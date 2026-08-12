@@ -23673,15 +23673,15 @@ impl LowerCtx {
         )
     }
 
-    /// Build the iterator-only clone-out read used by `VecIter::next`.
+    /// Build the iterator-only owned-output read used by `VecIter::next`.
     ///
     /// This deliberately does not use [`HirExprKind::Index`]: ordinary
     /// `xs[i]` preserves its established element-class semantics, including
     /// borrowed nested-collection handles. An iterator yield must instead be
     /// an independent owner because the cursor keeps and later releases its
-    /// snapshot. `Vec::get` is the existing descriptor-backed clone choke and
-    /// returns the owned value directly in `Option<T>`.
-    fn make_vec_iter_get_clone_call(
+    /// snapshot. Cloneable elements use the descriptor clone choke. Drop-only
+    /// trait objects instead move the fat pointer and null its source slot.
+    fn make_vec_iter_get_call(
         &mut self,
         vec_expr: HirExpr,
         index: HirExpr,
@@ -23689,6 +23689,11 @@ impl LowerCtx {
         span: Span,
     ) -> HirExpr {
         let option_ty = Self::resolved_option_ty(elem_ty.clone());
+        let target_symbol = if matches!(elem_ty, ResolvedTy::TraitObject { .. }) {
+            "hew_vec_take_owned"
+        } else {
+            "hew_vec_get_clone"
+        };
         self.make_expr(
             HirExprKind::ResolvedImplCall {
                 receiver: Box::new(vec_expr),
@@ -23697,7 +23702,7 @@ impl LowerCtx {
                 ),
                 impl_id: ImplId(u32::MAX),
                 method_name: "get".to_string(),
-                target_symbol: "hew_vec_get_clone".to_string(),
+                target_symbol: target_symbol.to_string(),
                 target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Get),
                 type_args: vec![Self::resolved_ty_pattern(elem_ty)],
                 args: vec![index],
@@ -24466,12 +24471,8 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
-        let value_expr = self.make_vec_iter_get_clone_call(
-            vec_read_for_get,
-            idx_read_for_get,
-            elem_ty,
-            span.clone(),
-        );
+        let value_expr =
+            self.make_vec_iter_get_call(vec_read_for_get, idx_read_for_get, elem_ty, span.clone());
         let value_binding_name = format!("__hew_iter_value_{}", self.ids.binding().0);
         let value_binding = self.bind(
             value_binding_name.clone(),

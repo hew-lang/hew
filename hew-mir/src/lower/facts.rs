@@ -3999,6 +3999,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_vec_contains_thunk",
         "hew_vec_get_bool",
         "hew_vec_get_clone",
+        "hew_vec_take_owned",
         "hew_vec_get_f32",
         "hew_vec_get_f64",
         "hew_vec_get_i16",
@@ -4107,6 +4108,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_vec_contains_thunk",
         "hew_vec_get_bool",
         "hew_vec_get_clone",
+        "hew_vec_take_owned",
         "hew_vec_get_f32",
         "hew_vec_get_f64",
         "hew_vec_get_i16",
@@ -4330,7 +4332,7 @@ mod runtime_callee_ownership_contract_parity {
 
     #[test]
     fn callee_ownership_contract_matches_literal_projection_sets() {
-        assert_eq!(CLASSIFIER_SYMBOLS.len(), 170);
+        assert_eq!(CLASSIFIER_SYMBOLS.len(), 171);
         let vec_receiver = expected_set(VEC_RECEIVER_SYMBOLS);
         let collection_receiver = expected_set(COLLECTION_RECEIVER_SYMBOLS);
         let copy_in = expected_set(COPY_IN_SYMBOLS);
@@ -4342,7 +4344,7 @@ mod runtime_callee_ownership_contract_parity {
         let interior_alias = expected_set(INTERIOR_ALIAS_SYMBOLS);
         let fresh_bytes = expected_set(FRESH_BYTES_SYMBOLS);
 
-        assert_eq!(vec_receiver.len(), 92);
+        assert_eq!(vec_receiver.len(), 93);
         assert_eq!(collection_receiver.len(), 20);
         assert_eq!(bytes_receiver.len(), 11);
         assert_eq!(string_use.len(), 38);

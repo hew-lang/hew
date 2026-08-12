@@ -5040,14 +5040,25 @@ impl Checker {
         admissible.then_some(token)
     }
 
-    /// Fail-closed gate for the Vec pipeline methods (`map`/`filter`/`reduce`)
-    /// on function-valued elements. Each `Vec<fn(...)>` slot owns its
-    /// closure-pair box and, transitively, the pair's environment box; the
-    /// pipeline desugar reads elements by index (a borrow) and would hand a
-    /// second owner the same environment the source vec still releases at
-    /// scope exit (`boundary-fail-closed`, `ffi-ownership-contracts`).
+    /// Fail-closed gate for Vec pipeline methods whose elements cannot be
+    /// copied into a second owner. Function slots own their closure-pair box;
+    /// trait-object slots own their concrete `HeapBoxed` value. The pipeline
+    /// desugar reads elements without consuming the source Vec, so neither can
+    /// safely manufacture a result owner.
     /// Returns `true` when the call was rejected.
     fn reject_vec_pipeline_fn_element(&mut self, method: &str, elem_ty: &Ty, span: &Span) -> bool {
+        if matches!(elem_ty, Ty::TraitObject { .. }) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`Vec::{method}` is not supported for trait-object elements: \
+                     the source Vec retains each HeapBoxed owner and `dyn Trait` has no \
+                     semantic clone operation; consume the Vec with `into_iter()` instead"
+                ),
+            );
+            return true;
+        }
         if matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. }) {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
@@ -5788,35 +5799,6 @@ impl Checker {
         None
     }
 
-    /// A `dyn Trait` element behind an opaque vtable pointer has no clone/drop
-    /// thunk (`VecIter::next()` needs one to clone each element into an
-    /// independent owner) and no scalar-index or push-rewrite entry, so
-    /// `Vec<dyn Trait>` type-checks today and then fails three different ways
-    /// deep in codegen/HIR with internal-looking diagnostics (`VecIter<dyn T>
-    /// is not supported`, `MethodCallNoRewrite`, `VecIndexElementTypeUnsupported`)
-    /// instead of one clear rejection naming the supported alternative. `dyn
-    /// Trait` itself is fine (a function parameter monomorphises per call
-    /// site); only wrapping it in `Vec` is unsupported, so this check is
-    /// scoped to the `Vec` element position, not `Ty::TraitObject` generally.
-    ///
-    /// Returns `Some(reason)` for a `Ty::TraitObject` element, `None` otherwise.
-    #[allow(
-        clippy::unused_self,
-        reason = "kept as a &self method to match the sibling \
-                  indirect_enum_vec_element_reject_reason call convention at both call sites"
-    )]
-    pub(super) fn trait_object_vec_element_reject_reason(&self, elem_ty: &Ty) -> Option<String> {
-        if matches!(elem_ty, Ty::TraitObject { .. }) {
-            return Some(
-                "trait-object elements are not supported in `Vec` (no clone/drop, index, or \
-                 push path exists for an opaque `dyn Trait` pointer); wrap each variant in an \
-                 enum and store `Vec<YourEnum>` instead"
-                    .to_string(),
-            );
-        }
-        None
-    }
-
     /// Channel/stream element admission for the layout-witness queue path
     /// (`Sender<T>`/`Receiver<T>`/`Stream<T>` recv/send). An element is
     /// admissible when the codegen element witness can describe it:
@@ -5956,6 +5938,11 @@ impl Checker {
         visiting: &mut HashSet<String>,
     ) -> bool {
         match elem_ty {
+            // A trait-object slot owns its heap-promoted concrete box. The
+            // descriptor is deliberately drop-only: push and consuming
+            // iteration move the two-word fat pointer, while clone-dependent
+            // surfaces remain refused.
+            Ty::TraitObject { .. } => true,
             // Tuple element: a tuple with at least one owned (non-Copy) field
             // routes through the synthesized `__hew_tuple_*_inplace` thunk. An
             // all-Copy tuple is `Copy` and never reaches this admissibility
@@ -6401,6 +6388,17 @@ impl Checker {
         let runtime_method_declared = self
             .lookup_builtin_vec_method_sig(type_args, method)
             .is_some();
+        if method == "clone" && matches!(self.subst.resolve(&elem_ty), Ty::TraitObject { .. }) {
+            self.check_arity(args, 0, "`Vec::clone`", span);
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "`Vec<dyn Trait>::clone()` is not supported because trait objects have no \
+                 semantic clone operation; use `into_iter()` to transfer the existing owners"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
         let result = match method {
             "into_iter" => {
                 self.check_arity(args, 0, "`Vec::into_iter`", span);
@@ -6453,6 +6451,17 @@ impl Checker {
                 // its `keys()`/`values()` projections.
                 self.check_arity(args, 0, "`Vec::iter`", span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
+                if matches!(resolved_elem, Ty::TraitObject { .. }) {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "`Vec<dyn Trait>::iter()` is not supported because a borrowed iterator \
+                         needs an independent clone of each trait object; use `into_iter()` to \
+                         transfer the existing owners"
+                            .to_string(),
+                    );
+                    return Ty::Error;
+                }
                 if !self.validate_vec_iter_element_clone_type(&resolved_elem, span) {
                     return Ty::Error;
                 }
@@ -6494,6 +6503,17 @@ impl Checker {
                     }
                 }
                 let resolved_elem = self.subst.resolve(&elem_ty);
+                if matches!(resolved_elem, Ty::TraitObject { .. }) {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "`Vec<dyn Trait>::get()` is not supported because returning an owned \
+                         element would require a semantic trait-object clone; use pop/remove or \
+                         consuming iteration to move an owner out"
+                            .to_string(),
+                    );
+                    return Ty::Error;
+                }
                 self.record_method_call_receiver_kind(
                     span,
                     MethodCallReceiverKind::PrimitiveTraitImpl {
@@ -6680,7 +6700,12 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &expected_fn);
                 }
-                self.subst.resolve(&acc_ty)
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if self.reject_vec_pipeline_fn_element("fold", &resolved_elem, span) {
+                    Ty::Error
+                } else {
+                    self.subst.resolve(&acc_ty)
+                }
             }
             _ if runtime_method_declared => self
                 .check_runtime_vec_method_from_source(type_args, method, args, span)

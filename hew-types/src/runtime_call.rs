@@ -223,6 +223,9 @@ pub enum VecGetElem {
     /// `Terminator::Call` path because its concrete element layout determines
     /// the hidden output-pointer ABI.
     Clone,
+    /// Descriptor-backed move into a caller-provided output slot. Used by
+    /// consuming iteration over drop-only elements.
+    Take,
     Layout,
     Owned,
     Ptr,
@@ -1314,6 +1317,7 @@ impl RuntimeCallFamily {
             Self::VecGet(VecGetElem::I32) => "hew_vec_get_i32",
             Self::VecGet(VecGetElem::I64) => "hew_vec_get_i64",
             Self::VecGet(VecGetElem::Clone) => "hew_vec_get_clone",
+            Self::VecGet(VecGetElem::Take) => "hew_vec_take_owned",
             Self::VecGet(VecGetElem::Layout) => "hew_vec_get_layout",
             Self::VecGet(VecGetElem::Owned) => "hew_vec_get_owned",
             Self::VecGet(VecGetElem::Ptr) => "hew_vec_get_ptr",
@@ -1635,6 +1639,7 @@ impl RuntimeCallFamily {
             "hew_vec_get_i32" => Self::VecGet(VecGetElem::I32),
             "hew_vec_get_i64" => Self::VecGet(VecGetElem::I64),
             "hew_vec_get_clone" => Self::VecGet(VecGetElem::Clone),
+            "hew_vec_take_owned" => Self::VecGet(VecGetElem::Take),
             "hew_vec_get_layout" => Self::VecGet(VecGetElem::Layout),
             "hew_vec_get_owned" => Self::VecGet(VecGetElem::Owned),
             "hew_vec_get_ptr" => Self::VecGet(VecGetElem::Ptr),
@@ -1911,9 +1916,9 @@ impl RuntimeCallFamily {
             | Self::VecRemoveAtLayout
             | Self::VecCloneLayout
             | Self::VecSliceRange(VecSliceElem::Layout) => RuntimeCallAbiShape::VecLayout,
-            Self::VecPushOwned
+            Self::VecGet(VecGetElem::Take | VecGetElem::Owned)
+            | Self::VecPushOwned
             | Self::VecPushOwnedMove
-            | Self::VecGet(VecGetElem::Owned)
             | Self::VecSetOwned
             | Self::VecSetOwnedMove
             | Self::VecPopOwned
@@ -2909,7 +2914,7 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::VecContainsLayout
             | F::VecContainsOwned
             | F::VecContainsScalar(_)
-            | F::VecGet(VecGetElem::Clone)
+            | F::VecGet(VecGetElem::Clone | VecGetElem::Take)
             | F::VecNew
             | F::VecPopBool
             | F::VecPopLayout

@@ -1297,6 +1297,7 @@ pub use hew_hir::declared_release::ty_is_scalar_non_heap;
 /// contract keys on the EMITTED symbol the site will actually lower to.
 const PROVED_OWNER_METHOD_SYMBOLS: &[&str] = &[
     "hew_vec_get_clone",
+    "hew_vec_take_owned",
     "hew_vec_get_str",
     "hew_vec_pop_str",
     "hew_vec_remove_at_str",

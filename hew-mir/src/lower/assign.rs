@@ -209,9 +209,8 @@ impl Builder {
                         type_args.len()
                     );
                 }
-                if self.vec_receiver_has_drop_only_receiver_element(&receiver.ty) {
-                    let _ = self
-                        .reject_drop_only_receiver_vec_operation("index set copy-in", target.site);
+                if self.vec_receiver_has_drop_only_element(&receiver.ty) {
+                    let _ = self.reject_drop_only_vec_operation("index set copy-in", target.site);
                     return;
                 }
                 let Some(receiver_place) = self.lower_value(receiver) else {

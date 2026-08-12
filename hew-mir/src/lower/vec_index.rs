@@ -14,27 +14,25 @@ use super::{
 use hew_types::runtime_call::{RuntimeCallFamily, VecGetElem};
 
 impl Builder {
-    fn reject_drop_only_receiver_index(
-        &mut self,
-        elem_ty: &ResolvedTy,
-        site: hew_hir::SiteId,
-    ) -> bool {
-        if !matches!(
-            self.subst_ty(elem_ty),
-            ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::Receiver),
-                ..
-            }
-        ) {
+    fn reject_drop_only_index(&mut self, elem_ty: &ResolvedTy, site: hew_hir::SiteId) -> bool {
+        if !matches!(self.subst_ty(elem_ty), ResolvedTy::TraitObject { .. })
+            && !matches!(
+                self.subst_ty(elem_ty),
+                ResolvedTy::Named {
+                    builtin: Some(hew_types::BuiltinType::Receiver),
+                    ..
+                }
+            )
+        {
             return false;
         }
         self.diagnostics.push(MirDiagnostic {
             kind: MirDiagnosticKind::NotYetImplemented {
-                construct: "`Vec<channel.Receiver<_>>` index read".to_string(),
+                construct: "drop-only `Vec` element index read".to_string(),
                 site,
             },
-            note: "indexing would clone a receiver out of the Vec, but channel.Receiver<T> \
-                   is drop-only; consume the receiver through a moving operation instead."
+            note: "indexing would clone an affine value out of the Vec, but its descriptor \
+                   is drop-only; consume it through pop/remove or consuming iteration instead."
                 .to_string(),
         });
         true
@@ -81,7 +79,7 @@ impl Builder {
         elem_ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        if self.reject_drop_only_receiver_index(elem_ty, site) {
+        if self.reject_drop_only_index(elem_ty, site) {
             return None;
         }
         // Lower the container and index sub-expressions.
@@ -348,6 +346,7 @@ mod tests {
             VecGetElem::I32 => ResolvedTy::I32,
             VecGetElem::I64 => ResolvedTy::I64,
             VecGetElem::Clone => ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
+            VecGetElem::Take => ResolvedTy::Unit,
             VecGetElem::Layout => ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
             VecGetElem::Owned => {
                 ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String])
@@ -372,6 +371,13 @@ mod tests {
             let RuntimeCallFamily::VecGet(elem) = family else {
                 continue;
             };
+            if elem == VecGetElem::Take {
+                assert_eq!(
+                    RuntimeCallFamily::from_c_symbol(family.c_symbol()),
+                    Some(family)
+                );
+                continue;
+            }
             let witness = witness_type(elem);
             assert_eq!(
                 builder.vec_element_get_family(&witness),

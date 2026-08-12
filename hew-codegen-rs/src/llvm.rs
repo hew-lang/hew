@@ -20793,6 +20793,31 @@ fn lower_inline_drop(
     ty: &ResolvedTy,
     drop_fn: &hew_mir::DropFnSpec,
 ) -> CodegenResult<()> {
+    if matches!(ty, ResolvedTy::TraitObject { .. }) {
+        if *drop_fn != hew_mir::DropFnSpec::Release("hew_dyn_trait_drop_boxed_in_place") {
+            return Err(CodegenError::FailClosed(format!(
+                "inline dyn Trait drop @ {place:?} carries {drop_fn:?}; expected the \
+                 heap-boxed trait-object drop callback"
+            )));
+        }
+        let (slot, slot_ty) = place_pointer(fn_ctx, place)?;
+        let helper = get_or_declare_drop_helper(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &DropHelper {
+                name: "hew_dyn_trait_drop_boxed_in_place",
+            },
+        );
+        fn_ctx
+            .builder
+            .build_call(helper, &[slot.into()], "inline_dyn_trait_drop")
+            .llvm_ctx("inline dyn Trait drop call")?;
+        fn_ctx
+            .builder
+            .build_store(slot, slot_ty.const_zero())
+            .llvm_ctx("inline dyn Trait drop zero-store")?;
+        return Ok(());
+    }
     // Bytes ABI: a native `bytes` value is a stack-resident `BytesTriple
     // { ptr, i32, i32 }`, NOT a single owned pointer. The data buffer's sole
     // release is `hew_bytes_drop(data_ptr)` (`hew-runtime/src/bytes.rs`'s
@@ -24616,6 +24641,7 @@ pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
         } => !args
             .first()
             .is_some_and(|e| matches!(e, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })),
+        ResolvedTy::TraitObject { .. } => true,
         _ => false,
     }
 }
@@ -29699,9 +29725,18 @@ fn lower_terminator<'ctx>(
             // tracks). Scope-exit release is descriptor-driven.
             if matches!(
                 builtin,
-                Some(RtFamily::VecGet(hew_types::runtime_call::VecGetElem::Clone))
+                Some(RtFamily::VecGet(
+                    hew_types::runtime_call::VecGetElem::Clone
+                        | hew_types::runtime_call::VecGetElem::Take
+                ))
             ) {
-                crate::layout::lower_vec_get_clone_call(fn_ctx, args, dest.as_ref(), *next)?;
+                crate::layout::lower_vec_get_clone_call(
+                    fn_ctx,
+                    callee,
+                    args,
+                    dest.as_ref(),
+                    *next,
+                )?;
                 return Ok(());
             }
             if builtin.is_some_and(|family| {

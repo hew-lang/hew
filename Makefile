@@ -68,7 +68,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew hew-native observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
+.PHONY: all build bootstrap install-hooks hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
 .PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
@@ -206,7 +206,7 @@ RUNTIME_MIRI_TARGET_DIR := target/miri-runtime
 
 # ── Default target ──────────────────────────────────────────────────────────
 
-all: hew-native observe runtime stdlib wasm-runtime assemble
+all: hew-native hew-lsp observe runtime stdlib wasm-runtime assemble
 
 # Convenience alias — rebuilds all debug artifacts including libhew.a.
 # Equivalent to `make all`; exists so that `make build` behaves as expected.
@@ -229,6 +229,10 @@ hew: hew-native
 # Windows hosts use the same build graph as Linux/macOS.
 hew-native: libhew-debug
 	cargo build -p hew-cli $(CARGO_TARGET_FLAG)
+
+# Build the language server (debug).
+hew-lsp:
+	cargo build -p hew-lsp $(CARGO_TARGET_FLAG)
 
 # Build the TUI actor observer (debug).
 # hew-observe is a sibling binary: `hew observe` delegates to it when it is
@@ -574,7 +578,7 @@ wasm-dist: wasm
 
 # Create symlinks from build/ into the real output locations.
 # This gives you one stable directory to point PATH at during development.
-assemble: | hew-native observe runtime stdlib wasm-runtime
+assemble: | hew-native hew-lsp observe runtime stdlib wasm-runtime
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
 	@# assemble-release makes build/std a symlink to ../std; reset it so the
 	@# flat std stub loop below cannot rewrite tracked std/*.hew files in root.
@@ -582,6 +586,8 @@ assemble: | hew-native observe runtime stdlib wasm-runtime
 	@mkdir -p $(BUILD_DIR)/std
 	@# Compiler driver
 	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew"                "$(BUILD_DIR)/bin/hew"
+	@# Language server
+	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew-lsp"            "$(BUILD_DIR)/bin/hew-lsp"
 	@# TUI actor observer (sibling binary — `hew observe` delegates here)
 	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew-observe"        "$(BUILD_DIR)/bin/hew-observe"
 	@# Combined Hew library (runtime + all stdlib packages)

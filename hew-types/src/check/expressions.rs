@@ -5920,6 +5920,27 @@ impl Checker {
             }
         }
 
+        // Dotted module-qualified unit constructor:
+        // `module.Type.Variant`. The parser represents this as nested field
+        // access, but neither `module` nor `module.Type` is a runtime value.
+        // Resolve the complete constructor before synthesising the inner
+        // projection so it shares the exact export and variant authority of
+        // the existing `module.Type::Variant` surface.
+        if let Expr::FieldAccess {
+            object: module,
+            field: type_name,
+        } = &object.0
+        {
+            if let Expr::Identifier(module_short) = &module.0 {
+                if self.modules.contains(module_short)
+                    && self.env.lookup_ref(module_short).is_none()
+                {
+                    let constructor = format!("{module_short}.{type_name}::{field}");
+                    return self.synthesize_identifier(&constructor, span);
+                }
+            }
+        }
+
         // Pre-dispatch: module-qualified value-constructor reference, e.g.
         // `m.Type::Variant` (unit or tuple-naked).  This must run BEFORE
         // `synthesize(object)` because `module` is not bound in `self.env`

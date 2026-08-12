@@ -1620,7 +1620,10 @@ fn main() { let r = mk(); println(r.tag); }
     ];
     for (name, source) in cases {
         let (ok, out) = hew_run(source);
-        assert!(ok, "{name}: heap-owning tuple carry must run clean; got:\n{out}");
+        assert!(
+            ok,
+            "{name}: heap-owning tuple carry must run clean; got:\n{out}"
+        );
         assert!(
             out.contains(&"y".repeat(32)),
             "{name}: carry must override tag; got:\n{out}"

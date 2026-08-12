@@ -4390,6 +4390,7 @@ impl Builder {
                                 &subst_fty,
                                 &self.record_field_orders,
                                 &self.enum_layouts,
+                                &self.lifecycle_registry,
                             );
                         if sound_carry {
                             continue;

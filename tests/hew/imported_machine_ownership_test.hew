@@ -61,3 +61,20 @@ fn imported_machine_transitions_and_supports_dotted_unit_construction() {
     value.step(machine_defs.PayloadLifecycleEvent::Load);
     testing.assert_eq_str(payload_label(value), "TRANSITIONED");
 }
+
+/// `payload_label`'s match arms are `module.Type::Variant` patterns
+/// (`machine_defs.PayloadLifecycle::Loaded { label }` then
+/// `machine_defs.PayloadLifecycle::Empty`). Before the parser's dotted-
+/// pattern lookahead fix, an unguarded dotted-segment loop could fold a
+/// module-qualified dotted pattern into a single irrefutable identifier
+/// binding, making the first arm a catch-all: an `Empty` value would
+/// silently select the `Loaded` arm's label instead of being rejected or
+/// correctly falling through. Assert both variants route to their own arm.
+#[test]
+fn module_qualified_variant_pattern_selects_the_matching_arm_for_both_states() {
+    let empty = machine_defs.PayloadLifecycle.Empty;
+    testing.assert_eq_str(payload_label(empty), "empty");
+
+    let loaded = machine_defs.make("direct".to_upper());
+    testing.assert_eq_str(payload_label(loaded), "DIRECT");
+}

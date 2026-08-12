@@ -95,6 +95,28 @@ impl Parser<'_> {
         Some(result)
     }
 
+    /// Scans ahead (without consuming) from a `Token::Dot` at the current
+    /// position to decide whether it opens a `module.Type::Variant` path.
+    /// Walks alternating `Dot Identifier` pairs and reports true only if
+    /// that chain is immediately followed by `Token::DoubleColon`. Any other
+    /// token — including a `Dot` not followed by an identifier, or a
+    /// dotted chain that runs into `=>`/`(`/`{`/EOF without ever reaching
+    /// `::` — reports false, so the caller leaves the `.` untouched instead
+    /// of folding it into an identifier.
+    fn dotted_pattern_reaches_double_colon(&self) -> bool {
+        let mut idx = self.pos;
+        loop {
+            match self.peek_at(idx) {
+                Some(Token::Dot) => match self.peek_at(idx + 1) {
+                    Some(Token::Identifier(_)) => idx += 2,
+                    _ => return false,
+                },
+                Some(Token::DoubleColon) => return true,
+                _ => return false,
+            }
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "recursive descent parser requires sequential case handling"
@@ -180,15 +202,29 @@ impl Parser<'_> {
                     Pattern::Wildcard
                 } else {
                     // Preserve dotted module qualification before the
-                    // type/variant separator: `module.Type::Variant`. The
-                    // complete path stays in the existing pattern variants,
-                    // so checker and HIR variant resolution use the same
-                    // owner-qualified constructor surface as expressions.
-                    while self.eat(&Token::Dot) {
-                        if let Some(segment) = self.expect_ident() {
-                            name = format!("{name}.{segment}");
-                        } else {
-                            break;
+                    // type/variant separator: `module.Type::Variant`. Scoped
+                    // to exactly that ratified surface (Q315's stated gap,
+                    // #2922) — NOT the general dotted-pattern grammar A315's
+                    // sweep will add. Only entered when a scan ahead
+                    // confirms the dotted chain terminates in `::` before
+                    // any other token; otherwise the loop is skipped
+                    // entirely and the `.` is left for the caller, which
+                    // rejects it (`expected '=>', found '.'`) exactly as
+                    // `main` does for `foo.bar => ...` or `m.T.Variant =>
+                    // ...`. Without this guard, any dotted identifier with
+                    // no trailing `::Variant` silently became an irrefutable
+                    // `Pattern::Identifier("a.b")` binding — a fail-open
+                    // that made the first arm of a dotted-variant match a
+                    // catch-all.
+                    if self.peek() == Some(&Token::Dot)
+                        && self.dotted_pattern_reaches_double_colon()
+                    {
+                        while self.eat(&Token::Dot) {
+                            if let Some(segment) = self.expect_ident() {
+                                name = format!("{name}.{segment}");
+                            } else {
+                                break;
+                            }
                         }
                     }
                     // Handle qualified names like Colour::Red

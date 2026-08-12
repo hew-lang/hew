@@ -4420,6 +4420,64 @@ fn module_qualified_variant_pattern_preserves_dotted_owner() {
     }
 }
 
+/// A dotted identifier in pattern position that never reaches `::` is
+/// rejected at parse time, matching `main`. Before the F1 fix, the dotted
+/// loop unconditionally folded `foo.bar` into an irrefutable
+/// `Pattern::Identifier("foo.bar")` binding — a silent-wrong-answer hole,
+/// not the module-qualified-variant surface this grammar is scoped to.
+#[test]
+fn dotted_pattern_without_double_colon_is_rejected() {
+    let source = "fn f(n: i64) -> i64 { match n { foo.bar => 1, _ => 0 } }";
+    let result = parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected a parse error for a dotted pattern with no '::', got none"
+    );
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("expected") && e.message.contains("=>")),
+        "expected an 'expected =>' diagnostic, got: {:?}",
+        result.errors
+    );
+}
+
+/// A multi-segment dotted path with no `::` anywhere (`m.T.Variant`) is
+/// also rejected, not folded into a binding — the guard scans the whole
+/// dotted chain, not just the first segment.
+#[test]
+fn multi_segment_dotted_pattern_without_double_colon_is_rejected() {
+    let source = "fn f(n: i64) -> i64 { match n { m.T.Variant => 1, _ => 0 } }";
+    let result = parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected a parse error for a dotted pattern with no '::', got none"
+    );
+}
+
+/// The lookahead that gates the dotted-pattern loop distinguishes a dotted
+/// path that continues into `::<Variant>` (consumed as module-qualified
+/// owner) from one that terminates at `=>` (left untouched, rejected by the
+/// caller) — pinning the exact boundary F1 was missing.
+#[test]
+fn dotted_pattern_lookahead_stops_at_fat_arrow_not_double_colon() {
+    let accepted = "fn f(e: m.E) -> i64 { match e { m.E::Some(x) => x, _ => 0 } }";
+    let accepted_result = parse(accepted);
+    assert!(
+        accepted_result.errors.is_empty(),
+        "module-qualified variant pattern should parse cleanly, got: {:?}",
+        accepted_result.errors
+    );
+
+    let rejected = "fn f(n: i64) -> i64 { match n { m.E => 1, _ => 0 } }";
+    let rejected_result = parse(rejected);
+    assert!(
+        !rejected_result.errors.is_empty(),
+        "a dotted path ending at '=>' with no '::' must be rejected, not bound"
+    );
+}
+
 // ── RecordShorthand pattern (let {a, b} = rec) ───────────────────────────
 
 /// `let { x, y } = p` parses as `Pattern::RecordShorthand` with two plain

@@ -21,8 +21,8 @@ use hew_parser::ast::{
     ImportSpec, Item, LambdaParam, Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl,
     RecordDecl, RecordKind, ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm,
     ShutdownDirective, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
-    TimeoutClause, TraitItem, TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp,
-    VariantKind,
+    TimeoutClause, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
+    TypeExpr, UnaryOp, VariantKind,
 };
 use hew_types::builtin_enums::BuiltinMonomorphicEnumVariant;
 use hew_types::BuiltinType;
@@ -2368,6 +2368,7 @@ pub fn lower_program_with_mono_cap(
     target_arch: TargetArch,
 ) -> LowerOutput {
     let mut ctx = LowerCtx::new(type_check_output, mono_cap, target_arch);
+    ctx.type_aliases = collect_type_aliases(program);
     let file_import_module_idx = file_import_item_module_indices(program);
     // Source items flattened from a file import still belong to that file's
     // declaration namespace.  Compute the checker-aligned module-name carrier
@@ -4274,7 +4275,7 @@ pub fn lower_program_with_mono_cap(
                     ctx.lower_supervisor(decl, span.clone()),
                 ));
             }
-            Item::Import(_) => {
+            Item::Import(_) | Item::TypeAlias(_) => {
                 // Imports are frontend-resolved: module-path imports
                 // (`import greeting;`) are lowered from `program.module_graph`
                 // below under their qualified mangled name (e.g. `greeting$hello`).
@@ -4283,6 +4284,8 @@ pub fn lower_program_with_mono_cap(
                 // the loop above.  The residual `Item::Import` stub is kept in
                 // `program.items` for diagnostic source-map attribution (removing
                 // it would require auditing every span consumer — out of scope).
+                // Type aliases likewise have no runtime artifact: checker and
+                // annotation lowering expand them to their underlying storage.
             }
             Item::Trait(trait_decl) => {
                 // User-defined `trait` declarations have no runtime artefact —
@@ -4313,9 +4316,6 @@ pub fn lower_program_with_mono_cap(
             }
             Item::Const(const_decl) => {
                 items.push(HirItem::Const(ctx.lower_const(const_decl, span.clone())));
-            }
-            Item::TypeAlias(_) => {
-                ctx.unsupported(span.clone(), "top-level-item", "slice-2");
             }
             Item::ExternBlock(block) => {
                 for func in &block.functions {
@@ -7371,6 +7371,9 @@ struct LowerCtx {
     /// and sibling alias lookups agrees with the checker's inserts for depth-≥2
     /// importers; the short last segment would diverge and miss.
     current_module_name: Option<String>,
+    type_aliases: HashMap<String, TypeAliasLowering>,
+    type_alias_substitutions: Vec<HashMap<String, ResolvedTy>>,
+    resolving_type_aliases: HashSet<String>,
     /// Checker-authoritative import resolution table: maps `(importer_module,
     /// source spelling)` → canonical qualified source identity for named/glob
     /// imports and canonical lifecycle whole-module aliases.
@@ -7393,6 +7396,55 @@ struct LowerCtx {
     /// `closableerr.CloseError` still resolves to
     /// `hew.closableerr.CloseError` without a leaf-name retry.
     module_import_bindings: HashMap<(Option<String>, String), String>,
+}
+
+#[derive(Debug, Clone)]
+struct TypeAliasLowering {
+    type_params: Vec<String>,
+    target: Spanned<TypeExpr>,
+}
+
+fn collect_type_aliases(program: &Program) -> HashMap<String, TypeAliasLowering> {
+    fn insert_alias(
+        aliases: &mut HashMap<String, TypeAliasLowering>,
+        owner: Option<&str>,
+        decl: &TypeAliasDecl,
+    ) {
+        let alias = TypeAliasLowering {
+            type_params: decl
+                .type_params
+                .as_ref()
+                .map(|params| params.iter().map(|param| param.name.clone()).collect())
+                .unwrap_or_default(),
+            target: decl.ty.clone(),
+        };
+        if let Some(owner) = owner {
+            aliases.insert(format!("{owner}.{}", decl.name), alias);
+        } else {
+            aliases.insert(decl.name.clone(), alias);
+        }
+    }
+
+    let mut aliases = HashMap::new();
+    for (item, _) in &program.items {
+        if let Item::TypeAlias(decl) = item {
+            insert_alias(&mut aliases, None, decl);
+        }
+    }
+    if let Some(graph) = &program.module_graph {
+        for module_id in &graph.topo_order {
+            let Some(module) = graph.modules.get(module_id) else {
+                continue;
+            };
+            let owner = module_id.path.join(".");
+            for (item, _) in &module.items {
+                if let Item::TypeAlias(decl) = item {
+                    insert_alias(&mut aliases, Some(&owner), decl);
+                }
+            }
+        }
+    }
+    aliases
 }
 
 struct PendingProducedValueCarrier {
@@ -7920,6 +7972,9 @@ impl LowerCtx {
             caller_visible_param_spans: tc_output.caller_visible_param_projections.clone(),
             lowering_injected_items: false,
             current_module_name: None,
+            type_aliases: HashMap::new(),
+            type_alias_substitutions: Vec::new(),
+            resolving_type_aliases: HashSet::new(),
             import_type_name_aliases: tc_output.import_type_name_aliases.clone(),
             module_import_bindings: tc_output.module_import_bindings.clone(),
         }
@@ -12030,6 +12085,7 @@ impl LowerCtx {
         // compiler-reserved inherent-impl exception below. Source spellings
         // such as `Vec`, `Option`, and `Result` are ordinary user nominals
         // unless they carry the corresponding builtin discriminator.
+        let target_is_alias = self.type_alias_for_name(self_type_name).is_some();
         let mut resolved_impl_self_ty = self.lower_type(&decl.target_type);
         // Injected `std/builtins.hew` impls are compiler-owned declarations.
         // A root user declaration with the same source leaf must not retag
@@ -12101,7 +12157,8 @@ impl LowerCtx {
         // User-source inherent impls on VecIter still take the guard below.
         let is_std_iter_vec_iter_extension = builtin_impl_kind == Some(BuiltinType::VecIter)
             && self.current_module_name.as_deref() == Some("std.iter");
-        if !is_duration_ctor_block
+        if !target_is_alias
+            && !is_duration_ctor_block
             && !is_std_iter_vec_iter_extension
             && decl.trait_bound.is_none()
             && builtin_impl_kind.is_some()
@@ -23400,6 +23457,68 @@ impl LowerCtx {
             && !self.non_opaque_type_short_names.contains(short_name)
     }
 
+    fn type_alias_for_name(&self, name: &str) -> Option<(String, TypeAliasLowering)> {
+        if let Some(alias) = self.type_aliases.get(name) {
+            return Some((name.to_string(), alias.clone()));
+        }
+        let module = self.current_module_name.as_deref()?;
+        let qualified = format!("{module}.{name}");
+        self.type_aliases
+            .get(&qualified)
+            .cloned()
+            .map(|alias| (qualified, alias))
+    }
+
+    fn lower_type_alias(
+        &mut self,
+        identity: String,
+        alias: TypeAliasLowering,
+        args: Vec<ResolvedTy>,
+        span: &Span,
+    ) -> ResolvedTy {
+        if alias.type_params.len() != args.len() {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: identity,
+                    reason: format!(
+                        "alias arity mismatch: expected {}, found {}",
+                        alias.type_params.len(),
+                        args.len()
+                    ),
+                },
+                span.clone(),
+                "type alias reached HIR with invalid type arguments",
+            ));
+            return ResolvedTy::Unit;
+        }
+        if !self.resolving_type_aliases.insert(identity.clone()) {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: identity.clone(),
+                    reason: "recursive type alias".to_string(),
+                },
+                span.clone(),
+                "recursive type aliases are not supported",
+            ));
+            return ResolvedTy::Unit;
+        }
+        self.type_alias_substitutions.push(
+            alias
+                .type_params
+                .into_iter()
+                .zip(args)
+                .collect::<HashMap<_, _>>(),
+        );
+        let lowered = self.lower_type(&alias.target);
+        self.type_alias_substitutions.pop();
+        self.resolving_type_aliases.remove(&identity);
+        lowered
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "type lowering keeps every TypeExpr boundary in one exhaustive dispatcher"
+    )]
     fn lower_type(&mut self, ty: &Spanned<TypeExpr>) -> ResolvedTy {
         match &ty.0 {
             TypeExpr::Named { name, type_args } => {
@@ -23407,6 +23526,20 @@ impl LowerCtx {
                     .as_ref()
                     .map(|args| args.iter().map(|arg| self.lower_type(arg)).collect())
                     .unwrap_or_default();
+                if args.is_empty() {
+                    if let Some(substituted) = self
+                        .type_alias_substitutions
+                        .iter()
+                        .rev()
+                        .find_map(|scope| scope.get(name))
+                        .cloned()
+                    {
+                        return substituted;
+                    }
+                }
+                if let Some((identity, alias)) = self.type_alias_for_name(name) {
+                    return self.lower_type_alias(identity, alias, args, &ty.1);
+                }
                 // W3.042 S2-S1: `Self` in an impl-method body annotation
                 // resolves to the concrete impl-target type. Without this
                 // interception, `self`'s parser-assigned `TypeExpr::Named

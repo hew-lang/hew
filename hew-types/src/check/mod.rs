@@ -57,7 +57,7 @@ use self::types::{
     DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry,
     ImplAliasScope, ImportKey, IndexContext, IntegerTypeInfo, PendingDirectCallOwnership,
     PendingLoweringFact, PendingMethodCallOwnership, SourceExternDeclaration,
-    TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
+    TraitAssociatedTypeInfo, TraitInfo, TypeAliasDef, TypeParamScope,
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,

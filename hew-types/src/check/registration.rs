@@ -2480,10 +2480,41 @@ impl Checker {
                     if !self.register_type_namespace_name(None, &ta.name, span) {
                         continue;
                     }
+                    let type_params: Vec<String> = ta
+                        .type_params
+                        .as_ref()
+                        .map(|params| params.iter().map(|param| param.name.clone()).collect())
+                        .unwrap_or_default();
+                    let generic_bindings: HashMap<String, Ty> = type_params
+                        .iter()
+                        .map(|name| {
+                            (
+                                name.clone(),
+                                Ty::Named {
+                                    name: name.clone(),
+                                    args: Vec::new(),
+                                    builtin: None,
+                                },
+                            )
+                        })
+                        .collect();
+                    if !generic_bindings.is_empty() {
+                        self.generic_ctx.push(generic_bindings);
+                    }
                     let mut hole_vars = Vec::new();
                     let resolved = self.resolve_type_expr_tracking_holes(&ta.ty, &mut hole_vars);
-                    self.type_aliases.insert(ta.name.clone(), resolved);
+                    if !type_params.is_empty() {
+                        self.generic_ctx.pop();
+                    }
+                    self.type_aliases.insert(
+                        ta.name.clone(),
+                        TypeAliasDef {
+                            type_params,
+                            target: resolved,
+                        },
+                    );
                     self.record_type_def_inference_holes(&ta.name, hole_vars);
+                    self.local_type_defs.insert(ta.name.clone());
                     self.source_type_defs.insert(ta.name.clone());
                 }
                 Item::Trait(td) => {
@@ -2583,6 +2614,7 @@ impl Checker {
                     self.source_type_defs.insert(ad.name.clone());
                 }
                 Item::TypeAlias(ta) => {
+                    self.local_type_defs.insert(ta.name.clone());
                     self.source_type_defs.insert(ta.name.clone());
                 }
                 Item::Record(rd) => {
@@ -2718,6 +2750,7 @@ impl Checker {
                     self.source_type_defs.insert(ad.name.clone());
                 }
                 Item::TypeAlias(ta) => {
+                    self.local_type_defs.insert(ta.name.clone());
                     self.source_type_defs.insert(ta.name.clone());
                 }
                 _ => {}

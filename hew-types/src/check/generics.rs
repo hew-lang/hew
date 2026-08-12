@@ -1229,7 +1229,17 @@ impl Checker {
             ),
             _ => None,
         });
-        identity.is_some_and(|identity| self.type_identity_implements_trait(&identity, trait_name))
+        if identity
+            .as_deref()
+            .is_some_and(|identity| self.type_identity_implements_trait(identity, trait_name))
+        {
+            return true;
+        }
+        let Ty::Named { name, args, .. } = ty else {
+            return false;
+        };
+        self.alias_target_for_instance(name, args)
+            .is_some_and(|target| self.type_implements_trait_for_ty(&target, trait_name))
     }
 
     /// Check if `child_trait` transitively extends `parent_trait`.

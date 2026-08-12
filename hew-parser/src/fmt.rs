@@ -362,8 +362,10 @@ impl<'a> Formatter<'a> {
     fn format_type_alias(&mut self, decl: &TypeAliasDecl) {
         self.write_outer_doc(decl.doc_comment.as_ref());
         self.write_indent();
+        self.write_visibility(decl.visibility);
         self.write("type ");
         self.write(&decl.name);
+        self.format_opt_type_params(decl.type_params.as_ref());
         self.write(" = ");
         self.format_type_expr(&decl.ty.0);
         self.write(";\n");

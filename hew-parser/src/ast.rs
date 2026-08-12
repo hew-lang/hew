@@ -998,6 +998,7 @@ pub struct TypeAliasDecl {
     #[serde(default)]
     pub visibility: Visibility,
     pub name: String,
+    pub type_params: Option<Vec<TypeParam>>,
     pub ty: Spanned<TypeExpr>,
     pub doc_comment: Option<String>,
 }

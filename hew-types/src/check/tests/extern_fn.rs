@@ -318,7 +318,7 @@ fn injected_ordinary_field_and_alias_borrows_fail_closed() {
     assert!(checker
         .type_aliases
         .get("Alias")
-        .is_none_or(|ty| !matches!(ty, Ty::Borrow { .. })));
+        .is_none_or(|alias| !matches!(alias.target, Ty::Borrow { .. })));
 }
 
 #[test]

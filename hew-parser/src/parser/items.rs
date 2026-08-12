@@ -755,13 +755,35 @@ impl Parser<'_> {
     }
 
     pub(crate) fn is_type_alias_lookahead(&self) -> bool {
-        // Check for "type Name =" pattern (Name can be a contextual keyword)
-        matches!(self.tokens.get(self.pos), Some((Token::Type, _)))
-            && self
+        // Check for `type Name =` or `type Name<...> =` (Name can be a
+        // contextual keyword). A body declaration starts with `{` instead.
+        if !matches!(self.tokens.get(self.pos), Some((Token::Type, _)))
+            || !self
                 .tokens
                 .get(self.pos + 1)
                 .is_some_and(|(tok, _)| Self::is_ident_token(tok))
-            && matches!(self.tokens.get(self.pos + 2), Some((Token::Equal, _)))
+        {
+            return false;
+        }
+        if matches!(self.tokens.get(self.pos + 2), Some((Token::Equal, _))) {
+            return true;
+        }
+        if !matches!(self.tokens.get(self.pos + 2), Some((Token::Less, _))) {
+            return false;
+        }
+        let mut depth = 0usize;
+        for (index, (token, _)) in self.tokens.iter().enumerate().skip(self.pos + 2) {
+            match token {
+                Token::Less => depth += 1,
+                Token::Greater => depth = depth.saturating_sub(1),
+                Token::GreaterGreater => depth = depth.saturating_sub(2),
+                _ => {}
+            }
+            if depth == 0 {
+                return matches!(self.tokens.get(index + 1), Some((Token::Equal, _)));
+            }
+        }
+        false
     }
 
     pub(crate) fn parse_type_alias(
@@ -771,12 +793,14 @@ impl Parser<'_> {
     ) -> Option<TypeAliasDecl> {
         self.expect(&Token::Type)?;
         let name = self.expect_ident()?;
+        let type_params = self.parse_opt_type_params()?;
         self.expect(&Token::Equal)?;
         let ty = self.parse_type()?;
         self.expect(&Token::Semicolon)?;
         Some(TypeAliasDecl {
             visibility,
             name,
+            type_params,
             ty,
             doc_comment,
         })

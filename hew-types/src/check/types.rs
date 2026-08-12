@@ -2199,6 +2199,12 @@ pub struct TypeDef {
 }
 
 #[derive(Debug, Clone)]
+pub(super) struct TypeAliasDef {
+    pub(super) type_params: Vec<String>,
+    pub(super) target: Ty,
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct TraitInfo {
     pub(super) methods: Vec<TraitMethod>,
     pub(super) associated_types: Vec<TraitAssociatedTypeInfo>,
@@ -2830,7 +2836,7 @@ pub struct Checker {
     pub(super) loop_labels: Vec<String>,
     pub(super) modules: HashSet<String>,
     pub(super) known_types: HashSet<String>,
-    pub(super) type_aliases: HashMap<String, Ty>,
+    pub(super) type_aliases: HashMap<String, TypeAliasDef>,
     pub(super) trait_defs: HashMap<String, TraitInfo>,
     /// Maps trait name → list of super-trait names (e.g., `Pet` → [`Animal`])
     pub(super) trait_super: HashMap<String, Vec<String>>,

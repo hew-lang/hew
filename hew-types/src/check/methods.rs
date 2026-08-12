@@ -2655,6 +2655,15 @@ impl Checker {
     ) -> Option<FnSig> {
         shared_lookup_named_method_sig(&self.type_defs, &self.fn_sigs, type_name, type_args, method)
             .or_else(|| {
+                let target = self.alias_target_for_instance(type_name, type_args)?;
+                crate::method_resolution::lookup_method_sig(
+                    &self.type_defs,
+                    &self.fn_sigs,
+                    &target,
+                    method,
+                )
+            })
+            .or_else(|| {
                 self.module_registry
                     .resolve_handle_method_sig(type_name, method)
                     .map(|(_c_symbol, params, return_type, canonical_owner)| {
@@ -7852,6 +7861,25 @@ impl Checker {
             }
         } else {
             resolved
+        };
+        let resolved = match &resolved {
+            Ty::Named {
+                name,
+                args: type_args,
+                ..
+            } if crate::method_resolution::lookup_named_method_sig(
+                &self.type_defs,
+                &self.fn_sigs,
+                name,
+                type_args,
+                method,
+            )
+            .is_none() =>
+            {
+                self.alias_target_for_instance(name, type_args)
+                    .unwrap_or(resolved)
+            }
+            _ => resolved,
         };
         if let Some((_, child_ty)) = resolved.as_supervisor_pool() {
             let kind = match method {

@@ -1,0 +1,40 @@
+import std::testing;
+
+type Meters = i64;
+type Pair<T> = (T, T);
+type MyMap = HashMap<string, i64>;
+
+impl Meters {
+    fn answer(self) -> i64 {
+        42
+    }
+}
+
+fn roundtrip(values: MyMap) -> MyMap {
+    values
+}
+
+fn roundtrip_pair(pair: Pair<i64>) -> Pair<i64> {
+    pair
+}
+
+#[test]
+fn test_concrete_alias_and_impl_identity() {
+    let distance: Meters = 5;
+    testing.assert_eq(distance, 5);
+    testing.assert_eq(distance.answer(), 42);
+}
+
+#[test]
+fn test_parameterized_alias() {
+    let _pair: Pair<i64> = roundtrip_pair((20, 22));
+    testing.assert_true(true);
+}
+
+#[test]
+fn test_generic_rhs_alias_in_signatures() {
+    let values: MyMap = HashMap::new();
+    values.insert("answer", 42);
+    let _returned: MyMap = roundtrip(values);
+    testing.assert_true(true);
+}

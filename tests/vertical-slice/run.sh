@@ -2004,6 +2004,12 @@ grep -q 'LocalPid' "${reject_output}"
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"
 run_accept_expect_stdout "print_f64"
+run_accept_expect_stdout "top_level_type_aliases"
+run_accept_expect_stdout "type_alias_resource_close"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/type_alias_wrong_arity.hew" \
+  "type alias \`Pair\` expects 1 type argument(s), found 2" \
+  "type_alias_wrong_arity"
 run_accept_expect_stdout "iflet_literal"
 run_accept_expect_stdout "iflet_nested_ctor"
 run_accept_expect_stdout "let_nested_tuple"

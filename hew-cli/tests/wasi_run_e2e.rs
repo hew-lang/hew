@@ -695,7 +695,7 @@ fn native_cooperative_sleep_matches_wasi_output() {
 }
 
 // An actor with an `#[every]` periodic handler. No `await` is used: awaiting
-// inside an actor is still gated on wasm (WASM-TODO(#1451)), so an ask-based
+// inside an actor is still gated on wasm (see backlog #1451), so an ask-based
 // variant would fail at codegen and prove nothing about the timer.
 const COOPERATIVE_PERIODIC_SOURCE: &str = r#"actor Pulse {
     var count: i64 = 0;

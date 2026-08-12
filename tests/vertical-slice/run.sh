@@ -3727,6 +3727,10 @@ run_accept_expect_status "vec_range_slice_inclusive" 3
 run_accept_expect_stdout "hashmap_values_scalar"
 run_accept_expect_stdout "hashmap_values_string"
 run_accept_expect_status "hashmap_generic_ops" 0
+run_accept_expect_status "temporary_receiver_method" 0
+run_accept_expect_status "temporary_receiver_for" 0
+run_accept_expect_status "temporary_receiver_argument" 0
+run_accept_expect_status "temporary_receiver_binding" 0
 run_accept_expect_stdout "vec_scalar_range_slice"
 run_accept_expect_stdout "vec_string_range_slice"
 run_accept_expect_stdout "vec_record_range_slice"

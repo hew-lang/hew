@@ -1,9 +1,141 @@
 use super::{
     Builder, HashSet, HirExpr, MirDiagnostic, MirDiagnosticKind, Place, ProducedValueOwnership,
-    ResolvedTy, ValueClass, SYNTHETIC_TEMP_ARG_NAME,
+    ResolvedTy, ValueClass, SYNTHETIC_TEMP_ARG_NAME, SYNTHETIC_TEMP_RECEIVER_NAME,
 };
 
+#[derive(Clone, Copy)]
+enum BorrowedValueRole {
+    Argument,
+    Receiver,
+}
+
+impl BorrowedValueRole {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Argument => "argument",
+            Self::Receiver => "receiver",
+        }
+    }
+}
+
 impl Builder {
+    fn finalize_borrowed_value_owner(
+        &mut self,
+        value: &HirExpr,
+        place: Place,
+        role: BorrowedValueRole,
+    ) {
+        let ownership = self
+            .param_ownership
+            .produced_value_facts
+            .get(&value.site)
+            .map(|fact| fact.ownership);
+        let owned_ty = self.subst_ty(&value.ty);
+        if ValueClass::of_ty(&owned_ty, &self.type_classes) == ValueClass::Linear
+            || (!matches!(owned_ty, ResolvedTy::TraitObject { .. })
+                && !crate::model::ty_owns_heap_mir(
+                    &owned_ty,
+                    &self.record_field_orders,
+                    &self.enum_layouts,
+                ))
+        {
+            return;
+        }
+        if matches!(ownership, Some(ProducedValueOwnership::Unknown) | None) {
+            let construct = match role {
+                BorrowedValueRole::Argument => "borrowing argument ownership is unresolved",
+                BorrowedValueRole::Receiver => "borrowing receiver ownership is unresolved",
+            };
+            self.typed_produced_value_demand_is_resolved(value, construct);
+            return;
+        }
+        if !matches!(ownership, Some(ProducedValueOwnership::Owned { .. })) {
+            return;
+        }
+        let Place::Local(local) = place else {
+            return;
+        };
+        if self.parameter_locals.contains(&local) {
+            return;
+        }
+        let owners = self.finalize_typed_produced_value_owners(
+            match role {
+                BorrowedValueRole::Argument => SYNTHETIC_TEMP_ARG_NAME,
+                BorrowedValueRole::Receiver => SYNTHETIC_TEMP_RECEIVER_NAME,
+            },
+            value.site,
+            Place::Local(local),
+        );
+        if owners.is_empty() {
+            if self.typed_projection_has_live_parent_owner(value)
+                || matches!(role, BorrowedValueRole::Receiver)
+            {
+                // Specialised receiver rewrites can transfer an owned rvalue
+                // directly into their cursor or result storage without first
+                // publishing a provisional whole-value owner. There is no
+                // ordinary receiver generation for this sink to complete.
+                return;
+            }
+            let construct = format!("owned borrowing {} without provisional owner", role.label());
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct,
+                    site: value.site,
+                },
+                note: format!(
+                    "the typed owned {} must publish its exact MIR generation before the borrowing {} sink",
+                    role.label(),
+                    if matches!(role, BorrowedValueRole::Argument) {
+                        "call"
+                    } else {
+                        "method"
+                    }
+                ),
+            });
+            return;
+        }
+        if owners
+            .iter()
+            .any(|(_, published_ty)| *published_ty != owned_ty)
+        {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("borrowing {} owner changed type at handoff", role.label()),
+                    site: value.site,
+                },
+                note: format!(
+                    "typed {} has type {owned_ty:?}, but its provisional owners are {owners:?}",
+                    role.label()
+                ),
+            });
+            return;
+        }
+        if matches!(owned_ty, ResolvedTy::TraitObject { .. }) {
+            for (binding, _) in owners {
+                self.dyn_trait_storage
+                    .insert(binding, crate::TraitObjectStorage::HeapBoxed);
+            }
+        }
+    }
+
+    /// Hand a borrowing method's anonymous owned receiver from its typed
+    /// publication generation to the ordinary scope-exit planner.
+    pub(super) fn finalize_borrowed_receiver_owner(
+        &mut self,
+        receiver: &HirExpr,
+        receiver_place: Place,
+    ) {
+        if !self
+            .param_ownership
+            .produced_value_facts
+            .get(&receiver.site)
+            .is_some_and(|fact| matches!(fact.ownership, ProducedValueOwnership::Owned { .. }))
+        {
+            return;
+        }
+        self.finalize_borrowed_value_owner(receiver, receiver_place, BorrowedValueRole::Receiver);
+    }
+
     /// Hand a borrowing call's anonymous owned arguments from their typed
     /// publication generation to the ordinary scope-exit planner.
     pub(super) fn finalize_borrowed_argument_owners(
@@ -14,11 +146,6 @@ impl Builder {
         proven_borrow_args: &HashSet<usize>,
     ) {
         for (index, arg) in hir_args.iter().enumerate() {
-            let ownership = self
-                .param_ownership
-                .produced_value_facts
-                .get(&arg.site)
-                .map(|fact| fact.ownership);
             let owned_ty = self.subst_ty(&arg.ty);
             if ValueClass::of_ty(&owned_ty, &self.type_classes) == ValueClass::Linear
                 || (!matches!(owned_ty, ResolvedTy::TraitObject { .. })
@@ -43,62 +170,10 @@ impl Builder {
             if !callee_borrows {
                 continue;
             }
-            if matches!(ownership, Some(ProducedValueOwnership::Unknown) | None) {
-                self.typed_produced_value_demand_is_resolved(
-                    arg,
-                    "borrowing argument ownership is unresolved",
-                );
-                continue;
-            }
-            if !matches!(ownership, Some(ProducedValueOwnership::Owned { .. })) {
-                continue;
-            }
-            let Some(Place::Local(local)) = arg_places.get(index).copied() else {
+            let Some(place) = arg_places.get(index).copied() else {
                 continue;
             };
-            if self.parameter_locals.contains(&local) {
-                continue;
-            }
-            let owners = self.finalize_typed_produced_value_owners(
-                SYNTHETIC_TEMP_ARG_NAME,
-                arg.site,
-                Place::Local(local),
-            );
-            if owners.is_empty() {
-                if self.typed_projection_has_live_parent_owner(arg) {
-                    continue;
-                }
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "owned borrowing argument without provisional owner".to_string(),
-                        site: arg.site,
-                    },
-                    note: "the typed owned argument must publish its exact MIR generation before the borrowing call sink"
-                        .to_string(),
-                });
-                continue;
-            }
-            if owners
-                .iter()
-                .any(|(_, published_ty)| *published_ty != owned_ty)
-            {
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "borrowing argument owner changed type at handoff".to_string(),
-                        site: arg.site,
-                    },
-                    note: format!(
-                        "typed argument has type {owned_ty:?}, but its provisional owners are {owners:?}"
-                    ),
-                });
-                continue;
-            }
-            if matches!(owned_ty, ResolvedTy::TraitObject { .. }) {
-                for (binding, _) in owners {
-                    self.dyn_trait_storage
-                        .insert(binding, crate::TraitObjectStorage::HeapBoxed);
-                }
-            }
+            self.finalize_borrowed_value_owner(arg, place, BorrowedValueRole::Argument);
         }
     }
 }

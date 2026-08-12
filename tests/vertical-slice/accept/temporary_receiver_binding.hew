@@ -1,0 +1,17 @@
+fn main() -> i64 {
+    let map: HashMap<string, string> = HashMap::new();
+    var i = 0;
+    while i < 3 {
+        map.insert(f"key-{i}", f"value-{i}");
+        i = i + 1;
+    }
+
+    let keys = map.keys();
+    var count = 0;
+    var length = 0;
+    for key in keys {
+        count = count + 1;
+        length = length + key.len();
+    }
+    if count == 3 && length == 15 { 0 } else { 94 }
+}

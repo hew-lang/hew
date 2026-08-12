@@ -534,6 +534,27 @@ const FOR_RANGE_CLEAN: &str = "fn sum(n: i64) -> i64 {\n\
 
 const DEAD_STORE_MESSAGE: &str = "is never read before it is overwritten";
 
+/// A float accumulator incremented every iteration and never read afterwards —
+/// the canonical `clean_counter` case. Float arithmetic has no overflow trap, so
+/// deleting `c` is provably semantics-preserving.
+const CLEAN_COUNTER: &str = "fn main() {\n\
+     var c = 0.0;\n\
+     for i in 0..10 {\n\
+     c = c + 1.0;\n\
+     }\n\
+     }\n";
+
+/// The same shape with an *integer* counter. Hew's checked `+` traps on
+/// overflow, so this must never fire.
+const CLEAN_COUNTER_INT: &str = "fn main() {\n\
+     var c = 0;\n\
+     for i in 0..10 {\n\
+     c = c + 1;\n\
+     }\n\
+     }\n";
+
+const CLEAN_COUNTER_MESSAGE: &str = "the counting is dead work";
+
 /// The same shape as `DEAD_STORE`, but the discarded local is `_`-prefixed:
 /// the documented "intentionally unused" idiom. A dead store into an
 /// underscore binding must stay silent — the user already declared the value
@@ -647,20 +668,55 @@ fn underscore_local_does_not_trip_dead_store() {
 }
 
 #[test]
-fn clean_counter_is_unregistered_and_fails_closed() {
-    // `clean_counter` was deliberately NOT registered (it has no emission code
-    // yet). Selecting it must fail closed at the CLI boundary as an unknown
-    // lint — never silently no-op — so the registry's fail-closed contract
-    // holds. Mirrors `unknown_lint_name_is_rejected`.
-    let output = run_check(DEAD_STORE, &["-D", "clean_counter"]);
+fn clean_counter_is_registered_and_fires_on_unused_float_accumulator() {
+    // `clean_counter` is now registered and emitting (issue #2178). Under `-D`
+    // it must fail the build and name the counter. This replaces the earlier
+    // `clean_counter_is_unregistered_and_fails_closed` test, which pinned the
+    // pre-implementation state where selecting the lint was an unknown-lint
+    // error.
+    let output = run_check(CLEAN_COUNTER, &["-D", "clean_counter"]);
     let stderr = stderr_of(&output);
     assert!(
         !output.status.success(),
-        "-D clean_counter must fail closed (unregistered lint):\n{stderr}"
+        "-D clean_counter must fail the build on a dead accumulator:\n{stderr}"
     );
     assert!(
-        stderr.contains("unknown lint `clean_counter`"),
-        "expected a clear unknown-lint error naming clean_counter:\n{stderr}"
+        stderr.contains(CLEAN_COUNTER_MESSAGE) && stderr.contains("`c`"),
+        "expected a clean_counter diagnostic naming `c`:\n{stderr}"
+    );
+}
+
+#[test]
+fn clean_counter_is_suppressible_by_allow() {
+    // Registration must make `-A` real, not a no-op: the same program that
+    // fails under `-D` must be silent under `-A`.
+    let output = run_check(CLEAN_COUNTER, &["-A", "clean_counter"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "-A clean_counter must silence the lint:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains(CLEAN_COUNTER_MESSAGE),
+        "clean_counter must emit nothing under -A:\n{stderr}"
+    );
+}
+
+#[test]
+fn clean_counter_does_not_fire_on_integer_counter_under_deny() {
+    // THE soundness guard, end to end. Hew's integer `+` lowers to a checked
+    // add whose overflow flag branches to an `IntegerOverflow` trap, so the
+    // counter's value decides whether the program traps: removing it is
+    // semantics-changing. Even under `-D` the lint must stay silent.
+    let output = run_check(CLEAN_COUNTER_INT, &["-D", "clean_counter"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "an integer counter can trap on overflow — clean_counter must not fire:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains(CLEAN_COUNTER_MESSAGE),
+        "clean_counter must stay silent on checked integer arithmetic:\n{stderr}"
     );
 }
 

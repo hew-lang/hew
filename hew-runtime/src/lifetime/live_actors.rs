@@ -276,6 +276,26 @@ pub(crate) fn with_live_actor<R>(
     .flatten()
 }
 
+/// Return whether any tracked actor still owns a parked continuation.
+///
+/// The liveness lock is held while reading each actor state, so a concurrent
+/// free cannot reclaim an allocation beneath the scan. Shutdown uses this as
+/// source-agnostic drain authority: TCP, timer, ask, stream, and other await
+/// implementations all converge on `HewActorState::Suspended`.
+pub(crate) fn has_suspended_actor() -> bool {
+    with_live_actors_opt(|map| {
+        map.as_ref().is_some_and(|actors| {
+            actors.values().any(|ActorPtr(actor)| {
+                // SAFETY: the pointer remains tracked under the liveness lock;
+                // every free path must untrack it before reclaiming the box.
+                (unsafe { (**actor).actor_state.load(Ordering::Acquire) })
+                    == crate::internal::types::HewActorState::Suspended as i32
+            })
+        })
+    })
+    .unwrap_or(false)
+}
+
 /// Check whether an actor ID still maps to the expected live actor pointer.
 ///
 /// Returns `Some(f(..))` if `actor_id` maps to `expected`; `None` otherwise.

@@ -499,6 +499,9 @@ pub(crate) fn drain_is_idle() -> bool {
     if sched.stealers.iter().any(|stealer| !stealer.is_empty()) {
         return false;
     }
+    if crate::lifetime::live_actors::has_suspended_actor() {
+        return false;
+    }
 
     ACTIVE_WORKERS.load(Ordering::Acquire) == 0
 }
@@ -7859,6 +7862,24 @@ mod tests {
         assert!(
             drain_is_idle(),
             "scheduler should report drained after work clears"
+        );
+
+        let mut suspended = stub_actor();
+        suspended.id = 0xD2A1_0002;
+        suspended
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Release);
+        let suspended_ptr = &raw mut suspended;
+        // SAFETY: the stack actor remains live until it is untracked below.
+        assert!(unsafe { crate::lifetime::live_actors::track_actor(suspended_ptr) });
+        assert!(
+            !drain_is_idle(),
+            "a parked handler must keep shutdown draining independently of wake source"
+        );
+        assert!(crate::lifetime::live_actors::untrack_actor(suspended_ptr));
+        assert!(
+            drain_is_idle(),
+            "removing the final parked activation must restore idle"
         );
 
         take_default_runtime_for_test();

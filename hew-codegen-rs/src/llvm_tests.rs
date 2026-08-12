@@ -11539,6 +11539,16 @@ fn actor_using_main_emits_drain_epilogue() {
         "actor-using main must emit hew_shutdown_wait call before return:\n{ir}"
     );
     assert!(
+        ir.contains("hew_shutdown_failed")
+            && ir.contains("hew_shutdown_exit_failed")
+            && ir.contains("call void @hew_exit(i64 1)"),
+        "actor-using main must turn a failed drain into a non-zero process status:\n{ir}"
+    );
+    assert!(
+        ir.contains("hew_lambda_drain_failed") && ir.contains("hew_shutdown_any_failed"),
+        "main must combine scheduler and lambda-handler drain failures:\n{ir}"
+    );
+    assert!(
         ir.contains("hew_runtime_cleanup_after_main"),
         "actor-using main must emit the shared native runtime cleanup tail:\n{ir}"
     );
@@ -11612,6 +11622,12 @@ fn non_actor_main_omits_drain_epilogue() {
     assert!(
         !ir.contains("hew_runtime_cleanup_after_main"),
         "non-runtime main must NOT emit hew_runtime_cleanup_after_main:\n{ir}"
+    );
+    assert!(
+        ir.contains("hew_lambda_drain_failed")
+            && ir.contains("hew_shutdown_exit_failed")
+            && ir.contains("call void @hew_exit(i64 1)"),
+        "lambda-only main must surface an abandoned dispatch thread through exit status:\n{ir}"
     );
 }
 

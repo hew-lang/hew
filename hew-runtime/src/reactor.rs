@@ -293,6 +293,37 @@ static DELIVERING_ACTOR: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 /// add that lands during the wait is still evicted before the actor is freed.
 static PROMOTING_ACTOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Return `true` when the reactor owns no connection or readiness work that can
+/// resume an actor after the scheduler has been observed idle.
+///
+/// Shutdown samples this between two scheduler-idle probes. Registry entries
+/// represent accepted connections still owned by handlers; queued adds and the
+/// promotion/delivery guards cover the hand-off windows where a registration is
+/// temporarily absent from the registry but can still publish actor work.
+pub(crate) fn drain_is_idle() -> bool {
+    let no_registered_work = REACTOR_STATE.access(|state| {
+        state.registry.is_empty()
+            && !state
+                .pending
+                .iter()
+                .any(|pending| matches!(pending, Pending::Add { .. }))
+    });
+    if !no_registered_work
+        || PROMOTING_ACTOR.load(Ordering::SeqCst) != 0
+        || DELIVERING_ACTOR.load(Ordering::SeqCst) != 0
+    {
+        return false;
+    }
+
+    REACTOR_STATE.access(|state| {
+        state.registry.is_empty()
+            && !state
+                .pending
+                .iter()
+                .any(|pending| matches!(pending, Pending::Add { .. }))
+    })
+}
+
 /// Ensure the reactor thread is running. Lazily started on first `attach`.
 /// Returns `true` if the reactor is running (or was just started).
 fn ensure_reactor_started() -> bool {
@@ -2251,6 +2282,50 @@ mod tests {
             0,
             "empty registry must not enqueue a poller-unregister request"
         );
+    }
+
+    #[test]
+    fn shutdown_drain_idle_tracks_registry_pending_and_handoff_windows() {
+        const KEY: usize = 0xD2A1_0001;
+
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+        assert!(drain_is_idle(), "empty reactor must not delay shutdown");
+
+        let slot = crate::read_slot::hew_read_slot_new();
+        // SAFETY: creator ref remains live through reset below.
+        unsafe { crate::read_slot::read_slot_retain(slot) };
+        inject_resume_registration_for_test(71, 72, dead_actor_ref(), KEY, slot);
+        assert!(
+            !drain_is_idle(),
+            "a registered accepted-connection wait must keep shutdown draining"
+        );
+        reset_reactor();
+        // SAFETY: reset dropped the registration ref; release the creator ref.
+        unsafe { crate::read_slot::hew_read_slot_free(slot) };
+
+        enqueue_pending_add_for_test(73, 74, dead_actor_ref(), KEY);
+        assert!(
+            !drain_is_idle(),
+            "a queued registration must not be invisible before promotion"
+        );
+        reset_reactor();
+
+        set_promoting_actor_for_test(KEY);
+        assert!(
+            !drain_is_idle(),
+            "an in-flight promotion must keep shutdown draining"
+        );
+        set_promoting_actor_for_test(0);
+        set_delivering_actor_for_test(KEY);
+        assert!(
+            !drain_is_idle(),
+            "an in-flight readiness delivery must keep shutdown draining"
+        );
+        set_delivering_actor_for_test(0);
+        assert!(drain_is_idle());
     }
 
     // A detach-by-conn request is queued for the reactor to apply.

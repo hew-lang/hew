@@ -2745,8 +2745,8 @@ invisible outside its defining file.
 
 **Reserved-word module path segments.** A path segment written in `src::`
 dotted form cannot currently be a keyword — `import src::workflow::machine::{Thing};`
-is a parse error (`expected identifier, found` at the `machine` segment) even
-though `machine` is a perfectly good file name on disk. `actor` is the one
+is a parse error (`` expected `*` or `{` after `::`, found `machine` `` at the
+`machine` segment) even though `machine` is a perfectly good file name on disk. `actor` is the one
 keyword carved out as a valid segment today; other type-declaration keywords
 (`machine`, `type`, `trait`, ...) are not. If a module's file name collides
 with a keyword, either rename the file or reach it via the quoted string-path
@@ -2764,10 +2764,11 @@ fn main() {
 
 `const NAME: Type = expr;` declares a module-level constant; `pub const`
 exports it. A const is evaluated once and is immutable — there is no `var
-const`. Read a `pub const` from another module the same way you read a `pub
-fn`: dotted access on the imported module (`reasons.MAX_RETRIES`) or via
-selective import (`import src::reasons::reasons::{MAX_RETRIES};`, then bare
-`MAX_RETRIES`). Prefer a `pub const` over a zero-argument wrapper function
+const`. Read a `pub const` from another module via dotted access on the
+imported module (`reasons.MAX_RETRIES`) — selective import of a `const`
+(`import src::reasons::reasons::{MAX_RETRIES};`, then bare `MAX_RETRIES`)
+currently fails to resolve; dotted access is the only working form today.
+Prefer a `pub const` over a zero-argument wrapper function
 (`pub fn max_retries() -> i64 { 3 }`) for a fixed value — the const form is
 shorter, makes the value's constancy visible at the call site, and avoids a
 function-call indirection for something that never varies.
@@ -3696,9 +3697,11 @@ defaults to the host's physical core count.
 
 ### The empty-run gate — `--allow-empty`
 
-`hew test <path>` fails (non-zero exit, `No test functions found.`) when
-discovery finds zero `#[test]` functions — this is deliberate, so a typo'd
-path or an empty `tests/` directory doesn't silently report success in CI.
+`hew test <path>` fails (non-zero exit) when discovery finds no tests to run:
+`No test files found.` when the path itself is empty or typo'd, `No test
+functions found.` when a discovered test file has zero `#[test]` functions —
+this is deliberate, so a typo'd path or an empty `tests/` directory doesn't
+silently report success in CI.
 Pass `--allow-empty` for the rare case where an empty result is
 legitimately fine (e.g. a generated/optional test directory that may not
 exist yet on some branches).

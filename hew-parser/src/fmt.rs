@@ -3986,6 +3986,36 @@ extern \"rt\" {
     }
 
     #[test]
+    fn pub_type_alias_roundtrip() {
+        // `format_type_alias` emits `write_visibility` before `type`; a `pub`
+        // top-level alias must survive format -> reparse rather than
+        // silently losing its visibility modifier.
+        let src = "\
+pub type Label = string;
+
+fn main() {
+}
+";
+        let formatted = roundtrip(src);
+        assert_eq!(formatted, src);
+    }
+
+    #[test]
+    fn parameterized_type_alias_roundtrip() {
+        // `format_type_alias` calls `format_opt_type_params` between the
+        // alias name and `=`; a generic alias's type-parameter list must
+        // round-trip through format -> reparse.
+        let src = "\
+type Pair<T> = (T, T);
+
+fn main() {
+}
+";
+        let formatted = roundtrip(src);
+        assert_eq!(formatted, src);
+    }
+
+    #[test]
     fn preserves_consume_modifier_on_extern_param() {
         // `consume` pins by-move ownership on an affine boundary parameter;
         // the formatter must emit it so the surface ownership disposition

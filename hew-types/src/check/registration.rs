@@ -2528,6 +2528,20 @@ impl Checker {
                             target: resolved,
                         },
                     );
+                    // Detect a self-referential alias (`type Loop = Loop;`, or
+                    // through a chain) right here, once, instead of leaving
+                    // every USE site's `expand_type_aliases` recursion guard
+                    // to return `Ty::Error` silently. An unreported `Ty::Error`
+                    // reaching a use site let HIR lowering discover the bogus
+                    // shape independently at 3-4 different consumers — one
+                    // root cause read as a multi-error cascade.
+                    if self.alias_expansion_is_recursive(&ta.name) {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!("type alias `{}` is recursive: aliases cannot refer to themselves, directly or through a chain", ta.name),
+                        );
+                    }
                     self.record_type_def_inference_holes(&ta.name, hole_vars);
                     self.local_type_defs.insert(ta.name.clone());
                     self.source_type_defs.insert(ta.name.clone());

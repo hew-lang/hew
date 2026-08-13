@@ -2260,6 +2260,47 @@ impl Checker {
         )
     }
 
+    /// Whether a just-registered top-level alias `name` is self-referential
+    /// (directly `type Loop = Loop;`, or indirectly through an alias chain).
+    ///
+    /// Every USE site of a recursive alias runs through `expand_type_aliases`,
+    /// whose recursion guard returns `Ty::Error` silently — correct for
+    /// keeping the walk total, but it broke the invariant that a `Ty::Error`
+    /// always has an associated diagnostic: nothing had reported one yet.
+    /// Downstream HIR lowering never runs (the checker returns early on any
+    /// error), so the invariant held only by accident when this alias was
+    /// never actually used; the moment it WAS used, HIR discovered the bogus
+    /// shape at 3-4 different consumers (Display dispatch, verifier, produced-
+    /// value tracking) and each emitted its own checker-boundary-violation
+    /// diagnostic — one root cause read as five errors.
+    ///
+    /// Called once, right after registration, so the checker emits exactly
+    /// ONE root-cause diagnostic per recursive alias declaration, before any
+    /// use site can ever observe the silent `Ty::Error`.
+    pub(super) fn alias_expansion_is_recursive(&self, name: &str) -> bool {
+        let Some(alias) = self.type_aliases.get(name) else {
+            return false;
+        };
+        let placeholder_args: Vec<Ty> = alias
+            .type_params
+            .iter()
+            .map(|param| Ty::Named {
+                name: param.clone(),
+                args: Vec::new(),
+                builtin: None,
+            })
+            .collect();
+        let probe = Ty::Named {
+            name: name.to_string(),
+            args: placeholder_args,
+            builtin: None,
+        };
+        matches!(
+            self.expand_type_aliases(&probe, &mut HashSet::new()),
+            Ty::Error
+        )
+    }
+
     fn expand_type_aliases(&self, ty: &Ty, visiting: &mut HashSet<String>) -> Ty {
         if let Ty::Named { name, args, .. } = ty {
             if let Some(target) = self.alias_target_for_instance(name, args) {

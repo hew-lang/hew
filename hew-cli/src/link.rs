@@ -897,6 +897,22 @@ fn hew_lib_candidates(
                 .iter()
                 .map(|profile| target_dir.join(triple).join(profile).join(name)),
         );
+        // A native (non-cross-compiled) build has no `<triple>` segment: Cargo
+        // writes straight to `<target-dir>/<profile>/<archive>`. The
+        // hardcoded `../../target/<profile>` fallbacks below only match a
+        // target dir literally named `target`; a custom `CARGO_TARGET_DIR`
+        // (e.g. an isolated ratchet target) never resolves through them, so
+        // a release-built driver cannot find a debug-only sibling archive.
+        // Push the flat per-profile path — in the same `cargo_profiles`
+        // order used above, so `release-lib` still shadows a stale `release`
+        // or `debug` sibling — right after the triple-qualified candidates.
+        if target_matches_host {
+            candidates.extend(
+                cargo_profiles
+                    .iter()
+                    .map(|profile| target_dir.join(profile).join(name)),
+            );
+        }
     }
 
     candidates.extend([
@@ -995,8 +1011,13 @@ pub(crate) fn find_hew_lib(
         }
     }
 
+    let searched = candidates
+        .iter()
+        .map(|c| c.display().to_string())
+        .collect::<Vec<_>>()
+        .join("\n  ");
     Err(format!(
-        "Error: cannot find {name}. Build with: make stdlib"
+        "Error: cannot find {name}. Build with: make stdlib\nSearched:\n  {searched}"
     ))
 }
 
@@ -2181,17 +2202,18 @@ mod tests {
             };
 
             // Host-fallback block: release-lib before the plain release archive.
+            // The flat `/repo/target/release-lib/{name}` candidate is the
+            // earliest release-lib occurrence (pushed once by the
+            // matching-profile block and again, redundantly, by the D10
+            // flat-per-profile block) — always earlier than any
+            // `.../release/{name}` occurrence.
             assert!(
-                position(format!("../../target/release-lib/{name}"))
+                position(format!("/repo/target/release-lib/{name}"))
                     < position(format!("/repo/target/release/{name}"))
             );
             assert!(
-                position(format!("../../target/release-lib/{name}"))
+                position(format!("/repo/target/release-lib/{name}"))
                     < position(format!("../../target/release/{name}"))
-            );
-            assert!(
-                position(format!("../release-lib/{name}"))
-                    < position(format!("/repo/target/release/{name}"))
             );
 
             // Cross-target block: <triple>/release-lib before <triple>/release.
@@ -2247,6 +2269,50 @@ mod tests {
             .expect("flat host archive");
 
         assert!(cross_debug_index < host_debug_index);
+    }
+
+    #[test]
+    fn hew_lib_candidates_find_a_debug_archive_under_a_custom_target_dir() {
+        // D10: a release-built driver under a `CARGO_TARGET_DIR` that is not
+        // literally named `target` (e.g. an isolated ratchet target root)
+        // could not find a debug-only sibling archive. The hardcoded
+        // `../../target/<profile>` fallbacks only match a dir literally
+        // named `target`; the flat host-profile candidate derived from
+        // `exe_dir.parent()` must cover a custom root too.
+        let exe_dir = std::path::Path::new("/scratch/isolated-target/release");
+        let triple = "aarch64-apple-darwin";
+        let candidates = hew_lib_candidates(exe_dir, "libhew.a", triple, true);
+        let flat_debug = std::path::PathBuf::from("/scratch/isolated-target/debug/libhew.a");
+        let flat_debug_index = candidates
+            .iter()
+            .position(|path| path == &flat_debug)
+            .expect("flat debug archive under the custom target dir must be a candidate");
+        let flat_release_lib =
+            std::path::PathBuf::from("/scratch/isolated-target/release-lib/libhew.a");
+        let flat_release_lib_index = candidates
+            .iter()
+            .position(|path| path == &flat_release_lib)
+            .expect("flat release-lib archive under the custom target dir must be a candidate");
+        // Profile order (release-lib, release, debug) is preserved so a
+        // release-lib sibling still shadows a debug one when both exist.
+        assert!(
+            flat_release_lib_index < flat_debug_index,
+            "release-lib must be probed before debug under a custom target dir"
+        );
+    }
+
+    #[test]
+    fn find_hew_lib_error_lists_searched_candidates() {
+        let result = find_hew_lib("nonexistent_lib_xyz.a", "aarch64-apple-darwin", true);
+        let err = result.expect_err("a nonexistent archive name must fail");
+        assert!(
+            err.contains("Searched:"),
+            "error must list the searched candidate paths: {err}"
+        );
+        assert!(
+            err.contains("nonexistent_lib_xyz.a"),
+            "searched paths must name the archive being looked up: {err}"
+        );
     }
 
     #[test]

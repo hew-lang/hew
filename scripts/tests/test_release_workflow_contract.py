@@ -39,11 +39,14 @@ RELEASE_BINARY_SMOKE = ROOT / "scripts" / "test-release-binary.sh"
 PACKAGE_BUILDER = ROOT / "installers" / "build-packages.sh"
 WINDOWS_LLVM_PREBUILD = ROOT / ".github" / "workflows" / "prebuild-llvm.yml"
 SETUP_LLVM_ACTION = ROOT / ".github" / "actions" / "setup-llvm" / "action.yml"
+SETUP_WASM_PACK_ACTION = ROOT / ".github" / "actions" / "setup-wasm-pack" / "action.yml"
+DOWNLOAD_VERIFY_BINARYEN = ROOT / ".github" / "scripts" / "download-verify-binaryen.sh"
 WINDOWS_BUILD_GUIDE = ROOT / "docs" / "cross-platform-build-guide.md"
 WINDOWS_LLVM_TOOLCHAIN_REPO = "hew-lang/llvm-toolchain"
 WINDOWS_LLVM_TOOLCHAIN_VERSION = "22.1.0-windows-msvc-v1"
 WINDOWS_LLVM_TOOLCHAIN_TAG = f"llvm-{WINDOWS_LLVM_TOOLCHAIN_VERSION}"
 WINDOWS_LLVM_TOOLCHAIN_ASSET = f"hew-llvm-{WINDOWS_LLVM_TOOLCHAIN_VERSION}.tar.gz"
+BINARYEN_SHA256 = "3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e83212"
 
 
 def workflow() -> str:
@@ -1020,6 +1023,74 @@ def workflow_job(text: str, name: str) -> str:
     return text[start:end]
 
 
+def assert_binaryen_downloader_contract(downloader: str) -> None:
+    assert (
+        "github.com/WebAssembly/binaryen/releases/download/${version}/${asset}"
+        in downloader
+    )
+    assert "--retry-all-errors" in downloader
+    assert 'sha256sum -c "${tarball}.sha256"' in downloader
+    assert 'tar -xzf "${tarball}" -C "${install_root}"' in downloader
+
+
+def assert_wasm_pack_action_contract(action: str) -> None:
+    assert "WASM_PACK_VERSION=0.13.1" in action
+    assert "RETRY_ATTEMPTS=5 RETRY_INITIAL_DELAY=10" in action
+    assert "scripts/retry-download.sh" in action
+    assert "scripts/download-verify-binaryen.sh" in action
+    assert "BINARYEN_VERSION=version_117" in action
+    assert f"BINARYEN_SHA256={BINARYEN_SHA256}" in action
+    assert '"${BINARYEN_VERSION}" "${BINARYEN_SHA256}"' in action
+    assert (
+        'echo "${RUNNER_TEMP}/binaryen-${BINARYEN_VERSION}/bin"'
+        ' >> "${GITHUB_PATH}"' in action
+    )
+    assert (
+        '"${RUNNER_TEMP}/binaryen-${BINARYEN_VERSION}/bin/wasm-opt" --version' in action
+    )
+
+
+def test_wasm_pack_consumers_prefetch_checksum_pinned_binaryen() -> None:
+    action = SETUP_WASM_PACK_ACTION.read_text()
+    downloader = DOWNLOAD_VERIFY_BINARYEN.read_text()
+    action_use = "uses: ./.github/actions/setup-wasm-pack"
+
+    assert_wasm_pack_action_contract(action)
+    assert_binaryen_downloader_contract(downloader)
+
+    consumers = (
+        (
+            workflow_job(CI_WORKFLOW.read_text(), "playground-wasm-build"),
+            "make playground-check",
+        ),
+        (
+            workflow_job(CI_WORKFLOW.read_text(), "build-and-test"),
+            "scripts/ci-preflight-dispatcher.sh",
+        ),
+        (
+            workflow_job(RELEASE_GATE.read_text(), "gate-linux"),
+            "make playground-check",
+        ),
+        (
+            workflow_job(NPM_PUBLISH_WORKFLOW.read_text(), "publish"),
+            "node scripts/build-npm-packages.mjs",
+        ),
+    )
+    for job, build_command in consumers:
+        assert job.count(action_use) == 1
+        assert job.index(action_use) < job.index(build_command)
+
+
+def test_binaryen_prefetch_pin_mutations_are_rejected() -> None:
+    action = SETUP_WASM_PACK_ACTION.read_text()
+    mutated = action.replace(BINARYEN_SHA256, "0" * 64)
+    try:
+        assert_wasm_pack_action_contract(mutated)
+    except AssertionError:
+        return
+    raise AssertionError("Binaryen checksum mutation escaped the contract")
+
+
 def assert_windows_job_initialises_msvc_before_native_linking(job: str) -> None:
     """Require precisely one MSVC environment import before LLVM/Cargo use."""
     setup_msvc = "uses: ./.github/actions/setup-msvc"
@@ -1688,6 +1759,8 @@ _TESTS = [
     test_sanitizer_gate_is_behavioral_and_release_scoped,
     test_release_record_is_durable_and_tag_ready,
     test_contract_oracle_runs_in_required_ci,
+    test_wasm_pack_consumers_prefetch_checksum_pinned_binaryen,
+    test_binaryen_prefetch_pin_mutations_are_rejected,
     test_windows_test_workflows_initialise_msvc_before_lld_link,
     test_windows_test_workflow_msvc_ordering_mutations_are_rejected,
     test_windows_llvm_prebuild_workflow_is_not_owned_by_this_repository,

@@ -132,6 +132,10 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'Makefile'
+              - '.github/actions/setup-wasm-pack/**'
+              - '.github/scripts/download-verify-binaryen.sh'
+              - '.github/scripts/retry-download.sh'
+              - '.github/workflows/ci.yml'
             docs:
               - 'docs/**'
               - '*.md'
@@ -400,16 +404,8 @@ jobs:
         with:
           cache-shared-key: playground-wasm
 
-      - name: Install wasm-pack v0.13.1
-        run: |
-          set -euo pipefail
-          WASM_PACK_VERSION=0.13.1
-          TARBALL="wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          curl -fsSL "https://github.com/rustwasm/wasm-pack/releases/download/v${WASM_PACK_VERSION}/${TARBALL}" \
-            -o "/tmp/${TARBALL}"
-          tar -xzf "/tmp/${TARBALL}" -C /tmp
-          echo "/tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
-          /tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl/wasm-pack --version
+      - name: Install wasm-pack v0.13.1 and Binaryen 117
+        uses: ./.github/actions/setup-wasm-pack
 
       - name: Check sandbox fixtures are current
         # The committed sandbox fixtures are generated from in-tree sources; a
@@ -729,17 +725,9 @@ jobs:
           echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
           "./${WASMTIME_DIR}/wasmtime" --version
 
-      - name: Install wasm-pack v0.13.1
+      - name: Install wasm-pack v0.13.1 and Binaryen 117
         if: env.RUN_CODE_PATH == 'true'
-        run: |
-          set -euo pipefail
-          WASM_PACK_VERSION=0.13.1
-          TARBALL="wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          curl -fsSL "https://github.com/rustwasm/wasm-pack/releases/download/v${WASM_PACK_VERSION}/${TARBALL}" \
-            -o "/tmp/${TARBALL}"
-          tar -xzf "/tmp/${TARBALL}" -C /tmp
-          echo "/tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
-          /tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl/wasm-pack --version
+        uses: ./.github/actions/setup-wasm-pack
 
       - name: Setup Node.js for selected browser checks
         if: env.RUN_CODE_PATH == 'true'

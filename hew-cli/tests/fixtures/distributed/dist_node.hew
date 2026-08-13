@@ -65,6 +65,10 @@ enum KvReq {
     // cross-node DOWN with the right reason.
     StopSelf;
     CrashSelf;
+    // scenario_partition_ask phase A: hold the reply past the client's ask
+    // deadline so the pending ask is deterministically resolvable ONLY by the
+    // armed partition probe (no reply, no socket drop — the route stays live).
+    Stall;
 }
 
 enum KvResp {
@@ -131,6 +135,14 @@ actor KeyValue {
             // terminal state, reported as a DOWN carrying the crash reason.
             KvReq::CrashSelf => {
                 panic("crash requested by cross-node monitor scenario");
+                KvResp::Ack
+            },
+            // Deterministic pend for scenario_partition_ask phase A: hold the
+            // reply well past the client's ask deadline (3 s) so the armed
+            // partition probe is the only path that can resolve the pending ask
+            // early. The harness SIGKILLs this process before the sleep ends.
+            KvReq::Stall => {
+                sleep(10s);
                 KvResp::Ack
             },
         }
@@ -252,8 +264,11 @@ extern "C" {
 //
 // The harness still kills the server (a real teardown), so the route genuinely
 // dies; the injector fixes only WHEN the in-flight ask is failed closed, not
-// WHETHER. Teeth preserved: a broken fan-out leaves the ask pending -> it times
-// out -> scenario_partition_ask still reports FAIL.
+// WHETHER. The fan-out's teeth live in scenario_partition_ask phase A: the
+// stalled ask there is resolvable ONLY by this probe (route live, reply held
+// past the deadline), so a broken/no-op fan-out surfaces as a deadline
+// timeout -> FAIL — it cannot hide behind the kill's routing-failure or
+// socket-drop outcomes, which resolve phase B's ask regardless.
 actor PartitionInjector {
     receive fn arm() {
 
@@ -484,11 +499,20 @@ actor MonitorProbe {
 
     // Scenario: partition_ask
     //
-    // The partition gate. The client looks up the remote actor, signals
-    // READY_DROP so the harness can kill the server (dropping the route to the
-    // peer), then issues a remote ask to the now-unreachable actor. The invariant
-    // under test is: the ask FAILS CLOSED — it resolves to a typed AskError WITHOUT
-    // hanging — rather than blocking to the client ceiling or fabricating a value.
+    // The partition gate, in two phases.
+    //
+    // Phase A (probe proof): with the route still LIVE, the client asks
+    // KvReq::Stall — the server holds the reply past the ask's whole deadline —
+    // so the armed partition probe's fan-out is the ONLY path that can resolve
+    // the pending ask early. Phase A REQUIRES reason=Partition, fast: it proves
+    // the armed probe actually fired. A sabotaged/no-op fan-out times out here
+    // and FAILS; it cannot hide behind the kill's teardown outcomes.
+    //
+    // Phase B (real teardown): the client signals READY_DROP so the harness can
+    // kill the server (dropping the route to the peer), then issues a remote ask
+    // to the now-unreachable actor. The invariant under test is: the ask FAILS
+    // CLOSED — it resolves to a typed AskError WITHOUT hanging — rather than
+    // blocking to the client ceiling or fabricating a value.
     //
     // The EXACT fail-closed cause is timing-dependent: a two-process SIGKILL races
     // three independent fail paths, any of which is a correct fail-closed verdict
@@ -1402,11 +1426,50 @@ fn scenario_remote_setup_exit_race(
 }
 
 fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
-    println("READY_DROP partition_ask");
     let injector = spawn PartitionInjector;
     injector.arm();
-    let ask_timeout_ms: u64 = 1000;
     let fast_fail_ceiling_ms: i64 = 900;
+
+    // Phase A — the armed probe must PROVE it fired. The route is still live
+    // (READY_DROP has not been printed, so the harness has not killed the
+    // server) and KvReq::Stall holds the server-side reply past this ask's
+    // whole 3 s deadline. The only path that can resolve the pending ask
+    // before its deadline is therefore the injector's Partition fan-out: no
+    // reply arrives, no socket drops, no route is torn down. A broken or
+    // no-op probe surfaces here as a deadline timeout -> FAIL, instead of
+    // hiding behind the kill's routing-failure / socket-drop outcomes.
+    let probe_started = instant::now();
+    let probe = kv.ask(KvReq::Stall, 3000);
+    let probe_elapsed = probe_started.elapsed().millis();
+    match probe {
+        Result::Ok(_) => {
+            println("FAIL partition_ask probe-replied");
+            return 4;
+        },
+        Result::Err(e) => {
+            match e {
+                AskError::Partition => {
+                    if probe_elapsed >= fast_fail_ceiling_ms {
+                        println(f"FAIL partition_ask probe-slow ms={probe_elapsed}");
+                        return 5;
+                    }
+                    println(f"PASS partition_ask probe-partition ms={probe_elapsed}");
+                },
+                _ => {
+                    println(f"FAIL partition_ask probe-not-partition ms={probe_elapsed}");
+                    return 6;
+                },
+            }
+        },
+    }
+
+    // Phase B — the real-teardown no-hang gate: kill the server, then the ask
+    // must fail closed with ANY typed cause without hanging. Re-arm the
+    // injector (phase A consumed its first arm) so the typed verdict again
+    // does not race the socket-teardown / SWIM detector latency.
+    injector.arm();
+    println("READY_DROP partition_ask");
+    let ask_timeout_ms: u64 = 1000;
     var attempts: i64 = 0;
     loop {
         let started = instant::now();

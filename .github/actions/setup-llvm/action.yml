@@ -142,6 +142,15 @@ runs:
     - name: Download and verify LLVM tarball
       if: runner.os != 'macOS' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
+      # Runner egress to github.com's release-asset CDN has shown mid-transfer
+      # drops (curl exit 56, "Connection died") and empty replies (exit 52)
+      # even while GitHub's own status page reports operational -- see the
+      # observed 2026-08-08/2026-08-12 CI incidents. curl's default --retry
+      # does not retry those two error classes without --retry-all-errors,
+      # and a single exhausted transfer previously failed the whole job.
+      # retry-download.sh adds an outer exponential-backoff loop (5 attempts,
+      # 10/20/40/80s) around the full download+checksum-verify+extract unit;
+      # download-verify-llvm.sh adds --retry-all-errors to the inner curl.
       run: |
         set -euo pipefail
         asset="${{ steps.layout.outputs.asset }}"
@@ -155,26 +164,10 @@ runs:
         if command -v cygpath >/dev/null 2>&1; then
           tarball="$(cygpath -u "${tarball}")"
         fi
-        echo "Downloading ${url}"
-        curl -fL --retry 3 --retry-delay 5 -o "${tarball}" "${url}"
-        expected="${{ steps.layout.outputs.sha256 }}"
-        if [ "${expected}" = "companion" ]; then
-          curl -fL --retry 3 -o "${tarball}.companion" "${url}.sha256"
-          expected="$(awk '{print $1}' "${tarball}.companion")"
-        fi
-        echo "${expected}  ${tarball}" > "${tarball}.sha256"
-        if command -v sha256sum >/dev/null 2>&1; then
-          sha256sum -c "${tarball}.sha256"
-        else
-          # macOS shasum fallback
-          shasum -a 256 -c "${tarball}.sha256"
-        fi
-        echo "Extracting to ${install_root}"
-        case "${tarball}" in
-          *.tar.gz) tar -xzf "${tarball}" -C "${install_root}" ;;
-          *) tar -xJf "${tarball}" -C "${install_root}" ;;
-        esac
-        rm -f "${tarball}" "${tarball}.sha256"
+        RETRY_ATTEMPTS=5 RETRY_INITIAL_DELAY=10 \
+          "${GITHUB_ACTION_PATH}/../../scripts/retry-download.sh" \
+          "${GITHUB_ACTION_PATH}/../../scripts/download-verify-llvm.sh" \
+          "${url}" "${{ steps.layout.outputs.sha256 }}" "${tarball}" "${install_root}"
 
     - name: Stub xml2s.lib for the upstream Windows tarball
       if: runner.os == 'Windows'

@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HEW_SHA = "0123456789abcdef0123456789abcdef01234567"
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+RUST_TOOLCHAIN = ROOT / "rust-toolchain.toml"
 NPM_PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-npm-packages.yml"
 RELEASE_GATE = ROOT / ".github" / "workflows" / "release-gate.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
@@ -24,6 +25,12 @@ CHANGELOG = ROOT / "CHANGELOG.md"
 UNIX_INSTALLER = ROOT / "installers" / "install.sh"
 PRE_RELEASE_VALIDATOR = ROOT / "scripts" / "pre-release-validate.sh"
 RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.sh"
+RELEASE_LINK_FIXTURE = (
+    ROOT / "scripts" / "fixtures" / "release-lib-link" / "src" / "lib.rs"
+)
+RELEASE_LINK_MANIFEST = (
+    ROOT / "scripts" / "fixtures" / "release-lib-link" / "Cargo.toml"
+)
 WINDOWS_RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.ps1"
 WINDOWS_RELEASE_BUILD = ROOT / "scripts" / "windows-release-build.ps1"
 SANITIZER_GATE = ROOT / "scripts" / "check-sanitizer-gate.sh"
@@ -562,6 +569,8 @@ def test_prerelease_validator_proves_external_staticlib_linking() -> None:
     validator = PRE_RELEASE_VALIDATOR.read_text()
     windows_build = WINDOWS_RELEASE_BUILD.read_text()
     probe = RELEASE_LINK_PROBE.read_text()
+    fixture = RELEASE_LINK_FIXTURE.read_text()
+    fixture_manifest = RELEASE_LINK_MANIFEST.read_text()
     windows_probe = WINDOWS_RELEASE_LINK_PROBE.read_text()
     makefile = MAKEFILE.read_text()
 
@@ -575,7 +584,12 @@ def test_prerelease_validator_proves_external_staticlib_linking() -> None:
     assert "target/release/hew _smoke.hew -o" not in validator
     assert '"$WORK_DIR/release/bin/hew" build' in probe
     assert "--link-lib" in probe
-    assert 'String::from("release-link-ok")' in probe
+    assert '"$SCRIPT_DIR/fixtures/release-lib-link/src/lib.rs"' in probe
+    assert "--consumer-archive" in probe
+    assert 'String::from("release-link-ok")' in fixture
+    assert 'crate-type = ["staticlib"]' in fixture_manifest
+    assert 'panic = "abort"' in fixture_manifest
+    assert "codegen-units = 1" in fixture_manifest
     assert 'String::from("release-link-ok")' in windows_probe
     assert "--link-lib" in windows_probe
     assert "Copy-Item -LiteralPath $Archive" in windows_probe
@@ -605,6 +619,120 @@ def test_every_release_lane_executes_the_library_consumer_proof() -> None:
         assert "llvm-ar t " not in text
 
 
+def test_cross_release_machinery_resolves_from_workflow_ref() -> None:
+    text = workflow()
+    start = text.index("  build-cross-release-libs:\n")
+    end = text.index("  # Build — macOS and Windows release artifacts\n", start)
+    job = text[start:end]
+    assert (
+        """      - name: Checkout release machinery
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: release-machinery
+"""
+        in job
+    )
+    assert (
+        "release-machinery/scripts/verify-cross-release-lib.sh "
+        '"${{ matrix.rust_target }}" "${archive}"' in job
+    )
+
+
+def test_cross_release_libraries_are_target_keyed_and_natively_proved() -> None:
+    release = workflow()
+    cross_start = release.index("  build-cross-release-libs:\n")
+    build_start = release.index("  build:\n", cross_start)
+    freebsd_start = release.index("  build-freebsd:\n", build_start)
+    freebsd_aarch64_start = release.index("  build-freebsd-aarch64:\n", freebsd_start)
+    linux_packages_start = release.index("  linux-packages:\n", freebsd_aarch64_start)
+
+    cross = release[cross_start:build_start]
+    build = release[build_start:freebsd_start]
+    freebsd = release[freebsd_start:freebsd_aarch64_start]
+    freebsd_aarch64 = release[freebsd_aarch64_start:linux_packages_start]
+    verifier = (ROOT / "scripts" / "verify-cross-release-lib.sh").read_text()
+
+    assert 'toolchain: "1.96.0"' in cross
+    assert "version: 0.16.0" in cross
+    assert "cargo install cargo-zigbuild --locked --version 0.22.3" in cross
+    assert "cargo install cargo-xwin --locked --version 0.23.0" in cross
+    assert (
+        "cargo zigbuild -p hew-lib --profile release-lib --target"
+        " ${{ matrix.rust_target }}" in cross
+    )
+    assert (
+        "cargo xwin build -p hew-lib --profile release-lib --target"
+        " ${{ matrix.rust_target }}" in cross
+    )
+    assert 'AWS_LC_SYS_PREBUILT_NASM: "1"' in cross
+    assert "components: rust-src" in cross
+    assert cross.count('RUSTC_BOOTSTRAP: "1"') == 2
+    assert (
+        "cargo zigbuild -Zbuild-std=std,panic_abort -p hew-lib"
+        " --profile release-lib --target ${{ matrix.rust_target }}" in cross
+    )
+    assert "      - name: Build aarch64 FreeBSD release consumer" in cross
+    assert "--manifest-path scripts/fixtures/release-lib-link/Cargo.toml" in cross
+    assert "cross-release-consumer-target" in cross
+    assert "libhew_release_link_probe.a" in cross
+    assert 'zig cc -target "${{ matrix.zig_target }}"' in cross
+    assert "for FreeBSD 14.0 (1400500)" in cross
+    assert 'tee -a "${GITHUB_STEP_SUMMARY}"' in cross
+    assert "name: libhew-${{ matrix.rust_target }}" in cross
+    assert "cross-release-libs/${{ matrix.rust_target }}" in cross
+    assert "if-no-files-found: error" in cross
+
+    for target in (
+        "x86_64-unknown-freebsd",
+        "aarch64-unknown-freebsd",
+        "x86_64-pc-windows-msvc",
+    ):
+        assert target in cross
+    for required in (
+        "llvm-readobj --file-headers",
+        "llvm-nm --defined-only --extern-only",
+        "expected exactly one release archive",
+        "hew_alloc",
+        "OS/ABI: ${expected_os_abi}",
+        "elf64-littleaarch64",
+    ):
+        assert required in verifier
+
+    native_lib_step = build[
+        build.index("      - name: Build libhew.a (runtime + stdlib)\n") : build.index(
+            "      - name: Prove release library consumer linking",
+            build.index("      - name: Build libhew.a (runtime + stdlib)\n"),
+        )
+    ]
+    assert "if: startsWith(matrix.target, 'darwin')" in native_lib_step
+    assert '-Archive "cross-release-libs/${{ matrix.rust_target }}/hew.lib"' in build
+    assert 'Copy-Item "${ReleaseLibDir}/hew.lib"' in build
+    assert '"${ArchiveName}/lib/${{ matrix.rust_target }}"' in build
+
+    assert "needs: build-cross-release-libs" in freebsd
+    assert "name: libhew-x86_64-unknown-freebsd" in freebsd
+    assert "cargo build -p hew-lib --profile release-lib" not in freebsd
+    assert "--archive cross-release-libs/x86_64-unknown-freebsd/libhew.a" in freebsd
+    assert freebsd.count("cp cross-release-libs/x86_64-unknown-freebsd/libhew.a") == 2
+    assert '"${ARCHIVE_NAME}/lib/x86_64-unknown-freebsd/"' in freebsd
+    assert "pkg-smoke-ok" in freebsd
+
+    assert "needs: build-cross-release-libs" in freebsd_aarch64
+    assert "name: libhew-aarch64-unknown-freebsd" in freebsd_aarch64
+    assert "cargo build -p hew-lib --profile release-lib" not in freebsd_aarch64
+    assert (
+        "--archive cross-release-libs/aarch64-unknown-freebsd/libhew.a"
+        in freebsd_aarch64
+    )
+    assert (
+        freebsd_aarch64.count("cp cross-release-libs/aarch64-unknown-freebsd/libhew.a")
+        == 2
+    )
+    assert '"${ARCHIVE_NAME}/lib/aarch64-unknown-freebsd/"' in freebsd_aarch64
+    assert "pkg-smoke-ok" in freebsd_aarch64
+
+
 def test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh() -> None:
     release = workflow()
     gate = RELEASE_GATE.read_text()
@@ -622,6 +750,155 @@ def test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh() -> Non
         next_job = release.find("\n  # ──", start + len(job_name))
         block = release[start : next_job if next_job != -1 else len(release)]
         assert "if [[ " not in block
+
+
+def assert_freebsd_x86_64_release_uses_pinned_rust(
+    release: str, rust_toolchain: str
+) -> None:
+    channel = re.search(r'^channel = "([^"]+)"$', rust_toolchain, re.MULTILINE)
+    assert channel, "rust-toolchain.toml must declare an exact channel"
+    version = channel.group(1)
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version), "Rust channel must be pinned"
+
+    start = release.index("  build-freebsd:\n")
+    end = release.index("  build-freebsd-aarch64:\n", start)
+    job = release[start:end]
+
+    assert (
+        "pkg install -y -r FreeBSD llvm22 rustup-init cmake ninja git bash "
+        "pkgconf libffi libxml2" in job
+    )
+    assert "pkg install -y -r FreeBSD llvm22 rust cmake" not in job
+    install = (
+        "/usr/local/bin/rustup-init -y --no-modify-path --profile minimal \\\n"
+        f"              --default-toolchain {version}"
+    )
+    probe = (
+        f"rustup run {version} rustc --version | grep -q '^rustc {re.escape(version)} '"
+    )
+    assert job.count(install) == 1
+    assert job.count('export PATH="$HOME/.cargo/bin:$PATH"') == 1
+    assert job.count(probe) == 1
+    assert job.index(install) < job.index(probe) < job.index("cargo build -p hew-cli")
+
+
+def test_freebsd_x86_64_release_uses_repository_pinned_rust() -> None:
+    release = workflow()
+    toolchain = RUST_TOOLCHAIN.read_text()
+    assert_freebsd_x86_64_release_uses_pinned_rust(release, toolchain)
+    channel = re.search(r'^channel = "([^"]+)"$', toolchain, re.MULTILINE)
+    assert channel
+    version = channel.group(1)
+
+    mutations = (
+        release.replace("llvm22 rustup-init cmake", "llvm22 rust cmake", 1),
+        release.replace(
+            f"--default-toolchain {version}", "--default-toolchain stable", 1
+        ),
+        release.replace(
+            f"rustup run {version} rustc --version | "
+            f"grep -q '^rustc {re.escape(version)} '",
+            "rustc --version",
+            1,
+        ),
+    )
+    for mutated in mutations:
+        try:
+            assert_freebsd_x86_64_release_uses_pinned_rust(mutated, toolchain)
+        except AssertionError:
+            continue
+        raise AssertionError("FreeBSD Rust toolchain mutation escaped the contract")
+
+
+def assert_freebsd_aarch64_release_uses_cross_built_consumer(
+    release: str, rust_toolchain: str
+) -> None:
+    channel = re.search(r'^channel = "([^"]+)"$', rust_toolchain, re.MULTILINE)
+    assert channel, "rust-toolchain.toml must declare an exact channel"
+    version = channel.group(1)
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version), "Rust channel must be pinned"
+
+    cross_start = release.index("  build-cross-release-libs:\n")
+    cross_end = release.index("  build:\n", cross_start)
+    cross_job = release[cross_start:cross_end]
+    freebsd_start = release.index("  build-freebsd-aarch64:\n")
+    freebsd_end = release.index("  linux-packages:\n", freebsd_start)
+    freebsd_job = release[freebsd_start:freebsd_end]
+
+    package_install = (
+        "pkg install -y -r FreeBSD llvm22 rust cmake ninja git bash pkgconf "
+        "libffi libxml2"
+    )
+    consumer_build = (
+        "cargo zigbuild -Zbuild-std=std,panic_abort\n"
+        "          --manifest-path scripts/fixtures/release-lib-link/Cargo.toml\n"
+        "          --release --target ${{ matrix.rust_target }}"
+    )
+    consumer_stage = (
+        'cp "cross-release-consumer-target/${{ matrix.rust_target }}/release/'
+        'libhew_release_link_probe.a" \\\n'
+        '              "${destination}/libhew_release_link_probe.a"'
+    )
+    consumer_proof = (
+        "--consumer-archive cross-release-libs/aarch64-unknown-freebsd/"
+        "libhew_release_link_probe.a"
+    )
+
+    assert f'toolchain: "{version}"' in cross_job
+    assert cross_job.count("      - name: Build aarch64 FreeBSD release consumer") == 1
+    assert cross_job.count("CARGO_TARGET_DIR: cross-release-consumer-target") == 1
+    assert cross_job.count(consumer_build) == 1
+    assert cross_job.count(consumer_stage) == 1
+    assert "path: cross-release-libs/${{ matrix.rust_target }}/" in cross_job
+
+    assert freebsd_job.count(package_install) == 1
+    assert freebsd_job.count(consumer_proof) == 1
+    assert "/usr/local/bin/rustup-init" not in freebsd_job
+    assert "rustup run" not in freebsd_job
+    assert "aarch64-unknown-freebsd/rustup-init" not in release
+    assert (
+        freebsd_job.index("/usr/sbin/pkg bootstrap -fy -r FreeBSD")
+        < freebsd_job.index("pkg update -f -r FreeBSD")
+        < freebsd_job.index(package_install)
+        < freebsd_job.index("cargo build -p hew-cli")
+        < freebsd_job.index(consumer_proof)
+    )
+
+
+def test_freebsd_aarch64_release_uses_cross_built_consumer() -> None:
+    release = workflow()
+    toolchain = RUST_TOOLCHAIN.read_text()
+    assert_freebsd_aarch64_release_uses_cross_built_consumer(release, toolchain)
+
+    mutations = (
+        release.replace("llvm22 rust cmake", "llvm22 cmake", 1),
+        release.replace(
+            "--consumer-archive cross-release-libs/aarch64-unknown-freebsd/"
+            "libhew_release_link_probe.a",
+            "",
+            1,
+        ),
+        release.replace(
+            "cargo zigbuild -Zbuild-std=std,panic_abort\n"
+            "          --manifest-path scripts/fixtures/release-lib-link/Cargo.toml",
+            "cargo zigbuild\n"
+            "          --manifest-path scripts/fixtures/release-lib-link/Cargo.toml",
+            1,
+        ),
+        release.replace(
+            "            cargo build -p hew-cli -p hew-lsp -p hew-observe --release",
+            "            /usr/bin/fetch https://static.rust-lang.org/rustup/dist/"
+            "aarch64-unknown-freebsd/rustup-init\n"
+            "            cargo build -p hew-cli -p hew-lsp -p hew-observe --release",
+            1,
+        ),
+    )
+    for mutated in mutations:
+        try:
+            assert_freebsd_aarch64_release_uses_cross_built_consumer(mutated, toolchain)
+        except AssertionError:
+            continue
+        raise AssertionError("FreeBSD aarch64 consumer mutation escaped the contract")
 
 
 def test_sanitizer_gate_is_behavioral_and_release_scoped() -> None:
@@ -1376,7 +1653,11 @@ _TESTS = [
     test_release_checksums_require_every_platform_asset,
     test_prerelease_validator_proves_external_staticlib_linking,
     test_every_release_lane_executes_the_library_consumer_proof,
+    test_cross_release_machinery_resolves_from_workflow_ref,
+    test_cross_release_libraries_are_target_keyed_and_natively_proved,
     test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh,
+    test_freebsd_x86_64_release_uses_repository_pinned_rust,
+    test_freebsd_aarch64_release_uses_cross_built_consumer,
     test_sanitizer_gate_is_behavioral_and_release_scoped,
     test_release_record_is_durable_and_tag_ready,
     test_contract_oracle_runs_in_required_ci,

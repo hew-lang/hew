@@ -1,0 +1,48 @@
+machine RunLifecycle {
+    events {
+        StageFailed;
+        GateCompleted;
+    }
+
+    state Running;
+    state Failed;
+    state Completed;
+
+    on StageFailed: Running => Failed {
+        Failed
+    }
+    on GateCompleted: Running => Completed {
+        Completed
+    }
+    default {
+        state
+    }
+}
+
+pub fn initial() -> RunLifecycle {
+    RunLifecycle::Running
+}
+
+pub machine PayloadLifecycle {
+    events {
+        Load;
+    }
+
+    state Empty;
+    state Loaded { label: string; }
+
+    on Load: Empty => Loaded {
+        Loaded { label: "transitioned".to_upper() }
+    }
+    default {
+        state
+    }
+}
+
+pub fn make(label: string) -> PayloadLifecycle {
+    PayloadLifecycle::Loaded { label: label }
+}
+
+pub fn bounce(value: PayloadLifecycle) -> PayloadLifecycle {
+    value
+}

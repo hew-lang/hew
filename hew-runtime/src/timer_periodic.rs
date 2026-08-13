@@ -405,6 +405,18 @@ pub(crate) fn timer_count_for_actor(actor: *mut HewActor) -> usize {
     })
 }
 
+/// Returns the total number of active (registered) periodic timers across all
+/// actors. Used by the debug-only ticker-liveness diagnostics in
+/// `shutdown_ticker`; not gated on `cfg(test)` because it is also needed in
+/// ordinary debug-profile builds (which is what CI's e2e suite links).
+#[cfg(debug_assertions)]
+fn registered_periodic_timer_count() -> usize {
+    ACTOR_TIMERS.access(|lock| {
+        lock.as_ref()
+            .map_or(0, |map| map.values().map(Vec::len).sum())
+    })
+}
+
 /// Heap-allocated context for a periodic timer callback.
 ///
 /// Owned through an [`Arc`]; see [`ACTOR_TIMERS`] for the ownership protocol.
@@ -574,7 +586,7 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
 
     // SAFETY: `actor` and `tw` were validated above; hew_now_ms has no
     // preconditions on native targets.
-    unsafe {
+    let handle = unsafe {
         schedule_periodic_on_wheel(
             actor,
             msg_type,
@@ -582,7 +594,26 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
             tw,
             crate::io_time::hew_now_ms(),
         )
+    };
+
+    // Debug-only liveness check (see `assert_ticker_alive` doc comment): a
+    // ticker that died between `start_ticker_thread` returning and this first
+    // insert would otherwise leave the freshly-armed entry silently dead —
+    // the wheel holds it, but nothing will ever tick it. This traps at the
+    // arm site, with a file:line-precise diagnostic, instead of surfacing
+    // later as a program that exits cleanly having fired zero times. Gated
+    // to the real FFI entry point (not `schedule_periodic_on_wheel` itself)
+    // because unit tests call that helper directly against a bare test
+    // wheel with no ticker thread ever started, by design.
+    #[cfg(debug_assertions)]
+    if !handle.is_null() {
+        // SAFETY: `tw` was validated above and is still live.
+        unsafe {
+            assert_ticker_alive("hew_actor_schedule_periodic: after first insert", tw);
+        }
     }
+
+    handle
 }
 
 /// Schedule one native periodic timer on a specific wheel and clock sample.
@@ -637,6 +668,48 @@ unsafe fn schedule_periodic_on_wheel(
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wheel_handle);
 
     handle_ptr
+}
+
+/// Debug-only liveness assertion for the periodic-timer ticker thread.
+///
+/// Verifies both that `TICKER_RUNNING` is still `true` and, when the ticker's
+/// `JoinHandle` is available, that the thread has not already finished.
+/// Gated on `cfg(debug_assertions)` because this is the profile CI's e2e
+/// suite actually links (`cargo nextest run` with no `--release`, producing
+/// `target/debug/libhew_runtime.a` — see `hew-cli/src/link.rs`), so the check
+/// is live exactly where the single-witness failure was observed, and adds
+/// no cost to a release-profile user binary.
+///
+/// On failure, includes the wheel's seeded `current_ms` against a fresh
+/// wall-clock read so a large clock/scheduling discontinuity (a residual
+/// hypothesis distinct from ticker death) is distinguishable in the panic
+/// message rather than collapsed into the same diagnostic.
+///
+/// # Safety
+///
+/// `tw` must be a valid pointer returned by `hew_timer_wheel_new`.
+#[cfg(debug_assertions)]
+unsafe fn assert_ticker_alive(context: &str, tw: *mut HewTimerWheel) {
+    let ticker_running = TICKER_RUNNING.load(Ordering::SeqCst);
+    let handle_finished = TICKER_HANDLE.get().and_then(|handle_mutex| {
+        handle_mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(JoinHandle::is_finished)
+    });
+    if !ticker_running || handle_finished == Some(true) {
+        // SAFETY: caller guarantees `tw` is valid.
+        let wheel_cursor_ms = unsafe { timer_wheel_cursor_ms(tw) };
+        let wall_clock_ms = crate::io_time::hew_now_ms();
+        panic!(
+            "hew periodic-timer liveness check failed ({context}): TICKER_RUNNING={ticker_running}, \
+             ticker thread finished={handle_finished:?} — the ticker thread is not alive right \
+             after arming a periodic timer; wheel cursor current_ms={wheel_cursor_ms}, wall-clock \
+             now_ms={wall_clock_ms} (delta={delta}ms)",
+            delta = wall_clock_ms.abs_diff(wheel_cursor_ms),
+        );
+    }
 }
 
 /// Cancel a periodic timer previously started by [`hew_actor_schedule_periodic`].
@@ -706,6 +779,50 @@ fn report_ticker_join_result(join_result: std::thread::Result<()>) {
 /// Sets the stop flag, waits for the thread to join, then resets the flag
 /// for potential re-initialisation. Safe to call multiple times.
 pub(crate) fn shutdown_ticker() {
+    // Debug-only: `report_ticker_join_result` below only fires on a *panic*
+    // observed at join time. A ticker thread that instead returned early —
+    // an unanticipated exit from its loop, distinct from a panic — is
+    // otherwise invisible: it is *only* ever supposed to finish after this
+    // function sets `TICKER_STOP` and notifies it, so a handle that is
+    // already finished before that happens is a bug on its own, independent
+    // of whether any periodic timer registration is still live at this
+    // exact instant (actor drain commonly cancels/unregisters timers ahead
+    // of this call in the healthy path, so registration count alone is not
+    // a reliable signal here — an already-dead handle is). This converts
+    // the exact silent-zero-tick shape under investigation into a loud
+    // diagnostic instead of a clean exit. Detect this *before* this
+    // function's own stop request makes a finished handle look expected.
+    #[cfg(debug_assertions)]
+    {
+        let already_finished = TICKER_HANDLE.get().is_some_and(|handle_mutex| {
+            handle_mutex
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(JoinHandle::is_finished)
+        });
+        if already_finished {
+            let live_registrations = registered_periodic_timer_count();
+            // SAFETY: the wheel is still live; shutdown_ticker runs before
+            // hew_periodic_shutdown frees it. hew_now_ms has no
+            // preconditions on native targets.
+            let (wheel_cursor_ms, wall_clock_ms) = unsafe {
+                (
+                    timer_wheel_cursor_ms(global_wheel()),
+                    crate::io_time::hew_now_ms(),
+                )
+            };
+            eprintln!(
+                "hew: periodic timer ticker thread exited before shutdown was requested \
+                 ({live_registrations} periodic timer(s) still registered at this point; any \
+                 timer already unregistered by then — e.g. via actor drain — could still have \
+                 missed every tick before that); wheel cursor current_ms={wheel_cursor_ms}, \
+                 wall-clock now_ms={wall_clock_ms} (delta={delta}ms)",
+                delta = wall_clock_ms.abs_diff(wheel_cursor_ms),
+            );
+        }
+    }
+
     // Set the stop flag first so the ticker exits after its next wakeup.
     TICKER_STOP.store(true, Ordering::Release);
 

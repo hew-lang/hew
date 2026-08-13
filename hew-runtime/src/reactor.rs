@@ -300,27 +300,57 @@ static PROMOTING_ACTOR: std::sync::atomic::AtomicUsize = std::sync::atomic::Atom
 /// represent accepted connections still owned by handlers; queued adds and the
 /// promotion/delivery guards cover the hand-off windows where a registration is
 /// temporarily absent from the registry but can still publish actor work.
+///
+/// `RegMode::Accept` registrations are exempt: a parked `await accept()` is a
+/// listener ADMISSION wait for connections that have not arrived, not owned
+/// in-flight work — closing the listener stops new connections but expresses
+/// nothing about outstanding ones. Counting it would stall every server that
+/// leaves its accept parked at main-exit into the drain timeout, regressing the
+/// fast-shutdown floor (`await_accept_shutdown_fast_exit`). Accepted
+/// connections (`AutoSend`, `Resume`) still block.
 pub(crate) fn drain_is_idle() -> bool {
-    let no_registered_work = REACTOR_STATE.access(|state| {
-        state.registry.is_empty()
-            && !state
+    fn owns_resumable_work(state: &ReactorState) -> bool {
+        let is_work = |reg: &Registration| !matches!(reg.mode, RegMode::Accept { .. });
+        state.registry.values().any(is_work)
+            || state
                 .pending
                 .iter()
-                .any(|pending| matches!(pending, Pending::Add { .. }))
-    });
-    if !no_registered_work
+                .any(|pending| matches!(pending, Pending::Add { reg, .. } if is_work(reg)))
+    }
+
+    if REACTOR_STATE.access(|state| owns_resumable_work(state))
         || PROMOTING_ACTOR.load(Ordering::SeqCst) != 0
         || DELIVERING_ACTOR.load(Ordering::SeqCst) != 0
     {
         return false;
     }
 
+    !REACTOR_STATE.access(|state| owns_resumable_work(state))
+}
+
+/// Snapshot the actor keys currently parked on a listener `await accept()`
+/// (registry entries and queued adds in `RegMode::Accept`).
+///
+/// The shutdown drain's suspended-actor scan consults this set so an actor
+/// whose only park is an admission wait does not hold the drain open (the
+/// scheduler-side twin of the `RegMode::Accept` exemption above). Taken as an
+/// owned snapshot under the `REACTOR_STATE` lock and consumed under the
+/// live-actors lock afterwards — never nested, so no lock-order edge. A
+/// registration resolving between snapshot and scan makes the woken actor
+/// visible to the drain's scheduler probes instead (drain requires two
+/// consecutive idle polls).
+pub(crate) fn actors_parked_on_accept() -> std::collections::HashSet<usize> {
     REACTOR_STATE.access(|state| {
-        state.registry.is_empty()
-            && !state
-                .pending
-                .iter()
-                .any(|pending| matches!(pending, Pending::Add { .. }))
+        state
+            .registry
+            .values()
+            .chain(state.pending.iter().filter_map(|pending| match pending {
+                Pending::Add { reg, .. } => Some(reg),
+                _ => None,
+            }))
+            .filter(|reg| matches!(reg.mode, RegMode::Accept { .. }))
+            .map(|reg| reg.actor_key)
+            .collect()
     })
 }
 
@@ -1962,6 +1992,34 @@ pub(crate) fn inject_resume_registration_for_test(
     });
 }
 
+/// Inject an ACCEPT-mode registration directly into the registry (test-only),
+/// bypassing the pending queue + OS poller. The reactor ref on `read_slot`
+/// must be taken by the caller (mirrors `reactor_await_accept`'s retain); the
+/// registration's `Drop` releases it on removal. Lets the admission-wait drain
+/// exemption be exercised against a real read slot without a live socket.
+#[cfg(test)]
+pub(crate) fn inject_accept_registration_for_test(
+    fd: c_int,
+    conn: c_int,
+    actor_ref: HewActorRef,
+    actor_key: usize,
+    read_slot: *mut crate::read_slot::HewReadSlot,
+) {
+    REACTOR_STATE.access(|state| {
+        state.conn_to_fd.insert(conn, fd);
+        state.registry.insert(
+            fd,
+            Registration {
+                conn,
+                actor_ref,
+                actor_key,
+                mode: RegMode::Accept { read_slot },
+                closed: false,
+            },
+        );
+    });
+}
+
 /// Drive `handle_ready_fd` against a given poller (test-only) so the
 /// dead-actor-drop path can be exercised deterministically.
 #[cfg(test)]
@@ -2326,6 +2384,31 @@ mod tests {
         );
         set_delivering_actor_for_test(0);
         assert!(drain_is_idle());
+
+        // Admission exemption: a parked listener `await accept()` is waiting
+        // for connections that have not arrived, not in-flight work, and must
+        // not hold the drain open — but the scheduler-side scan must be able
+        // to identify its actor as admission-parked.
+        let accept_slot = crate::read_slot::hew_read_slot_new();
+        // SAFETY: creator ref remains live through reset below.
+        unsafe { crate::read_slot::read_slot_retain(accept_slot) };
+        inject_accept_registration_for_test(75, 76, dead_actor_ref(), KEY, accept_slot);
+        assert!(
+            drain_is_idle(),
+            "a parked listener accept is admission, not in-flight work, and \
+             must not delay shutdown"
+        );
+        assert!(
+            actors_parked_on_accept().contains(&KEY),
+            "the admission-parked snapshot must expose the accept-parked actor"
+        );
+        reset_reactor();
+        // SAFETY: reset dropped the registration ref; release the creator ref.
+        unsafe { crate::read_slot::hew_read_slot_free(accept_slot) };
+        assert!(
+            actors_parked_on_accept().is_empty(),
+            "clearing the registry must empty the admission-parked snapshot"
+        );
     }
 
     // A detach-by-conn request is queued for the reactor to apply.

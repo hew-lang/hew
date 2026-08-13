@@ -294,12 +294,22 @@ pub(crate) fn with_live_actor<R>(
 /// retained [`crate::actor::HewActor::parked_ask_channel`] gate reference —
 /// safe to dereference here because every release site swaps that slot to
 /// null under THIS registry lock before dropping the reference
-/// (`scheduler::release_parked_ask_channel`). A parked handler with no ask at
-/// all (`null` gate) is genuinely outstanding work and keeps blocking.
-// Native-only: the shutdown drain (and the `reply_channel` module the gate
-// dereference needs) is not compiled on wasm32.
+/// (`scheduler::release_parked_ask_channel`).
+///
+/// `accept_parked` is the reactor's snapshot of actors parked on a listener
+/// `await accept()` ([`crate::reactor::actors_parked_on_accept`], taken before
+/// this lock — never nested). An admission wait for connections that have not
+/// arrived is likewise not in-flight work, UNLESS the handler parked there
+/// while serving a live ask — then a caller is still owed a reply and the
+/// actor keeps blocking through the ask rule. A parked handler with no ask and
+/// no admission wait (plain recv/timer/stream) is genuinely outstanding work
+/// and keeps blocking.
+// Native-only: the shutdown drain (and the `reply_channel`/`reactor` modules
+// this scan consults) is not compiled on wasm32.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn has_drain_blocking_suspended_actor() -> bool {
+pub(crate) fn has_drain_blocking_suspended_actor(
+    accept_parked: &std::collections::HashSet<usize>,
+) -> bool {
     with_live_actors_opt(|map| {
         map.as_ref().is_some_and(|actors| {
             actors.values().any(|ActorPtr(actor)| {
@@ -313,9 +323,10 @@ pub(crate) fn has_drain_blocking_suspended_actor() -> bool {
                 }
                 let gate = a.parked_ask_channel.load(Ordering::Acquire);
                 if gate.is_null() {
-                    // Parked with no ask (plain recv/timer/reactor wait):
-                    // outstanding work, blocks the drain.
-                    return true;
+                    // Parked with no ask: an admission wait does not block;
+                    // any other wait (plain recv/timer/stream) is outstanding
+                    // work and does.
+                    return !accept_parked.contains(&(*actor as usize));
                 }
                 // SAFETY: the gate slot owns a retained channel reference that
                 // is released only after a swap performed under this same

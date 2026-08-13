@@ -525,7 +525,12 @@ pub(crate) fn drain_is_idle() -> bool {
     if sched.stealers.iter().any(|stealer| !stealer.is_empty()) {
         return false;
     }
-    if crate::lifetime::live_actors::has_drain_blocking_suspended_actor() {
+    // Snapshot the admission-parked set BEFORE the live-actors scan (the two
+    // locks are never nested). An actor parked solely on a listener
+    // `await accept()` is waiting for connections that have not arrived, not
+    // doing in-flight work, and must not hold the drain open.
+    let accept_parked = crate::reactor::actors_parked_on_accept();
+    if crate::lifetime::live_actors::has_drain_blocking_suspended_actor(&accept_parked) {
         return false;
     }
 
@@ -7965,6 +7970,16 @@ mod tests {
         assert!(
             !drain_is_idle(),
             "a parked handler with no ask must keep shutdown draining"
+        );
+
+        // Admission row: the same no-ask park does not block when the reactor
+        // reports the actor parked on a listener `await accept()` (waiting for
+        // connections that have not arrived is not in-flight work).
+        let admission_set: std::collections::HashSet<usize> =
+            std::iter::once(suspended_ptr as usize).collect();
+        assert!(
+            !crate::lifetime::live_actors::has_drain_blocking_suspended_actor(&admission_set),
+            "an admission-parked handler with no ask must not hold the drain open"
         );
 
         // Attach a live ask: the gate slot owns a retained channel reference,

@@ -20,7 +20,7 @@
 #   APPLE_API_ISSUER_ID         — App Store Connect API issuer ID
 #
 # Required variable and secret for the required playground dispatch:
-#   vars.PLAYGROUND_APP_ID — GitHub App ID for the playground dispatch App
+#   secrets.PLAYGROUND_APP_ID — GitHub App ID for the playground dispatch App
 #   secrets.PLAYGROUND_APP_PRIVATE_KEY — Private key for the playground dispatch App
 #
 # Homebrew tap updates use a separate optional credential and are skipped for
@@ -1568,13 +1568,13 @@ jobs:
       - name: Validate playground GitHub App configuration
         shell: bash
         env:
-          PLAYGROUND_APP_ID: ${{ vars.PLAYGROUND_APP_ID }}
+          PLAYGROUND_APP_ID: ${{ secrets.PLAYGROUND_APP_ID }}
           PLAYGROUND_APP_PRIVATE_KEY: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}
         run: |
           set -euo pipefail
 
           if [[ -z "${PLAYGROUND_APP_ID}" || -z "${PLAYGROUND_APP_PRIVATE_KEY}" ]]; then
-            echo "::error::Playground dispatch requires vars.PLAYGROUND_APP_ID and secrets.PLAYGROUND_APP_PRIVATE_KEY; configure both before running a release"
+            echo "::error::Playground dispatch requires secrets.PLAYGROUND_APP_ID and secrets.PLAYGROUND_APP_PRIVATE_KEY; configure both before running a release"
             exit 1
           fi
 
@@ -1582,7 +1582,7 @@ jobs:
         id: playground-app-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349  # v2.2.2
         with:
-          app-id: ${{ vars.PLAYGROUND_APP_ID }}
+          app-id: ${{ secrets.PLAYGROUND_APP_ID }}
           private-key: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}
           owner: hew-lang
           repositories: playground

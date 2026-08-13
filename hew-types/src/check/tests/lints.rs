@@ -2593,6 +2593,64 @@ fn warn_dead_code_unused_function() {
 }
 
 #[test]
+fn dead_code_pub_fn_suggests_allow_not_underscore() {
+    // D11: `pub fn` is public API — a leading underscore would rename it,
+    // a breaking surface change just to silence an advisory lint. The
+    // suggestion must point at the suppression mechanisms instead.
+    let source = "pub fn reason_unused(x: i64) -> i64 { x + 1 } fn main() { println(1); }";
+    let result = hew_parser::parse(source);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let finding = output
+        .warnings
+        .iter()
+        .find(|w| {
+            w.kind == TypeErrorKind::Lint(LintId::DeadCode) && w.message.contains("reason_unused")
+        })
+        .unwrap_or_else(|| panic!("expected dead code warning: {:?}", output.warnings));
+    assert!(
+        finding
+            .suggestions
+            .iter()
+            .any(|s| s.contains("-A dead_code") || s.contains("hew:allow(dead_code)")),
+        "a pub fn's dead-code suggestion must point at lint suppression: {finding:?}"
+    );
+    assert!(
+        !finding
+            .suggestions
+            .iter()
+            .any(|s| s.contains("_reason_unused")),
+        "a pub fn's dead-code suggestion must not propose an underscore rename \
+         (that renames the public API): {finding:?}"
+    );
+}
+
+#[test]
+fn dead_code_private_fn_still_suggests_underscore() {
+    // The complement: a private (non-pub) unused function is a local
+    // rename-to-suppress decision the author controls, so the existing
+    // underscore-prefix suggestion is unchanged.
+    let source = "fn unused_helper(x: i64) -> i64 { x + 1 } fn main() { println(1); }";
+    let result = hew_parser::parse(source);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let finding = output
+        .warnings
+        .iter()
+        .find(|w| {
+            w.kind == TypeErrorKind::Lint(LintId::DeadCode) && w.message.contains("unused_helper")
+        })
+        .unwrap_or_else(|| panic!("expected dead code warning: {:?}", output.warnings));
+    assert!(
+        finding
+            .suggestions
+            .iter()
+            .any(|s| s.contains("_unused_helper")),
+        "a private fn keeps the underscore-prefix suggestion: {finding:?}"
+    );
+}
+
+#[test]
 fn no_warn_dead_code_main() {
     let source = "fn main() { println(1); }";
     let result = hew_parser::parse(source);

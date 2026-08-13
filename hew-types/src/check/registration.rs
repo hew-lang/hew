@@ -3701,9 +3701,21 @@ impl Checker {
         wire: &WireMetadata,
         variant_order: &[String],
     ) {
+        // ONE canonical wire identity (A316). A module declaration's wire
+        // surface is keyed by `{module}.{Name}` — the identity every resolved
+        // receiver and the codegen wire-layout lookup carry; a root
+        // declaration's bare name IS its canonical identity. Surface
+        // spellings resolve TO this key at lookup time
+        // (`canonical_nominal_name`); no bare mirror entries exist, so two
+        // same-leaf wire types from different modules never collide on a
+        // shared last-write-wins key.
+        let canonical_identity = self.current_module_identity().map_or_else(
+            || type_name.to_string(),
+            |module| format!("{module}.{type_name}"),
+        );
         let self_ty = Ty::Named {
             builtin: None,
-            name: type_name.to_string(),
+            name: canonical_identity.clone(),
             args: vec![],
         };
         let bytes_ty = Ty::Bytes;
@@ -3739,13 +3751,13 @@ impl Checker {
         // re-deriving wire-ness. Both ride the CBOR body codec: structs as a
         // tag-keyed map, enums as the "map-of-one" shape.
         if is_wire_struct {
-            self.wire_struct_types.insert(type_name.to_string());
+            self.wire_struct_types.insert(canonical_identity.clone());
         }
         if is_serial_wire_enum {
-            self.wire_enum_types.insert(type_name.to_string());
+            self.wire_enum_types.insert(canonical_identity.clone());
         }
         self.wire_layouts
-            .insert(type_name.to_string(), layout_entry);
+            .insert(canonical_identity.clone(), layout_entry);
 
         // Wire structs and wire enums carry the same method surface: the binary
         // CBOR codec (`encode`/`decode`) plus the text-format helpers. The body
@@ -3761,17 +3773,28 @@ impl Checker {
             vec![]
         };
 
+        // Instance methods land on the DECLARATION record (the bare
+        // `type_defs` entry this module's registration just wrote), then the
+        // canonical qualified alias is refreshed FROM it — the
+        // `commit_reresolved_type_def` pattern. Pre-registration mints the
+        // qualified skeleton before this runs and `register_full_type_alias`
+        // refuses to overwrite it, so the refresh (owning-module overwrite)
+        // is what carries the codec methods onto the canonical def; there is
+        // no independent second mutation that could diverge from it.
         if let Some(type_def) = self.type_defs.get_mut(type_name) {
-            for (method_name, params, return_type) in instance_methods {
+            for (method_name, params, return_type) in &instance_methods {
                 type_def.methods.insert(
-                    method_name.to_string(),
+                    (*method_name).to_string(),
                     FnSig {
-                        params,
-                        return_type,
+                        params: params.clone(),
+                        return_type: return_type.clone(),
                         ..FnSig::default()
                     },
                 );
             }
+        }
+        if let Some(module_owner) = self.current_module_identity().map(str::to_string) {
+            self.register_qualified_type_alias(&module_owner, type_name);
         }
 
         // `decode` returns bare `Self` (binary CBOR is trap-on-failure); the
@@ -3791,9 +3814,12 @@ impl Checker {
         };
 
         for (method_name, params, return_type) in static_methods {
-            let qualified_name = format!("{type_name}.{method_name}");
+            // Static codec entry points register under the canonical identity
+            // ONLY. The call-site arm canonicalizes the receiver's surface
+            // spelling (`Env.from_json` inside the defining module, an
+            // importer's binding, an `as`-alias) to this key before lookup.
             self.fn_sigs.insert(
-                qualified_name,
+                format!("{canonical_identity}.{method_name}"),
                 FnSig {
                     params,
                     return_type,
@@ -11704,6 +11730,23 @@ impl Checker {
                         let event_identity = format!("{module_full_path}.{event_name}");
                         self.record_published_bare_type(&machine_binding, &machine_identity);
                         self.record_published_bare_type(&event_binding, &event_identity);
+                        // HIR resolves annotations itself, and a machine's
+                        // value-class/layout facts key by the qualified
+                        // identity. Publish the binding→identity fact for
+                        // every named/glob import (not only renames): without
+                        // it, `fn f(m: Machine)` on a selectively-imported
+                        // machine froze a bare binding type MIR could not
+                        // classify (`owned call-carrier parameter` NYI +
+                        // `E_MIR: unknown type`), while the checker's own
+                        // expression facts already carried the dotted owner.
+                        self.import_type_name_aliases.insert(
+                            (self.current_module.clone(), machine_binding.clone()),
+                            machine_identity.clone(),
+                        );
+                        self.import_type_name_aliases.insert(
+                            (self.current_module.clone(), event_binding.clone()),
+                            event_identity.clone(),
+                        );
                         self.unqualified_to_module.insert(
                             (self.current_module.clone(), machine_binding),
                             module_full_path.to_string(),

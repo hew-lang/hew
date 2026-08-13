@@ -1,0 +1,14 @@
+//! Same-leaf wire collision fixture, module B. Schema deliberately disjoint
+//! from `env_a.Env` — different field set AND different wire tags — so any
+//! keyspace collapse between the two is observable in both the text and
+//! binary codecs.
+
+#[wire]
+pub type Env {
+    label: string @7,
+    port: i64 @9,
+}
+
+pub fn label_b(e: Env) -> string {
+    f"b:{e.label}:{e.port}"
+}

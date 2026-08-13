@@ -4737,9 +4737,12 @@ impl Builder {
                         let _ = self.lower_value(object);
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
+                                // `construct` carries only the construct; the
+                                // CLI diagnostic frame wraps it in the
+                                // "MIR lowering for … is not implemented yet"
+                                // sentence.
                                 construct: format!(
-                                    "MIR lowering for field access on unregistered record type \
-                                     `{type_name}` is not implemented yet"
+                                    "field access on unregistered record type `{type_name}`"
                                 ),
                                 site: expr.site,
                             },

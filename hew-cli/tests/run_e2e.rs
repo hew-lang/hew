@@ -5254,6 +5254,108 @@ fn run_file_imported_actor_spawns_and_calls() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "bumped: 1\n");
 }
 
+/// A selectively-imported pub const must bind bare at root exactly like a
+/// selectively-imported pub fn from the same module. The HIR pre-pass
+/// registers imported consts only under the qualified `{module}.{CONST}` key;
+/// the importer-visible binding aliases to the same entry. Before the alias,
+/// `import m::{MAX_RETRIES};` + bare `MAX_RETRIES` failed with
+/// `E_HIR: identifier has no binding in resolved HIR` while the sibling fn
+/// import and the dotted spelling both worked.
+#[test]
+fn run_selectively_imported_const_binds_bare_like_fn() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    std::fs::create_dir_all(dir.path().join("src/reasons")).unwrap();
+    std::fs::write(
+        dir.path().join("src/reasons/reasons.hew"),
+        "pub const MAX_RETRIES: i64 = 5;\n\
+         pub fn retries_label() -> string {\n\
+         \x20   \"retries\"\n\
+         }\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import src::reasons::reasons::{MAX_RETRIES, retries_label};\n\
+         fn main() {\n\
+         \x20   println(retries_label());\n\
+         \x20   println(f\"max: {MAX_RETRIES}\");\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        output.status.success(),
+        "selectively-imported const and fn should both bind bare; \
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "retries\nmax: 5\n");
+}
+
+/// A record reaching root through a string-path import (`import "file.hew";`)
+/// is spelled bare at the surface but keyed by its defining file's module
+/// identity in the MIR layout registries. The bare parameter annotation was
+/// the failing site: construction and inferred locals resolved, while
+/// `fn f(w: WorkflowState)` froze a bare binding type that missed the
+/// qualified field-order/value-class entries (doubled
+/// `E_NOT_YET_IMPLEMENTED … field access on unregistered record type` +
+/// `E_MIR: unknown type`). Root annotations now project through the
+/// flat-file bare→qualified alias table, so field access through an
+/// annotated parameter, construction, and a defining-module factory all
+/// agree on one identity.
+#[test]
+fn run_string_path_imported_record_annotated_param_field_access() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    std::fs::create_dir_all(dir.path().join("src/workflow")).unwrap();
+    std::fs::write(
+        dir.path().join("src/workflow/machine.hew"),
+        "pub type WorkflowState {\n\
+         \x20   name: string,\n\
+         \x20   count: i64,\n\
+         }\n\
+         pub fn make_state(name: string, count: i64) -> WorkflowState {\n\
+         \x20   WorkflowState { name: name, count: count }\n\
+         }\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import \"src/workflow/machine.hew\";\n\
+         fn read_name(w: WorkflowState) -> string {\n\
+         \x20   w.name\n\
+         }\n\
+         fn main() {\n\
+         \x20   let annotated = WorkflowState { name: \"annotated\", count: 3 };\n\
+         \x20   println(read_name(annotated));\n\
+         \x20   let made = make_state(\"made\", 7);\n\
+         \x20   println(made.name);\n\
+         \x20   println(f\"count: {made.count}\");\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        output.status.success(),
+        "string-path-imported record through an annotated parameter should run; \
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "annotated\nmade\ncount: 7\n"
+    );
+}
+
 /// Revision-2 regression: a FILE-IMPORTED actor whose receive body exercises
 /// checker-owned `SpanKey`-keyed facts that are consumed during HIR body
 /// lowering — a closure literal (`closure_capture_facts` / `closure_escape_facts`)

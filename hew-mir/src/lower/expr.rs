@@ -2192,6 +2192,7 @@ impl Builder {
                     value,
                     &binding_ty,
                     pending || value_place.is_some(),
+                    value_place,
                 );
                 if owned_string_record_key.is_some() && value_place.is_some() {
                     self.owned_string_record_bindings.insert(binding.id);

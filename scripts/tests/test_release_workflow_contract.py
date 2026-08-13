@@ -605,6 +605,26 @@ def test_every_release_lane_executes_the_library_consumer_proof() -> None:
         assert "llvm-ar t " not in text
 
 
+def test_cross_release_machinery_resolves_from_workflow_ref() -> None:
+    text = workflow()
+    start = text.index("  build-cross-release-libs:\n")
+    end = text.index("  # Build — macOS and Windows release artifacts\n", start)
+    job = text[start:end]
+    assert (
+        """      - name: Checkout release machinery
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: release-machinery
+"""
+        in job
+    )
+    assert (
+        "release-machinery/scripts/verify-cross-release-lib.sh "
+        '"${{ matrix.rust_target }}" "${archive}"' in job
+    )
+
+
 def test_cross_release_libraries_are_target_keyed_and_natively_proved() -> None:
     release = workflow()
     cross_start = release.index("  build-cross-release-libs:\n")
@@ -1466,6 +1486,7 @@ _TESTS = [
     test_release_checksums_require_every_platform_asset,
     test_prerelease_validator_proves_external_staticlib_linking,
     test_every_release_lane_executes_the_library_consumer_proof,
+    test_cross_release_machinery_resolves_from_workflow_ref,
     test_cross_release_libraries_are_target_keyed_and_natively_proved,
     test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh,
     test_sanitizer_gate_is_behavioral_and_release_scoped,

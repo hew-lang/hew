@@ -11704,6 +11704,23 @@ impl Checker {
                         let event_identity = format!("{module_full_path}.{event_name}");
                         self.record_published_bare_type(&machine_binding, &machine_identity);
                         self.record_published_bare_type(&event_binding, &event_identity);
+                        // HIR resolves annotations itself, and a machine's
+                        // value-class/layout facts key by the qualified
+                        // identity. Publish the binding→identity fact for
+                        // every named/glob import (not only renames): without
+                        // it, `fn f(m: Machine)` on a selectively-imported
+                        // machine froze a bare binding type MIR could not
+                        // classify (`owned call-carrier parameter` NYI +
+                        // `E_MIR: unknown type`), while the checker's own
+                        // expression facts already carried the dotted owner.
+                        self.import_type_name_aliases.insert(
+                            (self.current_module.clone(), machine_binding.clone()),
+                            machine_identity.clone(),
+                        );
+                        self.import_type_name_aliases.insert(
+                            (self.current_module.clone(), event_binding.clone()),
+                            event_identity.clone(),
+                        );
                         self.unqualified_to_module.insert(
                             (self.current_module.clone(), machine_binding),
                             module_full_path.to_string(),

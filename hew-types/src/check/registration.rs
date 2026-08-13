@@ -2419,8 +2419,11 @@ impl Checker {
                             // spans here would cause false duplicate-definition
                             // errors when the import path later registers the same
                             // machine. Idempotency guard matches `pre_register_type_decl`.
-                            Item::Machine(md) if !self.type_defs.contains_key(&md.name) => {
-                                self.register_machine_decl(md, item_span);
+                            Item::Machine(md) => {
+                                let identity = format!("{module_name}.{}", md.name);
+                                if !self.type_defs.contains_key(&identity) {
+                                    self.register_machine_decl(md, item_span);
+                                }
                             }
                             _ => {}
                         }
@@ -4115,16 +4118,23 @@ impl Checker {
                 args: vec![],
             })
             .collect();
+        let machine_identity = self
+            .current_module_identity()
+            .map_or_else(|| md.name.clone(), |module| format!("{module}.{}", md.name));
         let machine_ty = Ty::Named {
             builtin: None,
-            name: md.name.clone(),
+            name: machine_identity.clone(),
             args: machine_generic_args.clone(),
         };
 
         let event_type_name = format!("{}Event", md.name);
+        let event_identity = self.current_module_identity().map_or_else(
+            || event_type_name.clone(),
+            |module| format!("{module}.{event_type_name}"),
+        );
         let event_ty = Ty::Named {
             builtin: None,
-            name: event_type_name.clone(),
+            name: event_identity.clone(),
             args: machine_generic_args.clone(),
         };
 
@@ -4189,9 +4199,10 @@ impl Checker {
         self.registry
             .register_type_params(md.name.clone(), type_param_names.clone());
 
-        self.type_defs.insert(md.name.clone(), type_def);
-        self.record_type_def_inference_holes(&md.name, machine_hole_vars);
+        self.commit_reresolved_type_def(&md.name, type_def);
+        self.record_type_def_inference_holes(&machine_identity, machine_hole_vars);
         self.known_types.insert(md.name.clone());
+        self.known_types.insert(machine_identity.clone());
 
         // Register the generated event companion enum
         let mut event_variants = HashMap::new();
@@ -4225,13 +4236,13 @@ impl Checker {
             doc_comment: None,
             is_indirect: false,
         };
-        self.type_defs
-            .insert(event_type_name.clone(), event_type_def);
-        self.record_type_def_inference_holes(&event_type_name, event_hole_vars);
-        self.known_types.insert(event_type_name);
+        self.commit_reresolved_type_def(&event_type_name, event_type_def);
+        self.record_type_def_inference_holes(&event_identity, event_hole_vars);
+        self.known_types.insert(event_type_name.clone());
+        self.known_types.insert(event_identity);
 
         // Register the step() method on the machine type
-        if let Some(td) = self.type_defs.get_mut(&md.name) {
+        if let Some(td) = self.type_defs.get_mut(&machine_identity) {
             td.methods.insert(
                 "step".to_string(),
                 FnSig {
@@ -4262,6 +4273,11 @@ impl Checker {
                     ..FnSig::default()
                 },
             );
+        }
+        if machine_identity != md.name {
+            if let Some(type_def) = self.type_defs.get(&machine_identity).cloned() {
+                self.type_defs.insert(md.name.clone(), type_def);
+            }
         }
     }
 

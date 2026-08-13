@@ -4510,7 +4510,7 @@ pub fn lower_program_with_mono_cap(
                             };
                             items.push(HirItem::TypeDecl(hir_decl));
                         }
-                        // Emit `HirItem::Machine` entries for imported pub
+                        // Emit `HirItem::Machine` entries for imported
                         // machines so MIR's `machine_layout_names` set (built
                         // from `module.items`) includes their names. Without
                         // this, the MIR `Builder::is_known_actor_runtime_ty`
@@ -4518,9 +4518,11 @@ pub fn lower_program_with_mono_cap(
                         // `ValueClass::Unknown` → `Strategy::UnknownBlocked` →
                         // `DecisionMapTotal` + `UnknownType` diagnostics, even
                         // though HIR's `machine_ctor_registry` already resolved
-                        // the qualified ctor reference. The visibility gate
-                        // mirrors the TypeDecl arm above.
-                        Item::Machine(machine) if machine.visibility.is_pub() => {
+                        // the qualified ctor reference. A private declaration
+                        // can still cross the module boundary through a public
+                        // function signature, so visibility cannot discard its
+                        // runtime layout and value-class identity here.
+                        Item::Machine(machine) => {
                             if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
                                 items.push(HirItem::Machine(hir_machine));
                             }
@@ -4815,14 +4817,13 @@ pub fn lower_program_with_mono_cap(
                         // this slice; their cross-module lowering semantics are
                         // tracked as separate follow-ups.
                         //
-                        // Non-pub Function/TypeDecl/Machine/Actor fall here (not
+                        // Non-pub Function/TypeDecl/Actor fall here (not
                         // visible to importers). If a new Item variant is
                         // added, the compiler will force a conscious decision.
                         Item::Import(_)
                         | Item::Function(_)
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
-                        | Item::Machine(_)
                         | Item::Record(_)
                         | Item::Actor(_)
                         | Item::Supervisor(_) => {}
@@ -18542,6 +18543,47 @@ impl LowerCtx {
                         .try_lower_machine_event_field_access(field, &object.1, &span, site, intent)
                     {
                         return hir_expr;
+                    }
+                }
+                // Dotted module-qualified unit constructor:
+                // `module.Type.Variant`. The checker has already resolved
+                // this nested field-access surface to the exact tagged-union
+                // owner. Consume that fact before lowering `module.Type` as a
+                // runtime projection (it is a namespace path, not a value).
+                if let Expr::FieldAccess {
+                    object: module,
+                    field: type_name,
+                } = &object.0
+                {
+                    if let Expr::Identifier(module_short) = &module.0 {
+                        let canonical_type =
+                            self.imported_module_member_key(module_short, type_name);
+                        let checker_ty = self.checker_expr_ty_if_present(&span);
+                        let checker_selects_type = matches!(
+                            &checker_ty,
+                            Some(ResolvedTy::Named { name, .. }) if name == &canonical_type
+                        );
+                        if checker_selects_type {
+                            if let Some((type_name, variant_idx, HirVariantKind::Unit)) =
+                                self.lookup_variant_ctor(field, checker_ty.as_ref())
+                            {
+                                let result_ty = checker_ty
+                                    .expect("module-qualified variant selection checked above");
+                                return HirExpr {
+                                    node: self.ids.node(),
+                                    site,
+                                    value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
+                                    ty: result_ty,
+                                    intent,
+                                    kind: HirExprKind::MachineVariantCtor {
+                                        machine_name: type_name,
+                                        state_idx: variant_idx,
+                                        payload: None,
+                                    },
+                                    span,
+                                };
+                            }
+                        }
                     }
                 }
                 // Pre-dispatch: module-qualified constant reference, e.g.

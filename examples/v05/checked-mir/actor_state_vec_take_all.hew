@@ -1,0 +1,73 @@
+// MIR-corpus fixture: consuming iteration over a Vec field in actor state.
+//
+// Pins `hew_vec_take_all` (the whole-buffer move that drains a persistent
+// state slot into the cursor while the slot stays a valid empty vec with
+// its stamped element descriptor): a second dispatch re-iterates the
+// drained field (yielding nothing), a refill push lands in the retained
+// descriptor's fresh buffer, and actor teardown frees the slot exactly
+// once.
+
+trait Labeled {
+    fn label_size(val: Self) -> i64;
+}
+
+type Tag {
+    label: string;
+}
+
+impl Labeled for Tag {
+    fn label_size(val: Tag) -> i64 {
+        val.label.len()
+    }
+}
+
+fn make_tag(label: string) -> dyn Labeled {
+    let erased: dyn Labeled = Tag { label: label };
+    erased
+}
+
+actor Registry {
+    var plugins: Vec<dyn Labeled> = Vec::new();
+
+    #[on(start)]
+    fn boot() {
+        plugins.push(make_tag("alpha"));
+        plugins.push(make_tag("be"));
+    }
+
+    receive fn drain_total() -> i64 {
+        var total: i64 = 0;
+        for plugin in plugins.into_iter() {
+            total = total + plugin.label_size();
+        }
+        total
+    }
+
+    receive fn refill() {
+        plugins.push(make_tag("gamma"));
+    }
+
+    receive fn plugin_count() -> i64 {
+        plugins.len()
+    }
+}
+
+fn main() {
+    let registry = spawn Registry();
+    let first = await registry.drain_total();
+    match first {
+        Ok(total) => println(total),
+        Err(_) => println(-1),
+    }
+    let drained = await registry.drain_total();
+    match drained {
+        Ok(total) => println(total),
+        Err(_) => println(-1),
+    }
+    registry.refill();
+    let count = await registry.plugin_count();
+    match count {
+        Ok(n) => println(n),
+        Err(_) => println(-1),
+    }
+}

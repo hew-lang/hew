@@ -41,6 +41,7 @@ WINDOWS_LLVM_PREBUILD = ROOT / ".github" / "workflows" / "prebuild-llvm.yml"
 SETUP_LLVM_ACTION = ROOT / ".github" / "actions" / "setup-llvm" / "action.yml"
 SETUP_WASM_PACK_ACTION = ROOT / ".github" / "actions" / "setup-wasm-pack" / "action.yml"
 DOWNLOAD_VERIFY_BINARYEN = ROOT / ".github" / "scripts" / "download-verify-binaryen.sh"
+NPM_PACKAGE_BUILDER = ROOT / "scripts" / "build-npm-packages.mjs"
 WINDOWS_BUILD_GUIDE = ROOT / "docs" / "cross-platform-build-guide.md"
 WINDOWS_LLVM_TOOLCHAIN_REPO = "hew-lang/llvm-toolchain"
 WINDOWS_LLVM_TOOLCHAIN_VERSION = "22.1.0-windows-msvc-v1"
@@ -686,6 +687,36 @@ def test_cross_release_machinery_resolves_from_workflow_ref() -> None:
     )
 
 
+def test_npm_publish_machinery_resolves_from_workflow_ref() -> None:
+    job = workflow_job(npm_publish_workflow(), "publish")
+    assert (
+        """      - name: Checkout release machinery
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: release-machinery
+"""
+        in job
+    )
+    assert "uses: ./release-machinery/.github/actions/setup-wasm-pack" in job
+    assert "node release-machinery/scripts/build-npm-packages.mjs" in job
+    assert "HEW_SOURCE_ROOT: ${{ github.workspace }}" in job
+
+    unscoped_machinery_references = [
+        line.strip()
+        for line in job.splitlines()
+        if re.search(r"(?<!release-machinery/)scripts/", line)
+        or re.search(r"uses:\s+\./(?!release-machinery/)", line)
+    ]
+    assert not unscoped_machinery_references, (
+        "npm publish machinery must resolve from the workflow ref: "
+        f"{unscoped_machinery_references}"
+    )
+
+    builder = NPM_PACKAGE_BUILDER.read_text()
+    assert "process.env.HEW_SOURCE_ROOT ?? SCRIPT_REPO_ROOT" in builder
+
+
 def test_cross_release_libraries_are_target_keyed_and_natively_proved() -> None:
     release = workflow()
     cross_start = release.index("  build-cross-release-libs:\n")
@@ -1088,30 +1119,32 @@ def assert_wasm_pack_action_contract(action: str) -> None:
 def test_wasm_pack_consumers_prefetch_checksum_pinned_binaryen() -> None:
     action = SETUP_WASM_PACK_ACTION.read_text()
     downloader = DOWNLOAD_VERIFY_BINARYEN.read_text()
-    action_use = "uses: ./.github/actions/setup-wasm-pack"
-
     assert_wasm_pack_action_contract(action)
     assert_binaryen_downloader_contract(downloader)
 
     consumers = (
         (
             workflow_job(CI_WORKFLOW.read_text(), "playground-wasm-build"),
+            "uses: ./.github/actions/setup-wasm-pack",
             "make playground-check",
         ),
         (
             workflow_job(CI_WORKFLOW.read_text(), "build-and-test"),
+            "uses: ./.github/actions/setup-wasm-pack",
             "scripts/ci-preflight-dispatcher.sh",
         ),
         (
             workflow_job(RELEASE_GATE.read_text(), "gate-linux"),
+            "uses: ./.github/actions/setup-wasm-pack",
             "make playground-check",
         ),
         (
             workflow_job(NPM_PUBLISH_WORKFLOW.read_text(), "publish"),
-            "node scripts/build-npm-packages.mjs",
+            "uses: ./release-machinery/.github/actions/setup-wasm-pack",
+            "node release-machinery/scripts/build-npm-packages.mjs",
         ),
     )
-    for job, build_command in consumers:
+    for job, action_use, build_command in consumers:
         assert job.count(action_use) == 1
         assert job.index(action_use) < job.index(build_command)
 
@@ -1795,6 +1828,7 @@ _TESTS = [
     test_prerelease_validator_proves_external_staticlib_linking,
     test_every_release_lane_executes_the_library_consumer_proof,
     test_cross_release_machinery_resolves_from_workflow_ref,
+    test_npm_publish_machinery_resolves_from_workflow_ref,
     test_cross_release_libraries_are_target_keyed_and_natively_proved,
     test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh,
     test_freebsd_x86_64_release_uses_repository_pinned_rust,

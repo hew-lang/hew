@@ -370,20 +370,28 @@ fn borrow_capture_read_after_loop_source(frames: usize) -> String {
     )
 }
 
+/// Two escaping closures share one source string. Returning an outer closure
+/// forces both inner closure envs onto the heap; each inner env takes one
+/// retained share, while the direct `label.len()` keeps the source binding
+/// live after both captures. This reaches the retained-env exclusion in the
+/// generic hand-off inference: without it, that walk adds a second retain for
+/// each env field and the leak slope grows by two shares per iteration.
 fn borrow_capture_two_shares_loop_source(frames: usize) -> String {
     let label_len = "row-payload-seed".len();
     let expected_total = frames * 3 * label_len + frames * frames.saturating_sub(1);
     format!(
-        "fn two_shares(n: i64) -> i64 {{\n\
+        "fn make_two_shares(n: i64) -> fn() -> i64 {{\n\
          \x20   let label = \"row-payload-seed\".to_upper();\n\
          \x20   let a = || label.len() + n;\n\
          \x20   let b = || label.len() + n;\n\
-         \x20   a() + b() + label.len()\n\
+         \x20   let after = label.len();\n\
+         \x20   || a() + b() + after\n\
          }}\n\
          fn run_loop(frames: i64) -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..frames {{\n\
-         \x20       total = total + two_shares(i);\n\
+         \x20       let f = make_two_shares(i);\n\
+         \x20       total = total + f();\n\
          \x20   }}\n\
          \x20   total\n\
          }}\n\
@@ -395,10 +403,13 @@ fn borrow_capture_two_shares_loop_source(frames: usize) -> String {
     )
 }
 
-/// Record source read after a field-projecting capture, closure invoked
-/// directly (no std combinator): isolates the retained-share capture ownership
-/// from the pre-existing closure-pair-argument leak the `iter::any` pin below
-/// tracks.
+/// Record source read after a field-projecting capture, with an outer returned
+/// closure forcing the field-projecting inner closure env onto the heap. The
+/// source read after the inner capture makes the generic hand-off inference
+/// want another aggregate retain; excluding the retained env field keeps the
+/// env at exactly one recursive leaf retain. The direct invocation of the
+/// returned closure avoids the pre-existing closure-pair-argument leak the
+/// `iter::any` pin below tracks.
 fn borrow_capture_record_read_after_loop_source(frames: usize) -> String {
     let item_len = "row-item".len();
     let expected_total = frames * (1 + item_len) + frames * frames.saturating_sub(1) / 2;
@@ -407,18 +418,22 @@ fn borrow_capture_record_read_after_loop_source(frames: usize) -> String {
          \x20   item: string;\n\
          \x20   run_id: string;\n\
          }}\n\
-         fn probe() -> i64 {{\n\
+         fn make_probe(n: i64) -> fn() -> i64 {{\n\
          \x20   let claim = Claim {{ item: \"row-item\".to_upper(), run_id: \"row-run\".to_upper() }};\n\
          \x20   let matches_run = |t: string| t == claim.run_id;\n\
-         \x20   var score: i64 = 0;\n\
-         \x20   if matches_run(\"ROW-RUN\") {{ score = score + 1; }}\n\
-         \x20   if matches_run(\"nope\") {{ score = score + 100; }}\n\
-         \x20   score + claim.item.len()\n\
+         \x20   let item_len = claim.item.len();\n\
+         \x20   || {{\n\
+         \x20       var score: i64 = 0;\n\
+         \x20       if matches_run(\"ROW-RUN\") {{ score = score + 1; }}\n\
+         \x20       if matches_run(\"nope\") {{ score = score + 100; }}\n\
+         \x20       score + item_len + n\n\
+         \x20   }}\n\
          }}\n\
          fn run_loop(frames: i64) -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..frames {{\n\
-         \x20       total = total + probe() + i;\n\
+         \x20       let f = make_probe(i);\n\
+         \x20       total = total + f();\n\
          \x20   }}\n\
          \x20   total\n\
          }}\n\
@@ -530,16 +545,18 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
 
     assert!(
         output.status.success(),
-        "{shape_name}: escaping closure capture must free the owned value exactly once -- a \
-         crash here indicates a double-free: the caller binding freed the same handle the env \
-         now owns. The env must be the sole owner (the caller's scope-exit drop is suppressed by \
-         the aliased-local scan); a non-zero exit is a scribbled-read miscompute or the fixture's \
-         own total check;\n{}",
+        "{shape_name}: escaping closure capture must balance every owning share exactly once -- \
+         a crash indicates a double-free between the source binding and an env share, while a \
+         non-zero exit is a scribbled-read miscompute or the fixture's own total check;\n{}",
         describe_output(&output)
     );
 }
 
-fn assert_compile_fails(shape_name: &str, source: &str, expected: &str) {
+fn assert_compile_fails_after_retained_capture(
+    shape_name: &str,
+    source: &str,
+    expected_record_binding: &str,
+) {
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -570,9 +587,16 @@ fn assert_compile_fails(shape_name: &str, source: &str, expected: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    let expected = format!("binding `{expected_record_binding}` is used after it was consumed");
     assert!(
-        combined.contains(expected),
-        "{shape_name}: compile failed but did not mention `{expected}`:\n{combined}"
+        combined.contains(&expected),
+        "{shape_name}: compile failed before reaching the intended record-store seam; expected \
+         `{expected}`:\n{combined}"
+    );
+    assert!(
+        !combined.contains("binding `label` is used after it was consumed"),
+        "{shape_name}: the read-only capture still consumed `label`, so this is the pre-fix \
+         capture failure rather than the intended record-store rejection:\n{combined}"
     );
 }
 
@@ -803,9 +827,9 @@ fn borrow_capture_read_after_freed_exactly_once_under_malloc_scribble() {
     );
 }
 
-/// Slope oracle: two closures sharing one source string, plus a direct read of
-/// the source — three co-owners (two retained env shares + the original), three
-/// releases, flat slope.
+/// Slope oracle: two escaping closures sharing one source string, plus a direct
+/// read of the source — three co-owners (two retained heap-env shares + the
+/// original), three releases, flat slope.
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
@@ -830,9 +854,10 @@ fn borrow_capture_two_shares_freed_exactly_once_under_malloc_scribble() {
     );
 }
 
-/// Slope oracle: record source read after a field-projecting capture (direct
-/// invocation) — the env's retained record share and the source's own drop
-/// each release once; flat slope.
+/// Slope oracle: record source read after a field-projecting capture that an
+/// outer returned closure forces to escape. Directly invoking the returned
+/// closure avoids the std-combinator carrier seam. The inner env's retained
+/// record share and the source's own drop each release once; flat slope.
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
@@ -879,24 +904,26 @@ fn borrow_capture_record_iter_any_freed_exactly_once_under_malloc_scribble() {
 /// takes a retained share), but storing a CAPTURING closure pair into a record
 /// field still fails closed — `UseAfterConsume` fires on `a`/`b` at the
 /// `RecordInit` (the closure-pair-into-record transfer has no ownership
-/// protocol yet). This pin holds the fail-closed line at that seam.
+/// protocol yet). Requiring that record-store diagnostic while rejecting an
+/// earlier `label` diagnostic distinguishes this from the pre-fix failure.
 #[test]
 fn shared_source_two_escaping_closures_fail_closed() {
-    assert_compile_fails(
+    assert_compile_fails_after_retained_capture(
         "shared_source_two_closures",
         &shared_source_two_closures_source(),
-        "UseAfterConsume",
+        "a",
     );
 }
 
 /// Same seam as above: the capture itself (closure + original both live) is now
 /// a legal retained share, but the record store of the capturing closure pair
-/// `f` still fails closed at the `RecordInit`.
+/// `f` still fails closed at the `RecordInit`. The pin also rejects the pre-fix
+/// `label`-consume diagnostic, so an early capture failure cannot satisfy it.
 #[test]
 fn shared_source_closure_plus_original_store_fail_closed() {
-    assert_compile_fails(
+    assert_compile_fails_after_retained_capture(
         "shared_source_original_store",
         &shared_source_closure_plus_original_store_source(),
-        "UseAfterConsume",
+        "f",
     );
 }

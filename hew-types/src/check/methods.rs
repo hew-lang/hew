@@ -1294,7 +1294,7 @@ impl Checker {
         self.registry.is_resource(type_name)
     }
 
-    fn record_method_call_rewrite(&mut self, span: &Span, rewrite: MethodCallRewrite) {
+    pub(super) fn record_method_call_rewrite(&mut self, span: &Span, rewrite: MethodCallRewrite) {
         self.method_call_rewrites
             .insert(SpanKey::in_module(span, self.current_module_idx), rewrite);
     }

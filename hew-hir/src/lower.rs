@@ -12094,7 +12094,18 @@ impl LowerCtx {
                         )
                     })
             });
-        if !is_duration_ctor_block && decl.trait_bound.is_none() && builtin_impl_kind.is_some() {
+        // `std::iter` owns the fluent VecIter methods, but VecIter itself is a
+        // compiler-owned synthetic cursor.  Admit precisely that standard
+        // library implementation through the normal impl-body pipeline so
+        // its methods remain thin calls into the existing iterator functions.
+        // User-source inherent impls on VecIter still take the guard below.
+        let is_std_iter_vec_iter_extension = builtin_impl_kind == Some(BuiltinType::VecIter)
+            && self.current_module_name.as_deref() == Some("std.iter");
+        if !is_duration_ctor_block
+            && !is_std_iter_vec_iter_extension
+            && decl.trait_bound.is_none()
+            && builtin_impl_kind.is_some()
+        {
             let declared_resource_close_impl = self
                 .type_classes
                 .get(self_type_name)
@@ -17370,6 +17381,39 @@ impl LowerCtx {
                     _ => None,
                 };
                 let mut args = self.lower_call_args_for_callee(args, direct_extern_symbol);
+                if matches!(
+                    self.method_call_rewrites.get(&rewrite_key),
+                    Some(MethodCallRewrite::VecFrom)
+                ) {
+                    if args.len() == 1 {
+                        return self.subsumed_value(
+                            site,
+                            &span,
+                            intent,
+                            args.remove(0),
+                            HirProducedValueProducer::Call,
+                        );
+                    }
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "Vec::from".to_string(),
+                            reason: format!(
+                                "checker selected Vec::from rewrite with {} argument(s)",
+                                args.len()
+                            ),
+                        },
+                        span.clone(),
+                        "Vec::from lowering requires exactly one checked source value",
+                    ));
+                    return self.unsupported_expr(span, "Vec::from has invalid arity");
+                }
+                // Hew array literals already lower to the owned `Vec<T>`
+                // construction sequence. `Vec::from([..])` is therefore an
+                // identity at HIR: preserve that one canonical construction
+                // path rather than fabricating a second Vec-from-array ABI.
+                // The checker accepts only the array/Vec source forms, so any
+                // other source form is a clean checker diagnostic before this
+                // lowering boundary.
                 if let Expr::Identifier(name) = &function.0 {
                     // Intercept payload-bearing variant constructors written
                     // as calls (`Shape::Line(5)`, bare `Line(5)`). The bare
@@ -26464,6 +26508,10 @@ impl LowerCtx {
                 elem_ty,
                 out_ty,
             }) => self.lower_builtin_vec_higher_order(receiver, args, op, &elem_ty, &out_ty, span),
+            Some(MethodCallRewrite::VecFrom) => (
+                HirExprKind::Unsupported("Vec::from is a static-call rewrite".to_string()),
+                ResolvedTy::Unit,
+            ),
             Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) => {
                 self.lower_record_fn_field_call(receiver, method, args, &field_ty, span)
             }

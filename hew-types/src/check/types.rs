@@ -1789,6 +1789,10 @@ pub enum MethodCallRewrite {
         /// `Reduce`: the accumulator type.
         out_ty: crate::resolved_ty::ResolvedTy,
     },
+    /// `Vec::from(array_or_vec)` reuses the one canonical array/Vec HIR
+    /// construction path. The checker records this marker so HIR does not
+    /// treat the static convenience spelling as an unresolved ordinary call.
+    VecFrom,
     /// `receiver.field(args)` where `field` is a record field of function
     /// type: dispatches as a field-load + closure call, not a method lookup.
     /// HIR expands the call site into a synthetic let binding the field's

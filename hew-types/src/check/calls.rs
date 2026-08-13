@@ -1723,10 +1723,31 @@ impl Checker {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     let arr_ty = self.synthesize(expr, sp);
-                    if let Ty::Array(inner, _) = arr_ty {
-                        self.expect_type(&elem, &inner, span);
+                    match self.subst.resolve(&arr_ty) {
+                        // The parser's `[a, b]` surface is represented as a
+                        // temporary Array during some checker paths and as
+                        // the already-desugared `Vec<T>` in others. Both
+                        // forms feed the same HIR identity lowering below.
+                        Ty::Array(inner, _) => self.expect_type(&elem, &inner, span),
+                        Ty::Named {
+                            builtin: Some(crate::BuiltinType::Vec),
+                            args,
+                            ..
+                        } if args.len() == 1 => self.expect_type(&elem, &args[0], span),
+                        other => {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "`Vec::from` accepts an array or Vec source; `{}` is not supported",
+                                    other.user_facing()
+                                ),
+                            );
+                            return Ty::Error;
+                        }
                     }
                 }
+                self.record_method_call_rewrite(span, MethodCallRewrite::VecFrom);
                 return self.make_vec_type(elem, span);
             }
             // `link`/`unlink` of a `RemotePid<T>` → a targeted "use link_remote"

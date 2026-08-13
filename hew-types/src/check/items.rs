@@ -331,12 +331,13 @@ impl Checker {
     /// The v0.6 init-closure restart model re-runs every init arg on each
     /// incarnation: a scalar `config.field` is re-loaded and an owned
     /// `string`/`bytes` field is deep-cloned per restart, so each child gets a
-    /// fresh, unaliased owned value. `ty_is_supervisor_init_reproducible` admits
-    /// scalars together with `string` and `bytes` (the types the thunk has a
-    /// per-field clone for). Owned collections, records, enums, generic, alias,
-    /// user-defined, and `#[resource]` handle types stay walled (fail-closed):
-    /// their clone-in-thunk codegen is not wired (collections/records) or is
-    /// structurally forbidden (re-cloning a handle would alias a live resource).
+    /// fresh, unaliased owned value. After transparent aliases are expanded,
+    /// `ty_is_supervisor_init_reproducible` admits scalars together with
+    /// `string` and `bytes` (the types the thunk has a per-field clone for).
+    /// Owned collections, records, enums, generic, user-defined, and
+    /// `#[resource]` handle types stay walled (fail-closed): their clone-in-thunk
+    /// codegen is not wired (collections/records) or is structurally forbidden
+    /// (re-cloning a handle would alias a live resource).
     fn check_supervisor_init_args_bitcopy(&mut self, sd: &SupervisorDecl, _span: &Span) {
         for child in &sd.children {
             // Only children with explicit init args carry init-arg types.
@@ -377,7 +378,8 @@ impl Checker {
                 // stays walled (fail-closed). The arg-EXPRESSION typing that
                 // `config.field` requires happens in `check_supervisor_init_args`'
                 // synthesis pass; this is the param-type gate.
-                if !ty_is_supervisor_init_reproducible(&param.ty) {
+                let resolved_param_ty = self.normalize_for_use(&param.ty);
+                if !ty_is_supervisor_init_reproducible(&resolved_param_ty) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::SupervisorError {
                             subkind: SupervisorErrorKind::InitArgNonBitcopy,

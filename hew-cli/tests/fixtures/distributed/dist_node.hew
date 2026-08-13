@@ -236,6 +236,10 @@ extern "C" {
     // (the same seam the SWIM-DEAD verdict reaches). Returns the count failed (0
     // when none are pending yet). Not user-callable.
     fn hew_dist_partition_pending_remote_asks() -> i64;
+    // Shutdown-phase probe: 1 once main-exit teardown has begun, else 0. Lets
+    // the PartitionInjector's bounded poll stand down instead of holding the
+    // shutdown drain open as outstanding work.
+    fn hew_is_shutting_down() -> i32;
 }
 
 // Deterministic partition seam for `scenario_partition_ask`. A fire-and-forget
@@ -264,6 +268,17 @@ actor PartitionInjector {
                 hew_dist_partition_pending_remote_asks()
             };
             if failed >= 1 {
+                return;
+            }
+            // Stand down once main-exit teardown begins: the ask this poller
+            // exists to partition has already resolved (or never registered —
+            // the send itself failed), and a poller still sleep-parking here
+            // is outstanding work that would hold the shutdown drain open to
+            // its timeout and turn the client's clean exit into a failure.
+            let shutting_down = unsafe {
+                hew_is_shutting_down()
+            };
+            if shutting_down != 0 {
                 return;
             }
             spins = spins + 1;

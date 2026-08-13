@@ -16,7 +16,10 @@ impl Builder {
         if matches!(value.kind, HirExprKind::StructInit { .. }) {
             return vec_iter_let_cursor_owns_handle(value)
                 && !self.vec_iter_source_projects_actor_state_field(value)
-                && !self.vec_iter_source_indexes_owned_element_vec(value);
+                && !self.vec_iter_source_indexes_owned_element_vec(value)
+                && self
+                    .vec_iter_source_live_binding_record_field_root(value)
+                    .is_none();
         }
         // A `VecIter<T>` returned through the Hew call ABI is an ownership
         // transfer. The callee's return edge suppresses its local cursor drop,
@@ -234,6 +237,7 @@ impl Builder {
         value: &HirExpr,
         binding_ty: &ResolvedTy,
         slot_is_wired: bool,
+        value_place: Option<Place>,
     ) {
         if !slot_is_wired
             || self.vec_iter_cursor_release_symbol(binding_ty).is_none()
@@ -258,6 +262,17 @@ impl Builder {
                         self.vec_iter_borrowed_sources
                             .push((scope, *source_binding));
                     }
+                }
+            }
+            // A field-projection cursor rooted at a live binding borrows the
+            // root's field handle: pin the ROOT against mid-loop moves /
+            // reassignment, and mark the cursor init so the composite-drop
+            // provers keep the root's single release authority admitted
+            // (`vec_iter_projection_borrow_inits`).
+            if let Some(root) = self.vec_iter_source_live_binding_record_field_root(value) {
+                self.vec_iter_borrowed_sources.push((scope, root));
+                if let Some(init) = value_place {
+                    self.vec_iter_projection_borrow_inits.insert(init);
                 }
             }
         }
@@ -541,6 +556,62 @@ impl Builder {
                         && self.current_actor_state_fields.contains_key(name);
                 }
                 _ => return false,
+            }
+        }
+    }
+    /// The live local/param ROOT binding of a `for x in root.f` cursor whose
+    /// `vec` source is a pure `FieldAccess` chain over a function-local
+    /// binding, or `None` for any other source shape.
+    ///
+    /// The third sibling of the projection-borrow family —
+    /// [`Self::vec_iter_source_projects_actor_state_field`] (#2540, actor-state
+    /// root) and [`Self::vec_iter_source_indexes_owned_element_vec`] (#2545,
+    /// owned-element Vec index). A record-field projection rooted at a LIVE
+    /// binding is owned by that binding's storage:
+    ///   - a by-value parameter's guarded carrier drop
+    ///     (`append_owned_carrier_param_drops`) runs
+    ///     `__hew_record_drop_inplace_<R>` on the whole record at every
+    ///     return/trap/cancel edge unless the WHOLE value transferred — the
+    ///     guard never tracks a field-level move, so a cursor that took the
+    ///     field handle and freed it at exhaustion double-freed the buffer at
+    ///     normal return (the poisoned-allocator SIGABRT);
+    ///   - a local record root fares no better as an owner donor: the
+    ///     composite-drop prover sees the field escape into the cursor init,
+    ///     excludes the WHOLE root, and every non-iterated sibling field leaks.
+    ///
+    /// The cursor must BORROW — the root's one drop authority frees every
+    /// field exactly once, mirroring what the bare-`BindingRef` arm of
+    /// [`vec_iter_let_cursor_owns_handle`] already grants `for x in v`.
+    /// Registration also records the root in `vec_iter_borrowed_sources`, so
+    /// moving or reassigning it mid-loop is rejected while the cursor reads
+    /// the shared handle.
+    ///
+    /// Only `FieldAccess` hops are admitted. A `TupleIndex` hop keeps today's
+    /// sole-owner disposition: the tuple composite prover has no
+    /// borrow-ingress exemption yet, so flipping it would trade its current
+    /// behaviour for a whole-tuple leak. A non-`BindingRef` root (an rvalue
+    /// call, a block result) has no surviving owner and the cursor stays the
+    /// sole owner as before.
+    pub(crate) fn vec_iter_source_live_binding_record_field_root(
+        &self,
+        value: &HirExpr,
+    ) -> Option<hew_hir::BindingId> {
+        let mut cur = vec_iter_init_vec_source_expr(value)?;
+        let mut projected = false;
+        loop {
+            match &cur.kind {
+                HirExprKind::SubsumedValue { source, .. } => cur = source,
+                HirExprKind::FieldAccess { object, .. } => {
+                    projected = true;
+                    cur = object;
+                }
+                HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(id),
+                    ..
+                } => {
+                    return (projected && self.binding_locals.contains_key(id)).then_some(*id);
+                }
+                _ => return None,
             }
         }
     }

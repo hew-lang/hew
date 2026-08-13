@@ -160,6 +160,7 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
     lifecycle_registry: &hew_hir::LifecycleRegistry,
     alias_chain: &[(u32, u32, u32)],
     aggregate_clone_sites: &HashSet<(u32, usize, Place)>,
+    projection_borrow_cursor_inits: &HashSet<Place>,
     is_owned_record: &dyn Fn(&ResolvedTy) -> bool,
     owned_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
     owned_tuple_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
@@ -304,7 +305,26 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                     }
                 }
                 Instr::RecordInit { fields, dest, .. } => {
+                    // A live-root field-projection cursor init BORROWS its
+                    // `vec`-field binder (`vec_iter_projection_borrow_inits`):
+                    // the root keeps sole ownership, so the read is a use
+                    // site, never an escape event — mirroring the exemption in
+                    // `derive_owned_record_drop_allowed` so admission and
+                    // discharge cannot disagree.
+                    let borrowed_cursor_vec_src = if projection_borrow_cursor_inits.contains(dest) {
+                        vec_iter_record_init_vec_source(instr)
+                    } else {
+                        None
+                    };
                     for (_, p) in fields {
+                        if borrowed_cursor_vec_src == Some(*p) {
+                            if let Some(l) = base_local(*p) {
+                                if field_binders.contains(&l) {
+                                    site!(binder_root(l), Some(idx));
+                                }
+                            }
+                            continue;
+                        }
                         if aggregate_borrowed_ingress_sink_clones_source(
                             block,
                             idx,
@@ -2078,6 +2098,7 @@ pub(super) fn derive_owned_record_drop_allowed(
     lifecycle_registry: &hew_hir::LifecycleRegistry,
     alias_field_binders: &[(u32, u32)],
     proven_borrow_call_args: &HashMap<u32, HashSet<usize>>,
+    projection_borrow_cursor_inits: &HashSet<Place>,
 ) -> HashSet<BindingId> {
     // A local carries a heap-owning value iff its registered type says so. Used
     // to decide whether a `RecordFieldLoad` dest is an owned-field binder (a
@@ -2532,7 +2553,27 @@ pub(super) fn derive_owned_record_drop_allowed(
                     // tip because the no-clone control leaked the identical floor).
                     | Instr::RecordCloneInplace { .. }
             ) {
+                // A `record_init VecIter { vec, idx }` whose registration
+                // proved a live-root field-projection BORROW
+                // (`vec_iter_projection_borrow_inits`) reads the field binder
+                // without taking ownership: the cursor never frees the handle
+                // (its ownership bit is born moved), so the root record keeps
+                // its single release authority. The verdict comes from the
+                // Builder ledger, not structure — an owning rvalue-rooted
+                // projection cursor produces the identical MIR shape and must
+                // still exclude the root (its cursor DOES free the handle).
+                let borrowed_cursor_vec_src = match instr {
+                    Instr::RecordInit { dest, .. }
+                        if projection_borrow_cursor_inits.contains(dest) =>
+                    {
+                        vec_iter_record_init_vec_source(instr)
+                    }
+                    _ => None,
+                };
                 for p in instr_source_places(instr) {
+                    if borrowed_cursor_vec_src == Some(p) {
+                        continue;
+                    }
                     if let Some(l) = base_local(p) {
                         let cloned_borrowed_ingress =
                             aggregate_borrowed_ingress_sink_clones_source(
@@ -6782,6 +6823,7 @@ mod owned_record_drop_derivation {
             &hew_hir::LifecycleRegistry::default(),
             &[],
             &HashMap::new(),
+            &HashSet::new(),
         )
     }
 
@@ -6876,6 +6918,7 @@ mod owned_record_drop_derivation {
             &hew_hir::LifecycleRegistry::default(),
             &[],
             proven_borrow_call_args,
+            &HashSet::new(),
         )
     }
 
@@ -7656,6 +7699,7 @@ mod escaped_sibling_field_discharge {
             &hew_hir::LifecycleRegistry::default(),
             alias_chain,
             &HashSet::new(),
+            &HashSet::new(),
             is_owned_record,
             owned_field_list,
             &owned_tuple_fields,
@@ -8163,6 +8207,7 @@ mod escaped_sibling_field_discharge {
             &[],
             &hew_hir::LifecycleRegistry::default(),
             &[],
+            &HashSet::new(),
             &HashSet::new(),
             &is_rec,
             &three_fields,

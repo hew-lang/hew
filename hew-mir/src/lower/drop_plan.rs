@@ -606,6 +606,7 @@ pub(super) fn elaborate(
         builder.type_classes.lifecycle_registry(),
         &alias_field_binders,
         &builder.proven_borrow_call_args,
+        &builder.vec_iter_projection_borrow_inits,
     );
     // A flagged fresh String/BitCopy record has an explicit runtime owner
     // discriminator. The ordinary escape scan excludes it because one path

@@ -838,6 +838,19 @@ struct Builder {
     /// invalidate `cursor.vec`; those ownership boundaries reject until the
     /// cursor scope closes.
     pub(crate) vec_iter_borrowed_sources: Vec<(ScopeId, hew_hir::BindingId)>,
+    /// `RecordInit` destination places of `for x in root.field` cursor inits
+    /// whose `vec` handle BORROWS a field projection rooted at a live
+    /// local/param binding
+    /// ([`Builder::vec_iter_source_live_binding_record_field_root`]). The
+    /// root's own drop authority — a by-value parameter's guarded carrier drop
+    /// (`append_owned_carrier_param_drops`) or a local record's `RecordInPlace`
+    /// composite — releases the field exactly once, so the composite-drop
+    /// provers must not classify the cursor-init read of the field binder as an
+    /// ownership escape (which would exclude the root and leak every field).
+    /// Recorded at cursor registration, where the HIR borrow verdict is known;
+    /// the provers cannot re-derive it structurally because an owning
+    /// rvalue-rooted projection produces the identical MIR shape.
+    pub(crate) vec_iter_projection_borrow_inits: HashSet<Place>,
     /// Runtime ownership bit for every first-class `VecIter<T>` local.
     ///
     /// `0` means this binding currently owns its `vec` snapshot and must release
@@ -5533,6 +5546,7 @@ pub(crate) fn lower_function(
             builder.type_classes.lifecycle_registry(),
             &alias_chain,
             &aggregate_clone_sites,
+            &builder.vec_iter_projection_borrow_inits,
             &is_owned_record,
             &owned_field_list,
             &owned_tuple_field_list,
@@ -5964,6 +5978,7 @@ pub(crate) fn lower_function(
         builder.type_classes.lifecycle_registry(),
         &alias_field_binders,
         &builder.proven_borrow_call_args,
+        &builder.vec_iter_projection_borrow_inits,
     );
     let mut composite_drop_allowed = tuple_composite_drop_allowed;
     composite_drop_allowed.extend(owned_record_drop_allowed);

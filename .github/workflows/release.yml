@@ -131,6 +131,16 @@ jobs:
           RUSTC_BOOTSTRAP: "1"
         run: cargo zigbuild -Zbuild-std=std,panic_abort -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
 
+      - name: Build aarch64 FreeBSD release consumer
+        if: matrix.build_std
+        env:
+          CARGO_TARGET_DIR: cross-release-consumer-target
+          RUSTC_BOOTSTRAP: "1"
+        run: >-
+          cargo zigbuild -Zbuild-std=std,panic_abort
+          --manifest-path scripts/fixtures/release-lib-link/Cargo.toml
+          --release --target ${{ matrix.rust_target }}
+
       - name: Build Windows release library
         if: matrix.builder == 'xwin'
         env:
@@ -159,11 +169,16 @@ jobs:
           mkdir -p "${destination}"
           cp "${archive}" "${destination}/${{ matrix.archive }}"
 
+          if [[ "${{ matrix.build_std }}" == "true" ]]; then
+            cp "cross-release-consumer-target/${{ matrix.rust_target }}/release/libhew_release_link_probe.a" \
+              "${destination}/libhew_release_link_probe.a"
+          fi
+
       - name: Upload cross-built archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: libhew-${{ matrix.rust_target }}
-          path: cross-release-libs/${{ matrix.rust_target }}/${{ matrix.archive }}
+          path: cross-release-libs/${{ matrix.rust_target }}/
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -1109,10 +1124,7 @@ jobs:
             # read the catalogue the old one wrote, so every package reports missing.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
-            pkg install -y -r FreeBSD llvm22 cmake ninja git bash pkgconf libffi libxml2
-            /usr/bin/fetch -o /usr/local/bin/rustup-init \
-              https://static.rust-lang.org/rustup/dist/aarch64-unknown-freebsd/rustup-init
-            chmod 0755 /usr/local/bin/rustup-init
+            pkg install -y -r FreeBSD llvm22 rust cmake ninja git bash pkgconf libffi libxml2
 
           run: |
             set -eux
@@ -1123,13 +1135,6 @@ jobs:
             # binaries report `unknown` for their commit hash.
             git config --global --add safe.directory "$(pwd)"
 
-            # Build with the repository-pinned Rust release instead of the
-            # moving version published by the FreeBSD package repository.
-            /usr/local/bin/rustup-init -y --no-modify-path --profile minimal \
-              --default-toolchain 1.96.0
-            export PATH="$HOME/.cargo/bin:$PATH"
-            rustup run 1.96.0 rustc --version | grep -q '^rustc 1\.96\.0 '
-
             # ── LLVM ───────────────────────────────────────────────────────
             # LLVM 22 comes from pkg on FreeBSD 15.0 (llvm22-22.1.2).
             export LLVM_SYS_221_PREFIX=/usr/local/llvm22
@@ -1137,9 +1142,14 @@ jobs:
 
             # ── Rust builds (release) ──────────────────────────────────────
             cargo build -p hew-cli -p hew-lsp -p hew-observe --release
+            # Rustup does not publish an aarch64 FreeBSD host toolchain. The
+            # consumer archive was cross-built with the pinned release
+            # toolchain and build-std settings; this VM links and runs it on
+            # the target hardware while pkg Rust builds only the Hew binaries.
             bash scripts/test-release-lib-link.sh \
               --hew target/release/hew \
-              --archive cross-release-libs/aarch64-unknown-freebsd/libhew.a
+              --archive cross-release-libs/aarch64-unknown-freebsd/libhew.a \
+              --consumer-archive cross-release-libs/aarch64-unknown-freebsd/libhew_release_link_probe.a
 
             # ── Third-party license attribution ────────────────────────────
             cargo install cargo-about --locked --features cli --version 0.9.0

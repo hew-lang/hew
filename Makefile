@@ -43,7 +43,10 @@
 #   make licenses-check            — verify THIRD-PARTY-LICENSES is current (used in CI)
 #   make check-gate-reachability   — verify every gate target/crate/exclusion is reached by CI,
 #                                    and every documented make target exists
-#   make ci-preflight              — dispatch a conservative local preflight from the current diff
+#   make preflight                 — STANDARD per-branch gate: dispatcher-routed checks for the
+#                                    current diff, fail-fast; hosted CI remains the backstop
+#   make ci-preflight              — run-all dispatcher preflight; for integration/release
+#                                    moments (merge trains, RC cuts), not routine branch gating
 #   make ci-preflight-smoke        — fast smoke tier: fmt + in-process tests (<5 min)
 #   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
@@ -68,7 +71,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
+.PHONY: all build bootstrap install-hooks hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
 .PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
@@ -371,7 +374,24 @@ playground-wasi-check:
 	cargo test -p hew-cli --test wasi_run_e2e curated_playground_examples_run_under_wasi -- --exact
 	cargo test -p hew-cli --test wasi_run_e2e supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi -- --exact
 
-# Conservative diff-based local preflight dispatcher.
+# Standard per-branch gate: the dispatcher classifies the current diff and
+# runs the narrowest sufficient checks for its file classes, stopping at the
+# first failure for quick iteration.  This is THE routine gate before pushing a
+# branch — hosted CI is the backstop for cross-cutting fallout the routing cannot
+# foresee.  Escape classes observed while gating by hand-picked per-crate tests
+# (structural ratchets outside the cargo dependency graph, cross-crate exec
+# fallout from resolver changes, ll-oracle golden drift from emission reorders)
+# are routed by the dispatcher itself, so use this target rather than an ad-hoc
+# test selection.
+# Usage: make preflight            (classify + run, fail-fast)
+#        make preflight ARGS="--dry-run"   (print the routing only)
+preflight:
+	scripts/ci-preflight-dispatcher.sh --fail-fast $(ARGS)
+
+# Conservative diff-based local preflight dispatcher, run-all failure policy.
+# Reserve for integration/release moments (merge trains, RC cuts, post-squash
+# re-verification) where the complete failure report is worth the wall clock;
+# routine branch gating uses make preflight above.
 # Usage: make ci-preflight ARGS="--dry-run" or ARGS="--base origin/main"
 ci-preflight:
 	scripts/ci-preflight-dispatcher.sh $(ARGS)

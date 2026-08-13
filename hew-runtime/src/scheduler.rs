@@ -656,6 +656,13 @@ impl Xorshift64 {
 
 // ── C ABI ───────────────────────────────────────────────────────────────
 
+/// Re-open the per-generation admission gates a previous generation's shutdown
+/// closed at drain start (periodic timers, listener accepts).
+fn reopen_admission_gates() {
+    crate::timer_periodic::reset_periodic_admission();
+    crate::reactor::reset_listener_admission();
+}
+
 /// Initialize and start the M:N scheduler.
 ///
 /// Spawns one worker thread per available CPU core (falls back to 4).
@@ -740,7 +747,7 @@ pub extern "C" fn hew_sched_init() -> c_int {
         // Another thread beat us — `install_default` already dropped ours.
         return 0;
     }
-    crate::timer_periodic::reset_periodic_admission();
+    reopen_admission_gates();
 
     // Ignore SIGPIPE process-wide, before ANY background thread is spawned or
     // any socket I/O runs. A broken-pipe write on the main thread (where a
@@ -8032,6 +8039,216 @@ mod tests {
         );
 
         take_default_runtime_for_test();
+        ACTIVE_WORKERS.store(0, Ordering::Release);
+    }
+
+    /// Forced-ordering composite for the drain's admission race: an accept
+    /// completion driven BETWEEN the drain's reactor sample and the final
+    /// scheduler poll's blocker scan (the window the per-state drain tests
+    /// cannot see — it exists only across the composite
+    /// scheduler→reactor→scheduler sample).
+    ///
+    /// The dichotomy under test: an accept completion is either SERVED (it
+    /// begins before admission closes, and the enqueued activation blocks the
+    /// drain until a worker dispatches it) or NEVER ADMITTED (admission closed
+    /// at drain start; the reactor refuses to begin the completion, so the
+    /// idle verdict abandons no accepted connection). What must be impossible
+    /// is the pre-fix third outcome: a connection accepted inside the window
+    /// while the composite sample still reads idle — shutdown terminating with
+    /// the accepted socket silently dropped during cleanup.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the forced-ordering composite must drive both arms of the \
+                  served-or-never-admitted dichotomy in one deterministic sequence"
+    )]
+    fn accept_completion_between_drain_samples_is_served_or_never_admitted() {
+        // Lock order: scheduler-test lock first, then the reactor test mutex
+        // (the order reactor tests that install a runtime already use).
+        let sched = NoWorkerSchedulerForTest::install();
+        let _reactor = crate::reactor::REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::reactor::reset_listener_admission();
+        ACTIVE_WORKERS.store(0, Ordering::Release);
+
+        // A real tracked acceptor parked on `await accept()`: Suspended with a
+        // published (sentinel) continuation so the wake edge takes the normal
+        // resume path (the sentinel is never resumed — no worker exists).
+        let actor = TrackedTestActor::install(stub_actor());
+        actor
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Release);
+        actor.suspended_cont.store(
+            ptr::null_mut::<u8>().wrapping_add(1).cast(),
+            Ordering::Release,
+        );
+        actor.cont_tag.store(
+            crate::internal::types::ContTag::Parked as i32,
+            Ordering::Release,
+        );
+        let actor_ptr = actor.ptr();
+
+        // SAFETY: no preconditions; stopped below.
+        let poller = unsafe { crate::io_time::hew_io_poller_new() };
+        assert!(!poller.is_null());
+
+        // ── Arm 1: admission OPEN — the completion begins before drain start
+        // and must make the woken acceptor visible to the drain (served). ──
+        let (listener1, client1) = crate::transport::tcp_listener_with_pending_conn_for_test();
+        let fd1 = crate::transport::tcp_listener_raw_fd(listener1).expect("listener1 fd");
+        let slot1 = crate::read_slot::hew_read_slot_new();
+        assert!(!slot1.is_null());
+        // SAFETY: slot1 was just created and is live (registration-owned ref).
+        unsafe { crate::read_slot::read_slot_retain(slot1) };
+        // SAFETY: `actor_ptr` is a live tracked actor for the whole test.
+        let ref_inject = unsafe { crate::transport::hew_actor_ref_local(actor_ptr) };
+        crate::reactor::inject_accept_registration_for_test(
+            fd1,
+            listener1,
+            ref_inject,
+            actor_ptr as usize,
+            slot1,
+        );
+
+        // The admission-parked acceptor is exempt through the REAL reactor
+        // snapshot: both pre-completion samples read idle.
+        assert!(
+            drain_is_idle(),
+            "an admission-parked acceptor must not hold the scheduler sample open"
+        );
+        assert!(
+            crate::reactor::drain_is_idle(),
+            "a parked accept registration must not hold the reactor sample open"
+        );
+
+        crate::reactor::LAST_ACCEPTED_CONN_FOR_TEST.set(-1);
+        // SAFETY: `actor_ptr` is live; the ref is a by-value snapshot.
+        let ref_drive = unsafe { crate::transport::hew_actor_ref_local(actor_ptr) };
+        crate::reactor::handle_ready_accept_for_test(
+            poller, fd1, listener1, ref_drive, slot1, false,
+        );
+
+        let accepted = crate::reactor::LAST_ACCEPTED_CONN_FOR_TEST.get();
+        assert_ne!(
+            accepted, -1,
+            "open admission must accept the pending connection"
+        );
+        assert!(
+            !drain_is_idle(),
+            "an admitted accept completion must block the drain until the woken \
+             acceptor is dispatched (the connection is served, not abandoned)"
+        );
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Runnable as i32,
+            "the served completion must wake the parked acceptor"
+        );
+        assert_eq!(
+            sched.pop_global(),
+            Some(actor_ptr),
+            "the woken acceptor must be enqueued exactly once"
+        );
+        // Consume the served activation the way a worker would, then re-park.
+        crate::transport::tcp_close_raw_for_test(accepted);
+        actor
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Release);
+        // The one-shot registration was removed (its Drop released the retained
+        // ref); release the creator ref.
+        // SAFETY: creator ref held.
+        unsafe { crate::read_slot::hew_read_slot_free(slot1) };
+        drop(client1);
+        crate::transport::hew_tcp_close(listener1);
+
+        // ── Arm 2: drain start — admission closes, then the completion fires
+        // inside the window: after the reactor sample and the final scheduler
+        // poll's queue checks, before its blocker scan. ──
+        let (listener2, client2) = crate::transport::tcp_listener_with_pending_conn_for_test();
+        let fd2 = crate::transport::tcp_listener_raw_fd(listener2).expect("listener2 fd");
+        let slot2 = crate::read_slot::hew_read_slot_new();
+        assert!(!slot2.is_null());
+        // SAFETY: slot2 was just created and is live (registration-owned ref).
+        unsafe { crate::read_slot::read_slot_retain(slot2) };
+        // SAFETY: `actor_ptr` is live; the ref is a by-value snapshot.
+        let ref_inject2 = unsafe { crate::transport::hew_actor_ref_local(actor_ptr) };
+        crate::reactor::inject_accept_registration_for_test(
+            fd2,
+            listener2,
+            ref_inject2,
+            actor_ptr as usize,
+            slot2,
+        );
+
+        // Step 1 (drain start): shutdown Phase 1 closes listener admission
+        // before any idleness sample.
+        crate::reactor::close_listener_admission();
+        // Steps 2-3: first scheduler sample and reactor sample read idle.
+        assert!(drain_is_idle(), "first scheduler sample must read idle");
+        assert!(
+            crate::reactor::drain_is_idle(),
+            "reactor sample must read idle"
+        );
+        // Step 4: the final scheduler poll has passed its queue checks.
+        assert!(
+            get_scheduler()
+                .expect("runtime installed")
+                .global_queue
+                .is_empty(),
+            "final poll's queue phase must observe an empty queue"
+        );
+        // Step 5: the readiness completion fires inside the window. Admission
+        // is closed: the reactor must refuse to BEGIN the accept.
+        crate::reactor::LAST_ACCEPTED_CONN_FOR_TEST.set(-1);
+        // SAFETY: `actor_ptr` is live; the ref is a by-value snapshot.
+        let ref_drive2 = unsafe { crate::transport::hew_actor_ref_local(actor_ptr) };
+        crate::reactor::handle_ready_accept_for_test(
+            poller, fd2, listener2, ref_drive2, slot2, false,
+        );
+
+        assert_eq!(
+            crate::reactor::LAST_ACCEPTED_CONN_FOR_TEST.get(),
+            -1,
+            "closed admission must not accept a connection behind the drain sample"
+        );
+        // SAFETY: slot2 is live (creator + registration refs held).
+        let slot2_status = unsafe { crate::read_slot::hew_read_slot_status(slot2) };
+        assert_eq!(
+            slot2_status,
+            crate::read_slot::ReadStatus::Pending as i32,
+            "a refused completion must deposit nothing"
+        );
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "a refused completion must leave the acceptor parked"
+        );
+        assert!(
+            crate::reactor::actors_parked_on_accept().contains(&(actor_ptr as usize)),
+            "the refused park must remain a visible (skippable) admission wait"
+        );
+        // Step 6: the final blocker scan completes — the composite verdict is
+        // idle, and honestly so: nothing was admitted, so terminating abandons
+        // no accepted connection.
+        assert!(
+            drain_is_idle(),
+            "final scheduler sample must read idle with nothing admitted"
+        );
+        assert!(
+            crate::reactor::drain_is_idle(),
+            "reactor must stay idle with the refused park left in place"
+        );
+
+        // Teardown: remove the deliberately-retained registration (its Drop
+        // releases the retained ref), then the creator ref and admission flag.
+        crate::reactor::remove_registration_for_test(fd2);
+        // SAFETY: creator ref held.
+        unsafe { crate::read_slot::hew_read_slot_free(slot2) };
+        crate::reactor::reset_listener_admission();
+        drop(client2);
+        crate::transport::hew_tcp_close(listener2);
+        // SAFETY: poller was created above and is not in use by any thread.
+        unsafe { crate::io_time::hew_io_poller_stop(poller) };
         ACTIVE_WORKERS.store(0, Ordering::Release);
     }
 

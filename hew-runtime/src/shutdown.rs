@@ -487,6 +487,15 @@ fn shutdown_orchestrate_mode(drain_timeout: Duration, cancel_parked_waits: bool)
     // need it through drain and parked-frame retirement.
     crate::timer_periodic::quiesce_periodic_timers();
 
+    // Close listener admission for the same category of race: an accept
+    // completion that BEGINS after the drain's mid-sample could deposit and
+    // enqueue its actor behind the final scheduler observation, terminating
+    // shutdown with a freshly accepted connection abandoned in the queue. Once
+    // closed, the reactor refuses to begin new accept completions, so a parked
+    // `await accept()` is an unconditionally skippable admission wait for the
+    // whole drain (the exemption `drain_is_idle` relies on).
+    reactor::close_listener_admission();
+
     // Phase 2: Drain — let workers process remaining messages.
     shutdown_phase_store(PHASE_DRAIN, Ordering::Release);
 

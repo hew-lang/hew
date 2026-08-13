@@ -320,7 +320,7 @@ def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
     assert "HEW_SHA: ${{ steps.release-commit.outputs.hew_sha }}" in job
     assert "PLAYGROUND_DISPATCH_TOKEN" not in text
     assert "HOMEBREW_TAP_TOKEN" not in job
-    assert "#   vars.PLAYGROUND_APP_ID" in text
+    assert "#   secrets.PLAYGROUND_APP_ID" in text
     assert "#   secrets.PLAYGROUND_APP_PRIVATE_KEY" in text
 
     validate = job.index("      - name: Validate playground GitHub App configuration\n")
@@ -331,13 +331,13 @@ def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
     token_step = job[mint:trigger]
     trigger_step = job[trigger:]
 
-    assert "PLAYGROUND_APP_ID: ${{ vars.PLAYGROUND_APP_ID }}" in validation_step
+    assert "PLAYGROUND_APP_ID: ${{ secrets.PLAYGROUND_APP_ID }}" in validation_step
     assert (
         "PLAYGROUND_APP_PRIVATE_KEY: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}"
         in validation_step
     )
     assert (
-        "requires vars.PLAYGROUND_APP_ID and secrets.PLAYGROUND_APP_PRIVATE_KEY"
+        "requires secrets.PLAYGROUND_APP_ID and secrets.PLAYGROUND_APP_PRIVATE_KEY"
         in validation_step
     )
     assert "exit 1" in validation_step
@@ -350,7 +350,7 @@ def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
         token_step,
         re.MULTILINE,
     )
-    assert "app-id: ${{ vars.PLAYGROUND_APP_ID }}" in token_step
+    assert "app-id: ${{ secrets.PLAYGROUND_APP_ID }}" in token_step
     assert "private-key: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}" in token_step
     assert "owner: hew-lang" in token_step
     assert "repositories: playground" in token_step

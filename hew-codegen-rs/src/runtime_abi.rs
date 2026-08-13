@@ -3944,6 +3944,7 @@ pub(crate) fn lower_call_runtime_abi(
         | F::TaskSetResult
         | F::VecCloneLayout
         | F::VecCloneOwned
+        | F::VecTakeAll
         | F::VecAppend
         | F::VecClear
         | F::VecClone

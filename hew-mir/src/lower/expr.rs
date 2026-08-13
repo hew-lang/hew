@@ -596,6 +596,31 @@ impl Builder {
         )
     }
 
+    /// Lower a consuming `VecIter` `vec`-field source that reads a bare actor
+    /// state field: load the field's handle (an alias read — the take-all call
+    /// arg is the load's only use, so the state-load classifier keeps it a
+    /// bare `Borrowed` load), then move the buffer into a fresh vec via
+    /// `hew_vec_take_all`. The returned place owns the taken vec; the state
+    /// slot keeps its handle, now a valid empty vec with the same stamped
+    /// element descriptor (dogfood F3 — see
+    /// [`Builder::vec_field_src_consumes_bare_actor_state_field`]).
+    fn lower_vec_take_all_from_state_field(&mut self, fexpr: &HirExpr) -> Option<Place> {
+        let src = self.lower_value(fexpr)?;
+        let taken = self.alloc_local(self.subst_ty(&fexpr.ty));
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_vec_take_all".to_string(),
+            authority: crate::CallAuthority::Runtime(
+                hew_types::runtime_call::RuntimeCallFamily::VecTakeAll,
+            ),
+            args: vec![src],
+            dest: Some(taken),
+            next,
+        });
+        self.start_block(next);
+        Some(taken)
+    }
+
     pub(crate) fn fieldless_enum_layout_key(&self, ty: &ResolvedTy) -> Option<String> {
         let ResolvedTy::Named { name, args, .. } = ty else {
             return None;
@@ -4123,8 +4148,23 @@ impl Builder {
                     let borrows_vec_iter_source = is_vec_iter_cursor
                         && fname == "vec"
                         && fexpr.intent == hew_hir::IntentKind::Capture;
+                    // A consuming cursor over a BARE actor state field
+                    // (`plugins.into_iter()`) must neither alias-share the
+                    // handle (the cursor's own free would dangle the
+                    // persistent slot: next dispatch reads freed heap,
+                    // teardown double-frees — dogfood F3) nor deep-clone it
+                    // (drop-only dyn elements have no clone thunk). Route the
+                    // loaded handle through `hew_vec_take_all`: the cursor
+                    // owns the moved buffer, the state slot stays a valid
+                    // empty vec with its stamped element descriptor — later
+                    // pushes and the exactly-once state drop stay sound.
+                    let takes_persistent_state_vec = is_vec_iter_cursor
+                        && fname == "vec"
+                        && self.vec_field_src_consumes_bare_actor_state_field(fexpr);
                     let place = if borrows_vec_iter_source {
                         self.lower_value(fexpr)
+                    } else if takes_persistent_state_vec {
+                        self.lower_vec_take_all_from_state_field(fexpr)
                     } else {
                         self.lower_value_for_move(fexpr)
                     };

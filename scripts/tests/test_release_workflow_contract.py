@@ -309,6 +309,7 @@ def test_npm_publication_is_pinned_to_a_version_matching_release_tag() -> None:
 
 
 def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
+    text = workflow()
     job = playground_job()
     assert "      - name: Resolve release commit identity\n" in job
     assert (
@@ -316,11 +317,45 @@ def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
     ) in job
     assert "did not resolve to an exact lowercase" in job
     assert "HEW_SHA: ${{ steps.release-commit.outputs.hew_sha }}" in job
-    assert "PLAYGROUND_DISPATCH_TOKEN" in job
+    assert "PLAYGROUND_DISPATCH_TOKEN" not in text
     assert "HOMEBREW_TAP_TOKEN" not in job
-    assert 'if [ -z "${GH_TOKEN}" ]; then' in job
-    assert "PLAYGROUND_DISPATCH_TOKEN secret is required" in job
-    assert "exit 1" in job
+    assert "#   vars.PLAYGROUND_APP_ID" in text
+    assert "#   secrets.PLAYGROUND_APP_PRIVATE_KEY" in text
+
+    validate = job.index("      - name: Validate playground GitHub App configuration\n")
+    mint = job.index("      - name: Mint playground GitHub App token\n")
+    trigger = job.index("      - name: Trigger playground image rebuild\n")
+    assert validate < mint < trigger
+    validation_step = job[validate:mint]
+    token_step = job[mint:trigger]
+    trigger_step = job[trigger:]
+
+    assert "PLAYGROUND_APP_ID: ${{ vars.PLAYGROUND_APP_ID }}" in validation_step
+    assert (
+        "PLAYGROUND_APP_PRIVATE_KEY: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}"
+        in validation_step
+    )
+    assert (
+        "requires vars.PLAYGROUND_APP_ID and secrets.PLAYGROUND_APP_PRIVATE_KEY"
+        in validation_step
+    )
+    assert "exit 1" in validation_step
+    assert "if:" not in validation_step
+    assert "continue-on-error:" not in validation_step
+
+    assert "id: playground-app-token" in token_step
+    assert re.search(
+        r"uses: actions/create-github-app-token@[0-9a-f]{40}  # v2\.2\.2$",
+        token_step,
+        re.MULTILINE,
+    )
+    assert "app-id: ${{ vars.PLAYGROUND_APP_ID }}" in token_step
+    assert "private-key: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}" in token_step
+    assert "owner: hew-lang" in token_step
+    assert "repositories: playground" in token_step
+    assert "if:" not in token_step
+    assert "continue-on-error:" not in token_step
+    assert "GH_TOKEN: ${{ steps.playground-app-token.outputs.token }}" in trigger_step
     assert "gh repo view hew-lang/playground" in job
     assert "gh api repos/hew-lang/playground --jq '.default_branch'" in job
     assert "gh workflow view build.yml" in job

@@ -5467,10 +5467,11 @@ impl Builder {
                 // receiver carries concrete K/V.
                 //
                 // Whole-map clone duplicates BOTH keys and values. `get` and
-                // `values` duplicate V; `keys` duplicates K. HashMap for-in
+                // `values` duplicate V; `keys` duplicates K; `entries`
+                // duplicates BOTH into the tuple elements. HashMap for-in
                 // synthesizes `keys` + `values`, so it shares these same guards.
                 let hashmap_clone_roles = match callee.as_str() {
-                    "hew_hashmap_clone_layout" => Some((true, true)),
+                    "hew_hashmap_clone_layout" | "hew_hashmap_entries_layout" => Some((true, true)),
                     "hew_hashmap_get_layout"
                     | "hew_hashmap_get_clone_layout"
                     | "hew_hashmap_values_layout" => Some((false, true)),
@@ -5520,6 +5521,9 @@ impl Builder {
                                 }
                                 "hew_hashmap_values_layout" => {
                                     "HashMap::values() must clone every value into an independent snapshot"
+                                }
+                                "hew_hashmap_entries_layout" => {
+                                    "HashMap::entries() must clone every key and value into an independent snapshot"
                                 }
                                 _ => {
                                     "HashMap::get() must clone the matched value into an independent owner"
@@ -9315,6 +9319,7 @@ fn runtime_authority_for_collection(
         Family::HashMap(Map::Len) => matches!(runtime, Rt::HashMapLenLayout),
         Family::HashMap(Map::Keys) => matches!(runtime, Rt::HashMapKeysLayout),
         Family::HashMap(Map::Values) => matches!(runtime, Rt::HashMapValuesLayout),
+        Family::HashMap(Map::Entries) => matches!(runtime, Rt::HashMapEntriesLayout),
         Family::HashMap(Map::Clone) => matches!(runtime, Rt::HashMapCloneLayout),
         Family::HashMap(Map::Clear) => matches!(runtime, Rt::HashMapClearLayout),
         Family::HashSet(Set::Insert) => matches!(runtime, Rt::HashSetInsertLayout),

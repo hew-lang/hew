@@ -121,7 +121,17 @@ pub(super) fn aggregate_borrowed_ingress_sink_clones_source(
         }))
 }
 
-fn string_or_bitcopy_tree(
+/// Whether every owning leaf of `ty` is a `string` (or the shape is pure
+/// bit-copy) — the exact class `StringRetainCondition::AggregateBorrowedIngress`
+/// can turn into an independent co-owner with one recursive retain. Shapes with
+/// bytes, collections, indirect enums, resources, or opaque handles return
+/// `false`: the aggregate string retain does not clone those leaves.
+///
+/// Shared with the closure-capture ownership classifier
+/// (`closure_env_capture_ownership`): a `Borrow` capture may become a retained
+/// share (`OwnsClonedOrRetained`) only for shapes this predicate admits, so the
+/// classifier and the retain-derivation proof stay one authority.
+pub(crate) fn string_or_bitcopy_tree(
     ty: &ResolvedTy,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],

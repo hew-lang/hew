@@ -126,6 +126,18 @@ MUST_TRIGGER: list[tuple[str, str]] = [
     ("Cargo.toml", "root Cargo.toml must trigger playground"),
     ("Cargo.lock", "Cargo.lock must trigger playground"),
     ("Makefile", "Makefile must trigger playground"),
+    (
+        ".github/actions/setup-wasm-pack/action.yml",
+        "wasm-pack setup changes must trigger playground",
+    ),
+    (
+        ".github/scripts/download-verify-binaryen.sh",
+        "Binaryen download changes must trigger playground",
+    ),
+    (
+        ".github/scripts/retry-download.sh",
+        "download retry changes must trigger playground",
+    ),
     (".github/workflows/ci.yml", "ci.yml self-change must trigger playground"),
 ]
 
@@ -251,6 +263,19 @@ def test_hew_wasm_triggers_playground() -> None:
     assert path_matches_any("hew-wasm/src/lib.rs", patterns), (
         "hew-wasm/** must be in the playground path filter"
     )
+
+
+def test_wasm_toolchain_changes_trigger_playground() -> None:
+    patterns = _get_patterns()
+    for path in (
+        ".github/actions/setup-wasm-pack/action.yml",
+        ".github/scripts/download-verify-binaryen.sh",
+        ".github/scripts/retry-download.sh",
+        ".github/workflows/ci.yml",
+    ):
+        assert path_matches_any(path, patterns), (
+            f"{path} must trigger the playground build"
+        )
 
 
 def test_docs_only_does_not_trigger_playground() -> None:

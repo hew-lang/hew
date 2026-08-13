@@ -361,13 +361,21 @@ bb1:                                              ; preds = %bb0
 
 bb2:                                              ; preds = %bb1
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
-  ret i8 0
+  %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
+  br i1 %hew_lambda_drain_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 cancel_exit:                                      ; preds = %entry
   ret i8 0
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+hew_shutdown_exit_failed:                         ; preds = %bb2
+  call void @hew_exit(i64 1)
+  br label %hew_shutdown_exit_continue
+
+hew_shutdown_exit_continue:                       ; preds = %hew_shutdown_exit_failed, %bb2
+  ret i8 0
 }
 
 define internal ptr @"i8::fmt"(i8 %0) {

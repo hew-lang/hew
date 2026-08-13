@@ -1097,9 +1097,12 @@ helper_crash_cleanup_retire_rejected:             ; preds = %helper_crash_cleanu
 helper_crash_cleanup_return_merge_12:             ; preds = %helper_crash_cleanup_return_retire_12_accepted, %helper_crash_cleanup_retire_merge
   call void @hew_shutdown_initiate_implicit(i64 0)
   %hew_shutdown_wait_call = call i32 @hew_shutdown_wait()
-  %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
+  %hew_shutdown_failed = icmp ne i32 %hew_shutdown_wait_call, 0
   call void @hew_runtime_cleanup_after_main()
-  ret i8 0
+  %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
+  %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
+  %hew_shutdown_any_failed = or i1 %hew_shutdown_failed, %hew_lambda_drain_failed
+  br i1 %hew_shutdown_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 helper_crash_cleanup_return_retire_12:            ; preds = %helper_crash_cleanup_retire_merge
   %helper_crash_cleanup_return_retire_12_call = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_return_token_12)
@@ -1114,6 +1117,13 @@ helper_crash_cleanup_return_retire_12_rejected:   ; preds = %helper_crash_cleanu
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
+
+hew_shutdown_exit_failed:                         ; preds = %helper_crash_cleanup_return_merge_12
+  call void @hew_exit(i64 1)
+  br label %hew_shutdown_exit_continue
+
+hew_shutdown_exit_continue:                       ; preds = %hew_shutdown_exit_failed, %helper_crash_cleanup_return_merge_12
+  ret i8 0
 }
 
 define internal ptr @"i8::fmt"(i8 %0) {
@@ -2051,9 +2061,9 @@ declare void @hew_shutdown_initiate_implicit(i64)
 
 declare i32 @hew_shutdown_wait()
 
-declare i32 @hew_lambda_drain_all(i64)
-
 declare void @hew_runtime_cleanup_after_main()
+
+declare i32 @hew_lambda_drain_all(i64)
 
 declare void @hew_string_drop(ptr)
 

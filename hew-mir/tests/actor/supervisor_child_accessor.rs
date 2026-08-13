@@ -350,6 +350,143 @@ fn fungible_send_has_no_program_killing_trap() {
     );
 }
 
+/// Collect the `ConstI64` slot-index value feeding `args[1]` of every
+/// `hew_supervisor_child_get` call in `func`, in instruction order.
+fn child_get_slot_constants(func: &hew_mir::RawMirFunction) -> Vec<i64> {
+    // Map each local to the last ConstI64 written into it before the call
+    // (accessor lowering emits the const immediately before its child_get, and
+    // each const local is single-use, so a per-function map is sufficient).
+    let mut const_values: std::collections::HashMap<Place, i64> = std::collections::HashMap::new();
+    let mut slots = Vec::new();
+    for block in &func.blocks {
+        for instr in &block.instructions {
+            match instr {
+                Instr::ConstI64 { dest, value } => {
+                    const_values.insert(*dest, *value);
+                }
+                Instr::CallRuntimeAbi(call) if call.symbol() == "hew_supervisor_child_get" => {
+                    let idx_place = call.args()[1];
+                    slots.push(
+                        *const_values
+                            .get(&idx_place)
+                            .expect("child_get slot arg must be a ConstI64-seeded local"),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    slots
+}
+
+/// P0 sibling-ask misroute regression (dogfood F1, mechanism 1): inside an
+/// actor receive handler (the suspending lowering path), each stable-role
+/// child accessor must bake ITS OWN slot-index constant. Before the fix,
+/// `lower_actor_body_handlers` lowered handlers with an EMPTY
+/// `supervisor_layout_map`, so `partitioned_static_slot_index` fell back to 0
+/// for every access — every `await sup.<child>.<method>()` after the first
+/// misrouted to slot 0 regardless of the child written in source.
+#[test]
+fn actor_handler_sibling_asks_bake_distinct_slot_indices() {
+    let source = r"
+actor Worker {
+    let id: i64;
+    receive fn whoami() -> i64 { id }
+}
+
+supervisor Pool {
+    strategy: one_for_one;
+    child w1: Worker(id: 1);
+    child w2: Worker(id: 2);
+    child w3: Worker(id: 3);
+}
+
+actor Dispatcher {
+    var sup: LocalPid<Pool>;
+    receive fn run() {
+        let a = await sup.w1.whoami();
+        let _ = a;
+        let b = await sup.w2.whoami();
+        let _ = b;
+        let c = await sup.w3.whoami();
+        let _ = c;
+    }
+}
+
+fn main() {
+    let sup = spawn Pool;
+    let d = spawn Dispatcher(sup: sup);
+    d.run();
+}
+";
+    let pipeline = lower_module(source);
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name.contains("Dispatcher") && f.name.contains("run"))
+        .expect("Dispatcher receive handler lowered");
+    let slots = child_get_slot_constants(handler);
+    assert_eq!(
+        slots,
+        vec![0, 1, 2],
+        "each sibling accessor in a receive handler must bake its own slot \
+         index (w1=0, w2=1, w3=2); a collapsed vector means handler lowering \
+         lost the supervisor layout map"
+    );
+}
+
+/// Blast-radius companion for the same defect class: `select` arms that ask
+/// DIFFERENT supervisor children from inside a receive handler share the
+/// stable-role machinery (`fungible_child_ref_of`), so their accessor seeds
+/// must also bake distinct slot indices.
+#[test]
+fn actor_handler_select_arms_bake_distinct_slot_indices() {
+    let source = r"
+actor Worker {
+    let id: i64;
+    receive fn whoami() -> i64 { id }
+}
+
+supervisor Pool {
+    strategy: one_for_one;
+    child w1: Worker(id: 1);
+    child w2: Worker(id: 2);
+}
+
+actor Dispatcher {
+    var sup: LocalPid<Pool>;
+    receive fn pick() -> i64 {
+        let winner = select {
+            reply from sup.w1.whoami() => reply,
+            reply from sup.w2.whoami() => reply,
+            after 500ms => -7,
+        };
+        winner
+    }
+}
+
+fn main() {
+    let sup = spawn Pool;
+    let d = spawn Dispatcher(sup: sup);
+    let r = await d.pick();
+    let _ = r;
+}
+";
+    let pipeline = lower_module(source);
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name.contains("Dispatcher") && f.name.contains("pick"))
+        .expect("Dispatcher select handler lowered");
+    let slots = child_get_slot_constants(handler);
+    assert_eq!(
+        slots,
+        vec![0, 1],
+        "select arms asking different supervisor children must bake distinct \
+         slot indices (w1=0, w2=1)"
+    );
+}
+
 #[test]
 fn pool_child_field_and_get_lower_end_to_end() {
     let source = r"

@@ -3481,6 +3481,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     &module.type_classes,
                     &record_field_orders,
                     &actor_layout_map,
+                    &supervisor_layout_map,
                     &machine_layout_names,
                     &classification_enum_layouts,
                     &opaque_handle_names,

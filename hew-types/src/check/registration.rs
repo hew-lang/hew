@@ -3701,9 +3701,19 @@ impl Checker {
         wire: &WireMetadata,
         variant_order: &[String],
     ) {
+        // The declaration identity, following `register_record_decl`'s
+        // `declaration_name` pattern: inside a module the wire surface is
+        // keyed by `{module}.{Name}` — the identity every imported receiver
+        // and the codegen wire-layout lookup carry — with the bare key
+        // retained for the defining module's own body surface.
+        let qualified_identity = self
+            .current_module_identity()
+            .map(|module| format!("{module}.{type_name}"));
         let self_ty = Ty::Named {
             builtin: None,
-            name: type_name.to_string(),
+            name: qualified_identity
+                .clone()
+                .unwrap_or_else(|| type_name.to_string()),
             args: vec![],
         };
         let bytes_ty = Ty::Bytes;
@@ -3740,9 +3750,19 @@ impl Checker {
         // tag-keyed map, enums as the "map-of-one" shape.
         if is_wire_struct {
             self.wire_struct_types.insert(type_name.to_string());
+            if let Some(qualified) = &qualified_identity {
+                self.wire_struct_types.insert(qualified.clone());
+            }
         }
         if is_serial_wire_enum {
             self.wire_enum_types.insert(type_name.to_string());
+            if let Some(qualified) = &qualified_identity {
+                self.wire_enum_types.insert(qualified.clone());
+            }
+        }
+        if let Some(qualified) = &qualified_identity {
+            self.wire_layouts
+                .insert(qualified.clone(), layout_entry.clone());
         }
         self.wire_layouts
             .insert(type_name.to_string(), layout_entry);
@@ -3761,16 +3781,24 @@ impl Checker {
             vec![]
         };
 
-        if let Some(type_def) = self.type_defs.get_mut(type_name) {
-            for (method_name, params, return_type) in instance_methods {
-                type_def.methods.insert(
-                    method_name.to_string(),
-                    FnSig {
-                        params,
-                        return_type,
-                        ..FnSig::default()
-                    },
-                );
+        // Instance methods land on the bare declaration def AND on the
+        // qualified alias def when one already exists. Pre-registration mints
+        // the qualified skeleton before this runs, and
+        // `register_full_type_alias` refuses to overwrite an existing
+        // canonical entry — so without the direct mirror an imported
+        // receiver (`e.to_json()` on `src.env.Env`) found no method.
+        for def_key in std::iter::once(type_name).chain(qualified_identity.as_deref()) {
+            if let Some(type_def) = self.type_defs.get_mut(def_key) {
+                for (method_name, params, return_type) in &instance_methods {
+                    type_def.methods.insert(
+                        (*method_name).to_string(),
+                        FnSig {
+                            params: params.clone(),
+                            return_type: return_type.clone(),
+                            ..FnSig::default()
+                        },
+                    );
+                }
             }
         }
 
@@ -3791,15 +3819,21 @@ impl Checker {
         };
 
         for (method_name, params, return_type) in static_methods {
-            let qualified_name = format!("{type_name}.{method_name}");
-            self.fn_sigs.insert(
-                qualified_name,
-                FnSig {
-                    params,
-                    return_type,
-                    ..FnSig::default()
-                },
-            );
+            let sig = FnSig {
+                params,
+                return_type,
+                ..FnSig::default()
+            };
+            // Static codec entry points resolve through the receiver's
+            // resolved nominal: `Env.from_json` inside the defining module,
+            // `src.env.Env.from_json` wherever the qualified identity is the
+            // spelling the checker resolved. Register both keys.
+            if let Some(qualified) = &qualified_identity {
+                self.fn_sigs
+                    .insert(format!("{qualified}.{method_name}"), sig.clone());
+            }
+            self.fn_sigs
+                .insert(format!("{type_name}.{method_name}"), sig);
         }
     }
 

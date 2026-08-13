@@ -1593,6 +1593,14 @@ impl Checker {
             if !func_name.contains("::") {
                 self.warn_bare_variant_expr(&func_name, &format!("{type_name}.{func_name}"), span);
             }
+            // A selectively-imported enum/struct type used only as a variant
+            // constructor (`Status::Ok(m)`) never reached the unused-import
+            // credit below `check_struct_init` covers for record literals —
+            // this call-form constructor is its own resolution path. Credit
+            // the lexical binding the same way, via the resolved owner.
+            if let Some((owner, _)) = type_name.rsplit_once('.') {
+                self.mark_module_owner_bindings_used(owner);
+            }
             let type_param_count = type_params.len();
             if type_param_count == 0 {
                 if let Some(type_args_provided) = type_args {

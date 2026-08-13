@@ -153,6 +153,10 @@ pub struct HewActor {
     pub state_drop_consumed: AtomicBool,
     // Supervisor shallow-template provenance; mirrors the canonical tail.
     pub state_drop_borrowed: AtomicBool,
+    // Shutdown-drain ask gate; mirrors the canonical tail. The drain scan is
+    // native-only, so this slot is never read or written on WASM — it exists
+    // purely to preserve the layout parity this module asserts.
+    pub parked_ask_channel: AtomicPtr<c_void>,
 }
 
 /// The dispatch entry point selected for one dequeued message — the WASM twin
@@ -233,6 +237,7 @@ const _: () = {
     assert!(offset_of!(W, sys_dispatch) == offset_of!(N, sys_dispatch));
     assert!(offset_of!(W, state_drop_consumed) == offset_of!(N, state_drop_consumed));
     assert!(offset_of!(W, state_drop_borrowed) == offset_of!(N, state_drop_borrowed));
+    assert!(offset_of!(W, parked_ask_channel) == offset_of!(N, parked_ask_channel));
 };
 
 // ── HewMsgNode layout (strict prefix of native mailbox.rs) ──────────────
@@ -2731,6 +2736,7 @@ mod tests {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -7636,6 +7642,7 @@ mod tests {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────

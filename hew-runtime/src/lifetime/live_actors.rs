@@ -276,24 +276,79 @@ pub(crate) fn with_live_actor<R>(
     .flatten()
 }
 
-/// Return whether any tracked actor still owns a parked continuation.
+/// Return whether any tracked actor still owns a parked continuation that
+/// represents IN-FLIGHT work the shutdown drain must wait for.
 ///
 /// The liveness lock is held while reading each actor state, so a concurrent
 /// free cannot reclaim an allocation beneath the scan. Shutdown uses this as
 /// source-agnostic drain authority: TCP, timer, ask, stream, and other await
 /// implementations all converge on `HewActorState::Suspended`.
-pub(crate) fn has_suspended_actor() -> bool {
+///
+/// A `Suspended` actor whose currently-dispatching `ask` was ABANDONED by its
+/// caller is NOT in-flight work: the `await … | after d` deadline (or a task
+/// cancel) already resolved the caller with a typed `Err`, and nothing will
+/// ever consume the parked handler's reply. Blocking the drain on it would
+/// regress the documented never-hangs abandonment contract into a full
+/// drain-timeout plus abnormal exit. The abandonment bit is the reply
+/// channel's `cancelled` flag, reached through the actor's independently
+/// retained [`crate::actor::HewActor::parked_ask_channel`] gate reference —
+/// safe to dereference here because every release site swaps that slot to
+/// null under THIS registry lock before dropping the reference
+/// (`scheduler::release_parked_ask_channel`). A parked handler with no ask at
+/// all (`null` gate) is genuinely outstanding work and keeps blocking.
+// Native-only: the shutdown drain (and the `reply_channel` module the gate
+// dereference needs) is not compiled on wasm32.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn has_drain_blocking_suspended_actor() -> bool {
     with_live_actors_opt(|map| {
         map.as_ref().is_some_and(|actors| {
             actors.values().any(|ActorPtr(actor)| {
                 // SAFETY: the pointer remains tracked under the liveness lock;
                 // every free path must untrack it before reclaiming the box.
-                (unsafe { (**actor).actor_state.load(Ordering::Acquire) })
-                    == crate::internal::types::HewActorState::Suspended as i32
+                let a = unsafe { &**actor };
+                if a.actor_state.load(Ordering::Acquire)
+                    != crate::internal::types::HewActorState::Suspended as i32
+                {
+                    return false;
+                }
+                let gate = a.parked_ask_channel.load(Ordering::Acquire);
+                if gate.is_null() {
+                    // Parked with no ask (plain recv/timer/reactor wait):
+                    // outstanding work, blocks the drain.
+                    return true;
+                }
+                // SAFETY: the gate slot owns a retained channel reference that
+                // is released only after a swap performed under this same
+                // registry lock, so the channel is alive while we hold it.
+                let cancelled = unsafe {
+                    (*gate.cast::<crate::reply_channel::HewReplyChannel>())
+                        .cancelled
+                        .load(Ordering::Acquire)
+                };
+                // A live ask blocks the drain; an abandoned one does not.
+                !cancelled
             })
         })
     })
     .unwrap_or(false)
+}
+
+/// Swap `slot` to null under the live-actors registry lock.
+///
+/// Serialization primitive for pointer slots that the shutdown drain scan
+/// dereferences under this lock ([`has_drain_blocking_suspended_actor`]): a
+/// releaser swaps here first, so a scan that observed a non-null pointer holds
+/// the lock the swap needs and the backing allocation cannot be freed beneath
+/// the dereference. The actual release of the swapped-out reference belongs
+/// OUTSIDE the lock (it may run reply destructors). Falls back to a bare swap
+/// when no runtime is installed — the scan resolves through the same runtime
+/// slot, so no scan can be racing in that case.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn swap_slot_under_registry_lock(
+    slot: &std::sync::atomic::AtomicPtr<std::ffi::c_void>,
+) -> *mut std::ffi::c_void {
+    with_live_actors_opt(|_| slot.swap(std::ptr::null_mut(), Ordering::AcqRel))
+        .unwrap_or_else(|| slot.swap(std::ptr::null_mut(), Ordering::AcqRel))
 }
 
 /// Check whether an actor ID still maps to the expected live actor pointer.

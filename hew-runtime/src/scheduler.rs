@@ -406,6 +406,10 @@ fn clear_suspended_cancel_token(a: &HewActor) {
 /// it publishes through — the same single release the mailbox teardown path
 /// performs for an ask node that is dropped before dispatch.
 pub(crate) fn retire_suspended_reply_channel(a: &HewActor) {
+    // Every route that abandons the parked activation also ends the ask the
+    // shutdown drain gate was tracking; drop the gate's independent reference
+    // in the same motion so the pair cannot drift apart.
+    release_parked_ask_channel(a);
     let ch = a
         .suspended_reply_channel
         .swap(std::ptr::null_mut(), Ordering::AcqRel);
@@ -415,6 +419,28 @@ pub(crate) fn retire_suspended_reply_channel(a: &HewActor) {
         unsafe {
             crate::reply_channel::hew_reply_channel_retire_orphaned_ask_sender_ref(ch.cast());
         }
+    }
+}
+
+/// Drop the shutdown-drain gate's independently retained reply-channel
+/// reference ([`HewActor::parked_ask_channel`]).
+///
+/// The swap runs under the live-actors registry lock
+/// ([`crate::lifetime::live_actors::swap_slot_under_registry_lock`]) because
+/// the drain scan dereferences the channel through this slot under that lock;
+/// swapping first means a scan that observed a non-null pointer cannot have
+/// its channel freed beneath it. The reference release itself happens outside
+/// the lock — the final release may run the reply payload's registered
+/// destructor, which must not execute under a global registry lock.
+///
+/// Idempotent (the swap yields null on a second visit), so overlapping
+/// abandon routes settle to exactly one release.
+pub(crate) fn release_parked_ask_channel(a: &HewActor) {
+    let ch = crate::lifetime::live_actors::swap_slot_under_registry_lock(&a.parked_ask_channel);
+    if !ch.is_null() {
+        // SAFETY: the gate slot owned this retained reference, taken on the
+        // suspend edge; the swap above transferred it to this call.
+        unsafe { crate::reply_channel::hew_reply_channel_free(ch.cast()) };
     }
 }
 
@@ -499,7 +525,7 @@ pub(crate) fn drain_is_idle() -> bool {
     if sched.stealers.iter().any(|stealer| !stealer.is_empty()) {
         return false;
     }
-    if crate::lifetime::live_actors::has_suspended_actor() {
+    if crate::lifetime::live_actors::has_drain_blocking_suspended_actor() {
         return false;
     }
 
@@ -2251,6 +2277,10 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     let restored = crate::execution_context::set_current_context(prev_context);
     debug_assert_eq!(restored, &raw mut resume_context);
     if matches!(poll, Some(crate::cont::ResumePoll::Ready) | None) {
+        // The parked ask is over either way; drop the drain gate's reference
+        // (a no-op inside `retire_suspended_reply_channel` on the else arm —
+        // the swap keeps it exactly once).
+        release_parked_ask_channel(a);
         if resume_reply_consumed {
             a.suspended_reply_channel
                 .store(std::ptr::null_mut(), Ordering::Release);
@@ -2361,8 +2391,10 @@ unsafe fn resume_crash_recovery(actor: *mut HewActor, resume_context: *mut HewEx
     restore_current_context_after_dispatch();
 
     // The resume's reply channel was a snapshot of the actor's stashed slot;
-    // clear that slot + the stashed cancel token so a re-armed actor does not
-    // reuse the freed channel/token (the crashed activation is terminal).
+    // clear that slot + the drain gate's retained reference + the stashed
+    // cancel token so a re-armed actor does not reuse the freed channel/token
+    // (the crashed activation is terminal).
+    release_parked_ask_channel(a);
     a.suspended_reply_channel
         .store(std::ptr::null_mut(), Ordering::Release);
     clear_suspended_cancel_token(a);
@@ -3395,6 +3427,26 @@ fn activate_queued_actor(actor: *mut HewActor) {
                         && !current_reply_channel_consumed_on(ec_ptr)
                         && !msg_ref.reply_channel.is_null()
                     {
+                        // Shutdown-drain ask gate: retain an INDEPENDENT
+                        // channel reference for `parked_ask_channel` before the
+                        // move below. The drain scan dereferences the channel's
+                        // `cancelled` flag through this slot to tell an
+                        // abandoned ask (caller resolved by `| after d` /
+                        // cancel — not in-flight work) from a live one; the
+                        // moved W6.010 reference below cannot serve that read
+                        // because the resumed body may consume-and-free it
+                        // while the slot still holds the stale pointer. The
+                        // store precedes the `Running → Suspended` park CAS, so
+                        // any scan that observes `Suspended` observes the gate.
+                        // SAFETY: the mailbox node still owns a live reference;
+                        // retain adds the gate's own.
+                        unsafe {
+                            crate::reply_channel::hew_reply_channel_retain(
+                                msg_ref.reply_channel.cast(),
+                            );
+                        }
+                        a.parked_ask_channel
+                            .store(msg_ref.reply_channel, Ordering::Release);
                         a.suspended_reply_channel
                             .store(msg_ref.reply_channel, Ordering::Release);
                         // SAFETY: msg is exclusively owned by this worker; the
@@ -4774,6 +4826,7 @@ mod tests {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -5917,6 +5970,7 @@ mod tests {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -7886,6 +7940,86 @@ mod tests {
         ACTIVE_WORKERS.store(0, Ordering::Release);
     }
 
+    /// The suspended-actor drain rule (the ask-abandonment table):
+    /// suspended without an ask → blocks the drain; suspended with a LIVE ask
+    /// → blocks; suspended with a CANCELLED ask → does NOT block. An abandoned
+    /// ask (`await … | after d` deadline / cancel already resolved the caller)
+    /// is not in-flight work, and holding the drain open on it regresses the
+    /// never-hangs abandonment contract into a drain timeout + abnormal exit.
+    #[test]
+    fn drain_gate_applies_the_suspended_actor_ask_abandonment_table() {
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        install_scheduler_for_test(worker_less_scheduler_for_test());
+        ACTIVE_WORKERS.store(0, Ordering::Release);
+
+        let mut suspended = stub_actor();
+        suspended.id = 0xD2A1_0003;
+        suspended
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Release);
+        let suspended_ptr = &raw mut suspended;
+        // SAFETY: the stack actor remains live until it is untracked below.
+        assert!(unsafe { crate::lifetime::live_actors::track_actor(suspended_ptr) });
+        assert!(
+            !drain_is_idle(),
+            "a parked handler with no ask must keep shutdown draining"
+        );
+
+        // Attach a live ask: the gate slot owns a retained channel reference,
+        // mirroring the suspend edge.
+        let ask_channel = crate::reply_channel::hew_reply_channel_new();
+        assert!(!ask_channel.is_null());
+        // SAFETY: `ask_channel` was just created and is live.
+        unsafe { crate::reply_channel::hew_reply_channel_retain(ask_channel) };
+        suspended
+            .parked_ask_channel
+            .store(ask_channel.cast(), Ordering::Release);
+        assert!(
+            !drain_is_idle(),
+            "a parked handler serving a LIVE ask is in-flight work and must \
+             keep shutdown draining"
+        );
+
+        // Abandon the ask (the `await … | after d` deadline / cancel path sets
+        // this flag): the parked handler is no longer in-flight work.
+        // SAFETY: `ask_channel` is live; cancel only records the flag.
+        unsafe { crate::reply_channel::hew_reply_channel_cancel(ask_channel) };
+        assert!(
+            drain_is_idle(),
+            "a parked handler whose dispatching ask was abandoned must not \
+             hold the shutdown drain open"
+        );
+
+        // Release the gate reference through the production helper (swap under
+        // the registry lock), then drop the constructor reference.
+        release_parked_ask_channel(&suspended);
+        assert!(
+            suspended
+                .parked_ask_channel
+                .load(Ordering::Acquire)
+                .is_null(),
+            "gate release must clear the slot"
+        );
+        // SAFETY: releases the `hew_reply_channel_new` constructor reference.
+        unsafe { crate::reply_channel::hew_reply_channel_free(ask_channel) };
+        assert!(
+            !drain_is_idle(),
+            "clearing the gate returns the parked handler to the no-ask rule: \
+             it blocks the drain again"
+        );
+
+        assert!(crate::lifetime::live_actors::untrack_actor(suspended_ptr));
+        assert!(
+            drain_is_idle(),
+            "removing the final parked activation must restore idle"
+        );
+
+        take_default_runtime_for_test();
+        ACTIVE_WORKERS.store(0, Ordering::Release);
+    }
+
     #[test]
     fn dequeued_self_reenqueue_waits_for_prior_activation_release() {
         let sched = NoWorkerSchedulerForTest::install();
@@ -8139,6 +8273,7 @@ mod tests {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 

@@ -1,0 +1,140 @@
+//! Regression tests for a `machine` reached only THROUGH a record field, under
+//! BOTH declaration orders — the record-wrapped half of #2864 ("Gap 1").
+//!
+//! `machine_in_machine_test.hew` covers a machine embedded DIRECTLY in another
+//! machine's state payload. This file covers the indirect case:
+//!
+//!     state HoldingG { w: WrapG }   +   type WrapG { inner: InnerG }
+//!
+//! `register_machine_layouts` dependency-sorts machines so a container is never
+//! sized against a still-opaque embedded machine. That sort walks state/event
+//! payload field types looking for names that resolve to machines — but a
+//! RECORD is not a machine, so it misses that lookup. Without descending into
+//! the record's own field types, `InnerG` is never seen as a dependency of
+//! `OuterG` and the container is sized against an opaque struct.
+//!
+//! Unlike the direct case (which segfaulted), this one failed SILENTLY: the
+//! container-first program compiled clean, emitted no diagnostic, produced no
+//! output, and exited 1.
+//!
+//! Both orders are tested because a fix handling only one is half a fix, and
+//! each asserts the EXACT embedded payload string so a zero-sized or misaligned
+//! payload fails rather than reading back an accidental value.
+
+import std::testing;
+
+// ── Order A: container declared FIRST (this failed silently before the fix) ──
+
+machine OuterG {
+    events {
+        step;
+    }
+    state HoldingG { w: WrapG }
+    state EmptyG;
+
+    on step: HoldingG => EmptyG {
+        EmptyG
+    }
+    on step: _ => _ {
+        state
+    }
+}
+
+type WrapG {
+    inner: InnerG;
+}
+
+machine InnerG {
+    events {
+        go;
+    }
+    state ReadyG { payload: string }
+    state DoneG;
+
+    on go: ReadyG => DoneG {
+        DoneG
+    }
+    on go: _ => _ {
+        state
+    }
+}
+
+fn payload_of_g(o: OuterG) -> string {
+    match o {
+        HoldingG { w } => match w.inner {
+            ReadyG { payload } => payload,
+            DoneG => "done",
+        },
+        EmptyG => "empty",
+    }
+}
+
+#[test]
+fn machine_through_record_container_declared_first() {
+    let o = OuterG::HoldingG {
+        w: WrapG {
+            inner: InnerG::ReadyG {
+                payload: "container-first-through-record",
+            },
+        },
+    };
+    testing.assert_eq_str(payload_of_g(o), "container-first-through-record");
+}
+
+// ── Order B: embedded machine declared FIRST (this always worked) ────────────
+
+machine InnerH {
+    events {
+        go;
+    }
+    state ReadyH { payload: string }
+    state DoneH;
+
+    on go: ReadyH => DoneH {
+        DoneH
+    }
+    on go: _ => _ {
+        state
+    }
+}
+
+type WrapH {
+    inner: InnerH;
+}
+
+machine OuterH {
+    events {
+        step;
+    }
+    state HoldingH { w: WrapH }
+    state EmptyH;
+
+    on step: HoldingH => EmptyH {
+        EmptyH
+    }
+    on step: _ => _ {
+        state
+    }
+}
+
+fn payload_of_h(o: OuterH) -> string {
+    match o {
+        HoldingH { w } => match w.inner {
+            ReadyH { payload } => payload,
+            DoneH => "done",
+        },
+        EmptyH => "empty",
+    }
+}
+
+#[test]
+fn machine_through_record_embedded_declared_first() {
+    let o = OuterH::HoldingH {
+        w: WrapH {
+            inner: InnerH::ReadyH {
+                payload: "embedded-first-through-record",
+            },
+        },
+    };
+    testing.assert_eq_str(payload_of_h(o), "embedded-first-through-record");
+}

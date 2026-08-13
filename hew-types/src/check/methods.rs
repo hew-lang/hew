@@ -7701,9 +7701,24 @@ impl Checker {
             }
 
             // Static method calls on type names: e.g. Point.from_json(json)
-            // Look up "TypeName.method" in fn_sigs (registered by wire types etc.)
-            let static_key = format!("{name}.{method}");
-            if let Some(sig) = self.fn_sigs.get(&static_key).cloned() {
+            // Look up "TypeName.method" in fn_sigs (registered by wire types
+            // etc.). The surface spelling resolves to its canonical
+            // declaration identity first (A316): the wire codec surface
+            // registers under `{module}.{Name}.{method}` only, so the bare
+            // binding an import published (or an `as`-alias) must consult the
+            // canonical key of ITS owner. The surface key remains the lookup
+            // for root-canonical (bare) declarations and any non-wire dotted
+            // signature registered under its own spelling.
+            let canonical_static_owner = self
+                .canonical_nominal_name(name)
+                .unwrap_or_else(|| name.clone());
+            let static_key = format!("{canonical_static_owner}.{method}");
+            let static_sig = self.fn_sigs.get(&static_key).cloned().or_else(|| {
+                (canonical_static_owner != *name)
+                    .then(|| self.fn_sigs.get(&format!("{name}.{method}")).cloned())
+                    .flatten()
+            });
+            if let Some(sig) = static_sig {
                 self.check_arity(args, sig.params.len(), &format!("`{static_key}`"), span);
                 for (i, arg) in args.iter().enumerate() {
                     if let Some(param_ty) = sig.params.get(i) {
@@ -7741,7 +7756,9 @@ impl Checker {
                 // here without this arm, so the call would lower to
                 // `MethodCallNoRewrite`. Record a dedicated codec rewrite so
                 // HIR/codegen drive the matching thunk with the correct ABI.
-                if self.wire_struct_types.contains(name) || self.wire_enum_types.contains(name) {
+                if self.wire_struct_types.contains(&canonical_static_owner)
+                    || self.wire_enum_types.contains(&canonical_static_owner)
+                {
                     let text_dir = match method {
                         "decode" => Some(WireCodecDirection::Decode),
                         "from_json" => Some(WireCodecDirection::FromJson),
@@ -9590,26 +9607,35 @@ impl Checker {
                         // fall through to `MethodCallNoRewrite`. Record a dedicated
                         // codec rewrite so HIR/codegen drive the matching thunk
                         // with the correct ABI.
-                        let wire_serialize_dir = if self.wire_struct_types.contains(name)
-                            || self.wire_enum_types.contains(name)
-                        {
-                            match method {
-                                "encode" => Some(WireCodecDirection::Encode),
-                                "to_json" => Some(WireCodecDirection::ToJson),
-                                "to_yaml" => Some(WireCodecDirection::ToYaml),
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        };
+                        let wire_serialize_dir =
+                            if self.wire_struct_types.contains(&canonical_receiver_name)
+                                || self.wire_enum_types.contains(&canonical_receiver_name)
+                            {
+                                match method {
+                                    "encode" => Some(WireCodecDirection::Encode),
+                                    "to_json" => Some(WireCodecDirection::ToJson),
+                                    "to_yaml" => Some(WireCodecDirection::ToYaml),
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            };
                         if let Some(direction) = wire_serialize_dir {
                             // `value_ty` is the receiver wire type (the value being
                             // serialized) regardless of the textual return type,
                             // so codegen keys the thunk by the same type the binary
-                            // path uses.
-                            if let Ok(value_ty) =
-                                ResolvedTy::from_ty(&self.subst.resolve(&resolved))
-                            {
+                            // path uses. Carry the CANONICAL nominal: the wire
+                            // layout table is keyed by the declaration identity
+                            // only, and codegen's tag probe falls back to
+                            // positional keys on a miss — a bare spelling here
+                            // would silently change the encoded schema.
+                            let mut value_source = self.subst.resolve(&resolved);
+                            if let Ty::Named { name: nominal, .. } = &mut value_source {
+                                if *nominal != canonical_receiver_name {
+                                    nominal.clone_from(&canonical_receiver_name);
+                                }
+                            }
+                            if let Ok(value_ty) = ResolvedTy::from_ty(&value_source) {
                                 self.record_method_call_rewrite(
                                     span,
                                     MethodCallRewrite::WireCodec {

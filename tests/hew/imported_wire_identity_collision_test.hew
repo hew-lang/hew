@@ -1,0 +1,53 @@
+//! Two same-leaf `#[wire]` types from different modules coexist: one
+//! canonical wire keyspace, keyed by the module-qualified identity, with each
+//! surface spelling (a published bare binding, an `as`-alias) resolving to
+//! ITS import's canonical entry. `env_a.Env` and `env_b.Env` carry disjoint
+//! schemas — a shared bare layout/signature key would reject one of them or
+//! silently serialize it through the other's schema.
+
+import tests::hew::imported_wire_support::env_a::{Env, label_a};
+import tests::hew::imported_wire_support::env_b::{Env as BEnv, label_b};
+
+import std::testing;
+
+#[test]
+fn same_leaf_wire_types_round_trip_independently() {
+    let a = Env { name: "svc", port: 8080 };
+    let b = BEnv { label: "edge", port: 9 };
+    testing.assert_eq_str(a.to_json(), "{\"name\":\"svc\",\"port\":8080}");
+    testing.assert_eq_str(b.to_json(), "{\"label\":\"edge\",\"port\":9}");
+    match Env.from_json(a.to_json()) {
+        Ok(back) => {
+            testing.assert_eq_str(back.name, "svc");
+            testing.assert_eq(back.port, 8080);
+        },
+        Err(msg) => panic(f"env_a from_json failed: {msg}"),
+    }
+    match BEnv.from_json(b.to_json()) {
+        Ok(back) => {
+            testing.assert_eq_str(back.label, "edge");
+            testing.assert_eq(back.port, 9);
+        },
+        Err(msg) => panic(f"env_b from_json failed: {msg}"),
+    }
+}
+
+#[test]
+fn same_leaf_wire_types_binary_round_trip_independently() {
+    let a = Env { name: "bin", port: 1 };
+    let b = BEnv { label: "bin", port: 2 };
+    let a_back = Env.decode(a.encode());
+    testing.assert_eq_str(a_back.name, "bin");
+    testing.assert_eq(a_back.port, 1);
+    let b_back = BEnv.decode(b.encode());
+    testing.assert_eq_str(b_back.label, "bin");
+    testing.assert_eq(b_back.port, 2);
+}
+
+#[test]
+fn cross_use_resolves_per_import() {
+    let a = Env { name: "x", port: 3 };
+    let b = BEnv { label: "y", port: 4 };
+    testing.assert_eq_str(label_a(a), "a:x:3");
+    testing.assert_eq_str(label_b(b), "b:y:4");
+}

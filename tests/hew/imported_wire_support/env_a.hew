@@ -1,0 +1,14 @@
+//! Same-leaf wire collision fixture, module A. `Env` here and `Env` in
+//! `env_b` are DISTINCT wire types with divergent schemas; each must keep its
+//! own canonical layout entry (one keyspace, module-qualified — no shared
+//! bare key to last-write-wins over).
+
+#[wire]
+pub type Env {
+    name: string @1,
+    port: i64 @2,
+}
+
+pub fn label_a(e: Env) -> string {
+    f"a:{e.name}:{e.port}"
+}

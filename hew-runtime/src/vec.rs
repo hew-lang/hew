@@ -2935,6 +2935,53 @@ pub unsafe extern "C" fn hew_vec_clone_owned(v: *const HewVec) -> *mut HewVec {
     unsafe { clone_vec_descriptor(v) }
 }
 
+/// Move a Vec's entire contents into a freshly allocated Vec with the same
+/// element representation, leaving `v` a valid EMPTY vec.
+///
+/// This is the consuming-iteration choke for a Vec that lives in persistent
+/// storage (an actor state field): the cursor takes sole ownership of the
+/// buffer — every element moves with it, no clone/drop thunk runs — while the
+/// source handle keeps its stamped descriptor/elem-kind and stays usable for
+/// later pushes and for its owner's exactly-once teardown free. Works for
+/// every element representation: descriptor-backed owned elements (including
+/// drop-only trait objects, which have no clone thunk and therefore CANNOT be
+/// snapshot-cloned) and plain/string `elem_kind` buffers alike.
+///
+/// # Safety
+///
+/// `v` must be a valid `HewVec` pointer (or null, which returns null). The
+/// returned vec must be freed with the same release symbol `v`'s element
+/// representation requires (`hew_vec_free_owned` for descriptor-backed
+/// elements, `hew_vec_free` otherwise).
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_take_all(v: *mut HewVec) -> *mut HewVec {
+    cabi_guard!(v.is_null(), ptr::null_mut());
+    // SAFETY: null was rejected; constructors validate the representation.
+    unsafe {
+        let src = &mut *v;
+        let out = if src.layout.is_null() {
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "elem_size originates from an i64 at construction"
+            )]
+            let out = hew_vec_new_with_elem_size(src.elem_size as i64);
+            (*out).elem_kind = src.elem_kind;
+            out
+        } else {
+            // Copies the descriptor into the new vec's inline layout_storage;
+            // the taken vec's descriptor pointer never aliases `v`'s.
+            hew_vec_new_with_elem_layout(src.layout)
+        };
+        (*out).data = src.data;
+        (*out).len = src.len;
+        (*out).cap = src.cap;
+        src.data = ptr::null_mut();
+        src.len = 0;
+        src.cap = 0;
+        out
+    }
+}
+
 /// Stage 1 fail-closed stub for layout-descriptor equality/contains.
 ///
 /// # Safety
@@ -5100,6 +5147,87 @@ mod vec_owned_tests {
                 "the moved output supplies the sole release"
             );
             assert_eq!(live_allocations(), 0, "the moved owner must not leak");
+        }
+    }
+
+    /// `take_all` moves the whole buffer into a fresh vec — no clone thunk runs
+    /// (drop-only elements MUST be movable this way) — and leaves the source a
+    /// valid empty vec whose stamped descriptor still drives later pushes and
+    /// its owner's exactly-once free.
+    #[test]
+    fn take_all_moves_buffer_and_leaves_source_empty_with_descriptor() {
+        let _guard = reset_counters();
+        // SAFETY: descriptor and element pointers are valid; ownership of the
+        // pushed elements transfers to the taken vec wholesale.
+        unsafe {
+            let layout = HewVecElemLayout {
+                size: core::mem::size_of::<OwnedElem>(),
+                align: core::mem::align_of::<OwnedElem>(),
+                ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+                clone_fn: None,
+                drop_fn: Some(drop_thunk_if_live),
+            };
+            let v = hew_vec_new_with_elem_layout(&raw const layout);
+            let s0 = make_source(7);
+            let s1 = make_source(8);
+            hew_vec_push_owned_move(v, (&raw const s0).cast());
+            hew_vec_push_owned_move(v, (&raw const s1).cast());
+
+            let taken = hew_vec_take_all(v);
+            assert_eq!(hew_vec_len(taken), 2, "the taken vec owns both elements");
+            assert_eq!(hew_vec_len(v), 0, "the source is drained");
+            assert!(
+                !(*v).layout.is_null(),
+                "the source keeps its stamped descriptor"
+            );
+            assert!(
+                core::ptr::eq(
+                    (*taken).layout,
+                    core::ptr::addr_of!((*taken).layout_storage)
+                ),
+                "the taken vec's descriptor points at its OWN inline storage"
+            );
+
+            // The drained source stays usable: a later push lands in a fresh
+            // buffer through the retained descriptor.
+            let s2 = make_source(9);
+            hew_vec_push_owned_move(v, (&raw const s2).cast());
+            assert_eq!(hew_vec_len(v), 1);
+
+            hew_vec_free_owned(taken);
+            assert_eq!(
+                DROP_CALLS.load(Ordering::SeqCst),
+                2,
+                "freeing the taken vec drops exactly the moved elements"
+            );
+            hew_vec_free_owned(v);
+            assert_eq!(
+                DROP_CALLS.load(Ordering::SeqCst),
+                3,
+                "freeing the drained-then-refilled source drops the new element"
+            );
+            assert_eq!(live_allocations(), 0, "no leak, no double-free");
+        }
+    }
+
+    /// `take_all` on a plain/string-kind vec (no descriptor) moves the buffer
+    /// and elem-kind wholesale so string retain counts are untouched.
+    #[test]
+    fn take_all_moves_plain_kind_buffer_and_elem_kind() {
+        // SAFETY: constructor + i64 push + take + free follow the plain ABI.
+        unsafe {
+            let v = hew_vec_new_i64();
+            hew_vec_push_i64(v, 41);
+            hew_vec_push_i64(v, 42);
+            let taken = hew_vec_take_all(v);
+            assert_eq!(hew_vec_len(taken), 2);
+            assert_eq!(hew_vec_get_i64(taken, 1), 42);
+            assert_eq!((*taken).elem_kind, (*v).elem_kind);
+            assert_eq!(hew_vec_len(v), 0);
+            hew_vec_push_i64(v, 43);
+            assert_eq!(hew_vec_get_i64(v, 0), 43);
+            hew_vec_free(taken);
+            hew_vec_free(v);
         }
     }
 

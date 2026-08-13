@@ -128,6 +128,14 @@ LLVM_PREFIX="$(brew --prefix llvm)" make release
 
 **Status:** Tier 2 — builds and tests pass on FreeBSD 15.0 x86_64.
 
+Tag releases build `libhew.a` on Linux with Rust 1.96.0,
+`cargo-zigbuild` 0.22.3, and Zig 0.16.0. The archive is published between
+jobs under the full `x86_64-unknown-freebsd` Rust triple. The FreeBSD 15.0
+job still builds the compiler and support binaries natively, links a real Hew
+consumer against the downloaded archive, and runs the packaged compile/run
+smoke before that cross-built library can ship. Zig currently targets the
+FreeBSD 14 ABI baseline, so the native FreeBSD 15.0 proof is required.
+
 ### Prerequisites
 
 Install LLVM 22 from the FreeBSD package collection:
@@ -162,6 +170,24 @@ LLVM_SYS_221_PREFIX=/usr/local/llvm22 make release
 
 ### Quick Reference (updated table below)
 
+## FreeBSD aarch64
+
+**Status:** Tier 2 — the release package is proved on FreeBSD 15.0 aarch64
+under QEMU.
+
+Rust 1.96.0 does not publish a standard-library component for
+`aarch64-unknown-freebsd`. Tag releases therefore install the matching
+`rust-src` component and scope `RUSTC_BOOTSTRAP=1` with
+`-Zbuild-std=std,panic_abort` to the `cargo-zigbuild` 0.22.3 archive command.
+The producer records and checks Zig 0.16.0's FreeBSD 14.0 ABI baseline before
+uploading the full-triple-keyed archive.
+
+The FreeBSD 15.0 aarch64 job keeps the native compiler and support-binary
+builds. It links a real Hew consumer against the downloaded `libhew.a`,
+packages that exact archive under both `lib/` and
+`lib/aarch64-unknown-freebsd/`, and executes the packaged compile/run smoke.
+A failed native link or smoke rejects the release.
+
 ## Windows
 
 **Status:** Supported for release builds when LLVM 22 is installed locally
@@ -170,6 +196,13 @@ paths have Windows implementations (`VirtualAlloc` / `VirtualFree`). Windows
 is fail-soft / Tier 2 in `release.yml` today: the tag-release Windows job
 remains `continue-on-error: true` until this validation path has proven itself
 through a full release cycle.
+
+Tag releases build `hew.lib` on Linux with Rust 1.96.0 and `cargo-xwin`
+0.23.0, then publish it between jobs under the full
+`x86_64-pc-windows-msvc` Rust triple. The Windows job keeps the native
+compiler and support-binary builds, links a real Hew consumer against the
+downloaded library, and runs the packaged compile/run smoke before the
+cross-built library becomes the packaged authority.
 
 ### Prerequisites
 

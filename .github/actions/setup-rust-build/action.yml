@@ -50,8 +50,44 @@ runs:
         components: ${{ inputs.components }}
         targets: ${{ inputs.targets }}
 
-    - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
+    # Retried up to 3x: 2026-08-08/2026-08-12 CI incidents showed
+    # taiki-e/install-action's own binary fetch (cargo-nextest et al., from
+    # GitHub release assets) failing with curl exit 52 "Empty reply from
+    # server" while GitHub's status page reported operational. The action is
+    # a third-party `uses:` step with no exposed retry-count input, so the
+    # retry lives at this composite-action level rather than inside it.
+    - id: install-tools-attempt-1
+      uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
       if: inputs.tools != ''
+      continue-on-error: true
+      with:
+        tool: ${{ inputs.tools }}
+
+    - name: Wait before retrying tool install
+      if: inputs.tools != '' && steps.install-tools-attempt-1.outcome == 'failure'
+      shell: bash
+      run: sleep 15
+
+    - id: install-tools-attempt-2
+      uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
+      if: inputs.tools != '' && steps.install-tools-attempt-1.outcome == 'failure'
+      continue-on-error: true
+      with:
+        tool: ${{ inputs.tools }}
+
+    - name: Wait before final tool install attempt
+      if: >-
+        inputs.tools != '' &&
+        steps.install-tools-attempt-1.outcome == 'failure' &&
+        steps.install-tools-attempt-2.outcome == 'failure'
+      shell: bash
+      run: sleep 30
+
+    - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
+      if: >-
+        inputs.tools != '' &&
+        steps.install-tools-attempt-1.outcome == 'failure' &&
+        steps.install-tools-attempt-2.outcome == 'failure'
       with:
         tool: ${{ inputs.tools }}
 
@@ -64,10 +100,41 @@ runs:
     # crate compilation.  The two compose: sccache caches compiler
     # invocations; Swatinem caches the registry.  SCCACHE_CACHE_SIZE bounds
     # the on-disk buffer; the GHA cache has its own 10 GB/repo ceiling.
-    - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
+    #
+    # Retried up to 3x for the same reason as install-tools above: the
+    # 2026-08-08/2026-08-12 incidents showed this action's own sccache
+    # binary fetch failing with "socket hang up". The action already retries
+    # twice internally before giving up; this outer loop covers an egress
+    # blip that outlasts its built-in window. No exposed retry-count input
+    # (node action, dist/setup/index.js), so the retry wraps the step.
+    - id: sccache-attempt-1
+      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
+      continue-on-error: true
       with:
         # Always pull the latest released sccache binary unless we need to
         # pin for a specific fix.  The action itself is SHA-pinned above.
+        version: "v0.10.0"
+
+    - name: Wait before retrying sccache setup
+      if: steps.sccache-attempt-1.outcome == 'failure'
+      shell: bash
+      run: sleep 15
+
+    - id: sccache-attempt-2
+      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
+      if: steps.sccache-attempt-1.outcome == 'failure'
+      continue-on-error: true
+      with:
+        version: "v0.10.0"
+
+    - name: Wait before final sccache setup attempt
+      if: steps.sccache-attempt-1.outcome == 'failure' && steps.sccache-attempt-2.outcome == 'failure'
+      shell: bash
+      run: sleep 30
+
+    - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
+      if: steps.sccache-attempt-1.outcome == 'failure' && steps.sccache-attempt-2.outcome == 'failure'
+      with:
         version: "v0.10.0"
 
     - name: Export sccache environment variables

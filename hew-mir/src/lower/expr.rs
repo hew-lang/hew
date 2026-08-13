@@ -587,7 +587,7 @@ impl Builder {
     /// whose element drop must run `close` — correctly is. Same verdict the
     /// codegen owned-Vec walker reaches, so getter, constructor, and release
     /// agree (`dedup-semantic-boundary`).
-    fn named_elem_carries_drop_obligation(&self, ty: &ResolvedTy) -> bool {
+    pub(super) fn named_elem_carries_drop_obligation(&self, ty: &ResolvedTy) -> bool {
         crate::model::ty_carries_drop_obligation_mir(
             ty,
             &self.record_field_orders,

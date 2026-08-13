@@ -309,6 +309,40 @@ impl Builder {
             {
                 VecGetElem::Layout
             }
+            // User-declared (non-builtin, non-enum) value records with no
+            // heap-owning field: `hew_vec_push_symbol_for_elem`'s ValueClass
+            // tail routes BOTH `BitCopy` AND `Unknown` through
+            // `hew_vec_push_layout`, storing the element INLINE at the full
+            // record stride. The getter must mirror that storage decision or
+            // it mis-strides. `Unknown` covers exactly the records the
+            // structural BitCopy promotion cannot reach — e.g. a record with a
+            // direct-enum field (`type Job { id: i32; kind: JobKind }`): enums
+            // are never marker-promoted, so the containing record stays
+            // `Unknown` while its bytes are plainly inline-copyable (F4,
+            // dogfood 2026-08-13). Guards, in order:
+            //   - the enum arms above already claimed enum element types, so
+            //     `find_enum_layout` must MISS here (an indirect enum falls
+            //     through to the pointer getter below, matching its 8-byte
+            //     heap-handle slots);
+            //   - `owned_elem`/`clone_owned_value` above already claimed every
+            //     heap-owning record; `named_elem_carries_drop_obligation`
+            //     re-checks so a heap-owning record that ever escapes the
+            //     owned-key set falls to the pointer getter's runtime abort
+            //     (fail closed) instead of silently bit-copying owned heap.
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin: None,
+                ..
+            } if crate::model::find_enum_layout(name, args, &self.enum_layouts).is_none()
+                && !self.named_elem_carries_drop_obligation(elem_ty)
+                && matches!(
+                    ValueClass::of_ty(elem_ty, &self.type_classes),
+                    ValueClass::BitCopy | ValueClass::Unknown
+                ) =>
+            {
+                VecGetElem::Layout
+            }
             // Pointer-shaped heap handles (Resource, Linear): Duplex,
             // LambdaActorHandle, indirect enums, and other non-BitCopy Named
             // types whose heap-backing is opaque to the element-load ABI.
@@ -393,6 +427,31 @@ mod tests {
                 Some(family)
             );
         }
+    }
+
+    /// F4 (dogfood 2026-08-13): a non-heap user record whose structural
+    /// `BitCopy` promotion is blocked by a field the promoter cannot classify
+    /// (a direct-enum field ⇒ `ValueClass::Unknown`) is still STORED inline
+    /// through `hew_vec_push_layout`; indexing must therefore dispatch to the
+    /// layout getter, mirroring the push table's `BitCopy | Unknown` arm —
+    /// never the 8-byte-stride pointer getter.
+    #[test]
+    fn unknown_class_heapless_record_element_dispatches_to_layout_getter() {
+        let builder = Builder::default();
+        // `type Job { id: i32; kind: JobKind }` reaches the getter as a bare
+        // Named type with no marker registered — `ValueClass::Unknown`.
+        let elem = ResolvedTy::Named {
+            name: "Job".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        };
+        assert_eq!(
+            builder.vec_element_get_family(&elem),
+            Some(RuntimeCallFamily::VecGet(VecGetElem::Layout)),
+            "an Unknown-class heapless record is stored at record stride by \
+             hew_vec_push_layout; the getter must mirror that storage decision"
+        );
     }
 
     /// Every getter spelling ordinary indexing can emit carries the ownership

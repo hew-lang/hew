@@ -1006,8 +1006,23 @@ impl Checker {
         member_types
     }
 
+    /// Expand type aliases in a member-type list before it is handed to the
+    /// `TraitRegistry` for marker derivation (Send/Frozen/Sync/Copy/Eq/Hash/
+    /// Encode/Decode/…). `TraitRegistry` has no alias table of its own — it
+    /// only knows nominal struct/record/enum member sets — so a field typed
+    /// `Ty::Named { Label }` where `Label` is a top-level alias reads as an
+    /// unknown nominal and derives conservatively false for every marker
+    /// (`cannot send AppConfig to actor: type is not Send` even when `Label`
+    /// is `string`). `type_def.fields` itself stays unexpanded: alias
+    /// identity is still needed at annotation/impl-lookup sites (A316); only
+    /// this admission-facing copy is normalized.
+    fn expand_for_marker_registration(&self, types: &[Ty]) -> Vec<Ty> {
+        types.iter().map(|ty| self.normalize_for_use(ty)).collect()
+    }
+
     fn register_serializable_members_for_type(&mut self, type_name: &str, type_def: &TypeDef) {
-        let member_types = Self::structural_member_types_for_type(type_def);
+        let member_types =
+            self.expand_for_marker_registration(&Self::structural_member_types_for_type(type_def));
         self.registry
             .register_serializable_type(type_name.to_string(), member_types);
     }
@@ -2886,6 +2901,7 @@ impl Checker {
         } else {
             type_def.fields.values().cloned().collect()
         };
+        let field_types = self.expand_for_marker_registration(&field_types);
         let all_fields_encodable = td.wire.is_none()
             && kind == TypeDefKind::Struct
             && field_types
@@ -2954,6 +2970,7 @@ impl Checker {
                     is_indirect: false,
                 };
                 let field_types: Vec<Ty> = type_def.fields.values().cloned().collect();
+                let field_types = self.expand_for_marker_registration(&field_types);
                 self.registry
                     .register_type(rd.name.clone(), field_types.clone());
                 self.registry
@@ -2977,10 +2994,11 @@ impl Checker {
                 if let Some(sig) = self.fn_sigs.get_mut(&rd.name) {
                     sig.params.clone_from(&param_tys);
                 }
+                let expanded_param_tys = self.expand_for_marker_registration(&param_tys);
                 self.registry
-                    .register_type(rd.name.clone(), param_tys.clone());
+                    .register_type(rd.name.clone(), expanded_param_tys.clone());
                 self.registry
-                    .register_serializable_type(rd.name.clone(), param_tys);
+                    .register_serializable_type(rd.name.clone(), expanded_param_tys);
                 if let Some(module_short) = self.current_module_identity().map(str::to_string) {
                     self.registry
                         .alias_type_markers(&rd.name, &format!("{module_short}.{}", rd.name));
@@ -3041,6 +3059,7 @@ impl Checker {
                         all_field_types.push(self.resolve_type_expr(spanned_te));
                     }
                 }
+                let all_field_types = self.expand_for_marker_registration(&all_field_types);
                 self.registry
                     .register_type(md.name.clone(), all_field_types);
                 self.commit_reresolved_type_def(&md.name, type_def);
@@ -3271,6 +3290,7 @@ impl Checker {
         } else {
             type_def.fields.values().cloned().collect()
         };
+        let field_types = self.expand_for_marker_registration(&field_types);
         self.registry.register_type(td.name.clone(), field_types);
         self.registry
             .register_type_params(td.name.clone(), type_def.type_params.clone());
@@ -3565,6 +3585,7 @@ impl Checker {
         } else {
             type_def.fields.values().cloned().collect()
         };
+        let field_types = self.expand_for_marker_registration(&field_types);
         let all_fields_encodable = td.wire.is_none()
             && kind == TypeDefKind::Struct
             && field_types
@@ -3709,6 +3730,7 @@ impl Checker {
         } else {
             tuple_field_types
         };
+        let field_types = self.expand_for_marker_registration(&field_types);
         self.registry
             .register_type(rd.name.clone(), field_types.clone());
         self.registry
@@ -4253,6 +4275,7 @@ impl Checker {
                 all_field_types.push(self.resolve_type_expr(spanned_te));
             }
         }
+        let all_field_types = self.expand_for_marker_registration(&all_field_types);
         self.registry
             .register_type(md.name.clone(), all_field_types);
         self.registry
@@ -12387,6 +12410,7 @@ impl Checker {
         } else {
             source_def.fields.values().cloned().collect()
         };
+        let members = self.expand_for_marker_registration(&members);
         self.registry.register_type(qualified.clone(), members);
         self.registry
             .register_type_params(qualified.clone(), source_def.type_params.clone());

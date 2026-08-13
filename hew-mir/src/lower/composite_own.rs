@@ -36,6 +36,7 @@ use super::{
     PayloadBinderRoot, Place, ResolvedTy, RootScan, ScopeId, ScopeInfoEntry, StringRetainCondition,
     SuspendKind, Terminator, FOR_ITER_CURSOR_NAME_PREFIX,
 };
+pub(crate) use aggregate_borrowed_ingress_clone::string_or_bitcopy_tree;
 use aggregate_borrowed_ingress_clone::{
     aggregate_borrowed_ingress_retain_clones_value, aggregate_borrowed_ingress_sink_clones_source,
 };

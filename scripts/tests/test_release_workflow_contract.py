@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HEW_SHA = "0123456789abcdef0123456789abcdef01234567"
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+RUST_TOOLCHAIN = ROOT / "rust-toolchain.toml"
 NPM_PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-npm-packages.yml"
 RELEASE_GATE = ROOT / ".github" / "workflows" / "release-gate.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
@@ -732,6 +733,150 @@ def test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh() -> Non
         next_job = release.find("\n  # ──", start + len(job_name))
         block = release[start : next_job if next_job != -1 else len(release)]
         assert "if [[ " not in block
+
+
+def assert_freebsd_x86_64_release_uses_pinned_rust(
+    release: str, rust_toolchain: str
+) -> None:
+    channel = re.search(r'^channel = "([^"]+)"$', rust_toolchain, re.MULTILINE)
+    assert channel, "rust-toolchain.toml must declare an exact channel"
+    version = channel.group(1)
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version), "Rust channel must be pinned"
+
+    start = release.index("  build-freebsd:\n")
+    end = release.index("  build-freebsd-aarch64:\n", start)
+    job = release[start:end]
+
+    assert (
+        "pkg install -y -r FreeBSD llvm22 rustup-init cmake ninja git bash "
+        "pkgconf libffi libxml2" in job
+    )
+    assert "pkg install -y -r FreeBSD llvm22 rust cmake" not in job
+    install = (
+        "/usr/local/bin/rustup-init -y --no-modify-path --profile minimal \\\n"
+        f"              --default-toolchain {version}"
+    )
+    probe = (
+        f"rustup run {version} rustc --version | grep -q '^rustc {re.escape(version)} '"
+    )
+    assert job.count(install) == 1
+    assert job.count('export PATH="$HOME/.cargo/bin:$PATH"') == 1
+    assert job.count(probe) == 1
+    assert job.index(install) < job.index(probe) < job.index("cargo build -p hew-cli")
+
+
+def test_freebsd_x86_64_release_uses_repository_pinned_rust() -> None:
+    release = workflow()
+    toolchain = RUST_TOOLCHAIN.read_text()
+    assert_freebsd_x86_64_release_uses_pinned_rust(release, toolchain)
+    channel = re.search(r'^channel = "([^"]+)"$', toolchain, re.MULTILINE)
+    assert channel
+    version = channel.group(1)
+
+    mutations = (
+        release.replace("llvm22 rustup-init cmake", "llvm22 rust cmake", 1),
+        release.replace(
+            f"--default-toolchain {version}", "--default-toolchain stable", 1
+        ),
+        release.replace(
+            f"rustup run {version} rustc --version | "
+            f"grep -q '^rustc {re.escape(version)} '",
+            "rustc --version",
+            1,
+        ),
+    )
+    for mutated in mutations:
+        try:
+            assert_freebsd_x86_64_release_uses_pinned_rust(mutated, toolchain)
+        except AssertionError:
+            continue
+        raise AssertionError("FreeBSD Rust toolchain mutation escaped the contract")
+
+
+def assert_freebsd_aarch64_release_uses_pinned_rust(
+    release: str, rust_toolchain: str
+) -> None:
+    channel = re.search(r'^channel = "([^"]+)"$', rust_toolchain, re.MULTILINE)
+    assert channel, "rust-toolchain.toml must declare an exact channel"
+    version = channel.group(1)
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version), "Rust channel must be pinned"
+
+    start = release.index("  build-freebsd-aarch64:\n")
+    end = release.index("  linux-packages:\n", start)
+    job = release[start:end]
+
+    package_install = (
+        "pkg install -y -r FreeBSD llvm22 cmake ninja git bash pkgconf libffi libxml2"
+    )
+    rustup_download = (
+        "/usr/bin/fetch -o /usr/local/bin/rustup-init \\\n"
+        "              https://static.rust-lang.org/rustup/dist/"
+        "aarch64-unknown-freebsd/rustup-init"
+    )
+    rustup_install = (
+        "/usr/local/bin/rustup-init -y --no-modify-path --profile minimal \\\n"
+        f"              --default-toolchain {version}"
+    )
+    probe = (
+        f"rustup run {version} rustc --version | grep -q '^rustc {re.escape(version)} '"
+    )
+
+    assert job.count(package_install) == 1
+    assert "pkg install -y -r FreeBSD llvm22 rust cmake" not in job
+    assert "pkg install -y -r FreeBSD llvm22 rustup-init cmake" not in job
+    assert job.count(rustup_download) == 1
+    assert job.count("chmod 0755 /usr/local/bin/rustup-init") == 1
+    assert job.count(rustup_install) == 1
+    assert job.count('export PATH="$HOME/.cargo/bin:$PATH"') == 1
+    assert job.count(probe) == 1
+    assert (
+        job.index("/usr/sbin/pkg bootstrap -fy -r FreeBSD")
+        < job.index("pkg update -f -r FreeBSD")
+        < job.index(package_install)
+        < job.index(rustup_download)
+        < job.index(rustup_install)
+        < job.index(probe)
+        < job.index("cargo build -p hew-cli")
+    )
+
+
+def test_freebsd_aarch64_release_uses_repository_pinned_rust() -> None:
+    release = workflow()
+    toolchain = RUST_TOOLCHAIN.read_text()
+    assert_freebsd_aarch64_release_uses_pinned_rust(release, toolchain)
+    channel = re.search(r'^channel = "([^"]+)"$', toolchain, re.MULTILINE)
+    assert channel
+    version = channel.group(1)
+    start = release.index("  build-freebsd-aarch64:\n")
+    prefix, job_and_tail = release[:start], release[start:]
+
+    mutations = (
+        job_and_tail.replace("llvm22 cmake", "llvm22 rust cmake", 1),
+        job_and_tail.replace(
+            "aarch64-unknown-freebsd/rustup-init",
+            "x86_64-unknown-freebsd/rustup-init",
+            1,
+        ),
+        job_and_tail.replace(
+            f"--default-toolchain {version}", "--default-toolchain stable", 1
+        ),
+        job_and_tail.replace(
+            f"rustup run {version} rustc --version | "
+            f"grep -q '^rustc {re.escape(version)} '",
+            "rustc --version",
+            1,
+        ),
+    )
+    for mutated_job_and_tail in mutations:
+        try:
+            assert_freebsd_aarch64_release_uses_pinned_rust(
+                prefix + mutated_job_and_tail, toolchain
+            )
+        except AssertionError:
+            continue
+        raise AssertionError(
+            "FreeBSD aarch64 Rust toolchain mutation escaped the contract"
+        )
 
 
 def test_sanitizer_gate_is_behavioral_and_release_scoped() -> None:
@@ -1489,6 +1634,8 @@ _TESTS = [
     test_cross_release_machinery_resolves_from_workflow_ref,
     test_cross_release_libraries_are_target_keyed_and_natively_proved,
     test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh,
+    test_freebsd_x86_64_release_uses_repository_pinned_rust,
+    test_freebsd_aarch64_release_uses_repository_pinned_rust,
     test_sanitizer_gate_is_behavioral_and_release_scoped,
     test_release_record_is_durable_and_tag_ready,
     test_contract_oracle_runs_in_required_ci,

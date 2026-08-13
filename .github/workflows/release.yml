@@ -965,7 +965,7 @@ jobs:
             # read the catalogue the old one wrote, so every package reports missing.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
-            pkg install -y -r FreeBSD llvm22 rust cmake ninja git bash pkgconf libffi libxml2
+            pkg install -y -r FreeBSD llvm22 rustup-init cmake ninja git bash pkgconf libffi libxml2
 
           run: |
             set -eux
@@ -975,6 +975,13 @@ jobs:
             # this the build script cannot read git metadata and the shipped
             # binaries report `unknown` for their commit hash.
             git config --global --add safe.directory "$(pwd)"
+
+            # Build with the repository-pinned Rust release instead of the
+            # moving version published by the FreeBSD package repository.
+            /usr/local/bin/rustup-init -y --no-modify-path --profile minimal \
+              --default-toolchain 1.96.0
+            export PATH="$HOME/.cargo/bin:$PATH"
+            rustup run 1.96.0 rustc --version | grep -q '^rustc 1\.96\.0 '
 
             # ── LLVM ───────────────────────────────────────────────────────
             # LLVM 22 comes from pkg on FreeBSD 15.0 (llvm22-22.1.2).
@@ -1102,7 +1109,10 @@ jobs:
             # read the catalogue the old one wrote, so every package reports missing.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
-            pkg install -y -r FreeBSD llvm22 rust cmake ninja git bash pkgconf libffi libxml2
+            pkg install -y -r FreeBSD llvm22 cmake ninja git bash pkgconf libffi libxml2
+            /usr/bin/fetch -o /usr/local/bin/rustup-init \
+              https://static.rust-lang.org/rustup/dist/aarch64-unknown-freebsd/rustup-init
+            chmod 0755 /usr/local/bin/rustup-init
 
           run: |
             set -eux
@@ -1112,6 +1122,13 @@ jobs:
             # this the build script cannot read git metadata and the shipped
             # binaries report `unknown` for their commit hash.
             git config --global --add safe.directory "$(pwd)"
+
+            # Build with the repository-pinned Rust release instead of the
+            # moving version published by the FreeBSD package repository.
+            /usr/local/bin/rustup-init -y --no-modify-path --profile minimal \
+              --default-toolchain 1.96.0
+            export PATH="$HOME/.cargo/bin:$PATH"
+            rustup run 1.96.0 rustc --version | grep -q '^rustc 1\.96\.0 '
 
             # ── LLVM ───────────────────────────────────────────────────────
             # LLVM 22 comes from pkg on FreeBSD 15.0 (llvm22-22.1.2).

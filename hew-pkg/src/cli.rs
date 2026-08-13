@@ -288,7 +288,8 @@ pub fn run_native_build() {
 }
 
 /// Scaffold a manifest-first Hew project in `dir` — the `hew init` back end.
-/// The package name is the (canonicalized) directory name.
+/// The package name is the (canonicalized) directory name with hyphens
+/// normalized to underscores.
 ///
 /// Never destructive: errors if `hew.toml` already exists, skips any scaffold
 /// source file that already exists, and merges (never replaces) `.gitignore`.
@@ -326,7 +327,7 @@ fn load_config_or_exit() -> config::PkgConfig {
 }
 
 fn cmd_init(dir: &Path, template: manifest::ManifestTemplate, cfg: &config::PkgConfig) {
-    let name = dir
+    let directory_name = dir
         .canonicalize()
         .ok()
         .as_deref()
@@ -335,6 +336,7 @@ fn cmd_init(dir: &Path, template: manifest::ManifestTemplate, cfg: &config::PkgC
         .and_then(|n| n.to_str())
         .unwrap_or("myproject")
         .to_string();
+    let name = directory_name.replace('-', "_");
     let manifest_path = dir.join("hew.toml");
     if manifest_path.exists() {
         eprintln!("hew init: hew.toml already exists");

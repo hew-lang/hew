@@ -1649,6 +1649,10 @@ impl Parser<'_> {
             None
         };
 
+        if self.diagnose_hyphenated_import_package(&path) {
+            return None;
+        }
+
         self.expect(&Token::Semicolon)?;
 
         Some(ImportDecl {
@@ -1660,6 +1664,39 @@ impl Parser<'_> {
             resolved_item_source_paths: Vec::new(),
             resolved_source_paths: Vec::new(),
         })
+    }
+
+    fn diagnose_hyphenated_import_package(&mut self, path: &[String]) -> bool {
+        if path.len() != 1 || self.peek() != Some(&Token::Minus) {
+            return false;
+        }
+
+        let mut invalid_name = path[0].clone();
+        let mut lookahead = 0;
+        while self.peek_at(self.pos + lookahead) == Some(&Token::Minus) {
+            let Some(segment) = self
+                .peek_at(self.pos + lookahead + 1)
+                .and_then(Self::import_path_segment_text)
+            else {
+                break;
+            };
+            invalid_name.push('-');
+            invalid_name.push_str(&segment);
+            lookahead += 2;
+        }
+        if lookahead == 0 {
+            return false;
+        }
+
+        let suggested_name = invalid_name.replace('-', "_");
+        self.error_at_with_hint(
+            format!("package name `{invalid_name}` cannot be used in an import"),
+            self.peek_span(),
+            format!(
+                "set `name = \"{suggested_name}\"` in `hew.toml` and import `{suggested_name}`"
+            ),
+        );
+        true
     }
 
     pub(crate) fn parse_const_decl(

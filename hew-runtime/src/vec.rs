@@ -2765,6 +2765,37 @@ pub unsafe extern "C" fn hew_vec_get_clone(
     }
 }
 
+/// Move one descriptor-owned element into `out` without changing Vec length.
+///
+/// This is the consuming-iterator choke for drop-only elements. The slot bytes
+/// are copied to `out`, then zeroed so the Vec's later descriptor walk observes
+/// a moved-from value. Bounds misses leave `out` untouched and return `false`.
+///
+/// # Safety
+///
+/// `v` must be an owned-element Vec and `out` must point to at least
+/// `descriptor.size` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_take_owned(
+    v: *mut HewVec,
+    index: i64,
+    out: *mut core::ffi::c_void,
+) -> bool {
+    cabi_guard!(v.is_null() || out.is_null(), false);
+    // SAFETY: null pointers were rejected and owned_descriptor validates the
+    // descriptor-backed representation.
+    unsafe {
+        if index < 0 || index as usize >= (*v).len {
+            return false;
+        }
+        let layout = owned_descriptor(v);
+        let src = (*v).data.add(index as usize * layout.size);
+        core::ptr::copy_nonoverlapping(src, out.cast::<u8>(), layout.size);
+        core::ptr::write_bytes(src, 0, layout.size);
+        true
+    }
+}
+
 /// Overwrite an owned element: drop the old element (descriptor `drop_fn`),
 /// then deep-copy the new one in (`clone_fn`). Aborts on out-of-bounds.
 ///
@@ -4925,6 +4956,18 @@ mod vec_owned_tests {
         FREE_COUNT.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// Drop-only aggregate callback used for moved-from slots. A null payload
+    /// is the descriptor-level moved state, matching the trait-object callback.
+    unsafe extern "C" fn drop_thunk_if_live(slot: *mut c_void) {
+        // SAFETY: the descriptor supplies an OwnedElem-sized slot.
+        let elem = unsafe { &*slot.cast::<OwnedElem>() };
+        if elem.payload.is_null() {
+            return;
+        }
+        // SAFETY: a non-null payload is still the sole live owner.
+        unsafe { drop_thunk(slot) };
+    }
+
     fn owned_layout() -> HewVecElemLayout {
         HewVecElemLayout {
             size: core::mem::size_of::<OwnedElem>(),
@@ -5010,6 +5053,53 @@ mod vec_owned_tests {
                 "descriptor free drops the moved-in slot exactly once"
             );
             assert_eq!(live_allocations(), 0, "drop-only slot must not leak");
+        }
+    }
+
+    /// Consuming iteration moves slot bytes into the caller, nulls the source,
+    /// and leaves exactly one later drop authority in the output value.
+    #[test]
+    fn take_owned_moves_and_nulls_a_drop_only_slot() {
+        let _guard = reset_counters();
+        // SAFETY: every pointer and descriptor below names a live value of the
+        // declared layout. The output owns the payload after `take` returns.
+        unsafe {
+            let layout = HewVecElemLayout {
+                size: core::mem::size_of::<OwnedElem>(),
+                align: core::mem::align_of::<OwnedElem>(),
+                ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+                clone_fn: None,
+                drop_fn: Some(drop_thunk_if_live),
+            };
+            let v = hew_vec_new_with_elem_layout(&raw const layout);
+            let source = make_source(91);
+            hew_vec_push_owned_move(v, (&raw const source).cast());
+
+            let mut output = OwnedElem {
+                payload: core::ptr::null_mut(),
+            };
+            assert!(hew_vec_take_owned(v, 0, (&raw mut output).cast::<c_void>()));
+            assert_eq!(*output.payload, 91, "the output receives the live owner");
+
+            let moved_from = hew_vec_get_owned(v, 0).cast::<OwnedElem>();
+            assert!(
+                (*moved_from).payload.is_null(),
+                "the source slot must be the null moved state"
+            );
+            hew_vec_free_owned(v);
+            assert_eq!(
+                DROP_CALLS.load(Ordering::SeqCst),
+                0,
+                "freeing the cursor skips the moved-from slot"
+            );
+
+            drop_thunk_if_live((&raw mut output).cast());
+            assert_eq!(
+                DROP_CALLS.load(Ordering::SeqCst),
+                1,
+                "the moved output supplies the sole release"
+            );
+            assert_eq!(live_allocations(), 0, "the moved owner must not leak");
         }
     }
 

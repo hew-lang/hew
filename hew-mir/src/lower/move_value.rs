@@ -299,16 +299,26 @@ impl Builder {
             // let-share of the param then double-frees. Aggregate roots
             // (records, tuples, enums, Vec) have no competing ownership
             // spine and stay on the carrier protocol.
+            // A `dyn Trait` parameter joins the carrier protocol MOVE-ONLY:
+            // the value is already a heap-boxed two-word fat pointer, so the
+            // caller's transfer moves the existing box (never a rebox and
+            // never a clone — `is_clone_total` is structurally `false` for
+            // an erased concrete type). The guarded terminal drop below
+            // releases the box on paths that keep it; a return/move-out
+            // flips the guard and neutralizes the slot, handing the caller
+            // the one live owner. A non-last-use caller argument fails
+            // closed in `prepare_owned_call_carriers` (no clone path).
             Ok(plan)
                 if !super::snapshot_root_outside_carrier_protocol(plan.root())
-                    && plan
-                        .is_clone_total(
-                            &record_layouts,
-                            &self.enum_layouts,
-                            &self.opaque_handle_names,
-                            &self.lifecycle_registry,
-                        )
-                        .unwrap_or(false) =>
+                    && (matches!(plan.root(), SnapshotFieldKind::TraitObject)
+                        || plan
+                            .is_clone_total(
+                                &record_layouts,
+                                &self.enum_layouts,
+                                &self.opaque_handle_names,
+                                &self.lifecycle_registry,
+                            )
+                            .unwrap_or(false)) =>
             {
                 // Every admitted carrier gets an explicit transfer guard.
                 // Heap-only carrier shapes happen to make their zeroed

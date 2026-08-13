@@ -2241,15 +2241,7 @@ fn vec_indirect_enum_element_rejected_at_checker_boundary() {
 }
 
 #[test]
-fn vec_trait_object_element_rejected_at_checker_boundary() {
-    // A `dyn Trait` element behind an opaque vtable pointer has no clone/drop
-    // thunk, scalar-index path, or push-rewrite entry, so `Vec<dyn Trait>`
-    // used to type-check clean and fail three different ways deep in
-    // codegen/HIR (VecIter clone, MethodCallNoRewrite on `.push`,
-    // VecIndexElementTypeUnsupported on `v[i]`) with internal-looking
-    // diagnostics instead of one clear checker-level reject. `dyn Trait`
-    // itself (a function parameter) is unaffected — only the `Vec` element
-    // position is rejected.
+fn vec_trait_object_element_is_admitted_at_checker_boundary() {
     let output = check_source(
         r"
         trait Speaker {
@@ -2263,22 +2255,101 @@ fn vec_trait_object_element_rejected_at_checker_boundary() {
         ",
     );
 
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}
+
+#[test]
+fn vec_trait_object_clone_dependent_surfaces_remain_refused() {
+    let output = check_source(
+        r"
+        trait Speaker {
+            fn speak(val: Self) -> i64;
+        }
+
+        fn clone_vec(values: Vec<dyn Speaker>) {
+            let copied = values.clone();
+        }
+
+        fn clone_element(values: Vec<dyn Speaker>) {
+            let copied = values.get(0);
+        }
+
+        fn repeat_element(value: dyn Speaker) {
+            let copied = [value; 2];
+        }
+
+        fn iter_vec(values: Vec<dyn Speaker>) {
+            let cursor = values.iter();
+        }
+
+        fn for_vec(values: Vec<dyn Speaker>) {
+            for value in values {
+                let _ = value;
+            }
+        }
+
+        fn map_vec(values: Vec<dyn Speaker>) {
+            let mapped = values.map(|value| value);
+        }
+        ",
+    );
+
+    let messages = output
+        .errors
+        .iter()
+        .map(|error| error.message.as_str())
+        .collect::<Vec<_>>();
     assert!(
-        output
-            .errors
+        messages
             .iter()
-            .any(|e| e.message.contains("cannot be a `Vec` element")
-                && e.message
-                    .contains("trait-object elements are not supported")),
-        "Vec<dyn Speaker> must be rejected AT the checker with the \
-         trait-object reason: {:#?}",
+            .any(|message| message.contains("Vec<dyn Trait>::clone()")
+                && message.contains("no semantic clone")),
+        "Vec clone must fail with the trait-object clone diagnostic: {:#?}",
+        output.errors
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("Vec<dyn Trait>::get()")
+                && message.contains("semantic trait-object clone")),
+        "Vec get must fail with the trait-object clone diagnostic: {:#?}",
+        output.errors
+    );
+    assert!(
+        messages.iter().any(|message| message
+            .contains("array repeat requires the element type to be Clone")
+            && message.contains("no clone path")),
+        "array repeat must not duplicate a trait-object owner: {:#?}",
+        output.errors
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("Vec<dyn Trait>::iter()")
+                && message.contains("into_iter()")),
+        "Vec iter() must fail with the trait-object clone diagnostic naming into_iter(): {:#?}",
+        output.errors
+    );
+    assert!(
+        messages.iter().any(
+            |message| message.contains("direct `for` over `Vec<dyn Trait>`")
+                && message.contains("into_iter()")
+        ),
+        "direct for over Vec<dyn Trait> must fail naming into_iter(): {:#?}",
+        output.errors
+    );
+    assert!(
+        messages.iter().any(|message| message
+            .contains("`Vec::map` is not supported for trait-object elements")
+            && message.contains("into_iter()")),
+        "Vec::map on trait-object elements must fail naming into_iter(): {:#?}",
         output.errors
     );
 }
 
 #[test]
 fn dyn_trait_function_parameter_still_admitted() {
-    // Control case for `vec_trait_object_element_rejected_at_checker_boundary`:
+    // Control case for `vec_trait_object_element_is_admitted_at_checker_boundary`:
     // `dyn Trait` as a bare function parameter (not wrapped in `Vec`) is a
     // supported, monomorphised-per-call-site shape and must not be caught by
     // the `Vec`-scoped trait-object reject.

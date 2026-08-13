@@ -338,7 +338,6 @@ These gaps are explicitly deferred and tracked here:
 | Ed25519 signing parity | A wasm32-compatible key generation, signing, and verification implementation | `WASM-TODO(crypto-sign):` |
 | Imported-module diagnostic source loading without native filesystem access | A host-provided source map for WASM and no-filesystem diagnostic rendering | `WASM-TODO(diagnostic-source-map):` |
 | Duplex channel parity | A cooperative WASM implementation of the native dual-queue Duplex runtime | `WASM-TODO(duplex):` |
-| Returned dynamic trait objects across function boundaries | Heap-promotion of coercion-site concrete storage before the fat pointer escapes its defining frame; return signatures fail closed until that lowering exists | `WASM-TODO(dyn-trait-returns):` |
 | Outbound HTTP client parity | A browser/WASI request bridge for the native-only HTTP client wrapper | `WASM-TODO(http-client):` |
 | Lambda-actor construction parity | A cooperative WASM implementation of the native lambda-actor runtime | `WASM-TODO(lambda-actors):` |
 | Runtime profiler parity | A WASM sampling and dashboard design without native OS threads or an embedded HTTP server | `WASM-TODO(profiler):` |

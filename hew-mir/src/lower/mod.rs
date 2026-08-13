@@ -4713,6 +4713,7 @@ fn resolve_outbound_actor_modes(
                         | SnapshotFieldKind::ChannelSender
                         | SnapshotFieldKind::OpaqueHandle { .. }
                         | SnapshotFieldKind::ClosurePair
+                        | SnapshotFieldKind::TraitObject
                         | SnapshotFieldKind::Resource { .. } => {
                             if transferable {
                                 SendAliasMode::TransferLastUse

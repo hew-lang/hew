@@ -1,0 +1,63 @@
+// MIR-corpus fixture: consuming iteration over Vec<dyn Trait>.
+//
+// Pins `hew_vec_take_owned` (the iterator-only move-out for drop-only
+// trait-object elements: the fat pointer moves to the caller's output
+// slot and the source slot's data word is nulled) alongside the
+// trait-object element push transfer and the descriptor-driven teardown
+// of a partially consumed Vec<dyn Trait>.
+import std::string;
+
+trait Labeled {
+    fn label_size(val: Self) -> i64;
+}
+
+type Person {
+    label: string;
+}
+
+impl Person {
+    fn label_size(val: Person) -> i64 {
+        val.label.len()
+    }
+}
+
+type Parcel {
+    label: string;
+}
+
+impl Parcel {
+    fn label_size(val: Parcel) -> i64 {
+        val.label.len()
+    }
+}
+
+fn make_person(seed: string) -> dyn Labeled {
+    let erased: dyn Labeled = Person { label: string.repeat(seed, 3) };
+    erased
+}
+
+fn make_parcel(seed: string) -> dyn Labeled {
+    let erased: dyn Labeled = Parcel { label: string.repeat(seed, 5) };
+    erased
+}
+
+fn main() {
+    let values: Vec<dyn Labeled> = Vec::new();
+    values.push(make_person("p"));
+    values.push(make_parcel("q"));
+    values.push(make_person("r"));
+    var total: i64 = 0;
+    for value in values.into_iter() {
+        total = total + value.label_size();
+    }
+    println(total);
+    let partial: Vec<dyn Labeled> = Vec::new();
+    partial.push(make_person("a"));
+    partial.push(make_parcel("b"));
+    var seen: i64 = 0;
+    for value in partial.into_iter() {
+        seen = seen + value.label_size();
+        break;
+    }
+    println(seen);
+}

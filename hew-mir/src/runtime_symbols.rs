@@ -341,6 +341,7 @@ pub(crate) const fn vec_getter_ownership_contract(
         VecGetElem::Owned | VecGetElem::Ptr => ResultOwnership::Borrowed,
         VecGetElem::Bool
         | VecGetElem::Clone
+        | VecGetElem::Take
         | VecGetElem::F32
         | VecGetElem::F64
         | VecGetElem::I8
@@ -775,6 +776,11 @@ const TOML_RESULT_CONSISTENCY: &[(&str, &str, ResultOwnership)] = &[
         "fresh",
         ResultOwnership::IndependentValue,
     ),
+    (
+        "hew_vec_take_owned",
+        "fresh",
+        ResultOwnership::IndependentValue,
+    ),
     ("hew_vec_get_owned", "borrowed", ResultOwnership::Borrowed),
     (
         "hew_vec_get_str",
@@ -904,6 +910,7 @@ mod tests {
         "hew_vec_contains_thunk",
         "hew_vec_get_bool",
         "hew_vec_get_clone",
+        "hew_vec_take_owned",
         "hew_vec_get_f32",
         "hew_vec_get_f64",
         "hew_vec_get_i16",
@@ -1053,7 +1060,7 @@ mod tests {
     #[test]
     fn callee_ownership_contract_symbols_are_unique_positive_rows() {
         let unique = CONTRACT_SYMBOLS.iter().copied().collect::<BTreeSet<_>>();
-        assert_eq!(CONTRACT_SYMBOLS.len(), 176);
+        assert_eq!(CONTRACT_SYMBOLS.len(), 177);
         assert_eq!(
             unique.len(),
             CONTRACT_SYMBOLS.len(),

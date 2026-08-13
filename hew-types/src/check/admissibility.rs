@@ -1574,12 +1574,17 @@ impl Checker {
     }
 
     /// Checker boundary for every operation that constructs or advances a
-    /// `VecIter<T>`. The diagnostic text is intentionally shared by method-call
-    /// and `for` syntax so the rejection remains stable across desugaring.
+    /// `VecIter<T>`. Most elements need a semantic clone. A trait object is the
+    /// consuming-iterator exception: its cursor moves and nulls each slot.
     pub(super) fn validate_vec_iter_element_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         if matches!(resolved, Ty::Error) {
             return false;
+        }
+        // Consuming Vec iteration moves a heap-boxed trait object out of its
+        // descriptor slot and nulls that slot; it does not require a clone.
+        if matches!(resolved, Ty::TraitObject { .. }) {
+            return true;
         }
         let mut visiting = HashSet::new();
         let Some(blocker) = self.vec_iter_clone_blocker(&resolved, &mut visiting) else {

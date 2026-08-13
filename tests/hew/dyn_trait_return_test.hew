@@ -1,0 +1,84 @@
+//! Returned trait objects own heap-promoted concrete storage. The callee
+//! transfers that box through its return slot; the caller is the sole final
+//! owner on both normal and panic exits.
+
+import std::string;
+
+import std::testing;
+
+trait Labeled {
+    fn label_size(val: Self) -> i64;
+}
+
+type Person {
+    label: string;
+}
+
+impl Person {
+    fn label_size(val: Person) -> i64 {
+        val.label.len()
+    }
+}
+
+type Parcel {
+    label: string;
+    route: string;
+}
+
+impl Parcel {
+    fn label_size(val: Parcel) -> i64 {
+        val.label.len()
+    }
+}
+
+fn make_labeled(seed: string, kind: i64) -> dyn Labeled {
+    if kind == 0 {
+        Person { label: string.repeat(seed, 64) }
+    } else {
+        Parcel { label: string.repeat(seed, 96), route: string.repeat(seed, 17) }
+    }
+}
+
+fn match_labeled(seed: string, kind: i64) -> dyn Labeled {
+    match kind {
+        0 => Person { label: string.repeat(seed, 48) },
+        1 => Parcel { label: string.repeat(seed, 80), route: string.repeat(seed, 13) },
+        _ => Person { label: string.repeat(seed, 32) },
+    }
+}
+
+fn inspect(value: dyn Labeled) -> i64 {
+    value.label_size()
+}
+
+fn identity(value: dyn Labeled) -> dyn Labeled {
+    value
+}
+
+#[test]
+fn test_returned_dyn_transfers_to_caller() {
+    let person = make_labeled("p", 0);
+    let parcel = make_labeled("q", 1);
+    testing.assert_eq(inspect(person), 64);
+    testing.assert_eq(inspect(parcel), 96);
+    testing.assert_eq(inspect(match_labeled("r", 0)), 48);
+    testing.assert_eq(inspect(match_labeled("s", 1)), 80);
+    testing.assert_eq(inspect(match_labeled("t", 2)), 32);
+}
+
+#[test]
+fn test_dyn_param_passes_through_without_reboxing() {
+    let person = identity(make_labeled("p", 0));
+    let parcel = identity(identity(make_labeled("q", 1)));
+    testing.assert_eq(inspect(person), 64);
+    testing.assert_eq(inspect(parcel), 96);
+}
+
+#[test]
+#[should_panic]
+fn test_returned_dyn_drops_during_panic_unwind() {
+    let value = make_labeled("u", 0);
+    testing.assert_eq(inspect(value), 64);
+    let empty: Vec<i64> = Vec::new();
+    let _missing = empty[0];
+}

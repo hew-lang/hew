@@ -1,8 +1,3 @@
-// A returned dyn value currently points at concrete storage in this callee's
-// frame. Direct and carrier-nested signatures must fail closed until the
-// compiler heap-promotes that storage and transfers drop authority to the
-// caller.
-
 trait Named {
     fn name(val: Self) -> string;
 }

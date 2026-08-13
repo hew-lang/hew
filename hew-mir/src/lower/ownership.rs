@@ -236,6 +236,10 @@ impl Builder {
         if warrant.withholds_mint() {
             return;
         }
+        if matches!(ty, ResolvedTy::TraitObject { .. }) {
+            self.dyn_trait_storage
+                .insert(binding, crate::TraitObjectStorage::HeapBoxed);
+        }
         let bound_place = self.binding_locals.get(&binding).copied();
         let place = bound_place.unwrap_or(Place::Local(0));
         let ownership = ValueOwnership::classify(&ty, place, &self.ownership_ctx());
@@ -3192,7 +3196,8 @@ impl Builder {
         }
 
         match ty {
-            ResolvedTy::String
+            ResolvedTy::TraitObject { .. }
+            | ResolvedTy::String
             | ResolvedTy::Bytes
             | ResolvedTy::CancellationToken
             | ResolvedTy::Named {

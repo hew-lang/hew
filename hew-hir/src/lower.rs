@@ -16974,6 +16974,28 @@ impl LowerCtx {
         assert!(previous.is_none(), "generated HIR site published twice");
     }
 
+    /// Replace an authored expression's pre-materialization source occurrence
+    /// with the generated value that crosses its type-directed boundary.
+    /// Both occurrences retain facts, but parent identity/join relations must
+    /// converge on the value after representation-changing materialization.
+    fn replace_produced_value_source_site(
+        &mut self,
+        span: &Span,
+        source: SiteId,
+        materialized: SiteId,
+    ) {
+        let key = self.mk_key(span);
+        let sites = self
+            .produced_value_source_sites
+            .get_mut(&key)
+            .expect("materialization source must already be registered");
+        let source_index = sites
+            .iter()
+            .rposition(|site| *site == source)
+            .expect("materialization source site must be registered");
+        sites[source_index] = materialized;
+    }
+
     /// Publish a synthetic expression root that deliberately has no checker
     /// span identity of its own. Actor-lambda bodies can share the enclosing
     /// spawn span, so consuming the spawn's fresh-handle fact for the body
@@ -19320,6 +19342,7 @@ impl LowerCtx {
                     return inner;
                 }
             };
+            let source_site = inner.site;
             self.record_produced_value_fact(&span, &inner);
             let wrapped = HirExpr {
                 node: self.ids.node(),
@@ -19342,6 +19365,7 @@ impl LowerCtx {
                     hew_types::ProducedValueAcquisition::Fresh,
                 ),
             );
+            self.replace_produced_value_source_site(&wrapped.span, source_site, wrapped.site);
             return wrapped;
         }
         inner
@@ -23802,15 +23826,15 @@ impl LowerCtx {
         )
     }
 
-    /// Build the iterator-only clone-out read used by `VecIter::next`.
+    /// Build the iterator-only owned-output read used by `VecIter::next`.
     ///
     /// This deliberately does not use [`HirExprKind::Index`]: ordinary
     /// `xs[i]` preserves its established element-class semantics, including
     /// borrowed nested-collection handles. An iterator yield must instead be
     /// an independent owner because the cursor keeps and later releases its
-    /// snapshot. `Vec::get` is the existing descriptor-backed clone choke and
-    /// returns the owned value directly in `Option<T>`.
-    fn make_vec_iter_get_clone_call(
+    /// snapshot. Cloneable elements use the descriptor clone choke. Drop-only
+    /// trait objects instead move the fat pointer and null its source slot.
+    fn make_vec_iter_get_call(
         &mut self,
         vec_expr: HirExpr,
         index: HirExpr,
@@ -23818,6 +23842,11 @@ impl LowerCtx {
         span: Span,
     ) -> HirExpr {
         let option_ty = Self::resolved_option_ty(elem_ty.clone());
+        let target_symbol = if matches!(elem_ty, ResolvedTy::TraitObject { .. }) {
+            "hew_vec_take_owned"
+        } else {
+            "hew_vec_get_clone"
+        };
         self.make_expr(
             HirExprKind::ResolvedImplCall {
                 receiver: Box::new(vec_expr),
@@ -23826,7 +23855,7 @@ impl LowerCtx {
                 ),
                 impl_id: ImplId(u32::MAX),
                 method_name: "get".to_string(),
-                target_symbol: "hew_vec_get_clone".to_string(),
+                target_symbol: target_symbol.to_string(),
                 target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Get),
                 type_args: vec![Self::resolved_ty_pattern(elem_ty)],
                 args: vec![index],
@@ -24595,12 +24624,8 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
-        let value_expr = self.make_vec_iter_get_clone_call(
-            vec_read_for_get,
-            idx_read_for_get,
-            elem_ty,
-            span.clone(),
-        );
+        let value_expr =
+            self.make_vec_iter_get_call(vec_read_for_get, idx_read_for_get, elem_ty, span.clone());
         let value_binding_name = format!("__hew_iter_value_{}", self.ids.binding().0);
         let value_binding = self.bind(
             value_binding_name.clone(),
@@ -34634,6 +34659,14 @@ fn render_elem_ty(ty: &ResolvedTy) -> String {
                 .join(", ");
             format!("{name}<{arg_list}>")
         }
+        ResolvedTy::TraitObject { traits } => {
+            let bounds = traits
+                .iter()
+                .map(|bound| bound.trait_name.clone())
+                .collect::<Vec<_>>()
+                .join(" + ");
+            format!("dyn {bounds}")
+        }
         other => format!("{other:?}"),
     }
 }
@@ -34738,35 +34771,60 @@ fn check_vec_index_element_type(
     }
 
     let rendered = render_elem_ty(&elem_ty);
-    let (kind, note) = if is_range_slice {
-        (
-            HirDiagnosticKind::VecSliceElementTypeUnsupported {
-                element_ty: rendered.clone(),
-            },
-            format!(
-                "Vec<{rendered}> range-slice (xs[a..b]) is not yet supported. \
-                 Supported element types for Vec range-slicing are: \
-                 bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
-                 usize, f32, f64, string, tuples, user-defined types, and \
-                 type-parameter elements."
-            ),
-        )
+    let is_trait_object = matches!(elem_ty, ResolvedTy::TraitObject { .. });
+    let note = vec_index_unsupported_note(&rendered, is_range_slice, is_trait_object);
+    let kind = if is_range_slice {
+        HirDiagnosticKind::VecSliceElementTypeUnsupported {
+            element_ty: rendered,
+        }
     } else {
-        (
-            HirDiagnosticKind::VecIndexElementTypeUnsupported {
-                element_ty: rendered.clone(),
-            },
-            format!(
-                "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
-                 Supported element types for Vec scalar indexing are: \
-                 bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
-                 usize, f32, f64, string, tuples, type-parameter elements, \
-                 and user-defined types (records, enums, \
-                 Duplex, etc.)."
-            ),
-        )
+        HirDiagnosticKind::VecIndexElementTypeUnsupported {
+            element_ty: rendered,
+        }
     };
     diagnostics.push(HirDiagnostic::new(kind, index_expr_span.clone(), note));
+}
+
+/// Diagnostic note for an unsupported `Vec<T>` scalar-index or range-slice
+/// element type. Trait-object elements get a dedicated message naming the
+/// supported alternative (`into_iter()` / pop / remove), matching the
+/// quality of the reachable checker-level trait-object refusals
+/// (`hew-types/src/check/methods.rs`); every other unsupported element type
+/// gets the generic supported-set listing.
+fn vec_index_unsupported_note(
+    rendered: &str,
+    is_range_slice: bool,
+    is_trait_object: bool,
+) -> String {
+    match (is_range_slice, is_trait_object) {
+        (true, true) => format!(
+            "Vec<{rendered}> range-slice (xs[a..b]) is not supported: a sliced Vec would \
+             share each `HeapBoxed` trait-object owner with the source, and `{rendered}` \
+             has no semantic clone operation to give the slice an independent copy; \
+             consume the Vec with `into_iter()` instead."
+        ),
+        (true, false) => format!(
+            "Vec<{rendered}> range-slice (xs[a..b]) is not yet supported. \
+             Supported element types for Vec range-slicing are: \
+             bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
+             usize, f32, f64, string, tuples, user-defined types, and \
+             type-parameter elements."
+        ),
+        (false, true) => format!(
+            "Vec<{rendered}> scalar index (xs[i]) is not supported: returning or \
+             overwriting an owned element would require a semantic trait-object clone, \
+             and `{rendered}` has none; use pop/remove or consuming iteration \
+             (`into_iter()`) to move an owner out instead."
+        ),
+        (false, false) => format!(
+            "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
+             Supported element types for Vec scalar indexing are: \
+             bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
+             usize, f32, f64, string, tuples, type-parameter elements, \
+             and user-defined types (records, enums, \
+             Duplex, etc.)."
+        ),
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

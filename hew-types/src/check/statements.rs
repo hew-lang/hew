@@ -1682,7 +1682,18 @@ impl Checker {
                             );
                         }
                         if let Some(elem) = args.first().cloned() {
-                            if self.validate_vec_iter_element_clone_type(&elem, &iterable.1) {
+                            if matches!(self.subst.resolve(&elem), Ty::TraitObject { .. }) {
+                                self.report_error(
+                                    TypeErrorKind::InvalidOperation,
+                                    &iterable.1,
+                                    "direct `for` over `Vec<dyn Trait>` would require a cloneable \
+                                     borrowed snapshot; use `for value in values.into_iter()` to \
+                                     consume and move each trait object instead"
+                                        .to_string(),
+                                );
+                                Ty::Error
+                            } else if self.validate_vec_iter_element_clone_type(&elem, &iterable.1)
+                            {
                                 elem
                             } else {
                                 Ty::Error

@@ -796,6 +796,7 @@ stable = [
   "hew_vec_from_u8_data",
   "hew_vec_get_bool",
   "hew_vec_get_clone",
+  "hew_vec_take_owned",
   "hew_vec_get_f32",
   "hew_vec_get_f64",
   "hew_vec_get_generic",
@@ -1342,6 +1343,7 @@ codegen-stable = [
   "hew_dispatch_state_cleanup_prepare_transfer",
   "hew_dyn_box_alloc",
   "hew_dyn_box_free",
+  "hew_dyn_trait_drop_boxed_in_place",
   "hew_gen_coro_destroy",
   "hew_get_reply_channel",
   "hew_glob",
@@ -1985,6 +1987,26 @@ result = "fresh"
 params = ["borrow", "borrow", "borrow"]
 release-symbol = "HewTypeLayout.drop_fn"
 discharge-depth = "deep"
+
+# Moves one descriptor-owned slot into `out` and zeros the source slot.
+[[ownership.contracts]]
+symbol = "hew_vec_take_owned"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "HewTypeLayout.drop_fn"
+discharge-depth = "deep"
+
+# hew-runtime/src/trait_object.rs:426-447 consumes the trait object stored in
+# the pointed-to two-word slot: vtable slot 0 (`drop_in_place`) runs on the
+# concrete value, `hew_dyn_box_free` releases the box with the vtable's exact
+# (size, align), and both slot words are nulled. Null slot / null data word
+# no-op (moved-from state).
+[[ownership.contracts]]
+symbol = "hew_dyn_trait_drop_boxed_in_place"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
 
 # hew-std/src/protobuf.rs:589-618 allocates a header-aware string copy.
 [[ownership.contracts]]

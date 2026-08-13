@@ -6832,10 +6832,6 @@ impl Checker {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "signature registration resolves annotations, generics, bounds, and ownership"
-    )]
     pub(super) fn register_fn_sig_with_name(&mut self, name: &str, fd: &FnDecl) {
         // Only filter out the receiver for methods (Type::method), not free
         // functions that happen to have a parameter named `self`.
@@ -6878,31 +6874,6 @@ impl Checker {
         let declared_return = fd.return_type.as_ref().map_or(Ty::Unit, |ret| {
             self.resolve_registered_annotation_ty(ret, &mut hole_vars)
         });
-        // A coercion to `dyn Trait` currently stores the fat pointer's data word
-        // as an alias of concrete storage in the producing frame. Returning
-        // that pair, directly or inside another carrier, would let the alias
-        // escape after the frame is gone. The runtime already has target-width
-        // box allocation primitives, but the compiler does not yet promote the
-        // concrete value and rewrite the data word at this boundary.
-        //
-        // WASM-TODO(dyn-trait-returns): heap-promote the concrete storage before
-        // returning the fat pointer, then transfer its drop authority to the
-        // caller. Until that lowering exists, reject the signature itself so
-        // neither native nor wasm32 codegen can manufacture a dangling value.
-        if self.subst.resolve(&declared_return).contains_trait_object() {
-            let error_span = fd
-                .return_type
-                .as_ref()
-                .map_or_else(|| fd.decl_span.clone(), |ret| ret.1.clone());
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                &error_span,
-                "returning `dyn Trait` is not yet supported: the concrete value \
-                 must be heap-promoted before its fat pointer can escape the \
-                 callee frame"
-                    .to_string(),
-            );
-        }
         if pushed_bounds {
             self.current_type_param_bounds.pop();
         }

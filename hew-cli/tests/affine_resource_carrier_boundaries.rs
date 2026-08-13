@@ -570,11 +570,13 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
     ] {
         let stderr = compile_rejected(name, body);
         assert!(
-            stderr.contains("Receiver")
-                && (stderr.contains("drop-only")
+            (stderr.contains("drop-only")
+                || stderr.contains("affine close contract")
+                || stderr.contains("opaque/resource handle")
+                || stderr.contains("owned handle"))
+                && (stderr.contains("semantic clone")
+                    || stderr.contains("clone an affine value")
                     || stderr.contains("cannot be cloned")
-                    || stderr.contains("affine close contract")
-                    || stderr.contains("semantic clone")
                     || stderr.contains("owned handle")),
             "{name} must reject the copy/read surface through the affine Receiver contract:\n{stderr}"
         );

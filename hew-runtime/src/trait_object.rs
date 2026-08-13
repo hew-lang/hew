@@ -407,6 +407,45 @@ pub unsafe extern "C" fn hew_dyn_box_free(ptr: *mut u8, size: usize, align: usiz
     unsafe { alloc::dealloc(ptr, layout) };
 }
 
+/// Drop one heap-boxed trait object stored in an aggregate slot.
+///
+/// Collection descriptors call this with the address of a two-word
+/// [`HewTraitObject`]. A zeroed data word is the moved-from state used by
+/// consuming iteration; otherwise the callback dispatches vtable slot 0 and
+/// releases the concrete box with the vtable's exact size and alignment.
+///
+/// # Safety
+///
+/// `slot` must be null or point to a valid, writable `HewTraitObject` whose
+/// non-null data pointer came from [`hew_dyn_box_alloc`].
+///
+/// # Panics
+///
+/// Panics if a live data pointer carries a null vtable.
+#[no_mangle]
+pub unsafe extern "C" fn hew_dyn_trait_drop_boxed_in_place(slot: *mut c_void) {
+    if slot.is_null() {
+        return;
+    }
+    // SAFETY: guaranteed by the caller contract.
+    let object = unsafe { &mut *slot.cast::<HewTraitObject>() };
+    if object.data.is_null() {
+        return;
+    }
+    assert!(
+        !object.vtable.is_null(),
+        "heap-boxed trait object has live data but a null vtable"
+    );
+    // SAFETY: a live trait object carries the vtable for its concrete box.
+    let vtable = unsafe { &*object.vtable };
+    // SAFETY: slot 0 was synthesized for the concrete type in this box.
+    unsafe { (vtable.drop_in_place)(object.data) };
+    // SAFETY: the vtable prefix carries the allocation's original layout.
+    unsafe { hew_dyn_box_free(object.data, vtable.size_of, vtable.align_of) };
+    object.data = core::ptr::null_mut();
+    object.vtable = core::ptr::null();
+}
+
 #[cfg(test)]
 mod tests {
     //! Unit tests for the layout-validation helper.

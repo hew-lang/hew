@@ -637,6 +637,15 @@ def test_cross_release_machinery_resolves_from_workflow_ref() -> None:
         "release-machinery/scripts/verify-cross-release-lib.sh "
         '"${{ matrix.rust_target }}" "${archive}"' in job
     )
+    unscoped_script_references = [
+        line.strip()
+        for line in job.splitlines()
+        if re.search(r"(?<!release-machinery/)scripts/", line)
+    ]
+    assert not unscoped_script_references, (
+        "cross-release scripts must resolve from the workflow ref: "
+        f"{unscoped_script_references}"
+    )
 
 
 def test_cross_release_libraries_are_target_keyed_and_natively_proved() -> None:
@@ -673,7 +682,10 @@ def test_cross_release_libraries_are_target_keyed_and_natively_proved() -> None:
         " --profile release-lib --target ${{ matrix.rust_target }}" in cross
     )
     assert "      - name: Build aarch64 FreeBSD release consumer" in cross
-    assert "--manifest-path scripts/fixtures/release-lib-link/Cargo.toml" in cross
+    assert (
+        "--manifest-path "
+        "release-machinery/scripts/fixtures/release-lib-link/Cargo.toml" in cross
+    )
     assert "cross-release-consumer-target" in cross
     assert "libhew_release_link_probe.a" in cross
     assert 'zig cc -target "${{ matrix.zig_target }}"' in cross
@@ -740,7 +752,8 @@ def test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh() -> Non
     assert gate.count("git gmake bash pkgconf") == 2
     assert release.count("command -v bash") == 2
     assert gate.count("command -v bash") == 2
-    assert release.count("bash scripts/test-release-lib-link.sh") == 2
+    assert release.count("bash scripts/test-release-lib-link.sh") == 1
+    assert release.count("bash release-machinery/scripts/test-release-lib-link.sh") == 1
     # Gate: FreeBSD x86_64 only — the aarch64 gate leg is intentionally
     # scoped to build+smoke (coverage retained on freebsd-x86_64/linux-aarch64).
     assert gate.count("bash scripts/test-release-lib-link.sh") == 1
@@ -831,7 +844,8 @@ def assert_freebsd_aarch64_release_uses_cross_built_consumer(
     )
     consumer_build = (
         "cargo zigbuild -Zbuild-std=std,panic_abort\n"
-        "          --manifest-path scripts/fixtures/release-lib-link/Cargo.toml\n"
+        "          --manifest-path "
+        "release-machinery/scripts/fixtures/release-lib-link/Cargo.toml\n"
         "          --release --target ${{ matrix.rust_target }}"
     )
     consumer_stage = (
@@ -843,6 +857,12 @@ def assert_freebsd_aarch64_release_uses_cross_built_consumer(
         "--consumer-archive cross-release-libs/aarch64-unknown-freebsd/"
         "libhew_release_link_probe.a"
     )
+    machinery_checkout = """      - name: Checkout release machinery
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: release-machinery
+"""
 
     assert f'toolchain: "{version}"' in cross_job
     assert cross_job.count("      - name: Build aarch64 FreeBSD release consumer") == 1
@@ -852,6 +872,11 @@ def assert_freebsd_aarch64_release_uses_cross_built_consumer(
     assert "path: cross-release-libs/${{ matrix.rust_target }}/" in cross_job
 
     assert freebsd_job.count(package_install) == 1
+    assert freebsd_job.count(machinery_checkout) == 1
+    assert (
+        freebsd_job.count("bash release-machinery/scripts/test-release-lib-link.sh")
+        == 1
+    )
     assert freebsd_job.count(consumer_proof) == 1
     assert "/usr/local/bin/rustup-init" not in freebsd_job
     assert "rustup run" not in freebsd_job
@@ -880,9 +905,11 @@ def test_freebsd_aarch64_release_uses_cross_built_consumer() -> None:
         ),
         release.replace(
             "cargo zigbuild -Zbuild-std=std,panic_abort\n"
-            "          --manifest-path scripts/fixtures/release-lib-link/Cargo.toml",
+            "          --manifest-path release-machinery/scripts/fixtures/"
+            "release-lib-link/Cargo.toml",
             "cargo zigbuild\n"
-            "          --manifest-path scripts/fixtures/release-lib-link/Cargo.toml",
+            "          --manifest-path release-machinery/scripts/fixtures/"
+            "release-lib-link/Cargo.toml",
             1,
         ),
         release.replace(

@@ -2472,6 +2472,8 @@ fn main() {
 
 `std::iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (consumes `v`).
 
+When the receiver is a `Vec` field in actor state, `into_iter()` DRAINS the field: the iteration consumes every element and the field is left a valid empty vec. A later message may push new elements into it or iterate it again (yielding nothing). This is the only iteration form for `Vec<dyn Trait>` fields — trait objects cannot be cloned, so there is no non-consuming snapshot to hand out.
+
 ### std::sort — sorting vectors
 
 ```hew

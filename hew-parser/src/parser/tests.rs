@@ -1835,6 +1835,62 @@ fn parse_import_actor_path_segment() {
 }
 
 #[test]
+fn parse_import_machine_path_segment() {
+    let source = "import src::workflow::machine::{Machine};";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    if let Item::Import(imp) = &result.program.items[0].0 {
+        assert_eq!(imp.path, vec!["src", "workflow", "machine"]);
+        let Some(ImportSpec::Names(names)) = &imp.spec else {
+            panic!("expected selective import spec");
+        };
+        assert_eq!(names[0].name, "Machine");
+    } else {
+        panic!("expected import");
+    }
+}
+
+#[test]
+fn parse_import_type_decl_keyword_path_segments() {
+    // Every type-declaration keyword is a plausible module file name and
+    // must parse as an import path segment.
+    for kw in [
+        "actor",
+        "machine",
+        "record",
+        "enum",
+        "supervisor",
+        "type",
+        "trait",
+    ] {
+        let source = format!("import src::{kw}::helpers;");
+        let result = parse(&source);
+        assert!(
+            result.errors.is_empty(),
+            "segment `{kw}` should parse, errors: {:?}",
+            result.errors
+        );
+        if let Item::Import(imp) = &result.program.items[0].0 {
+            assert_eq!(imp.path, vec!["src", kw, "helpers"]);
+        } else {
+            panic!("expected import for segment `{kw}`");
+        }
+    }
+}
+
+#[test]
+fn machine_qualifier_in_type_position_rejected() {
+    // The import-path carve-out does not extend to qualifier position:
+    // `machine.Machine` as a type annotation stays reserved.
+    let source = "fn f(m: machine.Machine) {}";
+    let result = parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected parse error for `machine` qualifier in type position"
+    );
+}
+
+#[test]
 fn parse_trait_declaration() {
     let source = "trait Printable { fn print(self); }";
     let result = parse(source);

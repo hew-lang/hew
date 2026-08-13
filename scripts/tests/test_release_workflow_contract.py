@@ -1081,6 +1081,14 @@ def test_wasm_pack_consumers_prefetch_checksum_pinned_binaryen() -> None:
         assert job.index(action_use) < job.index(build_command)
 
 
+def test_ci_wasm_consumers_provision_unknown_target() -> None:
+    ci = CI_WORKFLOW.read_text()
+    for job_name in ("playground-wasm-build", "build-and-test"):
+        job = workflow_job(ci, job_name)
+        assert "uses: ./.github/actions/setup-rust-build" in job
+        assert "targets: wasm32-unknown-unknown" in job
+
+
 def test_binaryen_prefetch_pin_mutations_are_rejected() -> None:
     action = SETUP_WASM_PACK_ACTION.read_text()
     mutated = action.replace(BINARYEN_SHA256, "0" * 64)

@@ -418,8 +418,6 @@ fn summarize(results: Vec<TestResult>) -> TestSummary {
 }
 
 struct CompiledTestArtifact {
-    _source: tempfile::NamedTempFile,
-    _source_tree: tempfile::TempDir,
     _emit_dir: tempfile::TempDir,
     binary_path: PathBuf,
 }
@@ -497,50 +495,33 @@ fn compile_test(
         name = test.name,
     );
 
-    // Mirror only the fixture's relative file-import closure into a writable
-    // temporary tree. The synthetic source keeps the original absolute parent
-    // shape inside that tree, so quoted imports resolve identically without
-    // requiring write access to the source checkout.
-    let source_path = Path::new(&test.file)
-        .canonicalize()
-        .map_err(|error| format!("cannot resolve test source `{}`: {error}", test.file))?;
-    let source_dir = source_path
-        .parent()
-        .ok_or_else(|| "test source path has no parent directory".to_string())?;
-    let source_tree = tempfile::Builder::new()
-        .prefix("hew_test_source_")
-        .tempdir_in(std::env::temp_dir())
-        .map_err(|e| format!("cannot create temp source tree: {e}"))?;
-    mirror_file_imports(source, source_dir, source_tree.path(), &mut HashSet::new())?;
-    let mirrored_source_dir = mirrored_source_path(source_tree.path(), source_dir);
-    std::fs::create_dir_all(&mirrored_source_dir)
-        .map_err(|e| format!("cannot create mirrored test source directory: {e}"))?;
-    let tmp_source = tempfile::Builder::new()
-        .prefix("hew_test_")
-        .suffix(".hew")
-        .tempfile_in(mirrored_source_dir)
-        .map_err(|e| format!("cannot create temp file: {e}"))?;
-
-    std::fs::write(tmp_source.path(), &synthetic)
-        .map_err(|e| format!("cannot write temp file: {e}"))?;
+    let parsed = hew_parser::parse(&synthetic);
 
     let emit_dir = tempfile::Builder::new()
         .prefix("hew_test_emit_")
         .tempdir_in(std::env::temp_dir())
         .map_err(|e| format!("cannot create temp emit dir: {e}"))?;
 
-    let binary_name = tmp_source
-        .path()
+    let source_path = Path::new(&test.file);
+    let binary_name = source_path
         .file_stem()
-        .ok_or_else(|| "temp source path has no file stem".to_string())?;
+        .ok_or_else(|| "test source path has no file stem".to_string())?;
     let binary_path = emit_dir.path().join(binary_name);
     let extra_libs = ffi_lib.into_iter().map(str::to_owned).collect::<Vec<_>>();
 
     crate::diagnostic::start_diagnostic_capture();
-    let compile_result = crate::compile_test_binary_with_paths(
-        tmp_source.path(),
+    // Compile the synthetic program in memory while retaining the real test
+    // path for file-relative imports and the invocation root for package imports.
+    let compile_result = crate::compile_native_from_program_with_paths(
+        parsed.program,
+        &synthetic,
+        &test.file,
         &binary_path,
-        &compile_paths.paths,
+        &crate::compile::CompileOptions {
+            project_dir: Some(compile_paths.paths.project_dir.clone()),
+            ..crate::compile::CompileOptions::default()
+        },
+        Some(&compile_paths.paths),
         &extra_libs,
     );
     let diagnostics = crate::diagnostic::finish_diagnostic_capture();
@@ -553,8 +534,6 @@ fn compile_test(
     }
 
     Ok(CompiledTestArtifact {
-        _source: tmp_source,
-        _source_tree: source_tree,
         _emit_dir: emit_dir,
         binary_path,
     })

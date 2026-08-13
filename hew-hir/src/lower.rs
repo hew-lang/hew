@@ -2428,12 +2428,63 @@ pub fn lower_program_with_mono_cap(
             };
             decl.is_opaque.then(|| decl.name.clone())
         }));
-    ctx.root_visible_source_type_short_names
-        .extend(program.items.iter().filter_map(|(item, _)| match item {
-            Item::TypeDecl(decl) => Some(decl.name.clone()),
-            Item::Record(decl) => Some(decl.name.clone()),
-            _ => None,
-        }));
+    // Root-authored declarations only: items spliced into `program.items` by
+    // `flatten_file_import_items` keep their defining file's module identity
+    // (`file_import_module_idx`), so they must not claim the root bare
+    // namespace here. Their layouts key by `qualified_name()`; leaving the
+    // spliced short name in this set made a root annotation resolve bare and
+    // miss the qualified MIR field-order/value-class entries. The
+    // bare-spelling route for these declarations is
+    // `file_import_root_type_aliases` below.
+    ctx.root_visible_source_type_short_names.extend(
+        program
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(item_idx, _)| !file_import_module_idx.contains_key(item_idx))
+            .filter_map(|(_, (item, _))| match item {
+                Item::TypeDecl(decl) => Some(decl.name.clone()),
+                Item::Record(decl) => Some(decl.name.clone()),
+                _ => None,
+            }),
+    );
+    // Flat-file imports share the root bare namespace (the checker enforces
+    // uniqueness there), but their declaration identity is the defining
+    // module's qualified name. Publish the bare→qualified projection so an
+    // annotation written at root (`fn f(w: WorkflowState)`) resolves to the
+    // same identity the layout registries key by.
+    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        let Some(module_idx) = file_import_module_idx.get(&item_idx) else {
+            continue;
+        };
+        let Some(module_full_path) = span_indices.module_name(*module_idx) else {
+            continue;
+        };
+        match item {
+            Item::TypeDecl(decl) => {
+                ctx.file_import_root_type_aliases.insert(
+                    decl.name.clone(),
+                    format!("{module_full_path}.{}", decl.name),
+                );
+            }
+            Item::Record(decl) => {
+                ctx.file_import_root_type_aliases.insert(
+                    decl.name.clone(),
+                    format!("{module_full_path}.{}", decl.name),
+                );
+            }
+            Item::Machine(decl) => {
+                ctx.file_import_root_type_aliases.insert(
+                    decl.name.clone(),
+                    format!("{module_full_path}.{}", decl.name),
+                );
+                let event = machine_event_surface_type(&decl.name);
+                ctx.file_import_root_type_aliases
+                    .insert(event.clone(), format!("{module_full_path}.{event}"));
+            }
+            _ => {}
+        }
+    }
     if let Some(module_graph) = &program.module_graph {
         for module_id in &module_graph.topo_order {
             if *module_id == module_graph.root {
@@ -2894,6 +2945,56 @@ pub fn lower_program_with_mono_cap(
         program,
         &type_check_output.root_value_bindings,
     ));
+
+    // Selective/glob imports bind a pub const's bare (or aliased) name at
+    // root, but the pre-pass above registers imported consts only under the
+    // qualified `{module}.{CONST}` key. Alias the importer-visible binding to
+    // the same entry so a bare `MAX_RETRIES` resolves to the identical
+    // `ItemId`/descriptor a dotted `reasons.MAX_RETRIES` reaches. Root-owned
+    // consts registered by the root pre-pass keep precedence (`or_insert`),
+    // mirroring `root_imported_fn_rewrites` for functions.
+    for (item, _) in &program.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        if decl.path.is_empty() {
+            continue;
+        }
+        let Some(spec) = &decl.spec else {
+            continue;
+        };
+        let Some(resolved_items) = &decl.resolved_items else {
+            continue;
+        };
+        let module_full_path = decl.path.join(".");
+        for (resolved_item, _) in resolved_items {
+            let Item::Const(const_decl) = resolved_item else {
+                continue;
+            };
+            if !const_decl.visibility.is_pub() {
+                continue;
+            }
+            let binding = match spec {
+                ImportSpec::Glob => Some(const_decl.name.clone()),
+                ImportSpec::Names(names) => names
+                    .iter()
+                    .find(|imported| imported.name == const_decl.name)
+                    .map(|imported| {
+                        imported
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| const_decl.name.clone())
+                    }),
+            };
+            let Some(binding) = binding else {
+                continue;
+            };
+            let qualified = format!("{module_full_path}.{}", const_decl.name);
+            if let Some(entry) = ctx.const_registry.get(&qualified).cloned() {
+                ctx.const_registry.entry(binding).or_insert(entry);
+            }
+        }
+    }
 
     // Pre-pass: collect record/type-decl shapes so `Expr::StructInit`
     // lowering in the source-order pass can answer "is this a generic
@@ -7210,6 +7311,13 @@ struct LowerCtx {
     /// considered before the compiler-only `Task`, `Unit`, and
     /// `CancellationToken` fallbacks, including for generic source types.
     root_visible_source_type_short_names: HashSet<String>,
+    /// Bare→qualified identity projection for declarations reaching root
+    /// through a flat file import (`import "x.hew";`). The spliced items share
+    /// the root bare namespace at the source surface, but their declaration
+    /// identity — and every layout registry key derived from it — is the
+    /// defining file's `{module}.{name}`. Root annotations resolve through
+    /// this table so binding types and layout keys agree.
+    file_import_root_type_aliases: HashMap<String, String>,
     /// Exact `{module_owner}.{type}` identities declared by non-root modules.
     /// This lets the three compiler-special spellings retain their source
     /// identity inside a declaring module and through named imports without
@@ -7802,6 +7910,7 @@ impl LowerCtx {
             non_opaque_type_short_names: HashSet::new(),
             root_opaque_type_short_names: HashSet::new(),
             root_visible_source_type_short_names: HashSet::new(),
+            file_import_root_type_aliases: HashMap::new(),
             source_type_identities: HashSet::new(),
             canonical_std_source_type_identities: HashSet::new(),
             checker_type_identities: tc_output.type_defs.keys().cloned().collect(),
@@ -22306,6 +22415,17 @@ impl LowerCtx {
             }
         }
 
+        // A flat file import's declaration is spelled bare at root but its
+        // identity is the defining file's `{module}.{name}` — the key every
+        // layout registry uses. Project the bare annotation to that identity
+        // before the global record-registry fallback can freeze the bare
+        // spelling into a binding type MIR cannot look up.
+        if !name.contains('.') && self.current_module_name.is_none() {
+            if let Some(canonical) = self.file_import_root_type_aliases.get(name).cloned() {
+                return self.resolve_named_type_ref(&canonical, args);
+            }
+        }
+
         // A global record registry is layout metadata, not lexical authority.
         // In particular, source-owned lifecycle payloads must reach this point
         // through the checker-published import binding above; their bare
@@ -22402,6 +22522,15 @@ impl LowerCtx {
             .get(&(self.current_module_name.clone(), name.to_string()))
         {
             return Some(self.resolve_named_type_ref(canonical, args));
+        }
+
+        // A flat-file-imported declaration sharing a compiler-special leaf
+        // (`Unit`, `Task`, `CancellationToken`) keeps source authority under
+        // its qualified identity, same as the root-authored branch below.
+        if self.current_module_name.is_none() {
+            if let Some(canonical) = self.file_import_root_type_aliases.get(name).cloned() {
+                return Some(self.resolve_named_type_ref(&canonical, args));
+            }
         }
 
         if self.current_module_name.is_none()

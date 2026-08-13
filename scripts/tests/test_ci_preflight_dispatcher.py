@@ -525,6 +525,111 @@ def test_types_lane_includes_checked_mir_run() -> None:
     )
 
 
+def test_mir_types_diff_routes_capability_authority_ratchet() -> None:
+    """hew-mir / hew-types diffs run the hew-capability-gen authority ratchet.
+
+    hew-capability-gen/tests/authority.rs pins checker coverage over the
+    capability surface STRUCTURALLY; the crate has no cargo dependency on
+    hew-mir or hew-types, so the reverse-dep closure never selects it.  A
+    hew-mir/hew-types branch broke structural_coverage_ratchet_is_pinned with
+    every closure-routed test green — this ratchet locks the explicit gate in.
+    """
+    result = run_dispatcher("hew-mir/src/lower.rs", "hew-types/src/check/resolution.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: compiler-pipeline" in result.stdout, result.stdout
+    assert (
+        "  - cargo nextest run --profile ci -p hew-capability-gen" in result.stdout
+    ), (
+        f"Expected the capability authority ratchet in the routing.\n"
+        f"stdout:\n{result.stdout}"
+    )
+
+
+def test_mir_types_diff_routes_cross_crate_catching_gates() -> None:
+    """The closure nextest run for hew-mir / hew-types diffs carries hew-cli
+    and hew-codegen-rs.
+
+    Two observed escape classes depend on this closure: a hew-mir/hew-types
+    change broke hew-cli/tests/affine_resource_carrier_boundaries.rs, and a
+    hew-types resolver change split stdlib nominal identity, caught only by
+    the hew-codegen-rs exec suites (sink_owned_element_exec).  Both catching
+    suites ride AFFECTED_PACKAGE_ARGS' reverse-dep closure; this ratchet pins
+    that the closure actually selects them, so a closure-computation change
+    cannot silently drop the coverage.
+    """
+    result = run_dispatcher("hew-mir/src/lower.rs", "hew-types/src/check/resolution.rs")
+    assert result.returncode == 0, result.stderr
+    nextest_lines = [
+        line
+        for line in result.stdout.splitlines()
+        if "cargo nextest run --profile ci" in line
+        and "-p hew-capability-gen" not in line
+    ]
+    assert nextest_lines, (
+        f"Expected a closure nextest command.\nstdout:\n{result.stdout}"
+    )
+    for package in ("-p hew-cli", "-p hew-codegen-rs"):
+        assert any(package in line for line in nextest_lines), (
+            f"Expected {package} in the closure nextest run.\nstdout:\n{result.stdout}"
+        )
+
+
+def test_types_resolver_diff_routes_codegen_exec_closure() -> None:
+    """A lone hew-types resolver diff still routes the codegen exec suites.
+
+    The nominal-identity escape came from a resolver change whose fallout was
+    only visible when hew-codegen-rs exec tests compiled and ran stdlib-using
+    programs.  The types lane's closure nextest must therefore carry
+    -p hew-codegen-rs (and the exec binaries with it) for resolver-file diffs.
+    """
+    result = run_dispatcher("hew-types/src/check/resolution.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: types" in result.stdout, result.stdout
+    assert "-p hew-codegen-rs" in result.stdout, (
+        f"Expected -p hew-codegen-rs in the types lane closure.\n"
+        f"stdout:\n{result.stdout}"
+    )
+    assert (
+        "  - cargo nextest run --profile ci -p hew-capability-gen" in result.stdout
+    ), (
+        f"Expected the capability authority ratchet for a hew-types diff.\n"
+        f"stdout:\n{result.stdout}"
+    )
+
+
+def test_codegen_emission_diff_routes_ll_oracle_golden_diff() -> None:
+    """hew-codegen-rs / hew-mir diffs run the ll-oracle golden diff.
+
+    A codegen epilogue reorder invalidated the ll-oracle goldens with the
+    whole compiler-pipeline lane green: nothing in the lane diffed the
+    committed per-function IR corpus.  make ll-diff (~45s) closes that class
+    for emission-reaching diffs; intentional drifts regenerate via ll-golden
+    in the same commit.
+    """
+    for path in ("hew-codegen-rs/src/llvm.rs", "hew-mir/src/lower.rs"):
+        result = run_dispatcher(path)
+        assert result.returncode == 0, result.stderr
+        assert "Selected profile: compiler-pipeline" in result.stdout, result.stdout
+        assert "  - make ll-diff" in result.stdout, (
+            f"Expected 'make ll-diff' for {path}.\nstdout:\n{result.stdout}"
+        )
+
+
+def test_fallback_lane_does_not_duplicate_side_channel_gates() -> None:
+    """The fallback lane already carries ll-diff and the full workspace run;
+    the side-channel flags must not append duplicates on top of it."""
+    result = run_dispatcher("hew-codegen-rs/src/llvm.rs", "tools/some-tool.py")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: comprehensive" in result.stdout, result.stdout
+    assert result.stdout.count("  - make ll-diff") == 1, result.stdout
+    assert (
+        "cargo nextest run --profile ci -p hew-capability-gen" not in result.stdout
+    ), (
+        f"make test already covers hew-capability-gen in the fallback lane.\n"
+        f"stdout:\n{result.stdout}"
+    )
+
+
 def test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages() -> None:
     """The compiler-pipeline and types lanes delegate hew-cli consumer-corpus
     coverage to make test-compiler-pipeline: its nextest invocation must keep

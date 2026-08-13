@@ -8447,6 +8447,7 @@ mod twin_gate_classifier {
     //! (the precise origin variant), fail-closed by default.
     use super::*;
     use crate::return_provenance::{AliasBits, CallScrutineeProvenance, ExternContractTable};
+    use hew_hir::HirProducedValueProducer;
 
     fn expr(kind: HirExprKind, ty: ResolvedTy) -> HirExpr {
         HirExpr {
@@ -8468,6 +8469,27 @@ mod twin_gate_classifier {
             },
             ty,
         )
+    }
+
+    /// A `ParamOwnershipFacts` carrying a single `Borrowed` produced-value fact
+    /// at the shared synthetic call site (`SiteId(u32::MAX)`, see `expr`
+    /// above). Stands in for the checker's HIR-level publication that a
+    /// module-fn call forwards a by-value heap parameter — the same fact
+    /// `classify_call_arm_scrutinee_origin` reads to reject the move.
+    fn borrowed_call_result_facts() -> ParamOwnershipFacts {
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            SiteId(u32::MAX),
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::Call,
+                ownership: ProducedValueOwnership::Borrowed,
+                relation: HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        facts
     }
 
     fn is_alias_reject(o: &ProjectedPayloadOrigin) -> bool {
@@ -8559,19 +8581,15 @@ mod twin_gate_classifier {
 
     #[test]
     fn call_forwarding_a_param_summary_rejects() {
-        // A resolved module-fn callee whose precise summary carries PARAM forwards
-        // a by-value heap parameter — the twin gate rejects it (defence-in-depth
-        // for the #2523 forwarding-call twin; the preflight owns the same reject).
-        let mut b = Builder::default();
-        let mut provenance = HashMap::new();
-        provenance.insert(hew_hir::ItemId(7), AliasBits::PARAM);
-        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
-            provenance,
-            extern_names: HashSet::new(),
-            extern_table: ExternContractTable::default(),
-            may_mutate: HashMap::new(),
-            ..CallScrutineeProvenance::default()
-        });
+        // A module-fn callee whose HIR-checked produced-value fact is `Borrowed`
+        // forwards a by-value heap parameter — the classify arm treats a
+        // `Borrowed` call result as caller-visible-alias and rejects the move
+        // (the checker publishes this fact for a PARAM-forwarding return; see
+        // `resolve_user_call_facts` in hew-hir/src/verify.rs).
+        let b = Builder {
+            param_ownership: Rc::new(borrowed_call_result_facts()),
+            ..Builder::default()
+        };
         let callee = expr(
             HirExprKind::BindingRef {
                 name: "passthru".to_string(),
@@ -8646,16 +8664,14 @@ mod twin_gate_classifier {
     fn call_with_mixed_param_opaque_summary_rejects_despite_fresh_args() {
         // A mixed `PARAM|OPAQUE` summary is never arg-rescuable — the OPAQUE
         // component can alias a capture/global regardless of the arguments.
-        let mut b = Builder::default();
-        let mut provenance = HashMap::new();
-        provenance.insert(hew_hir::ItemId(7), AliasBits::PARAM | AliasBits::OPAQUE);
-        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
-            provenance,
-            extern_names: HashSet::new(),
-            extern_table: ExternContractTable::default(),
-            may_mutate: HashMap::new(),
-            ..CallScrutineeProvenance::default()
-        });
+        // At the HIR fact level this still publishes as `Borrowed` (an aliasing
+        // return, full stop; the checker does not distinguish PARAM-only from
+        // PARAM|OPAQUE once either forces non-fresh), so the fixture is the
+        // same shape as the PARAM-only reject above.
+        let b = Builder {
+            param_ownership: Rc::new(borrowed_call_result_facts()),
+            ..Builder::default()
+        };
         let callee = expr(
             HirExprKind::BindingRef {
                 name: "mixed".to_string(),

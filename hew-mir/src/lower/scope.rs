@@ -269,8 +269,9 @@ impl Builder {
             // reassignment, and mark the cursor init so the composite-drop
             // provers keep the root's single release authority admitted
             // (`vec_iter_projection_borrow_inits`).
-            if let Some(root) = self.vec_iter_source_live_binding_record_field_root(value) {
+            if let Some((root, path)) = self.vec_iter_source_live_binding_record_field_path(value) {
                 self.vec_iter_borrowed_sources.push((scope, root));
+                self.vec_iter_borrowed_projections.push((scope, root, path));
                 if let Some(init) = value_place {
                     self.vec_iter_projection_borrow_inits.insert(init);
                 }
@@ -332,6 +333,8 @@ impl Builder {
         }
         self.vec_iter_borrowed_sources
             .retain(|(scope, _)| *scope != scope_id);
+        self.vec_iter_borrowed_projections
+            .retain(|(scope, ..)| *scope != scope_id);
     }
 
     /// Release the `vec` handle of every registered `for x in …` cursor
@@ -596,20 +599,38 @@ impl Builder {
         &self,
         value: &HirExpr,
     ) -> Option<hew_hir::BindingId> {
+        self.vec_iter_source_live_binding_record_field_path(value)
+            .map(|(root, _)| root)
+    }
+    /// Path-carrying sibling of
+    /// [`Self::vec_iter_source_live_binding_record_field_root`]: the live root
+    /// binding AND the projected field-name chain in root→leaf order
+    /// (`outer.inner.items` → `(outer, ["inner", "items"])`). The chain feeds
+    /// `vec_iter_borrowed_projections`, whose prefix guard rejects
+    /// record-field stores that would overwrite the borrowed handle's slot
+    /// mid-loop.
+    pub(crate) fn vec_iter_source_live_binding_record_field_path(
+        &self,
+        value: &HirExpr,
+    ) -> Option<(hew_hir::BindingId, Vec<String>)> {
         let mut cur = vec_iter_init_vec_source_expr(value)?;
-        let mut projected = false;
+        let mut path: Vec<String> = Vec::new();
         loop {
             match &cur.kind {
                 HirExprKind::SubsumedValue { source, .. } => cur = source,
-                HirExprKind::FieldAccess { object, .. } => {
-                    projected = true;
+                HirExprKind::FieldAccess { object, field } => {
+                    path.push(field.clone());
                     cur = object;
                 }
                 HirExprKind::BindingRef {
                     resolved: ResolvedRef::Binding(id),
                     ..
                 } => {
-                    return (projected && self.binding_locals.contains_key(id)).then_some(*id);
+                    if path.is_empty() || !self.binding_locals.contains_key(id) {
+                        return None;
+                    }
+                    path.reverse();
+                    return Some((*id, path));
                 }
                 _ => return None,
             }

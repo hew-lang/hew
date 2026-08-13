@@ -838,6 +838,21 @@ struct Builder {
     /// invalidate `cursor.vec`; those ownership boundaries reject until the
     /// cursor scope closes.
     pub(crate) vec_iter_borrowed_sources: Vec<(ScopeId, hew_hir::BindingId)>,
+    /// Full field paths (root binding + field-name chain, root→leaf) of
+    /// `for x in root.f…` cursors whose `vec` handle BORROWS a record-field
+    /// projection. `vec_iter_borrowed_sources` holds the ROOT for the
+    /// whole-value move/reassign guards; this twin holds the PATH for the
+    /// record-field-store guard. While an entry is active, a store whose
+    /// target path is the projection itself or ANY prefix of it
+    /// (`root.f = …`; `root.mid = …` while iterating `root.mid.f`) would
+    /// overwrite the slot holding the borrowed handle — the cursor's own
+    /// handle copy (cursor field 0) then dereferences released storage — so
+    /// those stores reject until the cursor scope closes. Element-level
+    /// mutation through the SAME handle (`root.f[i] = …`, `root.f.push(…)`,
+    /// `root.f.clear()`) stays allowed: every `next` re-loads the handle,
+    /// re-probes `hew_vec_len`, and clones the element out, so in-place
+    /// mutation is a memory-safe live view.
+    pub(crate) vec_iter_borrowed_projections: Vec<(ScopeId, hew_hir::BindingId, Vec<String>)>,
     /// `RecordInit` destination places of `for x in root.field` cursor inits
     /// whose `vec` handle BORROWS a field projection rooted at a live
     /// local/param binding

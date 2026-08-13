@@ -370,6 +370,95 @@ fn borrowed_for_source_cannot_move_or_reassign_until_cursor_scope_closes() {
 }
 
 #[test]
+fn borrowed_projection_prefix_stores_reject_while_cursor_active() {
+    let pipeline = pipeline_allowing_mir_diagnostics(
+        r"
+        record Holder {
+            items: Vec<i64>,
+        }
+
+        record Inner {
+            items: Vec<i64>,
+        }
+
+        record Outer {
+            inner: Inner,
+            spare: Vec<i64>,
+        }
+
+        fn make() -> Vec<i64> {
+            [1, 2, 3]
+        }
+
+        fn direct_store() {
+            var holder = Holder { items: make() };
+            for value in holder.items {
+                holder.items = make();
+                print(value);
+            }
+        }
+
+        fn nested_store() {
+            var outer = Outer { inner: Inner { items: make() }, spare: make() };
+            for value in outer.inner.items {
+                outer.inner.items = make();
+                print(value);
+            }
+        }
+
+        fn prefix_store() {
+            var outer = Outer { inner: Inner { items: make() }, spare: make() };
+            for value in outer.inner.items {
+                outer.inner = Inner { items: make() };
+                print(value);
+            }
+        }
+
+        fn sibling_store_stays_valid() {
+            var outer = Outer { inner: Inner { items: make() }, spare: make() };
+            for value in outer.inner.items {
+                outer.spare = make();
+                print(value);
+            }
+        }
+        ",
+    );
+
+    let constructs: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| match &diagnostic.kind {
+            hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("while a VecIter cursor borrows it") =>
+            {
+                Some(construct.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        constructs.len(),
+        3,
+        "the projection itself, its full nested path, and every prefix must \
+         reject while the borrowed field cursor is active, while a disjoint \
+         sibling field store stays valid: {:#?}",
+        pipeline.diagnostics
+    );
+    for expected in [
+        "assigning `holder.items`",
+        "assigning `outer.inner.items`",
+        "assigning `outer.inner`",
+    ] {
+        assert!(
+            constructs
+                .iter()
+                .any(|construct| construct.starts_with(expected)),
+            "missing rejection for {expected}: {constructs:#?}"
+        );
+    }
+}
+
+#[test]
 fn vec_iter_yield_cancel_cleanup_is_path_exact_or_rejected() {
     let pipeline = pipeline_allowing_mir_diagnostics(
         r"

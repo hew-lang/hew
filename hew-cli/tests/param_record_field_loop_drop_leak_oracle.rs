@@ -244,6 +244,87 @@ fn main() {
 }
 "#;
 
+/// The projection-store bypass: assigning the ITERATED field mid-loop
+/// replaced the slot holding the borrowed handle while the cursor's own handle
+/// copy kept dereferencing the old storage — an abort under the poisoned
+/// allocator and reused-handle reads (`40,40,40,40` from `[40, 2]`) without
+/// it. The store now rejects at check-time (`vec_iter_borrowed_projections`
+/// prefix guard), so the runtime scenario is unreachable by construction.
+const PROJECTION_STORE_MID_LOOP_SOURCE: &str = r#"
+record Holder {
+    items: Vec<i64>,
+}
+
+fn main() {
+    var items: Vec<i64> = Vec::new();
+    items.push(40);
+    items.push(2);
+    var holder = Holder { items: items };
+    for value in holder.items {
+        println(f"{value}");
+        holder.items = Vec::new();
+    }
+}
+"#;
+
+/// Element-level mutation of the iterated field through the SHARED handle:
+/// `push` mid-loop extends the live view (the appended element is visited),
+/// `clear` ends it (the next length probe reads 0). Every `next` re-loads the
+/// handle from the cursor and clones the element out, so neither operation
+/// can leave the cursor holding a stale buffer pointer.
+const ITERATED_FIELD_PUSH_CLEAR_SOURCE: &str = r#"
+record Holder {
+    items: Vec<i64>,
+}
+
+fn main() {
+    var items: Vec<i64> = Vec::new();
+    items.push(40);
+    items.push(2);
+    var holder = Holder { items: items };
+    var seen: i64 = 0;
+    var total: i64 = 0;
+    for value in holder.items {
+        seen = seen + 1;
+        total = total + value;
+        if seen == 1 {
+            holder.items.push(7);
+        }
+        if seen == 3 {
+            holder.items.clear();
+        }
+    }
+    println(f"seen={seen} total={total} len={holder.items.len()}");
+}
+"#;
+
+/// Index assignment INTO the iterated field (`holder.items[1] = 9`) is an
+/// in-place element store through the shared handle — bounds-checked, no
+/// handle replacement — so the cursor observes the new element on the next
+/// clone-out: a live view, not a stale read.
+const ITERATED_FIELD_INDEX_SET_SOURCE: &str = r#"
+record Holder {
+    items: Vec<i64>,
+}
+
+fn main() {
+    var items: Vec<i64> = Vec::new();
+    items.push(40);
+    items.push(2);
+    var holder = Holder { items: items };
+    var seen: i64 = 0;
+    var total: i64 = 0;
+    for value in holder.items {
+        if seen == 0 {
+            holder.items[1] = 9;
+        }
+        seen = seen + 1;
+        total = total + value;
+    }
+    println(f"seen={seen} total={total}");
+}
+"#;
+
 fn param_field_loop_source(frames: usize) -> String {
     PARAM_FIELD_LOOP_TEMPLATE.replace("__FRAMES__", &frames.to_string())
 }
@@ -262,6 +343,94 @@ fn compile_and_run(source: &str, dir: &std::path::Path, name: &str) -> std::path
         describe_output(&output)
     );
     bin
+}
+
+#[test]
+fn projection_store_mid_loop_rejects_at_check_time() {
+    let dir = tempfile::Builder::new()
+        .prefix("projection-store-mid-loop-")
+        .tempdir()
+        .expect("tempdir");
+    let hew_src = dir.path().join("projection_store_mid_loop.hew");
+    std::fs::write(&hew_src, PROJECTION_STORE_MID_LOOP_SOURCE).expect("write hew source");
+
+    let output = std::process::Command::new(support::hew_binary())
+        .args(["check", hew_src.to_str().expect("hew src utf-8")])
+        .current_dir(support::repo_root())
+        .output()
+        .expect("invoke hew check");
+    assert!(
+        !output.status.success(),
+        "storing to the iterated field projection mid-loop must reject at \
+         check-time — accepting it re-opens the mid-loop handle replacement \
+         (poisoned-allocator abort / reused-handle reads):\n{}",
+        describe_output(&output)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("assigning `holder.items` while a VecIter cursor borrows it"),
+        "the rejection must name the projected path and the borrowing cursor:\n{}",
+        describe_output(&output)
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the poisoned allocator contract is macOS-only; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn iterated_field_push_and_clear_run_as_live_view() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("iterated-field-push-clear-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_and_run(
+        ITERATED_FIELD_PUSH_CLEAR_SOURCE,
+        dir.path(),
+        "iterated_field_push_clear",
+    );
+    let output = run_under_malloc_scribble(&bin);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "seen=3 total=49 len=0\n",
+        "a mid-loop push must extend the live view (the appended 7 is visited) \
+         and a mid-loop clear must end it at the next length probe"
+    );
+    assert_eq!(
+        measure_leaks_exact(&bin),
+        (0, 0),
+        "element mutation through the shared handle must not strand cleared or \
+         reallocated element storage"
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the poisoned allocator contract is macOS-only; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn iterated_field_index_set_runs_in_place() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("iterated-field-index-set-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_and_run(
+        ITERATED_FIELD_INDEX_SET_SOURCE,
+        dir.path(),
+        "iterated_field_index_set",
+    );
+    let output = run_under_malloc_scribble(&bin);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "seen=2 total=49\n",
+        "an in-place element store into the iterated field must be observed by \
+         the cursor's next clone-out (40 then the stored 9)"
+    );
+    assert_eq!(measure_leaks_exact(&bin), (0, 0));
 }
 
 #[cfg_attr(

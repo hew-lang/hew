@@ -447,7 +447,7 @@ is_ll_oracle_path() {
     # change can drift it (e.g. an epilogue reorder), and nothing else in the
     # narrow lanes diffs those goldens — only make ll-diff does (~45s).
     case "$1" in
-        hew-codegen-rs/*|hew-mir/*|tests/ll-oracle/*)
+        hew-hir/*|hew-mir/*|hew-codegen-rs/*|tests/ll-oracle/*)
             return 0
             ;;
     esac

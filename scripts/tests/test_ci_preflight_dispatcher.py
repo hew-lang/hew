@@ -598,7 +598,7 @@ def test_types_resolver_diff_routes_codegen_exec_closure() -> None:
 
 
 def test_codegen_emission_diff_routes_ll_oracle_golden_diff() -> None:
-    """hew-codegen-rs / hew-mir diffs run the ll-oracle golden diff.
+    """hew-hir / hew-codegen-rs / hew-mir diffs run the ll-oracle golden diff.
 
     A codegen epilogue reorder invalidated the ll-oracle goldens with the
     whole compiler-pipeline lane green: nothing in the lane diffed the
@@ -606,7 +606,11 @@ def test_codegen_emission_diff_routes_ll_oracle_golden_diff() -> None:
     for emission-reaching diffs; intentional drifts regenerate via ll-golden
     in the same commit.
     """
-    for path in ("hew-codegen-rs/src/llvm.rs", "hew-mir/src/lower.rs"):
+    for path in (
+        "hew-hir/src/lib.rs",
+        "hew-codegen-rs/src/llvm.rs",
+        "hew-mir/src/lower.rs",
+    ):
         result = run_dispatcher(path)
         assert result.returncode == 0, result.stderr
         assert "Selected profile: compiler-pipeline" in result.stdout, result.stdout

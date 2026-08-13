@@ -1,0 +1,61 @@
+// A child passed to a consume parameter moves from the caller into the native
+// sink. Reusing it would create two release authorities for one opaque resource.
+#[opaque]
+type Handle {
+}
+
+// This mirrors the shipped encoding-builder contract, including the consuming
+// `free()` compatibility alias for the compiler-visible `close()` disposer.
+#[resource]
+type Value {
+    handle: Handle;
+}
+
+trait ValueMethods {
+    fn free(consuming self);
+
+    #[returns_receiver]
+    fn absorb(consuming self, consume child: Value) -> Self;
+}
+
+impl ValueMethods for Value {
+    fn free(consuming self) {
+        self.close();
+    }
+    #[returns_receiver]
+    fn absorb(consuming self, consume child: Value) -> Value {
+        unsafe {
+            hpush(self.handle, child.release())
+        };
+        self
+    }
+}
+
+impl Value {
+    fn close(consuming self) {
+        unsafe {
+            hclose(self.handle)
+        };
+    }
+    fn release(consuming self) -> Handle {
+        self.handle
+    }
+}
+
+extern "C" {
+    fn hclose(consume handle: Handle);
+    fn hpush(handle: Handle, consume child: Handle);
+    fn hmake() -> Handle;
+}
+
+fn main() {
+    let owner = Value { handle: unsafe {
+        hmake()
+    } };
+    let child = Value { handle: unsafe {
+        hmake()
+    } };
+    let combined = owner.absorb(child);
+    child.close();
+    combined.free();
+}

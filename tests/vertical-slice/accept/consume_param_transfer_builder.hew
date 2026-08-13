@@ -1,0 +1,93 @@
+#[opaque]
+type Handle {
+}
+// Model the shipped value-tree contract with an explicit native-handle field:
+// builders consume a child while returning their consuming receiver, and
+// `free()` remains a consuming compatibility alias of `close()`. Returning the
+// resource through a Result payload also exercises aggregate ownership.
+#[resource]
+type Value {
+    handle: Handle;
+}
+
+trait ValueMethods {
+    fn free(consuming self);
+
+    #[returns_receiver]
+    fn push(consuming self, consume child: Value) -> Self;
+}
+
+pub enum BuildError {
+    Failed(string);
+}
+
+impl ValueMethods for Value {
+    fn free(consuming self) {
+        self.close();
+    }
+    #[returns_receiver]
+    fn push(consuming self, consume child: Value) -> Value {
+        unsafe {
+            hpush(self.handle, child.release())
+        };
+        self
+    }
+}
+
+impl Value {
+    fn close(consuming self) {
+        unsafe {
+            hclose(self.handle)
+        };
+    }
+    fn release(consuming self) -> Handle {
+        self.handle
+    }
+}
+
+extern "C" {
+    fn hclose(consume handle: Handle);
+    fn hpush(handle: Handle, consume child: Handle);
+    fn hmake() -> Handle;
+    fn hkind(handle: Handle) -> i32;
+}
+
+fn try_build() -> Result<Value, BuildError> {
+    let value = Value { handle: unsafe {
+        hmake()
+    } };
+    if unsafe {
+        hkind(value.handle)
+    } >= 0 {
+        let child = Value { handle: unsafe {
+            hmake()
+        } };
+        Ok(value.push(child))
+    } else {
+        value.close();
+        Err(BuildError::Failed("bad handle"))
+    }
+}
+
+fn close_canonical() {
+    match try_build() {
+        Ok(value) => {
+            value.close();
+        },
+        Err(BuildError::Failed(_)) => {},
+    }
+}
+
+fn close_compatibility_alias() {
+    match try_build() {
+        Ok(value) => {
+            value.free();
+        },
+        Err(BuildError::Failed(_)) => {},
+    }
+}
+
+fn main() {
+    close_canonical();
+    close_compatibility_alias();
+}

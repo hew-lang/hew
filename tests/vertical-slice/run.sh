@@ -1206,6 +1206,23 @@ run_accept_expect_stdout "user_resource_close_multiple_types"
 # gate bug 1.)
 run_accept_expect_stdout "resource_nonreceiver_method_arg_drops_once"
 
+# A fluent builder transfers a consumed child into its receiver while returning
+# that receiver, matching the standard encoding value-tree contract. The accept
+# fixture also pins both explicit release spellings: compiler-visible `close()`
+# and its consuming `free()` compatibility alias.
+"${HEW}" check \
+    "${ROOT}/tests/vertical-slice/accept/consume_param_transfer_builder.hew" \
+    >"${accept_output}" 2>&1
+
+# Reusing the transferred child must fail at checked MIR with main's concrete
+# consume-parameter diagnostic.
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/consume_param_transfer_builder_use_after_move.hew" \
+    'binding `child` is used after it was consumed' \
+    "consume param transfer builder use after move"
+grep -qF 'MIR kind: UseAfterConsume' "${reject_output}"
+
 # Drop-obligation lattice, `MachineStatePayload` position: a `#[resource]` /
 # `#[linear]` value in a machine state payload has no wired release on
 # transition or scope exit, so the declaration is rejected rather than leaking

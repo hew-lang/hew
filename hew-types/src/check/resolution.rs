@@ -2295,10 +2295,32 @@ impl Checker {
             args: placeholder_args,
             builtin: None,
         };
-        matches!(
-            self.expand_type_aliases(&probe, &mut HashSet::new()),
-            Ty::Error
-        )
+        self.alias_expansion_has_cycle(&probe, &mut HashSet::new())
+    }
+
+    /// Walk an alias expansion and distinguish an actual cycle from an
+    /// unrelated `Ty::Error` already reported while resolving the target.
+    fn alias_expansion_has_cycle(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
+        if let Ty::Named { name, args, .. } = ty {
+            if let Some(target) = self.alias_target_for_instance(name, args) {
+                if !visiting.insert(name.clone()) {
+                    return true;
+                }
+                let has_cycle = self.alias_expansion_has_cycle(&target, visiting);
+                visiting.remove(name);
+                return has_cycle;
+            }
+        }
+
+        let has_cycle = std::cell::Cell::new(false);
+        let _ = ty.map_children_pub(&|child| {
+            let mut child_visiting = visiting.clone();
+            if self.alias_expansion_has_cycle(child, &mut child_visiting) {
+                has_cycle.set(true);
+            }
+            child.clone()
+        });
+        has_cycle.get()
     }
 
     fn expand_type_aliases(&self, ty: &Ty, visiting: &mut HashSet<String>) -> Ty {

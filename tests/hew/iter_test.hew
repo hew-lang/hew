@@ -13,6 +13,16 @@ import std::iter;
 
 import std::testing;
 
+record Claim {
+    run_id: string,
+    amount: i64
+}
+
+record ClaimsLedger {
+    claims: Vec<Claim>,
+    terminal_runs: Vec<string>
+}
+
 // ── map ────────────────────────────────────────────────────────────────────
 #[test]
 fn test_map_str_transforms_each_element() {
@@ -376,4 +386,175 @@ fn test_vec_from_array_uses_the_canonical_vec_construction() {
     let values: Vec<i64> = Vec::from([4, 5, 6]);
     testing.assert_eq(values.len(), 3);
     testing.assert_eq(values[1], 5);
+}
+
+#[test]
+fn test_vec_iter_filter_method_keeps_exact_matching_values() {
+    let values: Vec<i64> = Vec::new();
+    values.push(2);
+    values.push(3);
+    values.push(4);
+    values.push(5);
+    let filtered = values.into_iter().filter(|value: i64| value % 2 == 0);
+    let result = iter::collect(filtered);
+    testing.assert_eq(result.len(), 2);
+    testing.assert_eq(result[0], 2);
+    testing.assert_eq(result[1], 4);
+}
+
+#[test]
+fn test_vec_iter_fold_method_accumulates_exact_value() {
+    let values: Vec<i64> = Vec::new();
+    values.push(2);
+    values.push(3);
+    values.push(4);
+    let product = values.into_iter().fold(1, |acc: i64, value: i64| acc * value);
+    testing.assert_eq(product, 24);
+}
+
+#[test]
+fn test_vec_iter_any_method_short_circuits_to_true() {
+    let values: Vec<string> = Vec::new();
+    values.push("alpha");
+    values.push("beta");
+    values.push("gamma");
+    testing.assert_true(values.into_iter().any(|value: string| value == "beta"));
+}
+
+#[test]
+fn test_vec_iter_all_method_detects_a_non_matching_value() {
+    let values: Vec<i64> = Vec::new();
+    values.push(4);
+    values.push(6);
+    values.push(7);
+    testing.assert_false(values.into_iter().all(|value: i64| value % 2 == 0));
+}
+
+#[test]
+fn test_vec_iter_find_method_returns_the_exact_item() {
+    let values: Vec<string> = Vec::new();
+    values.push("one");
+    values.push("two");
+    values.push("three");
+    match values.into_iter().find(|value: string| value.starts_with("tw")) {
+        Some(value) => testing.assert_eq_str(value, "two"),
+        None => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_vec_iter_count_method_counts_every_item() {
+    let values: Vec<i64> = Vec::new();
+    values.push(11);
+    values.push(22);
+    values.push(33);
+    values.push(44);
+    testing.assert_eq(values.into_iter().count(), 4);
+}
+
+#[test]
+fn test_vec_iter_enumerate_method_keeps_indices_and_values() {
+    let values: Vec<i64> = Vec::new();
+    values.push(7);
+    values.push(9);
+    let indexed = iter::collect(values.into_iter().enumerate());
+    testing.assert_eq(indexed.len(), 2);
+    testing.assert_eq(indexed[0].0, 0);
+    testing.assert_eq(indexed[0].1, 7);
+    testing.assert_eq(indexed[1].0, 1);
+    testing.assert_eq(indexed[1].1, 9);
+}
+
+#[test]
+fn test_vec_iter_take_method_clamps_to_exact_prefix() {
+    let values: Vec<i64> = Vec::new();
+    values.push(5);
+    values.push(6);
+    values.push(7);
+    let prefix = iter::collect(values.into_iter().take(2));
+    testing.assert_eq(prefix.len(), 2);
+    testing.assert_eq(prefix[0], 5);
+    testing.assert_eq(prefix[1], 6);
+}
+
+#[test]
+fn test_vec_iter_skip_method_keeps_exact_suffix() {
+    let values: Vec<i64> = Vec::new();
+    values.push(5);
+    values.push(6);
+    values.push(7);
+    let suffix = iter::collect(values.into_iter().skip(2));
+    testing.assert_eq(suffix.len(), 1);
+    testing.assert_eq(suffix[0], 7);
+}
+
+#[test]
+fn test_vec_iter_collect_method_preserves_every_value() {
+    let values: Vec<i64> = Vec::new();
+    values.push(8);
+    values.push(13);
+    values.push(21);
+    let collected = values.into_iter().collect();
+    testing.assert_eq(collected.len(), 3);
+    testing.assert_eq(collected[0], 8);
+    testing.assert_eq(collected[1], 13);
+    testing.assert_eq(collected[2], 21);
+}
+
+#[test]
+fn test_filter_map_collect_two_deep_chain_preserves_values() {
+    let values: Vec<i64> = Vec::new();
+    values.push(1);
+    values.push(2);
+    values.push(3);
+    values.push(4);
+    let filtered = values.into_iter().filter(|value: i64| value % 2 == 0);
+    let mapped = iter::map(filtered, |value: i64| value * 10);
+    let result = iter::collect(mapped);
+    testing.assert_eq(result.len(), 2);
+    testing.assert_eq(result[0], 20);
+    testing.assert_eq(result[1], 40);
+}
+
+#[test]
+fn test_terminal_into_iter_method_chain_executes() {
+    let values: Vec<i64> = Vec::new();
+    values.push(3);
+    values.push(4);
+    values.push(5);
+    let total = values.into_iter().fold(0, |acc: i64, value: i64| acc + value);
+    testing.assert_eq(total, 12);
+}
+
+#[test]
+fn test_let_bound_into_iter_method_chain_executes() {
+    let values: Vec<i64> = Vec::new();
+    values.push(9);
+    values.push(10);
+    let iterator = values.into_iter();
+    testing.assert_eq(iterator.count(), 2);
+}
+
+fn without_terminal_claims(ledger: ClaimsLedger) -> Vec<Claim> {
+    let terminal_runs = ledger.terminal_runs;
+    let claims = ledger.claims.into_iter();
+    let active = claims.filter(|claim: Claim| !terminal_runs.contains(claim.run_id));
+    iter::collect(active)
+}
+
+#[test]
+fn test_claims_ledger_filter_collect_keeps_non_terminal_claims() {
+    let claims: Vec<Claim> = Vec::new();
+    claims.push(Claim { run_id: "first", amount: 10 });
+    claims.push(Claim { run_id: "terminal", amount: 20 });
+    claims.push(Claim { run_id: "last", amount: 30 });
+    let terminal_runs: Vec<string> = Vec::new();
+    terminal_runs.push("terminal");
+    let ledger = ClaimsLedger { claims: claims, terminal_runs: terminal_runs };
+    let active = without_terminal_claims(ledger);
+    testing.assert_eq(active.len(), 2);
+    testing.assert_eq_str(active[0].run_id, "first");
+    testing.assert_eq(active[0].amount, 10);
+    testing.assert_eq_str(active[1].run_id, "last");
+    testing.assert_eq(active[1].amount, 30);
 }

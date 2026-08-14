@@ -52,8 +52,9 @@ hew install
 
 ### Registry
 
-- `hew publish [--registry <NAME>]` — Publish package to the registry
+- `hew publish [--registry <NAME>]` — Publish package to a remote registry (requires `hew login`; fails if the remote publish fails)
   - `--registry`, `-r` — Use a named registry from config
+  - `--local` — Install into the local package registry only; never contacts a remote registry
 - `hew list` — List installed packages
 - `hew search <QUERY> [--category <CATEGORY>] [--page <N>] [--per-page <N>] [--registry <NAME>]` — Search for packages
   - `--registry`, `-r` — Use a named registry from config

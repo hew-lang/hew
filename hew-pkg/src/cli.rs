@@ -45,6 +45,10 @@ pub enum PkgCommand {
         /// Use a named registry from config
         #[arg(long, short = 'r')]
         registry: Option<String>,
+        /// Install into the local package registry only; never contacts a
+        /// remote registry
+        #[arg(long, conflicts_with = "registry")]
+        local: bool,
     },
     /// List packages in the local registry
     List,
@@ -212,7 +216,10 @@ pub fn dispatch(cmd: &PkgCommand) {
             locked,
             registry: reg,
         } => cmd_install(*locked, &registry, reg.as_deref()),
-        PkgCommand::Publish { registry: reg } => cmd_publish(&registry, reg.as_deref()),
+        PkgCommand::Publish {
+            registry: reg,
+            local,
+        } => cmd_publish(&registry, reg.as_deref(), *local),
         PkgCommand::List => cmd_list(&registry),
         PkgCommand::Search {
             query,
@@ -874,7 +881,7 @@ fn verify_registry_signature(
     clippy::too_many_lines,
     reason = "CLI command handler requires many steps"
 )]
-fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
+fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>, local: bool) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
     if !manifest_path.exists() {
@@ -971,6 +978,24 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
             }
         })
         .collect();
+
+    if local {
+        let dest = registry.package_dir(&m.package.name, &m.package.version);
+        if let Err(e) = copy_dir(&cwd, &dest) {
+            eprintln!("hew publish: {e}");
+            std::process::exit(1);
+        }
+        println!(
+            "Published {}@{} to {} (local registry only — not published to a remote registry)",
+            m.package.name,
+            m.package.version,
+            dest.display()
+        );
+        println!("Checksum: {}", pack_result.checksum);
+        println!("Signature: {signature}");
+        println!("Key: {fingerprint}");
+        return;
+    }
 
     // Try remote publish first if we have credentials.
     let cred_path = credentials::credentials_path();

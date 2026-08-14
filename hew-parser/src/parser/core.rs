@@ -674,6 +674,15 @@ impl<'src> Parser<'src> {
             || Self::contextual_keyword_name(tok).is_some()
     }
 
+    pub(crate) fn import_path_segment_text(tok: &Token<'_>) -> Option<String> {
+        match tok {
+            Token::Identifier(name) => Some((*name).to_string()),
+            _ => Self::import_path_segment_keyword(tok)
+                .or_else(|| Self::contextual_keyword_name(tok))
+                .map(str::to_string),
+        }
+    }
+
     pub(crate) fn expect_import_path_segment(&mut self) -> Option<String> {
         match self.peek() {
             Some(tok) => {

@@ -1823,6 +1823,23 @@ fn parse_import_statement() {
 }
 
 #[test]
+fn hyphenated_package_import_suggests_manifest_name() {
+    let result = parse("import config-telemetry::types;");
+    assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
+
+    let error = &result.errors[0];
+    assert_eq!(
+        error.message,
+        "package name `config-telemetry` cannot be used in an import"
+    );
+    assert_eq!(
+        error.hint.as_deref(),
+        Some("set `name = \"config_telemetry\"` in `hew.toml` and import `config_telemetry`")
+    );
+    assert_eq!(error.span, 13..14);
+}
+
+#[test]
 fn parse_import_actor_path_segment() {
     let source = "import std::actor::monitor;";
     let result = parse(source);

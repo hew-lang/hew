@@ -145,6 +145,35 @@ fn init_dot_and_no_arg_produce_the_same_project_name() {
 }
 
 #[test]
+fn init_dot_normalizes_hyphenated_package_name_without_renaming_directory() {
+    let tmp = support::tempdir();
+    let project_dir = tmp.path().join("config-telemetry");
+    fs::create_dir(&project_dir).unwrap();
+
+    let out = run_hew(&project_dir, &["init", "."]);
+
+    assert!(
+        out.status.success(),
+        "hew init . failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let manifest = fs::read_to_string(project_dir.join("hew.toml")).unwrap();
+    assert!(
+        manifest.contains("name = \"config_telemetry\""),
+        "hew.toml should use an importable package identifier; got:\n{manifest}"
+    );
+    assert!(
+        project_dir.exists(),
+        "hew init must keep the hyphenated directory name"
+    );
+    assert!(
+        !tmp.path().join("config_telemetry").exists(),
+        "hew init must not create a renamed sibling directory"
+    );
+}
+
+#[test]
 fn init_refuses_existing_manifest_untouched() {
     let tmp = support::tempdir();
     fs::write(tmp.path().join("hew.toml"), "sentinel manifest").unwrap();

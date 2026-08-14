@@ -2513,6 +2513,18 @@ fn apply_balance_instr(
                 }
             }
         }
+        Instr::ConstI64 {
+            dest: Place::EnumTag(local),
+            value: 1,
+        } => {
+            // `None` overwrites the carrier with an empty variant. Its old
+            // payload, if any, has already been discharged by the path that
+            // produced this terminal result; a following carrier drop must
+            // remain a no-op instead of charging that release twice.
+            if cx.tracked.contains_key(local) {
+                obligation_entry(state, *local).neutralized = PayloadNeutralized::Yes;
+            }
+        }
         Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => {
             if let Some(root) = cx.tracked_root(*src) {
                 if retained_share_move {

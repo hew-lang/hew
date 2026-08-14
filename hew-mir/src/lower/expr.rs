@@ -313,17 +313,12 @@ impl Builder {
         });
 
         self.start_block(none_bb);
-        let none_tag = self.alloc_local(ResolvedTy::I64);
-        self.push_instr(Instr::ConstI64 {
-            dest: none_tag,
-            value: 1,
-        });
         let Place::Local(result_local) = result else {
             unreachable!("alloc_local returns Place::Local");
         };
-        self.push_instr(Instr::Move {
+        self.push_instr(Instr::ConstI64 {
             dest: Place::EnumTag(result_local),
-            src: none_tag,
+            value: 1,
         });
         self.finish_current_block(Terminator::Goto { target: join_bb });
 

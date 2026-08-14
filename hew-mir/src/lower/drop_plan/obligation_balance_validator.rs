@@ -797,7 +797,12 @@ fn empty_enum_tag_does_not_remint_a_discharged_call_scrutinee() {
             Terminator::Return,
         ),
     ];
-    let plans = vec![(ExitPath::Return { block: 1 }, DropPlan::default())];
+    let plans = vec![(
+        ExitPath::Return { block: 1 },
+        DropPlan {
+            drops: vec![plain_drop(Place::Local(1))],
+        },
+    )];
     let findings = run(blocks, plans, &[(1, "__hew_call_scrutinee")]);
     assert!(
         findings.is_empty(),

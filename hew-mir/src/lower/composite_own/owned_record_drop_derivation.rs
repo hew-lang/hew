@@ -82,6 +82,7 @@ fn derive_with_field_ty(
         &hew_hir::LifecycleRegistry::default(),
         &[],
         &HashMap::new(),
+        &HashSet::new(),
     )
 }
 
@@ -108,6 +109,7 @@ fn derive_with_field_ty_and_enums(
         &hew_hir::LifecycleRegistry::default(),
         &[],
         &HashMap::new(),
+        &HashSet::new(),
     )
 }
 
@@ -202,6 +204,7 @@ fn derive_with_pbca(
         &hew_hir::LifecycleRegistry::default(),
         &[],
         proven_borrow_call_args,
+        &HashSet::new(),
     )
 }
 

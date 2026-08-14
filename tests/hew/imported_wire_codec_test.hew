@@ -1,0 +1,60 @@
+//! Cross-module `#[wire]` codec regression coverage.
+//!
+//! A `#[wire]` type in a module carries its codec surface on the
+//! module-qualified identity: instance methods (`to_json`, `to_yaml`,
+//! `encode`), static entry points (`from_json`, `from_yaml`, `decode`), the
+//! wire-struct/enum sets, and the wire layout table. Registration keyed only
+//! the bare declaration name, so an imported receiver failed with
+//! "no method `to_json`" and the checker fix alone would have moved the
+//! failure to the codegen CBOR layout lookup — both surfaces are pinned here.
+
+import tests::hew::imported_wire_support::wire_defs::{Env, Signal, env_to_json};
+
+import std::testing;
+
+#[test]
+fn imported_wire_struct_json_round_trip() {
+    let e = Env { name: "svc", port: 8080 };
+    let j = e.to_json();
+    testing.assert_eq_str(j, "{\"name\":\"svc\",\"port\":8080}");
+    match Env.from_json(j) {
+        Ok(back) => {
+            testing.assert_eq_str(back.name, "svc");
+            testing.assert_eq(back.port, 8080);
+        },
+        Err(msg) => panic(f"from_json failed: {msg}"),
+    }
+}
+
+#[test]
+fn imported_wire_struct_binary_and_yaml_round_trips() {
+    let e = Env { name: "bin", port: 9 };
+    let back = Env.decode(e.encode());
+    testing.assert_eq_str(back.name, "bin");
+    testing.assert_eq(back.port, 9);
+    match Env.from_yaml(back.to_yaml()) {
+        Ok(again) => testing.assert_eq(again.port, 9),
+        Err(msg) => panic(f"from_yaml failed: {msg}"),
+    }
+}
+
+#[test]
+fn defining_module_helper_serializes_when_module_is_imported() {
+    let e = Env { name: "helper", port: 1 };
+    testing.assert_eq_str(env_to_json(e), "{\"name\":\"helper\",\"port\":1}");
+}
+
+#[test]
+fn imported_wire_enum_json_round_trip() {
+    let s = Signal::Busy(4);
+    match Signal.from_json(s.to_json()) {
+        Ok(back) => {
+            let tag = match back {
+                Signal::Busy(n) => n,
+                Signal::Ready => -1,
+            };
+            testing.assert_eq(tag, 4);
+        },
+        Err(msg) => panic(f"enum from_json failed: {msg}"),
+    }
+}

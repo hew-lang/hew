@@ -226,7 +226,6 @@ pub mod wasm_capability_ids {
     pub const DISTRIBUTED: WasmCapabilityId = WasmCapabilityId("distributed");
     pub const DNS: WasmCapabilityId = WasmCapabilityId("dns");
     pub const DUPLEX: WasmCapabilityId = WasmCapabilityId("duplex");
-    pub const DYN_TRAIT_RETURNS: WasmCapabilityId = WasmCapabilityId("dyn-trait-returns");
     pub const FILESYSTEM_STREAMS: WasmCapabilityId = WasmCapabilityId("filesystem-streams");
     pub const HTTP_CLIENT: WasmCapabilityId = WasmCapabilityId("http-client");
     pub const HTTP_SERVER: WasmCapabilityId = WasmCapabilityId("http-server");

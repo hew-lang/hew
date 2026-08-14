@@ -287,20 +287,20 @@ brew install llvm
 ```bash
 make          # Build everything (debug)
 make release  # Build everything (optimized)
-make ci-preflight  # Dispatch a conservative local preflight from your current diff
+make preflight     # Diff-routed, fail-fast pre-PR gate
 make test     # Run Rust + native codegen tests
 make lint     # cargo clippy
 ```
 
 See the [Makefile](Makefile) header for all targets.
 
-Use `make ci-preflight ARGS="--dry-run"` to inspect the selected commands before
-running them. By default the dispatcher runs every selected command, collects
-any failures, and reports the full timing summary at the end so one local run
-shows the whole preflight picture. Pass `make ci-preflight ARGS="--fail-fast"`
-if you want it to stop after the first failed command instead. The first slice
-stays conservative: known docs/parser/types/CLI diffs get narrower checks, and
-everything else falls back to broader local preflight commands.
+Use `make preflight ARGS="--dry-run"` to inspect the selected commands before
+running them. The standard pre-PR gate is diff-routed and fails fast after the
+first failed command. Reserve `make ci-preflight` for integration and release
+moments, when the run-all failure policy and full timing summary are useful.
+The first slice stays conservative: known docs/parser/types/CLI diffs get
+narrower checks, and everything else falls back to broader local preflight
+commands.
 
 ### Browser / Playground Validation
 

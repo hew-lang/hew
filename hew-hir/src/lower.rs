@@ -2428,12 +2428,63 @@ pub fn lower_program_with_mono_cap(
             };
             decl.is_opaque.then(|| decl.name.clone())
         }));
-    ctx.root_visible_source_type_short_names
-        .extend(program.items.iter().filter_map(|(item, _)| match item {
-            Item::TypeDecl(decl) => Some(decl.name.clone()),
-            Item::Record(decl) => Some(decl.name.clone()),
-            _ => None,
-        }));
+    // Root-authored declarations only: items spliced into `program.items` by
+    // `flatten_file_import_items` keep their defining file's module identity
+    // (`file_import_module_idx`), so they must not claim the root bare
+    // namespace here. Their layouts key by `qualified_name()`; leaving the
+    // spliced short name in this set made a root annotation resolve bare and
+    // miss the qualified MIR field-order/value-class entries. The
+    // bare-spelling route for these declarations is
+    // `file_import_root_type_aliases` below.
+    ctx.root_visible_source_type_short_names.extend(
+        program
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(item_idx, _)| !file_import_module_idx.contains_key(item_idx))
+            .filter_map(|(_, (item, _))| match item {
+                Item::TypeDecl(decl) => Some(decl.name.clone()),
+                Item::Record(decl) => Some(decl.name.clone()),
+                _ => None,
+            }),
+    );
+    // Flat-file imports share the root bare namespace (the checker enforces
+    // uniqueness there), but their declaration identity is the defining
+    // module's qualified name. Publish the bare→qualified projection so an
+    // annotation written at root (`fn f(w: WorkflowState)`) resolves to the
+    // same identity the layout registries key by.
+    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        let Some(module_idx) = file_import_module_idx.get(&item_idx) else {
+            continue;
+        };
+        let Some(module_full_path) = span_indices.module_name(*module_idx) else {
+            continue;
+        };
+        match item {
+            Item::TypeDecl(decl) => {
+                ctx.file_import_root_type_aliases.insert(
+                    decl.name.clone(),
+                    format!("{module_full_path}.{}", decl.name),
+                );
+            }
+            Item::Record(decl) => {
+                ctx.file_import_root_type_aliases.insert(
+                    decl.name.clone(),
+                    format!("{module_full_path}.{}", decl.name),
+                );
+            }
+            Item::Machine(decl) => {
+                ctx.file_import_root_type_aliases.insert(
+                    decl.name.clone(),
+                    format!("{module_full_path}.{}", decl.name),
+                );
+                let event = machine_event_surface_type(&decl.name);
+                ctx.file_import_root_type_aliases
+                    .insert(event.clone(), format!("{module_full_path}.{event}"));
+            }
+            _ => {}
+        }
+    }
     if let Some(module_graph) = &program.module_graph {
         for module_id in &module_graph.topo_order {
             if *module_id == module_graph.root {
@@ -2894,6 +2945,56 @@ pub fn lower_program_with_mono_cap(
         program,
         &type_check_output.root_value_bindings,
     ));
+
+    // Selective/glob imports bind a pub const's bare (or aliased) name at
+    // root, but the pre-pass above registers imported consts only under the
+    // qualified `{module}.{CONST}` key. Alias the importer-visible binding to
+    // the same entry so a bare `MAX_RETRIES` resolves to the identical
+    // `ItemId`/descriptor a dotted `reasons.MAX_RETRIES` reaches. Root-owned
+    // consts registered by the root pre-pass keep precedence (`or_insert`),
+    // mirroring `root_imported_fn_rewrites` for functions.
+    for (item, _) in &program.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        if decl.path.is_empty() {
+            continue;
+        }
+        let Some(spec) = &decl.spec else {
+            continue;
+        };
+        let Some(resolved_items) = &decl.resolved_items else {
+            continue;
+        };
+        let module_full_path = decl.path.join(".");
+        for (resolved_item, _) in resolved_items {
+            let Item::Const(const_decl) = resolved_item else {
+                continue;
+            };
+            if !const_decl.visibility.is_pub() {
+                continue;
+            }
+            let binding = match spec {
+                ImportSpec::Glob => Some(const_decl.name.clone()),
+                ImportSpec::Names(names) => names
+                    .iter()
+                    .find(|imported| imported.name == const_decl.name)
+                    .map(|imported| {
+                        imported
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| const_decl.name.clone())
+                    }),
+            };
+            let Some(binding) = binding else {
+                continue;
+            };
+            let qualified = format!("{module_full_path}.{}", const_decl.name);
+            if let Some(entry) = ctx.const_registry.get(&qualified).cloned() {
+                ctx.const_registry.entry(binding).or_insert(entry);
+            }
+        }
+    }
 
     // Pre-pass: collect record/type-decl shapes so `Expr::StructInit`
     // lowering in the source-order pass can answer "is this a generic
@@ -4510,7 +4611,7 @@ pub fn lower_program_with_mono_cap(
                             };
                             items.push(HirItem::TypeDecl(hir_decl));
                         }
-                        // Emit `HirItem::Machine` entries for imported pub
+                        // Emit `HirItem::Machine` entries for imported
                         // machines so MIR's `machine_layout_names` set (built
                         // from `module.items`) includes their names. Without
                         // this, the MIR `Builder::is_known_actor_runtime_ty`
@@ -4518,9 +4619,11 @@ pub fn lower_program_with_mono_cap(
                         // `ValueClass::Unknown` → `Strategy::UnknownBlocked` →
                         // `DecisionMapTotal` + `UnknownType` diagnostics, even
                         // though HIR's `machine_ctor_registry` already resolved
-                        // the qualified ctor reference. The visibility gate
-                        // mirrors the TypeDecl arm above.
-                        Item::Machine(machine) if machine.visibility.is_pub() => {
+                        // the qualified ctor reference. A private declaration
+                        // can still cross the module boundary through a public
+                        // function signature, so visibility cannot discard its
+                        // runtime layout and value-class identity here.
+                        Item::Machine(machine) => {
                             if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
                                 items.push(HirItem::Machine(hir_machine));
                             }
@@ -4815,14 +4918,13 @@ pub fn lower_program_with_mono_cap(
                         // this slice; their cross-module lowering semantics are
                         // tracked as separate follow-ups.
                         //
-                        // Non-pub Function/TypeDecl/Machine/Actor fall here (not
+                        // Non-pub Function/TypeDecl/Actor fall here (not
                         // visible to importers). If a new Item variant is
                         // added, the compiler will force a conscious decision.
                         Item::Import(_)
                         | Item::Function(_)
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
-                        | Item::Machine(_)
                         | Item::Record(_)
                         | Item::Actor(_)
                         | Item::Supervisor(_) => {}
@@ -7209,6 +7311,13 @@ struct LowerCtx {
     /// considered before the compiler-only `Task`, `Unit`, and
     /// `CancellationToken` fallbacks, including for generic source types.
     root_visible_source_type_short_names: HashSet<String>,
+    /// Bare→qualified identity projection for declarations reaching root
+    /// through a flat file import (`import "x.hew";`). The spliced items share
+    /// the root bare namespace at the source surface, but their declaration
+    /// identity — and every layout registry key derived from it — is the
+    /// defining file's `{module}.{name}`. Root annotations resolve through
+    /// this table so binding types and layout keys agree.
+    file_import_root_type_aliases: HashMap<String, String>,
     /// Exact `{module_owner}.{type}` identities declared by non-root modules.
     /// This lets the three compiler-special spellings retain their source
     /// identity inside a declaring module and through named imports without
@@ -7801,6 +7910,7 @@ impl LowerCtx {
             non_opaque_type_short_names: HashSet::new(),
             root_opaque_type_short_names: HashSet::new(),
             root_visible_source_type_short_names: HashSet::new(),
+            file_import_root_type_aliases: HashMap::new(),
             source_type_identities: HashSet::new(),
             canonical_std_source_type_identities: HashSet::new(),
             checker_type_identities: tc_output.type_defs.keys().cloned().collect(),
@@ -16864,6 +16974,28 @@ impl LowerCtx {
         assert!(previous.is_none(), "generated HIR site published twice");
     }
 
+    /// Replace an authored expression's pre-materialization source occurrence
+    /// with the generated value that crosses its type-directed boundary.
+    /// Both occurrences retain facts, but parent identity/join relations must
+    /// converge on the value after representation-changing materialization.
+    fn replace_produced_value_source_site(
+        &mut self,
+        span: &Span,
+        source: SiteId,
+        materialized: SiteId,
+    ) {
+        let key = self.mk_key(span);
+        let sites = self
+            .produced_value_source_sites
+            .get_mut(&key)
+            .expect("materialization source must already be registered");
+        let source_index = sites
+            .iter()
+            .rposition(|site| *site == source)
+            .expect("materialization source site must be registered");
+        sites[source_index] = materialized;
+    }
+
     /// Publish a synthetic expression root that deliberately has no checker
     /// span identity of its own. Actor-lambda bodies can share the enclosing
     /// spawn span, so consuming the spawn's fresh-handle fact for the body
@@ -18544,6 +18676,47 @@ impl LowerCtx {
                         return hir_expr;
                     }
                 }
+                // Dotted module-qualified unit constructor:
+                // `module.Type.Variant`. The checker has already resolved
+                // this nested field-access surface to the exact tagged-union
+                // owner. Consume that fact before lowering `module.Type` as a
+                // runtime projection (it is a namespace path, not a value).
+                if let Expr::FieldAccess {
+                    object: module,
+                    field: type_name,
+                } = &object.0
+                {
+                    if let Expr::Identifier(module_short) = &module.0 {
+                        let canonical_type =
+                            self.imported_module_member_key(module_short, type_name);
+                        let checker_ty = self.checker_expr_ty_if_present(&span);
+                        let checker_selects_type = matches!(
+                            &checker_ty,
+                            Some(ResolvedTy::Named { name, .. }) if name == &canonical_type
+                        );
+                        if checker_selects_type {
+                            if let Some((type_name, variant_idx, HirVariantKind::Unit)) =
+                                self.lookup_variant_ctor(field, checker_ty.as_ref())
+                            {
+                                let result_ty = checker_ty
+                                    .expect("module-qualified variant selection checked above");
+                                return HirExpr {
+                                    node: self.ids.node(),
+                                    site,
+                                    value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
+                                    ty: result_ty,
+                                    intent,
+                                    kind: HirExprKind::MachineVariantCtor {
+                                        machine_name: type_name,
+                                        state_idx: variant_idx,
+                                        payload: None,
+                                    },
+                                    span,
+                                };
+                            }
+                        }
+                    }
+                }
                 // Pre-dispatch: module-qualified constant reference, e.g.
                 // `module_short.CONST_NAME`.  The type checker accepted this as
                 // a qualified const access and registered the result type in
@@ -19169,6 +19342,7 @@ impl LowerCtx {
                     return inner;
                 }
             };
+            let source_site = inner.site;
             self.record_produced_value_fact(&span, &inner);
             let wrapped = HirExpr {
                 node: self.ids.node(),
@@ -19191,6 +19365,7 @@ impl LowerCtx {
                     hew_types::ProducedValueAcquisition::Fresh,
                 ),
             );
+            self.replace_produced_value_source_site(&wrapped.span, source_site, wrapped.site);
             return wrapped;
         }
         inner
@@ -22264,6 +22439,17 @@ impl LowerCtx {
             }
         }
 
+        // A flat file import's declaration is spelled bare at root but its
+        // identity is the defining file's `{module}.{name}` — the key every
+        // layout registry uses. Project the bare annotation to that identity
+        // before the global record-registry fallback can freeze the bare
+        // spelling into a binding type MIR cannot look up.
+        if !name.contains('.') && self.current_module_name.is_none() {
+            if let Some(canonical) = self.file_import_root_type_aliases.get(name).cloned() {
+                return self.resolve_named_type_ref(&canonical, args);
+            }
+        }
+
         // A global record registry is layout metadata, not lexical authority.
         // In particular, source-owned lifecycle payloads must reach this point
         // through the checker-published import binding above; their bare
@@ -22360,6 +22546,15 @@ impl LowerCtx {
             .get(&(self.current_module_name.clone(), name.to_string()))
         {
             return Some(self.resolve_named_type_ref(canonical, args));
+        }
+
+        // A flat-file-imported declaration sharing a compiler-special leaf
+        // (`Unit`, `Task`, `CancellationToken`) keeps source authority under
+        // its qualified identity, same as the root-authored branch below.
+        if self.current_module_name.is_none() {
+            if let Some(canonical) = self.file_import_root_type_aliases.get(name).cloned() {
+                return Some(self.resolve_named_type_ref(&canonical, args));
+            }
         }
 
         if self.current_module_name.is_none()
@@ -23631,15 +23826,15 @@ impl LowerCtx {
         )
     }
 
-    /// Build the iterator-only clone-out read used by `VecIter::next`.
+    /// Build the iterator-only owned-output read used by `VecIter::next`.
     ///
     /// This deliberately does not use [`HirExprKind::Index`]: ordinary
     /// `xs[i]` preserves its established element-class semantics, including
     /// borrowed nested-collection handles. An iterator yield must instead be
     /// an independent owner because the cursor keeps and later releases its
-    /// snapshot. `Vec::get` is the existing descriptor-backed clone choke and
-    /// returns the owned value directly in `Option<T>`.
-    fn make_vec_iter_get_clone_call(
+    /// snapshot. Cloneable elements use the descriptor clone choke. Drop-only
+    /// trait objects instead move the fat pointer and null its source slot.
+    fn make_vec_iter_get_call(
         &mut self,
         vec_expr: HirExpr,
         index: HirExpr,
@@ -23647,6 +23842,11 @@ impl LowerCtx {
         span: Span,
     ) -> HirExpr {
         let option_ty = Self::resolved_option_ty(elem_ty.clone());
+        let target_symbol = if matches!(elem_ty, ResolvedTy::TraitObject { .. }) {
+            "hew_vec_take_owned"
+        } else {
+            "hew_vec_get_clone"
+        };
         self.make_expr(
             HirExprKind::ResolvedImplCall {
                 receiver: Box::new(vec_expr),
@@ -23655,7 +23855,7 @@ impl LowerCtx {
                 ),
                 impl_id: ImplId(u32::MAX),
                 method_name: "get".to_string(),
-                target_symbol: "hew_vec_get_clone".to_string(),
+                target_symbol: target_symbol.to_string(),
                 target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Get),
                 type_args: vec![Self::resolved_ty_pattern(elem_ty)],
                 args: vec![index],
@@ -24424,12 +24624,8 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
-        let value_expr = self.make_vec_iter_get_clone_call(
-            vec_read_for_get,
-            idx_read_for_get,
-            elem_ty,
-            span.clone(),
-        );
+        let value_expr =
+            self.make_vec_iter_get_call(vec_read_for_get, idx_read_for_get, elem_ty, span.clone());
         let value_binding_name = format!("__hew_iter_value_{}", self.ids.binding().0);
         let value_binding = self.bind(
             value_binding_name.clone(),
@@ -34463,6 +34659,14 @@ fn render_elem_ty(ty: &ResolvedTy) -> String {
                 .join(", ");
             format!("{name}<{arg_list}>")
         }
+        ResolvedTy::TraitObject { traits } => {
+            let bounds = traits
+                .iter()
+                .map(|bound| bound.trait_name.clone())
+                .collect::<Vec<_>>()
+                .join(" + ");
+            format!("dyn {bounds}")
+        }
         other => format!("{other:?}"),
     }
 }
@@ -34567,35 +34771,60 @@ fn check_vec_index_element_type(
     }
 
     let rendered = render_elem_ty(&elem_ty);
-    let (kind, note) = if is_range_slice {
-        (
-            HirDiagnosticKind::VecSliceElementTypeUnsupported {
-                element_ty: rendered.clone(),
-            },
-            format!(
-                "Vec<{rendered}> range-slice (xs[a..b]) is not yet supported. \
-                 Supported element types for Vec range-slicing are: \
-                 bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
-                 usize, f32, f64, string, tuples, user-defined types, and \
-                 type-parameter elements."
-            ),
-        )
+    let is_trait_object = matches!(elem_ty, ResolvedTy::TraitObject { .. });
+    let note = vec_index_unsupported_note(&rendered, is_range_slice, is_trait_object);
+    let kind = if is_range_slice {
+        HirDiagnosticKind::VecSliceElementTypeUnsupported {
+            element_ty: rendered,
+        }
     } else {
-        (
-            HirDiagnosticKind::VecIndexElementTypeUnsupported {
-                element_ty: rendered.clone(),
-            },
-            format!(
-                "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
-                 Supported element types for Vec scalar indexing are: \
-                 bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
-                 usize, f32, f64, string, tuples, type-parameter elements, \
-                 and user-defined types (records, enums, \
-                 Duplex, etc.)."
-            ),
-        )
+        HirDiagnosticKind::VecIndexElementTypeUnsupported {
+            element_ty: rendered,
+        }
     };
     diagnostics.push(HirDiagnostic::new(kind, index_expr_span.clone(), note));
+}
+
+/// Diagnostic note for an unsupported `Vec<T>` scalar-index or range-slice
+/// element type. Trait-object elements get a dedicated message naming the
+/// supported alternative (`into_iter()` / pop / remove), matching the
+/// quality of the reachable checker-level trait-object refusals
+/// (`hew-types/src/check/methods.rs`); every other unsupported element type
+/// gets the generic supported-set listing.
+fn vec_index_unsupported_note(
+    rendered: &str,
+    is_range_slice: bool,
+    is_trait_object: bool,
+) -> String {
+    match (is_range_slice, is_trait_object) {
+        (true, true) => format!(
+            "Vec<{rendered}> range-slice (xs[a..b]) is not supported: a sliced Vec would \
+             share each `HeapBoxed` trait-object owner with the source, and `{rendered}` \
+             has no semantic clone operation to give the slice an independent copy; \
+             consume the Vec with `into_iter()` instead."
+        ),
+        (true, false) => format!(
+            "Vec<{rendered}> range-slice (xs[a..b]) is not yet supported. \
+             Supported element types for Vec range-slicing are: \
+             bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
+             usize, f32, f64, string, tuples, user-defined types, and \
+             type-parameter elements."
+        ),
+        (false, true) => format!(
+            "Vec<{rendered}> scalar index (xs[i]) is not supported: returning or \
+             overwriting an owned element would require a semantic trait-object clone, \
+             and `{rendered}` has none; use pop/remove or consuming iteration \
+             (`into_iter()`) to move an owner out instead."
+        ),
+        (false, false) => format!(
+            "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
+             Supported element types for Vec scalar indexing are: \
+             bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
+             usize, f32, f64, string, tuples, type-parameter elements, \
+             and user-defined types (records, enums, \
+             Duplex, etc.)."
+        ),
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

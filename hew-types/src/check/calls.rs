@@ -581,18 +581,6 @@ impl Checker {
                 self.record_type(span, &Ty::Error);
                 return Some(Ty::Error);
             }
-            if let Some(reason) = self.trait_object_vec_element_reject_reason(&elem_ty) {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    format!(
-                        "`{}` cannot be a `Vec` element: {reason}",
-                        elem_ty.user_facing()
-                    ),
-                );
-                self.record_type(span, &Ty::Error);
-                return Some(Ty::Error);
-            }
             if crate::vec_authority::classify_element(&elem_ty, &self.type_defs)
                 == Some(crate::vec_authority::VecElementToken::Layout)
                 && matches!(elem_ty, Ty::Named { .. })
@@ -1595,17 +1583,6 @@ impl Checker {
                 // boundary (the `Ptr`-token element bypasses the `Layout` gate
                 // below). Same reason MIR fails closed with.
                 if let Some(reason) = self.indirect_enum_vec_element_reject_reason(&resolved_elem) {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`{}` cannot be a `Vec` element: {reason}",
-                            resolved_elem.user_facing()
-                        ),
-                    );
-                    return Ty::Error;
-                }
-                if let Some(reason) = self.trait_object_vec_element_reject_reason(&resolved_elem) {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,

@@ -27,11 +27,10 @@
 //! out of band with `leaks --atExit` (record String/Vec/enum-payload
 //! buffers all reach 0 leaked bytes).
 //!
-//! The local dyn-object ABI is target-width: codegen derives the vtable
-//! size/align slots from the active target data, and the runtime uses target
-//! `usize`. Returned dyn objects are a separate ownership boundary and remain
-//! fail-closed until their concrete storage is promoted before leaving the
-//! callee frame.
+//! The dyn-object ABI is target-width: codegen derives the vtable size/align
+//! slots from the active target data, and the runtime uses target `usize`.
+//! Coercions use heap-promoted storage so the same owner can safely cross a
+//! return boundary.
 
 import std::string;
 

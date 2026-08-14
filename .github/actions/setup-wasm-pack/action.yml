@@ -1,0 +1,36 @@
+name: Setup wasm-pack and Binaryen
+description: >
+  Install the pinned Linux x86_64 wasm-pack release and prefetch its pinned
+  Binaryen wasm-opt dependency with retry and checksum verification.
+
+runs:
+  using: composite
+  steps:
+    - name: Install wasm-pack v0.13.1
+      shell: bash
+      run: |
+        set -euo pipefail
+        WASM_PACK_VERSION=0.13.1
+        TARBALL="wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+        curl -fsSL "https://github.com/rustwasm/wasm-pack/releases/download/v${WASM_PACK_VERSION}/${TARBALL}" \
+          -o "${RUNNER_TEMP}/${TARBALL}"
+        tar -xzf "${RUNNER_TEMP}/${TARBALL}" -C "${RUNNER_TEMP}"
+        echo "${RUNNER_TEMP}/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl" >> "${GITHUB_PATH}"
+        "${RUNNER_TEMP}/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl/wasm-pack" --version
+
+    # wasm-pack v0.13.1 otherwise downloads Binaryen 117 during its release
+    # build. Prefetch the exact immutable asset so that download is the only
+    # retried unit; compiler and test verdicts remain single-attempt.
+    - name: Install Binaryen version_117
+      shell: bash
+      run: |
+        set -euo pipefail
+        BINARYEN_VERSION=version_117
+        BINARYEN_SHA256=3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e83212
+        RETRY_ATTEMPTS=5 RETRY_INITIAL_DELAY=10 \
+          "${GITHUB_ACTION_PATH}/../../scripts/retry-download.sh" \
+          "${GITHUB_ACTION_PATH}/../../scripts/download-verify-binaryen.sh" \
+          "${BINARYEN_VERSION}" "${BINARYEN_SHA256}" \
+          "${RUNNER_TEMP}"
+        echo "${RUNNER_TEMP}/binaryen-${BINARYEN_VERSION}/bin" >> "${GITHUB_PATH}"
+        "${RUNNER_TEMP}/binaryen-${BINARYEN_VERSION}/bin/wasm-opt" --version

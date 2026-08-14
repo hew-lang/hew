@@ -281,31 +281,60 @@ pub(crate) fn host_data_layout_string() -> &'static str {
 /// canonical class-tagged monomorphization key (`mc$$control.Lifecycle$$i64$$`),
 /// while a payload field carries the nominal owner plus its concrete type
 /// arguments. Project the latter through [`hew_hir::machine_layout_key`] so
-/// both sides meet without discarding module or generic identity. Recurses
-/// through generic args, tuples, arrays, and slices: any of them can carry an
-/// embedded machine whose body must be set before the container is sized.
+/// both sides meet without discarding module or generic identity. Records use
+/// the parallel [`hew_hir::layout_key_for_named`] authority before the walk
+/// descends through their fields. Recurses through generic args, tuples,
+/// arrays, and slices: any of them can carry an embedded machine whose body
+/// must be set before the container is sized.
 fn collect_named_machine_deps(
     field_ty: &ResolvedTy,
     index_of: &HashMap<String, usize>,
+    record_fields: &HashMap<String, &[ResolvedTy]>,
+    visiting: &mut Vec<String>,
     out: &mut Vec<usize>,
 ) {
     match field_ty {
-        ResolvedTy::Named { name, args, .. } => {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
             let machine_key = hew_hir::machine_layout_key(name, args);
             if let Some(&idx) = index_of.get(&machine_key) {
                 out.push(idx);
+            } else if let Some(record_key) = hew_hir::layout_key_for_named(name, args, *builtin) {
+                if let Some(fields) = record_fields.get(&record_key) {
+                    // A machine can be reached only THROUGH a record field
+                    // (`state Holding { w: Wrap }` where `type Wrap { inner: Inner }`).
+                    // The record is not itself a machine, so it misses `index_of`;
+                    // without descending here the embedded machine is never seen as
+                    // a dependency and the container is sized against an opaque
+                    // struct — the record-wrapped half of #2864.
+                    //
+                    // A record cycle is not representable by value, but recursion is
+                    // guarded rather than trusted: `visiting` makes a malformed or
+                    // indirect layout terminate instead of overflowing the stack.
+                    if !visiting.contains(&record_key) {
+                        visiting.push(record_key);
+                        for fty in *fields {
+                            collect_named_machine_deps(fty, index_of, record_fields, visiting, out);
+                        }
+                        visiting.pop();
+                    }
+                }
             }
             for arg in args {
-                collect_named_machine_deps(arg, index_of, out);
+                collect_named_machine_deps(arg, index_of, record_fields, visiting, out);
             }
         }
         ResolvedTy::Tuple(elems) => {
             for e in elems {
-                collect_named_machine_deps(e, index_of, out);
+                collect_named_machine_deps(e, index_of, record_fields, visiting, out);
             }
         }
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-            collect_named_machine_deps(inner, index_of, out);
+            collect_named_machine_deps(inner, index_of, record_fields, visiting, out);
         }
         _ => {}
     }
@@ -325,6 +354,7 @@ pub(crate) fn register_machine_layouts<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     machine_layouts: &[MachineLayout],
+    record_layouts: &[hew_mir::RecordLayout],
     record_layout_map: &mut RecordLayoutMap<'ctx>,
     enum_layouts: &[EnumLayout],
     target_data: Option<&TargetData>,
@@ -367,6 +397,15 @@ pub(crate) fn register_machine_layouts<'ctx>(
             .map(|(i, l)| (l.name.clone(), i))
             .collect();
 
+        // Records are not machines, so they never appear in `index_of` — but a
+        // state payload may reach a machine only by way of one. Preserve each
+        // record's canonical registry key so module-qualified and generic
+        // identities remain disjoint during the dependency walk.
+        let record_fields: HashMap<String, &[ResolvedTy]> = record_layouts
+            .iter()
+            .map(|r| (r.name.clone(), r.field_tys.as_slice()))
+            .collect();
+
         // `dep_of[i]` = indices of machines whose bodies must be set before `i`.
         let dep_of: Vec<Vec<usize>> = machine_layouts
             .iter()
@@ -375,7 +414,13 @@ pub(crate) fn register_machine_layouts<'ctx>(
                 let mut deps: Vec<usize> = Vec::new();
                 for variant in layout.variants.iter().chain(layout.events.iter()) {
                     for field_ty in &variant.field_tys {
-                        collect_named_machine_deps(field_ty, &index_of, &mut deps);
+                        collect_named_machine_deps(
+                            field_ty,
+                            &index_of,
+                            &record_fields,
+                            &mut Vec::new(),
+                            &mut deps,
+                        );
                     }
                 }
                 deps.sort_unstable();
@@ -1207,7 +1252,12 @@ pub(crate) fn collection_layout_witness(
         // collection: its drop is the user close-symbol call in
         // `emit_field_drop_step`'s dedicated arm and its clone is the rollback
         // refusal in `emit_field_clone_step`.
-        | StateFieldCloneKind::Resource { .. } => None,
+        | StateFieldCloneKind::Resource { .. }
+        // TraitObject is not a runtime-managed collection: the owned fat
+        // pointer drops through `hew_dyn_trait_drop_boxed_in_place` (the
+        // prepared-carrier and Vec-descriptor drop paths) and its clone is
+        // refused (erased concrete type — ownership moves instead).
+        | StateFieldCloneKind::TraitObject => None,
     })
 }
 
@@ -1393,6 +1443,14 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
     ) {
         return receiver_vec_elem_layout_descriptor_ptr(ctx, llvm_mod, target_data, elem_llvm_ty);
     }
+    if matches!(elem_resolved_ty, ResolvedTy::TraitObject { .. }) {
+        return trait_object_vec_elem_layout_descriptor_ptr(
+            ctx,
+            llvm_mod,
+            target_data,
+            elem_llvm_ty,
+        );
+    }
     let Some((kind, key)) = crate::thunks::owned_elem_thunk_key(regs, elem_resolved_ty) else {
         return Err(CodegenError::FailClosed(format!(
             "owned Vec element `{elem_resolved_ty:?}` has no resolvable record/enum \
@@ -1501,6 +1559,68 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
     g.set_linkage(Linkage::Private);
     g.set_initializer(&init);
     Ok(g.as_pointer_value())
+}
+
+/// Emit the clone-null descriptor shared by every `Vec<dyn Trait>`.
+///
+/// Each slot stores the two-word fat pointer for an independently HeapBoxed
+/// concrete value. Ingress and consuming iteration move those words; teardown
+/// calls the runtime callback that dispatches slot 0 and frees the box.
+fn trait_object_vec_elem_layout_descriptor_ptr<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
+    elem_llvm_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    const LAYOUT_NAME: &str = "__hew_vec_elem_layout_dyn_trait_drop_only";
+    if let Some(layout) = llvm_mod.get_global(LAYOUT_NAME) {
+        return Ok(layout.as_pointer_value());
+    }
+    let BasicTypeEnum::StructType(_) = elem_llvm_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "Vec<dyn Trait> must lower to the fat-pointer struct, got {elem_llvm_ty:?}"
+        )));
+    };
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let drop_fn = llvm_mod
+        .get_function("hew_dyn_trait_drop_boxed_in_place")
+        .unwrap_or_else(|| {
+            llvm_mod.add_function(
+                "hew_dyn_trait_drop_boxed_in_place",
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    let (size, align) = abi_size_align(elem_llvm_ty, Some(target_data))?;
+    let size_ty = ctx.ptr_sized_int_type(target_data, None);
+    let i8_ty = ctx.i8_type();
+    let layout_ty = ctx.struct_type(
+        &[
+            size_ty.into(),
+            size_ty.into(),
+            i8_ty.into(),
+            ptr_ty.into(),
+            ptr_ty.into(),
+        ],
+        false,
+    );
+    let init = layout_ty.const_named_struct(&[
+        size_ty.const_int(size, false).into(),
+        size_ty.const_int(u64::from(align), false).into(),
+        i8_ty
+            .const_int(
+                ownership_kind_byte(HewTypeOwnershipKind::LayoutManaged),
+                false,
+            )
+            .into(),
+        ptr_ty.const_null().into(),
+        drop_fn.as_global_value().as_pointer_value().into(),
+    ]);
+    let layout = llvm_mod.add_global(layout_ty, None, LAYOUT_NAME);
+    layout.set_constant(true);
+    layout.set_linkage(Linkage::Private);
+    layout.set_initializer(&init);
+    Ok(layout.as_pointer_value())
 }
 
 fn opaque_resource_vec_elem_layout_descriptor_ptr<'ctx>(
@@ -2771,6 +2891,7 @@ fn finalize_layout_facts_against_pipeline(
                 | F::HashMapRemoveLayout
                 | F::HashMapLenLayout
                 | F::HashMapKeysLayout
+                | F::HashMapEntriesLayout
                 | F::HashMapValuesLayout
                 | F::HashMapGetLayout
                 | F::HashSetInsertLayout
@@ -3154,6 +3275,10 @@ fn layout_hashmap_fn_type<'ctx>(
         "hew_hashmap_keys_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // `*mut HewVec hew_hashmap_values_layout(map)`
         "hew_hashmap_values_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
+        // `*mut HewVec hew_hashmap_entries_layout(map, pair_layout, v_offset)`
+        "hew_hashmap_entries_layout" => {
+            Ok(ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false))
+        }
         // `*mut HewLayoutHashMap hew_hashmap_clone_layout(map)`
         "hew_hashmap_clone_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // `void hew_hashmap_clear_layout(map)`
@@ -4437,6 +4562,8 @@ pub(crate) fn lower_layout_vec_direct_call(
 /// - `hew_hashmap_len_layout`:          1 arg  (handle)
 /// - `hew_hashmap_keys_layout`:         1 arg  (handle) → *mut HewVec
 /// - `hew_hashmap_values_layout`:       1 arg  (handle) → *mut HewVec
+/// - `hew_hashmap_entries_layout`:      1 arg  (handle) → *mut HewVec;
+///   codegen adds the tuple descriptor and V-field offset
 /// - `hew_hashset_insert_layout`:       2 args (handle, elem)
 /// - `hew_hashset_contains_layout`:     2 args (handle, elem)
 /// - `hew_hashset_remove_layout`:       2 args (handle, elem)
@@ -4606,6 +4733,7 @@ pub(crate) fn lower_hashmap_layout_direct_call(
         "hew_hashmap_contains_key_layout" | "hew_hashmap_remove_layout" => 2,
         "hew_hashmap_len_layout"
         | "hew_hashmap_keys_layout"
+        | "hew_hashmap_entries_layout"
         | "hew_hashmap_values_layout"
         | "hew_hashmap_clone_layout"
         | "hew_hashmap_clear_layout" => 1,
@@ -4795,6 +4923,79 @@ pub(crate) fn lower_hashmap_layout_direct_call(
                 .builder
                 .build_store(dest_ptr, vec_ptr)
                 .llvm_ctx("hew_hashmap_values_layout store")?;
+        }
+        "hew_hashmap_entries_layout" => {
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_hashmap_entries_layout returns *mut HewVec; call must supply a dest"
+                        .into(),
+                )
+            })?;
+            let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
+            let ResolvedTy::Named {
+                name,
+                args: vec_args,
+                ..
+            } = dest_ty
+            else {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_hashmap_entries_layout dest must be Vec<(K, V)>, got {dest_ty:?}"
+                )));
+            };
+            let [pair_ty] = vec_args.as_slice() else {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_hashmap_entries_layout dest must have one Vec element, got {vec_args:?}"
+                )));
+            };
+            if name != "Vec" || !matches!(pair_ty, ResolvedTy::Tuple(elems) if elems.len() == 2) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_hashmap_entries_layout dest must be Vec<(K, V)>, got {pair_ty:?}"
+                )));
+            }
+            let pair_llvm_ty = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                pair_ty,
+                fn_ctx.record_layouts,
+            )?;
+            let pair_struct = pair_llvm_ty.into_struct_type();
+            let v_offset = fn_ctx
+                .target_data
+                .offset_of_element(&pair_struct, 1)
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "hew_hashmap_entries_layout could not derive tuple V offset".into(),
+                    )
+                })?;
+            let pair_layout = owned_elem_layout_descriptor_ptr(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                fn_ctx.target_data,
+                fn_ctx.owned_elem_registries(),
+                pair_ty,
+                pair_llvm_ty,
+                "hashmap entries",
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[
+                        map_ptr.into(),
+                        pair_layout.into(),
+                        fn_ctx.ctx.i64_type().const_int(v_offset, false).into(),
+                    ],
+                    "hew_hashmap_entries_layout_call",
+                )
+                .llvm_ctx("hew_hashmap_entries_layout call")?;
+            let vec_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_hashmap_entries_layout returned void".into())
+            })?;
+            let (dest_ptr, _) = place_pointer(fn_ctx, *dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, vec_ptr)
+                .llvm_ctx("hew_hashmap_entries_layout store")?;
         }
         "hew_hashmap_clone_layout" => {
             // `*mut HewLayoutHashMap hew_hashmap_clone_layout(map)` — returns a
@@ -5579,6 +5780,7 @@ pub(crate) fn lower_hashmap_index_trap_call(
 /// of this change). On OOB the runtime returns `false` and we build `None`.
 pub(crate) fn lower_vec_get_clone_call(
     fn_ctx: &FnCtx<'_, '_>,
+    callee: &str,
     args: &[Place],
     dest: Option<&Place>,
     next: u32,
@@ -5667,7 +5869,7 @@ pub(crate) fn lower_vec_get_clone_call(
              element type {elem_llvm_ty:?}"
         )));
     }
-    let fv = get_or_declare_vec_get_clone_runtime(fn_ctx.ctx, fn_ctx.llvm_mod);
+    let fv = get_or_declare_vec_get_output_runtime(fn_ctx.ctx, fn_ctx.llvm_mod, callee);
     let is_some = fn_ctx
         .builder
         .build_call(
@@ -6380,18 +6582,19 @@ pub(crate) fn lower_string_sentinel_option_call(
 
 /// Declare (or fetch) the `hew_vec_get_clone(vec, index, out) -> bool` runtime
 /// choke point: `(ptr, i64, ptr) -> i1`.
-fn get_or_declare_vec_get_clone_runtime<'ctx>(
+fn get_or_declare_vec_get_output_runtime<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
+    symbol: &str,
 ) -> FunctionValue<'ctx> {
-    if let Some(fv) = llvm_mod.get_function("hew_vec_get_clone") {
+    if let Some(fv) = llvm_mod.get_function(symbol) {
         return fv;
     }
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i1_ty = ctx.bool_type();
     let i64_ty = ctx.i64_type();
     llvm_mod.add_function(
-        "hew_vec_get_clone",
+        symbol,
         i1_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
         Some(Linkage::External),
     )
@@ -6782,7 +6985,15 @@ mod tests {
             is_opaque: false,
         };
         let mut deps = Vec::new();
-        collect_named_machine_deps(&field_ty, &index_of, &mut deps);
+        let record_fields = HashMap::new();
+        let mut visiting = Vec::new();
+        collect_named_machine_deps(
+            &field_ty,
+            &index_of,
+            &record_fields,
+            &mut visiting,
+            &mut deps,
+        );
         assert_eq!(deps, vec![7]);
 
         let other_module = ResolvedTy::Named {
@@ -6791,7 +7002,13 @@ mod tests {
             builtin: None,
             is_opaque: false,
         };
-        collect_named_machine_deps(&other_module, &index_of, &mut deps);
+        collect_named_machine_deps(
+            &other_module,
+            &index_of,
+            &record_fields,
+            &mut visiting,
+            &mut deps,
+        );
         assert_eq!(
             deps,
             vec![7],

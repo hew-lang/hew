@@ -41,6 +41,44 @@ impl Builder {
                 return;
             }
         }
+        // A record-field store whose target path is a borrowed field-projection
+        // cursor's source — or ANY prefix of it — overwrites the slot the
+        // borrowed handle lives in. The cursor's own handle copy (cursor
+        // field 0) keeps dereferencing the replaced handle's storage on every
+        // `next`, so a bypass here is a use-after-free the moment the old
+        // handle is released (the poisoned-allocator abort). The whole-root
+        // guard above already rejects `root = …`; this is the same boundary
+        // one projection level down. Element-level mutation through the SAME
+        // handle (`root.f[i] = …`, `.push`, `.clear`) stays allowed — `next`
+        // re-loads the handle and re-probes the length, so in-place mutation
+        // is a live view, never a stale pointer.
+        if let Some((target_root, target_path, rendered)) = field_store_target_path(target) {
+            if self
+                .vec_iter_borrowed_projections
+                .iter()
+                .any(|(_, borrowed_root, borrowed_path)| {
+                    *borrowed_root == target_root
+                        && target_path.len() <= borrowed_path.len()
+                        && borrowed_path[..target_path.len()] == target_path[..]
+                })
+            {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "assigning `{rendered}` while a VecIter cursor borrows it"
+                        ),
+                        site: target.site,
+                    },
+                    note: "the active for-loop cursor reads this field's Vec handle directly; \
+                           storing to the projected field (or any record containing it) would \
+                           replace that handle while the cursor can still execute. Mutate \
+                           elements through Vec methods or index assignment, or store after \
+                           the loop has finished"
+                        .to_string(),
+                });
+                return;
+            }
+        }
         // A `string`/`bytes` assignment whose RHS is an ACTIVE yield binder is
         // a retained SHARE, mirroring the `let x = <binding>` share-site
         // registration above in `stmt`. The binder's release authority is the
@@ -171,9 +209,13 @@ impl Builder {
                         type_args.len()
                     );
                 }
-                if self.vec_receiver_has_drop_only_receiver_element(&receiver.ty) {
-                    let _ = self
-                        .reject_drop_only_receiver_vec_operation("index set copy-in", target.site);
+                // Trait-object receivers never reach this arm: the HIR gate
+                // (`check_vec_index_element_type` in `hew-hir/src/lower.rs`)
+                // rejects `xs[i] = v` fatally for `Vec<dyn Trait>` before MIR
+                // lowering runs. This check still fires for `Receiver`
+                // elements, which pass that HIR gate.
+                if self.vec_receiver_has_drop_only_element(&receiver.ty) {
+                    let _ = self.reject_drop_only_vec_operation("index set copy-in", target.site);
                     return;
                 }
                 let Some(receiver_place) = self.lower_value(receiver) else {
@@ -666,6 +708,40 @@ impl Builder {
                 },
                 note: "assignment target did not lower to a writable place".to_string(),
             }),
+        }
+    }
+}
+
+/// The `(root binding, field path, rendered spelling)` of a record-field
+/// store target — a pure `FieldAccess` chain over a local `BindingRef` root
+/// (`outer.inner.items = …` → `(outer, ["inner", "items"],
+/// "outer.inner.items")`). Mirrors the source-side walk in
+/// [`Builder::vec_iter_source_live_binding_record_field_path`] so the
+/// borrowed-projection store guard compares like against like. `None` for any
+/// other target shape (bare bindings, index targets, actor state) — those
+/// have their own guards or lowering arms.
+fn field_store_target_path(target: &HirExpr) -> Option<(hew_hir::BindingId, Vec<String>, String)> {
+    let mut cur = target;
+    let mut path: Vec<String> = Vec::new();
+    loop {
+        match &cur.kind {
+            HirExprKind::SubsumedValue { source, .. } => cur = source,
+            HirExprKind::FieldAccess { object, field } => {
+                path.push(field.clone());
+                cur = object;
+            }
+            HirExprKind::BindingRef {
+                name,
+                resolved: ResolvedRef::Binding(id),
+            } => {
+                if path.is_empty() {
+                    return None;
+                }
+                path.reverse();
+                let rendered = format!("{name}.{}", path.join("."));
+                return Some((*id, path, rendered));
+            }
+            _ => return None,
         }
     }
 }

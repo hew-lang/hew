@@ -223,6 +223,9 @@ pub enum VecGetElem {
     /// `Terminator::Call` path because its concrete element layout determines
     /// the hidden output-pointer ABI.
     Clone,
+    /// Descriptor-backed move into a caller-provided output slot. Used by
+    /// consuming iteration over drop-only elements.
+    Take,
     Layout,
     Owned,
     Ptr,
@@ -453,6 +456,7 @@ pub enum RuntimeCallFamily {
     HashMapContainsKeyLayout,
     HashMapClearLayout,
     HashMapCloneLayout,
+    HashMapEntriesLayout,
     HashMapFreeLayout,
     HashMapGetLayout,
     HashMapInsertLayout,
@@ -1119,6 +1123,7 @@ impl RuntimeCallFamily {
             Self::HashMapContainsKeyLayout => "hew_hashmap_contains_key_layout",
             Self::HashMapClearLayout => "hew_hashmap_clear_layout",
             Self::HashMapCloneLayout => "hew_hashmap_clone_layout",
+            Self::HashMapEntriesLayout => "hew_hashmap_entries_layout",
             Self::HashMapFreeLayout => "hew_hashmap_free_layout",
             Self::HashMapGetLayout => "hew_hashmap_get_layout",
             Self::HashMapInsertLayout => "hew_hashmap_insert_layout",
@@ -1312,6 +1317,7 @@ impl RuntimeCallFamily {
             Self::VecGet(VecGetElem::I32) => "hew_vec_get_i32",
             Self::VecGet(VecGetElem::I64) => "hew_vec_get_i64",
             Self::VecGet(VecGetElem::Clone) => "hew_vec_get_clone",
+            Self::VecGet(VecGetElem::Take) => "hew_vec_take_owned",
             Self::VecGet(VecGetElem::Layout) => "hew_vec_get_layout",
             Self::VecGet(VecGetElem::Owned) => "hew_vec_get_owned",
             Self::VecGet(VecGetElem::Ptr) => "hew_vec_get_ptr",
@@ -1440,6 +1446,7 @@ impl RuntimeCallFamily {
             "hew_hashmap_contains_key_layout" => Self::HashMapContainsKeyLayout,
             "hew_hashmap_clear_layout" => Self::HashMapClearLayout,
             "hew_hashmap_clone_layout" => Self::HashMapCloneLayout,
+            "hew_hashmap_entries_layout" => Self::HashMapEntriesLayout,
             "hew_hashmap_free_layout" => Self::HashMapFreeLayout,
             "hew_hashmap_get_layout" => Self::HashMapGetLayout,
             "hew_hashmap_insert_layout" => Self::HashMapInsertLayout,
@@ -1632,6 +1639,7 @@ impl RuntimeCallFamily {
             "hew_vec_get_i32" => Self::VecGet(VecGetElem::I32),
             "hew_vec_get_i64" => Self::VecGet(VecGetElem::I64),
             "hew_vec_get_clone" => Self::VecGet(VecGetElem::Clone),
+            "hew_vec_take_owned" => Self::VecGet(VecGetElem::Take),
             "hew_vec_get_layout" => Self::VecGet(VecGetElem::Layout),
             "hew_vec_get_owned" => Self::VecGet(VecGetElem::Owned),
             "hew_vec_get_ptr" => Self::VecGet(VecGetElem::Ptr),
@@ -1765,6 +1773,7 @@ impl RuntimeCallFamily {
             Self::HashMapContainsKeyLayout
                 | Self::HashMapClearLayout
                 | Self::HashMapCloneLayout
+                | Self::HashMapEntriesLayout
                 | Self::HashMapFreeLayout
                 | Self::HashMapGetLayout
                 | Self::HashMapInsertLayout
@@ -1907,9 +1916,9 @@ impl RuntimeCallFamily {
             | Self::VecRemoveAtLayout
             | Self::VecCloneLayout
             | Self::VecSliceRange(VecSliceElem::Layout) => RuntimeCallAbiShape::VecLayout,
-            Self::VecPushOwned
+            Self::VecGet(VecGetElem::Take | VecGetElem::Owned)
+            | Self::VecPushOwned
             | Self::VecPushOwnedMove
-            | Self::VecGet(VecGetElem::Owned)
             | Self::VecSetOwned
             | Self::VecSetOwnedMove
             | Self::VecPopOwned
@@ -1924,6 +1933,7 @@ impl RuntimeCallFamily {
             | Self::HashMapKeysLayout
             | Self::HashMapValuesLayout
             | Self::HashMapCloneLayout
+            | Self::HashMapEntriesLayout
             | Self::HashMapClearLayout
             | Self::HashSetInsertLayout
             | Self::HashSetContainsLayout
@@ -2172,6 +2182,7 @@ impl RuntimeCallFamily {
             | F::HashMapContainsKeyLayout
             | F::HashMapClearLayout
             | F::HashMapCloneLayout
+            | F::HashMapEntriesLayout
             | F::HashMapFreeLayout
             | F::HashMapGetLayout
             | F::HashMapInsertLayout
@@ -2862,6 +2873,7 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::ChannelSenderClose
             | F::ChannelReceiverClose
             | F::HashMapKeysLayout
+            | F::HashMapEntriesLayout
             | F::HashMapNew
             | F::HashMapValuesLayout
             | F::HashSetNew
@@ -2902,7 +2914,7 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::VecContainsLayout
             | F::VecContainsOwned
             | F::VecContainsScalar(_)
-            | F::VecGet(VecGetElem::Clone)
+            | F::VecGet(VecGetElem::Clone | VecGetElem::Take)
             | F::VecNew
             | F::VecPopBool
             | F::VecPopLayout

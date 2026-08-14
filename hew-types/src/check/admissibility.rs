@@ -1574,12 +1574,17 @@ impl Checker {
     }
 
     /// Checker boundary for every operation that constructs or advances a
-    /// `VecIter<T>`. The diagnostic text is intentionally shared by method-call
-    /// and `for` syntax so the rejection remains stable across desugaring.
+    /// `VecIter<T>`. Most elements need a semantic clone. A trait object is the
+    /// consuming-iterator exception: its cursor moves and nulls each slot.
     pub(super) fn validate_vec_iter_element_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         if matches!(resolved, Ty::Error) {
             return false;
+        }
+        // Consuming Vec iteration moves a heap-boxed trait object out of its
+        // descriptor slot and nulls that slot; it does not require a clone.
+        if matches!(resolved, Ty::TraitObject { .. }) {
+            return true;
         }
         let mut visiting = HashSet::new();
         let Some(blocker) = self.vec_iter_clone_blocker(&resolved, &mut visiting) else {
@@ -1813,12 +1818,14 @@ impl Checker {
             return false;
         }
 
-        if method == "keys" && !self.is_supported_hashmap_projection_element_type(&resolved_key) {
+        if matches!(method, "keys" | "entries")
+            && !self.is_supported_hashmap_projection_element_type(&resolved_key)
+        {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`HashMap<{}, {}>.keys()` is not yet supported: projecting key type `{}` into an owned `Vec` is not lowered; supported projection key types are scalar primitives, `string`, and Copy record/enum types",
+                    "`HashMap<{}, {}>.{method}()` is not yet supported: projecting key type `{}` into an owned `Vec` is not lowered; supported projection key types are scalar primitives, `string`, and Copy record/enum types",
                     resolved_key.user_facing(),
                     resolved_val.user_facing(),
                     resolved_key.user_facing()

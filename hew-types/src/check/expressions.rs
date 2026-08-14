@@ -988,16 +988,18 @@ impl Checker {
         // with a clear diagnostic rather than a silent double-free.
         if !self.vec_element_has_copy_layout(&elem_ty) {
             let resolved_elem = self.subst.resolve(&elem_ty);
-            // `Receiver<T>` has only the descriptor MOVE-in lane. An array
-            // repeat would need clone-in for every slot, which is forbidden.
-            let receiver_drop_only = matches!(
-                resolved_elem,
-                Ty::Named {
-                    builtin: Some(BuiltinType::Receiver),
-                    ..
-                }
-            );
-            let clonable = !receiver_drop_only
+            // Drop-only descriptor elements have only the MOVE-in path. An
+            // array repeat would need clone-in for every slot, which is
+            // forbidden.
+            let descriptor_drop_only = matches!(resolved_elem, Ty::TraitObject { .. })
+                || matches!(
+                    resolved_elem,
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Receiver),
+                        ..
+                    }
+                );
+            let clonable = !descriptor_drop_only
                 && (matches!(resolved_elem, Ty::String | Ty::Bytes)
                     || self.vec_owned_element_admissible(&elem_ty));
             if !clonable {
@@ -5916,6 +5918,27 @@ impl Checker {
                     );
                     self.publish_checked_expression(&object.0, &object.1, self_ty);
                     return ty;
+                }
+            }
+        }
+
+        // Dotted module-qualified unit constructor:
+        // `module.Type.Variant`. The parser represents this as nested field
+        // access, but neither `module` nor `module.Type` is a runtime value.
+        // Resolve the complete constructor before synthesising the inner
+        // projection so it shares the exact export and variant authority of
+        // the existing `module.Type::Variant` surface.
+        if let Expr::FieldAccess {
+            object: module,
+            field: type_name,
+        } = &object.0
+        {
+            if let Expr::Identifier(module_short) = &module.0 {
+                if self.modules.contains(module_short)
+                    && self.env.lookup_ref(module_short).is_none()
+                {
+                    let constructor = format!("{module_short}.{type_name}::{field}");
+                    return self.synthesize_identifier(&constructor, span);
                 }
             }
         }

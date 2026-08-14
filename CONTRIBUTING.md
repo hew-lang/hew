@@ -56,7 +56,7 @@ The installer is worktree-safe and targets the shared git common dir, so linked 
 
 The pre-push hook runs `cargo fmt --all -- --check` — it is intentionally fast. Its job is to catch unformatted code before it reaches review; it is not a substitute for CI.
 
-For substantive changes, run `make ci-preflight` yourself before opening a PR. CI runs `make ci-preflight` (or its dispatcher) on every PR regardless, so formatting errors, clippy violations, and test failures will be caught there. The pre-push hook just keeps the signal fast and local.
+For substantive changes, run `make preflight` yourself before opening a PR. It is the standard diff-routed, fail-fast gate for local iteration; reserve `make ci-preflight` for integration and release moments. CI runs the dispatcher on every PR regardless, so formatting errors, clippy violations, and test failures will be caught there. The pre-push hook just keeps the signal fast and local.
 
 If `cargo fmt --check` fails: run `cargo fmt --all` and re-push. There is no environment-based exemption and no `--no-verify` bypass.
 
@@ -80,7 +80,7 @@ Use `test-runtime-unit` for no-network runtime iteration and `test-compiler-pipe
 
 `make test-runtime-unit` is the recommended target when iterating on `hew-runtime` logic that does not touch QUIC, TLS, or the profiler. It runs the full `hew-runtime` test suite (lib unit tests + all integration tests) with `--no-default-features`, cutting compile time roughly 3× (measured: ~32 s vs ~85 s per integration test binary on a warm build cache). The two profiler allocator tests in `transport.rs` are excluded under this target because they require active allocation counters to be meaningful; they still run under `cargo test -p hew-runtime` (default features).
 
-`make ci-preflight` dispatches a conservative local preflight from your current diff and is the recommended manual gate before opening a PR or tagging a release. Pass `ARGS="--dry-run"` to preview without running. CI runs this on every PR regardless.
+`make preflight` dispatches a conservative, diff-routed local preflight and fails fast; it is the standard manual gate before opening a PR. Reserve `make ci-preflight` for integration and release moments. Pass `ARGS="--dry-run"` to preview without running. CI runs the dispatcher on every PR regardless.
 
 ### E2E test workflow
 

@@ -738,7 +738,10 @@ impl Builder {
             // `resolved_ty_element_owns_heap_for_owned_vec` exactly, so the
             // drop_fn the elaborator emits matches what codegen constructs —
             // `dedup-semantic-boundary`).
-            ResolvedTy::Named {
+            // A trait-object slot likewise owns its two-word `HeapBoxed` payload
+            // under a drop-only element descriptor.
+            ResolvedTy::TraitObject { .. }
+            | ResolvedTy::Named {
                 builtin:
                     Some(
                         hew_types::BuiltinType::HashMap
@@ -816,7 +819,6 @@ impl Builder {
             | ResolvedTy::Closure { .. }
             | ResolvedTy::Pointer { .. }
             | ResolvedTy::Borrow { .. }
-            | ResolvedTy::TraitObject { .. }
             | ResolvedTy::Task(_)
             | ResolvedTy::TypeParam { .. } => false,
         }
@@ -1391,11 +1393,10 @@ impl Builder {
             .is_some_and(|elem| self.is_owned_vec_element(elem))
     }
 
-    /// `Receiver<T>` slots have a descriptor close thunk but no clone thunk.
-    /// Sender is intentionally excluded: it remains a normal cloneable
-    /// descriptor-backed element. The predicate is used only to refuse Vec
-    /// operations that would manufacture a second endpoint owner.
-    pub(super) fn vec_receiver_has_drop_only_receiver_element(&self, vec_ty: &ResolvedTy) -> bool {
+    /// True when a Vec element descriptor has a drop callback but no clone
+    /// callback. Receiver endpoints and trait-object boxes are affine; every
+    /// operation that would manufacture a second owner must be refused.
+    pub(super) fn vec_receiver_has_drop_only_element(&self, vec_ty: &ResolvedTy) -> bool {
         let ResolvedTy::Named {
             args,
             builtin: Some(hew_types::BuiltinType::Vec),
@@ -1404,31 +1405,44 @@ impl Builder {
         else {
             return false;
         };
-        matches!(
-            args.first(),
-            Some(ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::Receiver),
-                ..
-            })
-        )
+        matches!(args.first(), Some(ResolvedTy::TraitObject { .. }))
+            || matches!(
+                args.first(),
+                Some(ResolvedTy::Named {
+                    builtin: Some(hew_types::BuiltinType::Receiver),
+                    ..
+                })
+            )
     }
 
-    pub(super) fn reject_drop_only_receiver_vec_operation(
+    pub(super) fn reject_drop_only_vec_operation(
         &mut self,
         operation: &str,
         site: SiteId,
     ) -> Option<Place> {
         self.diagnostics.push(MirDiagnostic {
             kind: MirDiagnosticKind::NotYetImplemented {
-                construct: format!("`Vec<channel.Receiver<_>>::{operation}()`"),
+                construct: format!("drop-only `Vec` element operation `{operation}`"),
                 site,
             },
-            note: "channel.Receiver<T> is a drop-only Vec element: this operation would clone \
-                   or copy a receiver slot. Move a receiver through a consuming operation \
-                   instead."
+            note: "this Vec element has a drop callback but no semantic clone: the operation \
+                   would create a second owner. Use push/pop/remove or consuming iteration \
+                   to transfer the value instead."
                 .to_string(),
         });
         None
+    }
+
+    fn vec_receiver_has_trait_object_element(&self, vec_ty: &ResolvedTy) -> bool {
+        let ResolvedTy::Named {
+            args,
+            builtin: Some(hew_types::BuiltinType::Vec),
+            ..
+        } = self.subst_ty(vec_ty)
+        else {
+            return false;
+        };
+        matches!(args.first(), Some(ResolvedTy::TraitObject { .. }))
     }
 
     /// Prove that a concrete collection payload has a total semantic clone and
@@ -2192,6 +2206,7 @@ impl Builder {
                     value,
                     &binding_ty,
                     pending || value_place.is_some(),
+                    value_place,
                 );
                 if owned_string_record_key.is_some() && value_place.is_some() {
                     self.owned_string_record_bindings.insert(binding.id);
@@ -4754,9 +4769,12 @@ impl Builder {
                         let _ = self.lower_value(object);
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
+                                // `construct` carries only the construct; the
+                                // CLI diagnostic frame wraps it in the
+                                // "MIR lowering for … is not implemented yet"
+                                // sentence.
                                 construct: format!(
-                                    "MIR lowering for field access on unregistered record type \
-                                     `{type_name}` is not implemented yet"
+                                    "field access on unregistered record type `{type_name}`"
                                 ),
                                 site: expr.site,
                             },
@@ -5318,7 +5336,8 @@ impl Builder {
                 // caller keeps its own independent drop.
                 let callee = if callee == "hew_vec_push_owned"
                     && args.len() == 1
-                    && self.expr_is_owned_vec_move_ingress_owner(&args[0])
+                    && (self.vec_receiver_has_trait_object_element(&receiver.ty)
+                        || self.expr_is_owned_vec_move_ingress_owner(&args[0]))
                 {
                     "hew_vec_push_owned_move".to_string()
                 } else {
@@ -5364,11 +5383,10 @@ impl Builder {
                 // have already been rewritten to their `_move` siblings above,
                 // so rejecting only these exact symbols preserves the sole
                 // supported construction path without weakening Sender.
-                if self.vec_receiver_has_drop_only_receiver_element(&receiver.ty)
+                if self.vec_receiver_has_drop_only_element(&receiver.ty)
                     && matches!(callee.as_str(), "hew_vec_push_owned" | "hew_vec_set_owned")
                 {
-                    return self
-                        .reject_drop_only_receiver_vec_operation("push/set copy-in", expr.site);
+                    return self.reject_drop_only_vec_operation("push/set copy-in", expr.site);
                 }
 
                 // `hew_vec_get_clone` is the clone-out choke used by both
@@ -5382,8 +5400,8 @@ impl Builder {
                 // resources, opaque handles, and unresolved layouts fail
                 // closed instead of receiving a shallow clone.
                 if callee == "hew_vec_get_clone" {
-                    if self.vec_receiver_has_drop_only_receiver_element(&receiver.ty) {
-                        return self.reject_drop_only_receiver_vec_operation("get", expr.site);
+                    if self.vec_receiver_has_drop_only_element(&receiver.ty) {
+                        return self.reject_drop_only_vec_operation("get", expr.site);
                     }
                     let concrete_receiver = self.subst_ty(&receiver.ty);
                     let ResolvedTy::Named {
@@ -5436,9 +5454,8 @@ impl Builder {
                     callee.as_str(),
                     "hew_vec_clone" | "hew_vec_clone_layout" | "hew_vec_clone_owned"
                 ) {
-                    if self.vec_receiver_has_drop_only_receiver_element(&receiver.ty) {
-                        return self
-                            .reject_drop_only_receiver_vec_operation("clone/iter", expr.site);
+                    if self.vec_receiver_has_drop_only_element(&receiver.ty) {
+                        return self.reject_drop_only_vec_operation("clone/iter", expr.site);
                     }
                     let concrete_receiver = self.subst_ty(&receiver.ty);
                     let ResolvedTy::Named {
@@ -5485,10 +5502,11 @@ impl Builder {
                 // receiver carries concrete K/V.
                 //
                 // Whole-map clone duplicates BOTH keys and values. `get` and
-                // `values` duplicate V; `keys` duplicates K. HashMap for-in
+                // `values` duplicate V; `keys` duplicates K; `entries`
+                // duplicates BOTH into the tuple elements. HashMap for-in
                 // synthesizes `keys` + `values`, so it shares these same guards.
                 let hashmap_clone_roles = match callee.as_str() {
-                    "hew_hashmap_clone_layout" => Some((true, true)),
+                    "hew_hashmap_clone_layout" | "hew_hashmap_entries_layout" => Some((true, true)),
                     "hew_hashmap_get_layout"
                     | "hew_hashmap_get_clone_layout"
                     | "hew_hashmap_values_layout" => Some((false, true)),
@@ -5538,6 +5556,9 @@ impl Builder {
                                 }
                                 "hew_hashmap_values_layout" => {
                                     "HashMap::values() must clone every value into an independent snapshot"
+                                }
+                                "hew_hashmap_entries_layout" => {
+                                    "HashMap::entries() must clone every key and value into an independent snapshot"
                                 }
                                 _ => {
                                     "HashMap::get() must clone the matched value into an independent owner"
@@ -5653,7 +5674,22 @@ impl Builder {
                 let mut arg_places = vec![receiver_place];
                 let mut yield_retained_locals: Vec<u32> = Vec::new();
                 for arg in args {
-                    let move_ingress = builtin_method_arg_is_move_ingress(*target_family);
+                    // A trait-object element push is the one rewrite that turns
+                    // a BARE-BINDING push into `hew_vec_push_owned_move` (the
+                    // drop-only descriptor has no clone thunk for copy-in), so
+                    // the source binding must be consumed through the move
+                    // ingress here. The scope is structural trait-object-ness,
+                    // never the `_move` spelling alone: the array-literal
+                    // desugar owns its element consume
+                    // (`consume_owned_vec_move_array_element` below), and the
+                    // fresh-rvalue `_move` rewrite for other owned elements
+                    // moves an unbound temp with no binding to consume — a
+                    // second move-ingress consume on either would double-record
+                    // the same site as use-after-consume.
+                    let move_ingress = builtin_method_arg_is_move_ingress(*target_family)
+                        || (callee == "hew_vec_push_owned_move"
+                            && !vec_owned_move_array_ingress
+                            && self.vec_receiver_has_trait_object_element(&receiver.ty));
                     // `HashMap`/`HashSet` ingress is MOVE by ABI — the runtime
                     // documents copy-in as intentionally absent — so the operand's
                     // heap is byte-transferred into the collection and the
@@ -8193,14 +8229,16 @@ impl Builder {
             }
         };
 
-        if matches!(
-            elem_ty,
-            ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::Receiver),
-                ..
-            }
-        ) {
-            return self.reject_drop_only_receiver_vec_operation("range slice", site);
+        if matches!(elem_ty, ResolvedTy::TraitObject { .. })
+            || matches!(
+                elem_ty,
+                ResolvedTy::Named {
+                    builtin: Some(hew_types::BuiltinType::Receiver),
+                    ..
+                }
+            )
+        {
+            return self.reject_drop_only_vec_operation("range slice", site);
         }
 
         let slice_symbol = match &elem_ty {
@@ -9333,6 +9371,7 @@ fn runtime_authority_for_collection(
         Family::HashMap(Map::Len) => matches!(runtime, Rt::HashMapLenLayout),
         Family::HashMap(Map::Keys) => matches!(runtime, Rt::HashMapKeysLayout),
         Family::HashMap(Map::Values) => matches!(runtime, Rt::HashMapValuesLayout),
+        Family::HashMap(Map::Entries) => matches!(runtime, Rt::HashMapEntriesLayout),
         Family::HashMap(Map::Clone) => matches!(runtime, Rt::HashMapCloneLayout),
         Family::HashMap(Map::Clear) => matches!(runtime, Rt::HashMapClearLayout),
         Family::HashSet(Set::Insert) => matches!(runtime, Rt::HashSetInsertLayout),

@@ -314,6 +314,15 @@ impl Checker {
         if let Some(published) = self.published_bare_type_qualified(name) {
             return Some(published);
         }
+        // An unqualified builtin keeps its compiler identity unless lexical
+        // source authority above explicitly published a same-named type. A
+        // private declaration pre-registered from another module is present in
+        // the global declaration ladder for that module's own body; it is not
+        // an importer binding and must not replace `Result`, `Option`, or any
+        // other builtin in an unrelated module.
+        if crate::lookup_builtin_type(name).is_some() || builtin_named_type(name).is_some() {
+            return None;
+        }
         let declaration = self.resolve_nominal_declaration(NominalOrigin::Lexical, name)?;
         // Compiler catalog nominals keep their own namespace. `Location`,
         // `NodeId` and the other entries the compiler declares in
@@ -580,12 +589,12 @@ impl Checker {
             }
         }
 
-        if self.type_defs.contains_key(&dotted) || self.known_types.contains(&dotted) {
-            return dotted;
-        }
-
         if let Some(canonical) = self.canonical_nominal_name(&dotted) {
             return canonical;
+        }
+
+        if self.type_defs.contains_key(&dotted) || self.known_types.contains(&dotted) {
+            return dotted;
         }
 
         dotted
@@ -2176,9 +2185,33 @@ impl Checker {
                 args,
                 builtin,
             } => {
-                let canonical_name = self
-                    .canonical_nominal_name(name)
-                    .unwrap_or_else(|| name.clone());
+                let canonical_name = if let Some(kind) = builtin {
+                    // A builtin discriminator is already closed identity
+                    // authority. Do not run a BARE presentation leaf through
+                    // the user-declaration ladder: a private imported `Result`
+                    // may share the leaf, but cannot rename builtin
+                    // `Result<T, E>` during final checker handoff.
+                    if name.contains('.') {
+                        if self.resolved_builtin_type(name).is_some() {
+                            // A trusted qualified carrier still projects its
+                            // lexical module alias to the one canonical source
+                            // owner (`stream.Stream` → `std.stream.Stream`).
+                            // Two dotted spellings are DISTINCT nominals to
+                            // `names_match_qualified`, so leaving the alias
+                            // spelling in place splits one builtin nominal
+                            // into two identities at every unify boundary.
+                            self.canonical_nominal_name(name)
+                                .unwrap_or_else(|| name.clone())
+                        } else {
+                            kind.canonical_name().to_string()
+                        }
+                    } else {
+                        name.clone()
+                    }
+                } else {
+                    self.canonical_nominal_name(name)
+                        .unwrap_or_else(|| name.clone())
+                };
                 Ty::Named {
                     // A source declaration may share a builtin leaf spelling
                     // (`Option`, `Result`, or an imported source nominal). The

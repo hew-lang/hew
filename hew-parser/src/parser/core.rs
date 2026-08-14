@@ -647,23 +647,47 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// Type-declaration keywords admitted as import path segments. Module
+    /// files are named after what they declare (`actor.hew`, `machine.hew`),
+    /// so these words must be spellable in an import path even though they
+    /// are reserved everywhere else. Import path position is unambiguous:
+    /// segments only appear directly after `import` or `::`, where no
+    /// declaration keyword carries its keyword meaning. Qualifier position
+    /// (`machine.Machine` as a type annotation) stays reserved — selective
+    /// import (`import a::machine::{Machine};`) is the supported spelling.
+    pub(crate) fn import_path_segment_keyword(tok: &Token<'_>) -> Option<&'static str> {
+        match tok {
+            Token::Actor => Some("actor"),
+            Token::Machine => Some("machine"),
+            Token::Record => Some("record"),
+            Token::Enum => Some("enum"),
+            Token::Supervisor => Some("supervisor"),
+            Token::Type => Some("type"),
+            Token::Trait => Some("trait"),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_import_path_segment_token(tok: &Token<'_>) -> bool {
-        matches!(tok, Token::Identifier(_) | Token::Actor)
+        matches!(tok, Token::Identifier(_))
+            || Self::import_path_segment_keyword(tok).is_some()
             || Self::contextual_keyword_name(tok).is_some()
     }
 
     pub(crate) fn expect_import_path_segment(&mut self) -> Option<String> {
         match self.peek() {
-            Some(Token::Actor) => {
-                self.advance();
-                Some("actor".to_string())
+            Some(tok) => {
+                if let Some(name) = Self::import_path_segment_keyword(tok) {
+                    self.advance();
+                    Some(name.to_string())
+                } else if let Some(name) = Self::contextual_keyword_name(tok) {
+                    self.advance();
+                    Some(name.to_string())
+                } else {
+                    self.expect_ident()
+                }
             }
-            Some(tok) if Self::contextual_keyword_name(tok).is_some() => {
-                let name = Self::contextual_keyword_name(tok).expect("checked above");
-                self.advance();
-                Some(name.to_string())
-            }
-            _ => self.expect_ident(),
+            None => self.expect_ident(),
         }
     }
 

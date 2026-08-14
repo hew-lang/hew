@@ -56,6 +56,7 @@ for the documented resolver precedence.
 - Negate a bool with `!`: `!x` is `true` when `x` is `false`.
 - `break` and `continue` work in both `loop {}` and `while` loops.
 - Iterate all HashMap keys with `.keys()` → `Vec<string>`; all values with `.values()` → `Vec<V>`.
+- Coming from Rust/Go/TS: there is no `struct` keyword — `type` declares both plain data records and generic containers, so one keyword covers what Rust splits into `struct`/`enum` shapes. Writing `struct` is a parse error with a `write \`type Name { ... }\`` hint.
 
 ## Primitives
 
@@ -1638,6 +1639,26 @@ fn main() {
 
 A machine is a value type. Inside the body use bare names (`NonZero { value: 1 }`, `step(Inc)`); outside use the qualifier (`Counter::Zero`, `CounterEvent::Inc`). `step()` mutates in place — the receiver must be a `var`. End with `default { state }` to make uncovered cells a no-op stay. Every (state, event) cell must be covered or it is a compile error.
 
+> **Why `default` is a blanket catch-all, and what that costs you.** Without
+> `default`, every `(state, event)` pair not covered by an explicit `on`
+> rule is a compile error — this is what makes a machine an exhaustive
+> state/event matrix instead of an ad-hoc set of handlers. `default { state
+> }` exists because most machines have far more legal no-op transitions
+> (an `Ajar` door ignoring a second `Open`) than meaningful ones, and
+> writing every one of those out by hand is pure noise. The trade-off:
+> `default` is all-or-nothing per machine, not per state. Adding it makes
+> every currently-unlisted `(state, event)` pair a silent stay — including
+> ones you meant to leave unhandled as a genuine error (a `Withdraw` event
+> reaching a `Closed` account, say). There is no middle ground today between
+> "enumerate every single cell by hand, so the compiler's exhaustiveness
+> check catches anything you forgot" and "add `default`, so every gap —
+> intentional or not — silently becomes a no-op stay". If some unhandled
+> transitions in a machine should be hard errors and others should be
+> silent no-ops, the only current option is to omit `default` and write out
+> every cell explicitly, including the no-op ones (`on Bump: Dead => Dead
+> reenter { state }`), so the compiler forces you to make each one a
+> deliberate decision.
+
 ### State field holding a Vec
 
 ```hew
@@ -2686,6 +2707,103 @@ fn main() {
 
 A config missing `port` traps with `missing required field: port` instead of returning a zero value.
 
+## Modules and imports
+
+### Importing your own modules
+
+<!-- doctest: skip -->
+```hew
+import "helpers.hew";
+
+fn main() {
+    println(shout("hi"));
+}
+```
+
+A quoted string path (`import "relative/path.hew";`) pulls in a sibling
+source file directly — no project layout is required. This is the fastest
+way to split a script into files.
+
+For a project with a `src/` tree, `import src::a::b::c;` addresses
+`src/a/b/c.hew` by dotted path and binds the module under its last
+segment (`c` here) — call its public items as `c.function_name()` /
+`c.CONST_NAME`, the same dotted-access form used for `std::string`,
+`std::math`, and every other stdlib module:
+
+```hew
+import std::string;
+
+fn main() {
+    println(string.from_int(42));
+}
+```
+
+Selective import (`import src::a::b::{Thing, other_fn};`) brings specific
+names into scope unqualified instead of binding the module name. Both forms
+resolve `pub` items only — a non-`pub` fn, type, `machine`, or `const` is
+invisible outside its defining file.
+
+**Reserved-word module path segments.** A path segment written in `src::`
+dotted form cannot currently be a keyword — `import src::workflow::machine::{Thing};`
+is a parse error (`` expected `*` or `{` after `::`, found `machine` `` at the
+`machine` segment) even though `machine` is a perfectly good file name on disk. `actor` is the one
+keyword carved out as a valid segment today; other type-declaration keywords
+(`machine`, `type`, `trait`, ...) are not. If a module's file name collides
+with a keyword, either rename the file or reach it via the quoted string-path
+import form above, which has no such restriction.
+
+### `pub const` — module-level constants
+
+```hew
+const MAX_RETRIES: i64 = 3;
+
+fn main() {
+    println(MAX_RETRIES);
+}
+```
+
+`const NAME: Type = expr;` declares a module-level constant; `pub const`
+exports it. A const is evaluated once and is immutable — there is no `var
+const`. Read a `pub const` from another module via dotted access on the
+imported module (`reasons.MAX_RETRIES`) — selective import of a `const`
+(`import src::reasons::reasons::{MAX_RETRIES};`, then bare `MAX_RETRIES`)
+currently fails to resolve; dotted access is the only working form today.
+Prefer a `pub const` over a zero-argument wrapper function
+(`pub fn max_retries() -> i64 { 3 }`) for a fixed value — the const form is
+shorter, makes the value's constancy visible at the call site, and avoids a
+function-call indirection for something that never varies.
+
+### Suppressing a lint
+
+```hew
+// hew:allow(dead_code)
+pub fn reserved_for_future_use() -> i64 { 1 }
+
+fn main() {
+    println("hi");
+}
+```
+
+`hew check`/`hew build`/`hew test` run a lint sweep after type-checking.
+`dead_code` (an unreachable, never-called function) is the one most projects
+hit first — it fires on **every** unreferenced function, `pub` included.
+This is deliberate, not a bug: Hew has no package/library manifest yet to
+mark a crate's public API surface as "used by design", so until that lands,
+a `pub` function with no caller inside the program you're compiling is
+indistinguishable from genuinely dead code, and the lint stays honest about
+that rather than special-casing `pub` and going quiet on real dead code in
+library-shaped files.
+
+Suppress a finding in-source with `// hew:allow(<lint-name>)` (or
+`// hew:allow(all)`) directly above the flagged item — this wins even under
+`-D`. Suppress project-wide from the command line with `-A <lint-name>`
+(`hew build -A dead_code`), or promote a lint with `-W`/`-D`. All three
+flags are repeatable and accept `all` in place of a lint name. The
+`dead_code` diagnostic's own suggested fix (`prefix with underscore:
+_name`) is aimed at genuinely-unused private helpers; for a deliberately
+exported function, reach for `// hew:allow(dead_code)` or `-A dead_code`
+instead of renaming your public API to satisfy the linter.
+
 ## Structural equality
 
 ### Records and payload-bearing enums
@@ -3397,6 +3515,196 @@ with `bytes.to_string()`. The method form (`stream.read(n)`) is NOT supported ye
 > pointer to a `BytesTriple`, matching the runtime's representation.
 
 Full example: [`examples/net/tls_client.hew`](../examples/net/tls_client.hew).
+
+### `process.run` vs `process.run_argv` — shell vs no-shell
+
+```hew
+import std::process;
+
+fn main() {
+    let out = process.run("echo shell-form");
+    println(out.trim());
+
+    let args: Vec<string> = Vec::new();
+    args.push("no-shell-form");
+    let result = process.run_argv("echo", args);
+    println(result.stdout.trim());
+}
+```
+
+`process.run(command: string)` hands `command` to the system shell (`sh -c`
+on POSIX) and returns captured stdout as a `string`; it panics on launch
+failure (`process.try_run` returns a `Result` instead). Because it goes
+through a shell, `command` is subject to shell quoting, globbing, and
+injection the same way a hand-built shell string always is — building
+`command` by concatenating untrusted input is a shell-injection bug in Hew
+exactly as it would be in any language's `system()`/`sh -c` wrapper. This is
+existing, documented behaviour, not a defect: a shell-executing `run` is
+useful for exactly the cases where you want shell features (pipes,
+redirects, globs), and `process.run_argv(command, args: Vec<string>)` is the
+no-shell alternative — it execs `command` directly with `args` as an argv
+array, so arguments containing spaces, quotes, or shell metacharacters pass
+through literally with no injection surface. Prefer `run_argv`/`try_run_argv`
+whenever any part of the command line comes from outside your source code;
+reach for `run`/`try_run` only when you deliberately want shell semantics.
+
+## Testing — `hew test`
+
+### Discovering tests: `#[test]` functions and file layout
+
+```hew
+fn add(a: i64, b: i64) -> i64 { a + b }
+
+#[test]
+fn add_two_positive_numbers_returns_sum() {
+    assert_eq(add(2, 3), 5);
+}
+```
+
+`hew test <path>` (a file or a directory) discovers every function tagged
+`#[test]` and runs each in its own isolated compiled program. A file is a
+*test file* — eligible for discovery at all — when its name ends in
+`_test.hew`, or when it lives inside a directory named `tests/`; a `#[test]`
+function in a plain, non-matching file is never discovered, silently.
+Running `hew test .` over a directory recurses and aggregates every
+discovered test file into one report:
+
+```
+running 3 tests
+test add_two_positive_numbers_returns_sum ... ok
+test divide_by_zero_traps ... ok
+test slow_integration_probe ... ignored
+test result: ok. 2 passed; 0 failed; 1 ignored
+```
+
+Each test compiles and runs as its own native subprocess — one test's
+panic, timeout, or stray `std::process::exit` cannot take down another
+test in the same run, and there is no shared global state between tests by
+default.
+
+> **Discovery is per-file, not per-project.** A `#[test]` fn in a file that
+> doesn't end in `_test.hew` and isn't under `tests/` is invisible to `hew
+> test` — no warning, no error, it's simply never found. If a suite's pass
+> count looks lower than expected, run `hew test <path> --list` first to see
+> exactly what was discovered before debugging individual tests.
+
+### Assertions: `assert`, `assert_eq`, `assert_ne`
+
+`assert(condition: bool)` panics when `condition` is `false`. `assert_eq(a,
+b)` and `assert_ne(a, b)` panic with a diff of the two values on failure —
+prefer them over `assert(a == b)` for the readable failure message:
+
+```
+---- wrong_expectation_fails ----
+assertion failed: assert_eq(4, 5)
+```
+
+These are the same panic-based builtins used everywhere else in Hew
+(`assert`, `assert_eq`, `assert_ne` — see "Assertions" above); a test
+failure IS a panic, nothing test-framework-specific.
+
+### `#[should_panic]` — tests that must panic
+
+```hew
+fn divide(a: i64, b: i64) -> i64 { a / b }
+
+#[test]
+#[should_panic]
+fn divide_by_zero_traps() {
+    divide(10, 0);
+}
+```
+
+A `#[should_panic]` test passes when the function body panics (including a
+runtime trap, like the integer division above) and fails when it completes
+normally. There is no message-matching form (no `#[should_panic(expected =
+"...")]`) — it only checks that a panic occurred.
+
+### `#[ignore]` — skip by default
+
+```hew
+#[test]
+#[ignore]
+fn slow_integration_probe() {
+    assert(true);
+}
+```
+
+An `#[ignore]`d test is discovered and listed but not run by a plain `hew
+test` — it reports `ignored`, not `ok`. Run it (and every other ignored test
+in the run) with `--include-ignored`.
+
+### `#[serial]` — mutual exclusion for shared-state tests
+
+Tag a test `#[serial]` when it touches process-wide shared state (an
+environment variable, a fixed filesystem path, a fixed port) that would
+race against another test running concurrently. All `#[serial]`-tagged
+tests in a run are mutually exclusive with each other (never execute
+concurrently), while non-`#[serial]` tests keep running in parallel around
+them. `#[serial]` does not, by itself, fix a resource conflict — it only
+serializes the tests that opt in; isolate the resource (a per-test temp
+dir, an ephemeral port) instead of reaching for `#[serial]` wherever
+possible, and use it as the fallback for the cases that generally can't be
+isolated (a fixed env var read by library code you don't control, for
+example).
+
+### Filtering, listing, and sharding
+
+```
+hew test .                    # run everything discovered under .
+hew test . --list             # list discovered test identities, run nothing
+hew test . --filter add_two   # run only tests whose name contains "add_two"
+hew test . --partition hash:1/2   # run this run's stable 1-of-2 shard
+```
+
+`--filter <pattern>` matches on substring of the test's bare name.
+`--partition hash:SHARD/TOTAL` (one-based `SHARD`) splits the discovered
+set into `TOTAL` stable hash-based shards — the same test always lands in
+the same shard across runs, which is what a sharded CI matrix needs.
+`--list` prints `<file>::<test-name>` identities without compiling or
+running anything; run it first when a discovery count is a surprise.
+
+### Output formats: text and `--format junit`
+
+`--format junit` emits a JUnit XML report instead of the default coloured
+text — wire it into CI systems that already consume JUnit:
+
+```
+hew test . --format junit
+```
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="hew test" tests="3" failures="0" skipped="1" time="0.43">
+  <testsuite name="math_test.hew" tests="3" failures="0" skipped="1" time="0.43">
+    <testcase name="add_two_positive_numbers_returns_sum" classname="math_test.hew" time="0.22"></testcase>
+    <testcase name="divide_by_zero_traps" classname="math_test.hew" time="0.21"></testcase>
+    <testcase name="slow_integration_probe" classname="math_test.hew" time="0.00"><skipped/></testcase>
+  </testsuite>
+</testsuites>
+```
+
+`--no-color` drops ANSI colour codes from the default text output (useful
+for log capture that doesn't strip escape codes on its own).
+
+### Timeouts
+
+`--timeout <duration>` (default `30`, meaning 30 seconds; accepts `500ms`,
+`30s`, `1m`) bounds each individual test's wall-clock time — a hung test
+fails with a timeout message instead of hanging the whole run. Use
+`--jobs N` (`-j`) to cap how many tests compile/run concurrently; it
+defaults to the host's physical core count.
+
+### The empty-run gate — `--allow-empty`
+
+`hew test <path>` fails (non-zero exit) when discovery finds no tests to run:
+`No test files found.` when the path itself is empty or typo'd, `No test
+functions found.` when a discovered test file has zero `#[test]` functions —
+this is deliberate, so a typo'd path or an empty `tests/` directory doesn't
+silently report success in CI.
+Pass `--allow-empty` for the rare case where an empty result is
+legitimately fine (e.g. a generated/optional test directory that may not
+exist yet on some branches).
 
 ## Appendix A - FFI boundary types
 

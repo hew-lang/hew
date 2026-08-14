@@ -256,6 +256,207 @@ fn already_dyn_argument_is_not_reboxed_as_its_original_concrete() {
     );
 }
 
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end ownership boundary covers callee transfer and both caller exits"
+)]
+fn returned_dyn_transfers_heap_boxed_drop_authority_to_the_caller() {
+    use hew_mir::{ExitPath, Place, Terminator, TraitObjectStorage};
+
+    let source = r#"
+        trait Labeled {
+            fn size(val: Self) -> i64;
+        }
+        type Item { label: string }
+        impl Item {
+            fn size(val: Item) -> i64 { val.label.len() }
+        }
+        fn make(label: string) -> dyn Labeled {
+            let erased: dyn Labeled = Item { label: label };
+            erased
+        }
+        fn hold_then_panic() {
+            let value = make("panic-owner");
+            let empty: Vec<i64> = Vec::new();
+            let missing = empty[0];
+        }
+        fn main() {
+            let value = make("return-owner");
+            value.size();
+        }
+    "#;
+    let p = pipeline(source);
+
+    let make_raw = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "make")
+        .expect("make raw MIR");
+    assert!(
+        make_raw.blocks.iter().any(|block| {
+            block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        ..
+                    }
+                )
+            }) && matches!(block.terminator, Terminator::Return)
+        }),
+        "the factory must transfer its fat pointer through ReturnSlot"
+    );
+
+    let make_elab = p
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "make")
+        .expect("make elaborated MIR");
+    assert!(
+        make_elab
+            .drop_plans
+            .iter()
+            .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+            .flat_map(|(_, plan)| &plan.drops)
+            .all(|drop| !matches!(drop.kind, DropKind::TraitObject { .. })),
+        "the callee must not drop the dyn owner after returning it"
+    );
+
+    let main_elab = p
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main elaborated MIR");
+    let main_dyn_drops = main_elab
+        .drop_plans
+        .iter()
+        .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter(|drop| {
+            matches!(
+                drop.kind,
+                DropKind::TraitObject {
+                    storage: TraitObjectStorage::HeapBoxed
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        main_dyn_drops, 1,
+        "the normal caller must hold exactly one HeapBoxed drop authority"
+    );
+
+    let panic_elab = p
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "hold_then_panic")
+        .expect("panic owner elaborated MIR");
+    assert!(
+        panic_elab
+            .drop_plans
+            .iter()
+            .filter(|(exit, _)| matches!(exit, ExitPath::Panic { .. }))
+            .flat_map(|(_, plan)| &plan.drops)
+            .any(|drop| {
+                matches!(
+                    drop.kind,
+                    DropKind::TraitObject {
+                        storage: TraitObjectStorage::HeapBoxed
+                    }
+                )
+            }),
+        "panic cleanup must release the caller-owned dyn box; plans: {:#?}",
+        panic_elab.drop_plans
+    );
+}
+
+/// A `dyn Trait` parameter returned by the same function (pass-through) is
+/// an owned call-carrier MOVE of the existing heap box: the callee registers
+/// a GUARDED terminal drop for the parameter (released only on paths that
+/// keep the value), the return path transfers the fat pointer through
+/// `ReturnSlot`, and no `E_NOT_YET_IMPLEMENTED` diagnostic is emitted. The
+/// value is never reboxed — the pass-through body contains no
+/// `CoerceToDynTrait`.
+#[test]
+fn dyn_param_pass_through_moves_box_with_guarded_callee_drop() {
+    use hew_mir::state_clone::StateFieldCloneKind;
+    use hew_mir::{Place, Terminator};
+
+    let source = r#"
+        trait Named {
+            fn size(val: Self) -> i64;
+        }
+        type Item { label: string }
+        impl Item {
+            fn size(val: Item) -> i64 { val.label.len() }
+        }
+        fn identity(value: dyn Named) -> dyn Named {
+            value
+        }
+        fn main() {
+            let item: dyn Named = Item { label: "pass-through" };
+            let same = identity(item);
+            same.size();
+        }
+    "#;
+    let p = pipeline(source);
+    assert!(
+        p.diagnostics.is_empty(),
+        "dyn pass-through must lower without diagnostics; got: {:#?}",
+        p.diagnostics
+    );
+
+    let identity_raw = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "identity")
+        .expect("identity raw MIR");
+    assert!(
+        identity_raw.blocks.iter().all(|block| {
+            block
+                .instructions
+                .iter()
+                .all(|instr| !matches!(instr, Instr::CoerceToDynTrait { .. }))
+        }),
+        "returning an already-dyn parameter must move the existing box, never rebox"
+    );
+    assert!(
+        identity_raw.blocks.iter().any(|block| {
+            block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        ..
+                    }
+                )
+            }) && matches!(block.terminator, Terminator::Return)
+        }),
+        "identity must transfer its fat pointer through ReturnSlot"
+    );
+    let guarded_dyn_drops = identity_raw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter(|instr| {
+            matches!(
+                instr,
+                Instr::ValueSnapshotDrop {
+                    plan,
+                    guard: Some(_),
+                    ..
+                } if matches!(plan.root(), StateFieldCloneKind::TraitObject)
+            )
+        })
+        .count();
+    assert!(
+        guarded_dyn_drops > 0,
+        "the dyn carrier parameter must register a guarded terminal drop \
+         (released on keep-paths, suppressed after the return transfer)"
+    );
+}
+
 /// A method call on a `dyn Display` receiver lowers to
 /// `Instr::CallTraitMethod` with the right trait, method, and pre-computed
 /// slot index. Slot 3 = first trait method (slots 0..=2 are the runtime

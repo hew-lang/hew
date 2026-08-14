@@ -1835,6 +1835,62 @@ fn parse_import_actor_path_segment() {
 }
 
 #[test]
+fn parse_import_machine_path_segment() {
+    let source = "import src::workflow::machine::{Machine};";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    if let Item::Import(imp) = &result.program.items[0].0 {
+        assert_eq!(imp.path, vec!["src", "workflow", "machine"]);
+        let Some(ImportSpec::Names(names)) = &imp.spec else {
+            panic!("expected selective import spec");
+        };
+        assert_eq!(names[0].name, "Machine");
+    } else {
+        panic!("expected import");
+    }
+}
+
+#[test]
+fn parse_import_type_decl_keyword_path_segments() {
+    // Every type-declaration keyword is a plausible module file name and
+    // must parse as an import path segment.
+    for kw in [
+        "actor",
+        "machine",
+        "record",
+        "enum",
+        "supervisor",
+        "type",
+        "trait",
+    ] {
+        let source = format!("import src::{kw}::helpers;");
+        let result = parse(&source);
+        assert!(
+            result.errors.is_empty(),
+            "segment `{kw}` should parse, errors: {:?}",
+            result.errors
+        );
+        if let Item::Import(imp) = &result.program.items[0].0 {
+            assert_eq!(imp.path, vec!["src", kw, "helpers"]);
+        } else {
+            panic!("expected import for segment `{kw}`");
+        }
+    }
+}
+
+#[test]
+fn machine_qualifier_in_type_position_rejected() {
+    // The import-path carve-out does not extend to qualifier position:
+    // `machine.Machine` as a type annotation stays reserved.
+    let source = "fn f(m: machine.Machine) {}";
+    let result = parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected parse error for `machine` qualifier in type position"
+    );
+}
+
+#[test]
 fn parse_trait_declaration() {
     let source = "trait Printable { fn print(self); }";
     let result = parse(source);
@@ -4408,6 +4464,74 @@ fn leading_dot_arm_leaves_qualified_pattern_path_intact() {
         other => panic!("expected qualified Pattern::Constructor, got {other:?}"),
     }
     assert!(matches!(&patterns[1], Pattern::Identifier(n) if n == "None"));
+}
+
+#[test]
+fn module_qualified_variant_pattern_preserves_dotted_owner() {
+    let source = "fn f(e: m.E) -> i64 { match e { m.E::Some(x) => x, _ => 0 } }";
+    let patterns = first_match_arm_patterns(source);
+    match &patterns[0] {
+        Pattern::Constructor { name, .. } => assert_eq!(name, "m.E::Some"),
+        other => panic!("expected qualified Pattern::Constructor, got {other:?}"),
+    }
+}
+
+/// A dotted identifier in pattern position that never reaches `::` is
+/// rejected at parse time, matching `main`. Before the F1 fix, the dotted
+/// loop unconditionally folded `foo.bar` into an irrefutable
+/// `Pattern::Identifier("foo.bar")` binding — a silent-wrong-answer hole,
+/// not the module-qualified-variant surface this grammar is scoped to.
+#[test]
+fn dotted_pattern_without_double_colon_is_rejected() {
+    let source = "fn f(n: i64) -> i64 { match n { foo.bar => 1, _ => 0 } }";
+    let result = parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected a parse error for a dotted pattern with no '::', got none"
+    );
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("expected") && e.message.contains("=>")),
+        "expected an 'expected =>' diagnostic, got: {:?}",
+        result.errors
+    );
+}
+
+/// A multi-segment dotted path with no `::` anywhere (`m.T.Variant`) is
+/// also rejected, not folded into a binding — the guard scans the whole
+/// dotted chain, not just the first segment.
+#[test]
+fn multi_segment_dotted_pattern_without_double_colon_is_rejected() {
+    let source = "fn f(n: i64) -> i64 { match n { m.T.Variant => 1, _ => 0 } }";
+    let result = parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected a parse error for a dotted pattern with no '::', got none"
+    );
+}
+
+/// The lookahead that gates the dotted-pattern loop distinguishes a dotted
+/// path that continues into `::<Variant>` (consumed as module-qualified
+/// owner) from one that terminates at `=>` (left untouched, rejected by the
+/// caller) — pinning the exact boundary F1 was missing.
+#[test]
+fn dotted_pattern_lookahead_stops_at_fat_arrow_not_double_colon() {
+    let accepted = "fn f(e: m.E) -> i64 { match e { m.E::Some(x) => x, _ => 0 } }";
+    let accepted_result = parse(accepted);
+    assert!(
+        accepted_result.errors.is_empty(),
+        "module-qualified variant pattern should parse cleanly, got: {:?}",
+        accepted_result.errors
+    );
+
+    let rejected = "fn f(n: i64) -> i64 { match n { m.E => 1, _ => 0 } }";
+    let rejected_result = parse(rejected);
+    assert!(
+        !rejected_result.errors.is_empty(),
+        "a dotted path ending at '=>' with no '::' must be rejected, not bound"
+    );
 }
 
 // ── RecordShorthand pattern (let {a, b} = rec) ───────────────────────────

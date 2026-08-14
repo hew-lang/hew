@@ -1098,6 +1098,10 @@ fn imported_machine_unit_state_constructor_resolves() {
         output.type_defs.contains_key("Traffic"),
         "machine type 'Traffic' must be registered in type_defs for the import path"
     );
+    assert!(
+        output.type_defs.contains_key("lights.Traffic"),
+        "imported machine registration must preserve its exact source owner"
+    );
     let td = &output.type_defs["Traffic"];
     assert!(
         td.variants.contains_key("Red"),
@@ -1112,6 +1116,28 @@ fn imported_machine_unit_state_constructor_resolves() {
     assert!(
         output.type_defs.contains_key("TrafficEvent"),
         "companion event enum 'TrafficEvent' must be registered for the import path"
+    );
+    assert!(
+        output.type_defs.contains_key("lights.TrafficEvent"),
+        "imported event registration must preserve its exact source owner"
+    );
+    assert_eq!(
+        output.fn_sigs["Red"].return_type,
+        Ty::Named {
+            builtin: None,
+            name: "lights.Traffic".to_string(),
+            args: vec![],
+        },
+        "an imported state constructor must return the exact machine identity"
+    );
+    assert_eq!(
+        output.type_defs["lights.Traffic"].methods["step"].params,
+        vec![Ty::Named {
+            builtin: None,
+            name: "lights.TrafficEvent".to_string(),
+            args: vec![],
+        }],
+        "an imported step method must accept the exact companion event identity"
     );
 }
 

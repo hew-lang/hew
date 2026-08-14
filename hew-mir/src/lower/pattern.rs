@@ -464,6 +464,9 @@ impl Builder {
     /// triple owns the heap allocation.
     pub(crate) fn generator_yield_drop_symbol(&self, ty: &ResolvedTy) -> ReleaseSymbolVerdict {
         match ty {
+            ResolvedTy::TraitObject { .. } => {
+                ReleaseSymbolVerdict::Wired("hew_dyn_trait_drop_boxed_in_place")
+            }
             ResolvedTy::String => ReleaseSymbolVerdict::Wired("hew_string_drop"),
             // Per-iteration release for a `for await frame in <Stream<bytes>>`
             // binding (and any analogous Some-arm `bytes` payload on a recv-call

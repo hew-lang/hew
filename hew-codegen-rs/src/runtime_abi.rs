@@ -3844,6 +3844,7 @@ pub(crate) fn lower_call_runtime_abi(
         | F::HashMapGetLayout
         | F::HashMapInsertLayout
         | F::HashMapKeysLayout
+        | F::HashMapEntriesLayout
         | F::HashMapLenLayout
         | F::HashMapNew
         | F::HashMapNewWithLayout
@@ -3951,7 +3952,7 @@ pub(crate) fn lower_call_runtime_abi(
         | F::VecContainsScalar(_)
         // Descriptor-backed clone-out is an intercepted `Terminator::Call`,
         // never an `Instr::CallRuntimeAbi`.
-        | F::VecGet(VecGetElem::Clone)
+        | F::VecGet(VecGetElem::Clone | VecGetElem::Take)
         | F::VecIsEmpty
         | F::VecJoinStr
         | F::VecNew

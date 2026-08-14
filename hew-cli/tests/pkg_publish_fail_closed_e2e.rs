@@ -234,6 +234,45 @@ fn publish_without_credentials_exits_one_and_writes_no_local_copy() {
     );
 }
 
+// ── 1b. corrupt credentials.toml — parse error, not "not logged in" ────────
+
+#[test]
+fn publish_corrupt_credentials_file_exits_one_with_parse_diagnostic() {
+    let home = support::tempdir();
+    let project = support::tempdir();
+    generate_signing_key(home.path());
+    write_publishable_manifest(project.path());
+    let hew_dir = home.path().join(".hew");
+    fs::create_dir_all(&hew_dir).expect("create .hew dir");
+    fs::write(
+        hew_dir.join("credentials.toml"),
+        "this is not valid toml {{{",
+    )
+    .expect("write corrupt credentials.toml");
+
+    let output = run_publish(project.path(), home.path(), &[]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1\n{}",
+        support::describe_output(&output)
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("invalid credentials file"),
+        "stderr missing parse-error diagnostic:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("not logged in"),
+        "a corrupt credentials file must not be misreported as not-logged-in:\n{stderr}"
+    );
+    assert!(
+        !local_package_dir(home.path()).exists(),
+        "no local copy should be written when credentials.toml is corrupt"
+    );
+}
+
 // ── 2. named registry, no token for it (Arm C: has_token hardcoded true) ───
 
 #[test]
@@ -256,6 +295,51 @@ fn publish_named_registry_without_token_exits_one() {
     assert!(
         !local_package_dir(home.path()).exists(),
         "no local copy should be written when the named registry has no token"
+    );
+}
+
+// ── 2b. --registry names a registry absent from config.toml ────────────────
+//
+// Credential resolution runs before `make_client` (test 1's comment above),
+// so a typo'd `--registry` name must still surface `make_client`'s precise
+// unknown-registry diagnostic rather than being misreported as "not logged
+// in" — no stored token is ever found for a registry name that doesn't
+// exist, so a naive `Err(_) => not-logged-in` classification would shadow
+// this diagnostic entirely.
+
+#[test]
+fn publish_unknown_registry_name_exits_one_with_precise_diagnostic() {
+    let home = support::tempdir();
+    let project = support::tempdir();
+    generate_signing_key(home.path());
+    write_publishable_manifest(project.path());
+    // No config.toml at all, and no credentials.toml — the unknown-registry
+    // check must fire before any credential lookup.
+
+    let output = run_publish(project.path(), home.path(), &["--registry", "typoreg"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1\n{}",
+        support::describe_output(&output)
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("hew: unknown registry 'typoreg'"),
+        "stderr missing precise unknown-registry diagnostic:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("[registries.typoreg]"),
+        "stderr missing config-hint for the unknown registry:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("not logged in"),
+        "unknown-registry diagnostic must not be shadowed by the not-logged-in message:\n{stderr}"
+    );
+    assert!(
+        !local_package_dir(home.path()).exists(),
+        "no local copy should be written when the named registry is unknown"
     );
 }
 

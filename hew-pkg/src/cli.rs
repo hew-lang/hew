@@ -305,16 +305,26 @@ pub fn run_init(dir: &Path, template: manifest::ManifestTemplate) {
     cmd_init(dir, template, &cfg);
 }
 
+/// Look up a named registry in config, exiting with the standard
+/// unknown-registry diagnostic if `name` is not configured.
+///
+/// Shared by [`make_client`] and the publish token-resolution path so a
+/// typo'd `--registry NAME` always gets this precise message rather than
+/// being misreported by whatever check happens to run first.
+fn resolve_named_registry_or_exit(name: &str) -> config::RemoteRegistry {
+    let cfg = load_config_or_exit();
+    config::get_named_registry(&cfg, name).unwrap_or_else(|| {
+        eprintln!("hew: unknown registry '{name}'");
+        eprintln!("Configure it in ~/.hew/config.toml under [registries.{name}]");
+        std::process::exit(1);
+    })
+}
+
 /// Build a [`RegistryClient`] for the given named registry (or default).
 fn make_client(registry_name: Option<&str>) -> client::RegistryClient {
     match registry_name {
         Some(name) => {
-            let cfg = load_config_or_exit();
-            let remote = config::get_named_registry(&cfg, name).unwrap_or_else(|| {
-                eprintln!("hew: unknown registry '{name}'");
-                eprintln!("Configure it in ~/.hew/config.toml under [registries.{name}]");
-                std::process::exit(1);
-            });
+            let remote = resolve_named_registry_or_exit(name);
             let mut c = client::RegistryClient::with_url(remote.api);
             let cred_path = credentials::credentials_path();
             if let Ok(token) = credentials::get_named_token(&cred_path, name) {
@@ -333,7 +343,9 @@ fn make_client(registry_name: Option<&str>) -> client::RegistryClient {
 /// # Errors
 ///
 /// Returns [`credentials::CredentialError::NotLoggedIn`] when no token is
-/// stored for the target registry (default or named).
+/// stored for the target registry (default or named), or
+/// [`credentials::CredentialError::Parse`]/[`credentials::CredentialError::Io`]
+/// when the credentials file exists but cannot be read.
 fn resolve_publish_token(
     cred_path: &Path,
     registry_name: Option<&str>,
@@ -963,15 +975,30 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>, local
     let token = if local {
         None
     } else {
+        // Validate a named registry before touching credentials at all, so
+        // a typo'd `--registry NAME` gets `make_client`'s precise
+        // unknown-registry diagnostic instead of being misreported as
+        // "not logged in" (no stored token is ever found for a registry
+        // name that doesn't exist).
+        if let Some(name) = registry_name {
+            resolve_named_registry_or_exit(name);
+        }
         let cred_path = credentials::credentials_path();
         Some(
-            resolve_publish_token(&cred_path, registry_name).unwrap_or_else(|_| {
-                eprintln!(
-                    "hew publish: not logged in; run `hew login` to publish to a remote registry"
-                );
-                eprintln!(
-                    "Use `hew publish --local` to install this package into the local registry only."
-                );
+            resolve_publish_token(&cred_path, registry_name).unwrap_or_else(|err| {
+                match err {
+                    credentials::CredentialError::NotLoggedIn => {
+                        eprintln!(
+                            "hew publish: not logged in; run `hew login` to publish to a remote registry"
+                        );
+                        eprintln!(
+                            "Use `hew publish --local` to install this package into the local registry only."
+                        );
+                    }
+                    credentials::CredentialError::Parse(_) | credentials::CredentialError::Io(_) => {
+                        eprintln!("hew publish: {err}");
+                    }
+                }
                 std::process::exit(1);
             }),
         )
@@ -2344,6 +2371,29 @@ mod tests {
 
         let token = resolve_publish_token(&cred_path, Some("testreg")).unwrap();
         assert_eq!(token, "tok_testreg");
+    }
+
+    /// A corrupt `credentials.toml` must surface as `CredentialError::Parse`,
+    /// not be collapsed into `NotLoggedIn` — the two point a user at
+    /// different remedies (`hew login` cannot fix a parse error, since
+    /// `hew login` also reads through this same file).
+    #[test]
+    fn resolve_publish_token_corrupt_credentials_file_is_parse_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let cred_path = dir.path().join("credentials.toml");
+        std::fs::write(&cred_path, "this is not valid toml {{{").unwrap();
+
+        let result = resolve_publish_token(&cred_path, None);
+        assert!(
+            matches!(result, Err(credentials::CredentialError::Parse(_))),
+            "expected Parse error, got {result:?}"
+        );
+
+        let result = resolve_publish_token(&cred_path, Some("testreg"));
+        assert!(
+            matches!(result, Err(credentials::CredentialError::Parse(_))),
+            "expected Parse error, got {result:?}"
+        );
     }
 
     // ── search tests ────────────────────────────────────────────────────

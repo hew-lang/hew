@@ -1294,7 +1294,7 @@ impl Checker {
         self.registry.is_resource(type_name)
     }
 
-    fn record_method_call_rewrite(&mut self, span: &Span, rewrite: MethodCallRewrite) {
+    pub(super) fn record_method_call_rewrite(&mut self, span: &Span, rewrite: MethodCallRewrite) {
         self.method_call_rewrites
             .insert(SpanKey::in_module(span, self.current_module_idx), rewrite);
     }
@@ -9514,7 +9514,22 @@ impl Checker {
                         || self.named_type_method_consumes_receiver(name, method)
                         || self.named_type_inherent_close_consumes_receiver(
                             name, *builtin, method, &sig,
-                        );
+                        )
+                        || (matches!(*builtin, Some(BuiltinType::VecIter))
+                            && matches!(
+                                method,
+                                "map"
+                                    | "filter"
+                                    | "fold"
+                                    | "any"
+                                    | "all"
+                                    | "find"
+                                    | "count"
+                                    | "enumerate"
+                                    | "take"
+                                    | "skip"
+                                    | "collect"
+                            ));
                     if consumes_receiver {
                         self.method_call_consumes_receiver
                             .insert(SpanKey::in_module(span, self.current_module_idx));
@@ -9769,7 +9784,26 @@ impl Checker {
                                     // does not enumerate user method keys.
                                     descriptor: None,
                                     extern_identity: None,
-                                    elem_ty: None,
+                                    elem_ty: (matches!(*builtin, Some(BuiltinType::VecIter))
+                                        && matches!(
+                                            method,
+                                            "map"
+                                                | "filter"
+                                                | "fold"
+                                                | "any"
+                                                | "all"
+                                                | "find"
+                                                | "count"
+                                                | "enumerate"
+                                                | "take"
+                                                | "skip"
+                                                | "collect"
+                                        ))
+                                    .then(|| type_args.first())
+                                    .flatten()
+                                    .and_then(|elem_ty| {
+                                            ResolvedTy::from_ty(&self.subst.resolve(elem_ty)).ok()
+                                        }),
                                     // #1295: a `#[resource]` type's inherent
                                     // `close(self)` is a terminal handle-release
                                     // consume — HIR lowers the receiver with

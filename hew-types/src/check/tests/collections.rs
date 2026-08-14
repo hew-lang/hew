@@ -2021,6 +2021,32 @@ fn bare_vec_iter_annotation_matches_the_compiler_cursor_without_a_source_shadow(
 }
 
 #[test]
+fn vec_into_iter_publishes_its_builtin_lowering_rewrite() {
+    let output = check_source(
+        r"
+        fn consume(values: Vec<i64>) -> VecIter<i64> {
+            values.into_iter()
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "Vec::into_iter must type-check cleanly: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::BuiltinVecIntoIter { elem_ty }
+                if *elem_ty == ResolvedTy::I64
+        )),
+        "Vec::into_iter must publish its builtin lowering rewrite: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
 fn vec_iter_clone_totality_rejects_direct_function_element() {
     let output = check_source(
         r"

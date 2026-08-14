@@ -2170,21 +2170,21 @@ fn payload_carrier_local(place: Place) -> Option<u32> {
 }
 
 /// The local a WRITE to `place` (re-)mints. Whole-owner writes re-initialise
-/// the slot; a tag write is the construction anchor for enum/machine carriers
-/// (their storage is written through `EnumTag`/`MachineTag` +
-/// variant-projection stores, never a whole `Local` write).
+/// the slot; a payload write materialises the heap-owning generation of an
+/// enum/machine carrier. A tag-only write selects an empty variant and must
+/// not re-mint a release obligation that an earlier payload path discharged.
 fn mint_target_local(place: Place) -> Option<u32> {
     match place {
         Place::Local(n)
         | Place::DuplexHandle(n)
         | Place::LambdaActorHandle(n)
         | Place::ActorHandle(n)
-        | Place::EnumTag(n)
-        | Place::MachineTag(n) => Some(n),
+        | Place::MachineVariant { local: n, .. }
+        | Place::EnumVariant { local: n, .. } => Some(n),
         Place::SendHalf(_)
         | Place::RecvHalf(_)
-        | Place::MachineVariant { .. }
-        | Place::EnumVariant { .. }
+        | Place::MachineTag(_)
+        | Place::EnumTag(_)
         | Place::ReturnSlot => None,
     }
 }
@@ -2511,6 +2511,18 @@ fn apply_balance_instr(
                     entry.confirm_transfer_discharge();
                     entry.neutralized = PayloadNeutralized::Yes;
                 }
+            }
+        }
+        Instr::ConstI64 {
+            dest: Place::EnumTag(local),
+            value: 1,
+        } => {
+            // `None` overwrites the carrier with an empty variant. Its old
+            // payload, if any, has already been discharged by the path that
+            // produced this terminal result; a following carrier drop must
+            // remain a no-op instead of charging that release twice.
+            if cx.tracked.contains_key(local) {
+                obligation_entry(state, *local).neutralized = PayloadNeutralized::Yes;
             }
         }
         Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => {

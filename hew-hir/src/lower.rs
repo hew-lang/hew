@@ -12094,7 +12094,18 @@ impl LowerCtx {
                         )
                     })
             });
-        if !is_duration_ctor_block && decl.trait_bound.is_none() && builtin_impl_kind.is_some() {
+        // `std::iter` owns the fluent VecIter methods, but VecIter itself is a
+        // compiler-owned synthetic cursor.  Admit precisely that standard
+        // library implementation through the normal impl-body pipeline so
+        // its methods remain thin calls into the existing iterator functions.
+        // User-source inherent impls on VecIter still take the guard below.
+        let is_std_iter_vec_iter_extension = builtin_impl_kind == Some(BuiltinType::VecIter)
+            && self.current_module_name.as_deref() == Some("std.iter");
+        if !is_duration_ctor_block
+            && !is_std_iter_vec_iter_extension
+            && decl.trait_bound.is_none()
+            && builtin_impl_kind.is_some()
+        {
             let declared_resource_close_impl = self
                 .type_classes
                 .get(self_type_name)
@@ -17370,6 +17381,39 @@ impl LowerCtx {
                     _ => None,
                 };
                 let mut args = self.lower_call_args_for_callee(args, direct_extern_symbol);
+                if matches!(
+                    self.method_call_rewrites.get(&rewrite_key),
+                    Some(MethodCallRewrite::VecFrom)
+                ) {
+                    if args.len() == 1 {
+                        return self.subsumed_value(
+                            site,
+                            &span,
+                            intent,
+                            args.remove(0),
+                            HirProducedValueProducer::Call,
+                        );
+                    }
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "Vec::from".to_string(),
+                            reason: format!(
+                                "checker selected Vec::from rewrite with {} argument(s)",
+                                args.len()
+                            ),
+                        },
+                        span.clone(),
+                        "Vec::from lowering requires exactly one checked source value",
+                    ));
+                    return self.unsupported_expr(span, "Vec::from has invalid arity");
+                }
+                // Hew array literals already lower to the owned `Vec<T>`
+                // construction sequence. `Vec::from([..])` is therefore an
+                // identity at HIR: preserve that one canonical construction
+                // path rather than fabricating a second Vec-from-array ABI.
+                // The checker accepts only the array/Vec source forms, so any
+                // other source form is a clean checker diagnostic before this
+                // lowering boundary.
                 if let Expr::Identifier(name) = &function.0 {
                     // Intercept payload-bearing variant constructors written
                     // as calls (`Shape::Line(5)`, bare `Line(5)`). The bare
@@ -24114,6 +24158,43 @@ impl LowerCtx {
         (iter_expr.kind, iter_expr.ty)
     }
 
+    /// Lower the receiver of a checker-selected fluent `VecIter` method.
+    ///
+    /// The method rewrite proves that the receiver is `VecIter<T>`. When its
+    /// source spelling is `Vec::into_iter()`, build that cursor directly from
+    /// the checked element type so an outer method rewrite cannot hide the
+    /// nested call's own rewrite entry. Other `VecIter` values (notably a
+    /// let-bound cursor) retain the ordinary expression path.
+    fn lower_fluent_vec_iter_receiver(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        elem_ty: ResolvedTy,
+        intent: IntentKind,
+    ) -> HirExpr {
+        if let Expr::MethodCall {
+            receiver: source,
+            method,
+            args,
+        } = &receiver.0
+        {
+            if method == "into_iter"
+                && args.is_empty()
+                && matches!(
+                    self.checked_ty(&source.1),
+                    Some(ResolvedTy::Named {
+                        builtin: Some(BuiltinType::Vec),
+                        ..
+                    })
+                )
+            {
+                let (kind, ty) =
+                    self.lower_builtin_vec_into_iter(source, elem_ty, receiver.1.clone());
+                return self.make_expr(kind, ty, IntentKind::Read, receiver.1.clone());
+            }
+        }
+        self.lower_expr(receiver, intent)
+    }
+
     /// Expand `v.iter()` over a `Vec<T>` into the SAME `VecIter<T>` cursor
     /// `into_iter` builds, but giving the cursor an INDEPENDENT CLONE of the
     /// receiver instead of moving it — the by-value-snapshot twin of
@@ -26464,6 +26545,10 @@ impl LowerCtx {
                 elem_ty,
                 out_ty,
             }) => self.lower_builtin_vec_higher_order(receiver, args, op, &elem_ty, &out_ty, span),
+            Some(MethodCallRewrite::VecFrom) => (
+                HirExprKind::Unsupported("Vec::from is a static-call rewrite".to_string()),
+                ResolvedTy::Unit,
+            ),
             Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) => {
                 self.lower_record_fn_field_call(receiver, method, args, &field_ty, span)
             }
@@ -26548,6 +26633,7 @@ impl LowerCtx {
                 descriptor,
                 consumes_receiver,
                 returns_receiver_identity,
+                elem_ty,
                 ..
             }) => {
                 if !self.ensure_executable_target(&target, &c_symbol, &span) {
@@ -26654,7 +26740,12 @@ impl LowerCtx {
                     && self.method_call_preserves_receiver_identity.contains(&key);
                 let receiver_intent =
                     self.method_receiver_intent(&key, consumes_receiver, preserves_receiver);
-                let lowered_receiver = self.lower_expr(receiver, receiver_intent);
+                let lowered_receiver = match elem_ty {
+                    Some(elem_ty) => {
+                        self.lower_fluent_vec_iter_receiver(receiver, elem_ty, receiver_intent)
+                    }
+                    None => self.lower_expr(receiver, receiver_intent),
+                };
                 // `c_symbol` is either projected from the exact selected impl
                 // declaration above or carried by a typed runtime/user target.
                 // Never rediscover an imported owner from receiver/name leaf
@@ -27077,6 +27168,36 @@ impl LowerCtx {
                 )
             }
             None => {
+                // The stdlib impl resolver can consume the dedicated
+                // `BuiltinVecIntoIter` marker while retaining the checker-owned
+                // input/output types. Preserve the builtin expansion when that
+                // happens rather than falling through to a generic no-rewrite
+                // failure for an otherwise admitted `Vec::into_iter()` call.
+                if method == "into_iter"
+                    && args.is_empty()
+                    && matches!(
+                        self.checked_ty(&receiver.1),
+                        Some(ResolvedTy::Named {
+                            builtin: Some(BuiltinType::Vec),
+                            ..
+                        })
+                    )
+                {
+                    if let Some(ResolvedTy::Named {
+                        builtin: Some(BuiltinType::VecIter),
+                        args: result_args,
+                        ..
+                    }) = self.checked_ty(&span)
+                    {
+                        if let Some(elem_ty) = result_args.first() {
+                            return self.lower_builtin_vec_into_iter(
+                                receiver,
+                                elem_ty.clone(),
+                                span,
+                            );
+                        }
+                    }
+                }
                 if let Expr::Identifier(module_name) = &receiver.0 {
                     if let Some(module) = self.missing_stdlib_module_import(module_name) {
                         let name = format!("{module_name}.{method}");

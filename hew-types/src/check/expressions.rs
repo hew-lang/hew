@@ -8280,7 +8280,13 @@ impl Checker {
             }
             Expr::Scope { body } | Expr::ScopeDeadline { body, .. } => {
                 body.trailing_expr.as_deref().map(|tail| {
-                    ProducedValueDependency::Identity(SpanKey::in_module(
+                    // A scope expression is always Unit at the outer surface,
+                    // but its tail expression may produce any type and still be
+                    // evaluated for side effects. Model that as a subsuming
+                    // publication rather than an identity edge so the checker
+                    // does not require the scope node and its tail to have the
+                    // same type.
+                    ProducedValueDependency::Subsumes(SpanKey::in_module(
                         &tail.1,
                         self.current_module_idx,
                     ))

@@ -10,48 +10,17 @@ fn run_hew(args: &[&str]) -> Output {
 
 fn assert_version_shape(stdout: &str) {
     let line = stdout.trim_end();
-    let prefix = format!("hew {} (", env!("CARGO_PKG_VERSION"));
-
-    assert!(line.starts_with(&prefix), "stdout: {stdout}");
-    assert!(line.ends_with(')'), "stdout: {stdout}");
-
-    let details = &line[prefix.len()..line.len() - 1];
-    let mut parts = details.split(", ");
-    let profile = parts
-        .next()
-        .expect("version detail should contain a profile");
-    assert!(matches!(profile, "debug" | "release"), "stdout: {stdout}");
-
-    if let Some(git) = parts.next() {
-        if git != "git-unavailable" {
-            let git = git.strip_suffix("-dirty").unwrap_or(git);
-            assert!(
-                !git.is_empty()
-                    && git
-                        .chars()
-                        .all(|ch| ch.is_ascii_digit() || matches!(ch, 'a'..='f')),
-                "stdout: {stdout}"
-            );
-        }
-    }
-
-    assert!(parts.next().is_none(), "stdout: {stdout}");
+    assert!(line.starts_with("hew "), "stdout: {stdout}");
+    assert_eq!(
+        line,
+        format!("hew {}", env!("HEW_VERSION")),
+        "stdout: {stdout}"
+    );
 }
 
 #[test]
-fn version_shape_accepts_present_and_unavailable_git_metadata() {
-    assert_version_shape(&format!(
-        "hew {} (debug, a1b2c3d)\n",
-        env!("CARGO_PKG_VERSION")
-    ));
-    assert_version_shape(&format!(
-        "hew {} (release, a1b2c3d-dirty)\n",
-        env!("CARGO_PKG_VERSION")
-    ));
-    assert_version_shape(&format!(
-        "hew {} (debug, git-unavailable)\n",
-        env!("CARGO_PKG_VERSION")
-    ));
+fn version_shape_matches_build_identity() {
+    assert_version_shape(&format!("hew {}\n", env!("HEW_VERSION")));
 }
 
 #[test]
@@ -93,6 +62,21 @@ stderr: {}",
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_version_shape(&stdout);
+}
+
+#[test]
+fn non_tag_build_version_contains_dev_identity() {
+    let output = run_hew(&["--version"]);
+    assert!(
+        output.status.success(),
+        "hew --version failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("-dev."),
+        "non-tag build should include a dev identity: {stdout}"
+    );
 }
 
 fn assert_completions_output(shell: &str, marker: &str) {

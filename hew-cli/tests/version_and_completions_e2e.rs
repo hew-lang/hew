@@ -1,6 +1,7 @@
 mod support;
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::Mutex;
@@ -86,32 +87,27 @@ fn non_tag_build_version_contains_dev_identity() {
 
 struct TaggedDirtyCheckout {
     repo: PathBuf,
-    tracked_file: PathBuf,
-    original_contents: Vec<u8>,
 }
 
 impl TaggedDirtyCheckout {
     fn create(repo: &Path) -> Self {
         let tracked_file = repo.join("hew-cli/build.rs");
-        let original_contents = fs::read(&tracked_file).expect("read tracked build script");
         run_git(repo, &["tag", "v0.6.0-rc2"]);
-        fs::write(
-            &tracked_file,
-            [original_contents.as_slice(), b"\n"].concat(),
-        )
-        .expect("make tracked file dirty");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&tracked_file)
+            .expect("open tracked build script")
+            .write_all(b"\n// version test dirty marker\n")
+            .expect("make tracked file dirty");
         Self {
             repo: repo.to_path_buf(),
-            tracked_file,
-            original_contents,
         }
     }
 }
 
 impl Drop for TaggedDirtyCheckout {
     fn drop(&mut self) {
-        fs::write(&self.tracked_file, &self.original_contents)
-            .expect("restore tracked build script");
+        run_git(&self.repo, &["checkout", "--", "hew-cli/build.rs"]);
         run_git(&self.repo, &["tag", "-d", "v0.6.0-rc2"]);
     }
 }
@@ -124,28 +120,6 @@ fn run_git(repo: &Path, args: &[&str]) {
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .output()
         .expect("run git");
-    assert!(
-        output.status.success(),
-        "git {args:?} failed:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-fn run_git_with_input(repo: &Path, args: &[&str], input: &[u8]) {
-    let mut child = Command::new("git")
-        .current_dir(repo)
-        .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("run git with input");
-    std::io::Write::write_all(child.stdin.as_mut().expect("git stdin"), input)
-        .expect("write git input");
-    let output = child.wait_with_output().expect("wait for git");
     assert!(
         output.status.success(),
         "git {args:?} failed:\nstdout: {}\nstderr: {}",
@@ -174,22 +148,11 @@ fn temporary_repo_from_worktree(repo: &Path) -> tempfile::TempDir {
         .expect("extract repository archive");
     assert!(output.status.success(), "tar extract failed: {output:?}");
 
-    let diff = Command::new("git")
-        .current_dir(repo)
-        .args(["diff", "--binary", "HEAD"])
-        .output()
-        .expect("capture worktree diff");
-    assert!(diff.status.success(), "git diff failed: {diff:?}");
-    run_git_with_input(&repo_dir, &["init", "--quiet"], &[]);
+    run_git(&repo_dir, &["init", "--quiet"]);
     run_git(&repo_dir, &["config", "user.name", "Version Test"]);
     run_git(
         &repo_dir,
         &["config", "user.email", "version-test@example.invalid"],
-    );
-    run_git_with_input(
-        &repo_dir,
-        &["apply", "--whitespace=nowarn", "-"],
-        &diff.stdout,
     );
     run_git(&repo_dir, &["add", "."]);
     run_git(

@@ -5979,6 +5979,9 @@ where
     F: FnOnce(*mut HewReplyChannel) -> i32,
 {
     if ch.is_null() {
+        // Classify the refusal before returning the raw code: with-channel
+        // callers read the failure kind from `hew_actor_ask_take_last_error`.
+        record_ask_error(send_err_to_ask_err(HewError::ErrOom as i32));
         return HewError::ErrOom as i32;
     }
 

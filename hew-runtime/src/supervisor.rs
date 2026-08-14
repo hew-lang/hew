@@ -5936,6 +5936,41 @@ mod tests {
         }
     }
 
+    /// A null reply channel is rejected before submission, but must still
+    /// classify the failure for with-channel callers that read the TLS slot.
+    #[test]
+    fn role_ask_null_channel_records_ask_error() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: test owns the supervisor tree and passes a null channel to
+        // exercise the submit guard directly.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            let supervisor_token = (*sup).local_pid_id;
+
+            let _ = crate::actor::hew_actor_ask_take_last_error();
+            let status = hew_supervisor_role_ask_with_channel(
+                supervisor_token,
+                0,
+                7,
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+            );
+            assert_eq!(
+                status,
+                crate::internal::types::HewError::ErrOom as i32,
+                "a null reply channel must be rejected as OOM"
+            );
+            assert_eq!(
+                crate::actor::hew_actor_ask_take_last_error(),
+                crate::internal::types::AskError::ActorStopped as i32,
+                "the null-channel refusal must report a real AskError, not NoError"
+            );
+
+            hew_supervisor_stop(sup);
+        }
+    }
+
     /// Fixture for the lock-order test: a supervised child with a BOUNDED
     /// Block-policy mailbox (capacity 1), so a second enqueue WAITS for space.
     unsafe fn make_supervisor_with_block_mailbox_child(

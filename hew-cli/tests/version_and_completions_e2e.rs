@@ -1,8 +1,13 @@
 mod support;
 
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::Mutex;
 
 use support::hew_binary;
+
+static GIT_WORKTREE_MUTATION: Mutex<()> = Mutex::new(());
 
 fn run_hew(args: &[&str]) -> Output {
     Command::new(hew_binary()).args(args).output().unwrap()
@@ -77,6 +82,162 @@ fn non_tag_build_version_contains_dev_identity() {
         stdout.contains("-dev."),
         "non-tag build should include a dev identity: {stdout}"
     );
+}
+
+struct TaggedDirtyCheckout {
+    repo: PathBuf,
+    tracked_file: PathBuf,
+    original_contents: Vec<u8>,
+}
+
+impl TaggedDirtyCheckout {
+    fn create(repo: &Path) -> Self {
+        let tracked_file = repo.join("hew-cli/build.rs");
+        let original_contents = fs::read(&tracked_file).expect("read tracked build script");
+        run_git(repo, &["tag", "v0.6.0-rc2"]);
+        fs::write(
+            &tracked_file,
+            [original_contents.as_slice(), b"\n"].concat(),
+        )
+        .expect("make tracked file dirty");
+        Self {
+            repo: repo.to_path_buf(),
+            tracked_file,
+            original_contents,
+        }
+    }
+}
+
+impl Drop for TaggedDirtyCheckout {
+    fn drop(&mut self) {
+        fs::write(&self.tracked_file, &self.original_contents)
+            .expect("restore tracked build script");
+        run_git(&self.repo, &["tag", "-d", "v0.6.0-rc2"]);
+    }
+}
+
+fn run_git(repo: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn run_git_with_input(repo: &Path, args: &[&str], input: &[u8]) {
+    let mut child = Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run git with input");
+    std::io::Write::write_all(child.stdin.as_mut().expect("git stdin"), input)
+        .expect("write git input");
+    let output = child.wait_with_output().expect("wait for git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn temporary_repo_from_worktree(repo: &Path) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("create temporary repository directory");
+    let archive = dir.path().join("source.tar");
+    let repo_dir = dir.path().join("repo");
+    fs::create_dir(&repo_dir).expect("create temporary repository root");
+    let output = Command::new("git")
+        .current_dir(repo)
+        .args(["archive", "--format=tar", "HEAD", "--output"])
+        .arg(&archive)
+        .output()
+        .expect("archive repository");
+    assert!(output.status.success(), "git archive failed: {output:?}");
+    let output = Command::new("tar")
+        .current_dir(&repo_dir)
+        .args(["-xf"])
+        .arg(&archive)
+        .output()
+        .expect("extract repository archive");
+    assert!(output.status.success(), "tar extract failed: {output:?}");
+
+    let diff = Command::new("git")
+        .current_dir(repo)
+        .args(["diff", "--binary", "HEAD"])
+        .output()
+        .expect("capture worktree diff");
+    assert!(diff.status.success(), "git diff failed: {diff:?}");
+    run_git_with_input(&repo_dir, &["init", "--quiet"], &[]);
+    run_git(&repo_dir, &["config", "user.name", "Version Test"]);
+    run_git(
+        &repo_dir,
+        &["config", "user.email", "version-test@example.invalid"],
+    );
+    run_git_with_input(
+        &repo_dir,
+        &["apply", "--whitespace=nowarn", "-"],
+        &diff.stdout,
+    );
+    run_git(&repo_dir, &["add", "."]);
+    run_git(
+        &repo_dir,
+        &["commit", "--quiet", "-m", "test: seed version repository"],
+    );
+    dir
+}
+
+#[test]
+fn dirty_exact_tag_build_reports_dirty_identity() {
+    let _lock = GIT_WORKTREE_MUTATION.lock().expect("lock git worktree");
+    let source_repo = support::repo_root();
+    let temp_repo = temporary_repo_from_worktree(source_repo);
+    let repo = temp_repo.path().join("repo");
+    let checkout = TaggedDirtyCheckout::create(&repo);
+    let target_dir = tempfile::tempdir().expect("create isolated cargo target directory");
+
+    let output = Command::new("cargo")
+        .current_dir(&repo)
+        .args(["build", "--quiet", "-p", "hew-cli", "--bin", "hew"])
+        .arg("--manifest-path")
+        .arg(repo.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", target_dir.path())
+        .output()
+        .expect("build tagged dirty hew-cli");
+    assert!(
+        output.status.success(),
+        "cargo build failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let probe = Command::new(target_dir.path().join("debug/hew"))
+        .arg("--version")
+        .output()
+        .expect("probe tagged dirty hew binary");
+    assert!(
+        probe.status.success(),
+        "hew --version failed: {}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&probe.stdout).trim_end(),
+        "hew 0.6.0-rc2+dirty"
+    );
+
+    drop(checkout);
 }
 
 fn assert_completions_output(shell: &str, marker: &str) {

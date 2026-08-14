@@ -35,7 +35,11 @@ fn git_version(repo_dir: &Path, cargo_version: &str) -> String {
     };
 
     if commits_since_tag == 0 && normalize_tag(tag) == cargo_version {
-        return cargo_version.to_string();
+        return if dirty {
+            format!("{cargo_version}+dirty")
+        } else {
+            cargo_version.to_string()
+        };
     }
 
     let mut version = format!("{cargo_version}-dev.{commits_since_tag}+{sha}");

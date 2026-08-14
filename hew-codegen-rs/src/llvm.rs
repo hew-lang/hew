@@ -1415,6 +1415,7 @@ fn wasm_excluded_call_family(
         | F::WebSocketAttachLocal
         | F::VecCloneLayout
         | F::VecCloneOwned
+        | F::VecTakeAll
         | F::VecAppend
         | F::VecClear
         | F::VecClone

@@ -2084,6 +2084,9 @@ fn owned_vec_fn_type<'ctx>(
         }
         // ptr hew_vec_clone_owned(ptr vec)
         "hew_vec_clone_owned" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
+        // ptr hew_vec_take_all(ptr vec) — whole-buffer move-out; the source
+        // stays a valid empty vec with its stamped descriptor.
+        "hew_vec_take_all" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // i32 hew_vec_contains_owned(ptr vec, ptr data, ptr eq_fn)
         "hew_vec_contains_owned" => {
             Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false))
@@ -2135,7 +2138,7 @@ pub(crate) fn lower_owned_vec_direct_call(
         "hew_vec_set_owned" | "hew_vec_set_owned_move" => 3,
         "hew_vec_slice_range_owned" => 3,
         "hew_vec_remove_at_owned" => 2,
-        "hew_vec_pop_owned" | "hew_vec_clone_owned" => 1,
+        "hew_vec_pop_owned" | "hew_vec_clone_owned" | "hew_vec_take_all" => 1,
         _ => {
             return Err(CodegenError::FailClosed(format!(
                 "lower_owned_vec_direct_call called with non-owned Vec symbol `{callee}`"
@@ -2283,7 +2286,10 @@ pub(crate) fn lower_owned_vec_direct_call(
                 )
                 .llvm_ctx("hew_vec_remove_at_owned call")?;
         }
-        "hew_vec_clone_owned" => {
+        // Clone deep-copies; take-all MOVES the buffer wholesale and resets
+        // the source to a valid empty vec. Both return a fresh vec handle the
+        // dest place owns, so they share the identical LLVM call shape.
+        "hew_vec_clone_owned" | "hew_vec_take_all" => {
             let dest_place = dest.ok_or_else(|| {
                 CodegenError::FailClosed(
                     "hew_vec_clone_owned returns a Vec; producer must supply a dest".into(),

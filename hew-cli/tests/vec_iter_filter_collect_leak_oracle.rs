@@ -4,10 +4,48 @@
 
 mod support;
 
+use std::process::Command;
+use std::time::Duration;
+
 use support::leak_slope::{
-    assert_frame_slope_below_tolerance, compile_to_native, run_under_malloc_scribble,
+    assert_frame_slope_below_tolerance, compile_to_native, require_leaks_tool,
+    run_under_malloc_scribble, try_measure_leaks_command,
 };
 use support::{describe_output, require_codegen};
+
+const INSPECTION_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn task_port_access_is_unavailable(error: &str) -> bool {
+    error.contains("Couldn't get task port for pid")
+        || error.contains("error acquiring target task port from parent")
+        || error.contains("is not debuggable. Due to security restrictions")
+}
+
+fn host_can_inspect_process() -> bool {
+    require_leaks_tool();
+    let mut command = Command::new("leaks");
+    command.args(["--atExit", "--", "/usr/bin/true"]);
+
+    match try_measure_leaks_command(
+        command,
+        "host-capability probe",
+        INSPECTION_PREFLIGHT_TIMEOUT,
+    ) {
+        Ok(_) => true,
+        Err(error) if task_port_access_is_unavailable(&error) => {
+            eprintln!(
+                "SKIP: owned record filter/collect leak-slope oracle: leaks(1) cannot acquire \
+                 the task-port access required to inspect a child process on this \
+                 non-debuggable macOS host:\n{error}"
+            );
+            false
+        }
+        Err(error) => panic!(
+            "leaks(1) host-capability preflight failed without a recognized task-port/access \
+             denial; refusing to skip the leak measurement:\n{error}"
+        ),
+    }
+}
 
 fn owned_record_filter_collect_source(frames: usize) -> String {
     format!(
@@ -73,6 +111,9 @@ fn assert_no_double_free(source: &str) {
 )]
 #[test]
 fn owned_record_filter_collect_has_no_per_frame_leak_slope() {
+    if !host_can_inspect_process() {
+        return;
+    }
     assert_frame_slope_below_tolerance(
         "vec_iter_owned_record_filter_collect",
         owned_record_filter_collect_source,

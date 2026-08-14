@@ -15,10 +15,12 @@ use support::{describe_output, require_codegen};
 
 const INSPECTION_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn task_port_access_is_unavailable(error: &str) -> bool {
+fn host_inspection_is_unavailable(error: &str) -> bool {
     error.contains("Couldn't get task port for pid")
         || error.contains("error acquiring target task port from parent")
         || error.contains("is not debuggable. Due to security restrictions")
+        || (error.contains("MallocStackLogging: could not tag MSL-related memory as no_footprint")
+            && error.contains("No such file or directory (2)"))
 }
 
 fn host_can_inspect_process() -> bool {
@@ -32,17 +34,16 @@ fn host_can_inspect_process() -> bool {
         INSPECTION_PREFLIGHT_TIMEOUT,
     ) {
         Ok(_) => true,
-        Err(error) if task_port_access_is_unavailable(&error) => {
+        Err(error) if host_inspection_is_unavailable(&error) => {
             eprintln!(
-                "SKIP: owned record filter/collect leak-slope oracle: leaks(1) cannot acquire \
-                 the task-port access required to inspect a child process on this \
-                 non-debuggable macOS host:\n{error}"
+                "SKIP: owned record filter/collect leak-slope oracle: leaks(1) cannot create \
+                 a usable inspection session on this macOS host:\n{error}"
             );
             false
         }
         Err(error) => panic!(
-            "leaks(1) host-capability preflight failed without a recognized task-port/access \
-             denial; refusing to skip the leak measurement:\n{error}"
+            "leaks(1) host-capability preflight failed without a recognized inspection \
+             capability denial; refusing to skip the leak measurement:\n{error}"
         ),
     }
 }

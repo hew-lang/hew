@@ -11693,7 +11693,26 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         }
-        let symbol = crate::mangle_dotted_name(c_symbol);
+        let symbol = if let CallTarget::ImplMethod(declaration) = &target {
+            let Some(symbol) = self.registered_impl_method_symbol(declaration) else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CallableUnsupportedInMir {
+                        name: declaration.full_path().to_string(),
+                    },
+                    span.clone(),
+                    "checker selected an associated implementation declaration whose HIR body was not registered",
+                ));
+                return (
+                    HirExprKind::Unsupported(
+                        "associated implementation call has no registered HIR body".to_string(),
+                    ),
+                    ResolvedTy::Unit,
+                );
+            };
+            symbol
+        } else {
+            crate::mangle_dotted_name(c_symbol)
+        };
         let selected_declaration = match &target {
             CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
                 Some(declaration)
@@ -17570,17 +17589,19 @@ impl LowerCtx {
         } = &expr.0
         {
             if let Expr::GenericApplySuffix { target, type_args } = &receiver.0 {
-                if let Expr::Identifier(owner) = &target.0 {
-                    let compatibility = Expr::Call {
-                        function: Box::new((
-                            Expr::Identifier(format!("{owner}::{method}")),
-                            target.1.clone(),
-                        )),
-                        type_args: Some(type_args.clone()),
-                        args: args.clone(),
-                        is_tail_call: false,
-                    };
-                    return self.lower_expr_inner(&(compatibility, span), intent);
+                if !self.method_call_rewrites.contains_key(&self.mk_key(&span)) {
+                    if let Expr::Identifier(owner) = &target.0 {
+                        let compatibility = Expr::Call {
+                            function: Box::new((
+                                Expr::Identifier(format!("{owner}::{method}")),
+                                target.1.clone(),
+                            )),
+                            type_args: Some(type_args.clone()),
+                            args: args.clone(),
+                            is_tail_call: false,
+                        };
+                        return self.lower_expr_inner(&(compatibility, span), intent);
+                    }
                 }
             }
             if let Expr::Identifier(owner) = &receiver.0 {
@@ -27988,7 +28009,10 @@ impl LowerCtx {
         name: &str,
         owner_ty: Option<&ResolvedTy>,
     ) -> Option<(String, usize, &HirVariantKind)> {
-        let variant_name = name.rsplit_once("::").map_or(name, |(_, variant)| variant);
+        let variant_name = name
+            .rsplit_once("::")
+            .or_else(|| name.rsplit_once('.'))
+            .map_or(name, |(_, variant)| variant);
         let mut candidates = Vec::with_capacity(5);
         if let Some(ResolvedTy::Named { name: owner, .. }) = owner_ty {
             candidates.push(format!("{owner}::{variant_name}"));

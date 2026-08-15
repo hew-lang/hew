@@ -128,6 +128,44 @@ fn dotted_tuple_variant_lowers_from_checker_selected_owner() {
     ));
 }
 
+#[test]
+fn dotted_struct_variant_lowers_from_checker_selected_owner() {
+    let (lower_output, tc_output) = typecheck_and_lower(
+        r"
+            enum Choice { Named { value: i64 } }
+            fn main() -> Choice { Choice.Named { value: 7 } }
+        ",
+    );
+    assert!(
+        tc_output.errors.is_empty(),
+        "type errors: {:#?}",
+        tc_output.errors
+    );
+    assert!(
+        lower_output.diagnostics.is_empty(),
+        "lowering diagnostics: {:#?}",
+        lower_output.diagnostics
+    );
+    let main = lower_output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main function must lower");
+    assert!(matches!(
+        main.body.tail.as_deref().map(|expr| &expr.kind),
+        Some(HirExprKind::MachineVariantCtor {
+            machine_name,
+            payload: Some(payload),
+            ..
+        }) if machine_name == "Choice"
+            && payload.iter().map(|(name, _)| name.as_str()).eq(["value"])
+    ));
+}
+
 /// `a.send(42)` on a `Duplex<i64, i64>` binding is rewritten to
 /// `HirExprKind::Call` with callee `hew_duplex_send` and the receiver
 /// prepended as the first argument.  No diagnostics are emitted and the

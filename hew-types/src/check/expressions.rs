@@ -7347,6 +7347,49 @@ impl Checker {
         base: Option<&Spanned<Expr>>,
         span: &Span,
     ) -> Ty {
+        // Expression-position struct variants use the final dotted surface
+        // (`Type.Variant { ... }`). Normalize that spelling only after the
+        // owner has been selected by checker authority: a lexical nominal
+        // binding for `Type.Variant`, or the exact export table for
+        // `module.Type.Variant`. The resulting registry key retains the full
+        // declaration owner and never scans by final segment.
+        let dotted_struct_variant = if name.contains("::") {
+            None
+        } else {
+            let segments = name.split('.').collect::<Vec<_>>();
+            match segments.as_slice() {
+                [surface_type, variant] => self
+                    .resolve_nominal_declaration(NominalOrigin::Lexical, surface_type)
+                    .or_else(|| {
+                        self.type_defs
+                            .get(*surface_type)
+                            .map(|type_def| type_def.name.clone())
+                    })
+                    .and_then(|canonical_type| {
+                        self.lookup_type_def(&canonical_type)
+                            .filter(|type_def| {
+                                matches!(
+                                    type_def.variants.get(*variant),
+                                    Some(VariantDef::Struct(_))
+                                )
+                            })
+                            .map(|_| format!("{canonical_type}::{variant}"))
+                    }),
+                [module_short, surface_type, variant] => self
+                    .resolve_module_variant(module_short, surface_type, variant)
+                    .filter(|(_, variant_def)| matches!(variant_def, VariantDef::Struct(_)))
+                    .map(|(type_def, _)| {
+                        self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            (*module_short).to_string(),
+                        ));
+                        format!("{}::{variant}", type_def.name)
+                    }),
+                _ => None,
+            }
+        };
+        let name = dotted_struct_variant.as_deref().unwrap_or(name);
         let Ok(canonical_lifecycle_name) =
             self.canonicalize_source_lifecycle_value_path(name, span)
         else {

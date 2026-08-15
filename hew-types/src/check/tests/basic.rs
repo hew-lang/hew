@@ -128,6 +128,21 @@ fn unit() -> Choice { Choice.Absent }
 }
 
 #[test]
+fn dotted_struct_variant_typechecks_in_expression_position() {
+    let output = check_source(
+        r"
+enum Choice { Named { value: i64 } }
+fn make() -> Choice { Choice.Named { value: 7 } }
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "dotted struct variant must typecheck: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn dotted_associated_calls_resolve_without_using_the_head_as_a_value() {
     let output = check_source(
         r#"

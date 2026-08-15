@@ -3307,7 +3307,7 @@ fn test_file_import_private_items_not_visible() {
 /// reaches `Mode` only through the call's expected parameter type.
 fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     let module = hew_parser::parse(
-        "pub enum Mode {\n    A;\n    B;\n    Present(i64)\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode::A => 1,\n        Mode::B => 2,\n        Mode::Present(value) => value,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode::A == Mode::A);\n}\n",
+        "pub enum Mode {\n    A;\n    B;\n    Present(i64);\n    Named { value: i64 }\n}\n\npub type Box<T> {\n    value: T;\n}\n\nimpl<T> Box<T> {\n    pub fn make(value: T) -> Box<T> {\n        Box<T> { value: value }\n    }\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode::A => 1,\n        Mode::B => 2,\n        Mode::Present(value) => value,\n        Mode::Named { value } => value,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode::A == Mode::A);\n}\n",
     );
     assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
     let mut root = hew_parser::parse(root_source);
@@ -3377,6 +3377,48 @@ fn module_qualified_enum_dotted_constructor_uses_canonical_owner() {
         output.errors.is_empty(),
         "module-qualified enum constructor must resolve canonically: {:?}",
         output.errors
+    );
+}
+
+#[test]
+fn imported_dotted_struct_variants_use_canonical_owner() {
+    let selected = check_qualified_variant_root(
+        "import m.{ Mode };\n\nfn main() {\n    let value: Mode = Mode.Named { value: 7 };\n    assert(m.pick(value) == 7);\n}\n",
+    );
+    assert!(
+        selected.errors.is_empty(),
+        "selected imported struct variant must resolve canonically: {:?}",
+        selected.errors
+    );
+
+    let qualified = check_qualified_variant_root(
+        "import m;\n\nfn main() {\n    let value: m.Mode = m.Mode.Named { value: 7 };\n    assert(m.pick(value) == 7);\n}\n",
+    );
+    assert!(
+        qualified.errors.is_empty(),
+        "module-qualified struct variant must resolve canonically: {:?}",
+        qualified.errors
+    );
+}
+
+#[test]
+fn imported_associated_calls_use_canonical_owner() {
+    let selected = check_qualified_variant_root(
+        "import m.{ Box };\n\nfn main() {\n    let inferred: Box<i64> = Box.make(42);\n    let explicit: Box<i64> = Box<i64>.make(42);\n    assert(inferred.value == explicit.value);\n}\n",
+    );
+    assert!(
+        selected.errors.is_empty(),
+        "selected imported associated calls must resolve canonically: {:?}",
+        selected.errors
+    );
+
+    let qualified = check_qualified_variant_root(
+        "import m;\n\nfn main() {\n    let inferred: m.Box<i64> = m.Box.make(42);\n    let explicit: m.Box<i64> = m.Box<i64>.make(42);\n    assert(inferred.value == explicit.value);\n}\n",
+    );
+    assert!(
+        qualified.errors.is_empty(),
+        "module-qualified associated calls must resolve canonically: {:?}",
+        qualified.errors
     );
 }
 

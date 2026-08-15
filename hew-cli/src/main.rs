@@ -2034,29 +2034,35 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
     ) {
         Ok(state) => state,
         Err(failure) => {
-            let has_legacy_separator = hew_lexer::lex(source)
-                .iter()
-                .any(|(token, _)| matches!(token, hew_lexer::Token::DoubleColon));
-            let generated_dotted_variant = failure.diagnostics.iter().any(|diagnostic| {
-                matches!(
-                    diagnostic.kind,
-                    hew_compile::FrontendDiagnosticKind::Type(hew_types::TypeError {
-                        kind: hew_types::error::TypeErrorKind::TypeUsedAsValue,
-                        ..
-                    })
-                )
-            });
-            if !has_legacy_separator && generated_dotted_variant {
-                return hew_parser::fmt::migrate_legacy_syntax(source, &[]).map_err(|error| {
-                    for refusal in error.refusals {
-                        eprintln!(
-                            "Error: migration refused {file}:{}-{}: {}",
-                            refusal.span.start, refusal.span.end, refusal.reason
-                        );
-                    }
-                });
-            }
             compile::render_frontend_diagnostics(&failure.diagnostics);
+            let mut listed_site = false;
+            for diagnostic in &failure.diagnostics {
+                let (span, reason) = match &diagnostic.kind {
+                    hew_compile::FrontendDiagnosticKind::Parse(error)
+                        if error.severity == hew_parser::Severity::Error =>
+                    {
+                        (&error.span, error.message.as_str())
+                    }
+                    hew_compile::FrontendDiagnosticKind::Type(error)
+                        if error.severity == hew_types::error::Severity::Error =>
+                    {
+                        (&error.span, error.message.as_str())
+                    }
+                    hew_compile::FrontendDiagnosticKind::Hir(error) => {
+                        (&error.span, error.note.as_str())
+                    }
+                    _ => continue,
+                };
+                let site_file = diagnostic.filename.as_deref().unwrap_or(file);
+                eprintln!(
+                    "Error: migration refused {site_file}:{}-{}: type checking failed: {reason}",
+                    span.start, span.end
+                );
+                listed_site = true;
+            }
+            if !listed_site {
+                eprintln!("Error: migration refused {file}: type checking failed: {failure}");
+            }
             eprintln!("{file}: migration requires a successfully type-checked source file");
             return Err(());
         }

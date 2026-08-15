@@ -325,6 +325,31 @@ fn fmt_migrate_root_discovers_nested_hew_sources() {
         .contains("Choice.Present(42)"));
 }
 
+#[test]
+fn fmt_migrate_lists_typecheck_failure_sites_instead_of_succeeding() {
+    let dir = support::tempdir();
+    let path = dir.path().join("invalid.hew");
+    let source = "enum Choice { Present; }\n\nfn main() { let value = Choice; }\n";
+    std::fs::write(&path, source).unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["fmt", "--migrate"])
+        .arg(&path)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "migration must fail closed");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains(&format!(
+            "migration refused {}:50-56: type checking failed",
+            path.display()
+        )),
+        "stderr: {stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Multi-file --check batch behavior
 // ---------------------------------------------------------------------------

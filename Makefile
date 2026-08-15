@@ -1302,23 +1302,35 @@ hew-fmt-check: hew
 	    && echo "hew-fmt-check passed: all $$total .hew sources are formatted." \
 	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
 
-# Exercise migration in an isolated copy so the idempotency proof never edits
-# the checkout. The first pass must cover every source root; the second pass
-# must leave the first-pass snapshot byte-identical.
+# Exercise representative migration inputs in an isolated copy so the proof
+# never edits the checkout. The second pass must leave the first-pass snapshot
+# byte-identical.
 test-migrate-corpus: hew
-	@set -e; migration_snapshot=$$(mktemp -d); migration_fixed=$$(mktemp -d); \
-	trap 'rm -rf "$$migration_snapshot" "$$migration_fixed"' 0; \
-	for migration_root in std examples tests docs repros tools; do \
-		if [ -d "$$migration_root" ]; then cp -R "$$migration_root" "$$migration_snapshot/"; fi; \
+	@set -e; migration_root=$$(mktemp -d); migration_fixed=$$(mktemp -d); \
+	trap 'rm -rf "$$migration_root" "$$migration_fixed"' 0; \
+	cp -R tests/corpus/migrate/. "$$migration_root/"; \
+	echo "1/5 migrate accepted representative sources"; \
+	"$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_root/accept"; \
+	echo "2/5 compare exact migrated sources"; \
+	for migration_source in "$$migration_root"/accept/*.hew; do \
+		migration_expected="$${migration_source%.hew}.expected"; \
+		diff -u "$$migration_expected" "$$migration_source"; \
 	done; \
-	"$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_snapshot"; \
-	$(MAKE) test; \
-	$(MAKE) test-vertical-slice; \
-	$(MAKE) test-pkg-import; \
-	cp -R "$$migration_snapshot/." "$$migration_fixed/"; \
-	"$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_snapshot"; \
-	diff -ru "$$migration_fixed" "$$migration_snapshot"; \
-	"$(DEBUG_DIR)/hew" fmt --migrate --check --root "$$migration_snapshot"
+	echo "3/5 require the unresolvable source to fail loudly"; \
+	migration_refusal="$$migration_root/refusal.log"; \
+	if "$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_root/reject" >"$$migration_refusal" 2>&1; then \
+		cat "$$migration_refusal"; \
+		echo "error: migration accepted the unresolvable representative site" >&2; \
+		exit 1; \
+	fi; \
+	grep -F 'unresolvable.hew: migration requires a successfully type-checked source file' "$$migration_refusal"; \
+	diff -u tests/corpus/migrate/reject/unresolvable.hew "$$migration_root/reject/unresolvable.hew"; \
+	echo "4/5 require a byte-identical second migration pass"; \
+	cp -R "$$migration_root/accept/." "$$migration_fixed/"; \
+	"$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_root/accept"; \
+	diff -ru "$$migration_fixed" "$$migration_root/accept"; \
+	echo "5/5 require check mode to recognize the fixed point"; \
+	"$(DEBUG_DIR)/hew" fmt --migrate --check --root "$$migration_root/accept"
 
 # Derive the compilable corpus from the tracked source roots, format a private
 # path-preserving mirror, then require the result to check and reach a fixed point.

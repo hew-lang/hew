@@ -1,0 +1,15 @@
+enum Choice {
+    Present(i64);
+    Absent;
+}
+
+fn make() -> Choice {
+    Choice.Present(42)
+}
+
+fn read(value: Choice) -> i64 {
+    match value {
+        .Present(number) => number,
+        .Absent => 0,
+    }
+}

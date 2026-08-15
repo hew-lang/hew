@@ -13,7 +13,7 @@ fn main() {
     emit_git_watch_paths(repo_dir);
 }
 
-fn git_version(repo_dir: &Path, cargo_version: &str) -> String {
+pub(crate) fn git_version(repo_dir: &Path, cargo_version: &str) -> String {
     if git_stdout(repo_dir, &["rev-parse", "--git-dir"]).is_err() {
         return cargo_version.to_string();
     }

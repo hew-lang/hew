@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# End-to-end package-manager consumer proof: local publish setup -> user-facing
-# `hew install` -> lock/materialization -> compiler check/run.
+# End-to-end package-manager consumer proof: explicit local publish setup ->
+# user-facing `hew install` -> lock/materialization -> compiler check/run.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -170,7 +170,7 @@ run_in "${TMP}" keygen "${HEW}" key generate
 
 adder_pkg="${TMP}/pkgs/adder-0.1.0"
 write_package "${adder_pkg}" "acme::adder" "0.1.0" "42"
-run_in "${adder_pkg}" publish-adder "${HEW}" publish
+run_in "${adder_pkg}" publish-adder "${HEW}" publish --local
 
 consumer="${TMP}/consumer"
 write_consumer "${consumer}" "acme::adder" "0.1.0"
@@ -223,8 +223,8 @@ versioned_v1="${TMP}/pkgs/versioned-0.1.0"
 versioned_v2="${TMP}/pkgs/versioned-0.2.0"
 write_package "${versioned_v1}" "acme::versioned" "0.1.0" "101"
 write_package "${versioned_v2}" "acme::versioned" "0.2.0" "202"
-run_in "${versioned_v1}" publish-versioned-v1 "${HEW}" publish
-run_in "${versioned_v2}" publish-versioned-v2 "${HEW}" publish
+run_in "${versioned_v1}" publish-versioned-v1 "${HEW}" publish --local
+run_in "${versioned_v2}" publish-versioned-v2 "${HEW}" publish --local
 
 versioned_consumer="${TMP}/versioned-consumer"
 write_consumer "${versioned_consumer}" "acme::versioned" "0.1.0"

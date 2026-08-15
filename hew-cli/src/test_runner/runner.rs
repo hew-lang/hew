@@ -436,15 +436,17 @@ fn compile_test(
         name = test.name,
     );
 
-    // Write synthetic source and the emit dir to the system temp directory,
-    // NOT to the test file's own parent.  If the process is killed mid-run,
-    // a leftover hew_test_*.hew inside a tests/ directory would be picked up
-    // by the next discovery scan and cause a spurious "main is defined multiple
-    // times" compile error.  The OS temp dir is outside any scanned tree.
+    // Keep the synthetic source beside the fixture so relative file imports
+    // resolve from the same directory as the authored test. Discovery excludes
+    // the `hew_test_*` prefix, so a process killed before TempPath cleanup cannot
+    // poison a later scan with the generated `main`.
+    let source_dir = Path::new(&test.file)
+        .parent()
+        .ok_or_else(|| "test source path has no parent directory".to_string())?;
     let tmp_source = tempfile::Builder::new()
         .prefix("hew_test_")
         .suffix(".hew")
-        .tempfile_in(std::env::temp_dir())
+        .tempfile_in(source_dir)
         .map_err(|e| format!("cannot create temp file: {e}"))?;
 
     std::fs::write(tmp_source.path(), &synthetic)

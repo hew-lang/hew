@@ -457,6 +457,22 @@ impl Builder {
         }
     }
 
+    fn is_direct_projected_resource_move(&self, expr: &HirExpr, requested_transfer: bool) -> bool {
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            ..
+        } = &expr.kind
+        else {
+            return false;
+        };
+        requested_transfer
+            && self.projected_payload_provenance.contains_key(binding)
+            && matches!(
+                super::drop_plan::resource_drop_fn(&self.subst_ty(&expr.ty), &self.type_classes),
+                Some(crate::model::DropFnSpec::UserClose(_))
+            )
+    }
+
     fn lower_value_with_vec_iter_transfer(
         &mut self,
         expr: &HirExpr,
@@ -525,10 +541,18 @@ impl Builder {
         let direct_binding = vec_iter_move
             && effective_transfer
             && matches!(expr.kind, HirExprKind::BindingRef { .. });
+        let direct_projected_resource =
+            self.is_direct_projected_resource_move(expr, requested_transfer);
         if direct_binding {
             self.vec_iter_direct_move_sites.push(expr.site);
         }
+        if direct_projected_resource {
+            self.projected_resource_direct_move_sites.push(expr.site);
+        }
         let value = self.lower_value(expr);
+        if direct_projected_resource {
+            self.projected_resource_direct_move_sites.pop();
+        }
         if direct_binding {
             self.vec_iter_direct_move_sites.pop();
         }

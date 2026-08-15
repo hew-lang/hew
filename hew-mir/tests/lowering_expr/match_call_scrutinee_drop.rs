@@ -25,7 +25,7 @@
 //! let-bound scrutinee must not gain a SECOND owner over the same slot, and an
 //! escaping payload must keep the composite excluded (leak, never double-free).
 
-use hew_mir::{DropKind, ElabDrop, ExitPath, IrPipeline};
+use hew_mir::{DropKind, ElabDrop, ExitPath, Instr, IrPipeline};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -300,6 +300,57 @@ fn main() -> i64 {
         1,
         "the call-carrier shell remains the complementary inactive-alternative cleanup, \
          but must not be counted as a second discharge of the moved-out string; got {ret:?}"
+    );
+}
+
+/// A non-idempotent resource selected as the value of a call-result match must
+/// transfer out of the arm binder. The payload slot is cleared at that exact
+/// handoff so an explicit close of the result cannot be followed by a second
+/// implicit close of the binder or its carrier.
+#[test]
+fn from_call_resource_match_result_neutralizes_the_payload_slot() {
+    let p = pipeline_with_tc(
+        r#"
+#[resource]
+#[opaque]
+type Handle {}
+
+impl Handle {
+    fn close(self) {}
+}
+
+fn make() -> Result<Handle, string> {
+    Err("unavailable".to_upper())
+}
+
+fn main() -> i64 {
+    let handle = match make() {
+        Ok(value) => value,
+        Err(_) => return 1,
+    };
+    handle.close();
+    0
+}
+"#,
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "the match-result handoff must preserve exactly one resource owner: {:?}",
+        p.diagnostics
+    );
+    let main = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("raw fn main");
+    assert_eq!(
+        main.blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(instr, Instr::NeutralizePayloadSlot { .. }))
+            .count(),
+        1,
+        "the selected resource payload must transfer out of its carrier once"
     );
 }
 

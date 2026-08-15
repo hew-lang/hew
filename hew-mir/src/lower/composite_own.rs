@@ -1232,6 +1232,17 @@ pub(super) fn derive_enum_composite_drop_allowed(
             )
         })
     };
+    let local_is_opaque_resource = |local: u32| -> bool {
+        local_tys.get(local as usize).is_some_and(|ty| {
+            matches!(
+                ty,
+                ResolvedTy::Named {
+                    is_opaque: true,
+                    ..
+                }
+            ) && lifecycle_registry.opaque_resource_for_ty(ty).is_some()
+        })
+    };
     // The candidate composite locals: base locals of heap-owning enum
     // composite bindings.
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
@@ -1348,6 +1359,12 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // the interior projection's aliased source (its `alias_of` root is the
     // candidate local) and carried along every onward hand-off below.
     let mut payload_binder_candidate_root: HashMap<u32, PayloadBinderRoot> = HashMap::new();
+    // A direct opaque-resource payload has its own lifecycle, while the enum's
+    // structural shell drop deliberately treats that slot as a no-op. Moving
+    // such a payload out must not suppress the shell drop needed by sibling
+    // variants. Track its forwarding chain so only the independent resource
+    // owner escapes; nested resource records keep the conservative exclusion.
+    let mut direct_opaque_resource_payloads: HashSet<u32> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
             if let Instr::Move { dest, src } = instr {
@@ -1362,6 +1379,9 @@ pub(super) fn derive_enum_composite_drop_allowed(
                                 // out — tracking it would over-exclude the
                                 // composite drop and leak.
                                 if local_is_heap_owning(dl) {
+                                    if local_is_opaque_resource(dl) {
+                                        direct_opaque_resource_payloads.insert(dl);
+                                    }
                                     // The binder's real declaring scope
                                     // (`None` for a synthetic transient with no
                                     // HIR scope — e.g. the nested-constructor
@@ -1458,6 +1478,9 @@ pub(super) fn derive_enum_composite_drop_allowed(
                                 sl,
                                 dl,
                             );
+                            if direct_opaque_resource_payloads.contains(&sl) {
+                                direct_opaque_resource_payloads.insert(dl);
+                            }
                             changed = true;
                         }
                     }
@@ -1724,7 +1747,9 @@ pub(super) fn derive_enum_composite_drop_allowed(
                     if alias_of.contains_key(&l) {
                         note_alias_escape(l, &mut excluded_roots);
                     }
-                    if payload_binders.contains_key(&l) {
+                    if payload_binders.contains_key(&l)
+                        && !direct_opaque_resource_payloads.contains(&l)
+                    {
                         note_payload_escape(
                             &payload_binder_candidate_root,
                             l,
@@ -1798,7 +1823,10 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         // `place_is_tag_read` discriminant exemption above.
                         let benign_bitcopy_extract = matches!(dest, Place::Local(_))
                             && dest_local.is_some_and(|dl| !local_is_heap_owning(dl));
-                        if !benign_handoff && !benign_bitcopy_extract {
+                        if !benign_handoff
+                            && !benign_bitcopy_extract
+                            && !direct_opaque_resource_payloads.contains(&sl)
+                        {
                             note_payload_escape(
                                 &payload_binder_candidate_root,
                                 sl,
@@ -1876,6 +1904,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             && !place_is_tag_read(p)
                             && !binder_read_is_borrow_safe_instr(instr, l)
                             && !vec_iter_cursor_ingress_of(instr, l)
+                            && !direct_opaque_resource_payloads.contains(&l)
                         {
                             note_payload_escape(
                                 &payload_binder_candidate_root,
@@ -1995,7 +2024,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             module_generic_fn_names,
                             extern_contracts,
                         ));
-                    if !read_is_borrow {
+                    if !read_is_borrow && !direct_opaque_resource_payloads.contains(&l) {
                         note_payload_escape(
                             &payload_binder_candidate_root,
                             l,

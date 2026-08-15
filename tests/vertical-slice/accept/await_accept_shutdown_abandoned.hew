@@ -25,7 +25,7 @@
 // ~20ms, not 10s); other NetError -> 3; Server's exit() never runs (TODAY,
 // pre-fix: the parked accept is abandoned, observing no outcome at all) ->
 // main's fallback exit(99).
-import std::net;
+import std.net;
 
 extern "C" {
     fn hew_sched_metrics_active_workers() -> i64;
@@ -39,8 +39,8 @@ actor Server {
         let code = match await ln.accept() | after 10s {
             Ok(_conn) => 2,
             Err(e) => match e {
-                NetError::Cancelled(_c) => 42,
-                NetError::TimedOut(_c) => 41,
+                NetError.Cancelled(_c) => 42,
+                NetError.TimedOut(_c) => 41,
                 _ => 3,
             },
         };

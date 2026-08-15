@@ -14,13 +14,13 @@ enum Maybe<T> {
 }
 
 fn greet() -> Maybe<string> {
-    Maybe::Some("hello")
+    Maybe.Some("hello")
 }
 
 fn main() -> i64 {
     let r = greet();
     match r {
-        Maybe::Some(s) => 1,
-        Maybe::None => 0,
+        Maybe.Some(s) => 1,
+        Maybe.None => 0,
     }
 }

@@ -1,6 +1,6 @@
 // A captured fluent chain transfers one YAML mapping owner, while get_field
 // creates an independent deep owner that survives closing the root.
-import std::encoding::yaml;
+import std.encoding.yaml;
 
 fn early_exit(flag: bool) {
     let value = yaml.object();

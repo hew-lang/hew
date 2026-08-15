@@ -15,7 +15,7 @@ type SetBox {
 }
 
 fn make_set_box() -> SetBox {
-    let s: HashSet<string> = HashSet::new();
+    let s: HashSet<string> = HashSet.new();
     s.insert("aa");
     s.insert("bbb");
     s.insert("cccc");

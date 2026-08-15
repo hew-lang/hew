@@ -3,7 +3,7 @@ type Rec {
 }
 
 fn main() {
-    let xs: Vec<((Rec, i64), bool)> = Vec::new();
+    let xs: Vec<((Rec, i64), bool)> = Vec.new();
     xs.push(((Rec { s: "hi" }, 21), true));
     xs.push(((Rec { s: "bye" }, 22), false));
     let ys = xs.clone();

@@ -1,6 +1,6 @@
-import std::net::websocket;
+import std.net.websocket;
 
-import std::net;
+import std.net;
 
 fn main() {
     match websocket.listen("127.0.0.1:0") {

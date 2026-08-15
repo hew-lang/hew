@@ -9,7 +9,7 @@ type Empties {
 }
 
 fn main() -> i64 {
-    let xs: Vec<i64> = Vec::new();
+    let xs: Vec<i64> = Vec.new();
     let h = Empties { items: xs, label: "" };
     let back = Empties.decode(h.encode());
     if back.items.len() != 0 { return 1; }

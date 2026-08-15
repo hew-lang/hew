@@ -10,7 +10,7 @@
 // Keys "k1","k2","k3" (lens 2+2+2 = 6); values "value_one","value_two",
 // "value_three" (lens 9+9+11 = 29): exit 35.
 pub fn main() -> i64 {
-    let m: HashMap<string, string> = HashMap::new();
+    let m: HashMap<string, string> = HashMap.new();
     m.insert("k1", "value_one");
     m.insert("k2", "value_two");
     m.insert("k3", "value_three");

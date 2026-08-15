@@ -6,6 +6,6 @@
 //
 // Expected: compile error (exit non-zero from `hew check`)
 fn main() -> i64 {
-    let _v = Vec::<i64, i32>::new();
+    let _v = Vec<i64, i32>.new();
     0
 }

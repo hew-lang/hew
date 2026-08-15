@@ -11,7 +11,7 @@ type Holder {
 }
 
 fn main() -> i64 {
-    let xs: Vec<Option<string>> = Vec::new();
+    let xs: Vec<Option<string>> = Vec.new();
     let h = Holder { xs: xs };
     let back = Holder.decode(h.encode());
     back.xs.len()

@@ -24,11 +24,11 @@ enum Narrow {
 }
 
 fn main() -> i64 {
-    let w = Wide::C("out-of-range-payload");
+    let w = Wide.C("out-of-range-payload");
     let raw = w.encode();
     let back = Narrow.decode(raw);
     match back {
-        Narrow::A => 0,
-        Narrow::B(n) => n,
+        Narrow.A => 0,
+        Narrow.B(n) => n,
     }
 }

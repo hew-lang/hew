@@ -1,10 +1,10 @@
-import std::failure;
+import std.failure;
 
 actor VecSetCrasher {
     var value: i64;
 
     receive fn boom() {
-        let xs: Vec<i64> = Vec::new();
+        let xs: Vec<i64> = Vec.new();
         xs.push(value);
         xs.set(99, 7);
     }
@@ -16,9 +16,9 @@ actor VecSetCrasher {
     #[on(crash)]
     fn on_crash(info: CrashInfo) -> CrashAction {
         if info.code == 205 {
-            CrashAction::Restart
+            CrashAction.Restart
         } else {
-            CrashAction::Kill
+            CrashAction.Kill
         }
     }
 }

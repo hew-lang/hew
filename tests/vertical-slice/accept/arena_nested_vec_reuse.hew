@@ -1,6 +1,6 @@
 // A free slot reused for a transitively heap-owning element must move/drop the
 // old payload exactly once. This is the sharp Vec<Slot<Vec<i64>>> path.
-import std::arena::{ Arena };
+import std.arena.{ Arena };
 
 fn main() {
     let store: Arena<Vec<i64>> = arena.new();

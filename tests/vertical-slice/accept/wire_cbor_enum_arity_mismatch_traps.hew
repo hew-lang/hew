@@ -23,11 +23,11 @@ enum Narrow {
 }
 
 fn main() -> i64 {
-    let w = Wide::Pair(10, 20);
+    let w = Wide.Pair(10, 20);
     let raw = w.encode();
     let back = Narrow.decode(raw);
     match back {
-        Narrow::Ping => 0,
-        Narrow::Pair(n) => n,
+        Narrow.Ping => 0,
+        Narrow.Pair(n) => n,
     }
 }

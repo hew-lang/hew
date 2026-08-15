@@ -1,4 +1,4 @@
-import std::text::unicode;
+import std.text.unicode;
 
 fn main() {
     match unicode.try_codepoint_at("hi", 2) {

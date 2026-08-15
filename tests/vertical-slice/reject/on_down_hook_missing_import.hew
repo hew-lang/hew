@@ -5,10 +5,10 @@ actor Watcher {
     fn on_down(note: DownNotification) {
         let _id = note.monitor.value;
         match note.target {
-            DownTarget::Local(slot) => {
+            DownTarget.Local(slot) => {
                 let _slot = slot;
             }
-            DownTarget::Remote(location) => {
+            DownTarget.Remote(location) => {
                 let _location = location;
             }
         }

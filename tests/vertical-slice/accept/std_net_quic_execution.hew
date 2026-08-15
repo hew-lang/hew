@@ -1,6 +1,6 @@
-import std::net::quic;
+import std.net.quic;
 
-import std::string;
+import std.string;
 
 fn main() {
     let endpoint = quic.new_server("127.0.0.1:0");

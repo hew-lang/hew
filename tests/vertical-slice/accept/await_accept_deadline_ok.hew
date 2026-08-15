@@ -10,7 +10,7 @@
 //
 // Exit-code contract: accept-before-deadline Ok(conn) -> 42; timeout Err -> 7;
 // no actor exit -> main fallback 99.
-import std::net::{Listener};
+import std.net.{Listener};
 
 actor Connector {
     receive fn go(port: i32) {

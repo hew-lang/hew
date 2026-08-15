@@ -1,4 +1,4 @@
-import std::channel::channel;
+import std.channel.channel;
 // Receiver is a drop-only Vec element: construction moves the sole endpoint
 // authority into a descriptor-backed slot, and returning closes that slot
 // exactly once. ASan catches a duplicate source/slot close; LSan catches an

@@ -3,7 +3,7 @@
 // context there is no actor recovery frame, so the helper aborts with exit 134,
 // matching bytes_index_oob_traps.
 fn main() -> i64 {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     b.push(1);
     b.push(2);
     b.push(3);

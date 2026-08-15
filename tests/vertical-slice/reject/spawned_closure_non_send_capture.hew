@@ -8,6 +8,6 @@
 //   - "spawned closure captures non-Send value 'r'"
 
 fn main() {
-    let r = Rc::new(1);
+    let r = Rc.new(1);
     scope { (move || { let _ = r; })(); };
 }

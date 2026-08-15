@@ -7,9 +7,9 @@ enum Maybe<T> {
 }
 
 fn main() -> i64 {
-    let x: Maybe<i64> = Maybe::None;
+    let x: Maybe<i64> = Maybe.None;
     match x {
-        Maybe::Some(v) => v,
-        Maybe::None => 99,
+        Maybe.Some(v) => v,
+        Maybe.None => 99,
     }
 }

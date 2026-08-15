@@ -68,25 +68,25 @@ fn count_weak_strings(items: Vec<Weak<string>>) -> i64 {
 }
 
 fn main() {
-    let a: Vec<i64> = Vec::new();
+    let a: Vec<i64> = Vec.new();
     a.push(1);
     a.push(2);
     a.push(3);
     println(count(a));
 
-    let b: Vec<string> = Vec::new();
+    let b: Vec<string> = Vec.new();
     b.push("w");
     b.push("x");
     b.push("y");
     b.push("z");
     println(count(b));
 
-    let c: Vec<Point> = Vec::new();
+    let c: Vec<Point> = Vec.new();
     c.push(Point { x: 1, y: 1 });
     c.push(Point { x: 2, y: 2 });
     println(count(c));
 
-    let monitors: Vec<CursorRef> = Vec::new();
+    let monitors: Vec<CursorRef> = Vec.new();
     monitors.push(CursorRef { ref_id: 7 });
     println(count(monitors));
 }

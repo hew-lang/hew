@@ -4,7 +4,7 @@
 //
 // Harness verb: hew compile (must fail)
 // Expected diagnostic substring: "non-suspendable context"
-import std::channel::channel;
+import std.channel.channel;
 
 fn helper(rx: channel.Receiver<i64>) -> Result<Option<i64>, TimeoutError> {
     await rx.recv() | after 50ms

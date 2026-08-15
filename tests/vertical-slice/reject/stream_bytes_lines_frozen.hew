@@ -5,7 +5,7 @@
 // with "no method `lines` on `Stream<bytes>`" so a future widening that
 // breaks the freeze fails this gate.
 // Expected: type error "no method `lines` on `Stream<bytes>`".
-import std::stream;
+import std.stream;
 
 fn main() {
     let (_sink, source) = stream.bytes_pipe(16);

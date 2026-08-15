@@ -1,5 +1,5 @@
-import std::text::regex;
-import std::string;
+import std.text.regex;
+import std.string;
 
 fn main() {
     let words = regex.new("[a-z]+");

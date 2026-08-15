@@ -1,5 +1,5 @@
 fn main() {
-    let xs: Vec<((string, i64), bool)> = Vec::new();
+    let xs: Vec<((string, i64), bool)> = Vec.new();
     xs.push((("a", 1), true));
     xs.push((("b", 2), false));
     let ys = xs.clone();

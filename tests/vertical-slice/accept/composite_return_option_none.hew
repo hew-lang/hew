@@ -7,13 +7,13 @@ enum Maybe<T> {
 }
 
 fn nothing() -> Maybe<i64> {
-    Maybe::None
+    Maybe.None
 }
 
 fn main() -> i64 {
     let r = nothing();
     match r {
-        Maybe::Some(v) => v,
-        Maybe::None => 99,
+        Maybe.Some(v) => v,
+        Maybe.None => 99,
     }
 }

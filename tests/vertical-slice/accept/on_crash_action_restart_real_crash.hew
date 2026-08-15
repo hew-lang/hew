@@ -26,7 +26,7 @@
 // The fresh child must then report 43, proving actor-state field access in the
 // hook used the explicit fourth ABI argument rather than the supervisor's
 // execution-context actor.
-import std::failure;
+import std.failure;
 
 actor Worker {
     var value: i64;
@@ -45,9 +45,9 @@ actor Worker {
         // restart), turning the bug into a timeout rather than a false pass.
         if !info.message.is_empty() {
             value = value + 1;
-            CrashAction::Restart
+            CrashAction.Restart
         } else {
-            CrashAction::Kill
+            CrashAction.Kill
         }
     }
 }

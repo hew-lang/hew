@@ -8,6 +8,6 @@
 // (Vec<i64> itself is valid; push/get are tested in scope-widening W3.004 S1
 // once the stdlib_catalog gains hew_vec_push_i64.)
 fn main() -> i64 {
-    let _v: Vec<i64> = Vec::new();
+    let _v: Vec<i64> = Vec.new();
     0
 }

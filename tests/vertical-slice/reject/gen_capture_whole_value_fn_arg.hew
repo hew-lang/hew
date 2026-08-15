@@ -3,7 +3,7 @@ fn take(value: Vec<i64>) -> Vec<i64> {
 }
 
 fn main() {
-    let items: Vec<i64> = Vec::new();
+    let items: Vec<i64> = Vec.new();
     let _g = gen {
         let _stolen = take(items);
         yield 0;

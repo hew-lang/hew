@@ -7,9 +7,9 @@ enum Outcome<T, E> {
 }
 
 fn main() -> i64 {
-    let x: Outcome<i64, bool> = Outcome::Ok(7);
+    let x: Outcome<i64, bool> = Outcome.Ok(7);
     match x {
-        Outcome::Ok(v) => v,
-        Outcome::Err(e) => 0,
+        Outcome.Ok(v) => v,
+        Outcome.Err(e) => 0,
     }
 }

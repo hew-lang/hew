@@ -7,7 +7,7 @@ enum Status {
 }
 
 fn main() -> i64 {
-    let s = Status::Ok(5);
-    let Status::Ok(x) = s;
+    let s = Status.Ok(5);
+    let Status.Ok(x) = s;
     x
 }

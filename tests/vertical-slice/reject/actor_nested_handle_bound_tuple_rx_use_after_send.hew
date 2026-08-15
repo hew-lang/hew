@@ -6,7 +6,7 @@
 // checker (hew-types) marks `pair` moved at the send site (non-Copy type),
 // but the inner `rx` must also be consumed at tuple-construction time so that
 // referring to `rx` — even before `pair` is sent — is refused.
-import std::channel::channel;
+import std.channel.channel;
 
 actor Worker {
     receive fn accept(pair: (channel.Receiver<i64>, i64)) {

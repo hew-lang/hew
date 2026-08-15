@@ -7,10 +7,10 @@ enum Packet {
 }
 
 fn sum(value: Packet) -> i64 {
-    let Packet::Data { pair: (a, b) } = value else { return 0 };
+    let Packet.Data { pair: (a, b) } = value else { return 0 };
     a + b
 }
 
 fn main() {
-    println(sum(Packet::Data { pair: (19, 23) }));
+    println(sum(Packet.Data { pair: (19, 23) }));
 }

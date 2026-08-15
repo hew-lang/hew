@@ -33,10 +33,10 @@ fn main() -> i64 {
     // "variant `LinkError::AlreadyLinked` is not a member of `LinkError`".
     match r {
         Ok(()) => {},
-        Err(LinkError::AlreadyLinked) => {
+        Err(LinkError.AlreadyLinked) => {
             exit(2);
         },
-        Err(LinkError::TargetDead) => {
+        Err(LinkError.TargetDead) => {
             exit(3);
         },
         Err(_) => {

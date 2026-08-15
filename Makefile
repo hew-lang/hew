@@ -1323,7 +1323,7 @@ test-migrate-corpus: hew
 		echo "error: migration accepted the unresolvable representative site" >&2; \
 		exit 1; \
 	fi; \
-	grep -F 'unresolvable.hew: migration requires a successfully type-checked source file' "$$migration_refusal"; \
+	grep -F 'unresolvable.hew:24-35: type checking failed: undefined function `Missing`' "$$migration_refusal"; \
 	diff -u tests/corpus/migrate/reject/unresolvable.hew "$$migration_root/reject/unresolvable.hew"; \
 	echo "4/6 prove the migrated snapshot reaches a successful typecheck"; \
 	for migration_source in "$$migration_root"/accept/*.hew; do \

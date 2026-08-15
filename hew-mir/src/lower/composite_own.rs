@@ -9,6 +9,7 @@ mod bytes_payload_handoff;
 mod foundation;
 mod opaque_resource_field_misuse;
 mod predicate_string_temp_drop;
+mod resource_payload_handoff;
 mod retained_string_aliases;
 mod shell_drop_safety;
 mod tuple_handle_projection;
@@ -45,34 +46,17 @@ use bytes_payload_handoff::provable_bytes_payload_handoff_sites;
 #[cfg(test)]
 use bytes_payload_handoff::BytesPayloadHandoff;
 use foundation::{
-    generator_env_snapshot_init_locals, initializes_generator_env_snapshot, scope_is_same_or_nested,
+    generator_env_snapshot_init_locals, initializes_generator_env_snapshot,
+    local_ty_carries_drop_obligation, scope_is_same_or_nested,
 };
 pub(super) use opaque_resource_field_misuse::detect_opaque_resource_field_misuse;
 use predicate_string_temp_drop::predicate_string_temp_drop_proof;
+use resource_payload_handoff::direct_independent_resource_payloads;
 use retained_string_aliases::{
     retained_string_field_load_aliases, uniquely_defined_retained_string_field_load_aliases,
 };
 pub(super) use shell_drop_safety::enum_payloads_are_shell_drop_safe;
 pub(super) use tuple_handle_projection::derive_owned_tuple_handle_projection_bindings;
-
-/// Obligation-axis projection shared by the per-local prover lambdas: a local
-/// carries an owner (and its escape must be tracked) when its type owns heap
-/// OR transitively contains a registered closeable `#[resource]` — the same
-/// admission axis the composite drops now use, so a resource payload binder is
-/// never mistaken for a harmless `BitCopy` escape (which would double-close).
-fn local_ty_carries_drop_obligation(
-    ty: &ResolvedTy,
-    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
-    enum_layouts: &[crate::model::EnumLayout],
-    lifecycle_registry: &hew_hir::LifecycleRegistry,
-) -> bool {
-    crate::model::ty_carries_drop_obligation_mir(
-        ty,
-        record_field_orders,
-        enum_layouts,
-        lifecycle_registry,
-    )
-}
 
 /// #2212 — discharge the non-escaped owned sibling fields of a record whose
 /// composite drop the sole-owner prover excludes because ONE of its fields
@@ -1232,33 +1216,6 @@ pub(super) fn derive_enum_composite_drop_allowed(
             )
         })
     };
-    let local_has_user_close = |local: u32| -> bool {
-        local_tys.get(local as usize).is_some_and(|ty| {
-            matches!(
-                super::drop_plan::resource_drop_fn(ty, type_classes),
-                Some(crate::model::DropFnSpec::UserClose(_))
-            )
-        })
-    };
-    let local_is_opaque_resource = |local: u32| -> bool {
-        local_tys.get(local as usize).is_some_and(|ty| {
-            matches!(
-                ty,
-                ResolvedTy::Named {
-                    is_opaque: true,
-                    ..
-                }
-            ) && lifecycle_registry.opaque_resource_for_ty(ty).is_some()
-        })
-    };
-    let neutralized_payload_slots: HashSet<Place> = blocks
-        .iter()
-        .flat_map(|block| block.instructions.iter())
-        .filter_map(|instr| match instr {
-            Instr::NeutralizePayloadSlot { place, .. } => Some(*place),
-            _ => None,
-        })
-        .collect();
     // The candidate composite locals: base locals of heap-owning enum
     // composite bindings.
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
@@ -1325,6 +1282,14 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // reachable from two distinct roots is evicted, not oscillated (#1942).
     let alias_of =
         propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
+    let mut direct_independent_resource_payloads = direct_independent_resource_payloads(
+        blocks,
+        &alias_of,
+        local_tys,
+        type_classes,
+        lifecycle_registry,
+        &local_is_heap_owning,
+    );
 
     // Local→ScopeId helper for the propagation scope-equality check.
     // Built from the public `binding_locals` × `binding_scope` view: each
@@ -1375,14 +1340,6 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // the interior projection's aliased source (its `alias_of` root is the
     // candidate local) and carried along every onward hand-off below.
     let mut payload_binder_candidate_root: HashMap<u32, PayloadBinderRoot> = HashMap::new();
-    // An opaque resource payload has an independent lifecycle. A field-bearing
-    // user-close payload gains the same status only when its carrier slot is
-    // neutralized by a proven consuming result handoff. Track those forwarding
-    // chains so the generic escape scan does not suppress sibling cleanup for
-    // the handoff, while an ordinary borrowed resource method keeps the legacy
-    // binder-owned close. The declared-release neutralize rule below still
-    // excludes the unsafe zeroed-record carrier itself.
-    let mut direct_independent_resource_payloads: HashSet<u32> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
             if let Instr::Move { dest, src } = instr {
@@ -1397,12 +1354,6 @@ pub(super) fn derive_enum_composite_drop_allowed(
                                 // out — tracking it would over-exclude the
                                 // composite drop and leak.
                                 if local_is_heap_owning(dl) {
-                                    if local_is_opaque_resource(dl)
-                                        || (local_has_user_close(dl)
-                                            && neutralized_payload_slots.contains(src))
-                                    {
-                                        direct_independent_resource_payloads.insert(dl);
-                                    }
                                     // The binder's real declaring scope
                                     // (`None` for a synthetic transient with no
                                     // HIR scope — e.g. the nested-constructor

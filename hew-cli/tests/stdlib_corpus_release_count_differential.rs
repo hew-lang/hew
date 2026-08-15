@@ -105,27 +105,22 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
     (
         "examples/benchmarks/http_server.hew",
         "main",
-        5,
-        "the current main has exactly five releases: the Server close on serve_forever's cancel-before-handoff edge, plus reason/detail on both the normal and cancel exits from the listen-error print (1 + 2 + 2). The request loop and its owned path temporaries now live in serve_forever, so the pre-refactor baseline of 10 describes an obsolete main topology",
+        8,
+        "the current main has exactly eight releases: the Server close and the three restored resource match-handoff releases, plus reason/detail on both normal and cancel exits from the listen-error print. The request loop and its owned path temporaries remain in serve_forever, so the pre-refactor baseline of 10 still describes an obsolete main topology",
     ),
     (
         "examples/benchmarks/http_server_expert.hew",
         "main",
-        9,
-        "the current main has exactly nine releases: addr on return, panic, serve_forever cancel, and listen-error-print cancel; the Server close on serve_forever's cancel-before-handoff edge; and reason/detail on both exits from the error print (4 + 1 + 4). The request loop and its owned path temporaries now live in serve_forever, so the pre-refactor baseline of 14 describes an obsolete main topology",
+        12,
+        "the current main has exactly twelve releases: addr on return, panic, serve_forever cancel, and listen-error-print cancel; the Server close and three restored resource match-handoff releases; and reason/detail on both exits from the error print. The request loop and its owned path temporaries remain in serve_forever, so the pre-refactor baseline of 14 still describes an obsolete main topology",
     ),
-    // The non-benchmark examples share the same current 21-entry topology.
+    // The non-benchmark examples share the same current 24-entry topology.
     // The Server close remains on cancel-before-handoff; the remaining entries
     // cover the three persistent strings and the two error strings on every
-    // live exit where each value is still owned.
-    ("examples/http_server.hew", "main", 21, "the current main has exactly 21 releases: port/root on both os.args cancel edges (4); port/root/addr on return, panic, serve_forever cancel, and listen-error-print cancel (12); the Server close on serve_forever's cancel-before-handoff edge (1); and reason/detail on both exits from the error print (4). This complete live-owner topology, not a removed Server close, accounts for the shortfall from the obsolete 25-entry baseline"),
-    ("examples/static_server.hew", "main", 21, "the current main has the same exact 21-entry topology as examples/http_server.hew::main: four os.args-edge string releases, twelve port/root/addr releases across four live exits, one Server close on cancel-before-handoff, and four reason/detail releases. The 25-entry baseline predates this consolidated serve_forever control flow"),
-    (
-        "examples/http_json_demo.hew",
-        "main",
-        14,
-        "main explicitly consumes the three owned JSON Value handles with Value::free, so their implicit resource plans are retracted; the 14 remaining entries are exactly the Option<string> shell and url string paired on seven return, panic, and cancel exits (7 * 2). The former 19-entry count included five plans that no longer belong to live implicit owners",
-    ),
+    // live exit where each value is still owned, plus the three restored
+    // resource match-handoff releases.
+    ("examples/http_server.hew", "main", 24, "the current main has exactly 24 releases: port/root on both os.args cancel edges; port/root/addr on return, panic, serve_forever cancel, and listen-error-print cancel; the Server close and three restored resource match-handoff releases; and reason/detail on both exits from the error print. This live-owner topology remains one below the obsolete 25-entry baseline"),
+    ("examples/static_server.hew", "main", 24, "the current main has the same exact 24-entry topology as examples/http_server.hew::main: four os.args-edge string releases, twelve port/root/addr releases across four live exits, the Server close and three restored resource match-handoff releases, and four reason/detail releases. The 25-entry baseline predates this consolidated serve_forever control flow"),
     // `Child` is now a resource record around an opaque runtime handle. These
     // methods contain no Hew heap value: resource teardown is the `Child.close`
     // action itself, outside the cow-heap drop count measured here.

@@ -997,6 +997,14 @@ struct ImplBodyPlan {
     symbol_self_names: HashMap<*const hew_parser::ast::ImplDecl, String>,
 }
 
+fn imported_impl_symbol_self_name(source_module: &str, source_name: &str) -> String {
+    if source_name.contains('.') {
+        source_name.to_string()
+    } else {
+        format!("{source_module}.{source_name}")
+    }
+}
+
 fn plan_impl_block_symbols(
     ctx: &mut LowerCtx,
     impl_decl: &hew_parser::ast::ImplDecl,
@@ -1174,7 +1182,10 @@ fn plan_imported_impl_bodies(
                 let symbol_self_name = file_import_module_idx
                     .get(&item_idx)
                     .and_then(|module_idx| span_indices.module_name(*module_idx))
-                    .map_or_else(|| name.clone(), |module| format!("{module}.{name}"));
+                    .map_or_else(
+                        || name.clone(),
+                        |module| imported_impl_symbol_self_name(module, name),
+                    );
                 plan_impl_block_symbols(ctx, impl_decl, &symbol_self_name, &empty_skips);
             }
         }
@@ -1235,7 +1246,7 @@ fn plan_imported_impl_bodies(
                 continue;
             };
             let skip_methods = ctx.imported_impl_skip_methods(impl_decl, &source_module, &rewrites);
-            let base_symbol_self_name = format!("{source_module}.{name}");
+            let base_symbol_self_name = imported_impl_symbol_self_name(&source_module, name);
             plan_impl_block_symbols(ctx, impl_decl, &base_symbol_self_name, &skip_methods);
         }
         ctx.current_module_name = previous_module;
@@ -2899,8 +2910,8 @@ pub fn lower_program_with_mono_cap(
                                     || classify_unsupported_where_clause(impl_decl).is_none()
                                 {
                                     let impl_type_params = impl_type_param_names(impl_decl);
-                                    let qualified_identity = format!("{module_full_path}.{name}");
-                                    let symbol_self_name = qualified_identity;
+                                    let symbol_self_name =
+                                        imported_impl_symbol_self_name(&module_full_path, name);
                                     for method in &impl_decl.methods {
                                         ctx.register_impl_method_fn_entry(
                                             &symbol_self_name,

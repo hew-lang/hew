@@ -1,0 +1,57 @@
+// Regression for F17: the `?` desugar must preserve the checker-selected
+// payload representation. An opaque JSON Value remains pointer-shaped instead
+// of becoming an inline `%std.encoding.json.Value = type {}` local.
+import std::encoding::json;
+
+type Box<T> {
+    value: T;
+}
+
+fn _small_source() -> Result<i64, string> {
+    Ok(7)
+}
+
+fn _small_chain() -> Result<i64, string> {
+    let value = _small_source()?;
+    Ok(value)
+}
+
+fn _boxed_source() -> Result<Box<string>, string> {
+    Ok(Box { value: "boxed" })
+}
+
+fn _boxed_chain() -> Result<Box<string>, string> {
+    let value = _boxed_source()?;
+    Ok(value)
+}
+
+fn _json_source(text: string) -> Result<json.Value, string> {
+    Ok(json.parse(text))
+}
+
+fn _json_chain(text: string) -> Result<json.Value, string> {
+    let value = _json_source(text)?;
+    Ok(value)
+}
+
+fn _option_source(text: string) -> Option<json.Value> {
+    Some(json.parse(text))
+}
+
+fn _option_chain(text: string) -> Option<json.Value> {
+    let value = _option_source(text)?;
+    Some(value)
+}
+
+fn _nested_source(text: string) -> Result<Result<json.Value, string>, string> {
+    Ok(_json_source(text))
+}
+
+fn _nested_chain(text: string) -> Result<json.Value, string> {
+    let inner = _nested_source(text)?;
+    let value = inner?;
+    Ok(value)
+}
+
+fn main() {
+}

@@ -4033,6 +4033,11 @@ run_accept_expect_stdout "result_ok_string_payload"
 # lift with ZERO HIR change (the W3.044 `?` desugar was already type-agnostic).
 run_accept_expect_stdout "try_op_heap_result"
 
+# F17 ABI regression: compile the same `?` chain across scalar, owned-record,
+# opaque-pointer, and nested-Result payloads. The opaque case previously failed
+# codegen-front with `Move type mismatch: src=ptr dest=%std.encoding.json.Value`.
+compile_accept "result_try_payload_abi"
+
 # Double-free guard: 50k iterations each construct, return, and drop a
 # heap-owning Result across both arms. A clean exit (no SIGABRT from the
 # free_cstring header-sentinel guard) is the behavioural proof the active

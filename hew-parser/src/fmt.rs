@@ -362,8 +362,10 @@ impl<'a> Formatter<'a> {
     fn format_type_alias(&mut self, decl: &TypeAliasDecl) {
         self.write_outer_doc(decl.doc_comment.as_ref());
         self.write_indent();
+        self.write_visibility(decl.visibility);
         self.write("type ");
         self.write(&decl.name);
+        self.format_opt_type_params(decl.type_params.as_ref());
         self.write(" = ");
         self.format_type_expr(&decl.ty.0);
         self.write(";\n");
@@ -3977,6 +3979,36 @@ extern \"rt\" {
     fn println(s: string);
     fn print(s: string);
     fn assert(cond: bool);
+}
+";
+        let formatted = roundtrip(src);
+        assert_eq!(formatted, src);
+    }
+
+    #[test]
+    fn pub_type_alias_roundtrip() {
+        // `format_type_alias` emits `write_visibility` before `type`; a `pub`
+        // top-level alias must survive format -> reparse rather than
+        // silently losing its visibility modifier.
+        let src = "\
+pub type Label = string;
+
+fn main() {
+}
+";
+        let formatted = roundtrip(src);
+        assert_eq!(formatted, src);
+    }
+
+    #[test]
+    fn parameterized_type_alias_roundtrip() {
+        // `format_type_alias` calls `format_opt_type_params` between the
+        // alias name and `=`; a generic alias's type-parameter list must
+        // round-trip through format -> reparse.
+        let src = "\
+type Pair<T> = (T, T);
+
+fn main() {
 }
 ";
         let formatted = roundtrip(src);

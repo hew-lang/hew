@@ -2163,7 +2163,8 @@ impl Checker {
     pub(super) fn normalize_for_use(&self, ty: &Ty) -> Ty {
         let substituted = self.subst.resolve(ty);
         let projected = self.project_assoc_types(&substituted);
-        self.canonicalize_nominal_identity(&projected)
+        let canonical = self.canonicalize_nominal_identity(&projected);
+        self.expand_type_aliases(&canonical, &mut HashSet::new())
     }
 
     /// Final checker-output form of a semantic type. Every type-carrying
@@ -2239,6 +2240,104 @@ impl Checker {
             }
             _ => ty.map_children_pub(&|child| self.canonicalize_nominal_identity(child)),
         }
+    }
+
+    pub(super) fn alias_target_for_instance(&self, name: &str, args: &[Ty]) -> Option<Ty> {
+        let alias = self.type_aliases.get(name)?;
+        if alias.type_params.len() != args.len() {
+            return None;
+        }
+        let substitutions: HashMap<String, Ty> = alias
+            .type_params
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        Some(
+            alias
+                .target
+                .substitute_named_params_parallel(&substitutions),
+        )
+    }
+
+    /// Whether a just-registered top-level alias `name` is self-referential
+    /// (directly `type Loop = Loop;`, or indirectly through an alias chain).
+    ///
+    /// Every USE site of a recursive alias runs through `expand_type_aliases`,
+    /// whose recursion guard returns `Ty::Error` silently — correct for
+    /// keeping the walk total, but it broke the invariant that a `Ty::Error`
+    /// always has an associated diagnostic: nothing had reported one yet.
+    /// Downstream HIR lowering never runs (the checker returns early on any
+    /// error), so the invariant held only by accident when this alias was
+    /// never actually used; the moment it WAS used, HIR discovered the bogus
+    /// shape at 3-4 different consumers (Display dispatch, verifier, produced-
+    /// value tracking) and each emitted its own checker-boundary-violation
+    /// diagnostic — one root cause read as five errors.
+    ///
+    /// Called once, right after registration, so the checker emits exactly
+    /// ONE root-cause diagnostic per recursive alias declaration, before any
+    /// use site can ever observe the silent `Ty::Error`.
+    pub(super) fn alias_expansion_is_recursive(&self, name: &str) -> bool {
+        let Some(alias) = self.type_aliases.get(name) else {
+            return false;
+        };
+        let placeholder_args: Vec<Ty> = alias
+            .type_params
+            .iter()
+            .map(|param| Ty::Named {
+                name: param.clone(),
+                args: Vec::new(),
+                builtin: None,
+            })
+            .collect();
+        let probe = Ty::Named {
+            name: name.to_string(),
+            args: placeholder_args,
+            builtin: None,
+        };
+        self.alias_expansion_has_cycle(&probe, &mut HashSet::new())
+    }
+
+    /// Walk an alias expansion and distinguish an actual cycle from an
+    /// unrelated `Ty::Error` already reported while resolving the target.
+    fn alias_expansion_has_cycle(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
+        if let Ty::Named { name, args, .. } = ty {
+            if let Some(target) = self.alias_target_for_instance(name, args) {
+                if !visiting.insert(name.clone()) {
+                    return true;
+                }
+                let has_cycle = self.alias_expansion_has_cycle(&target, visiting);
+                visiting.remove(name);
+                return has_cycle;
+            }
+        }
+
+        let has_cycle = std::cell::Cell::new(false);
+        let _ = ty.map_children_pub(&|child| {
+            let mut child_visiting = visiting.clone();
+            if self.alias_expansion_has_cycle(child, &mut child_visiting) {
+                has_cycle.set(true);
+            }
+            child.clone()
+        });
+        has_cycle.get()
+    }
+
+    fn expand_type_aliases(&self, ty: &Ty, visiting: &mut HashSet<String>) -> Ty {
+        if let Ty::Named { name, args, .. } = ty {
+            if let Some(target) = self.alias_target_for_instance(name, args) {
+                if !visiting.insert(name.clone()) {
+                    return Ty::Error;
+                }
+                let expanded = self.expand_type_aliases(&target, visiting);
+                visiting.remove(name);
+                return expanded;
+            }
+        }
+        ty.map_children_pub(&|child| {
+            let mut child_visiting = visiting.clone();
+            self.expand_type_aliases(child, &mut child_visiting)
+        })
     }
 
     /// Whether a resolved type NAME refers to something that exists: a
@@ -2779,9 +2878,26 @@ impl Checker {
                         return ty.clone();
                     }
                 }
-                // Check type aliases (transparent: Distance = int → Ty::I64)
-                if let Some(aliased) = self.type_aliases.get(name) {
-                    return aliased.clone();
+                // Preserve the alias's nominal identity for impl lookup. Semantic
+                // compatibility expands it at normalize-for-use boundaries.
+                if let Some(alias) = self.type_aliases.get(name) {
+                    if args.len() != alias.type_params.len() {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            &te.1,
+                            format!(
+                                "type alias `{name}` expects {} type argument(s), found {}",
+                                alias.type_params.len(),
+                                args.len()
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                    return Ty::Named {
+                        name: name.clone(),
+                        args,
+                        builtin: None,
+                    };
                 }
                 // A qualified lifecycle source identity is valid only when its
                 // canonical owner was imported directly by this lexical module.

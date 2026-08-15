@@ -2004,6 +2004,35 @@ grep -q 'LocalPid' "${reject_output}"
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"
 run_accept_expect_stdout "print_f64"
+run_accept_expect_stdout "top_level_type_aliases"
+run_accept_expect_stdout "type_alias_resource_close"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/type_alias_wrong_arity.hew" \
+  "type alias \`Pair\` expects 1 type argument(s), found 2" \
+  "type_alias_wrong_arity"
+# A self-referential alias (`type Loop = Loop;`) must fail closed with ONE
+# root-cause diagnostic at the declaration, not cascade into the downstream
+# checker-boundary-violation / NotYetImplemented diagnostics that `println`'s
+# Display dispatch and the HIR verifier would otherwise emit independently
+# for the unreported `Ty::Error` a use site observes.
+expect_check_fail_error_count_no_cascade \
+  "${ROOT}/tests/vertical-slice/reject/type_alias_recursive.hew" \
+  1 \
+  "type_alias_recursive" \
+  "CheckerBoundaryViolation" \
+  "NOT_YET_IMPLEMENTED"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/type_alias_recursive.hew" \
+  "type alias \`Loop\` is recursive" \
+  "type_alias_recursive_message"
+# A record field typed via a top-level alias must derive Send from the
+# alias TARGET, not fail closed on the unexpanded alias name (the field
+# type registered with the marker registry must be expanded).
+run_accept_expect_stdout "record_field_send_alias"
+# A supervisor constructor argument's record type (with an aliased field)
+# and an actor state field typed via an alias must both admit under the
+# same Send derivation the constructor-arg boundary consults.
+run_accept_expect_stdout "supervisor_init_alias"
 run_accept_expect_stdout "iflet_literal"
 run_accept_expect_stdout "iflet_nested_ctor"
 run_accept_expect_stdout "let_nested_tuple"

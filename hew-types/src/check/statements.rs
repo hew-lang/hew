@@ -29,8 +29,14 @@ impl Checker {
         if matches!(actual, Ty::Error) {
             return actual;
         }
-        if matches!(self.subst.resolve(expected), Ty::TraitObject { .. }) {
-            return self.subst.resolve(expected);
+        let resolved_expected = self.subst.resolve(expected);
+        if matches!(resolved_expected, Ty::TraitObject { .. })
+            || matches!(
+                &resolved_expected,
+                Ty::Named { name, .. } if self.type_aliases.contains_key(name)
+            )
+        {
+            return resolved_expected;
         }
         actual
     }

@@ -3154,6 +3154,26 @@ fn capture_doc_comment_on_const_and_type_alias() {
 }
 
 #[test]
+fn parses_parameterized_type_alias() {
+    let result = parse("type Pair<T> = (T, T);");
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::TypeAlias(alias) = &result.program.items[0].0 else {
+        panic!("expected type alias");
+    };
+    assert_eq!(alias.name, "Pair");
+    assert_eq!(
+        alias
+            .type_params
+            .as_ref()
+            .expect("type parameters")
+            .iter()
+            .map(|param| param.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["T"]
+    );
+}
+
+#[test]
 fn capture_doc_comment_on_actor_method() {
     let source = "actor A {\n    /// Reset the counter.\n    fn reset() {}\n}\n";
     let result = parse(source);

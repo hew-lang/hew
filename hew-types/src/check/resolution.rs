@@ -684,6 +684,22 @@ impl Checker {
         }
 
         let expected_segments: Vec<&str> = expected_canonical.split('.').collect();
+        if owner_segments
+            .split_first()
+            .is_some_and(|(module_binding, nested_owner)| {
+                self.module_import_bindings
+                    .get(&(self.current_module.clone(), module_binding.clone()))
+                    .is_some_and(|canonical_module| {
+                        canonical_module
+                            .split('.')
+                            .chain(nested_owner.iter().map(String::as_str))
+                            .eq(expected_segments.iter().copied())
+                    })
+            })
+        {
+            return true;
+        }
+
         if expected_segments
             .iter()
             .copied()

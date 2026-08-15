@@ -4498,6 +4498,23 @@ pub fn lower_program_with_mono_cap(
                         )
                     })
                     .collect();
+                let same_module_actor_rewrites: HashMap<String, String> = module
+                    .items
+                    .iter()
+                    .filter_map(|(it, _)| {
+                        if let Item::Actor(actor) = it {
+                            Some((
+                                actor.name.clone(),
+                                format!("{source_module}.{}", actor.name),
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let prev_actor_rewrites = ctx
+                    .imported_actor_rewrites
+                    .replace(same_module_actor_rewrites);
                 // Populate bare-name const scope for this module's own consts.
                 // Functions inside the module reference module-level consts by
                 // bare name (e.g. `STATUS_OK`), but the global `const_registry`
@@ -4832,11 +4849,13 @@ pub fn lower_program_with_mono_cap(
                                 items.push(HirItem::Const(lowered));
                             }
                         }
-                        // Emit `HirItem::Actor` entries for imported pub actors
+                        // Emit `HirItem::Actor` entries for imported actors
                         // so MIR's actor-layout pass (which walks `module.items`)
-                        // builds a layout keyed by the actor's bare name. Without
-                        // it, `spawn module.Actor(...)` and the subsequent
-                        // `receive fn` calls fail closed at MIR with
+                        // builds every layout reachable from an imported body.
+                        // Private actors are runtime implementation details, but
+                        // a public module function or public actor may spawn or
+                        // message them. Without their layouts, those bodies fail
+                        // closed at MIR with
                         // `spawn of unknown actor` / `actor call on unknown actor`,
                         // even though HIR/types resolved the cross-module
                         // reference. Mirrors the `Item::Machine` arm above. The
@@ -4844,7 +4863,7 @@ pub fn lower_program_with_mono_cap(
                         // active (see `lower_imported_actor`) so bare same-module
                         // calls resolve to their qualified symbols, exactly like
                         // the imported free-fn path.
-                        Item::Actor(actor) if actor.visibility.is_pub() => {
+                        Item::Actor(actor) => {
                             // Skip actors of FILE-import modules: their items
                             // were spliced into `program.items` and already
                             // emitted (under the flat/root identity) by the
@@ -4913,10 +4932,9 @@ pub fn lower_program_with_mono_cap(
                                 }
                             }
                         }
-                        // Item::Record, Item::Supervisor and non-pub Item::Actor
-                        // from imported modules are intentionally not emitted in
-                        // this slice; their cross-module lowering semantics are
-                        // tracked as separate follow-ups.
+                        // Item::Record and Item::Supervisor from imported modules
+                        // are intentionally not emitted in this slice; their
+                        // cross-module lowering semantics are tracked separately.
                         //
                         // Non-pub Function/TypeDecl/Actor fall here (not
                         // visible to importers). If a new Item variant is
@@ -4926,12 +4944,12 @@ pub fn lower_program_with_mono_cap(
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
                         | Item::Record(_)
-                        | Item::Actor(_)
                         | Item::Supervisor(_) => {}
                     }
                 }
                 // Restore the const scope after lowering this module's bodies.
                 ctx.imported_module_consts = prev_module_consts;
+                ctx.imported_actor_rewrites = prev_actor_rewrites;
                 ctx.folded_integer_consts = previous_folded_integer_consts;
                 ctx.tag_diagnostics_since(diag_start, &source_module);
                 record_source_modules_for_items(
@@ -6678,6 +6696,10 @@ struct LowerCtx {
     /// the qualified, native-symbol-safe `fn_registry` keys emitted for that
     /// imported module.
     imported_fn_rewrites: Option<HashMap<String, String>>,
+    /// Same-module actor identity rewrites active while lowering imported
+    /// module bodies. Keys are source-visible bare actor names; values are the
+    /// fully-qualified actor-layout identities used by MIR.
+    imported_actor_rewrites: Option<HashMap<String, String>>,
     /// Bare-name → `ConstEntry` map active while lowering an imported module's
     /// function bodies.  A module may reference its own module-level consts
     /// by bare name (e.g. `STATUS_OK` inside `tls.hew`), but only the
@@ -7825,6 +7847,7 @@ impl LowerCtx {
             fn_registry: HashMap::new(),
             extern_fn_names: HashSet::new(),
             imported_fn_rewrites: None,
+            imported_actor_rewrites: None,
             imported_module_consts: None,
             type_classes,
             opaque_resource_candidates: tc_output.opaque_resource_candidates.clone(),
@@ -12580,6 +12603,7 @@ impl LowerCtx {
         // bare identity — its layout stays bare too, so qualifying here would
         // instead CREATE a mismatch.
         for handler in &mut lowered.receive_handlers {
+            handler.return_ty = self.qualify_current_module_record_ty(handler.return_ty.clone());
             handler.return_ty =
                 self.qualify_colliding_module_record_ty(&handler.return_ty, module_full_path);
         }
@@ -12596,6 +12620,21 @@ impl LowerCtx {
         actor_identity
             .rsplit_once('.')
             .map(|(module, _actor)| module)
+    }
+
+    fn qualify_imported_actor_method_id(&self, method_id: String) -> String {
+        let Some((actor, method)) = method_id.rsplit_once("::") else {
+            return method_id;
+        };
+        if actor.contains('.') {
+            return method_id;
+        }
+        self.imported_actor_rewrites
+            .as_ref()
+            .and_then(|rewrites| rewrites.get(actor))
+            .map_or(method_id.clone(), |qualified| {
+                format!("{qualified}::{method}")
+            })
     }
 
     /// Qualify a bare user-record type reference to `{module_short}.{name}` when
@@ -14164,6 +14203,36 @@ impl LowerCtx {
     ) -> ResolvedTy {
         if let ResolvedTy::Named {
             name,
+            mut args,
+            builtin: Some(BuiltinType::LocalPid),
+            is_opaque,
+        } = ty
+        {
+            if let [ResolvedTy::Named {
+                name: actor_name,
+                args: actor_args,
+                builtin: None,
+                ..
+            }] = args.as_mut_slice()
+            {
+                if actor_args.is_empty() && !actor_name.contains('.') {
+                    if let Some(module) = decl_module {
+                        let qualified = format!("{module}.{actor_name}");
+                        if self.actor_type_names.contains(&qualified) {
+                            actor_name.clone_from(&qualified);
+                        }
+                    }
+                }
+            }
+            return ResolvedTy::Named {
+                name,
+                args,
+                builtin: Some(BuiltinType::LocalPid),
+                is_opaque,
+            };
+        }
+        if let ResolvedTy::Named {
+            name,
             args,
             builtin,
             ..
@@ -14323,7 +14392,7 @@ impl LowerCtx {
                 field.span.clone(),
             );
         }
-        let params = params.iter().map(|p| self.bind_param(p)).collect();
+        let params = params.iter().map(|p| self.bind_actor_param(p)).collect();
         let body = self.with_current_return_type(expected_ty.clone(), |ctx| {
             ctx.lower_block(body, expected_ty)
         });
@@ -14363,7 +14432,7 @@ impl LowerCtx {
             );
             state_field_bindings.insert(binding.id);
         }
-        let params = params.iter().map(|p| self.bind_param(p)).collect();
+        let params = params.iter().map(|p| self.bind_actor_param(p)).collect();
 
         // Snapshot the enclosing scope (state fields + params, just bound
         // above) BEFORE lowering the body, mirroring `lower_generator_fn_body`
@@ -20399,6 +20468,13 @@ impl LowerCtx {
         if let Some(inner) = Self::local_pid_actor_identity(&ty) {
             inner.clone_into(&mut actor_name);
         }
+        if let Some(qualified) = self
+            .imported_actor_rewrites
+            .as_ref()
+            .and_then(|rewrites| rewrites.get(&actor_name))
+        {
+            actor_name.clone_from(qualified);
+        }
         (
             HirExprKind::Spawn {
                 actor_name,
@@ -22784,10 +22860,24 @@ impl LowerCtx {
         else {
             return ty;
         };
-        let args = args
+        let mut args: Vec<ResolvedTy> = args
             .into_iter()
             .map(|arg| self.qualify_current_module_record_ty(arg))
             .collect();
+        if builtin == Some(BuiltinType::LocalPid) {
+            if let [ResolvedTy::Named {
+                name: actor_name, ..
+            }] = args.as_mut_slice()
+            {
+                if let Some(qualified) = self
+                    .imported_actor_rewrites
+                    .as_ref()
+                    .and_then(|rewrites| rewrites.get(actor_name))
+                {
+                    actor_name.clone_from(qualified);
+                }
+            }
+        }
         let current_module_is_file_import = self
             .current_module_name
             .as_deref()
@@ -26240,46 +26330,54 @@ impl LowerCtx {
                 })
                 .collect();
             return match dispatch {
-                ActorMethodKind::Fire(method_id) => (
-                    HirExprKind::ActorSend {
-                        receiver: Box::new(lowered_receiver),
-                        method_id,
-                        args: lowered_args,
-                    },
-                    ResolvedTy::Unit,
-                ),
-                ActorMethodKind::Ask(method_id, reply_ty) => match ResolvedTy::from_ty(&reply_ty) {
-                    Ok(reply_ty) => {
-                        // Owner-qualify the ask-reply record identity to the
-                        // ASKED actor's declaring module when it collides, so
-                        // this reply type and the actor-handler layout return
-                        // type (qualified in `lower_imported_actor` under the
-                        // same collision gate) both resolve to the SAME
-                        // qualified identity the MIR record layout is keyed by.
-                        // `method_id` is `{module}.{Actor}::{method}` for an
-                        // imported actor; a bare/root actor has no leading module
-                        // segment and is left unqualified (#2208).
-                        let reply_ty = Self::actor_module_short_of_method_id(&method_id)
-                            .map_or_else(
-                                || reply_ty.clone(),
-                                |module_short| {
-                                    self.qualify_colliding_module_record_ty(&reply_ty, module_short)
+                ActorMethodKind::Fire(method_id) => {
+                    let method_id = self.qualify_imported_actor_method_id(method_id);
+                    (
+                        HirExprKind::ActorSend {
+                            receiver: Box::new(lowered_receiver),
+                            method_id,
+                            args: lowered_args,
+                        },
+                        ResolvedTy::Unit,
+                    )
+                }
+                ActorMethodKind::Ask(method_id, reply_ty) => {
+                    let method_id = self.qualify_imported_actor_method_id(method_id);
+                    match ResolvedTy::from_ty(&reply_ty) {
+                        Ok(reply_ty) => {
+                            // Owner-qualify the ask-reply record identity to the
+                            // ASKED actor's declaring module when it collides, so
+                            // this reply type and the actor-handler layout return
+                            // type (qualified in `lower_imported_actor` under the
+                            // same collision gate) both resolve to the SAME
+                            // qualified identity the MIR record layout is keyed by.
+                            // `method_id` is `{module}.{Actor}::{method}` for an
+                            // imported actor; a bare/root actor has no leading module
+                            // segment and is left unqualified (#2208).
+                            let reply_ty = Self::actor_module_short_of_method_id(&method_id)
+                                .map_or_else(
+                                    || reply_ty.clone(),
+                                    |module_short| {
+                                        self.qualify_colliding_module_record_ty(
+                                            &reply_ty,
+                                            module_short,
+                                        )
+                                    },
+                                );
+                            (
+                                HirExprKind::ActorAsk {
+                                    receiver: Box::new(lowered_receiver),
+                                    method_id,
+                                    args: lowered_args,
+                                    reply_ty: reply_ty.clone(),
+                                    source_anchor: None,
+                                    deadline_ns: None,
                                 },
-                            );
-                        (
-                            HirExprKind::ActorAsk {
-                                receiver: Box::new(lowered_receiver),
-                                method_id,
-                                args: lowered_args,
-                                reply_ty: reply_ty.clone(),
-                                source_anchor: None,
-                                deadline_ns: None,
-                            },
-                            reply_ty,
-                        )
-                    }
-                    Err(err) => {
-                        self.diagnostics.push(HirDiagnostic::new(
+                                reply_ty,
+                            )
+                        }
+                        Err(err) => {
+                            self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::CheckerBoundaryViolation {
                                 name: format!("actor method `.{method}`"),
                                 reason: err.to_string(),
@@ -26287,15 +26385,17 @@ impl LowerCtx {
                             span.clone(),
                             "checker-authoritative actor_method_dispatch reply type failed boundary conversion",
                         ));
-                        (
-                            HirExprKind::Unsupported(format!(
-                                "actor method `.{method}` has poisoned dispatch reply type"
-                            )),
-                            ResolvedTy::Unit,
-                        )
+                            (
+                                HirExprKind::Unsupported(format!(
+                                    "actor method `.{method}` has poisoned dispatch reply type"
+                                )),
+                                ResolvedTy::Unit,
+                            )
+                        }
                     }
-                },
+                }
                 ActorMethodKind::StreamProducer(method_id, elem_ty) => {
+                    let method_id = self.qualify_imported_actor_method_id(method_id);
                     match ResolvedTy::from_ty(&elem_ty) {
                         Ok(elem_ty) => {
                             let stream_ty = ResolvedTy::named_builtin(
@@ -27454,6 +27554,14 @@ impl LowerCtx {
     /// every non-param binder) always leaves `false`.
     fn bind_param(&mut self, param: &Param) -> HirBinding {
         let ty = self.lower_type(&param.ty);
+        let mut binding = self.bind(param.name.clone(), ty, param.is_mutable, param.ty.1.clone());
+        binding.is_consume = param.is_consume;
+        binding
+    }
+
+    fn bind_actor_param(&mut self, param: &Param) -> HirBinding {
+        let ty = self.lower_type(&param.ty);
+        let ty = self.qualify_current_module_record_ty(ty);
         let mut binding = self.bind(param.name.clone(), ty, param.is_mutable, param.ty.1.clone());
         binding.is_consume = param.is_consume;
         binding

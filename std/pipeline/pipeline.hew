@@ -1,33 +1,109 @@
 //! Temporary S1 admission-proof shim for a concrete two-stage i64 pipeline.
 //!
 //! WHY: actor monomorphisation and closure-valued actor state are S2 work.
-//! WHEN: S2 lands, retire `SourceI64`, `StageI64`, `SinkI64`, and this shim.
+//! WHEN: S2 lands, retire these concrete actors and records.
 //! WHAT: the generic `Pipeline<T>` combinator is the planned S3 surface.
 
-actor SinkI64 {
+/// Owning payload carried across the source, stage, and sink mailboxes.
+pub type PipelineItemI64 {
+    value: i64;
+    label: string;
+    crash_stage: bool;
+}
+
+/// Concrete S1 builder. The permit count controls sink processing so callers
+/// can deterministically prove capacity-one admission.
+pub type PipelineI64TwoStage {
+    sink_permits: i64;
+}
+
+pub actor AdmissionControlI64 {
+    var permits: i64;
+    var stage_attempts: i64;
+    var stage_post_sends: i64;
+
+    mailbox 1;
+
+    receive fn take_permit() -> bool {
+        if permits > 0 {
+            permits = permits - 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    receive fn release() {
+        permits = permits + 1;
+    }
+
+    receive fn mark_stage_attempt() -> i64 {
+        stage_attempts = stage_attempts + 1;
+        stage_attempts
+    }
+
+    receive fn mark_stage_post_send() -> i64 {
+        stage_post_sends = stage_post_sends + 1;
+        stage_post_sends
+    }
+
+    receive fn attempts() -> i64 {
+        stage_attempts
+    }
+
+    receive fn post_sends() -> i64 {
+        stage_post_sends
+    }
+}
+
+pub actor SinkI64 {
     var count: i64;
+    var sum: i64;
     var first: i64;
     var second: i64;
     var third: i64;
+    var last_value: i64;
+    var last_label: string;
+    let control: LocalPid<AdmissionControlI64>;
 
     mailbox 1;
-    receive fn enqueue(value: i64) {
-        if count == 0 {
-            first = value;
-        } else if count == 1 {
-            second = value;
-        } else if count == 2 {
-            third = value;
+
+    receive fn push(item: PipelineItemI64) {
+        var admitted = false;
+        while !admitted {
+            match await control.take_permit() {
+                Ok(open) => { admitted = open; },
+                Err(_) => { return; },
+            }
+            if !admitted {
+                sleep(1ms);
+            }
         }
         count = count + 1;
+        sum = sum + item.value;
+        if count == 1 {
+            first = item.value;
+        } else if count == 2 {
+            second = item.value;
+        } else if count == 3 {
+            third = item.value;
+        }
+        last_value = item.value;
+        last_label = item.label;
     }
-    receive fn push(value: i64) -> bool {
-        this.enqueue(value);
-        true
-    }
+
     receive fn count() -> i64 {
         count
     }
+
+    receive fn sum() -> i64 {
+        sum
+    }
+
+    receive fn last_value() -> i64 {
+        last_value
+    }
+
     receive fn item(index: i64) -> i64 {
         if index == 0 {
             first
@@ -37,56 +113,140 @@ actor SinkI64 {
             third
         }
     }
-}
 
-actor StageI64 {
-    let next: LocalPid<SinkI64>;
-
-    mailbox 1;
-    receive fn push(value: i64) -> bool {
-        let transformed = value * 2;
-        next.enqueue(transformed);
-        true
+    receive fn last_label() -> string {
+        last_label
     }
 }
 
-actor SourceI64 {
-    let next: LocalPid<StageI64>;
-    let sink: LocalPid<SinkI64>;
+pub actor StageI64 {
+    let next: LocalPid<SinkI64>;
+    let control: LocalPid<AdmissionControlI64>;
 
     mailbox 1;
-    receive fn push(value: i64) -> bool {
-        match await next.push(value) {
+
+    receive fn push(item: PipelineItemI64) -> bool {
+        match await control.mark_stage_attempt() {
+            Ok(_) => {},
+            Err(_) => { return false; },
+        }
+        if item.crash_stage {
+            panic("pipeline S1 stage crash");
+        }
+        let transformed = PipelineItemI64 {
+            value: item.value * 2,
+            label: item.label + ":stage",
+            crash_stage: false,
+        };
+        next.push(transformed);
+        match await control.mark_stage_post_send() {
+            Ok(_) => true,
+            Err(_) => false,
+        }
+    }
+}
+
+pub actor SourceI64 {
+    let next: LocalPid<StageI64>;
+    let sink: LocalPid<SinkI64>;
+    let control: LocalPid<AdmissionControlI64>;
+
+    mailbox 1;
+
+    receive fn push(item: PipelineItemI64) -> bool {
+        match await next.push(item) {
             Ok(accepted) => accepted,
             Err(_) => false,
         }
     }
+
     receive fn count() -> i64 {
         match await sink.count() {
             Ok(value) => value,
             Err(_) => -1,
         }
     }
+
+    receive fn sum() -> i64 {
+        match await sink.sum() {
+            Ok(value) => value,
+            Err(_) => -1,
+        }
+    }
+
+    receive fn last_value() -> i64 {
+        match await sink.last_value() {
+            Ok(value) => value,
+            Err(_) => -1,
+        }
+    }
+
     receive fn item(index: i64) -> i64 {
         match await sink.item(index) {
             Ok(value) => value,
             Err(_) => -1,
         }
     }
+
+    receive fn last_label() -> string {
+        match await sink.last_label() {
+            Ok(value) => value,
+            Err(_) => "",
+        }
+    }
+
+    receive fn release_sink() {
+        control.release();
+    }
+
+    receive fn control_handle() -> LocalPid<AdmissionControlI64> {
+        control
+    }
+
+    receive fn stage_attempts() -> i64 {
+        match await control.attempts() {
+            Ok(value) => value,
+            Err(_) => -1,
+        }
+    }
+
+    receive fn stage_post_sends() -> i64 {
+        match await control.post_sends() {
+            Ok(value) => value,
+            Err(_) => -1,
+        }
+    }
+
+    receive fn shutdown(expected_count: i64) -> bool {
+        match await sink.count() {
+            Ok(value) => value == expected_count,
+            Err(_) => false,
+        }
+    }
 }
 
-/// Concrete S1 chain with one bounded mailbox per stage.
-pub type PipelineI64TwoStage = LocalPid<SourceI64>;
-
-// The compiler currently cannot lower actor spawns from an imported stdlib
-// module; the compiled root fixture supplies the wiring proof until S2's
-// actor-mono seam lands.
-/// Temporary construction spelling retained only for the S1 shim.
-pub fn from(source: LocalPid<SourceI64>) -> LocalPid<SourceI64> {
-    source
+/// Configure a concrete two-stage pipeline.
+pub fn from(sink_permits: i64) -> PipelineI64TwoStage {
+    PipelineI64TwoStage { sink_permits: sink_permits }
 }
 
-/// Return the wired source endpoint. Callers await `push` for admission.
-pub fn run(pipeline: LocalPid<SourceI64>) -> LocalPid<SourceI64> {
-    pipeline
+/// Spawn and wire the source, fixed transform stage, sink, and control actor.
+pub fn run(pipeline: PipelineI64TwoStage) -> LocalPid<SourceI64> {
+    let control = spawn AdmissionControlI64(
+        permits: pipeline.sink_permits,
+        stage_attempts: 0,
+        stage_post_sends: 0,
+    );
+    let sink = spawn SinkI64(
+        count: 0,
+        sum: 0,
+        first: 0,
+        second: 0,
+        third: 0,
+        last_value: 0,
+        last_label: "",
+        control: control,
+    );
+    let stage = spawn StageI64(next: sink, control: control);
+    spawn SourceI64(next: stage, sink: sink, control: control)
 }

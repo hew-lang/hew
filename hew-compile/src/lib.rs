@@ -4746,4 +4746,66 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             foreign.diagnostics
         );
     }
+
+    #[test]
+    fn imported_stdlib_function_can_spawn_and_wire_private_module_actors() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below repository root");
+        let dir = tempfile::tempdir().expect("create temp project");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import std::pipeline;\n\
+             fn main() {\n\
+                 let chain = pipeline.run(pipeline.from(1));\n\
+                 let item: pipeline.PipelineItemI64 = PipelineItemI64 {\n\
+                     value: 21, label: \"probe\", crash_stage: false\n\
+                 };\n\
+                 match await chain.push(item) { Ok(_) => {}, Err(_) => {} }\n\
+             }\n",
+        );
+        let state = run_file_frontend_to_typecheck(
+            &input,
+            &FrontendOptions {
+                project_dir: Some(repo_root.to_path_buf()),
+                ..FrontendOptions::default()
+            },
+        )
+        .unwrap_or_else(|failure| panic!("frontend failed: {failure:#?}"));
+        let typecheck = state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("fixture must typecheck");
+        let hir = hew_hir::lower_program(
+            &state.program,
+            typecheck,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            hir.diagnostics.is_empty(),
+            "imported pipeline bodies must lower: {:#?}",
+            hir.diagnostics
+        );
+        let mir = hew_mir::lower_hir_module(&hir.module);
+        assert!(
+            mir.diagnostics.is_empty(),
+            "imported pipeline actor layouts and calls must lower: {:#?}",
+            mir.diagnostics
+        );
+        for actor in [
+            "std.pipeline.AdmissionControlI64",
+            "std.pipeline.SinkI64",
+            "std.pipeline.StageI64",
+            "std.pipeline.SourceI64",
+        ] {
+            assert!(
+                mir.actor_layouts.iter().any(|layout| layout.name == actor),
+                "missing imported actor layout `{actor}`: {:#?}",
+                mir.actor_layouts
+            );
+        }
+    }
 }

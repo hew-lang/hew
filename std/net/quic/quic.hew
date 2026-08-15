@@ -89,7 +89,7 @@
 //! }
 //! ```
 
-import std::net;
+import std.net;
 
 /// A QUIC endpoint bound to a local UDP address.
 ///

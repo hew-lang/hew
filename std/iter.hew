@@ -309,7 +309,7 @@ pub fn count<I, A>(it: I) -> i64 where I: Iterator<Item = A> {
 
 /// Collect every item produced by `it` into a `Vec<A>`.
 pub fn collect<I, A>(it: I) -> Vec<A> where I: Iterator<Item = A> {
-    let out: Vec<A> = Vec::new();
+    let out: Vec<A> = Vec.new();
     var iter = it;
     loop {
         match iter.next() {

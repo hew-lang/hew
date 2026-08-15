@@ -17,7 +17,7 @@
 //! }
 //! ```
 
-import std::encoding::base64;
+import std.encoding.base64;
 
 /// Structured errors returned by `try_open`.
 pub enum CryptoError {
@@ -39,27 +39,27 @@ pub enum CryptoError {
 
 fn crypto_error_from_i32(code: i32) -> CryptoError { // INTERNAL-ABI: C ABI error tag is i32 repr(C)
     match code {
-        0 => CryptoError::None,
-        1 => CryptoError::InvalidKey,
-        2 => CryptoError::ShortCiphertext,
-        3 => CryptoError::AuthFailed,
-        4 => CryptoError::InvalidUtf8,
-        5 => CryptoError::AllocationFailure,
-        6 => CryptoError::EntropyFailure,
-        _ => CryptoError::AuthFailed,
+        0 => CryptoError.None,
+        1 => CryptoError.InvalidKey,
+        2 => CryptoError.ShortCiphertext,
+        3 => CryptoError.AuthFailed,
+        4 => CryptoError.InvalidUtf8,
+        5 => CryptoError.AllocationFailure,
+        6 => CryptoError.EntropyFailure,
+        _ => CryptoError.AuthFailed,
     }
 }
 
 /// Return a human-readable message for a [`CryptoError`].
 pub fn error_message(err: CryptoError) -> string {
     match err {
-        CryptoError::None => "no error",
-        CryptoError::InvalidKey => "encrypt key must be 32 bytes",
-        CryptoError::ShortCiphertext => "encrypt ciphertext is too short",
-        CryptoError::AuthFailed => "encrypt authentication failed",
-        CryptoError::InvalidUtf8 => "encrypt plaintext was not valid UTF-8",
-        CryptoError::AllocationFailure => "encrypt native allocation failed",
-        CryptoError::EntropyFailure => "encrypt system entropy source failed",
+        CryptoError.None => "no error",
+        CryptoError.InvalidKey => "encrypt key must be 32 bytes",
+        CryptoError.ShortCiphertext => "encrypt ciphertext is too short",
+        CryptoError.AuthFailed => "encrypt authentication failed",
+        CryptoError.InvalidUtf8 => "encrypt plaintext was not valid UTF-8",
+        CryptoError.AllocationFailure => "encrypt native allocation failed",
+        CryptoError.EntropyFailure => "encrypt system entropy source failed",
     }
 }
 
@@ -107,7 +107,7 @@ pub fn try_seal(key: bytes, plaintext: string) -> Result<bytes, CryptoError> {
         hew_encrypt_try_seal_base64_hew(key, plaintext)
     };
     match last_seal_error() {
-        CryptoError::None => Ok(base64.decode(encoded)),
+        CryptoError.None => Ok(base64.decode(encoded)),
         err => Err(err),
     }
 }
@@ -121,7 +121,7 @@ pub fn try_open(key: bytes, ciphertext: bytes) -> Result<string, CryptoError> {
         hew_encrypt_try_open_hew(key, ciphertext)
     };
     match last_open_error() {
-        CryptoError::None => Ok(plaintext),
+        CryptoError.None => Ok(plaintext),
         err => Err(err),
     }
 }
@@ -168,15 +168,15 @@ extern "C" {
 // codes — can only live here as an inline test.
 #[test]
 fn crypto_error_from_i32_poisoned_codes_never_decode_to_none() {
-    assert(crypto_error_from_i32(99) != CryptoError::None);
-    assert(crypto_error_from_i32(99) == CryptoError::AuthFailed);
-    assert(crypto_error_from_i32(-1) != CryptoError::None);
-    assert(crypto_error_from_i32(-1) == CryptoError::AuthFailed);
-    assert(crypto_error_from_i32(7) != CryptoError::None);
-    assert(crypto_error_from_i32(7) == CryptoError::AuthFailed);
-    assert(crypto_error_from_i32(100) != CryptoError::None);
-    assert(crypto_error_from_i32(100) == CryptoError::AuthFailed);
+    assert(crypto_error_from_i32(99) != CryptoError.None);
+    assert(crypto_error_from_i32(99) == CryptoError.AuthFailed);
+    assert(crypto_error_from_i32(-1) != CryptoError.None);
+    assert(crypto_error_from_i32(-1) == CryptoError.AuthFailed);
+    assert(crypto_error_from_i32(7) != CryptoError.None);
+    assert(crypto_error_from_i32(7) == CryptoError.AuthFailed);
+    assert(crypto_error_from_i32(100) != CryptoError.None);
+    assert(crypto_error_from_i32(100) == CryptoError.AuthFailed);
 
     // A genuinely absent error (status 0) still means None (no error).
-    assert(crypto_error_from_i32(0) == CryptoError::None);
+    assert(crypto_error_from_i32(0) == CryptoError.None);
 }

@@ -25,6 +25,63 @@ fn run_suite(files: &[(&str, &str)], extra_args: &[&str]) -> std::process::Outpu
 }
 
 #[test]
+fn package_native_ffi_is_built_and_linked() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    for (path, contents) in [
+        (
+            "hew.toml",
+            include_str!("fixtures/test_ffi_package/hew.toml"),
+        ),
+        (
+            "Cargo.toml",
+            include_str!("fixtures/test_ffi_package/Cargo.toml"),
+        ),
+        (
+            "src/lib.rs",
+            include_str!("fixtures/test_ffi_package/src/lib.rs"),
+        ),
+        (
+            "ffi_test.hew",
+            include_str!("fixtures/test_ffi_package/ffi_test.hew"),
+        ),
+    ] {
+        write_file(dir.path(), path, contents);
+    }
+
+    let output = Command::new(hew_binary())
+        .args(["test", "ffi_test.hew", "--no-color", "--jobs", "1"])
+        .env("CARGO_TARGET_DIR", dir.path().join("target"))
+        .current_dir(dir.path())
+        .output()
+        .expect("run package FFI test");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("test native_ffi_is_linked ... ok"));
+    assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
+    assert!(dir.path().join("target/release-lib").is_dir());
+    let archive = if cfg!(target_os = "windows") {
+        dir.path()
+            .join("target/release-lib/hew_test_ffi_package.lib")
+    } else {
+        dir.path()
+            .join("target/release-lib/libhew_test_ffi_package.a")
+    };
+    assert!(
+        archive.is_file(),
+        "declared native library was not built at {}",
+        archive.display()
+    );
+}
+
+#[test]
 fn passing_suite_exits_zero() {
     require_codegen();
 

@@ -848,12 +848,12 @@ fn snapshot_send_to_actor_twice_is_valid() {
     let output = typecheck(
         r#"
         type Payload { data: string; }
-        actor Sink {
+        actor SnapshotSink {
             let val: i64;
             receive fn consume(h: Payload) {}
         }
         fn main() {
-            let s = spawn Sink(val: 0);
+            let s = spawn SnapshotSink(val: 0);
             let h = Payload { data: "hello" };
             s.consume(h);
             s.consume(h);

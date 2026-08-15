@@ -5091,6 +5091,8 @@ run_check_run_expect_stdout file_import_trait_default_method
 # `CallableUnsupportedInMir`. Calls from both the root and inside the module
 # are exercised.
 run_check_run_expect_stdout dir_module_trait_default/main
+run_check_run_expect_stdout contextual_variant_resolution
+run_check_run_expect_stdout module_method_shadow/main
 
 # Regression: two peer files of a directory module that declare same-shaped
 # types at the same byte offsets must keep DISTINCT type identities. A

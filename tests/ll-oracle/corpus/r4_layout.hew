@@ -24,26 +24,26 @@ fn make_point(x: i64, y: i64) -> Point {
 
 fn color_code(c: Color) -> i64 {
     match c {
-        Color::Red => 0,
-        Color::Green => 1,
-        Color::Blue => 2,
+        Color.Red => 0,
+        Color.Green => 1,
+        Color.Blue => 2,
     }
 }
 
 fn main() -> i64 {
     let p = make_point(3, 4);
     println(p.x + p.y);
-    let xs: Vec<Point> = Vec::new();
+    let xs: Vec<Point> = Vec.new();
     xs.push(Point { x: 10, y: 20 });
     xs.push(Point { x: 5, y: 5 });
     let q = xs[0];
     println(q.x);
-    let tbl: HashMap<string, Point> = HashMap::new();
+    let tbl: HashMap<string, Point> = HashMap.new();
     tbl.insert("origin", Point { x: 0, y: 0 });
     match tbl.get("origin") {
-        Some(v) => println(v.x + v.y),
-        None => println(-1),
+        .Some(v) => println(v.x + v.y),
+        .None => println(-1),
     }
-    println(color_code(Color::Green));
+    println(color_code(Color.Green));
     0
 }

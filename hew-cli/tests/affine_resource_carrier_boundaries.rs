@@ -70,7 +70,7 @@ fn main() -> i64 {
 "#;
 
 const ACTOR_BODY: &str = r"
-actor Sink {
+actor ProbeSink {
     receive fn take(value: Token) {
         value.close();
     }
@@ -81,7 +81,7 @@ actor Sink {
 }
 
 fn main() -> i64 {
-    let sink = spawn Sink;
+    let sink = spawn ProbeSink;
     let token = Token { id: 77 };
     sink.take(token);
     match await sink.fence() {

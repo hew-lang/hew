@@ -1811,12 +1811,12 @@ fn fn_has_record_inplace_drop(pipeline: &hew_mir::IrPipeline, fn_name: &str) -> 
 fn recv_handler_ignored_string_param_earns_scope_exit_drop() {
     let pipeline = lower_source(
         r#"
-        actor Sink {
+        actor TestSink {
             var seen: i64;
             receive fn take(label: string) { seen = seen + 1; }
         }
         fn main() -> i64 {
-            let sink = spawn Sink(seen: 0);
+            let sink = spawn TestSink(seen: 0);
             sink.take("unused".to_upper());
             0
         }
@@ -1825,7 +1825,7 @@ fn recv_handler_ignored_string_param_earns_scope_exit_drop() {
     let handler = pipeline
         .elaborated_mir
         .iter()
-        .find(|f| f.name == "Sink__recv__take")
+        .find(|f| f.name == "TestSink__recv__take")
         .expect("receive handler present");
     assert!(
         handler
@@ -2817,7 +2817,7 @@ fn fn_has_bytes_drop(pipeline: &hew_mir::IrPipeline, fn_name: &str) -> bool {
 fn recv_handler_borrow_only_bytes_param_earns_bytes_drop() {
     let pipeline = lower_source(
         r"
-        actor Sink {
+        actor TestSink {
             var seen: i64;
             receive fn take(data: bytes) {
                 seen = seen + data.len();
@@ -2827,7 +2827,7 @@ fn recv_handler_borrow_only_bytes_param_earns_bytes_drop() {
         ",
     );
     assert!(
-        fn_has_bytes_drop(&pipeline, "Sink__recv__take"),
+        fn_has_bytes_drop(&pipeline, "TestSink__recv__take"),
         "a borrow-only receive-handler bytes param must earn the balancing \
          CowHeap(Bytes) drop: {:?}",
         pipeline.elaborated_mir
@@ -2835,8 +2835,8 @@ fn recv_handler_borrow_only_bytes_param_earns_bytes_drop() {
     let handler = pipeline
         .elaborated_mir
         .iter()
-        .find(|function| function.name == "Sink__recv__take")
-        .expect("Sink__recv__take must be present");
+        .find(|function| function.name == "TestSink__recv__take")
+        .expect("TestSink__recv__take must be present");
     assert!(
         handler.drop_plans.iter().all(|(_, plan)| {
             plan.drops
@@ -2918,7 +2918,7 @@ fn recv_handler_borrow_only_record_param_earns_record_inplace_drop() {
     let pipeline = lower_source(
         r"
         type Boxed { payload: Vec<i64> }
-        actor Sink {
+        actor TestSink {
             var seen: i64;
             receive fn take(b: Boxed) {
                 seen = seen + b.payload.len();
@@ -2926,14 +2926,14 @@ fn recv_handler_borrow_only_record_param_earns_record_inplace_drop() {
             receive fn total() -> i64 { seen }
         }
         fn main() -> i64 {
-            let sink = spawn Sink(seen: 0);
+            let sink = spawn TestSink(seen: 0);
             sink.take(Boxed { payload: [1, 2, 3] });
             0
         }
         ",
     );
     assert!(
-        fn_has_record_inplace_drop(&pipeline, "Sink__recv__take"),
+        fn_has_record_inplace_drop(&pipeline, "TestSink__recv__take"),
         "a borrow-only receive-handler record param must earn a RecordInPlace \
          scope-exit drop (else its field buffer leaks per message): {:?}",
         pipeline.elaborated_mir
@@ -2951,7 +2951,7 @@ fn recv_handler_record_param_retained_into_state_suppresses_record_inplace_drop(
     let pipeline = lower_source(
         r"
         type Boxed { payload: Vec<i64> }
-        actor Sink {
+        actor TestSink {
             var seen: i64;
             var store: Vec<i64>;
             receive fn take(b: Boxed) {
@@ -2961,14 +2961,14 @@ fn recv_handler_record_param_retained_into_state_suppresses_record_inplace_drop(
             receive fn total() -> i64 { seen }
         }
         fn main() -> i64 {
-            let sink = spawn Sink(seen: 0, store: []);
+            let sink = spawn TestSink(seen: 0, store: []);
             sink.take(Boxed { payload: [1, 2, 3] });
             0
         }
         ",
     );
     assert!(
-        !fn_has_record_inplace_drop(&pipeline, "Sink__recv__take"),
+        !fn_has_record_inplace_drop(&pipeline, "TestSink__recv__take"),
         "a receive-handler record whose owned field is retained into actor \
          state must NOT earn a RecordInPlace drop — the state_drop_fn is its \
          single free; admitting it double-frees: {:?}",
@@ -3188,10 +3188,10 @@ fn conditional_record_send_remains_outside_conditional_owner_protocol() {
     let pipeline = lower_source(
         r"
         type Wrap { name: string }
-        actor Sink {
+        actor TestSink {
             receive fn take(value: Wrap) {}
         }
-        fn route(sink: LocalPid<Sink>, label: string, send_it: bool) {
+        fn route(sink: LocalPid<TestSink>, label: string, send_it: bool) {
             let next = Wrap { name: label };
             if send_it {
                 sink.take(next);

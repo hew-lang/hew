@@ -38288,7 +38288,7 @@ fn main() {}
 
     // ── Enum-layout discovery tests ──────────────────────────────────────────
 
-    /// Lower the §0 probe (`Option<i64>` instantiated at a call site and
+    /// Lower the §0 probe (`Maybe<i64>` instantiated at a call site and
     /// matched) and assert that the HIR enum-layout registry contains exactly
     /// the expected entry. The `Some` variant's payload field must be
     /// `ResolvedTy::I64` (not `ResolvedTy::Named { name: "T", args: [] }` —
@@ -38300,12 +38300,12 @@ fn main() {}
     fn generic_enum_option_i64_registered_in_enum_layouts() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum Option<T> { Some(T); None }
+            enum Maybe<T> { Some(T); None }
             fn main() -> i64 {
-                let x: Option<i64> = Option::Some(42);
+                let x: Maybe<i64> = Maybe::Some(42);
                 match x {
-                    Option::Some(v) => v,
-                    Option::None => 0,
+                    Maybe::Some(v) => v,
+                    Maybe::None => 0,
                 }
             }
             ",
@@ -38315,13 +38315,13 @@ fn main() {}
         assert_eq!(
             layouts.len(),
             1,
-            "exactly one enum-layout entry expected for Option<i64>; got {layouts:#?}"
+            "exactly one enum-layout entry expected for Maybe<i64>; got {layouts:#?}"
         );
 
         let layout = &layouts[0];
         assert_eq!(
-            layout.key.origin_name, "Option",
-            "enum origin name must be 'Option'"
+            layout.key.origin_name, "Maybe",
+            "enum origin name must be 'Maybe'"
         );
         assert_eq!(
             layout.key.type_args,
@@ -38329,12 +38329,12 @@ fn main() {}
             "type_args must be [I64]"
         );
         assert_eq!(
-            layout.mangled_name, "Option$$i64",
+            layout.mangled_name, "Maybe$$i64",
             "mangled name must follow shared scheme"
         );
 
         // Two variants: Some(T→i64) and None.
-        assert_eq!(layout.variants.len(), 2, "Option has two variants");
+        assert_eq!(layout.variants.len(), 2, "Maybe has two variants");
         let some_variant = layout
             .variants
             .iter()
@@ -38360,20 +38360,22 @@ fn main() {}
     fn authored_generic_local_records_shadow_generic_builtin_spellings() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            type Option<T> { value: T }
-            type Sink<T> { value: T }
+            type Container<T> { value: T }
+            type OutputSink<T> { value: T }
 
-            fn keep_option(value: Option<i64>) -> Option<i64> { value }
-            fn keep_sink(value: Sink<i64>) -> Sink<i64> { value }
+            fn keep_container(value: Container<i64>) -> Container<i64> { value }
+            fn keep_sink(value: OutputSink<i64>) -> OutputSink<i64> { value }
             ",
         );
         assert!(
             lowered.diagnostics.is_empty(),
-            "generic local shadows must lower cleanly: {:#?}",
+            "generic local records must lower cleanly: {:#?}",
             lowered.diagnostics
         );
 
-        for (function_name, nominal_name) in [("keep_option", "Option"), ("keep_sink", "Sink")] {
+        for (function_name, nominal_name) in
+            [("keep_container", "Container"), ("keep_sink", "OutputSink")]
+        {
             let function = function_named(&lowered, function_name);
             for ty in [&function.params[0].ty, &function.return_ty] {
                 assert_eq!(
@@ -38476,9 +38478,9 @@ fn main() {}
         );
     }
 
-    /// Nested generic instantiation: `Option<Option<i64>>` must produce two
-    /// registry entries — one for `Option<Option<i64>>` and one for
-    /// `Option<i64>`. The worklist transitively expands type args so that the
+    /// Nested generic instantiation: `Maybe<Maybe<i64>>` must produce two
+    /// registry entries — one for `Maybe<Maybe<i64>>` and one for
+    /// `Maybe<i64>`. The worklist transitively expands type args so that the
     /// inner instantiation is discovered even though only the outer type
     /// appears at the call site.
     ///
@@ -38487,44 +38489,44 @@ fn main() {}
     fn nested_generic_enum_option_option_i64_registers_both_instantiations() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum Option<T> { Some(T); None }
+            enum Maybe<T> { Some(T); None }
             fn main() -> i64 {
-                let inner: Option<i64> = Option::Some(5);
-                let outer: Option<Option<i64>> = Option::Some(inner);
+                let inner: Maybe<i64> = Maybe::Some(5);
+                let outer: Maybe<Maybe<i64>> = Maybe::Some(inner);
                 match outer {
-                    Option::Some(v) => match v {
-                        Option::Some(n) => n,
-                        Option::None => 0,
+                    Maybe::Some(v) => match v {
+                        Maybe::Some(n) => n,
+                        Maybe::None => 0,
                     },
-                    Option::None => -1,
+                    Maybe::None => -1,
                 }
             }
             ",
         );
 
         let layouts = &lowered.module.enum_layouts;
-        // Both Option<i64> and Option<Option<i64>> must be registered.
+        // Both Maybe<i64> and Maybe<Maybe<i64>> must be registered.
         assert!(
             layouts.len() >= 2,
-            "expected at least two enum-layout entries for Option<i64> and \
-             Option<Option<i64>>; got {layouts:#?}"
+            "expected at least two enum-layout entries for Maybe<i64> and \
+             Maybe<Maybe<i64>>; got {layouts:#?}"
         );
 
         let has_option_i64 = layouts
             .iter()
-            .any(|l| l.key.origin_name == "Option" && l.key.type_args == vec![ResolvedTy::I64]);
+            .any(|l| l.key.origin_name == "Maybe" && l.key.type_args == vec![ResolvedTy::I64]);
         let has_option_option_i64 = layouts.iter().any(|l| {
-            l.key.origin_name == "Option"
-                && l.key.type_args == vec![ResolvedTy::named_user("Option", vec![ResolvedTy::I64])]
+            l.key.origin_name == "Maybe"
+                && l.key.type_args == vec![ResolvedTy::named_user("Maybe", vec![ResolvedTy::I64])]
         });
 
         assert!(
             has_option_i64,
-            "registry must contain Option<i64>; got {layouts:#?}"
+            "registry must contain Maybe<i64>; got {layouts:#?}"
         );
         assert!(
             has_option_option_i64,
-            "registry must contain Option<Option<i64>>; got {layouts:#?}"
+            "registry must contain Maybe<Maybe<i64>>; got {layouts:#?}"
         );
     }
 
@@ -38816,13 +38818,13 @@ fn main() {}
     fn record_shadowing_builtin_result_keeps_actor_ask_lowerable() {
         let (_program, _tco, lowered) = parse_typecheck_and_lower(
             r#"
-            type Result { handle: i64; }
+            type QueryReply { handle: i64; }
 
             actor Db {
                 var n: i64 = 0;
-                receive fn query(sql: string) -> Result {
+                receive fn query(sql: string) -> QueryReply {
                     n = n + 1;
-                    Result { handle: n }
+                    QueryReply { handle: n }
                 }
             }
 
@@ -38856,7 +38858,7 @@ fn main() {}
             .expect("query handler");
         assert_eq!(
             handler.return_ty,
-            ResolvedTy::named_user("Result".to_string(), vec![]),
+            ResolvedTy::named_user("QueryReply".to_string(), vec![]),
             "handler return type must resolve to the user record, not the builtin enum"
         );
         // The ask site registered the builtin `Result<Result, AskError>`
@@ -38869,7 +38871,7 @@ fn main() {}
                 .iter()
                 .any(|layout| layout.key.origin_name == "Result"
                     && layout.key.type_args.first()
-                        == Some(&ResolvedTy::named_user("Result".to_string(), vec![]))),
+                        == Some(&ResolvedTy::named_user("QueryReply".to_string(), vec![]))),
             "ask-site Result<Result, AskError> layout missing from enum_layouts: {:?}",
             lowered
                 .module
@@ -38949,17 +38951,17 @@ fn main() {}
     fn same_leaf_user_enums_keep_user_constructor_identity() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum LinkError { UserLink; }
-            enum LookupError { UserLookup; }
-            enum MonitorError { UserMonitor; }
-            enum CrashAction { UserAction; }
-            enum CrashKind { UserKind; }
+            enum UserLinkError { UserLink; }
+            enum UserLookupError { UserLookup; }
+            enum UserMonitorError { UserMonitor; }
+            enum UserCrashAction { UserAction; }
+            enum UserCrashKind { UserKind; }
 
-            fn user_link() -> LinkError { LinkError::UserLink }
-            fn user_lookup() -> LookupError { LookupError::UserLookup }
-            fn user_monitor() -> MonitorError { MonitorError::UserMonitor }
-            fn user_action() -> CrashAction { CrashAction::UserAction }
-            fn user_kind() -> CrashKind { CrashKind::UserKind }
+            fn user_link() -> UserLinkError { UserLinkError::UserLink }
+            fn user_lookup() -> UserLookupError { UserLookupError::UserLookup }
+            fn user_monitor() -> UserMonitorError { UserMonitorError::UserMonitor }
+            fn user_action() -> UserCrashAction { UserCrashAction::UserAction }
+            fn user_kind() -> UserCrashKind { UserCrashKind::UserKind }
             ",
         );
         assert!(
@@ -38969,11 +38971,11 @@ fn main() {}
         );
 
         for (function_name, expected_type) in [
-            ("user_link", "LinkError"),
-            ("user_lookup", "LookupError"),
-            ("user_monitor", "MonitorError"),
-            ("user_action", "CrashAction"),
-            ("user_kind", "CrashKind"),
+            ("user_link", "UserLinkError"),
+            ("user_lookup", "UserLookupError"),
+            ("user_monitor", "UserMonitorError"),
+            ("user_action", "UserCrashAction"),
+            ("user_kind", "UserCrashKind"),
         ] {
             let function = function_named(&lowered, function_name);
             let tail = function.body.tail.as_deref().expect("constructor tail");

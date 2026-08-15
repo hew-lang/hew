@@ -2,7 +2,7 @@ type Boxed {
     payload: Vec<i64>;
 }
 
-actor Sink {
+actor TestSink {
     var observed: i64;
 
     receive fn take(value: Boxed, tag: i64) {
@@ -16,8 +16,8 @@ actor Sink {
 }
 
 fn main() -> i64 {
-    let a = spawn Sink(observed: -1);
-    let b = spawn Sink(observed: -1);
+    let a = spawn TestSink(observed: -1);
+    let b = spawn TestSink(observed: -1);
     let value = Boxed { payload: [1, 2] };
     a.take(value, 7);
     b.take(value, 8);

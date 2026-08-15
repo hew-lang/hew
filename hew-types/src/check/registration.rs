@@ -10111,18 +10111,44 @@ impl Checker {
         }
     }
 
-    /// Snapshot every implicit lexical name before source registration begins.
-    /// Collision checks consume this immutable authority rather than whichever
-    /// compatibility table happens to win a later insertion.
+    /// Snapshot the compiler-assumed part of the implicit prelude before source
+    /// registration begins.
+    ///
+    /// The prelude manifest is deliberately broader than this protected set:
+    /// ordinary builtins remain normal lexical bindings and may be shadowed by
+    /// user declarations. Only declaration-level lang items plus the core
+    /// enum/desugaring heads below are names the compiler cannot let source
+    /// replace without changing language semantics.
     pub(super) fn capture_protected_prelude_bindings(&mut self) {
         self.protected_prelude_bindings.clear();
 
-        let prelude_exports = crate::stdlib_authority::authority().prelude_exports();
+        let authority = crate::stdlib_authority::authority();
+        let prelude_exports = authority.prelude_exports();
         let glob_modules: HashSet<String> = prelude_exports
             .iter()
             .filter(|export| export.kind == crate::PreludeExportKind::Glob)
             .map(|export| export.module.replace("::", "."))
             .collect();
+        let mut protected_names: HashSet<String> = authority
+            .lang_items()
+            .values()
+            .filter(|binding| {
+                matches!(
+                    binding.kind,
+                    crate::stdlib_authority::AuthorityDeclarationKind::Type
+                        | crate::stdlib_authority::AuthorityDeclarationKind::Trait
+                )
+            })
+            .map(|binding| binding.declaration.clone())
+            .collect();
+        // Option/Result construction and propagation, plus for-loop
+        // conversion, are compiler desugarings whose declarations predate the
+        // corresponding lang-item annotations.
+        protected_names.extend(
+            ["Option", "Result", "IntoIterator"]
+                .into_iter()
+                .map(str::to_string),
+        );
 
         for export in prelude_exports {
             if export.kind != crate::PreludeExportKind::Item {
@@ -10132,62 +10158,16 @@ impl Checker {
                 continue;
             };
             let binding = export.alias.as_ref().unwrap_or(source_name);
-            self.protected_prelude_bindings
-                .insert(binding.clone(), export.module.replace("::", "."));
-        }
-
-        if glob_modules.contains("std.builtins") {
-            let parsed = hew_parser::parse(include_str!("../../../std/builtins.hew"));
-            debug_assert!(
-                parsed.errors.is_empty(),
-                "embedded builtins must parse while collecting protected names: {:?}",
-                parsed.errors
-            );
-            for (item, _) in &parsed.program.items {
-                let name = match item {
-                    Item::Function(item) if item.visibility.is_pub() => Some(&item.name),
-                    Item::Const(item) if item.visibility.is_pub() => Some(&item.name),
-                    Item::TypeDecl(item) if item.visibility.is_pub() => Some(&item.name),
-                    Item::TypeAlias(item) if item.visibility.is_pub() => Some(&item.name),
-                    Item::Trait(item) if item.visibility.is_pub() => Some(&item.name),
-                    Item::Actor(item) if item.visibility.is_pub() => Some(&item.name),
-                    Item::Machine(item) if item.visibility.is_pub() => Some(&item.name),
-                    Item::Record(item) if item.visibility.is_pub() => Some(&item.name),
-                    _ => None,
-                };
-                if let Some(name) = name {
-                    self.protected_prelude_bindings
-                        .insert(name.clone(), "std.builtins".to_string());
-                }
+            if protected_names.contains(source_name) {
+                self.protected_prelude_bindings
+                    .insert(binding.clone(), export.module.replace("::", "."));
             }
         }
 
-        for builtin in crate::builtin_types() {
-            self.protected_prelude_bindings
-                .entry(builtin.canonical_name.to_string())
-                .or_insert_with(|| "std.builtins".to_string());
-        }
-
-        for owners in [
-            &self.published_bare_type_owners,
-            &self.published_bare_function_owners,
-            &self.published_bare_const_owners,
-            &self.published_bare_trait_owners,
-        ] {
-            for ((module, file, binding), identities) in owners {
-                if module.is_none() && *file == 0 && identities.len() == 1 {
-                    let identity = identities
-                        .iter()
-                        .next()
-                        .expect("single prelude owner must be present");
-                    let Some((owner, declaration_name)) = identity.rsplit_once('.') else {
-                        continue;
-                    };
-                    if declaration_name == binding && glob_modules.contains(owner) {
-                        self.protected_prelude_bindings
-                            .insert(binding.clone(), owner.to_string());
-                    }
-                }
+        if glob_modules.contains("std.builtins") {
+            for name in protected_names {
+                self.protected_prelude_bindings
+                    .insert(name, "std.builtins".to_string());
             }
         }
     }

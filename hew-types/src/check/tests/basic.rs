@@ -105,7 +105,7 @@ fn read(value: i64) -> i64 {
 
 #[test]
 fn prelude_declarations_are_protected_before_source_registration() {
-    let output = check_source("fn println(value: i64) { let _ = value; }");
+    let output = check_source("type Iterator { value: i64; }");
     assert!(output
         .errors
         .iter()
@@ -113,11 +113,11 @@ fn prelude_declarations_are_protected_before_source_registration() {
 }
 
 #[test]
-fn prelude_variant_names_do_not_become_protected_top_level_bindings() {
-    let output = check_source("actor Local { receive fn ping() {} }");
+fn ordinary_builtin_declarations_remain_shadowable() {
+    let output = check_source("type HashMapIter { value: i64; }");
     assert!(
         output.errors.is_empty(),
-        "an imported enum variant must not reserve its spelling across namespaces: {:#?}",
+        "an ordinary builtin must remain shadowable: {:#?}",
         output.errors
     );
 }
@@ -1810,21 +1810,17 @@ fn reserved_type_names_fail_closed_across_declaration_kinds() {
             "expected exactly one error for `{name}`; got: {:?}",
             output.errors
         );
-        if name == "CancellationToken" {
-            assert_eq!(output.errors[0].kind, TypeErrorKind::PreludeDeclCollision);
-        } else {
-            assert_eq!(
-                output.errors[0].kind,
-                TypeErrorKind::ReservedTypeName,
-                "expected ReservedTypeName for `{name}`"
-            );
-            assert_eq!(
-                output.errors[0].message,
-                format!(
-                    "E_RESERVED_TYPE_NAME: `{name}` is reserved and cannot be used for a type declaration"
-                )
-            );
-        }
+        assert_eq!(
+            output.errors[0].kind,
+            TypeErrorKind::ReservedTypeName,
+            "expected ReservedTypeName for `{name}`"
+        );
+        assert_eq!(
+            output.errors[0].message,
+            format!(
+                "E_RESERVED_TYPE_NAME: `{name}` is reserved and cannot be used for a type declaration"
+            )
+        );
     }
 }
 

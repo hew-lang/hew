@@ -54,7 +54,7 @@ fn prelude_collision_rejects_the_entire_import() {
         Some(ImportSpec::Names(vec![
             ImportName {
                 name: "custom_print".to_string(),
-                alias: Some("println".to_string()),
+                alias: Some("Iterator".to_string()),
             },
             ImportName {
                 name: "safe_helper".to_string(),

@@ -3958,7 +3958,7 @@ run_accept_expect_stdout "option_result_scalar_regression"
 run_check_run_expect_stdout "p0c_all_methods_paths"
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/p0c_method_value_failclosed.hew" \
-  "undefined variable \`Option\`" \
+  "type \`Option\` cannot be used as a value" \
   "Option/Result method values are not a callable fallback around the checker intercept"
 run_accept_expect_panic "option_unwrap_none_aborts" "called 'unwrap()' on a 'None' value"
 run_accept_expect_panic "result_unwrap_err_aborts" "called 'unwrap()' on an 'Err' value"

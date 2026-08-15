@@ -2975,8 +2975,9 @@ pub struct Checker {
     /// unused-import detection and source attribution.
     /// Key: (`owner_module`, `short_name`), Value: (import span, source module).
     pub(super) import_spans: HashMap<ImportKey, (Span, Option<String>)>,
-    /// Complete compiler-provided lexical surface, captured before user
-    /// declarations or imports are registered.
+    /// Compiler-assumed core of the implicit prelude, captured before user
+    /// declarations or imports are registered. Ordinary prelude bindings are
+    /// intentionally absent so user declarations may shadow them.
     pub(super) protected_prelude_bindings: HashMap<String, String>,
     /// First import declaration that reserved each file-local binding.
     pub(super) import_binding_spans: HashMap<ImportBindingKey, (Span, Option<String>, String)>,

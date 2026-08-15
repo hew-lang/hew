@@ -1451,8 +1451,8 @@ pub unsafe extern "C" fn hew_lambda_actor_release(actor: *mut HewLambdaActorHand
         // per the contract there is no peer, so this branch only fires
         // on a tight serial bug. The free below would then race with
         // whichever path runs second — both branches free, so we get
-        // a double-free instead of a leak. For now we accept that
-        // tight-serial-bug double-release surfaces as a double-free in
+        // a double-free instead of a leak. A tight serial double-release
+        // surfaces as a double-free in
         // tests, which is louder than a silent leak (the compiler's
         // drop-spine prevents this from ever firing in practice).
         return SendError::DoubleClose as i32;

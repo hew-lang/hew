@@ -1581,6 +1581,13 @@ pub enum MethodCallReceiverKind {
     ModuleBinding {
         module_name: String,
     },
+    /// The receiver spelling resolved to an exact enum declaration and the
+    /// dotted member selected one of that declaration's tuple variants. HIR
+    /// consumes this identity to lower `Type.Variant(args)` without treating
+    /// `Type` as a runtime receiver or rediscovering an owner from its leaf.
+    EnumConstructorPath {
+        type_name: String,
+    },
     NamedTypeInstance {
         type_name: String,
     },

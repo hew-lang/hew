@@ -7618,19 +7618,110 @@ impl Checker {
                 }
             }
         }
+        // A module-qualified nominal head (`module.Type.member(...)`) reaches
+        // the parser as a method call whose receiver is a field access. Resolve
+        // that field through the exact module export table before the ordinary
+        // value-receiver path can synthesize `module.Type` as a value. This is
+        // the multi-segment counterpart of the lexical nominal ladder below;
+        // both publish the same canonical checker facts to lowering.
+        if let Expr::FieldAccess { object, field } = &receiver.0 {
+            if let Expr::Identifier(module_short) = &object.0 {
+                if self.env.lookup_ref(module_short).is_none() {
+                    if let Some(type_def) = self.resolve_module_type(module_short, field) {
+                        self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            module_short.clone(),
+                        ));
+                        let canonical_type = type_def.name;
+                        let dotted_member = format!("{canonical_type}::{method}");
+                        if let Some((type_name, _, _)) =
+                            self.lookup_variant_constructor(&dotted_member)
+                        {
+                            let constructor = (Expr::Identifier(dotted_member), receiver.1.clone());
+                            let result = self.check_call(&constructor, None, args, span);
+                            self.record_method_call_receiver_kind(
+                                span,
+                                MethodCallReceiverKind::EnumConstructorPath { type_name },
+                            );
+                            return result;
+                        }
+
+                        if self.fn_sigs.contains_key(&dotted_member) {
+                            let function =
+                                (Expr::Identifier(dotted_member.clone()), receiver.1.clone());
+                            let result = self.check_call(&function, None, args, span);
+                            let call_key = SpanKey::in_module(span, self.current_module_idx);
+                            if let Some(target) = self.direct_call_targets.get(&call_key).cloned() {
+                                self.record_method_call_rewrite(
+                                    span,
+                                    MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                                        target,
+                                        c_symbol: dotted_member,
+                                        elem_ty: None,
+                                    },
+                                );
+                            }
+                            return result;
+                        }
+                    }
+                }
+            }
+        }
         // Module-qualified calls: e.g. http.listen(addr) → lookup "http.listen" in fn_sigs
         if let Expr::Identifier(name) = &receiver.0 {
             let receiver_is_binding = self.env.lookup_ref(name).is_some();
-            let receiver_is_known_type = self.type_defs.contains_key(name);
-            let dotted_constructor = format!("{name}::{method}");
-            if !receiver_is_binding
-                && receiver_is_known_type
-                && self
-                    .lookup_variant_constructor(&dotted_constructor)
-                    .is_some()
-            {
-                let constructor = (Expr::Identifier(dotted_constructor), receiver.1.clone());
-                return self.check_call(&constructor, None, args, span);
+            // A dotted expression head is resolved through the checker's one
+            // nominal-declaration ladder before member lookup. Imported bare
+            // bindings no longer have a leaf entry in `type_defs`, so probing
+            // `type_defs[name]` here misclassified `Parcel.Filled(...)` and
+            // every imported associated call as a value receiver. The ladder
+            // returns only declaration-proven identities and refuses ambiguous
+            // spellings; there is deliberately no final-segment fallback.
+            let canonical_type = self
+                .resolve_nominal_declaration(NominalOrigin::Lexical, name)
+                .unwrap_or_else(|| name.clone());
+            let dotted_constructor = format!("{canonical_type}::{method}");
+            let receiver_is_known_type = self.lookup_type_def(&canonical_type).is_some()
+                || self.resolved_builtin_type(&canonical_type).is_some();
+            if !receiver_is_binding {
+                if let Some((type_name, _, _)) =
+                    self.lookup_variant_constructor(&dotted_constructor)
+                {
+                    let constructor = (Expr::Identifier(dotted_constructor), receiver.1.clone());
+                    let result = self.check_call(&constructor, None, args, span);
+                    self.record_method_call_receiver_kind(
+                        span,
+                        MethodCallReceiverKind::EnumConstructorPath { type_name },
+                    );
+                    return result;
+                }
+
+                // Static/associated functions retain `::` in the declaration
+                // registry even though their source call surface is dotted.
+                // Route the call through ordinary call checking, then publish
+                // the same no-receiver rewrite used by module-qualified calls.
+                // The direct target written by `check_call` is the semantic
+                // authority; the string remains only the linker presentation.
+                if self.fn_sigs.contains_key(&dotted_constructor) {
+                    let function = (
+                        Expr::Identifier(dotted_constructor.clone()),
+                        receiver.1.clone(),
+                    );
+                    let result = self.check_call(&function, None, args, span);
+                    let call_key = SpanKey::in_module(span, self.current_module_idx);
+                    if let Some(target) = self.direct_call_targets.get(&call_key).cloned() {
+                        self.record_method_call_rewrite(
+                            span,
+                            MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                                target,
+                                c_symbol: dotted_constructor,
+                                elem_ty: None,
+                            },
+                        );
+                    }
+                    return result;
+                }
             }
             let receiver_shadows_module = receiver_is_binding
                 && self.module_import_bindings.contains_key(&(

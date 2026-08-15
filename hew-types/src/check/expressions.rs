@@ -6237,12 +6237,14 @@ impl Checker {
                 }
             }
 
-            let is_dotted_variant = self.env.lookup_ref(name).is_none()
-                && self
-                    .lookup_type_def(name)
-                    .is_some_and(|type_def| type_def.variants.contains_key(field));
-            if is_dotted_variant {
-                return self.synthesize_identifier(&format!("{name}::{field}"), span);
+            if self.env.lookup_ref(name).is_none() {
+                let canonical_type = self
+                    .resolve_nominal_declaration(NominalOrigin::Lexical, name)
+                    .unwrap_or_else(|| name.clone());
+                let dotted_variant = format!("{canonical_type}::{field}");
+                if self.lookup_variant_constructor(&dotted_variant).is_some() {
+                    return self.synthesize_identifier(&dotted_variant, span);
+                }
             }
         }
 

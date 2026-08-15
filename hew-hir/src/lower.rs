@@ -11673,7 +11673,10 @@ impl LowerCtx {
     ) -> (HirExprKind, ResolvedTy) {
         if !matches!(
             target,
-            CallTarget::User(_) | CallTarget::ImplMethod(_) | CallTarget::Runtime(_)
+            CallTarget::User(_)
+                | CallTarget::ImplMethod(_)
+                | CallTarget::Runtime(_)
+                | CallTarget::Builtin { .. }
         ) {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
@@ -11695,7 +11698,7 @@ impl LowerCtx {
             CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
                 Some(declaration)
             }
-            CallTarget::Runtime(_) => None,
+            CallTarget::Runtime(_) | CallTarget::Builtin { .. } => None,
             _ => unreachable!("direct-call target shape was validated above"),
         };
         self.register_free_fn_monomorphisation(&symbol, selected_declaration, span, site);
@@ -11709,11 +11712,11 @@ impl LowerCtx {
                 self.qualify_current_module_record_ty(ty)
             });
         self.assert_resolved_ty_totality(span);
-        let resolved_ref = match target {
+        let resolved_ref = match &target {
             // The checker has already selected this closed executable family.
             // Do not require a synthetic fn-registry spelling (or recover one
             // from `symbol`) merely to mark the binding as directly callable.
-            CallTarget::Runtime(family) => ResolvedRef::Builtin(family),
+            CallTarget::Runtime(family) => ResolvedRef::Builtin(*family),
             _ => self
                 .fn_registry
                 .get(&symbol)
@@ -26464,6 +26467,34 @@ impl LowerCtx {
         // diagnostic so the user is never left guessing why their code "works"
         // but produces aliased references instead of independent copies.
         let key = self.mk_key(&span);
+        if let Some(MethodCallReceiverKind::EnumConstructorPath { type_name }) =
+            self.method_call_receiver_kinds.get(&key).cloned()
+        {
+            let constructor = format!("{type_name}::{method}");
+            let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
+            let variant_kind = self
+                .lookup_variant_ctor(&constructor, checker_ctor_ty.as_ref())
+                .map(|(_, _, kind)| kind.clone());
+            if let Some(HirVariantKind::Tuple(_)) = variant_kind {
+                let lowered_args = self.lower_call_args(args);
+                return self.lower_variant_ctor_tuple_call(&constructor, lowered_args, &span);
+            }
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: constructor.clone(),
+                    reason: "checker-selected enum constructor is absent from HIR registry"
+                        .to_string(),
+                },
+                span.clone(),
+                "dotted enum construction must carry the exact checker-selected declaration",
+            ));
+            return (
+                HirExprKind::Unsupported(format!(
+                    "dotted enum constructor `{constructor}` has no HIR declaration"
+                )),
+                ResolvedTy::Unit,
+            );
+        }
         if method == "clone"
             && args.is_empty()
             && !self.resolved_calls.contains_key(&key)

@@ -128,6 +128,23 @@ fn unit() -> Choice { Choice.Absent }
 }
 
 #[test]
+fn dotted_associated_calls_resolve_without_using_the_head_as_a_value() {
+    let output = check_source(
+        r#"
+fn main() {
+    let values: Vec<i64> = Vec.new();
+    Node.start("127.0.0.1:0");
+}
+"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "dotted associated and namespace calls must check: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn uppercase_pattern_binding_is_not_classified_as_a_variant() {
     let output = check_source(
         r"
@@ -173,6 +190,29 @@ fn modules_and_types_are_rejected_in_value_position() {
         .errors
         .iter()
         .any(|error| error.kind == TypeErrorKind::TypeUsedAsValue));
+}
+
+#[test]
+fn bare_type_remains_rejected_as_a_value_after_dotted_path_dispatch() {
+    let output = check_source("enum Choice { Present(i64) } fn main() { let value = Choice; }");
+    let type_as_value_errors = output
+        .errors
+        .iter()
+        .filter(|error| error.kind == TypeErrorKind::TypeUsedAsValue)
+        .count();
+    assert_eq!(
+        type_as_value_errors, 1,
+        "the bare enum must produce exactly the type-as-value diagnostic: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|error| error.kind != TypeErrorKind::UndefinedVariable),
+        "the nominal head must not fall through to variable lookup: {:?}",
+        output.errors
+    );
 }
 
 #[test]

@@ -1611,7 +1611,7 @@ impl Checker {
                     self.current_module = saved_module;
                     let canonical = format!("std.builtins.{}", td.name);
                     if let Some(source_def) = self.type_defs.get(&canonical).cloned() {
-                        self.register_full_type_alias("std.builtins", &td.name, &source_def);
+                        self.register_canonical_type_def("std.builtins", &td.name, &source_def);
                     }
                     // Compiler-carrier builtins (`LocalPid`, `NodeId`, ...)
                     // retain the catalog's canonical identity; this source file
@@ -3382,14 +3382,11 @@ impl Checker {
         // at the ask-reply gate.
         self.seed_qualified_type_markers_for_current_module(&td.name);
 
-        // Insert the bare `type_defs` entry (last-write-wins across modules) and,
-        // for a non-root module, a per-module qualified alias. The qualified
-        // entry is the collision-free authority the per-module guard above keys
-        // on, and the field source that non-pub reply types (e.g. an actor's
-        // `receive fn` returning a module-private record) resolve through.
-        if let Some(module_short) = self.current_module_identity() {
-            let qualified = format!("{module_short}.{}", td.name);
-            self.type_defs.insert(qualified, type_def.clone());
+        // Keep the bare row as registration-local assembly state. A non-root
+        // declaration is published through the canonical constructor so every
+        // durable named-family insertion uses the same full-owner key path.
+        if let Some(module_owner) = self.current_module_identity().map(str::to_string) {
+            self.register_canonical_type_def(&module_owner, &td.name, &type_def);
         }
         self.type_defs.insert(td.name.clone(), type_def);
         self.record_type_def_inference_holes(&td.name, hole_vars);
@@ -3403,7 +3400,7 @@ impl Checker {
     /// stdlib / user modules; `None` for the root program and flat file imports,
     /// which share one namespace). Two distinct modules may each declare a type
     /// of the same bare name — the durable cross-module identity is the qualified
-    /// `{module}.{name}` key inserted by `register_qualified_type_alias`. The bare
+    /// `{module}.{name}` key inserted by `register_canonical_type_def`. The bare
     /// `type_def_spans` entry is still populated for the span-lookup consumers
     /// (cycle / actor-ref diagnostics); it is last-write-wins across modules and
     /// is no longer the uniqueness authority.
@@ -3921,12 +3918,10 @@ impl Checker {
 
         // Instance methods land on the DECLARATION record (the bare
         // `type_defs` entry this module's registration just wrote), then the
-        // canonical qualified alias is refreshed FROM it — the
+        // canonical definition is refreshed from it — the
         // `commit_reresolved_type_def` pattern. Pre-registration mints the
-        // qualified skeleton before this runs and `register_full_type_alias`
-        // refuses to overwrite it, so the refresh (owning-module overwrite)
-        // is what carries the codec methods onto the canonical def; there is
-        // no independent second mutation that could diverge from it.
+        // qualified skeleton before this runs; the later canonical refresh is
+        // what carries the codec methods onto the durable definition.
         if let Some(type_def) = self.type_defs.get_mut(type_name) {
             for (method_name, params, return_type) in &instance_methods {
                 type_def.methods.insert(
@@ -10959,7 +10954,11 @@ impl Checker {
                             source_def
                         });
                         if let Some(source_def) = source_def.as_ref() {
-                            self.register_full_type_alias(module_full_path, &td.name, source_def);
+                            self.register_canonical_type_def(
+                                module_full_path,
+                                &td.name,
+                                source_def,
+                            );
                         }
                         continue;
                     }
@@ -10980,7 +10979,7 @@ impl Checker {
                     // X" diagnostic and ambiguity candidate naming.
                     self.register_qualified_type_alias(module_short, &td.name);
                     if let Some(source_def) = source_def.as_ref() {
-                        self.register_full_type_alias(module_full_path, &td.name, source_def);
+                        self.register_canonical_type_def(module_full_path, &td.name, source_def);
                     }
                     self.record_module_type_export(module_short, &td.name);
                     self.record_module_type_export(module_full_path, &td.name);
@@ -11027,10 +11026,10 @@ impl Checker {
                     self.register_qualified_type_alias(module_short, &md.name);
                     self.register_qualified_type_alias(module_short, &event_name);
                     if let Some(machine_def) = machine_def.as_ref() {
-                        self.register_full_type_alias(module_full_path, &md.name, machine_def);
+                        self.register_canonical_type_def(module_full_path, &md.name, machine_def);
                     }
                     if let Some(event_def) = event_def.as_ref() {
-                        self.register_full_type_alias(module_full_path, &event_name, event_def);
+                        self.register_canonical_type_def(module_full_path, &event_name, event_def);
                     }
                     self.record_module_type_export(module_short, &md.name);
                     self.record_module_type_export(module_short, &event_name);
@@ -11325,24 +11324,38 @@ impl Checker {
                 }
             }
         }
-        // Pass 3: Create qualified type aliases (after impls have been registered)
+        // Pass 3: publish canonical type definitions after impl registration.
+        // Registration itself uses the source leaf as temporary assembly state;
+        // only the full owner survives this pass.
         for (item, _span) in items {
             match item {
                 Item::TypeDecl(td) => {
-                    if !td.visibility.is_pub() {
-                        continue;
+                    if let Some(source_def) = self.type_defs.get(&td.name).cloned() {
+                        self.register_canonical_type_def(module_full_path, &td.name, &source_def);
                     }
-                    self.register_qualified_type_alias(module_short, &td.name);
-                    self.record_module_type_export(module_short, &td.name);
-                    self.record_module_type_export(module_full_path, &td.name);
+                    self.retire_imported_type_keys(module_short, module_full_path, &td.name);
+                    if td.visibility.is_pub() {
+                        self.record_module_type_export(module_short, &td.name);
+                        self.record_module_type_export(module_full_path, &td.name);
+                    }
                 }
                 Item::Machine(md) => {
                     if !md.visibility.is_pub() {
                         continue;
                     }
-                    self.register_qualified_type_alias(module_short, &md.name);
                     let event_name = format!("{}Event", md.name);
-                    self.register_qualified_type_alias(module_short, &event_name);
+                    if let Some(source_def) = self.type_defs.get(&md.name).cloned() {
+                        self.register_canonical_type_def(module_full_path, &md.name, &source_def);
+                    }
+                    if let Some(source_def) = self.type_defs.get(&event_name).cloned() {
+                        self.register_canonical_type_def(
+                            module_full_path,
+                            &event_name,
+                            &source_def,
+                        );
+                    }
+                    self.retire_imported_type_keys(module_short, module_full_path, &md.name);
+                    self.retire_imported_type_keys(module_short, module_full_path, &event_name);
                     // A public machine publishes its generated event enum as
                     // part of the same declaration surface.  Keep the export
                     // ledger paired with the qualified aliases so import
@@ -12080,7 +12093,11 @@ impl Checker {
                                 source_def
                             });
                         if let Some(source_def) = source_def.as_ref() {
-                            self.register_full_type_alias(module_full_path, &td.name, source_def);
+                            self.register_canonical_type_def(
+                                module_full_path,
+                                &td.name,
+                                source_def,
+                            );
                         }
                         continue;
                     }
@@ -12102,7 +12119,7 @@ impl Checker {
                         self.register_qualified_type_alias(module_short, &td.name);
                     }
                     if let Some(source_def) = source_def.as_ref() {
-                        self.register_full_type_alias(module_full_path, &td.name, source_def);
+                        self.register_canonical_type_def(module_full_path, &td.name, source_def);
                     }
                     self.record_module_type_export(module_full_path, &td.name);
                     if spec.is_none() {
@@ -12183,10 +12200,10 @@ impl Checker {
                     self.register_qualified_type_alias(module_short, &md.name);
                     self.register_qualified_type_alias(module_short, &event_name);
                     if let Some(machine_def) = machine_def.as_ref() {
-                        self.register_full_type_alias(module_full_path, &md.name, machine_def);
+                        self.register_canonical_type_def(module_full_path, &md.name, machine_def);
                     }
                     if let Some(event_def) = event_def.as_ref() {
-                        self.register_full_type_alias(module_full_path, &event_name, event_def);
+                        self.register_canonical_type_def(module_full_path, &event_name, event_def);
                     }
                     self.record_module_type_export(module_short, &md.name);
                     self.record_module_type_export(module_short, &event_name);
@@ -12600,6 +12617,37 @@ impl Checker {
                 _ => {}
             }
         }
+        // Declaration and impl registration above use leaf keys as temporary
+        // assembly state. Refresh the full-owner rows with the complete defs,
+        // then remove both non-canonical spellings before returning to the
+        // importer.
+        for (item, _) in items {
+            match item {
+                Item::TypeDecl(td) => {
+                    if let Some(source_def) = self.type_defs.get(&td.name).cloned() {
+                        self.register_canonical_type_def(module_full_path, &td.name, &source_def);
+                    }
+                    self.retire_imported_type_keys(module_short, module_full_path, &td.name);
+                }
+                Item::Machine(md) if md.visibility.is_pub() => {
+                    let event_name = format!("{}Event", md.name);
+                    if let Some(source_def) = self.type_defs.get(&md.name).cloned() {
+                        self.register_canonical_type_def(module_full_path, &md.name, &source_def);
+                    }
+                    if let Some(source_def) = self.type_defs.get(&event_name).cloned() {
+                        self.register_canonical_type_def(
+                            module_full_path,
+                            &event_name,
+                            &source_def,
+                        );
+                    }
+                    self.retire_imported_type_keys(module_short, module_full_path, &md.name);
+                    self.retire_imported_type_keys(module_short, module_full_path, &event_name);
+                }
+                _ => {}
+            }
+        }
+
         self.local_type_defs = saved_local_type_defs;
         self.source_type_defs = saved_source_type_defs;
     }
@@ -12877,22 +12925,21 @@ impl Checker {
         }
     }
 
-    /// Add a full-path declaration alias for a source module type while
-    /// retaining the historical short-key alias for lookup compatibility.
-    /// Canonical IDs and imported type resolution consume this entry; legacy
-    /// layout consumers can continue to use the short alias until Stage 5.
-    fn register_full_type_alias(
+    /// Publish a source module type under its full declaration owner.
+    ///
+    /// The source definition is assembled under its leaf during registration,
+    /// but that spelling is never an imported identity. Calling this again
+    /// after impl registration deliberately refreshes the canonical row with
+    /// the declaration's complete method set.
+    fn register_canonical_type_def(
         &mut self,
         module_full_path: &str,
         name: &str,
         source_def: &TypeDef,
     ) {
         let qualified = format!("{module_full_path}.{name}");
-        // The full owner is declaration authority. Never overwrite an existing
-        // canonical entry, and never reconstruct it from the global bare key:
-        // that key is last-writer-wins across same-leaf module declarations.
-        if !self.type_defs.contains_key(&qualified) {
-            self.type_defs.insert(qualified.clone(), source_def.clone());
+        self.type_defs.insert(qualified.clone(), source_def.clone());
+        if !self.type_def_spans.contains_key(&qualified) {
             if let Some(span) = self.type_def_spans.get(name).cloned() {
                 self.type_def_spans.insert(qualified.clone(), span);
             }
@@ -12912,6 +12959,37 @@ impl Checker {
         self.registry
             .register_type_params(qualified.clone(), source_def.type_params.clone());
         self.handle_bearing_dirty = true;
+    }
+
+    /// Retire the temporary source-leaf and lexical-module keys for an imported
+    /// type after its full-owner definition has been published.
+    fn retire_imported_type_keys(
+        &mut self,
+        module_short: &str,
+        module_full_path: &str,
+        name: &str,
+    ) {
+        let canonical = format!("{module_full_path}.{name}");
+        let surface = format!("{module_short}.{name}");
+        for key in [name, surface.as_str()] {
+            if key == canonical {
+                continue;
+            }
+            // A root declaration owns its leaf spelling canonically. Imports
+            // with the same leaf may use that row transiently while their
+            // source definition is assembled, but must not retire the root's
+            // namespace row when their own canonical publication completes.
+            if key == name
+                && self
+                    .type_namespace_owners
+                    .contains_key(&(None, name.to_string()))
+            {
+                continue;
+            }
+            self.type_defs.remove(key);
+            self.type_def_spans.remove(key);
+            self.registry.remove_type_marker_key(key);
+        }
     }
 
     /// Record that an imported module exports a type/actor name.

@@ -3670,9 +3670,10 @@ fn duplicate_stdlib_import_with_same_resolved_source_does_not_reregister_items()
         "stdlib Hew import should not go through the user-module import path"
     );
     assert!(
-        output.type_defs.contains_key("Suite"),
-        "stdlib Hew items should still register public types"
+        output.type_defs.contains_key("std.bench.Suite"),
+        "stdlib Hew items should still register public types canonically"
     );
+    assert!(!output.type_defs.contains_key("Suite"));
     assert!(
         output.fn_sigs.contains_key("std.bench.suite"),
         "stdlib Hew items should still register qualified functions"

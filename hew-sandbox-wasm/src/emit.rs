@@ -1636,6 +1636,35 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
     fn lower_expr(&mut self, expr: &Spanned<Expr>) -> Result<String, CompileError> {
         let (kind, span) = expr;
         match kind {
+            Expr::ContextVariant(context) => {
+                let compatibility = if let Some(record) = &context.record {
+                    Expr::StructInit {
+                        name: context.name.clone(),
+                        fields: record.fields.clone(),
+                        type_args: None,
+                        base: record.base.clone(),
+                    }
+                } else {
+                    Expr::Identifier(context.name.clone())
+                };
+                self.lower_expr(&(compatibility, span.clone()))
+            }
+            Expr::GenericApplySuffix { target, .. } => self.lower_expr(target),
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                self.lower_expr(target)?;
+                for (_, value) in fields {
+                    self.lower_expr(value)?;
+                }
+                if let Some(base) = base {
+                    self.lower_expr(base)?;
+                }
+                self.emit_unsupported(Some(span.clone()));
+                Ok(self.emit_const_unit(Some(span.clone())))
+            }
             Expr::Literal(literal) => Ok(self.lower_literal(literal, span.clone())),
             Expr::RegexLiteral(pattern) => {
                 let pattern_local = self.temp_local(&Ty::String, Some(span.clone()));
@@ -2163,6 +2192,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             | Expr::Yield(_)
             | Expr::Return(_)
             | Expr::This
+            | Expr::QualifiedAssoc(_)
             | Expr::Range { .. }
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
@@ -4978,6 +5008,11 @@ fn collect_import_edges(program: &Program) -> Vec<ImportEdge> {
 
 fn ty_from_type_expr(ty: &hew_parser::ast::TypeExpr) -> Ty {
     match ty {
+        hew_parser::ast::TypeExpr::QualifiedAssocPath(path) => Ty::AssocType {
+            base: Box::new(ty_from_type_expr(&path.base.0)),
+            trait_name: path.trait_path.source_spelling().into_boxed_str(),
+            assoc_name: path.members.join(".").into_boxed_str(),
+        },
         hew_parser::ast::TypeExpr::Named { name, type_args } => {
             let args = type_args
                 .as_ref()

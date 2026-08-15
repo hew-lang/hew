@@ -189,6 +189,7 @@
   ],
   "contextual_identifiers": {
     "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",
+    "self": "Selects the imported module itself inside a dotted import selection (import path.{self as alias}).",
     "events": "Machine input-event vocabulary block header (contextual inside machine body)",
     "emits": "Machine Mealy-output manifest block header (contextual inside machine body)",
     "reenter": "Machine transition self-re-entry modifier (contextual after target state name)",

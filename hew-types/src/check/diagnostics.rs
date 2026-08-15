@@ -737,6 +737,8 @@ impl Checker {
             | Pattern::Identifier(_)
             | Pattern::Literal(_)
             | Pattern::Constructor { .. }
+            | Pattern::NominalPath { .. }
+            | Pattern::ContextVariant(_)
             | Pattern::Struct { .. }
             | Pattern::Tuple(_)
             | Pattern::Or(..) => {

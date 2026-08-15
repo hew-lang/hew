@@ -1236,26 +1236,40 @@ fn parse_deeply_nested_expr_produces_error() {
     // 300 levels of parenthesized nesting exceeds MAX_DEPTH (256).
     // Use a child thread with an explicit stack size to avoid the test
     // runner's own stack limit being hit before our guard triggers.
-    let result = std::thread::Builder::new()
+    let errors = std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
             let open: String = "(".repeat(300);
             let close: String = ")".repeat(300);
             let source = format!("fn main() -> i32 {{ {open}1{close} }}");
-            parse(&source)
+            parse(&source).errors
         })
         .expect("failed to spawn thread")
         .join()
         .expect("thread panicked");
 
     assert!(
-        result
-            .errors
+        errors
             .iter()
             .any(|e| e.message.contains("maximum nesting depth exceeded")),
-        "expected nesting depth error, got: {:?}",
-        result.errors
+        "expected nesting depth error, got: {errors:?}"
     );
+}
+
+#[test]
+fn expression_nesting_below_limit_still_parses() {
+    let errors = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let open = "(".repeat(48);
+            let close = ")".repeat(48);
+            let source = format!("fn main() -> i32 {{ {open}1{close} }}");
+            parse(&source).errors
+        })
+        .expect("failed to spawn thread")
+        .join()
+        .expect("thread panicked");
+    assert!(errors.is_empty(), "errors: {errors:?}");
 }
 
 #[test]
@@ -1820,6 +1834,51 @@ fn parse_import_statement() {
     } else {
         panic!("expected import");
     }
+}
+
+#[test]
+fn parse_dotted_import_with_self_and_aliases() {
+    let source = "import app.net.http.{self as transport, Client as C};";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Import(import) = &result.program.items[0].0 else {
+        panic!("expected import");
+    };
+    assert_eq!(import.path, ["app", "net", "http"]);
+    assert_eq!(
+        import.path_separators,
+        [PathSeparator::Dot, PathSeparator::Dot]
+    );
+    assert_eq!(import.spec_separator, Some(PathSeparator::Dot));
+    let Some(ImportSpec::Names(names)) = &import.spec else {
+        panic!("expected selected names");
+    };
+    assert_eq!(names[0].name, "self");
+    assert_eq!(names[0].alias.as_deref(), Some("transport"));
+    assert_eq!(names[1].name, "Client");
+    assert_eq!(names[1].alias.as_deref(), Some("C"));
+}
+
+#[test]
+fn dotted_import_glob_and_empty_selection_are_rejected() {
+    let glob = parse("import app.net.*;");
+    assert!(glob
+        .errors
+        .iter()
+        .any(|error| error.message.contains("::*")));
+
+    let empty = parse("import app.net.{};");
+    assert!(empty
+        .errors
+        .iter()
+        .any(|error| error.message.contains("at least one binding")));
+
+    let legacy_empty = parse("import app::net::{};");
+    assert!(
+        legacy_empty.errors.is_empty(),
+        "legacy empty selection remains accepted during the cutover: {:?}",
+        legacy_empty.errors
+    );
 }
 
 #[test]
@@ -2887,6 +2946,200 @@ fn parse_main_body(source: &str) -> Block {
         panic!("expected function");
     };
     f.body.clone()
+}
+
+#[test]
+fn generic_apply_suffix_commits_with_nested_angles() {
+    let expr = parse_let_expr("f<Vec<Vec<i64>>>()");
+    let Expr::Call {
+        type_args: Some(type_args),
+        ..
+    } = expr
+    else {
+        panic!("expected generic call, got {expr:?}");
+    };
+    assert_eq!(type_args.len(), 1);
+    assert!(matches!(&type_args[0].0, TypeExpr::Named { name, .. } if name == "Vec"));
+}
+
+#[test]
+fn direct_generic_call_accepts_unit_type_argument() {
+    let expr = parse_let_expr("f<i64, ()>(16)");
+    let Expr::Call {
+        type_args: Some(type_args),
+        args,
+        ..
+    } = expr
+    else {
+        panic!("expected generic call, got {expr:?}");
+    };
+    assert_eq!(type_args.len(), 2);
+    assert!(matches!(type_args[0].0, TypeExpr::Named { .. }));
+    assert!(matches!(type_args[1].0, TypeExpr::Tuple(ref fields) if fields.is_empty()));
+    assert_eq!(args.len(), 1);
+}
+
+#[test]
+fn generic_apply_suffix_wins_over_relational_chain_shape() {
+    let expr = parse_let_expr("x < y > (z)");
+    assert!(
+        matches!(
+            expr,
+            Expr::Call {
+                type_args: Some(_),
+                ..
+            }
+        ),
+        "the committed shape must not backtrack to comparisons: {expr:?}"
+    );
+
+    let comparison = parse_let_expr("x < y");
+    assert!(matches!(
+        comparison,
+        Expr::Binary {
+            op: BinaryOp::Less,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn generic_apply_suffix_attaches_before_member_access() {
+    let expr = parse_let_expr("HashMap<string, User>.new()");
+    let Expr::MethodCall {
+        receiver, method, ..
+    } = expr
+    else {
+        panic!("expected method call, got {expr:?}");
+    };
+    assert_eq!(method, "new");
+    assert!(matches!(receiver.0, Expr::GenericApplySuffix { .. }));
+}
+
+#[test]
+fn tuple_index_integer_suffix_remains_field_access() {
+    let expr = parse_let_expr("t.0");
+    assert!(matches!(expr, Expr::FieldAccess { field, .. } if field == "0"));
+}
+
+#[test]
+fn contextual_variant_expression_preserves_each_payload_origin() {
+    let unit = parse_let_expr(".None");
+    assert!(
+        matches!(unit, Expr::ContextVariant(context) if context.name == "None" && context.record.is_none())
+    );
+
+    let tuple = parse_let_expr(".Some(value)");
+    let Expr::Call { function, .. } = tuple else {
+        panic!("expected contextual tuple-payload call, got {tuple:?}");
+    };
+    assert!(matches!(&function.0, Expr::ContextVariant(context) if context.name == "Some"));
+
+    let record = parse_let_expr(".Ready { value: value }");
+    let Expr::ContextVariant(context) = record else {
+        panic!("expected contextual record variant, got {record:?}");
+    };
+    assert_eq!(context.name, "Ready");
+    assert_eq!(context.record.expect("record payload").fields.len(), 1);
+}
+
+#[test]
+fn pure_dot_record_init_and_qualified_assoc_paths_parse() {
+    let expr = parse_let_expr("wire.Message.Data { bytes: payload }");
+    assert!(matches!(expr, Expr::StructInit { name, .. } if name == "wire.Message.Data"));
+
+    let assoc = parse_let_expr("<T as iter.Iterator>.make()");
+    let Expr::Call { function, .. } = assoc else {
+        panic!("expected associated call, got {assoc:?}");
+    };
+    assert!(matches!(
+        &function.0,
+        Expr::QualifiedAssoc(assoc)
+            if assoc.trait_path.segments == ["iter", "Iterator"]
+                && assoc.members.len() == 1 && assoc.members[0] == "make"
+    ));
+
+    let result = parse("fn project(x: <T as iter.Iterator>.Item) {}");
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Function(function) = &result.program.items[0].0 else {
+        panic!("expected function");
+    };
+    assert!(matches!(
+        &function.params[0].ty.0,
+        TypeExpr::QualifiedAssocPath(assoc)
+            if assoc.trait_path.segments == ["iter", "Iterator"]
+                && assoc.members.len() == 1 && assoc.members[0] == "Item"
+    ));
+}
+
+#[test]
+fn nested_dotted_spawn_and_supervisor_child_paths_parse() {
+    let spawned = parse("fn main() { let pid = spawn app.workers.Worker(); }");
+    assert!(spawned.errors.is_empty(), "errors: {:?}", spawned.errors);
+
+    let supervised =
+        parse("supervisor App { strategy: one_for_one; child worker: app.workers.Worker(); }");
+    assert!(
+        supervised.errors.is_empty(),
+        "errors: {:?}",
+        supervised.errors
+    );
+    let Item::Supervisor(supervisor) = &supervised.program.items[0].0 else {
+        panic!("expected supervisor");
+    };
+    assert_eq!(supervisor.children[0].actor_type, "app.workers.Worker");
+}
+
+#[test]
+fn record_init_restrictions_and_explicit_angle_exemption_hold() {
+    let contextual = parse("fn f(flag: bool) { if .Ready { value: flag } { } }");
+    assert!(
+        !contextual.errors.is_empty(),
+        "an unparenthesized contextual record payload is restricted in condition position"
+    );
+
+    let dotted = parse("fn f(flag: bool) { if wire.Message.Ready { value: flag } { } }");
+    assert!(
+        !dotted.errors.is_empty(),
+        "an unparenthesized dotted record payload is restricted in condition position"
+    );
+
+    let scrutinee = parse("fn f(value: i64) { match .Ready { value: value } { .Ready => { } } }");
+    assert!(
+        !scrutinee.errors.is_empty(),
+        "an unparenthesized contextual record payload is restricted as a match scrutinee"
+    );
+
+    let parenthesized = parse("fn f(flag: bool) { if (.Ready { value: flag }).is_ready() { } }");
+    assert!(
+        parenthesized.errors.is_empty(),
+        "parentheses lift the restriction: {:?}",
+        parenthesized.errors
+    );
+
+    let explicit =
+        parse("type Tag<T> { value: T } fn f() { if Tag<bool> { value: true }.value { } }");
+    assert!(
+        explicit.errors.is_empty(),
+        "the explicit `>{{` form is unambiguous: {:?}",
+        explicit.errors
+    );
+}
+
+#[test]
+fn dotted_trait_paths_parse_in_bounds_dyn_and_impl_headers() {
+    for source in [
+        "fn f<T: module.api.Trait>(x: T) {}",
+        "fn f(x: dyn module.api.Trait) {}",
+        "type Thing {} impl module.api.Trait for Thing {}",
+    ] {
+        let result = parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "dotted trait path should parse in `{source}`: {:?}",
+            result.errors
+        );
+    }
 }
 
 #[test]
@@ -4450,34 +4703,38 @@ fn first_match_arm_patterns(source: &str) -> Vec<Pattern> {
     panic!("no match expression found in function body");
 }
 
-/// A leading-dot tuple-payload variant pattern parses to the SAME
-/// `Pattern::Constructor` a bare (unqualified) name would, with the short
-/// variant name and its payload sub-patterns.
+/// A leading-dot tuple-payload variant preserves its contextual origin.
 #[test]
-fn leading_dot_constructor_pattern_parses_as_bare_constructor() {
+fn leading_dot_constructor_pattern_preserves_origin() {
     let source = "fn f(e: E) -> i64 { match e { .Some(x) => x, _ => 0 } }";
     let patterns = first_match_arm_patterns(source);
     match &patterns[0] {
-        Pattern::Constructor { name, patterns } => {
-            assert_eq!(name, "Some");
+        Pattern::ContextVariant(context) => {
+            assert_eq!(context.name, "Some");
+            let Some(NominalPatternPayload::Tuple(patterns)) = &context.payload else {
+                panic!("expected tuple payload, got {:?}", context.payload);
+            };
             assert_eq!(patterns.len(), 1);
             assert!(matches!(&patterns[0].0, Pattern::Identifier(n) if n == "x"));
         }
-        other => panic!("expected Pattern::Constructor, got {other:?}"),
+        other => panic!("expected contextual variant pattern, got {other:?}"),
     }
 }
 
-/// A leading-dot unit variant pattern parses to a bare-name
-/// `Pattern::Identifier`, matching the unqualified unit-variant spelling.
+/// A leading-dot unit variant cannot be confused with a lexical binding.
 #[test]
-fn leading_dot_unit_variant_pattern_parses_as_identifier() {
+fn leading_dot_unit_variant_pattern_preserves_origin() {
     let source = "fn f(e: E) -> i64 { match e { .None => 0, _ => 1 } }";
     let patterns = first_match_arm_patterns(source);
-    assert!(matches!(&patterns[0], Pattern::Identifier(n) if n == "None"));
+    assert!(matches!(
+        &patterns[0],
+        Pattern::ContextVariant(context)
+            if context.name == "None" && context.payload.is_none()
+    ));
 }
 
 /// Leading-dot variants compose with or-patterns: `.A(x) | .B(x)` parses to
-/// a `Pattern::Or` over two bare-name constructor leaves.
+/// a `Pattern::Or` over two contextual leaves.
 #[test]
 fn leading_dot_or_pattern_parses() {
     let source = "fn f(e: E) -> i64 { match e { .A(x) | .B(x) => x, _ => 0 } }";
@@ -4485,8 +4742,8 @@ fn leading_dot_or_pattern_parses() {
     let Pattern::Or(left, right) = &patterns[0] else {
         panic!("expected Pattern::Or, got {:?}", patterns[0]);
     };
-    assert!(matches!(&left.0, Pattern::Constructor { name, .. } if name == "A"));
-    assert!(matches!(&right.0, Pattern::Constructor { name, .. } if name == "B"));
+    assert!(matches!(&left.0, Pattern::ContextVariant(context) if context.name == "A"));
+    assert!(matches!(&right.0, Pattern::ContextVariant(context) if context.name == "B"));
 }
 
 /// Adding the leading-dot arm does not disturb the existing qualified-name
@@ -4496,57 +4753,53 @@ fn leading_dot_or_pattern_parses() {
 fn leading_dot_arm_leaves_qualified_pattern_path_intact() {
     let source = "fn f(e: E) -> i64 { match e { E::Some(x) => x, .None => 0, _ => 1 } }";
     let patterns = first_match_arm_patterns(source);
-    match &patterns[0] {
-        Pattern::Constructor { name, .. } => assert_eq!(name, "E::Some"),
-        other => panic!("expected qualified Pattern::Constructor, got {other:?}"),
-    }
-    assert!(matches!(&patterns[1], Pattern::Identifier(n) if n == "None"));
+    let Pattern::NominalPath { path, payload } = &patterns[0] else {
+        panic!("expected nominal path, got {:?}", patterns[0]);
+    };
+    assert_eq!(path.segments, ["E", "Some"]);
+    assert_eq!(path.separators, [PathSeparator::DoubleColon]);
+    assert!(matches!(payload, Some(NominalPatternPayload::Tuple(_))));
+    assert!(matches!(&patterns[1], Pattern::ContextVariant(context) if context.name == "None"));
 }
 
 #[test]
 fn module_qualified_variant_pattern_preserves_dotted_owner() {
     let source = "fn f(e: m.E) -> i64 { match e { m.E::Some(x) => x, _ => 0 } }";
     let patterns = first_match_arm_patterns(source);
-    match &patterns[0] {
-        Pattern::Constructor { name, .. } => assert_eq!(name, "m.E::Some"),
-        other => panic!("expected qualified Pattern::Constructor, got {other:?}"),
-    }
+    let Pattern::NominalPath { path, .. } = &patterns[0] else {
+        panic!("expected nominal path, got {:?}", patterns[0]);
+    };
+    assert_eq!(path.segments, ["m", "E", "Some"]);
+    assert_eq!(
+        path.separators,
+        [PathSeparator::Dot, PathSeparator::DoubleColon]
+    );
 }
 
-/// A dotted identifier in pattern position that never reaches `::` is
-/// rejected at parse time, matching `main`. Before the F1 fix, the dotted
-/// loop unconditionally folded `foo.bar` into an irrefutable
-/// `Pattern::Identifier("foo.bar")` binding — a silent-wrong-answer hole,
-/// not the module-qualified-variant surface this grammar is scoped to.
 #[test]
-fn dotted_pattern_without_double_colon_is_rejected() {
+fn dotted_pattern_is_a_segmented_nominal_path() {
     let source = "fn f(n: i64) -> i64 { match n { foo.bar => 1, _ => 0 } }";
-    let result = parse(source);
-    assert!(
-        !result.errors.is_empty(),
-        "expected a parse error for a dotted pattern with no '::', got none"
-    );
-    assert!(
-        result
-            .errors
-            .iter()
-            .any(|e| e.message.contains("expected") && e.message.contains("=>")),
-        "expected an 'expected =>' diagnostic, got: {:?}",
-        result.errors
-    );
+    let patterns = first_match_arm_patterns(source);
+    let Pattern::NominalPath { path, payload } = &patterns[0] else {
+        panic!("expected nominal path, got {:?}", patterns[0]);
+    };
+    assert_eq!(path.segments, ["foo", "bar"]);
+    assert_eq!(path.separators, [PathSeparator::Dot]);
+    assert!(payload.is_none());
 }
 
 /// A multi-segment dotted path with no `::` anywhere (`m.T.Variant`) is
 /// also rejected, not folded into a binding — the guard scans the whole
 /// dotted chain, not just the first segment.
 #[test]
-fn multi_segment_dotted_pattern_without_double_colon_is_rejected() {
+fn multi_segment_dotted_pattern_is_accepted() {
     let source = "fn f(n: i64) -> i64 { match n { m.T.Variant => 1, _ => 0 } }";
-    let result = parse(source);
-    assert!(
-        !result.errors.is_empty(),
-        "expected a parse error for a dotted pattern with no '::', got none"
-    );
+    let patterns = first_match_arm_patterns(source);
+    let Pattern::NominalPath { path, .. } = &patterns[0] else {
+        panic!("expected nominal path, got {:?}", patterns[0]);
+    };
+    assert_eq!(path.segments, ["m", "T", "Variant"]);
+    assert_eq!(path.separators, [PathSeparator::Dot, PathSeparator::Dot]);
 }
 
 /// The lookahead that gates the dotted-pattern loop distinguishes a dotted
@@ -4554,7 +4807,7 @@ fn multi_segment_dotted_pattern_without_double_colon_is_rejected() {
 /// owner) from one that terminates at `=>` (left untouched, rejected by the
 /// caller) — pinning the exact boundary F1 was missing.
 #[test]
-fn dotted_pattern_lookahead_stops_at_fat_arrow_not_double_colon() {
+fn dotted_pattern_accepts_legacy_and_dot_separators() {
     let accepted = "fn f(e: m.E) -> i64 { match e { m.E::Some(x) => x, _ => 0 } }";
     let accepted_result = parse(accepted);
     assert!(
@@ -4563,11 +4816,12 @@ fn dotted_pattern_lookahead_stops_at_fat_arrow_not_double_colon() {
         accepted_result.errors
     );
 
-    let rejected = "fn f(n: i64) -> i64 { match n { m.E => 1, _ => 0 } }";
-    let rejected_result = parse(rejected);
+    let dotted = "fn f(n: i64) -> i64 { match n { m.E => 1, _ => 0 } }";
+    let dotted_result = parse(dotted);
     assert!(
-        !rejected_result.errors.is_empty(),
-        "a dotted path ending at '=>' with no '::' must be rejected, not bound"
+        dotted_result.errors.is_empty(),
+        "dotted nominal path should parse cleanly: {:?}",
+        dotted_result.errors
     );
 }
 
@@ -4791,6 +5045,13 @@ fn record_rest_patterns_parse_in_all_record_forms() {
         let patterns = first_match_arm_patterns(source);
         match &patterns[0] {
             Pattern::Struct { fields, rest, .. } if !shorthand => {
+                assert_eq!(fields.len(), 1);
+                assert!(rest.is_some());
+            }
+            Pattern::NominalPath {
+                payload: Some(NominalPatternPayload::Record { fields, rest }),
+                ..
+            } if !shorthand => {
                 assert_eq!(fields.len(), 1);
                 assert!(rest.is_some());
             }

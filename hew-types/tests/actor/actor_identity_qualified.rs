@@ -21,7 +21,10 @@ fn module_import(path: &[&str], source: &str) -> Spanned<Item> {
     let items = common::parse_program(source).items;
     let decl = ImportDecl {
         path: path.iter().map(ToString::to_string).collect(),
+        path_separators: Vec::new(),
         spec: None,
+        spec_separator: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: Some(items),

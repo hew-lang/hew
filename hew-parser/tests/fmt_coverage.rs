@@ -747,6 +747,47 @@ fn fmt_import_whole_module_alias_roundtrip() {
 }
 
 #[test]
+fn fmt_dotted_import_forms_roundtrip() {
+    exact_roundtrip("import app.net.http as transport;\n");
+    exact_roundtrip("import app.net.http.{self as transport, Client as C,};\n");
+}
+
+#[test]
+fn fmt_contextual_variants_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let a = .None;\n    let b = .Some(value);\n    let c = .Ready { value: value, ..base };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_dotted_and_mixed_nominal_patterns_roundtrip() {
+    exact_roundtrip(
+        "fn f(value: module.E) {\n    match value {\n        module.E.Some(x) => x,\n        module.E::None => 0,\n        .Other => 1,\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_generic_apply_suffix_forms_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let a = worker<Vec<Vec<i64>>>();\n    let b = service.compute<string>();\n    let c = HashMap<string, User>.new();\n    let d = Tag<bool> { value: true };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_qualified_assoc_paths_roundtrip() {
+    exact_roundtrip(
+        "fn project<T>(x: <T as iter.Iterator>.Item) {\n    let make = <T as iter.Iterator>.make();\n}\n",
+    );
+}
+
+#[test]
+fn fmt_pure_dot_record_init_with_update_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let data = wire.Message.Data { bytes: payload, ..base };\n}\n",
+    );
+}
+
+#[test]
 fn fmt_import_file() {
     let src = r#"import "helpers.hew";"#;
     let out = roundtrip(src);

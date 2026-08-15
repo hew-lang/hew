@@ -95,25 +95,30 @@ impl Parser<'_> {
         Some(result)
     }
 
-    /// Scans ahead (without consuming) from a `Token::Dot` at the current
-    /// position to decide whether it opens a `module.Type::Variant` path.
-    /// Walks alternating `Dot Identifier` pairs and reports true only if
-    /// that chain is immediately followed by `Token::DoubleColon`. Any other
-    /// token — including a `Dot` not followed by an identifier, or a
-    /// dotted chain that runs into `=>`/`(`/`{`/EOF without ever reaching
-    /// `::` — reports false, so the caller leaves the `.` untouched instead
-    /// of folding it into an identifier.
-    fn dotted_pattern_reaches_double_colon(&self) -> bool {
-        let mut idx = self.pos;
-        loop {
-            match self.peek_at(idx) {
-                Some(Token::Dot) => match self.peek_at(idx + 1) {
-                    Some(Token::Identifier(_)) => idx += 2,
-                    _ => return false,
-                },
-                Some(Token::DoubleColon) => return true,
-                _ => return false,
+    #[expect(
+        clippy::option_option,
+        reason = "outer None is parse failure; inner None is a valid unit nominal pattern"
+    )]
+    fn parse_nominal_pattern_payload(&mut self) -> Option<Option<NominalPatternPayload>> {
+        if self.eat(&Token::LeftParen) {
+            let mut patterns = Vec::new();
+            while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+                if self.reject_positional_rest_pattern() {
+                    self.eat(&Token::Comma);
+                    continue;
+                }
+                patterns.push(self.parse_pattern()?);
+                if !self.eat(&Token::Comma) {
+                    break;
+                }
             }
+            self.expect(&Token::RightParen)?;
+            Some(Some(NominalPatternPayload::Tuple(patterns)))
+        } else if self.eat(&Token::LeftBrace) {
+            let (fields, rest) = self.parse_record_pattern_fields()?;
+            Some(Some(NominalPatternPayload::Record { fields, rest }))
+        } else {
+            Some(None)
         }
     }
 
@@ -158,105 +163,80 @@ impl Parser<'_> {
                     _ => unreachable!(),
                 }
             }
-            // Leading-dot variant pattern: `.Variant`, `.Variant(p, ..)`, or
-            // `.Variant { f: p }`. The enum type is left implicit — the
-            // type-checker resolves the bare short name against the match
-            // scrutinee's type (`resolve_variant_match`), exactly as it does for
-            // a leading-dot constructor expression. Fires only when the dot is
-            // immediately followed by an identifier, so `..` range patterns
-            // (a distinct `Token::DotDot`) are untouched. Emits the SAME
-            // `Pattern::Constructor` / `Pattern::Struct` / `Pattern::Identifier`
-            // a bare (unqualified) name would, so downstream resolution and HIR
-            // lowering need no new pattern variant.
+            // Leading-dot variants retain their contextual origin in the AST.
+            // `DotDot` is a distinct lexer token and never enters this arm.
             Some(Token::Dot)
                 if matches!(self.peek_at(self.pos + 1), Some(Token::Identifier(_))) =>
             {
                 self.advance(); // consume '.'
                 let name = self.expect_ident()?;
-                if self.eat(&Token::LeftParen) {
-                    let mut patterns = Vec::new();
-                    while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                        if self.reject_positional_rest_pattern() {
-                            self.eat(&Token::Comma);
-                            continue;
-                        }
-                        patterns.push(self.parse_pattern()?);
-                        if !self.eat(&Token::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(&Token::RightParen)?;
-                    Pattern::Constructor { name, patterns }
-                } else if self.eat(&Token::LeftBrace) {
-                    let (fields, rest) = self.parse_record_pattern_fields()?;
-                    Pattern::Struct { name, fields, rest }
-                } else {
-                    Pattern::Identifier(name)
-                }
+                let payload = self.parse_nominal_pattern_payload()?;
+                Pattern::ContextVariant(ContextVariantPattern { name, payload })
             }
             Some(Token::Identifier(name)) => {
-                let mut name = name.to_string();
+                let first = name.to_string();
                 self.advance();
-                // Wildcard pattern
-                if name == "_" {
+                if first == "_" {
                     Pattern::Wildcard
                 } else {
-                    // Preserve dotted module qualification before the
-                    // type/variant separator: `module.Type::Variant`. Scoped
-                    // to exactly that ratified surface (Q315's stated gap,
-                    // #2922) — NOT the general dotted-pattern grammar A315's
-                    // sweep will add. Only entered when a scan ahead
-                    // confirms the dotted chain terminates in `::` before
-                    // any other token; otherwise the loop is skipped
-                    // entirely and the `.` is left for the caller, which
-                    // rejects it (`expected '=>', found '.'`) exactly as
-                    // `main` does for `foo.bar => ...` or `m.T.Variant =>
-                    // ...`. Without this guard, any dotted identifier with
-                    // no trailing `::Variant` silently became an irrefutable
-                    // `Pattern::Identifier("a.b")` binding — a fail-open
-                    // that made the first arm of a dotted-variant match a
-                    // catch-all.
-                    if self.peek() == Some(&Token::Dot)
-                        && self.dotted_pattern_reaches_double_colon()
-                    {
-                        while self.eat(&Token::Dot) {
-                            if let Some(segment) = self.expect_ident() {
-                                name = format!("{name}.{segment}");
-                            } else {
-                                break;
+                    let mut segments = vec![first.clone()];
+                    let mut separators = Vec::new();
+                    loop {
+                        let separator = match self.peek() {
+                            Some(Token::Dot)
+                                if self.peek_at(self.pos + 1).is_some_and(Self::is_ident_token) =>
+                            {
+                                PathSeparator::Dot
                             }
-                        }
-                    }
-                    // Handle qualified names like Colour::Red
-                    while self.eat(&Token::DoubleColon) {
-                        if let Some(segment) = self.expect_ident() {
-                            name = format!("{name}::{segment}");
-                        } else {
-                            break;
-                        }
+                            Some(Token::DoubleColon)
+                                if self.peek_at(self.pos + 1).is_some_and(Self::is_ident_token) =>
+                            {
+                                PathSeparator::DoubleColon
+                            }
+                            _ => break,
+                        };
+                        self.advance();
+                        segments.push(self.expect_ident()?);
+                        separators.push(separator);
                     }
 
-                    if self.eat(&Token::LeftParen) {
-                        // Constructor pattern
-                        let mut patterns = Vec::new();
-                        while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                            if self.reject_positional_rest_pattern() {
-                                self.eat(&Token::Comma);
-                                continue;
+                    if separators.is_empty() {
+                        if self.eat(&Token::LeftParen) {
+                            let mut patterns = Vec::new();
+                            while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+                                if self.reject_positional_rest_pattern() {
+                                    self.eat(&Token::Comma);
+                                    continue;
+                                }
+                                patterns.push(self.parse_pattern()?);
+                                if !self.eat(&Token::Comma) {
+                                    break;
+                                }
                             }
-                            patterns.push(self.parse_pattern()?);
-                            if !self.eat(&Token::Comma) {
-                                break;
+                            self.expect(&Token::RightParen)?;
+                            Pattern::Constructor {
+                                name: first,
+                                patterns,
                             }
+                        } else if self.eat(&Token::LeftBrace) {
+                            let (fields, rest) = self.parse_record_pattern_fields()?;
+                            Pattern::Struct {
+                                name: first,
+                                fields,
+                                rest,
+                            }
+                        } else {
+                            Pattern::Identifier(first)
                         }
-                        self.expect(&Token::RightParen)?;
-                        Pattern::Constructor { name, patterns }
-                    } else if self.eat(&Token::LeftBrace) {
-                        // Struct pattern
-                        let (fields, rest) = self.parse_record_pattern_fields()?;
-                        Pattern::Struct { name, fields, rest }
                     } else {
-                        Pattern::Identifier(name)
+                        let payload = self.parse_nominal_pattern_payload()?;
+                        Pattern::NominalPath {
+                            path: Path {
+                                segments,
+                                separators,
+                            },
+                            payload,
+                        }
                     }
                 }
             }

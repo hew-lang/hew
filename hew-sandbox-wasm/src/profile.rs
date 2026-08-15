@@ -558,6 +558,40 @@ impl<'a> ProfileChecker<'a> {
         let (expr, span) = expr;
         match expr {
             Expr::Literal(_) | Expr::Identifier(_) | Expr::This | Expr::RegexLiteral(_) => {}
+            Expr::ContextVariant(context) => {
+                if let Some(record) = &context.record {
+                    for (_, value) in &record.fields {
+                        self.check_expr(value);
+                    }
+                    if let Some(base) = &record.base {
+                        self.check_expr(base);
+                    }
+                }
+            }
+            Expr::GenericApplySuffix { target, .. } => self.check_expr(target),
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                self.reject(
+                    span.clone(),
+                    "reserved_runtime_feature",
+                    "qualified record initializers are reserved for native lowering",
+                );
+                self.check_expr(target);
+                for (_, value) in fields {
+                    self.check_expr(value);
+                }
+                if let Some(base) = base {
+                    self.check_expr(base);
+                }
+            }
+            Expr::QualifiedAssoc(_) => self.reject(
+                span.clone(),
+                "reserved_runtime_feature",
+                "qualified associated values are reserved for native lowering",
+            ),
             Expr::Binary { left, op, right } => {
                 // `a..b` / `a..=b` parse as `Expr::Binary` with a range operator.
                 // In bare value position these have no sandbox lowering (the
@@ -1010,6 +1044,16 @@ impl<'a> ProfileChecker<'a> {
                     self.check_pattern(pattern);
                 }
             }
+            Pattern::NominalPath { payload, .. } => {
+                if let Some(payload) = payload {
+                    self.check_nominal_pattern_payload(payload);
+                }
+            }
+            Pattern::ContextVariant(context) => {
+                if let Some(payload) = &context.payload {
+                    self.check_nominal_pattern_payload(payload);
+                }
+            }
             Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
                 for field in fields {
                     if let Some(pattern) = &field.pattern {
@@ -1020,6 +1064,23 @@ impl<'a> ProfileChecker<'a> {
             Pattern::Or(left, right) => {
                 self.check_pattern(left);
                 self.check_pattern(right);
+            }
+        }
+    }
+
+    fn check_nominal_pattern_payload(&mut self, payload: &hew_parser::ast::NominalPatternPayload) {
+        match payload {
+            hew_parser::ast::NominalPatternPayload::Tuple(patterns) => {
+                for pattern in patterns {
+                    self.check_pattern(pattern);
+                }
+            }
+            hew_parser::ast::NominalPatternPayload::Record { fields, .. } => {
+                for field in fields {
+                    if let Some(pattern) = &field.pattern {
+                        self.check_pattern(pattern);
+                    }
+                }
             }
         }
     }
@@ -1143,6 +1204,9 @@ impl<'a> ProfileChecker<'a> {
 
     fn check_type_expr(&mut self, ty: &TypeExpr, span: &std::ops::Range<usize>) {
         match ty {
+            TypeExpr::QualifiedAssocPath(path) => {
+                self.check_type_expr(&path.base.0, &path.base.1);
+            }
             TypeExpr::Pointer { .. } => self.reject_native_only(
                 span.clone(),
                 NativeOnlySurface::NativeFfi,
@@ -1238,6 +1302,8 @@ fn let_pattern_is_unconditional(pattern: &Pattern) -> bool {
         }
         Pattern::Literal(_)
         | Pattern::Constructor { .. }
+        | Pattern::NominalPath { .. }
+        | Pattern::ContextVariant(_)
         | Pattern::Or(_, _)
         | Pattern::Regex { .. } => false,
     }

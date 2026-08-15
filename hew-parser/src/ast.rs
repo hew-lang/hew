@@ -8,6 +8,58 @@ pub type Span = std::ops::Range<usize>;
 /// A value with an associated source span.
 pub type Spanned<T> = (T, Span);
 
+/// A syntactic path whose segments have not yet been resolved.
+///
+/// Separators are retained during the temporary dual-accept window so formatting an
+/// existing `::` corpus is lossless.  Resolution must use `segments`, never a
+/// separator-composed string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Path {
+    pub segments: Vec<String>,
+    pub separators: Vec<PathSeparator>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PathSeparator {
+    Dot,
+    DoubleColon,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextVariantExpr {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<Box<ContextVariantRecord>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextVariantRecord {
+    pub fields: Vec<(String, Spanned<Expr>)>,
+    pub base: Option<Box<Spanned<Expr>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QualifiedAssocExpr {
+    pub base: Box<Spanned<TypeExpr>>,
+    pub trait_path: Path,
+    pub members: Vec<String>,
+}
+
+impl Path {
+    #[must_use]
+    pub fn source_spelling(&self) -> String {
+        let mut result = self.segments.first().cloned().unwrap_or_default();
+        for (separator, segment) in self.separators.iter().zip(self.segments.iter().skip(1)) {
+            result.push_str(match separator {
+                PathSeparator::Dot => ".",
+                PathSeparator::DoubleColon => "::",
+            });
+            result.push_str(segment);
+        }
+        result
+    }
+}
+
 // ── Program ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -159,6 +211,26 @@ pub enum Expr {
     Clone(Box<Spanned<Expr>>),
     Literal(Literal),
     Identifier(String),
+    /// Expected-type contextual variant spelling, `.Variant`.
+    ///
+    /// This is deliberately not represented as a bare identifier: the
+    /// checker must be able to distinguish contextual lookup from lexical
+    /// lookup.
+    ContextVariant(ContextVariantExpr),
+    /// Direct generic application attached to a path/member segment.
+    GenericApplySuffix {
+        target: Box<Spanned<Expr>>,
+        type_args: Vec<Spanned<TypeExpr>>,
+    },
+    /// Record initializer attached to a non-string path form such as a
+    /// qualified associated path.
+    RecordInitSuffix {
+        target: Box<Spanned<Expr>>,
+        fields: Vec<(String, Spanned<Expr>)>,
+        base: Option<Box<Spanned<Expr>>>,
+    },
+    /// Fully-qualified associated item, `<T as module.Trait>.Item`.
+    QualifiedAssoc(Box<QualifiedAssocExpr>),
     Tuple(Vec<Spanned<Expr>>),
     Array(Vec<Spanned<Expr>>),
     ArrayRepeat {
@@ -442,6 +514,8 @@ pub enum TypeExpr {
         name: String,
         type_args: Option<Vec<Spanned<TypeExpr>>>,
     },
+    /// Fully-qualified associated type, `<T as module.Trait>.Item`.
+    QualifiedAssocPath(Box<QualifiedAssocPath>),
     Result {
         ok: Box<Spanned<TypeExpr>>,
         err: Box<Spanned<TypeExpr>>,
@@ -470,6 +544,13 @@ pub enum TypeExpr {
     Infer,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QualifiedAssocPath {
+    pub base: Box<Spanned<TypeExpr>>,
+    pub trait_path: Path,
+    pub members: Vec<String>,
+}
+
 // ── Patterns ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -477,6 +558,14 @@ pub enum Pattern {
     Wildcard,
     Literal(Literal),
     Identifier(String),
+    /// A qualified nominal pattern.  Keeping path segments separate prevents
+    /// a second string-key namespace from escaping the parser.
+    NominalPath {
+        path: Path,
+        payload: Option<NominalPatternPayload>,
+    },
+    /// Expected-type contextual variant spelling, `.Variant`.
+    ContextVariant(ContextVariantPattern),
     Constructor {
         name: String,
         patterns: Vec<Spanned<Pattern>>,
@@ -507,6 +596,21 @@ pub enum Pattern {
         pattern: String,
         captures: Vec<String>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum NominalPatternPayload {
+    Tuple(Vec<Spanned<Pattern>>),
+    Record {
+        fields: Vec<PatternField>,
+        rest: Option<Span>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextVariantPattern {
+    pub name: String,
+    pub payload: Option<NominalPatternPayload>,
 }
 
 // ── Supporting types ─────────────────────────────────────────────────
@@ -891,7 +995,16 @@ pub struct FnDecl {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportDecl {
     pub path: Vec<String>,
+    /// Source separators between adjacent module-path segments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_separators: Vec<PathSeparator>,
     pub spec: Option<ImportSpec>,
+    /// Separator that introduced a selection/glob spec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_separator: Option<PathSeparator>,
+    /// Whether a brace selection ended with a comma.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub selection_trailing_comma: bool,
     /// Whole-module alias from `import path::to::mod as alias;`. Legal only for
     /// the whole-module form (`spec` is `None`); aliasing a brace/glob spec
     /// (`import m::{ A } as f`, `import m::* as f`) is a parse error. When

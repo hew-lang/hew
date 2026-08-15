@@ -1589,6 +1589,10 @@ impl Parser<'_> {
         Some(ExternBlock { abi, functions })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the import production preserves path and selection separator origin in one parse"
+    )]
     pub(crate) fn parse_import(&mut self) -> Option<ImportDecl> {
         // File-path import: import "path/to/file.hew";
         if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
@@ -1598,7 +1602,10 @@ impl Parser<'_> {
             let file_path = unquote_str(raw).to_owned();
             return Some(ImportDecl {
                 path: Vec::new(),
+                path_separators: Vec::new(),
                 spec: None,
+                spec_separator: None,
+                selection_trailing_comma: false,
                 module_alias: None,
                 file_path: Some(file_path),
                 resolved_items: None,
@@ -1608,27 +1615,53 @@ impl Parser<'_> {
         }
 
         let mut path = Vec::new();
+        let mut path_separators = Vec::new();
 
         loop {
             path.push(self.expect_import_path_segment()?);
-            // Only continue path if :: is followed by an identifier
-            if self.peek() == Some(&Token::DoubleColon) {
+            // Both separators remain accepted during the temporary cutover. Only consume one as a
+            // path separator when another path segment follows; `.{` / `.*`
+            // and their legacy `::` counterparts belong to the spec parser.
+            if matches!(self.peek(), Some(Token::Dot | Token::DoubleColon)) {
                 let saved = self.save_pos();
-                self.advance(); // consume ::
+                let separator = if self.peek() == Some(&Token::Dot) {
+                    PathSeparator::Dot
+                } else {
+                    PathSeparator::DoubleColon
+                };
+                self.advance();
                 if !self.peek().is_some_and(Self::is_import_path_segment_token) {
-                    // :: followed by *, {, etc. — restore and let spec parsing handle it
+                    // Separator followed by *, {, etc. — let spec parsing handle it.
                     self.restore_pos(saved);
                     break;
                 }
+                path_separators.push(separator);
             } else {
                 break;
             }
         }
 
-        let spec = if self.eat(&Token::DoubleColon) {
+        let spec_separator = match self.peek() {
+            Some(Token::Dot) => Some(PathSeparator::Dot),
+            Some(Token::DoubleColon) => Some(PathSeparator::DoubleColon),
+            _ => None,
+        };
+        let mut selection_trailing_comma = false;
+        let spec = if let Some(separator) = spec_separator {
+            self.advance();
             if self.eat(&Token::Star) {
+                if separator == PathSeparator::Dot {
+                    self.error("glob imports use the `::*` spelling".to_string());
+                    return None;
+                }
                 Some(ImportSpec::Glob)
             } else if self.eat(&Token::LeftBrace) {
+                if separator == PathSeparator::Dot && self.peek() == Some(&Token::RightBrace) {
+                    self.error(
+                        "dotted import selections must contain at least one binding".to_string(),
+                    );
+                    return None;
+                }
                 let mut names = Vec::new();
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                     let name = self.expect_ident()?;
@@ -1641,6 +1674,10 @@ impl Parser<'_> {
                     if !self.eat(&Token::Comma) {
                         break;
                     }
+                    if self.peek() == Some(&Token::RightBrace) {
+                        selection_trailing_comma = true;
+                        break;
+                    }
                 }
                 self.expect(&Token::RightBrace)?;
                 Some(ImportSpec::Names(names))
@@ -1648,7 +1685,13 @@ impl Parser<'_> {
                 let found = self
                     .peek()
                     .map_or_else(|| "end of input".to_string(), |t| format!("{t}"));
-                self.error(format!("expected `*` or `{{` after `::`, found {found}"));
+                let spelling = match separator {
+                    PathSeparator::Dot => ".",
+                    PathSeparator::DoubleColon => "::",
+                };
+                self.error(format!(
+                    "expected `{{` after `{spelling}` (or `*` after `::`), found {found}"
+                ));
                 return None;
             }
         } else {
@@ -1681,7 +1724,10 @@ impl Parser<'_> {
 
         Some(ImportDecl {
             path,
+            path_separators,
             spec,
+            spec_separator,
+            selection_trailing_comma,
             module_alias,
             file_path: None,
             resolved_items: None,

@@ -892,7 +892,10 @@ fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup(
     let resolved_items = vec![(Item::TypeDecl(connection), 0..0)];
     let plain_decl = ImportDecl {
         path: vec!["std".to_string(), "net".to_string()],
+        path_separators: Vec::new(),
         spec: None,
+        spec_separator: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: Some(resolved_items.clone()),
@@ -1591,7 +1594,10 @@ fn stdlib_not_in_user_modules() {
     // A stdlib import should NOT appear in user_modules
     let import = ImportDecl {
         path: vec!["std".to_string(), "fs".to_string()],
+        path_separators: Vec::new(),
         spec: None,
+        spec_separator: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: None,
@@ -1711,7 +1717,10 @@ fn import_without_resolved_items_emits_unresolved_error() {
     // must now emit an UnresolvedImport error rather than silently dropping.
     let import = ImportDecl {
         path: vec!["unknown".to_string(), "pkg".to_string()],
+        path_separators: Vec::new(),
         spec: None,
+        spec_separator: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: None,
@@ -1750,7 +1759,10 @@ fn import_with_resolved_items_no_error() {
 fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
     let stream_import = ImportDecl {
         path: vec!["std".to_string(), "stream".to_string()],
+        path_separators: Vec::new(),
         spec: None,
+        spec_separator: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: None,
@@ -1759,7 +1771,10 @@ fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
     };
     let fs_import = ImportDecl {
         path: vec!["std".to_string(), "fs".to_string()],
+        path_separators: Vec::new(),
         spec: None,
+        spec_separator: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: None,
@@ -1797,7 +1812,10 @@ fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
 fn file_import_without_resolved_items_emits_unresolved_error() {
     let import = ImportDecl {
         path: vec![],
+        path_separators: Vec::new(),
         spec: None,
+        spec_separator: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: Some("missing.hew".to_string()),
         resolved_items: None,
@@ -1836,7 +1854,10 @@ fn merged_file_import_duplicate_pub_name_emits_duplicate_definition() {
     );
     let import = ImportDecl {
         path: vec![],
+        path_separators: Vec::new(),
         spec: None,
+        spec_separator: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: Some("pkg.hew".to_string()),
         resolved_items: Some(vec![
@@ -1875,7 +1896,10 @@ fn repeated_flat_file_import_with_same_resolved_source_does_not_reregister_items
     let shared_source = std::path::PathBuf::from("pkg/pkg.hew");
     let import = ImportDecl {
         path: vec![],
+        path_separators: Vec::new(),
         spec: None,
+        spec_separator: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: Some("pkg.hew".to_string()),
         resolved_items: Some(vec![(
@@ -1925,7 +1949,10 @@ fn repeated_stdlib_import_does_not_duplicate_hew_items() {
 
     let import = ImportDecl {
         path: vec!["std".to_string(), "fs".to_string()],
+        path_separators: Vec::new(),
         spec: None,
+        spec_separator: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: Some(parsed.program.items),
@@ -2577,7 +2604,10 @@ fn test_file_import_private_items_not_visible() {
 
     let import_decl = ImportDecl {
         path: vec![],
+        path_separators: Vec::new(),
         spec: None,
+        spec_separator: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: Some("private_lib.hew".to_string()),
         resolved_items: Some(resolved),

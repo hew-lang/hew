@@ -51,6 +51,7 @@ ident
     | 'drop_new' | 'drop_old'
     | 'launch' | 'cancel' | 'is_cancelled'
     | 'list' | 'export' | 'repeated' | 'since'
+    | 'self'
     ;
 
 // ----------------------------------------------------------------
@@ -116,22 +117,52 @@ attrArg
 // ----------------------------------------------------------------
 
 importDecl
-    : 'import' modulePath ( '::' importSpec )? ';'
+    : 'import' moduleImport ';'
     | 'import' STRING_LIT ';'              // File-path import: import "math_lib.hew";
     ;
 
-modulePath
-    : ident ( '::' ident )*
+moduleImport
+    : modulePath ( moduleAlias | importSelection | legacyImportSelection | legacyGlobImport )?
     ;
 
-importSpec
-    : ident
-    | '{' importName ( ',' importName )* '}'
-    | '*'
+moduleAlias
+    : 'as' ident
+    ;
+
+modulePath
+    : ident ( modulePathSeparator ident )*
+    ;
+
+modulePathSeparator
+    : '.'
+    | '::'                              // Temporary dual-accept scaffold
+    ;
+
+importSelection
+    : '.' '{' importBinding ( ',' importBinding )* ','? '}'
+    ;
+
+// The existing parser temporarily accepts empty legacy `::{}` for corpus
+// continuity, while new `.{}` is rejected.
+legacyImportSelection
+    : '::' '{' ( importBinding ( ',' importBinding )* ','? )? '}'
+    ;
+
+importBinding
+    : importSelf
+    | importName
+    ;
+
+importSelf
+    : 'self' ( 'as' ident )?
     ;
 
 importName
     : ident ( 'as' ident )?
+    ;
+
+legacyGlobImport
+    : '::' '*'
     ;
 
 // ----------------------------------------------------------------
@@ -190,7 +221,7 @@ traitBounds
     ;
 
 traitBound
-    : ident typeArgs?
+    : traitPath typeArgs?
     ;
 
 // ----------------------------------------------------------------
@@ -714,12 +745,92 @@ cloneExpr
     ;
 
 postfixExpr
-    : primary ( '?' | '.' ident | '.' INT_LIT | '::' typeArgs '(' args? ')' | '::' ident | '(' args? ')' | '[' expr ']' | 'as' type_ )*
+    : primary postfixSuffix*
+    ;
+
+postfixSuffix
+    : genericApplySuffix
+    | legacyTurbofishSuffix
+    | callSuffix
+    | memberSuffix
+    | legacyMemberSuffix
+    | tupleIndexSuffix
+    | recordInitSuffix
+    | indexSuffix
+    | trySuffix
+    | castSuffix
+    ;
+
+genericApplySuffix
+    : typeArgs
+    ;
+
+// This is the Rust parser's commitment recognizer, not the subsequent full
+// typeArgs parse. Its exact interior token set is identifier-class tokens
+// (`ident`, including contextual and primitive type names), '.', ',', and
+// balanced '<'/'>'; a lexer SHR (`>>`) token counts as two closing angles. The
+// matching outer '>' must be followed immediately by '(', '.', or '{'. A match
+// commits even if the tokens could otherwise be a comparison.
+genericApplyLookahead
+    : '<' genericApplyScanType ( ',' genericApplyScanType )* '>' genericApplyFollow
+    ;
+
+genericApplyScanType
+    : ident ( '.' ident )*
+      ( '<' genericApplyScanType ( ',' genericApplyScanType )* '>' )?
+    ;
+
+genericApplyFollow
+    : '('
+    | '.'
+    | '{'
+    ;
+
+legacyTurbofishSuffix
+    : '::' typeArgs                       // Temporary dual-accept scaffold
+    ;
+
+callSuffix
+    : '(' args? ')'
+    ;
+
+memberSuffix
+    : '.' ident
+    ;
+
+legacyMemberSuffix
+    : '::' ident                          // Temporary dual-accept scaffold
+    ;
+
+tupleIndexSuffix
+    : '.' INT_LIT                         // Existing depth-one tuple indexing
+    ;
+
+recordInitSuffix
+    : '{' fieldInitList? '}'
+    ;
+// Legal only after a chain resolving to a record type or record-payload
+// variant. Bare/contextual forms remain blocked by no_struct_literal in
+// top-level if/while conditions and match scrutinees; explicit Name<T>{...}
+// (`>{`) remains exempt.
+
+indexSuffix
+    : '[' expr ']'
+    ;
+
+trySuffix
+    : '?'
+    ;
+
+castSuffix
+    : 'as' type_
     ;
 
 primary
     : literal
     | INTERPOLATED_STRING
+    | qualifiedAssocExpr
+    | contextVariantExpr
     | ident '{' fieldInitList '}'           // Struct init: Point { x: 1, y: 2 }
     | ident                                 // Plain identifier
     | 'this'                                // Actor self-reference
@@ -743,6 +854,14 @@ primary
     | 'return' expr?                        // !-typed; no ';' in expression position
     | 'break' LABEL? expr?                  // !-typed; no ';' in expression position
     | 'continue' LABEL?                     // !-typed
+    ;
+
+qualifiedAssocExpr
+    : qualifiedAssocPath
+    ;
+
+contextVariantExpr
+    : '.' ident
     ;
 
 fieldInitList
@@ -818,7 +937,7 @@ spawn
     ;
 
 actorSpawn
-    : ident ( '.' ident )? typeArgs? ( '(' fieldInitList? ')' )?
+    : typePath typeArgs? ( '(' fieldInitList? ')' )?
     ;
 
 // Lambda actors use `actor` in primary expression position — not spawn:
@@ -896,9 +1015,44 @@ yieldExpr
 //    AsyncGenerator<Y>, Vec<T>, HashMap<K,V>
 // ----------------------------------------------------------------
 
+pathRoot
+    : ident
+    | 'Self'
+    ;
+
+path
+    : pathRoot ( pathSeparator ident )*
+    ;
+
+typePath
+    : path
+    ;
+
+traitPath
+    : path
+    ;
+
+pathSeparator
+    : '.'
+    | '::'                              // Temporary dual-accept scaffold
+    ;
+
+qualifiedAssocBase
+    : '<' type_ 'as' traitPath '>'
+    ;
+
+qualifiedAssocPath
+    : qualifiedAssocBase '.' ident ( '.' ident )*
+    ;
+
+namedType
+    : typePath typeArgs?
+    | qualifiedAssocPath
+    ;
+
 type_
     : primitiveType                         // i32, f64, bool, string, etc.
-    | ident typeArgs?                       // Named type (includes all built-in generics)
+    | namedType                             // Dotted named type or qualified associated projection
     | '(' typeList? ')'                     // Tuple type / unit ()
     | '[' type_ ';' INT_LIT ']'             // Fixed-size array: [i32; 256]
     | '[' type_ ']'                         // Slice: [i32]
@@ -978,16 +1132,33 @@ wireType
 
 pattern
     : pattern '|' pattern                       // Or-pattern
-    | ident ( '::' ident )+ ( '(' patternList? ')' )?  // Qualified: Mod::Color::Red or Option::Some(x)
+    | nominalPattern                            // Qualified: Mod.Color.Red or legacy Option::Some(x)
     | ident '(' patternList? ')'                // Constructor: Some(x)
     | ident '{' patternFieldList? '}'           // Named record destructure: Point { x, y }
     | '{' patternFieldList? '}'                 // Shorthand record destructure: let {a, b} = rec (type inferred; let-position only)
-    | '.' ident ( '(' patternList? ')' | '{' patternFieldList? '}' )?  // Leading-dot variant: .Some(x) or .Foo { a, b }
+    | contextVariantPattern                     // Origin-preserving .Some(x) or .Foo { a, b }
     | '(' patternList ')'                       // Tuple: (a, b, c)
     | REGEX_LIT                                 // Regex pattern: re"..." in match arm
     | literalPattern
     | '_'                                       // Wildcard
     | ident                                     // Binding
+    ;
+
+nominalPattern
+    : nominalPath nominalPatternPayload?
+    ;
+
+nominalPath
+    : ident pathSeparator ident ( pathSeparator ident )*
+    ;
+
+contextVariantPattern
+    : '.' ident nominalPatternPayload?
+    ;
+
+nominalPatternPayload
+    : '(' patternList? ')'
+    | '{' patternFieldList? '}'
     ;
 
 literalPattern

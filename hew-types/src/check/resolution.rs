@@ -2634,6 +2634,32 @@ impl Checker {
         context: TypeResolutionContext,
     ) -> Ty {
         match &te.0 {
+            TypeExpr::QualifiedAssocPath(path) => {
+                let base = self
+                    .resolve_type_expr_tracking_holes_with_context(&path.base, hole_vars, context);
+                let Some(assoc_name) = path.members.first() else {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &te.1,
+                        "qualified associated type path requires a member".to_string(),
+                    );
+                    return Ty::Error;
+                };
+                if path.members.len() != 1 {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &te.1,
+                        "multi-segment qualified associated type projections are not yet supported"
+                            .to_string(),
+                    );
+                    return Ty::Error;
+                }
+                Ty::AssocType {
+                    base: Box::new(base),
+                    trait_name: path.trait_path.source_spelling().into_boxed_str(),
+                    assoc_name: assoc_name.clone().into_boxed_str(),
+                }
+            }
             TypeExpr::Named { name, type_args } => {
                 // Handle `Self` type
                 if name == "Self" {

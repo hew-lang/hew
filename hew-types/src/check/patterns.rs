@@ -89,6 +89,62 @@ fn binding_name_for_pattern(pattern: &Pattern) -> Option<String> {
     }
 }
 
+fn compatibility_nominal_name(path: &hew_parser::ast::Path) -> String {
+    let Some((variant, owners)) = path.segments.split_last() else {
+        return String::new();
+    };
+    let mut name = owners.first().cloned().unwrap_or_default();
+    for (separator, segment) in path
+        .separators
+        .iter()
+        .take(owners.len().saturating_sub(1))
+        .zip(owners.iter().skip(1))
+    {
+        name.push_str(match separator {
+            hew_parser::ast::PathSeparator::Dot => ".",
+            hew_parser::ast::PathSeparator::DoubleColon => "::",
+        });
+        name.push_str(segment);
+    }
+    if !name.is_empty() {
+        name.push_str("::");
+    }
+    name.push_str(variant);
+    name
+}
+
+fn compatibility_nominal_pattern(
+    name: String,
+    payload: Option<&hew_parser::ast::NominalPatternPayload>,
+) -> Pattern {
+    match payload {
+        None => Pattern::Identifier(name),
+        Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => Pattern::Constructor {
+            name,
+            patterns: patterns.clone(),
+        },
+        Some(hew_parser::ast::NominalPatternPayload::Record { fields, rest }) => Pattern::Struct {
+            name,
+            fields: fields.clone(),
+            rest: rest.clone(),
+        },
+    }
+}
+
+fn compatibility_pattern(pattern: &Pattern) -> Option<Pattern> {
+    match pattern {
+        Pattern::NominalPath { path, payload } => Some(compatibility_nominal_pattern(
+            compatibility_nominal_name(path),
+            payload.as_ref(),
+        )),
+        Pattern::ContextVariant(context) => Some(compatibility_nominal_pattern(
+            context.name.clone(),
+            context.payload.as_ref(),
+        )),
+        _ => None,
+    }
+}
+
 /// Classify the payload subpattern kind label for use in
 /// `UnsupportedPayloadSubpattern` diagnostics.
 ///
@@ -109,7 +165,9 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
             None
         }
         Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => Some("record destructure"),
-        Pattern::Constructor { .. } => Some("nested constructor"),
+        Pattern::Constructor { .. } | Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
+            Some("nested constructor")
+        }
         Pattern::Or(_, _) => Some("or-pattern"),
         // Regex literals are only legal as top-level match-arm predicates
         // (scrutinee must be `string`). A regex in payload subpattern
@@ -133,7 +191,9 @@ fn unsupported_project_subpattern_label(pattern: &Pattern) -> Option<&'static st
         // Wildcard and bare identifiers: allowed or deferred to call site.
         Pattern::Wildcard | Pattern::Identifier(_) | Pattern::Literal(_) => None,
         Pattern::Tuple(pats) if pats.is_empty() => None,
-        Pattern::Constructor { .. } => Some("nested constructor"),
+        Pattern::Constructor { .. } | Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
+            Some("nested constructor")
+        }
         Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => Some("record destructure"),
         Pattern::Tuple(_) => Some("tuple destructure"),
         Pattern::Or(_, _) => Some("or-pattern"),
@@ -305,6 +365,9 @@ impl Checker {
     /// corresponding element type. Any arity mismatch or non-tuple resolved
     /// payload type stays refutable (fail-closed) rather than being credited.
     fn is_payload_irrefutable_for_ty(&self, pattern: &Pattern, payload_ty: &Ty) -> bool {
+        if let Some(compatibility) = compatibility_pattern(pattern) {
+            return self.is_payload_irrefutable_for_ty(&compatibility, payload_ty);
+        }
         match pattern {
             Pattern::Wildcard => true,
             Pattern::Identifier(name) => {
@@ -339,6 +402,9 @@ impl Checker {
     /// `project_ty`. Literal element predicates are refutable; bindings,
     /// wildcards, unit, and recursively irrefutable tuple elements are not.
     pub(super) fn is_project_irrefutable_for_ty(&self, pattern: &Pattern, project_ty: &Ty) -> bool {
+        if let Some(compatibility) = compatibility_pattern(pattern) {
+            return self.is_project_irrefutable_for_ty(&compatibility, project_ty);
+        }
         match pattern {
             Pattern::Wildcard => true,
             Pattern::Identifier(name) => {
@@ -384,7 +450,9 @@ impl Checker {
             | Pattern::Constructor { .. }
             | Pattern::RecordShorthand { .. }
             | Pattern::Or(_, _)
-            | Pattern::Regex { .. } => false,
+            | Pattern::Regex { .. }
+            | Pattern::NominalPath { .. }
+            | Pattern::ContextVariant(_) => false,
         }
     }
 
@@ -397,6 +465,10 @@ impl Checker {
         variant_name: &str,
         shape: &VariantPayloadShape,
     ) -> bool {
+        let compatibility_patterns: Vec<Pattern> = patterns
+            .iter()
+            .map(|pattern| compatibility_pattern(pattern).unwrap_or_else(|| (*pattern).clone()))
+            .collect();
         let struct_field_tys: HashMap<&str, &Ty> = match shape {
             VariantPayloadShape::Struct(fields) => fields
                 .iter()
@@ -407,7 +479,7 @@ impl Checker {
         let mut ctor_rows: Vec<&[(Pattern, Span)]> = Vec::new();
         let mut has_unit_row = false;
         let mut has_struct_cover = false;
-        for pattern in patterns {
+        for pattern in &compatibility_patterns {
             match pattern {
                 Pattern::Constructor { name, patterns } => {
                     let short = name.rsplit("::").next().unwrap_or(name);
@@ -924,6 +996,10 @@ impl Checker {
         is_mutable: bool,
         span: &Span,
     ) {
+        if let Some(compatibility) = compatibility_pattern(pattern) {
+            self.bind_pattern_inner(&compatibility, ty, is_mutable, span);
+            return;
+        }
         let resolved_ty = self.subst.resolve(ty);
         let projected_ty = self.project_assoc_types(&resolved_ty);
         let ty = &projected_ty;
@@ -1508,6 +1584,9 @@ impl Checker {
                     self.errors.push(error);
                 }
             }
+            Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => unreachable!(
+                "origin-preserving nominal patterns are bridged before checker dispatch"
+            ),
         }
     }
 
@@ -1531,6 +1610,10 @@ impl Checker {
         pattern_span: &Span,
         scrutinee_ty: &Ty,
     ) {
+        if let Some(compatibility) = compatibility_pattern(pattern) {
+            self.record_arm_resolution(&compatibility, pattern_span, scrutinee_ty);
+            return;
+        }
         // Resolve inference variables before pattern classification so that
         // Option<T>, Result<T,E>, and user-enum scrutinees are identifiable
         // even when the type was supplied as an in-flight inference var.
@@ -1600,6 +1683,8 @@ impl Checker {
                     std::collections::HashSet::new();
                 let mut payload_variant_patterns: Vec<PayloadVariantPattern> = Vec::new();
                 for (field_idx, (sub_pat, sub_span)) in patterns.iter().enumerate() {
+                    let compatibility = compatibility_pattern(sub_pat);
+                    let sub_pat = compatibility.as_ref().unwrap_or(sub_pat);
                     let payload_ty = payload_tys.get(field_idx).cloned().unwrap_or(Ty::Error);
                     let resolved_payload =
                         self.project_assoc_types(&self.subst.resolve(&payload_ty));
@@ -2084,6 +2169,9 @@ impl Checker {
                     payload_variant_patterns: vec![],
                 }
             }
+            Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
+                unreachable!("origin-preserving nominal patterns are bridged before arm resolution")
+            }
         };
 
         self.pending_pattern_resolutions.insert(key, resolution);
@@ -2146,6 +2234,8 @@ impl Checker {
         let mut bindings: Vec<PayloadBinding> = Vec::new();
         let mut nested: Vec<PayloadVariantPattern> = Vec::new();
         for (inner_idx, (sub_pat, inner_span)) in inner_patterns.iter().enumerate() {
+            let compatibility = compatibility_pattern(sub_pat);
+            let sub_pat = compatibility.as_ref().unwrap_or(sub_pat);
             let inner_ty = inner_payload_tys
                 .get(inner_idx)
                 .cloned()
@@ -2208,6 +2298,9 @@ impl Checker {
                         Pattern::Tuple(_) => "tuple destructure",
                         Pattern::Or(_, _) => "or-pattern",
                         Pattern::Regex { .. } => "regex pattern",
+                        Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
+                            "nested constructor"
+                        }
                         Pattern::Wildcard
                         | Pattern::Identifier(_)
                         | Pattern::Constructor { .. } => {

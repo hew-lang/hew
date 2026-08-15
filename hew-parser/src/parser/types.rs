@@ -9,6 +9,25 @@ use super::*;
 
 impl Parser<'_> {
     // ── Types ──
+    pub(crate) fn parse_syntactic_path(&mut self) -> Option<Path> {
+        let mut segments = vec![self.expect_ident()?];
+        let mut separators = Vec::new();
+        loop {
+            let separator = match self.peek() {
+                Some(Token::Dot) => PathSeparator::Dot,
+                Some(Token::DoubleColon) => PathSeparator::DoubleColon,
+                _ => break,
+            };
+            self.advance();
+            segments.push(self.expect_ident()?);
+            separators.push(separator);
+        }
+        Some(Path {
+            segments,
+            separators,
+        })
+    }
+
     pub(crate) fn parse_type(&mut self) -> Option<Spanned<TypeExpr>> {
         self.parse_type_with_context(TypeParseContext::Ordinary)
     }
@@ -146,6 +165,27 @@ impl Parser<'_> {
                     TypeExpr::Borrow(Box::new(inner))
                 }
             }
+            Some(Token::Less) => {
+                // Qualified associated path: `<T as module.Trait>.Item`.
+                self.advance();
+                let base = self.parse_type_with_context(context)?;
+                self.expect(&Token::As)?;
+                let trait_path = self.parse_syntactic_path()?;
+                if !self.eat_closing_angle() {
+                    self.error("expected '>' after qualified associated path base".to_string());
+                    return None;
+                }
+                self.expect(&Token::Dot)?;
+                let mut members = vec![self.expect_ident()?];
+                while self.eat(&Token::Dot) {
+                    members.push(self.expect_ident()?);
+                }
+                TypeExpr::QualifiedAssocPath(Box::new(QualifiedAssocPath {
+                    base: Box::new(base),
+                    trait_path,
+                    members,
+                }))
+            }
             Some(Token::Dyn) => {
                 self.advance();
                 // dyn TraitName or dyn (Trait1 + Trait2)
@@ -153,7 +193,8 @@ impl Parser<'_> {
                     // Multi-trait: dyn (Trait1 + Trait2 + ...)
                     let mut bounds = Vec::new();
                     loop {
-                        let name = self.expect_ident()?;
+                        let path = self.parse_syntactic_path()?;
+                        let name = path.source_spelling();
                         let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
                             self.parse_trait_bound_args_with_context(context)?
                         } else {
@@ -173,7 +214,8 @@ impl Parser<'_> {
                     bounds
                 } else {
                     // Single trait: dyn TraitName
-                    let name = self.expect_ident()?;
+                    let path = self.parse_syntactic_path()?;
+                    let name = path.source_spelling();
                     let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
                         self.parse_trait_bound_args_with_context(context)?
                     } else {
@@ -502,7 +544,8 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_trait_bound(&mut self) -> Option<TraitBound> {
-        let name = self.expect_ident()?;
+        let path = self.parse_syntactic_path()?;
+        let name = path.source_spelling();
 
         let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
             self.parse_trait_bound_args()?

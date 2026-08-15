@@ -58,13 +58,28 @@ AttrArgs       = AttrArg { "," AttrArg } ;
 AttrArg        = Ident ( "=" (StringLit | Ident) )?
                | StringLit ;
 
-(* Module system *)
-Import         = "import" ( StringLit | ModulePath ( "::" ImportSpec )? ) ";" ;
-ModulePath     = Ident { "::" Ident } ;
-ImportSpec     = "{" ImportName { "," ImportName } "}"
-               | "*" ;
-(* Single-name import uses the brace form: import m::{ Name }; bare Ident is not accepted *)
-ImportName     = Ident ( "as" Ident )? ;
+(* Module system.
+   During the dot-path integration cutover, legacy `::` module separators,
+   `::{...}` selections, and `::*` globs remain accepted. New source uses
+   dotted module paths and `.{...}` selections. *)
+Import          = "import" ( StringLit | ModuleImport ) ";" ;
+ModuleImport    = ModulePath ( ModuleAlias
+                             | ImportSelection
+                             | LegacyImportSelection
+                             | LegacyGlobImport )? ;
+ModuleAlias     = "as" Ident ;
+ModulePath      = Ident { ModulePathSeparator Ident } ;
+ModulePathSeparator = "." | "::" ;
+ImportSelection = "." "{" ImportBinding { "," ImportBinding } [ "," ] "}" ;
+(* The existing parser temporarily accepts an empty legacy `::{}` for corpus
+   continuity, but the new dotted selection requires at least one binding. *)
+LegacyImportSelection = "::" "{"
+                          [ ImportBinding { "," ImportBinding } [ "," ] ]
+                        "}" ;
+ImportBinding   = ImportSelf | ImportName ;
+ImportSelf      = "self" [ "as" Ident ] ;
+ImportName      = Ident [ "as" Ident ] ;
+LegacyGlobImport = "::" "*" ;
 
 (* Constants and types *)
 ConstDecl      = "const" Ident ":" Type "=" Expr ";" ;
@@ -78,7 +93,7 @@ WireStructFieldDecl = Ident ":" Type ( "@" IntLit )? WireAttr* ( "," | ";" ) ;
 TypeParams     = "<" TypeParam { "," TypeParam } ">" ;
 TypeParam      = Ident ( ":" TraitBounds )? ;
 TraitBounds    = TraitBound { "+" TraitBound } ;
-TraitBound     = Ident TypeArgs? ;
+TraitBound     = TraitPath TypeArgs? ;
 
 (* Where clauses for complex bounds *)
 WhereClause    = "where" WherePredicate { "," WherePredicate } [ "," ] ;
@@ -244,7 +259,45 @@ UnaryExpr      = ("!" | "-" | "~" | "await" | "await_restart" | "clone") UnaryEx
    `x.clone()`, `fn clone(...)`, and `clone(args)` are unaffected.
    Binding power matches other unary prefixes, so `clone a + b` parses as
    `(clone a) + b`. See also §3.4.4 for ownership and cloning semantics. *)
-PostfixExpr    = Primary { "?" | "." Ident | "." IntLit | "::" TypeArgs "(" Args? ")" | "::" Ident | "(" Args? ")" | "[" Expr "]" | "as" Type } ;
+PostfixExpr    = Primary { PostfixSuffix } ;
+PostfixSuffix  = GenericApplySuffix
+               | LegacyTurbofishSuffix
+               | CallSuffix
+               | MemberSuffix
+               | LegacyMemberSuffix
+               | TupleIndexSuffix
+               | RecordInitSuffix
+               | IndexSuffix
+               | TrySuffix
+               | CastSuffix ;
+GenericApplySuffix = TypeArgs ;
+(* GenericApplyLookahead is the commitment recognizer, not the subsequent
+   GenericApplySuffix parse. Its interior token set is exactly identifier
+   tokens (primitive type names lex as identifiers), ".", ",", balanced "<"
+   and ">". A lexer `>>` token counts as two closing angles. The matching outer
+   ">" must be followed immediately by "(", ".", or "{". Once this shape
+   matches, parsing commits and parses the full TypeArgs production even when
+   the same tokens could otherwise spell a comparison. *)
+GenericApplyLookahead = "<" GenericApplyScanType
+                         { "," GenericApplyScanType } ">"
+                         GenericApplyFollow ;
+GenericApplyScanType = Ident { "." Ident }
+                       [ "<" GenericApplyScanType
+                         { "," GenericApplyScanType } ">" ] ;
+GenericApplyFollow = "(" | "." | "{" ;
+LegacyTurbofishSuffix = "::" TypeArgs ;  (* Temporary dual-accept scaffold. *)
+CallSuffix     = "(" [ Args ] ")" ;
+MemberSuffix   = "." Ident ;
+LegacyMemberSuffix = "::" Ident ;        (* Temporary dual-accept scaffold. *)
+TupleIndexSuffix = "." IntLit ;           (* Existing depth-one tuple indexing *)
+RecordInitSuffix = "{" [ FieldInitList ] "}" ;
+(* RecordInitSuffix is legal only after a chain resolving to a record type or
+   record-payload variant. Bare/contextual forms remain blocked by
+   no_struct_literal in top-level if/while conditions and match scrutinees;
+   explicit Name<T>{...} (`>{`) remains exempt. *)
+IndexSuffix    = "[" Expr "]" ;
+TrySuffix      = "?" ;
+CastSuffix     = "as" Type ;
 
 LambdaActor    = "actor" "move"? "|" LambdaParams? "|" RetType? Block ;
 (* `actor |params| RetType? { body }` — lambda actor literal; spawn is implicit *)
@@ -252,6 +305,8 @@ LambdaActor    = "actor" "move"? "|" LambdaParams? "|" RetType? Block ;
 Primary        = Literal
                | InterpolatedStr
                | "this"                              (* Actor self-reference *)
+               | QualifiedAssocExpr
+               | ContextVariantExpr
                | Ident ( "{" FieldInitList "}" )?   (* Struct init: Point { x: 1, y: 2 } *)
                | "[" ExprList? "]"                  (* Array literal *)
                | "[" Expr ";" Expr "]"              (* Array repeat: [0; 256] *)
@@ -270,6 +325,9 @@ Primary        = Literal
                | ScopeExpr                          (* scope { ... } structured-concurrency block *)
                | ForkChild                          (* fork name = expr or fork expr — only inside a scope block *)
                | YieldExpr ;
+
+QualifiedAssocExpr = QualifiedAssocPath ;
+ContextVariantExpr = "." Ident ;
 
 FieldInitList  = FieldInit { "," FieldInit } ","? ;
 FieldInit      = Ident ":" Expr ;
@@ -294,7 +352,7 @@ LambdaParam    = Ident ( ":" Type )? ;
 
 (* Actor operations *)
 Spawn          = "spawn" ActorSpawn ;
-ActorSpawn     = Ident ( "." Ident )? TypeArgs? ( "(" FieldInitList? ")" )? ;  (* Spawn: spawn Counter(count: 0) or spawn Counter *)
+ActorSpawn     = TypePath TypeArgs? ( "(" FieldInitList? ")" )? ;  (* Spawn: spawn Counter(...) or spawn module.Counter(...) *)
 (* Lambda actor literals use `actor` in Primary position, not `spawn`: *)
 (* LambdaActor = "actor" "move"? "|" LambdaParams? "|" RetType? Block ; *)
 (* `spawn (params) => body` was removed; use `actor |params| { body }` instead. *)
@@ -323,7 +381,17 @@ YieldExpr      = "yield" Expr? ;
 (* Primitive types: i8..i64, u8..u64, f32, f64, bool, string, duration *)
 (* Note: "int" and "uint" aliases were removed in v0.5 — use i64 / u64 explicitly. *)
 (* Integer literals default to int (i64), float literals default to float (f64) *)
-Type           = Ident TypeArgs?
+PathRoot       = Ident | "Self" ;
+Path           = PathRoot { PathSeparator Ident } ;
+TypePath       = Path ;
+TraitPath      = Path ;
+PathSeparator  = "." | "::" ;  (* `::` is a temporary accepted separator. *)
+QualifiedAssocBase = "<" Type "as" TraitPath ">" ;
+QualifiedAssocPath = QualifiedAssocBase "." Ident { "." Ident } ;
+NamedType      = TypePath TypeArgs?
+               | QualifiedAssocPath ;
+
+Type           = NamedType
                | "Task" "<" Type ">"              (* Task type: Task<T> *)
                | "LocalPid" "<" Type ">"          (* In-process actor pid: LocalPid<A> *)
                | "RemotePid" "<" Type ">"         (* Cross-node actor pid: RemotePid<A> *)
@@ -391,13 +459,19 @@ Pattern        = "_"
                | LiteralPattern
                | RegexLiteral                          (* Regex pattern in match arm: re"..." *)
                | Ident
-               | Ident ( "::" Ident )+ ( "(" PatternList? ")" )?  (* Qualified constructor pattern *)
                | Ident "(" PatternList? ")"           (* Constructor pattern *)
                | Ident "{" PatternFieldList? "}"       (* Named record destructure: Point { x, y } *)
+               | NominalPattern
                | "{" PatternFieldList? "}"             (* Shorthand record destructure: let {a, b} = rec — type inferred; let-position only *)
-               | "." Ident ( "(" PatternList? ")" | "{" PatternFieldList? "}" )?  (* Leading-dot variant pattern: enum inferred from scrutinee type *)
+               | ContextVariantPattern
                | "(" PatternList ")"                   (* Tuple pattern *)
                | Pattern "|" Pattern ;                 (* Or-pattern *)
+
+NominalPattern = NominalPath [ NominalPatternPayload ] ;
+NominalPath    = Ident PathSeparator Ident { PathSeparator Ident } ;
+ContextVariantPattern = "." Ident [ NominalPatternPayload ] ;
+NominalPatternPayload = "(" [ PatternList ] ")"
+                      | "{" [ PatternFieldList ] "}" ;
 
 LiteralPattern = "-"? IntLit | "-"? FloatLit | StringLit | CharLit | "true" | "false" ;
 PatternList    = Pattern { "," Pattern } ;

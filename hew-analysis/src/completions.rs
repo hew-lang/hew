@@ -896,6 +896,16 @@ fn collect_pattern_names(pattern: &Pattern, locals: &mut Vec<CompletionItem>) {
                 collect_pattern_names(p, locals);
             }
         }
+        Pattern::NominalPath { payload, .. } => {
+            if let Some(payload) = payload {
+                collect_nominal_payload_names(payload, locals);
+            }
+        }
+        Pattern::ContextVariant(context) => {
+            if let Some(payload) = &context.payload {
+                collect_nominal_payload_names(payload, locals);
+            }
+        }
         Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
             for field in fields {
                 if let Some((pattern, _)) = &field.pattern {
@@ -915,6 +925,28 @@ fn collect_pattern_names(pattern: &Pattern, locals: &mut Vec<CompletionItem>) {
             }
         }
         Pattern::Literal(_) | Pattern::Wildcard => {}
+    }
+}
+
+fn collect_nominal_payload_names(
+    payload: &hew_parser::ast::NominalPatternPayload,
+    locals: &mut Vec<CompletionItem>,
+) {
+    match payload {
+        hew_parser::ast::NominalPatternPayload::Tuple(patterns) => {
+            for (pattern, _) in patterns {
+                collect_pattern_names(pattern, locals);
+            }
+        }
+        hew_parser::ast::NominalPatternPayload::Record { fields, .. } => {
+            for field in fields {
+                if let Some((pattern, _)) = &field.pattern {
+                    collect_pattern_names(pattern, locals);
+                } else {
+                    locals.push(local_completion(&field.name));
+                }
+            }
+        }
     }
 }
 
@@ -1122,7 +1154,10 @@ mod tests {
                 (
                     Item::Import(ImportDecl {
                         path: path.iter().map(ToString::to_string).collect(),
+                        path_separators: Vec::new(),
                         spec: None,
+                        spec_separator: None,
+                        selection_trailing_comma: false,
                         module_alias: module_alias.map(str::to_string),
                         file_path: None,
                         resolved_items: Some(parsed.program.items),

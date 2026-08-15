@@ -1655,7 +1655,10 @@ mod warning_source_attribution {
         // import_spans.
         ImportDecl {
             path: vec!["fakemod".to_string()],
+            path_separators: Vec::new(),
             spec: None,
+            spec_separator: None,
+            selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
             resolved_items: Some(vec![]),
@@ -1937,7 +1940,10 @@ mod warning_source_attribution {
     fn make_named_import_decl(short_name: &str) -> ImportDecl {
         ImportDecl {
             path: vec![short_name.to_string()],
+            path_separators: Vec::new(),
             spec: None,
+            spec_separator: None,
+            selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
             resolved_items: Some(vec![]),
@@ -2111,7 +2117,10 @@ mod warning_source_attribution {
         // module_fn_exports gets "fakemod.helper".
         let import_a_with_items = ImportDecl {
             path: vec!["fakemod".to_string()],
+            path_separators: Vec::new(),
             spec: None,
+            spec_separator: None,
+            selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
             resolved_items: Some(vec![(Item::Function(helper_fn), 0..30)]),
@@ -2227,7 +2236,10 @@ mod warning_source_attribution {
         };
         let import_b = ImportDecl {
             path: vec!["fakemod".to_string()],
+            path_separators: Vec::new(),
             spec: None,
+            spec_separator: None,
+            selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
             resolved_items: Some(vec![(Item::Trait(fake_trait.clone()), 0..30)]),

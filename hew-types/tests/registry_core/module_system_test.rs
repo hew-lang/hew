@@ -60,7 +60,10 @@ fn make_user_import(
 ) -> ImportDecl {
     ImportDecl {
         path: path.iter().map(std::string::ToString::to_string).collect(),
+        path_separators: Vec::new(),
         spec,
+        spec_separator: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: Some(items),
@@ -1511,7 +1514,10 @@ fn test_unresolved_import_fail_closed() {
 
     let import = ImportDecl {
         path: vec!["no_such_pkg".to_string(), "missing".to_string()],
+        path_separators: Vec::new(),
         spec: None,
+        spec_separator: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: None,

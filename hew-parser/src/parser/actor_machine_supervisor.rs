@@ -1205,9 +1205,10 @@ impl Parser<'_> {
                     // `type_defs["bank.Account"]`, MIR layout key); a bare
                     // name stays the root/local identity.
                     let mut actor_type = self.expect_ident()?;
-                    if self.eat(&Token::Dot) {
+                    while self.eat(&Token::Dot) {
                         let type_name = self.expect_ident()?;
-                        actor_type = format!("{actor_type}.{type_name}");
+                        actor_type.push('.');
+                        actor_type.push_str(&type_name);
                     }
 
                     // Parse named init args: `child w: Worker(field: expr, ...)`.

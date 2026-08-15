@@ -4678,6 +4678,32 @@ impl Checker {
                     Self::collect_machine_transition_forbidden_exprs(&base.0, &base.1, hits);
                 }
             }
+            Expr::ContextVariant(context) => {
+                if let Some(record) = &context.record {
+                    for (_, (field, field_span)) in &record.fields {
+                        Self::collect_machine_transition_forbidden_exprs(field, field_span, hits);
+                    }
+                    if let Some(base) = &record.base {
+                        Self::collect_machine_transition_forbidden_exprs(&base.0, &base.1, hits);
+                    }
+                }
+            }
+            Expr::GenericApplySuffix { target, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&target.0, &target.1, hits);
+            }
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&target.0, &target.1, hits);
+                for (_, (field, field_span)) in fields {
+                    Self::collect_machine_transition_forbidden_exprs(field, field_span, hits);
+                }
+                if let Some(base) = base {
+                    Self::collect_machine_transition_forbidden_exprs(&base.0, &base.1, hits);
+                }
+            }
             Expr::Select { arms, timeout } => {
                 for arm in arms {
                     Self::collect_machine_transition_forbidden_exprs(
@@ -4733,6 +4759,7 @@ impl Checker {
             }
             Expr::Literal(_)
             | Expr::Identifier(_)
+            | Expr::QualifiedAssoc(_)
             | Expr::Yield(None)
             | Expr::Return(None)
             | Expr::This

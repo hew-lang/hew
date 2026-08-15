@@ -691,10 +691,37 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
     match expr {
         Expr::Literal(_)
         | Expr::Identifier(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}
+        Expr::ContextVariant(context) => {
+            if let Some(record) = &context.record {
+                for (_, value) in &record.fields {
+                    walk_expr(&value.0, &value.1, visitor);
+                }
+                if let Some(base) = &record.base {
+                    walk_expr(&base.0, &base.1, visitor);
+                }
+            }
+        }
+        Expr::GenericApplySuffix { target, .. } => {
+            walk_expr(&target.0, &target.1, visitor);
+        }
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            walk_expr(&target.0, &target.1, visitor);
+            for (_, value) in fields {
+                walk_expr(&value.0, &value.1, visitor);
+            }
+            if let Some(base) = base {
+                walk_expr(&base.0, &base.1, visitor);
+            }
+        }
         Expr::Binary { left, right, .. } => {
             walk_expr(&left.0, &left.1, visitor);
             walk_expr(&right.0, &right.1, visitor);

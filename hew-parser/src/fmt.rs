@@ -10,11 +10,11 @@ use crate::ast::{
     CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
     ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl,
     MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
-    OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl, RecordDecl, RecordKind,
-    RestartPolicy, SelectArm, ShutdownDirective, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
-    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
-    VariantKind, Visibility, WhereClause, WireMetadata,
+    NominalPatternPayload, OverflowPolicy, Param, Path, PathSeparator, Pattern, PatternField,
+    Program, ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm, ShutdownDirective,
+    Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound,
+    TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
+    TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -112,6 +112,10 @@ impl<'a> Formatter<'a> {
             }
             fmt_item(self, item);
         }
+    }
+
+    fn format_path(&mut self, path: &Path) {
+        self.write(&path.source_spelling());
     }
 
     fn write_visibility(&mut self, vis: Visibility) {
@@ -318,12 +322,31 @@ impl<'a> Formatter<'a> {
             self.write(file_path);
             self.write("\"");
         } else {
-            self.write(&decl.path.join("::"));
+            if let Some(first) = decl.path.first() {
+                self.write(first);
+                for (idx, segment) in decl.path.iter().enumerate().skip(1) {
+                    let separator = decl
+                        .path_separators
+                        .get(idx - 1)
+                        .copied()
+                        .unwrap_or(PathSeparator::DoubleColon);
+                    self.write(match separator {
+                        PathSeparator::Dot => ".",
+                        PathSeparator::DoubleColon => "::",
+                    });
+                    self.write(segment);
+                }
+            }
             if let Some(spec) = &decl.spec {
+                let separator = decl.spec_separator.unwrap_or(PathSeparator::DoubleColon);
+                self.write(match separator {
+                    PathSeparator::Dot => ".",
+                    PathSeparator::DoubleColon => "::",
+                });
                 match spec {
-                    ImportSpec::Glob => self.write("::*"),
+                    ImportSpec::Glob => self.write("*"),
                     ImportSpec::Names(names) => {
-                        self.write("::{");
+                        self.write("{");
                         self.comma_sep(names, |f, n| {
                             f.write(&n.name);
                             if let Some(alias) = &n.alias {
@@ -331,6 +354,9 @@ impl<'a> Formatter<'a> {
                                 f.write(alias);
                             }
                         });
+                        if decl.selection_trailing_comma {
+                            self.write(",");
+                        }
                         self.write("}");
                     }
                 }
@@ -1790,6 +1816,17 @@ impl<'a> Formatter<'a> {
                     self.write(">");
                 }
             }
+            TypeExpr::QualifiedAssocPath(assoc) => {
+                self.write("<");
+                self.format_type_expr(&assoc.base.0);
+                self.write(" as ");
+                self.format_path(&assoc.trait_path);
+                self.write(">");
+                for member in &assoc.members {
+                    self.write(".");
+                    self.write(member);
+                }
+            }
             TypeExpr::Result { ok, err } => {
                 self.write("Result<");
                 self.format_type_expr(&ok.0);
@@ -2126,16 +2163,31 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the exhaustive expression-shape classifier stays readable as one match"
+    )]
     fn can_format_expr_inline(expr: &Expr) -> bool {
         match expr {
             Expr::Literal(_)
             | Expr::Identifier(_)
+            | Expr::QualifiedAssoc(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
             | Expr::This
             | Expr::Yield(None)
             | Expr::Return(None) => true,
+            Expr::ContextVariant(context) => context.record.as_ref().is_none_or(|record| {
+                record
+                    .fields
+                    .iter()
+                    .all(|(_, expr)| Self::can_format_expr_inline(&expr.0))
+                    && record
+                        .base
+                        .as_ref()
+                        .is_none_or(|expr| Self::can_format_expr_inline(&expr.0))
+            }),
             Expr::Tuple(exprs) | Expr::Array(exprs) => exprs
                 .iter()
                 .all(|(expr, _)| Self::can_format_expr_inline(expr)),
@@ -2169,7 +2221,9 @@ impl<'a> Formatter<'a> {
                         .iter()
                         .all(|arg| Self::can_format_expr_inline(&arg.expr().0))
             }
-            Expr::FieldAccess { object, .. } => Self::can_format_expr_inline(&object.0),
+            Expr::FieldAccess { object, .. } | Expr::GenericApplySuffix { target: object, .. } => {
+                Self::can_format_expr_inline(&object.0)
+            }
             Expr::Index { object, index } => {
                 Self::can_format_expr_inline(&object.0) && Self::can_format_expr_inline(&index.0)
             }
@@ -2186,6 +2240,19 @@ impl<'a> Formatter<'a> {
                 fields
                     .iter()
                     .all(|(_, expr)| Self::can_format_expr_inline(&expr.0))
+                    && base
+                        .as_ref()
+                        .is_none_or(|expr| Self::can_format_expr_inline(&expr.0))
+            }
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                Self::can_format_expr_inline(&target.0)
+                    && fields
+                        .iter()
+                        .all(|(_, expr)| Self::can_format_expr_inline(&expr.0))
                     && base
                         .as_ref()
                         .is_none_or(|expr| Self::can_format_expr_inline(&expr.0))
@@ -2781,6 +2848,74 @@ impl<'a> Formatter<'a> {
             }
             Expr::Literal(lit) => self.format_literal(lit),
             Expr::Identifier(name) => self.write(name),
+            Expr::ContextVariant(context) => {
+                self.write(".");
+                self.write(&context.name);
+                if let Some(record) = &context.record {
+                    self.write(" { ");
+                    self.comma_sep(&record.fields, |f, (name, value)| {
+                        f.write(name);
+                        f.write(": ");
+                        f.format_expr(&value.0);
+                    });
+                    if let Some(base) = &record.base {
+                        if !record.fields.is_empty() {
+                            self.write(", ");
+                        }
+                        self.write("..");
+                        self.format_expr(&base.0);
+                    }
+                    self.write(" }");
+                }
+            }
+            Expr::GenericApplySuffix { target, type_args } => {
+                if matches!(
+                    &target.0,
+                    Expr::Identifier(_)
+                        | Expr::FieldAccess { .. }
+                        | Expr::QualifiedAssoc(_)
+                        | Expr::GenericApplySuffix { .. }
+                ) {
+                    self.format_expr(&target.0);
+                } else {
+                    self.format_receiver(&target.0);
+                }
+                self.write("<");
+                self.comma_sep(type_args, |f, ty| f.format_type_expr(&ty.0));
+                self.write(">");
+            }
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                self.format_receiver(&target.0);
+                self.write(" { ");
+                self.comma_sep(fields, |f, (name, value)| {
+                    f.write(name);
+                    f.write(": ");
+                    f.format_expr(&value.0);
+                });
+                if let Some(base) = base {
+                    if !fields.is_empty() {
+                        self.write(", ");
+                    }
+                    self.write("..");
+                    self.format_expr(&base.0);
+                }
+                self.write(" }");
+            }
+            Expr::QualifiedAssoc(assoc) => {
+                self.write("<");
+                self.format_type_expr(&assoc.base.0);
+                self.write(" as ");
+                self.format_path(&assoc.trait_path);
+                self.write(">");
+                for member in &assoc.members {
+                    self.write(".");
+                    self.write(member);
+                }
+            }
             Expr::Clone(operand) => {
                 self.write("clone ");
                 self.format_expr(&operand.0);
@@ -3005,8 +3140,8 @@ impl<'a> Formatter<'a> {
                 // re-parses as `Call { FieldAccess }`, not as a `MethodCall`. The two forms
                 // are syntactically distinct (different AST nodes, different checker paths);
                 // normalising them would break the round-trip property.
-                let needs_callee_parens =
-                    matches!(function.0, Expr::Lambda { .. } | Expr::FieldAccess { .. });
+                let needs_callee_parens = matches!(function.0, Expr::Lambda { .. })
+                    || (type_args.is_none() && matches!(function.0, Expr::FieldAccess { .. }));
                 if needs_callee_parens {
                     self.write("(");
                 }
@@ -3323,6 +3458,15 @@ impl<'a> Formatter<'a> {
             Pattern::Wildcard => self.write("_"),
             Pattern::Literal(lit) => self.format_literal(lit),
             Pattern::Identifier(name) => self.write(name),
+            Pattern::NominalPath { path, payload } => {
+                self.format_path(path);
+                self.format_nominal_pattern_payload(payload.as_ref());
+            }
+            Pattern::ContextVariant(context) => {
+                self.write(".");
+                self.write(&context.name);
+                self.format_nominal_pattern_payload(context.payload.as_ref());
+            }
             Pattern::Constructor { name, patterns } => {
                 self.write(name);
                 if !patterns.is_empty() {
@@ -3353,6 +3497,21 @@ impl<'a> Formatter<'a> {
                 self.write("re\"");
                 self.write(&escape_regex_pattern(pattern));
                 self.write("\"");
+            }
+        }
+    }
+
+    fn format_nominal_pattern_payload(&mut self, payload: Option<&NominalPatternPayload>) {
+        match payload {
+            None => {}
+            Some(NominalPatternPayload::Tuple(patterns)) => {
+                self.write("(");
+                self.comma_sep(patterns, |f, pattern| f.format_pattern(&pattern.0));
+                self.write(")");
+            }
+            Some(NominalPatternPayload::Record { fields, rest }) => {
+                self.write(" ");
+                self.format_record_pattern_fields(fields, rest.as_ref());
             }
         }
     }

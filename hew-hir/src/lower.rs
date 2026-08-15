@@ -90,11 +90,78 @@ fn flatten_or_pattern(pattern: &Spanned<Pattern>) -> Vec<Spanned<Pattern>> {
     }
 }
 
+fn compatibility_nominal_name(path: &hew_parser::ast::Path) -> String {
+    let Some((variant, owners)) = path.segments.split_last() else {
+        return String::new();
+    };
+    let mut name = owners.first().cloned().unwrap_or_default();
+    for (separator, segment) in path
+        .separators
+        .iter()
+        .take(owners.len().saturating_sub(1))
+        .zip(owners.iter().skip(1))
+    {
+        name.push_str(match separator {
+            hew_parser::ast::PathSeparator::Dot => ".",
+            hew_parser::ast::PathSeparator::DoubleColon => "::",
+        });
+        name.push_str(segment);
+    }
+    if !name.is_empty() {
+        name.push_str("::");
+    }
+    name.push_str(variant);
+    name
+}
+
+fn compatibility_nominal_pattern(
+    name: String,
+    payload: Option<&hew_parser::ast::NominalPatternPayload>,
+) -> Pattern {
+    match payload {
+        None => Pattern::Identifier(name),
+        Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => Pattern::Constructor {
+            name,
+            patterns: patterns.clone(),
+        },
+        Some(hew_parser::ast::NominalPatternPayload::Record { fields, rest }) => Pattern::Struct {
+            name,
+            fields: fields.clone(),
+            rest: rest.clone(),
+        },
+    }
+}
+
+fn compatibility_pattern(pattern: &Pattern) -> Option<Pattern> {
+    match pattern {
+        Pattern::NominalPath { path, payload } => Some(compatibility_nominal_pattern(
+            compatibility_nominal_name(path),
+            payload.as_ref(),
+        )),
+        Pattern::ContextVariant(context) => Some(compatibility_nominal_pattern(
+            context.name.clone(),
+            context.payload.as_ref(),
+        )),
+        _ => None,
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the exhaustive payload classifier keeps all pattern forms in one match"
+)]
 fn collect_match_payload_predicates(
     ctx: &LowerCtx,
     pattern: &Spanned<Pattern>,
     scrutinee_ty: &ResolvedTy,
 ) -> Result<Vec<HirPayloadPredicate>, String> {
+    if let Some(compatibility) = compatibility_pattern(&pattern.0) {
+        return collect_match_payload_predicates(
+            ctx,
+            &(compatibility, pattern.1.clone()),
+            scrutinee_ty,
+        );
+    }
     match &pattern.0 {
         Pattern::Constructor { name, patterns } => {
             let field_tys = ctx
@@ -187,7 +254,9 @@ fn collect_match_payload_predicates(
         | Pattern::Literal(_)
         | Pattern::Or(_, _)
         | Pattern::Regex { .. }
-        | Pattern::RecordShorthand { .. } => Ok(Vec::new()),
+        | Pattern::RecordShorthand { .. }
+        | Pattern::NominalPath { .. }
+        | Pattern::ContextVariant(_) => Ok(Vec::new()),
     }
 }
 
@@ -1602,6 +1671,12 @@ fn trait_method_to_fn_decl(method: &TraitMethod) -> FnDecl {
 /// to direct them to the fix, not to round-trip the AST.
 fn render_type_expr(ty: &TypeExpr) -> String {
     match ty {
+        TypeExpr::QualifiedAssocPath(path) => format!(
+            "<{} as {}>.{}",
+            render_type_expr(&path.base.0),
+            path.trait_path.source_spelling(),
+            path.members.join(".")
+        ),
         TypeExpr::Named { name, type_args } => match type_args {
             Some(args) if !args.is_empty() => {
                 let inner: Vec<String> = args.iter().map(|a| render_type_expr(&a.0)).collect();
@@ -1848,6 +1923,9 @@ fn check_builtin_receiver_impl_program(program: &Program) -> TypeCheckOutput {
 
 fn canonicalize_injected_cursor_type_expr(ty: &mut TypeExpr) {
     match ty {
+        TypeExpr::QualifiedAssocPath(path) => {
+            canonicalize_injected_cursor_type_expr(&mut path.base.0);
+        }
         TypeExpr::Named { name, type_args } => {
             let canonical = injected_builtin_impl_symbol_owner(name).to_string();
             if canonical != *name {
@@ -9085,6 +9163,10 @@ fn method_signature_type_exprs(method: &FnDecl) -> impl Iterator<Item = &TypeExp
 /// spellings only — no resolution, no qualification.
 fn collect_type_expr_named_leaves(ty: &TypeExpr, out: &mut Vec<String>) {
     match ty {
+        TypeExpr::QualifiedAssocPath(path) => {
+            collect_type_expr_named_leaves(&path.base.0, out);
+            out.push(path.trait_path.source_spelling());
+        }
         TypeExpr::Named { name, type_args } => {
             out.push(name.clone());
             for arg in type_args.as_deref().unwrap_or(&[]) {
@@ -14932,6 +15014,16 @@ impl LowerCtx {
         stmts: &mut Vec<HirStmt>,
         span: Span,
     ) {
+        if let Some(compatibility) = compatibility_pattern(&pattern.0) {
+            self.lower_pattern_value_into_stmts(
+                &(compatibility, pattern.1.clone()),
+                value,
+                value_ty,
+                stmts,
+                span,
+            );
+            return;
+        }
         match &pattern.0 {
             Pattern::Identifier(name) => {
                 self.push_pattern_binding_stmt(name.clone(), value_ty, value, stmts, span);
@@ -14949,7 +15041,9 @@ impl LowerCtx {
             Pattern::Constructor { .. }
             | Pattern::Literal(_)
             | Pattern::Or(_, _)
-            | Pattern::Regex { .. } => {
+            | Pattern::Regex { .. }
+            | Pattern::NominalPath { .. }
+            | Pattern::ContextVariant(_) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::NotYetImplemented {
                         construct: "unsupported nested let pattern".into(),
@@ -17269,6 +17363,22 @@ impl LowerCtx {
         let in_stmt_position = await_position == AwaitPosition::Statement;
         let in_bindable_value_position = await_position == AwaitPosition::BindableValueLet;
         let span = expr.1.clone();
+        if let Expr::ContextVariant(context) = &expr.0 {
+            let compatibility = if let Some(record) = &context.record {
+                Expr::StructInit {
+                    name: context.name.clone(),
+                    fields: record.fields.clone(),
+                    type_args: None,
+                    base: record.base.clone(),
+                }
+            } else {
+                Expr::Identifier(context.name.clone())
+            };
+            return self.lower_expr(&(compatibility, span), intent);
+        }
+        if let Expr::GenericApplySuffix { target, .. } = &expr.0 {
+            return self.lower_expr(&(target.0.clone(), span), intent);
+        }
         // Pre-allocate the SiteId for this expression so call-site
         // side-tables (e.g. `call_site_type_args`) can be keyed
         // by the eventual HirExpr.site before the wrapping struct is
@@ -17364,6 +17474,43 @@ impl LowerCtx {
                 } else {
                     self.lower_identifier(name, span.clone())
                 }
+            }
+            Expr::ContextVariant(_) | Expr::GenericApplySuffix { .. } => {
+                unreachable!("compatibility suffix expressions are lowered before site allocation")
+            }
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                self.lower_expr(target, IntentKind::Read);
+                for (_, value) in fields {
+                    self.lower_expr(value, IntentKind::Read);
+                }
+                if let Some(base) = base {
+                    self.lower_expr(base, IntentKind::Read);
+                }
+                self.unsupported(
+                    span.clone(),
+                    "qualified record initializer",
+                    "qualified-record-init",
+                );
+                (
+                    HirExprKind::Unsupported("unsupported qualified record initializer".into()),
+                    ResolvedTy::Unit,
+                )
+            }
+            Expr::QualifiedAssoc(path) => {
+                let _ = render_type_expr(&path.base.0);
+                self.unsupported(
+                    span.clone(),
+                    "qualified associated value",
+                    "qualified-assoc-value",
+                );
+                (
+                    HirExprKind::Unsupported("unsupported qualified associated value".into()),
+                    ResolvedTy::Unit,
+                )
             }
             Expr::Binary { left, op, right } => {
                 let left = self.lower_expr(left, IntentKind::Read);

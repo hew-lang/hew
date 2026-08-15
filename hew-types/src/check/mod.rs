@@ -2321,6 +2321,37 @@ impl Checker {
                     self.classify_escapes_in_expr(&b.0, &b.1, in_fork, AnonContext::Other);
                 }
             }
+            Expr::ContextVariant(context) => {
+                if let Some(record) = &context.record {
+                    for (_, (e, s)) in &record.fields {
+                        self.classify_escapes_in_expr(e, s, in_fork, AnonContext::StoredInBinding);
+                    }
+                    if let Some(base) = &record.base {
+                        self.classify_escapes_in_expr(
+                            &base.0,
+                            &base.1,
+                            in_fork,
+                            AnonContext::Other,
+                        );
+                    }
+                }
+            }
+            Expr::GenericApplySuffix { target, .. } => {
+                self.classify_escapes_in_expr(&target.0, &target.1, in_fork, ctx);
+            }
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                self.classify_escapes_in_expr(&target.0, &target.1, in_fork, AnonContext::Other);
+                for (_, (e, s)) in fields {
+                    self.classify_escapes_in_expr(e, s, in_fork, AnonContext::StoredInBinding);
+                }
+                if let Some(base) = base {
+                    self.classify_escapes_in_expr(&base.0, &base.1, in_fork, AnonContext::Other);
+                }
+            }
             Expr::Tuple(items) | Expr::Array(items) => {
                 for (e, s) in items {
                     self.classify_escapes_in_expr(e, s, in_fork, AnonContext::StoredInBinding);
@@ -2448,6 +2479,7 @@ impl Checker {
             Expr::GenBlock { body } => self.classify_escapes_in_block(body, in_fork),
             Expr::Literal(_)
             | Expr::Identifier(_)
+            | Expr::QualifiedAssoc(_)
             | Expr::This
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
@@ -2776,6 +2808,32 @@ fn collect_lambda_spans_in_expr(
                 collect_lambda_spans_in_expr(&b.0, &b.1, out);
             }
         }
+        Expr::ContextVariant(context) => {
+            if let Some(record) = &context.record {
+                for (_, (e, s)) in &record.fields {
+                    collect_lambda_spans_in_expr(e, s, out);
+                }
+                if let Some(base) = &record.base {
+                    collect_lambda_spans_in_expr(&base.0, &base.1, out);
+                }
+            }
+        }
+        Expr::GenericApplySuffix { target, .. } => {
+            collect_lambda_spans_in_expr(&target.0, &target.1, out);
+        }
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            collect_lambda_spans_in_expr(&target.0, &target.1, out);
+            for (_, (e, s)) in fields {
+                collect_lambda_spans_in_expr(e, s, out);
+            }
+            if let Some(base) = base {
+                collect_lambda_spans_in_expr(&base.0, &base.1, out);
+            }
+        }
         Expr::Tuple(items) | Expr::Array(items) => {
             for (e, s) in items {
                 collect_lambda_spans_in_expr(e, s, out);
@@ -2876,6 +2934,7 @@ fn collect_lambda_spans_in_expr(
         }
         Expr::Literal(_)
         | Expr::Identifier(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)

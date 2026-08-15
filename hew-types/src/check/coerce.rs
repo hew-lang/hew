@@ -793,6 +793,7 @@ fn type_expr_mentions_self(expr: &TypeExpr) -> bool {
                 .as_ref()
                 .is_some_and(|args| args.iter().any(|a| type_expr_mentions_self(&a.0)))
         }
+        TypeExpr::QualifiedAssocPath(path) => type_expr_mentions_self(&path.base.0),
         TypeExpr::Result { ok, err } => {
             type_expr_mentions_self(&ok.0) || type_expr_mentions_self(&err.0)
         }

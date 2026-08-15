@@ -408,6 +408,13 @@ fn pattern_binds_name(pattern: &Pattern, name: &str) -> bool {
         Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => patterns
             .iter()
             .any(|(pattern, _)| pattern_binds_name(pattern, name)),
+        Pattern::NominalPath { payload, .. } => payload
+            .as_ref()
+            .is_some_and(|payload| nominal_payload_binds_name(payload, name)),
+        Pattern::ContextVariant(context) => context
+            .payload
+            .as_ref()
+            .is_some_and(|payload| nominal_payload_binds_name(payload, name)),
         Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
             fields.iter().any(|field| {
                 field
@@ -421,6 +428,25 @@ fn pattern_binds_name(pattern: &Pattern, name: &str) -> bool {
         }
         Pattern::Regex { captures, .. } => captures.iter().any(|c| c == name),
         Pattern::Wildcard | Pattern::Literal(_) => false,
+    }
+}
+
+fn nominal_payload_binds_name(
+    payload: &hew_parser::ast::NominalPatternPayload,
+    name: &str,
+) -> bool {
+    match payload {
+        hew_parser::ast::NominalPatternPayload::Tuple(patterns) => patterns
+            .iter()
+            .any(|(pattern, _)| pattern_binds_name(pattern, name)),
+        hew_parser::ast::NominalPatternPayload::Record { fields, .. } => {
+            fields.iter().any(|field| {
+                field
+                    .pattern
+                    .as_ref()
+                    .is_some_and(|(pattern, _)| pattern_binds_name(pattern, name))
+            })
+        }
     }
 }
 
@@ -463,6 +489,16 @@ impl RefsVisitor<'_> {
                     self.push_pattern_matches(p, s);
                 }
             }
+            Pattern::NominalPath { payload, .. } => {
+                if let Some(payload) = payload {
+                    self.push_nominal_payload_matches(payload, span);
+                }
+            }
+            Pattern::ContextVariant(context) => {
+                if let Some(payload) = &context.payload {
+                    self.push_nominal_payload_matches(payload, span);
+                }
+            }
             Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
                 for field in fields {
                     if let Some((p, s)) = &field.pattern {
@@ -482,6 +518,29 @@ impl RefsVisitor<'_> {
                 }
             }
             Pattern::Wildcard | Pattern::Literal(_) => {}
+        }
+    }
+
+    fn push_nominal_payload_matches(
+        &mut self,
+        payload: &hew_parser::ast::NominalPatternPayload,
+        span: &Span,
+    ) {
+        match payload {
+            hew_parser::ast::NominalPatternPayload::Tuple(patterns) => {
+                for (pattern, pattern_span) in patterns {
+                    self.push_pattern_matches(pattern, pattern_span);
+                }
+            }
+            hew_parser::ast::NominalPatternPayload::Record { fields, .. } => {
+                for field in fields {
+                    if let Some((pattern, pattern_span)) = &field.pattern {
+                        self.push_pattern_matches(pattern, pattern_span);
+                    } else if field.name == self.name {
+                        self.spans.push(span.clone());
+                    }
+                }
+            }
         }
     }
 }

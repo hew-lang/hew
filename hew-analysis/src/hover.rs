@@ -745,6 +745,62 @@ fn hover_pattern_binding(
     })
 }
 
+fn compatibility_nominal_name(path: &hew_parser::ast::Path) -> String {
+    let Some((variant, owners)) = path.segments.split_last() else {
+        return String::new();
+    };
+    let mut name = owners.first().cloned().unwrap_or_default();
+    for (separator, segment) in path
+        .separators
+        .iter()
+        .take(owners.len().saturating_sub(1))
+        .zip(owners.iter().skip(1))
+    {
+        name.push_str(match separator {
+            hew_parser::ast::PathSeparator::Dot => ".",
+            hew_parser::ast::PathSeparator::DoubleColon => "::",
+        });
+        name.push_str(segment);
+    }
+    if !name.is_empty() {
+        name.push_str("::");
+    }
+    name.push_str(variant);
+    name
+}
+
+fn compatibility_nominal_pattern(
+    name: String,
+    payload: Option<&hew_parser::ast::NominalPatternPayload>,
+) -> Pattern {
+    match payload {
+        None => Pattern::Identifier(name),
+        Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => Pattern::Constructor {
+            name,
+            patterns: patterns.clone(),
+        },
+        Some(hew_parser::ast::NominalPatternPayload::Record { fields, rest }) => Pattern::Struct {
+            name,
+            fields: fields.clone(),
+            rest: rest.clone(),
+        },
+    }
+}
+
+fn compatibility_pattern(pattern: &Pattern) -> Option<Pattern> {
+    match pattern {
+        Pattern::NominalPath { path, payload } => Some(compatibility_nominal_pattern(
+            compatibility_nominal_name(path),
+            payload.as_ref(),
+        )),
+        Pattern::ContextVariant(context) => Some(compatibility_nominal_pattern(
+            context.name.clone(),
+            context.payload.as_ref(),
+        )),
+        _ => None,
+    }
+}
+
 fn find_pattern_binding_type(
     pattern: &(Pattern, Span),
     source_ty: &Ty,
@@ -754,6 +810,15 @@ fn find_pattern_binding_type(
 ) -> Option<Ty> {
     if !span_contains_offset(&pattern.1, offset) {
         return None;
+    }
+    if let Some(compatibility) = compatibility_pattern(&pattern.0) {
+        return find_pattern_binding_type(
+            &(compatibility, pattern.1.clone()),
+            source_ty,
+            type_defs,
+            word,
+            offset,
+        );
     }
     match &pattern.0 {
         Pattern::Identifier(name) => (name == word).then(|| source_ty.clone()),
@@ -808,13 +873,19 @@ fn find_pattern_binding_type(
                     args: vec![],
                 })
         }
-        Pattern::Wildcard | Pattern::Literal(_) => None,
+        Pattern::Wildcard
+        | Pattern::Literal(_)
+        | Pattern::NominalPath { .. }
+        | Pattern::ContextVariant(_) => None,
     }
 }
 
 fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Option<()> {
     if !span_contains_offset(&pattern.1, offset) {
         return None;
+    }
+    if let Some(compatibility) = compatibility_pattern(&pattern.0) {
+        return find_binding_name(&(compatibility, pattern.1.clone()), word, offset);
     }
     match &pattern.0 {
         Pattern::Identifier(name) => (name == word).then_some(()),
@@ -833,7 +904,10 @@ fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Op
             find_binding_name(left, word, offset).or_else(|| find_binding_name(right, word, offset))
         }
         Pattern::Regex { captures, .. } => captures.iter().find(|c| c.as_str() == word).map(|_| ()),
-        Pattern::Wildcard | Pattern::Literal(_) => None,
+        Pattern::Wildcard
+        | Pattern::Literal(_)
+        | Pattern::NominalPath { .. }
+        | Pattern::ContextVariant(_) => None,
     }
 }
 
@@ -945,6 +1019,12 @@ fn is_var_name_span(
 
 fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
     match type_expr {
+        TypeExpr::QualifiedAssocPath(path) => format!(
+            "<{} as {}>.{}",
+            format_type_expr_hover(&path.base.0),
+            path.trait_path.source_spelling(),
+            path.members.join(".")
+        ),
         TypeExpr::Named { name, type_args } => {
             let base =
                 Ty::from_name(name).map_or_else(|| name.clone(), |ty| ty.user_facing().to_string());

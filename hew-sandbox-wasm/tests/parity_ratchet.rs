@@ -1110,6 +1110,10 @@ mod ast_surface {
         match expr {
             Expr::Literal(_) => Some("literal + println"),
             Expr::Identifier(_) => Some("integer arithmetic + comparison"),
+            Expr::ContextVariant(_) => Some("match with constructor-payload patterns"),
+            Expr::GenericApplySuffix { .. } => Some("generic function call (monomorphised)"),
+            Expr::RecordInitSuffix { .. } => None,
+            Expr::QualifiedAssoc(_) => None,
             Expr::Binary { .. } => Some("integer arithmetic + comparison"),
             Expr::Unary { .. } => Some("unary integer negate (`-a`)"),
             Expr::Clone(_) => Some("`clone` prefix"),
@@ -1203,6 +1207,9 @@ mod ast_surface {
             Pattern::Literal(_) => Some("scalar-literal match (i64 scrutinee)"),
             Pattern::Identifier(_) => Some("match with constructor-payload patterns"),
             Pattern::Constructor { .. } => Some("match with constructor-payload patterns"),
+            Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
+                Some("match with constructor-payload patterns")
+            }
             Pattern::Struct { .. } => Some("struct pattern in match arm"),
             Pattern::RecordShorthand { .. } => Some("record shorthand destructure in let"),
             Pattern::Tuple(_) => Some("tuple value + tuple-let destructure"),
@@ -1218,6 +1225,7 @@ mod ast_surface {
     pub fn classify_type_expr(ty: &TypeExpr) -> Owner {
         match ty {
             TypeExpr::Named { .. } => None,
+            TypeExpr::QualifiedAssocPath(_) => None,
             TypeExpr::Result { .. } => None,
             TypeExpr::Option(_) => None,
             TypeExpr::Tuple(_) => Some("tuple value + tuple-let destructure"),
@@ -1626,6 +1634,16 @@ fn walk_pattern(
                 walk_pattern(pattern, owners);
             }
         }
+        Pattern::NominalPath { payload, .. } => {
+            if let Some(payload) = payload {
+                walk_nominal_pattern_payload(payload, owners);
+            }
+        }
+        Pattern::ContextVariant(context) => {
+            if let Some(payload) = &context.payload {
+                walk_nominal_pattern_payload(payload, owners);
+            }
+        }
         Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
             for field in fields {
                 if let Some(pattern) = &field.pattern {
@@ -1644,10 +1662,31 @@ fn walk_pattern(
     }
 }
 
+fn walk_nominal_pattern_payload(
+    payload: &hew_parser::ast::NominalPatternPayload,
+    owners: &mut Vec<Option<&'static str>>,
+) {
+    match payload {
+        hew_parser::ast::NominalPatternPayload::Tuple(patterns) => {
+            for pattern in patterns {
+                walk_pattern(pattern, owners);
+            }
+        }
+        hew_parser::ast::NominalPatternPayload::Record { fields, .. } => {
+            for field in fields {
+                if let Some(pattern) = &field.pattern {
+                    walk_pattern(pattern, owners);
+                }
+            }
+        }
+    }
+}
+
 fn walk_type_expr(ty: &hew_parser::ast::TypeExpr, owners: &mut Vec<Option<&'static str>>) {
     use hew_parser::ast::TypeExpr;
     owners.push(ast_surface::classify_type_expr(ty));
     match ty {
+        TypeExpr::QualifiedAssocPath(path) => walk_type_expr(&path.base.0, owners),
         TypeExpr::Named { type_args, .. } => {
             if let Some(type_args) = type_args {
                 for (ty, _) in type_args {
@@ -1708,10 +1747,40 @@ fn walk_expr(
         | Expr::AwaitRestart(operand) => walk_expr(operand, owners),
         Expr::Literal(_)
         | Expr::Identifier(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}
+        Expr::ContextVariant(context) => {
+            if let Some(record) = &context.record {
+                for (_, value) in &record.fields {
+                    walk_expr(value, owners);
+                }
+                if let Some(base) = &record.base {
+                    walk_expr(base, owners);
+                }
+            }
+        }
+        Expr::GenericApplySuffix { target, type_args } => {
+            walk_expr(target, owners);
+            for (ty, _) in type_args {
+                walk_type_expr(ty, owners);
+            }
+        }
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            walk_expr(target, owners);
+            for (_, value) in fields {
+                walk_expr(value, owners);
+            }
+            if let Some(base) = base {
+                walk_expr(base, owners);
+            }
+        }
         Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
             for item in items {
                 walk_expr(item, owners);

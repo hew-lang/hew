@@ -301,6 +301,49 @@ impl Checker {
             // (admissibility.rs) surfaces it as an inference error. See W4.042.
             Expr::Identifier(name) if name == "None" => Ty::option(Ty::Var(TypeVar::fresh())),
             Expr::Identifier(name) => self.synthesize_identifier(name, span),
+            Expr::ContextVariant(context) => {
+                if let Some(record) = &context.record {
+                    self.check_struct_init(
+                        &context.name,
+                        &record.fields,
+                        None,
+                        record.base.as_deref(),
+                        span,
+                    )
+                } else {
+                    self.synthesize_identifier(&context.name, span)
+                }
+            }
+            Expr::GenericApplySuffix { target, type_args } => {
+                for type_arg in type_args {
+                    self.resolve_type_expr(type_arg);
+                }
+                self.synthesize(&target.0, &target.1)
+            }
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                let target_ty = self.synthesize(&target.0, &target.1);
+                for (_, (value, value_span)) in fields {
+                    self.synthesize(value, value_span);
+                }
+                if let Some(base) = base {
+                    self.synthesize(&base.0, &base.1);
+                }
+                target_ty
+            }
+            Expr::QualifiedAssoc(path) => {
+                self.resolve_type_expr(&path.base);
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "qualified associated values are not yet supported by type checking"
+                        .to_string(),
+                );
+                Ty::Error
+            }
 
             // Binary ops
             Expr::Binary { left, op, right } => self.check_binary_op(left, *op, right),
@@ -2905,6 +2948,19 @@ impl Checker {
         // `tail_ok_armed` to perform the actual coercion.
         let tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
         match (expr, expected) {
+            (Expr::ContextVariant(context), _) => {
+                let compatibility_expr = if let Some(record) = &context.record {
+                    Expr::StructInit {
+                        name: context.name.clone(),
+                        fields: record.fields.clone(),
+                        type_args: None,
+                        base: record.base.clone(),
+                    }
+                } else {
+                    Expr::Identifier(context.name.clone())
+                };
+                self.check_against(&compatibility_expr, span, expected)
+            }
             // Lambda with expected function type — propagate param types!
             (
                 Expr::Lambda {
@@ -5748,6 +5804,10 @@ impl Checker {
             | Expr::Clone(_)
             | Expr::Literal(_)
             | Expr::Identifier(_)
+            | Expr::ContextVariant(_)
+            | Expr::GenericApplySuffix { .. }
+            | Expr::RecordInitSuffix { .. }
+            | Expr::QualifiedAssoc(_)
             | Expr::Tuple(_)
             | Expr::Array(_)
             | Expr::ArrayRepeat { .. }
@@ -7985,6 +8045,10 @@ impl Checker {
                 ProducedValueFact::result(Ownership::owned(Acquisition::Fresh))
             }
             Expr::Literal(_)
+            | Expr::ContextVariant(_)
+            | Expr::GenericApplySuffix { .. }
+            | Expr::RecordInitSuffix { .. }
+            | Expr::QualifiedAssoc(_)
             | Expr::Unary { .. }
             | Expr::Cast { .. }
             | Expr::Range { .. }

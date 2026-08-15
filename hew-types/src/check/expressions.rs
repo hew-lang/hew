@@ -7425,7 +7425,9 @@ impl Checker {
         // from colliding in the downstream MIR record-layout / field-order
         // registry (the same identity discipline `samename_type_layout` proves
         // for explicitly qualified constructions).
-        let qualified_owned = self.published_bare_type_qualified(name);
+        let qualified_owned = self
+            .published_bare_type_qualified(name)
+            .or_else(|| self.flat_file_import_type_owner(name));
         if let Some(qualified) = qualified_owned.as_deref() {
             if let Some((module, _)) = qualified.split_once('.') {
                 self.used_modules.borrow_mut().insert(ImportKey::in_file(

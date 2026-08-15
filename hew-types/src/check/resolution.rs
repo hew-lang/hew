@@ -376,6 +376,28 @@ impl Checker {
             .then(|| qualified.clone())
     }
 
+    pub(super) fn flat_file_import_type_owner(&self, name: &str) -> Option<String> {
+        if self.current_module.is_some() {
+            return None;
+        }
+        let mut owners: Vec<String> =
+            self.registered_type_owners(name)
+                .into_iter()
+                .filter(|owner| {
+                    owner.rsplit_once('.').is_some_and(|(module, _)| {
+                        self.flat_file_import_module_names.contains(module)
+                    }) && self.type_defs.contains_key(owner)
+                        && self.resolved_builtin_type(owner).is_none()
+                })
+                .collect();
+        owners.sort_unstable();
+        owners.dedup();
+        match owners.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        }
+    }
+
     /// The owner-qualified canonical identity a `Ty::Named` NAME denotes, for
     /// nominal-equality comparison at the unification boundary — or `None` when
     /// the name is already at its canonical identity and must be left as written.
@@ -477,25 +499,8 @@ impl Checker {
         // qualification every non-builtin-shaped leaf receives below — and
         // keep the builtin presentation only when no such user owner exists.
         if self.current_module.is_none() && crate::lookup_builtin_type(name).is_some() {
-            // Root's bare namespace IS the file-import namespace (#2208): a
-            // package import can only claim this leaf through an explicit
-            // qualified spelling, so only a flat-file-import declaration
-            // competes with the builtin presentation here. Exactly one such
-            // owner wins; zero (or an ambiguous set) keeps the builtin.
-            let mut file_owners: Vec<String> = self
-                .registered_type_owners(name)
-                .into_iter()
-                .filter(|owner| {
-                    owner.rsplit_once('.').is_some_and(|(module, _)| {
-                        self.flat_file_import_module_names.contains(module)
-                    }) && self.type_defs.contains_key(owner)
-                        && self.resolved_builtin_type(owner).is_none()
-                })
-                .collect();
-            file_owners.sort_unstable();
-            file_owners.dedup();
-            if let [only] = file_owners.as_slice() {
-                return Some(only.clone());
+            if let Some(owner) = self.flat_file_import_type_owner(name) {
+                return Some(owner);
             }
             return None;
         }

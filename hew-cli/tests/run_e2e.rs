@@ -203,6 +203,38 @@ fn run_program_with_simple_arithmetic_succeeds() {
 }
 
 #[test]
+fn qualified_variant_tuple_payload_binds_nested_values() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("qualified_variant_tuple_payload.hew");
+    std::fs::write(
+        &path,
+        r"
+enum Pair { Both((i64, i64)); None }
+
+fn main() {
+    let pair = Pair::Both((19, 23));
+    match pair {
+        Pair::Both((a, b)) => println(a * 100 + b),
+        Pair::None => println(0),
+    }
+}
+",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&path, dir.path());
+    assert!(
+        output.status.success(),
+        "qualified aggregate payload must compile and run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1923\n");
+}
+
+#[test]
 fn tcp_loopback_read_string_roundtrip_returns_written_bytes() {
     require_codegen();
 

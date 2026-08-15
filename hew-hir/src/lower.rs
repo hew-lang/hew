@@ -320,7 +320,7 @@ fn collect_match_payload_predicates(
 }
 
 fn constructor_payload_aggregate_subpatterns(pattern: &Pattern) -> bool {
-    let Pattern::Constructor { patterns, .. } = pattern else {
+    let Some((_, patterns)) = tuple_variant_pattern_parts(pattern) else {
         return false;
     };
     patterns.iter().any(|(sub_pat, _)| {
@@ -342,7 +342,7 @@ fn constructor_payload_aggregate_subpatterns(pattern: &Pattern) -> bool {
 /// (`lower_struct_variant_payload_aggregates`). Mirrors
 /// `constructor_payload_aggregate_subpatterns` for the struct-variant shape.
 fn struct_variant_payload_aggregate_subpatterns(pattern: &Pattern) -> bool {
-    let Pattern::Struct { fields, .. } = pattern else {
+    let Some((_, fields)) = struct_variant_pattern_parts(pattern) else {
         return false;
     };
     fields.iter().any(|pf| match &pf.pattern {
@@ -352,6 +352,42 @@ fn struct_variant_payload_aggregate_subpatterns(pattern: &Pattern) -> bool {
         }
         None => false,
     })
+}
+
+fn tuple_variant_pattern_parts(pattern: &Pattern) -> Option<(&str, &[Spanned<Pattern>])> {
+    match pattern {
+        Pattern::Constructor { name, patterns } => Some((name, patterns)),
+        Pattern::NominalPath {
+            path,
+            payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)),
+        } => Some((nominal_path_leaf(path)?, patterns)),
+        Pattern::ContextVariant(context) => match context.payload.as_ref() {
+            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                Some((&context.name, patterns))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn struct_variant_pattern_parts(
+    pattern: &Pattern,
+) -> Option<(&str, &[hew_parser::ast::PatternField])> {
+    match pattern {
+        Pattern::Struct { name, fields, .. } => Some((name, fields)),
+        Pattern::NominalPath {
+            path,
+            payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
+        } => Some((nominal_path_leaf(path)?, fields)),
+        Pattern::ContextVariant(context) => match context.payload.as_ref() {
+            Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                Some((&context.name, fields))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Resolve the type of an `if`/`else` expression from its two branch types,
@@ -16784,7 +16820,7 @@ impl LowerCtx {
         // produce no prelude.
         let success_prelude = if binding_error {
             Vec::new()
-        } else if let Pattern::Constructor { name, patterns } = &pattern.0 {
+        } else if let Some((name, patterns)) = tuple_variant_pattern_parts(&pattern.0) {
             let (prelude, had_error) = self.lower_constructor_payload_aggregates(
                 name,
                 patterns,
@@ -29730,7 +29766,7 @@ impl LowerCtx {
             }
 
             let mut body_prelude = Vec::new();
-            if let Pattern::Constructor { name, patterns } = &arm.pattern.0 {
+            if let Some((name, patterns)) = tuple_variant_pattern_parts(&arm.pattern.0) {
                 let (prelude, had_error) = self.lower_constructor_payload_aggregates(
                     name,
                     patterns,
@@ -29740,7 +29776,7 @@ impl LowerCtx {
                 );
                 body_prelude = prelude;
                 binding_error |= had_error;
-            } else if let Pattern::Struct { name, fields, .. } = &arm.pattern.0 {
+            } else if let Some((name, fields)) = struct_variant_pattern_parts(&arm.pattern.0) {
                 // Enum struct-variant arm with aggregate field sub-patterns
                 // (`Variant { field: (a, b) }`). Plain record-project arms
                 // (`Point { x, y }`) and plain field binders route through the

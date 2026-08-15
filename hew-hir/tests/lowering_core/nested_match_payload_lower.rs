@@ -271,6 +271,48 @@ fn arm_body_prelude_binding_names(arm: &hew_hir::HirMatchArm) -> Vec<String> {
         .collect()
 }
 
+#[test]
+fn qualified_tuple_variant_aggregate_binds_nested_names() {
+    let output = lower_checked(
+        r"
+enum Pair { Both((i64, i64)); None }
+
+fn sum(pair: Pair) -> i64 {
+    match pair {
+        Pair::Both((a, b)) => a + b,
+        Pair::None => 0,
+    }
+}",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+
+    let HirExprKind::Match { arms, .. } = find_match_in_fn(&output, "sum") else {
+        panic!("expected match expression")
+    };
+    let both_arm = &arms[0];
+    assert!(
+        both_arm
+            .bindings
+            .iter()
+            .any(|binding| binding.name.starts_with("__payload_")),
+        "qualified aggregate arm must retain its payload projection: {:?}",
+        both_arm.bindings
+    );
+    let nested = arm_body_prelude_binding_names(both_arm);
+    assert!(
+        nested.iter().any(|name| name == "a"),
+        "missing `a`: {nested:?}"
+    );
+    assert!(
+        nested.iter().any(|name| name == "b"),
+        "missing `b`: {nested:?}"
+    );
+}
+
 // Regression for hew-lang/hew#2354: a tuple sub-pattern in enum struct-variant
 // field position (`Data { value: (a, b) }`) passed the checker but failed HIR
 // lowering with `E_HIR: identifier has no binding` because the aggregate

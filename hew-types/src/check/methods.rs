@@ -2484,8 +2484,19 @@ impl Checker {
 
     /// Look up a type definition, handling module-qualified names like `json.Value`.
     pub(super) fn lookup_type_def(&self, name: &str) -> Option<TypeDef> {
+        let current_module_key = if name.contains('.') {
+            None
+        } else {
+            self.current_module_identity()
+                .map(|owner| format!("{owner}.{name}"))
+        };
         self.type_defs
             .get(name)
+            .or_else(|| {
+                current_module_key
+                    .as_ref()
+                    .and_then(|key| self.type_defs.get(key))
+            })
             .or_else(|| {
                 self.strip_module_prefix(name)
                     .and_then(|u| self.type_defs.get(u))
@@ -2497,6 +2508,14 @@ impl Checker {
     pub(super) fn lookup_type_def_mut(&mut self, name: &str) -> Option<&mut TypeDef> {
         if self.type_defs.contains_key(name) {
             return self.type_defs.get_mut(name);
+        }
+        if !name.contains('.') {
+            if let Some(owner) = self.current_module_identity() {
+                let current_module_key = format!("{owner}.{name}");
+                if self.type_defs.contains_key(&current_module_key) {
+                    return self.type_defs.get_mut(&current_module_key);
+                }
+            }
         }
         let unqualified = self.strip_module_prefix(name)?;
         self.type_defs.get_mut(unqualified)

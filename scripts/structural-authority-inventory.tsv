@@ -134,9 +134,9 @@ string-method-identity	qualified-format-macro	hew-types/src/check/coerce.rs	4	st
 string-method-identity	qualified-format-macro	hew-types/src/check/expressions.rs	6	stage-1	reviewed qualified string identity construction; adds dotted module-qualified unit-constructor resolution (module.Type.Variant)
 string-method-identity	qualified-format-macro	hew-types/src/check/items.rs	31	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/lints/mod.rs	1	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/methods.rs	58	stage-1	feat/dyn-trait-return-position: new trait-object pipeline rejection in reject_vec_pipeline_fn_element adds a qualified `Vec::{method}` literal
+string-method-identity	qualified-format-macro	hew-types/src/check/methods.rs	56	stage-1	feat/dyn-trait-return-position: new trait-object pipeline rejection in reject_vec_pipeline_fn_element adds a qualified `Vec::{method}` literal
 string-method-identity	qualified-format-macro	hew-types/src/check/mod.rs	3	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	37	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	38	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/resolution.rs	11	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/statements.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/method_resolution.rs	3	stage-1	reviewed qualified string identity construction

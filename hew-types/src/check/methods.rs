@@ -53,6 +53,7 @@ impl Checker {
         self.trait_method_ids_by_binding
             .get(&(
                 self.current_module.clone(),
+                self.current_module_idx,
                 trait_name.to_string(),
                 method_name.to_string(),
             ))
@@ -1228,8 +1229,14 @@ impl Checker {
         span: &Span,
         kind: MethodCallReceiverKind,
     ) {
-        self.method_call_receiver_kinds
-            .insert(SpanKey::in_module(span, self.current_module_idx), kind);
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        if matches!(
+            self.method_call_receiver_kinds.get(&key),
+            Some(MethodCallReceiverKind::LexicalBinding { .. })
+        ) {
+            return;
+        }
+        self.method_call_receiver_kinds.insert(key, kind);
     }
 
     /// Returns whether the qualified method name `Trait::method` is in the
@@ -1346,9 +1353,11 @@ impl Checker {
         // marker derivation keys on the source declaration's full owner. A
         // missing binding is not evidence for a bare reply type — fail closed
         // so a same-name sibling cannot lend it a Send marker.
-        let module_owner = self
-            .module_import_bindings
-            .get(&(self.current_module.clone(), module_short.to_string()))?;
+        let module_owner = self.module_import_bindings.get(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            module_short.to_string(),
+        ))?;
         let qualified = format!("{module_owner}.{name}");
         if self.registry.has_type_markers(&qualified) {
             Some(Ty::Named {
@@ -2062,9 +2071,34 @@ impl Checker {
     /// path segment.
     pub(super) fn canonical_module_import_owner(&self, module_name: &str) -> String {
         self.module_import_bindings
-            .get(&(self.current_module.clone(), module_name.to_string()))
+            .get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                module_name.to_string(),
+            ))
             .cloned()
             .unwrap_or_else(|| module_name.to_string())
+    }
+
+    /// Whether `module_name` is a lexical module binding in the current file.
+    /// The process-wide module registry is deliberately not consulted.
+    pub(super) fn module_binding_in_current_file(&self, module_name: &str) -> bool {
+        self.module_import_bindings.contains_key(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            module_name.to_string(),
+        )) || crate::stdlib_authority::authority()
+            .prelude_exports()
+            .iter()
+            .filter(|export| export.kind == crate::PreludeExportKind::Module)
+            .any(|export| {
+                export.alias.as_deref().unwrap_or_else(|| {
+                    export
+                        .module
+                        .rsplit_once("::")
+                        .map_or(export.module.as_str(), |(_, leaf)| leaf)
+                }) == module_name
+            })
     }
 
     /// Whether this module spelling resolves to a user-source declaration.
@@ -2441,7 +2475,7 @@ impl Checker {
 
     pub(super) fn strip_module_prefix<'a>(&self, name: &'a str) -> Option<&'a str> {
         let dot = name.find('.')?;
-        if self.modules.contains(&name[..dot]) {
+        if self.module_binding_in_current_file(&name[..dot]) {
             Some(&name[dot + 1..])
         } else {
             None
@@ -2481,12 +2515,16 @@ impl Checker {
         module_short: &str,
         type_name: &str,
     ) -> Option<TypeDef> {
-        if !self.modules.contains(module_short) {
+        if !self.module_binding_in_current_file(module_short) {
             return None;
         }
         let resolved_module = self
             .module_import_bindings
-            .get(&(self.current_module.clone(), module_short.to_string()))
+            .get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                module_short.to_string(),
+            ))
             .map(String::as_str)?;
         let exports = self.module_type_exports.get(resolved_module)?;
         if !exports.contains(type_name) {
@@ -2503,12 +2541,14 @@ impl Checker {
         &self,
         module_short: &str,
     ) -> Option<&HashSet<String>> {
-        if !self.modules.contains(module_short) {
+        if !self.module_binding_in_current_file(module_short) {
             return None;
         }
-        let owner = self
-            .module_import_bindings
-            .get(&(self.current_module.clone(), module_short.to_string()))?;
+        let owner = self.module_import_bindings.get(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            module_short.to_string(),
+        ))?;
         self.module_type_exports.get(owner)
     }
 
@@ -2590,10 +2630,11 @@ impl Checker {
         if is_actor(name) {
             return BareActorResolution::Resolved(name.to_string());
         }
-        if let Some(owners) = self
-            .published_bare_type_owners
-            .get(&(self.current_module.clone(), name.to_string()))
-        {
+        if let Some(owners) = self.published_bare_type_owners.get(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            name.to_string(),
+        )) {
             let candidates: Vec<String> = owners
                 .iter()
                 .filter(|identity| is_actor(identity))
@@ -7548,6 +7589,20 @@ impl Checker {
         if let Expr::Identifier(name) = &receiver.0 {
             let receiver_is_binding = self.env.lookup_ref(name).is_some();
             let receiver_is_known_type = self.type_defs.contains_key(name);
+            let receiver_shadows_module = receiver_is_binding
+                && self.module_import_bindings.contains_key(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    name.clone(),
+                ));
+            if receiver_shadows_module {
+                self.record_method_call_receiver_kind(
+                    span,
+                    MethodCallReceiverKind::LexicalBinding {
+                        binding_name: name.clone(),
+                    },
+                );
+            }
             // `name` is a lexical import binding (`string`, or an explicit
             // module alias). Declaration and export registries are keyed by the
             // exact source owner, so resolve the binding before every authority
@@ -7557,14 +7612,22 @@ impl Checker {
             let key = format!("{canonical_owner}.{method}");
             let looks_like_module_call = !receiver_is_binding
                 && !receiver_is_known_type
-                && (self.modules.contains(name)
+                && (self.module_binding_in_current_file(name)
                     || self.module_fn_exports.contains(&key)
                     || self.fn_sigs.contains_key(&key));
             if looks_like_module_call {
-                if self.modules.contains(name) {
-                    self.used_modules
-                        .borrow_mut()
-                        .insert(ImportKey::new(self.current_module.clone(), name.clone()));
+                self.record_method_call_receiver_kind(
+                    span,
+                    MethodCallReceiverKind::ModuleBinding {
+                        module_name: canonical_owner.clone(),
+                    },
+                );
+                if self.module_binding_in_current_file(name) {
+                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        name.clone(),
+                    ));
                 }
                 // Cross-module enum variant construction: e.g. `fs.IoError::TimedOut(0)`.
                 // method contains "::" → treat as a qualified variant constructor rather than a
@@ -7659,8 +7722,13 @@ impl Checker {
                             let (expr, sp) = arg.expr();
                             self.synthesize(expr, sp);
                         }
+                        let kind = if self.resolve_module_type(name, method).is_some() {
+                            TypeErrorKind::PathKindMismatch
+                        } else {
+                            TypeErrorKind::PathMemberNotFound
+                        };
                         self.report_error(
-                            TypeErrorKind::UndefinedMethod,
+                            kind,
                             span,
                             format!("no function `{method}` in module `{name}`"),
                         );
@@ -7734,7 +7802,7 @@ impl Checker {
                     self.synthesize(expr, sp);
                 }
                 self.report_error(
-                    TypeErrorKind::UndefinedMethod,
+                    TypeErrorKind::PathMemberNotFound,
                     span,
                     format!("no function `{method}` in module `{name}`"),
                 );
@@ -10373,7 +10441,7 @@ impl Checker {
                     } else {
                         format!("no method `{method}` on `{}`", resolved.user_facing())
                     };
-                    self.report_error(TypeErrorKind::UndefinedMethod, span, message);
+                    self.report_missing_method_with_shadow_note(receiver, method, span, message);
                     Ty::Error
                 }
             }
@@ -10468,10 +10536,37 @@ impl Checker {
                 } else {
                     format!("no method `{method}` on `{}`", resolved.user_facing())
                 };
-                self.report_error(TypeErrorKind::UndefinedMethod, span, message);
+                self.report_missing_method_with_shadow_note(receiver, method, span, message);
                 Ty::Error
             }
         }
+    }
+
+    fn report_missing_method_with_shadow_note(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        span: &Span,
+        message: String,
+    ) {
+        let mut error = TypeError::new(TypeErrorKind::UndefinedMethod, span.clone(), message);
+        if let Expr::Identifier(binding) = &receiver.0 {
+            if self.env.lookup_ref(binding).is_some()
+                && self.module_import_bindings.contains_key(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    binding.clone(),
+                ))
+            {
+                error = error.with_note(
+                    receiver.1.clone(),
+                    format!(
+                        "lexical binding `{binding}` shadows the imported module; `{binding}.{method}` was resolved as a value method lookup"
+                    ),
+                );
+            }
+        }
+        self.errors.push(error);
     }
 }
 
@@ -10897,7 +10992,7 @@ mod tests {
             .insert("std.fs".to_string());
         checker
             .module_import_bindings
-            .insert((None, "files".to_string()), "std.fs".to_string());
+            .insert((None, 0, "files".to_string()), "std.fs".to_string());
         checker.reject_wasm_native_only_module_function("files", "try_read", &span);
         assert_eq!(checker.errors.len(), 1, "module alias must reject");
 
@@ -10915,7 +11010,7 @@ mod tests {
         checker.enable_wasm_target();
         checker
             .module_import_bindings
-            .insert((None, "lookalike".to_string()), "app.fs".to_string());
+            .insert((None, 0, "lookalike".to_string()), "app.fs".to_string());
         checker.reject_wasm_native_only_module_function("lookalike", "try_read", &span);
         checker.reject_wasm_native_only_function_identity("app.fs.try_read", &span);
         assert!(
@@ -10938,11 +11033,12 @@ mod tests {
                 builtin: Some(BuiltinType::Rc),
             }],
         );
-        checker
-            .module_import_bindings
-            .insert((None, "replysend".to_string()), "hew.replysend".to_string());
         checker.module_import_bindings.insert(
-            (None, "replynonsend".to_string()),
+            (None, 0, "replysend".to_string()),
+            "hew.replysend".to_string(),
+        );
+        checker.module_import_bindings.insert(
+            (None, 0, "replynonsend".to_string()),
             "hew.replynonsend".to_string(),
         );
         let bare_reply = Ty::Named {

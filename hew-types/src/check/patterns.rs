@@ -1095,6 +1095,16 @@ impl Checker {
         }
 
         if let Pattern::ContextVariant(context) = pattern {
+            if self.context_variant_expected_owner(ty, span).is_none() {
+                if let Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) =
+                    context.payload.as_ref()
+                {
+                    for pattern in patterns {
+                        self.bind_pattern(&pattern.0, &Ty::Error, is_mutable, &pattern.1);
+                    }
+                }
+                return;
+            }
             if self.reject_machine_event_pattern_outside_transition(ty, span) {
                 return;
             }
@@ -1103,15 +1113,12 @@ impl Checker {
                     if self.resolve_variant_match(&context.name, ty).is_none()
                         && !matches!(ty, Ty::Var(_) | Ty::Error)
                     {
-                        let expected = ty.user_facing().to_string();
                         self.report_error(
-                            TypeErrorKind::Mismatch {
-                                expected: expected.clone(),
-                                actual: format!(".{}", context.name),
-                            },
+                            TypeErrorKind::PathMemberNotFound,
                             span,
                             format!(
-                                "variant `.{}` is not a member of scrutinee type `{expected}`",
+                                "E_PATH_MEMBER_NOT_FOUND: expected type `{}` has no variant `{}`",
+                                ty.user_facing(),
                                 context.name
                             ),
                         );
@@ -1125,16 +1132,12 @@ impl Checker {
                             self.bind_pattern(&pattern.0, payload_ty, is_mutable, &pattern.1);
                         }
                     } else if !matches!(ty, Ty::Var(_) | Ty::Error) {
-                        let expected = ty.user_facing().to_string();
                         self.report_error(
-                            TypeErrorKind::Mismatch {
-                                expected: expected.clone(),
-                                actual: format!(".{}", context.name),
-                            },
+                            TypeErrorKind::PathMemberNotFound,
                             span,
                             format!(
-                                "constructor pattern `.{}` cannot match `{expected}`",
-                                context.name
+                                "E_PATH_MEMBER_NOT_FOUND: expected type `{}` has no tuple variant `{}`",
+                                ty.user_facing(), context.name
                             ),
                         );
                     }
@@ -1251,6 +1254,9 @@ impl Checker {
                     self.resolve_variant_match(name, ty).is_some()
                 };
                 if is_constructor_like {
+                    if !name.contains("::") {
+                        self.warn_bare_variant_pattern(name, span);
+                    }
                     // A unit-variant constructor pattern introduces no binding. Gate the
                     // machine-event rejection for its side effect, then return WITHOUT
                     // defining a name: a constructor is not a binder, so the env must not
@@ -1277,6 +1283,9 @@ impl Checker {
                 }
                 // Look up variant in enum definition
                 if let Some(payload_tys) = self.lookup_variant_types(name, ty, patterns.len()) {
+                    if !name.contains("::") {
+                        self.warn_bare_variant_pattern(name, span);
+                    }
                     for (p, pty) in patterns.iter().zip(payload_tys.iter()) {
                         self.bind_pattern(&p.0, pty, is_mutable, &p.1);
                     }

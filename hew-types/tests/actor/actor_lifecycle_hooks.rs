@@ -322,7 +322,7 @@ fn whole_module_aliases_keep_canonical_exit_and_down_hook_identity() {
     assert_eq!(
         output
             .import_type_name_aliases
-            .get(&(None, "f.CrashNotification".to_string()))
+            .get(&(None, 0, "f.CrashNotification".to_string()))
             .map(String::as_str),
         Some("std.failure.CrashNotification"),
         "the checker must publish its proven whole-module lifecycle identity for HIR"

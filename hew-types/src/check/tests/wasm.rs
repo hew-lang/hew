@@ -720,7 +720,7 @@ mod wasm_rejects {
             assert_eq!(
                 checker
                     .import_fn_name_aliases
-                    .get(&(None, binding.to_string())),
+                    .get(&(None, 0, binding.to_string())),
                 Some(&"std.fs.try_read".to_string()),
                 "named binding `{binding}` must retain exact source identity; all bindings: {:#?}",
                 checker.import_fn_name_aliases,
@@ -850,7 +850,7 @@ mod wasm_rejects {
         let mut checker = Checker::new(test_registry());
         checker
             .module_import_bindings
-            .insert((None, "ws".to_string()), "acme.websocket".to_string());
+            .insert((None, 0, "ws".to_string()), "acme.websocket".to_string());
         assert_eq!(
             checker.wasm_native_only_module_feature("ws"),
             None,
@@ -859,7 +859,7 @@ mod wasm_rejects {
 
         checker
             .module_import_bindings
-            .insert((None, "ws".to_string()), "std.net.websocket".to_string());
+            .insert((None, 0, "ws".to_string()), "std.net.websocket".to_string());
         checker
             .canonical_std_module_sources
             .insert("std.net.websocket".to_string());

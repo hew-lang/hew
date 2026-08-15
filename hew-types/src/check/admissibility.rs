@@ -859,6 +859,8 @@ impl Checker {
 
         self.method_call_receiver_kinds
             .retain(|_, kind| match kind {
+                MethodCallReceiverKind::LexicalBinding { binding_name } => !binding_name.is_empty(),
+                MethodCallReceiverKind::ModuleBinding { module_name } => !module_name.is_empty(),
                 MethodCallReceiverKind::NamedTypeInstance { type_name } => {
                     type_defs.contains_key(type_name)
                         || type_name.contains('.')

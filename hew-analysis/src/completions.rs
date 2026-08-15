@@ -233,7 +233,7 @@ fn module_member_completions(
     let binding = trailing_identifier(source.get(..receiver_end)?)?;
     let owner = tc
         .module_import_bindings
-        .get(&(None, binding.to_string()))?;
+        .get(&(None, 0, binding.to_string()))?;
     let prefix = format!("{owner}.");
     // A member is a DIRECT child of the owner: `std.io.scanner.from_string`
     // belongs to `scanner`, `std.io.scanner.inner.helper` does not.
@@ -528,8 +528,8 @@ fn imported_actor_spawn_labels(output: &TypeCheckOutput) -> Vec<String> {
         let Some((owner, actor_name)) = identity.rsplit_once('.') else {
             continue;
         };
-        for ((importer, binding), bound_owner) in &output.module_import_bindings {
-            if importer.is_none() && bound_owner == owner {
+        for ((importer, file, binding), bound_owner) in &output.module_import_bindings {
+            if importer.is_none() && *file == 0 && bound_owner == owner {
                 labels.insert(format!("{binding}.{actor_name}"));
             }
         }

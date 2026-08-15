@@ -5,6 +5,185 @@
 pub(super) use super::*;
 
 #[test]
+fn contextual_variants_resolve_only_from_the_expected_type() {
+    let output = check_source(
+        r"
+enum Choice { Some(i64); None }
+
+fn choose(flag: bool) -> Choice {
+    if flag { .Some(7) } else { .None }
+}
+
+fn read(value: Choice) -> i64 {
+    match value {
+        .Some(number) => number,
+        .None => 0,
+    }
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "context-selected expression and pattern variants must check: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn contextual_variant_without_expected_enum_is_rejected() {
+    let output = check_source("fn main() { let value = .None; }");
+    assert!(output.errors.iter().any(|error| {
+        error.kind == TypeErrorKind::ContextVariantNoType
+            && error.message.contains("E_CONTEXT_VARIANT_NO_TYPE")
+    }));
+}
+
+#[test]
+fn contextual_variant_missing_from_expected_enum_is_rejected() {
+    let output = check_source("enum Choice { Ready } fn make() -> Choice { .Missing }");
+    assert!(output.errors.iter().any(|error| {
+        error.kind == TypeErrorKind::PathMemberNotFound
+            && error.message.contains("E_PATH_MEMBER_NOT_FOUND")
+    }));
+}
+
+#[test]
+fn contextual_variant_reports_ambiguous_expected_owner() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .published_bare_type_owners
+        .entry((None, 0, "State".to_string()))
+        .or_default()
+        .extend(["left.State".to_string(), "right.State".to_string()]);
+
+    assert!(checker
+        .context_variant_expected_owner(&Ty::named("State", vec![]), &(0..6))
+        .is_none());
+    assert!(checker.errors.iter().any(|error| {
+        error.kind == TypeErrorKind::ContextVariantAmbiguous
+            && error.message.contains("E_CONTEXT_VARIANT_AMBIGUOUS")
+    }));
+}
+
+#[test]
+fn accepted_bare_variants_emit_migration_warnings() {
+    let output = check_source(
+        r"
+enum Choice { Present(i64); Absent }
+fn make() -> Choice { Present(7) }
+fn read(value: Choice) -> i64 {
+    match value { Present(number) => number, Absent => 0 }
+}
+",
+    );
+    assert!(output.errors.is_empty(), "legacy form remains accepted");
+    assert!(output
+        .warnings
+        .iter()
+        .any(|warning| warning.kind == TypeErrorKind::BareVariantExpr));
+    assert!(output
+        .warnings
+        .iter()
+        .any(|warning| warning.kind == TypeErrorKind::BareVariantPattern));
+}
+
+#[test]
+fn uppercase_pattern_binding_is_not_classified_as_a_variant() {
+    let output = check_source(
+        r"
+fn read(value: i64) -> i64 {
+    match value { Value => Value }
+}
+",
+    );
+    assert!(output.errors.is_empty());
+    assert!(output
+        .warnings
+        .iter()
+        .all(|warning| warning.kind != TypeErrorKind::BareVariantPattern));
+}
+
+#[test]
+fn prelude_declarations_are_protected_before_source_registration() {
+    let output = check_source("fn println(value: i64) { let _ = value; }");
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::PreludeDeclCollision));
+}
+
+#[test]
+fn modules_and_types_are_rejected_in_value_position() {
+    let output = check_source("fn main() { let module_value = math; let type_value = Vec; }");
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::ModuleUsedAsValue));
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::TypeUsedAsValue));
+}
+
+#[test]
+fn module_member_lookup_uses_path_diagnostics() {
+    let output = check_source("fn main() { math.missing(); }");
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::PathMemberNotFound));
+}
+
+#[test]
+fn contextual_variant_constructor_kind_must_match() {
+    let output = check_source("enum State { Ready } fn make() -> State { .Ready(1) }");
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::PathKindMismatch));
+}
+
+#[test]
+fn qualified_associated_item_rejects_multiple_trait_owners() {
+    let parsed_trait = hew_parser::parse("pub trait Shared { type Item; }");
+    assert!(parsed_trait.errors.is_empty());
+    let trait_decl = parsed_trait
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            Item::Trait(trait_decl) => Some(trait_decl),
+            _ => None,
+        })
+        .expect("trait fixture");
+    let info = Checker::trait_info_from_decl(trait_decl);
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .trait_defs
+        .insert("left.Shared".to_string(), info.clone());
+    checker.trait_defs.insert("right.Shared".to_string(), info);
+    checker.published_bare_trait_owners.insert(
+        (None, 0, "Shared".to_string()),
+        ["left.Shared".to_string(), "right.Shared".to_string()]
+            .into_iter()
+            .collect(),
+    );
+    let program =
+        hew_parser::parse("fn main() { let item = <i64 as Shared>.Item; println(item); }");
+    assert!(
+        program.errors.is_empty(),
+        "fixture parse: {:?}",
+        program.errors
+    );
+    let output = checker.check_program(&program.program);
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::AssocItemAmbiguous));
+}
+
+#[test]
 fn test_arity_mismatch_too_many_args() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.register_builtins();

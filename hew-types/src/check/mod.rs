@@ -429,6 +429,15 @@ impl Checker {
         }
     }
 
+    /// Check the compiler-embedded builtin source under its declaration
+    /// authority. User programs must enter through [`Self::check_program`].
+    pub fn check_embedded_builtins(&mut self, program: &Program) -> TypeCheckOutput {
+        self.checking_embedded_builtins = true;
+        let output = self.check_program(program);
+        self.checking_embedded_builtins = false;
+        output
+    }
+
     /// Pass 3: Check all bodies
     #[expect(
         clippy::too_many_lines,
@@ -500,6 +509,7 @@ impl Checker {
             }
         }
         self.register_builtins();
+        self.capture_protected_prelude_bindings();
         // `register_builtins` parses the compiler-embedded `std/builtins.hew`
         // source outside the module graph.  Record that exact producer so
         // later trait/source identity normalization can relate prelude traits

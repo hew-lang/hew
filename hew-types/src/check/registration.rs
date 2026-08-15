@@ -12937,7 +12937,16 @@ impl Checker {
         source_def: &TypeDef,
     ) {
         let qualified = format!("{module_full_path}.{name}");
-        self.type_defs.insert(qualified.clone(), source_def.clone());
+        let mut published = source_def.clone();
+        if let Some(existing) = self.type_defs.get(&qualified) {
+            for (method_name, method_sig) in &existing.methods {
+                published
+                    .methods
+                    .entry(method_name.clone())
+                    .or_insert_with(|| method_sig.clone());
+            }
+        }
+        self.type_defs.insert(qualified.clone(), published.clone());
         if !self.type_def_spans.contains_key(&qualified) {
             if let Some(span) = self.type_def_spans.get(name).cloned() {
                 self.type_def_spans.insert(qualified.clone(), span);
@@ -12948,15 +12957,15 @@ impl Checker {
         // `replysend.Reply` after `replynonsend.Reply` could otherwise stamp the
         // non-Send owner's canonical key with the Send sibling's fields. Build
         // the structural rows directly from this source definition instead.
-        let members = if source_def.kind == TypeDefKind::Enum {
-            Self::structural_member_types_for_type(source_def)
+        let members = if published.kind == TypeDefKind::Enum {
+            Self::structural_member_types_for_type(&published)
         } else {
-            source_def.fields.values().cloned().collect()
+            published.fields.values().cloned().collect()
         };
         let members = self.expand_for_marker_registration(&members);
         self.registry.register_type(qualified.clone(), members);
         self.registry
-            .register_type_params(qualified.clone(), source_def.type_params.clone());
+            .register_type_params(qualified.clone(), published.type_params.clone());
         self.handle_bearing_dirty = true;
     }
 
@@ -13259,6 +13268,51 @@ fn collision_imported_type_name_collides(
         .take(2)
         .count()
         > 1
+}
+
+#[cfg(test)]
+mod canonical_type_publication_tests {
+    use super::*;
+
+    fn dog_type(methods: HashMap<String, FnSig>) -> TypeDef {
+        TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Dog".to_string(),
+            type_params: Vec::new(),
+            bounds: HashMap::new(),
+            fields: HashMap::new(),
+            field_order: Vec::new(),
+            variants: HashMap::new(),
+            methods,
+            doc_comment: None,
+            is_indirect: false,
+        }
+    }
+
+    #[test]
+    fn canonical_refresh_preserves_accumulated_methods() {
+        let mut checker = Checker::default();
+        checker.type_defs.insert(
+            "greeting.Dog".to_string(),
+            dog_type(HashMap::from([
+                ("greet".to_string(), FnSig::default()),
+                ("name".to_string(), FnSig::default()),
+            ])),
+        );
+        let source = dog_type(HashMap::from([(
+            "name".to_string(),
+            FnSig {
+                return_type: Ty::String,
+                ..FnSig::default()
+            },
+        )]));
+
+        checker.register_canonical_type_def("greeting", "Dog", &source);
+
+        let methods = &checker.type_defs["greeting.Dog"].methods;
+        assert!(methods.contains_key("greet"));
+        assert_eq!(methods["name"].return_type, Ty::String);
+    }
 }
 
 #[cfg(test)]

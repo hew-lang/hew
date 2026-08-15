@@ -19,7 +19,7 @@ fn git_version(repo_dir: &Path, cargo_version: &str) -> String {
     }
 
     let Ok(describe) = git_stdout(repo_dir, &["describe", "--tags", "--long", "--dirty"]) else {
-        return cargo_version.to_string();
+        return shallow_clone_version(repo_dir, cargo_version);
     };
 
     let dirty = describe.ends_with("-dirty");
@@ -42,6 +42,25 @@ fn git_version(repo_dir: &Path, cargo_version: &str) -> String {
         };
     }
 
+    dev_version(cargo_version, commits_since_tag, sha, dirty)
+}
+
+fn shallow_clone_version(repo_dir: &Path, cargo_version: &str) -> String {
+    let Ok(commits_since_root) = git_stdout(repo_dir, &["rev-list", "--count", "HEAD"])
+        .and_then(|count| count.parse::<u64>().map_err(|error| error.to_string()))
+    else {
+        return cargo_version.to_string();
+    };
+    let Ok(sha) = git_stdout(repo_dir, &["rev-parse", "--short=7", "HEAD"]) else {
+        return cargo_version.to_string();
+    };
+    let dirty =
+        git_stdout(repo_dir, &["status", "--porcelain"]).is_ok_and(|status| !status.is_empty());
+
+    dev_version(cargo_version, commits_since_root, &sha, dirty)
+}
+
+fn dev_version(cargo_version: &str, commits_since_tag: u64, sha: &str, dirty: bool) -> String {
     let mut version = format!("{cargo_version}-dev.{commits_since_tag}+{sha}");
     if dirty {
         version.push_str(".dirty");
@@ -82,11 +101,27 @@ fn git_stdout(repo_dir: &Path, args: &[&str]) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_tag;
+    use super::{dev_version, normalize_tag};
 
     #[test]
     fn normalizes_release_tag_prefix() {
         assert_eq!(normalize_tag("v0.6.0-rc2"), "0.6.0-rc2");
         assert_eq!(normalize_tag("0.6.0-rc2"), "0.6.0-rc2");
+    }
+
+    #[test]
+    fn renders_shallow_clone_identity() {
+        assert_eq!(
+            dev_version("0.6.0-rc2", 1, "abcdef0", false),
+            "0.6.0-rc2-dev.1+abcdef0"
+        );
+    }
+
+    #[test]
+    fn renders_dirty_dev_identity() {
+        assert_eq!(
+            dev_version("0.6.0-rc2", 1, "abcdef0", true),
+            "0.6.0-rc2-dev.1+abcdef0.dirty"
+        );
     }
 }

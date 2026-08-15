@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MAKEFILE = ROOT / "Makefile"
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+STRUCTURAL_LINT_WRAPPER = ROOT / "scripts" / "ast-grep-lint.sh"
 
 
 def lint_prerequisites(makefile: str) -> tuple[str, ...]:
@@ -110,10 +111,26 @@ def is_subsequence(expected: tuple[str, ...], actual: tuple[str, ...]) -> bool:
     return all(any(token == candidate for candidate in remaining) for token in expected)
 
 
-def check(makefile: str, workflow: str) -> list[str]:
+def wrapper_command_count(wrapper: str, expected: tuple[str, ...]) -> int:
+    count = 0
+    for line in wrapper.splitlines():
+        try:
+            tokens = tuple(shlex.split(line.strip(), comments=True))
+        except ValueError:
+            continue
+        if tokens == expected:
+            count += 1
+    return count
+
+
+def check(
+    makefile: str, workflow: str, structural_wrapper: str | None = None
+) -> list[str]:
     errors: list[str] = []
     prerequisites = lint_prerequisites(makefile)
     blocks = run_blocks(lint_job(workflow))
+    if structural_wrapper is None:
+        structural_wrapper = STRUCTURAL_LINT_WRAPPER.read_text(encoding="utf-8")
 
     owners: dict[str, list[str]] = {target: [] for target in prerequisites}
     aggregate_owners: list[str] = []
@@ -152,6 +169,25 @@ def check(makefile: str, workflow: str) -> list[str]:
         errors.append(
             f"CI Clippy step does not cover the lint recipe: {clippy_owners[0][0]}"
         )
+
+    keyspace_gate = wrapper_command_count(
+        structural_wrapper,
+        ("python3", "scripts/canonical-keyspace-lint.py", "--ast-grep", "$AST_GREP"),
+    )
+    if keyspace_gate != 1:
+        errors.append(
+            "structural lint must run canonical keyspace gate exactly once: "
+            f"found {keyspace_gate}"
+        )
+    keyspace_test = wrapper_command_count(
+        structural_wrapper,
+        ("python3", "scripts/tests/test_canonical_keyspace_lint.py", "$AST_GREP"),
+    )
+    if keyspace_test != 1:
+        errors.append(
+            "structural lint must run canonical keyspace counterfactuals exactly once: "
+            f"found {keyspace_test}"
+        )
     return errors
 
 
@@ -159,6 +195,7 @@ def main() -> int:
     errors = check(
         MAKEFILE.read_text(encoding="utf-8"),
         WORKFLOW.read_text(encoding="utf-8"),
+        STRUCTURAL_LINT_WRAPPER.read_text(encoding="utf-8"),
     )
     if errors:
         print("lint CI coverage: FAIL", file=sys.stderr)

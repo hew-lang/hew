@@ -1007,8 +1007,8 @@ fn make_pub_struct(name: &str, field: &str) -> TypeDecl {
     }
 }
 
-/// P1 — a bare `import m;` of a `pub type` publishes only the qualified
-/// binding; the importer-scope bare binding is NOT recorded.
+/// P1 — a bare `import m;` of a `pub type` publishes only its full source
+/// owner; the importer-scope bare binding is NOT recorded.
 #[test]
 fn bare_import_type_registers_qualified_only() {
     let reply = make_pub_struct("Reply", "code");
@@ -1024,13 +1024,15 @@ fn bare_import_type_registers_qualified_only() {
         module_doc: None,
     });
 
-    // Qualified authority is always published.
+    // Full-owner authority is always published; the lexical module spelling
+    // remains a resolver binding, not a second TypeDef identity.
     assert!(
-        output.type_defs.contains_key("mod_a.Reply"),
-        "bare import should register the qualified type `mod_a.Reply`"
+        output.type_defs.contains_key("myapp.mod_a.Reply"),
+        "bare import should register the canonical type `myapp.mod_a.Reply`"
     );
-    // The source module's own bare def stays (the alias copy reads it); the
-    // importer-scope binding does NOT.
+    assert!(!output.type_defs.contains_key("mod_a.Reply"));
+    assert!(!output.type_defs.contains_key("Reply"));
+    // The importer-scope binding is not published.
     assert!(
         !checker
             .unqualified_to_module
@@ -1252,9 +1254,11 @@ fn stdlib_plain_import_does_not_publish_bare_type() {
     );
 
     assert!(
-        checker.type_defs.contains_key("websocket.Server"),
-        "plain stdlib import must register the qualified type `websocket.Server`"
+        checker.type_defs.contains_key("std.net.websocket.Server"),
+        "plain stdlib import must register the canonical type `std.net.websocket.Server`"
     );
+    assert!(!checker.type_defs.contains_key("websocket.Server"));
+    assert!(!checker.type_defs.contains_key("Server"));
     assert!(
         checker
             .module_type_exports
@@ -1502,8 +1506,8 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
     );
     let holder = checker
         .type_defs
-        .get("tls.Holder")
-        .expect("qualified Holder definition must be registered");
+        .get("std.net.tls.Holder")
+        .expect("canonical Holder definition must be registered");
     match holder.fields.get("wrap") {
         Some(Ty::Named { name, .. }) => assert_eq!(
             name, "std.net.tls.Wrap",
@@ -1513,10 +1517,8 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
     }
 }
 
-/// P2 — the qualified type alias is published for a bare import, and its
-/// definition mirrors the source module's bare def (the alias-copy ordering
-/// canary). If the source module's bare `register_type_decl` is ever dropped,
-/// the qualified def goes empty and this test catches it.
+/// P2 — the canonical definition published for a bare import carries the
+/// source definition's fields after temporary registration keys are retired.
 #[test]
 fn bare_import_type_qualified_alias_has_fields() {
     let reply = make_pub_struct("Reply", "code");
@@ -1529,8 +1531,8 @@ fn bare_import_type_qualified_alias_has_fields() {
 
     let qualified = output
         .type_defs
-        .get("mod_a.Reply")
-        .expect("qualified type `mod_a.Reply` must be registered");
+        .get("myapp.mod_a.Reply")
+        .expect("canonical type `myapp.mod_a.Reply` must be registered");
     assert!(
         qualified.fields.contains_key("code"),
         "qualified alias must carry the source def's fields (alias-copy ordering)"
@@ -1582,6 +1584,154 @@ fn same_leaf_type_defs_keep_distinct_full_owners_left_then_right() {
 #[test]
 fn same_leaf_type_defs_keep_distinct_full_owners_right_then_left() {
     assert_same_leaf_canonical_type_defs_keep_distinct_shapes(false);
+}
+
+#[test]
+fn flat_file_owner_selection_ignores_same_leaf_package_owner() {
+    let flat = make_user_import(
+        &["pkg", "flat"],
+        None,
+        vec![(Item::TypeDecl(make_pub_struct("Result", "local")), 0..0)],
+    );
+    let package = make_user_import(
+        &["pkg", "package"],
+        None,
+        vec![(Item::TypeDecl(make_pub_struct("Result", "remote")), 0..0)],
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&Program {
+        module_graph: None,
+        items: vec![(Item::Import(flat), 0..0), (Item::Import(package), 0..0)],
+        module_doc: None,
+    });
+    checker
+        .flat_file_import_module_names
+        .insert("pkg.flat".to_string());
+
+    assert_eq!(
+        checker.flat_file_import_type_owner("Result"),
+        Some("pkg.flat.Result".to_string())
+    );
+}
+
+#[test]
+fn canonical_module_variants_shadow_builtin_variants() {
+    let output = check_source_in_module(
+        r"
+        pub enum AppErr { NotFound(string); Timeout; }
+
+        pub fn payload(msg: string) -> AppErr { NotFound(msg) }
+        pub fn unit() -> AppErr { Timeout }
+        ",
+        vec!["shadow".to_string()],
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "type errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
+    let selected = |alias: &str| {
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Shared".to_string(),
+            alias: Some(alias.to_string()),
+        }]))
+    };
+    let left = make_user_import(
+        &["pkg", "left"],
+        selected("LeftShared"),
+        vec![(Item::TypeDecl(make_pub_struct("Shared", "left_only")), 0..0)],
+    );
+    let right = make_user_import(
+        &["pkg", "right"],
+        selected("RightShared"),
+        vec![(
+            Item::TypeDecl(make_pub_struct("Shared", "right_only")),
+            0..0,
+        )],
+    );
+    let parsed = hew_parser::parse(
+        "fn keep_left(value: LeftShared) -> LeftShared { value }\n\
+         fn keep_right(value: RightShared) -> RightShared { value }",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture parse: {:?}",
+        parsed.errors
+    );
+    let mut items = vec![(Item::Import(left), 0..0), (Item::Import(right), 0..0)];
+    items.extend(parsed.program.items);
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items,
+        module_graph: None,
+        module_doc: None,
+    });
+    assert!(output.errors.is_empty(), "typecheck: {:?}", output.errors);
+
+    for (function, expected) in [
+        ("keep_left", "pkg.left.Shared"),
+        ("keep_right", "pkg.right.Shared"),
+    ] {
+        let signature = output.fn_sigs.get(function).expect("function signature");
+        assert!(matches!(
+            signature.params.as_slice(),
+            [Ty::Named { name, builtin: None, .. }] if name == expected
+        ));
+        assert!(matches!(
+            &signature.return_type,
+            Ty::Named { name, builtin: None, .. } if name == expected
+        ));
+    }
+
+    let resolved_names: HashSet<&str> = output
+        .resolved_expr_types
+        .values()
+        .filter_map(|ty| match ty {
+            ResolvedTy::Named {
+                name,
+                builtin: None,
+                ..
+            } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(resolved_names.contains("pkg.left.Shared"));
+    assert!(resolved_names.contains("pkg.right.Shared"));
+    assert!(resolved_names
+        .iter()
+        .all(|name| !matches!(*name, "Shared" | "LeftShared" | "RightShared")));
+
+    for alias in [
+        "Shared",
+        "LeftShared",
+        "RightShared",
+        "left.Shared",
+        "right.Shared",
+    ] {
+        assert!(
+            !output.type_defs.contains_key(alias),
+            "TypeDef alias survived: {alias}"
+        );
+        assert!(
+            !checker.type_def_spans.contains_key(alias),
+            "declaration-span alias survived: {alias}"
+        );
+        assert!(
+            !checker.registry.has_type_markers(alias),
+            "marker-registry alias survived: {alias}"
+        );
+    }
+    for canonical in ["pkg.left.Shared", "pkg.right.Shared"] {
+        assert!(output.type_defs.contains_key(canonical));
+        assert!(checker.type_def_spans.contains_key(canonical));
+        assert!(checker.registry.has_type_markers(canonical));
+    }
 }
 
 // (The machine arm is structurally identical to the type arm; its gate is
@@ -1991,13 +2141,11 @@ fn user_module_registers_types() {
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
     assert!(
-        output.type_defs.contains_key("Config"),
-        "user module type should be registered unqualified"
+        output.type_defs.contains_key("myapp.config.Config"),
+        "user module type should be registered under its full owner"
     );
-    assert!(
-        output.type_defs.contains_key("config.Config"),
-        "user module type should also be registered as qualified"
-    );
+    assert!(!output.type_defs.contains_key("Config"));
+    assert!(!output.type_defs.contains_key("config.Config"));
 }
 
 // -- user_modules set --
@@ -2492,9 +2640,10 @@ fn repeated_stdlib_import_does_not_duplicate_hew_items() {
         output.errors
     );
     assert!(
-        output.type_defs.contains_key("IoError"),
+        output.type_defs.contains_key("std.fs.IoError"),
         "expected std::fs Hew items to remain registered"
     );
+    assert!(!output.type_defs.contains_key("IoError"));
 }
 
 // -- Empty module import --
@@ -3158,7 +3307,7 @@ fn test_file_import_private_items_not_visible() {
 /// reaches `Mode` only through the call's expected parameter type.
 fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     let module = hew_parser::parse(
-        "pub enum Mode {\n    A;\n    B;\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode::A => 1,\n        Mode::B => 2,\n    }\n}\n",
+        "pub enum Mode {\n    A;\n    B;\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode::A => 1,\n        Mode::B => 2,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode::A == Mode::A);\n}\n",
     );
     assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
     let mut root = hew_parser::parse(root_source);

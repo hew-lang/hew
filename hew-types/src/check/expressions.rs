@@ -268,7 +268,7 @@ impl Checker {
                 }
                 Ty::Named {
                     builtin: None,
-                    name: "regex.Pattern".to_string(),
+                    name: "std.text.regex.Pattern".to_string(),
                     args: vec![],
                 }
             }
@@ -1846,6 +1846,7 @@ impl Checker {
         }
         if self.local_type_defs.contains(type_name.as_str())
             || self.source_type_defs.contains(type_name.as_str())
+            || self.is_current_module_type_def(&type_name)
         {
             Ty::named(type_name, type_args)
         } else {
@@ -1932,6 +1933,7 @@ impl Checker {
         for (type_name, td) in &self.type_defs {
             if !self.local_type_defs.contains(type_name.as_str())
                 && !self.source_type_defs.contains(type_name.as_str())
+                && !self.is_current_module_type_def(type_name)
             {
                 continue;
             }
@@ -1948,6 +1950,7 @@ impl Checker {
             for (type_name, td) in &self.type_defs {
                 if self.local_type_defs.contains(type_name.as_str())
                     || self.source_type_defs.contains(type_name.as_str())
+                    || self.is_current_module_type_def(type_name)
                 {
                     continue; // already scanned in pass 1
                 }
@@ -1970,13 +1973,19 @@ impl Checker {
                 // exact published owner before constructing the variant result
                 // so `LookupError::NotFound` agrees with a `LookupError`
                 // annotation that already resolved to `std.lookup_error`.
-                let canonical_type_prefix = if !self.local_type_defs.contains(type_prefix)
-                    && !self.source_type_defs.contains(type_prefix)
-                {
-                    self.published_bare_type_qualified(type_prefix)
-                        .unwrap_or_else(|| type_prefix.to_string())
-                } else {
+                let canonical_type_prefix = if type_prefix.contains('.') {
                     type_prefix.to_string()
+                } else {
+                    self.current_module_identity()
+                        .map(|owner| format!("{owner}.{type_prefix}"))
+                        .filter(|candidate| self.type_defs.contains_key(candidate))
+                        .or_else(|| {
+                            (!self.local_type_defs.contains(type_prefix)
+                                && !self.source_type_defs.contains(type_prefix))
+                            .then(|| self.published_bare_type_qualified(type_prefix))
+                            .flatten()
+                        })
+                        .unwrap_or_else(|| type_prefix.to_string())
                 };
                 if let Some(td) = self.type_defs.get(&canonical_type_prefix) {
                     if let Some(variant) = td.variants.get(variant_name) {
@@ -7419,7 +7428,9 @@ impl Checker {
         // from colliding in the downstream MIR record-layout / field-order
         // registry (the same identity discipline `samename_type_layout` proves
         // for explicitly qualified constructions).
-        let qualified_owned = self.published_bare_type_qualified(name);
+        let qualified_owned = self
+            .published_bare_type_qualified(name)
+            .or_else(|| self.flat_file_import_type_owner(name));
         if let Some(qualified) = qualified_owned.as_deref() {
             if let Some((module, _)) = qualified.split_once('.') {
                 self.used_modules.borrow_mut().insert(ImportKey::in_file(

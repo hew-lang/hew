@@ -55,10 +55,10 @@ impl Builder {
     ///
     /// This consults the machines-ONLY `machine_decl_layout_names`, never the
     /// combined `machine_layout_names`. The latter also carries every user enum
-    /// layout key so `is_known_actor_runtime_ty` can classify inline tagged
-    /// unions as `BitCopy`; consulting it here would misread an ordinary inline
-    /// user enum (`Payload`, `Mixed`) as a machine and wrongly deny it the
-    /// carrier protocol it must enter.
+    /// canonical classification key so `is_known_actor_runtime_ty` can classify
+    /// inline tagged unions as `BitCopy`; consulting it here would misread an
+    /// ordinary inline user enum (`Payload`, `Mixed`) as a machine and wrongly
+    /// deny it the carrier protocol it must enter.
     pub(crate) fn ty_is_machine(&self, ty: &hew_types::ResolvedTy) -> bool {
         matches!(
             ty,

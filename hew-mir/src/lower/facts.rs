@@ -3629,9 +3629,7 @@ pub(crate) fn named_layout_key(name: &str, args: &[ResolvedTy]) -> String {
 pub(super) fn machine_layout_ty_matches(layout_names: &HashSet<String>, ty: &ResolvedTy) -> bool {
     match ty {
         ResolvedTy::Named { name, args, .. } => {
-            let enum_key = named_layout_key(name, args);
-            layout_names.contains(&enum_key)
-                || layout_names.contains(&hew_hir::machine_layout_key(name, args))
+            layout_names.contains(&hew_hir::machine_layout_key(name, args))
         }
         _ => false,
     }
@@ -3894,7 +3892,6 @@ fn is_codegen_ready_user_component(
     readiness.record_field_orders.contains_key(&layout_key)
         || readiness.actor_layouts.contains_key(name)
         || readiness.supervisor_layout_map.contains_key(name)
-        || readiness.machine_layout_names.contains(&layout_key)
         || readiness
             .machine_layout_names
             .contains(&hew_hir::machine_layout_key(name, &component.args))
@@ -4463,7 +4460,7 @@ mod layout_key_shortening_guard {
 }
 #[cfg(test)]
 mod enum_layout_tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use super::{lower_hir_module, Builder};
     use hew_hir::{
@@ -4622,6 +4619,59 @@ mod enum_layout_tests {
             "expected one EnumLayout for Colour"
         );
         assert_eq!(colour_layouts[0].variants.len(), 3);
+    }
+
+    #[test]
+    fn tagged_union_classification_uses_one_canonical_key_family() {
+        let keys = HashSet::from([
+            hew_hir::machine_layout_key("Colour", &[]),
+            hew_hir::machine_layout_key("pkg.Toggle", &[]),
+            hew_hir::machine_layout_key("pkg.Option", &[ResolvedTy::I64]),
+        ]);
+        let builder = Builder {
+            machine_layout_names: keys.clone(),
+            ..Builder::default()
+        };
+
+        assert!(super::machine_layout_ty_matches(
+            &keys,
+            &ResolvedTy::named_user("Colour", vec![]),
+        ));
+        assert!(super::machine_layout_ty_matches(
+            &keys,
+            &ResolvedTy::named_user("pkg.Toggle", vec![]),
+        ));
+        assert!(super::machine_layout_ty_matches(
+            &keys,
+            &ResolvedTy::named_user("pkg.Option", vec![ResolvedTy::I64]),
+        ));
+        assert!(builder.is_known_actor_runtime_ty(&ResolvedTy::named_user("Colour", vec![])));
+        assert!(builder.is_known_actor_runtime_ty(&ResolvedTy::named_user(
+            "pkg.Option",
+            vec![ResolvedTy::I64],
+        )));
+        assert!(keys.iter().all(|key| key.starts_with("mc$$")));
+        assert!(!keys.contains("Colour"));
+    }
+
+    #[test]
+    fn bare_imported_machine_spelling_does_not_recover_by_leaf() {
+        let keys = HashSet::from([hew_hir::machine_layout_key("pkg.Toggle", &[])]);
+        let builder = Builder {
+            machine_layout_names: keys.clone(),
+            ..Builder::default()
+        };
+
+        assert!(!super::machine_layout_ty_matches(
+            &keys,
+            &ResolvedTy::named_user("Toggle", vec![]),
+        ));
+        assert!(super::machine_layout_ty_matches(
+            &keys,
+            &ResolvedTy::named_user("pkg.Toggle", vec![]),
+        ));
+        assert!(!builder.is_known_actor_runtime_ty(&ResolvedTy::named_user("Toggle", vec![])));
+        assert!(builder.is_known_actor_runtime_ty(&ResolvedTy::named_user("pkg.Toggle", vec![])));
     }
 
     #[test]

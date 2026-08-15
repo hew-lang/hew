@@ -1,6 +1,13 @@
 # Exact nonzero counts keyed by parsed syntax form and source path.
 # Retirement stages are checked against canonical_stage() and cannot be edited
 # independently of the Stage 1-5 cutover dependency map.
+# Canonical keyspace exceptions use this machine-readable comment form:
+# canonical-keyspace-allow<TAB>path<TAB>table<TAB>count<TAB>owner<TAB>follow-on work<TAB>reason
+# canonical-keyspace-allow	hew-hir/src/lower.rs	const_registry	1	hew-hir	a316-keyspace-registries	canonical const identity is qualified today but remains a bare local at insertion
+# canonical-keyspace-allow	hew-hir/src/lower.rs	machine_ctor_registry	7	hew-hir	a316-keyspace-registries	constructor registry still passes reviewed qualified locals into the insertion sink
+# canonical-keyspace-allow	hew-types/src/check/items.rs	fn_sigs	1	hew-types	a316-keyspace-fn-sigs	trait default signature restoration still inserts a reviewed qualified local
+# canonical-keyspace-allow	hew-types/src/check/registration.rs	fn_sigs	4	hew-types	a316-keyspace-fn-sigs	function signature publication remains in the deferred table-family cutover
+# canonical-keyspace-allow	hew-types/src/check/registration.rs	trait_defs	1	hew-types	a316-keyspace-trait-defs	trait definition publication remains in the deferred table-family cutover
 group	form	path	count	retirement_stage	reason
 call-target-authority	call-target-consumer	hew-hir/src/lower.rs	13	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-hir/src/lower.rs	30	stage-4	exact checker-selected executable identity carrier

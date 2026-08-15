@@ -44,8 +44,6 @@ fn physical_core_count() -> Option<usize> {
 
 #[cfg(target_os = "linux")]
 fn physical_core_count() -> Option<usize> {
-    use std::collections::HashSet;
-
     let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").ok()?;
     let mut physical_id = None;
     let mut core_id = None;

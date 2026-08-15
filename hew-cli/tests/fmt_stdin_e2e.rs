@@ -252,6 +252,134 @@ fn fmt_file_parse_errors_render_cli_diagnostics() {
     assert!(!stderr.contains("ParseError {"), "stderr: {stderr}");
 }
 
+#[test]
+fn fmt_migrate_uses_checker_resolved_variant_owners_and_check_is_non_destructive() {
+    let dir = support::tempdir();
+    let path = dir.path().join("legacy.hew");
+    let source = concat!(
+        "enum Choice { Present(i64); }\n\n",
+        "fn contextual() -> Choice { Present(42) }\n",
+        "fn inferred() { let value = Present(7); }\n"
+    );
+    std::fs::write(&path, source).unwrap();
+
+    let check = Command::new(hew_binary())
+        .args(["fmt", "--migrate", "--check"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        !check.status.success(),
+        "legacy syntax must fail migration check"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+
+    let migrate = Command::new(hew_binary())
+        .args(["fmt", "--migrate"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        migrate.status.success(),
+        "migration failed: {}",
+        String::from_utf8_lossy(&migrate.stderr)
+    );
+    let migrated = std::fs::read_to_string(&path).unwrap();
+    assert!(migrated.contains(".Present(42)"), "migrated: {migrated}");
+    assert!(
+        migrated.contains("Choice.Present(7)"),
+        "migrated: {migrated}"
+    );
+
+    let final_check = Command::new(hew_binary())
+        .args(["fmt", "--migrate", "--check"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        final_check.status.success(),
+        "migrated source must be a fixed point: {}",
+        String::from_utf8_lossy(&final_check.stderr)
+    );
+}
+
+#[test]
+fn fmt_migrate_root_discovers_nested_hew_sources() {
+    let dir = support::tempdir();
+    let nested = dir.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let path = nested.join("legacy.hew");
+    std::fs::write(
+        &path,
+        "enum Choice { Present(i64); }\n\nfn main() -> Choice { Present(42) }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["fmt", "--migrate", "--root"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "root migration failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(std::fs::read_to_string(path)
+        .unwrap()
+        .contains(".Present(42)"));
+}
+
+#[test]
+fn fmt_migrate_lists_typecheck_failure_sites_instead_of_succeeding() {
+    let dir = support::tempdir();
+    let path = dir.path().join("invalid.hew");
+    let source = "enum Choice { Present; }\n\nfn main() { let value = Choice; }\n";
+    std::fs::write(&path, source).unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["fmt", "--migrate"])
+        .arg(&path)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "migration must fail closed");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains(&format!(
+            "migration refused {}:50-56: type checking failed",
+            path.display()
+        )),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn fmt_migrate_refuses_checker_variants_missing_migration_warnings() {
+    let dir = support::tempdir();
+    let path = dir.path().join("missing-warning.hew");
+    let source = concat!(
+        "enum Shape { Box { w: i64, h: i64 }; }\n\n",
+        "fn make() -> Shape { Box { w: 3, h: 4 } }\n"
+    );
+    std::fs::write(&path, source).unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["fmt", "--migrate"])
+        .arg(&path)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "migration must fail closed");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("checker resolved bare variant `Box` without a migration warning"),
+        "stderr: {stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Multi-file --check batch behavior
 // ---------------------------------------------------------------------------

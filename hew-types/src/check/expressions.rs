@@ -2045,7 +2045,10 @@ impl Checker {
         }
         if let Some(ty) = found {
             if !name.contains("::") {
-                self.warn_bare_variant_expr(name, span);
+                let replacement = ty
+                    .type_name()
+                    .map_or_else(|| format!(".{name}"), |owner| format!("{owner}.{name}"));
+                self.warn_bare_variant_expr(name, &replacement, span);
             }
             ty
         } else {
@@ -4088,7 +4091,7 @@ impl Checker {
                     && (variant_after_owner.is_some() || !name.contains("::"));
                 if is_unit_variant {
                     if !name.contains("::") {
-                        self.warn_bare_variant_expr(name, span);
+                        self.warn_bare_variant_expr(name, &format!(".{name}"), span);
                     }
                     self.enforce_type_def_instantiation_bounds(
                         expected_type_name,
@@ -6232,6 +6235,14 @@ impl Checker {
                     self.publish_checked_expression(&object.0, &object.1, self_ty);
                     return ty;
                 }
+            }
+
+            let is_dotted_variant = self.env.lookup_ref(name).is_none()
+                && self
+                    .lookup_type_def(name)
+                    .is_some_and(|type_def| type_def.variants.contains_key(field));
+            if is_dotted_variant {
+                return self.synthesize_identifier(&format!("{name}::{field}"), span);
             }
         }
 

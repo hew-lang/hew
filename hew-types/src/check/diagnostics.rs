@@ -5,7 +5,7 @@
 use super::*;
 
 impl Checker {
-    pub(super) fn warn_bare_variant_expr(&mut self, name: &str, span: &Span) {
+    pub(super) fn warn_bare_variant_expr(&mut self, name: &str, replacement: &str, span: &Span) {
         self.warnings.push(TypeError {
             severity: crate::error::Severity::Warning,
             kind: TypeErrorKind::BareVariantExpr,
@@ -14,7 +14,7 @@ impl Checker {
                 "E_BARE_VARIANT_EXPR: bare variant `{name}` is deprecated; use `.{name}` when the surrounding type selects the enum, or qualify the variant with its type"
             ),
             notes: Vec::new(),
-            suggestions: vec![format!("replace `{name}` with `.{name}`")],
+            suggestions: vec![format!("replace `{name}` with `{replacement}`")],
             source_module: self.current_module.clone(),
         });
     }

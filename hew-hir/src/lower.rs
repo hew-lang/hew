@@ -16830,6 +16830,16 @@ impl LowerCtx {
             );
             binding_error |= had_error;
             prelude
+        } else if let Some((name, fields)) = struct_variant_pattern_parts(&pattern.0) {
+            let (prelude, had_error) = self.lower_struct_variant_payload_aggregates(
+                name,
+                fields,
+                &scrutinee_hir.ty,
+                &mut bindings,
+                "let-else-substrate",
+            );
+            binding_error |= had_error;
+            prelude
         } else {
             Vec::new()
         };

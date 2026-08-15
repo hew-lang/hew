@@ -2075,6 +2075,9 @@ run_accept_expect_stdout "let_else_unit_variant"
 # destructures the tuple and escapes BOTH leaf binders into the enclosing scope
 # (the success-path prelude mirrors `match`'s aggregate-payload destructure).
 run_accept_expect_stdout "let_else_tuple_payload"
+# let-else over an enum struct-variant aggregate field: the nested tuple
+# binders must materialize and retain both field values.
+run_accept_expect_stdout "let_else_struct_payload"
 # return-as-expression in a diverging branch: an unannotated
 # `let x = if … else { return … }` infers the value branch's type (not Never),
 # so a later `x + 1` lowers as integer arithmetic in let-RHS and binary-operand

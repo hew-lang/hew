@@ -449,3 +449,56 @@ fn sum(b: Box<i64>) -> i64 {
         ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64])
     );
 }
+
+#[test]
+fn struct_variant_tuple_field_let_else_binds_inner_names() {
+    let output = lower_checked(
+        r"
+enum Packet {
+    Data { pair: (i64, i64) };
+    Empty;
+}
+
+fn sum(value: Packet) -> i64 {
+    let Packet::Data { pair: (a, b) } = value else { return 0 };
+    a + b
+}",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+
+    let HirItem::Function(function) = output
+        .module
+        .items
+        .iter()
+        .find(|item| matches!(item, HirItem::Function(function) if function.name == "sum"))
+        .expect("sum function present")
+    else {
+        unreachable!()
+    };
+    let let_else = function
+        .body
+        .statements
+        .iter()
+        .find_map(|statement| match &statement.kind {
+            hew_hir::HirStmtKind::LetElse {
+                success_prelude, ..
+            } => Some(success_prelude),
+            _ => None,
+        })
+        .expect("struct-variant let-else present");
+    let nested: Vec<&str> = let_else
+        .iter()
+        .filter_map(|statement| match &statement.kind {
+            hew_hir::HirStmtKind::Let(binding, _) => Some(binding.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        nested.contains(&"a") && nested.contains(&"b"),
+        "inner binders `a`/`b` missing from let-else success prelude: {nested:?}"
+    );
+}

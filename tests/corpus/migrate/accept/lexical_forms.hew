@@ -1,11 +1,11 @@
-import std::math::{sqrt};
+import std.math.{sqrt};
 
 enum Marker {
     Ready;
 }
 
 fn marker() -> Marker {
-    Marker::Ready
+    Marker.Ready
 }
 
 fn root(value: f64) -> f64 {

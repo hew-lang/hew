@@ -4,12 +4,12 @@ enum Choice {
 }
 
 fn make() -> Choice {
-    Present(42)
+    .Present(42)
 }
 
 fn read(value: Choice) -> i64 {
     match value {
-        Present(number) => number,
-        Absent => 0,
+        .Present(number) => number,
+        .Absent => 0,
     }
 }

@@ -1846,6 +1846,7 @@ impl Checker {
         }
         if self.local_type_defs.contains(type_name.as_str())
             || self.source_type_defs.contains(type_name.as_str())
+            || self.is_current_module_type_def(&type_name)
         {
             Ty::named(type_name, type_args)
         } else {
@@ -1932,6 +1933,7 @@ impl Checker {
         for (type_name, td) in &self.type_defs {
             if !self.local_type_defs.contains(type_name.as_str())
                 && !self.source_type_defs.contains(type_name.as_str())
+                && !self.is_current_module_type_def(type_name)
             {
                 continue;
             }
@@ -1948,6 +1950,7 @@ impl Checker {
             for (type_name, td) in &self.type_defs {
                 if self.local_type_defs.contains(type_name.as_str())
                     || self.source_type_defs.contains(type_name.as_str())
+                    || self.is_current_module_type_def(type_name)
                 {
                     continue; // already scanned in pass 1
                 }

@@ -398,6 +398,13 @@ impl Checker {
         }
     }
 
+    pub(super) fn is_current_module_type_def(&self, name: &str) -> bool {
+        self.current_module_identity().is_some_and(|module| {
+            name.rsplit_once('.')
+                .is_some_and(|(owner, _)| owner == module)
+        })
+    }
+
     /// The owner-qualified canonical identity a `Ty::Named` NAME denotes, for
     /// nominal-equality comparison at the unification boundary — or `None` when
     /// the name is already at its canonical identity and must be left as written.

@@ -99,7 +99,8 @@ impl Checker {
                     .iter()
                     .filter(|(type_name, td)| {
                         let is_local = self.local_type_defs.contains(type_name.as_str())
-                            || self.source_type_defs.contains(type_name.as_str());
+                            || self.source_type_defs.contains(type_name.as_str())
+                            || self.is_current_module_type_def(type_name);
                         let kind_ok =
                             td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct;
                         kind_ok && (is_local == check_local)

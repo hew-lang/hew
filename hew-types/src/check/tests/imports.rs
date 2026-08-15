@@ -1615,6 +1615,25 @@ fn flat_file_owner_selection_ignores_same_leaf_package_owner() {
 }
 
 #[test]
+fn canonical_module_variants_shadow_builtin_variants() {
+    let output = check_source_in_module(
+        r"
+        pub enum AppErr { NotFound(string); Timeout; }
+
+        pub fn payload(msg: string) -> AppErr { NotFound(msg) }
+        pub fn unit() -> AppErr { Timeout }
+        ",
+        vec!["shadow".to_string()],
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "type errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
     let selected = |alias: &str| {
         Some(ImportSpec::Names(vec![ImportName {

@@ -434,7 +434,12 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | `(T1, T2, ...)`                    | All elements are `Send`                    |
 | `[T; N]`                           | `T` is `Send`                              |
 
-> **Note on array annotations:** Only fixed-size array annotations `[T; N]` are supported. Slice annotations `[T]` (unsized) are rejected by the type checker; unsized-slice lowering is not implemented. Use `Vec<T>` for dynamically-sized sequences.
+> **Note on array annotations:** `[T; N]` is a fixed-size array. The bare
+> `[T]` spelling is accepted and is a synonym for `Vec<T>` — `let xs: [T] = ...`
+> and `fn f(xs: [T])` both type-check and lower as `Vec<T>`, so an `[T; N]`
+> value does not satisfy an `[T]` annotation (``expected `Vec<i64>`, found
+> `[i64; 3]` ``). Prefer the explicit `Vec<T>` spelling for dynamically-sized
+> sequences.
 
 **Frozen derivation:**
 
@@ -1784,12 +1789,14 @@ The current subset does not yet fully enforce object-safety rules or support
 associated-type bounds and higher-ranked trait bounds in `dyn` position. See
 [HEW-FUTURE.md §2.2](HEW-FUTURE.md) for those remaining object-type details.
 
-`dyn Trait` is supported as a function PARAMETER only. `Vec<dyn Trait>` is
-rejected at the checker boundary (`` `dyn Trait` cannot be a `Vec` element ``)
-— an opaque vtable pointer has no clone/drop, scalar-index, or push path, so
-collecting trait objects is not yet implemented. Store an enum of the concrete
-variants instead (`enum Shape { Circle(Circle); Square(Square); }`,
-`Vec<Shape>`) and dispatch on it with `match`.
+`dyn Trait` works as a function parameter and as a `Vec` element. A
+`Vec<dyn Trait>` type-checks, accepts `push` of any concrete implementor
+(including a heterogeneous mix), and dispatches through the runtime vtable
+when the elements are drained with `into_iter()`. Because a trait object has
+no clone path, `into_iter()` is the only iteration form — there is no
+non-consuming `iter()` snapshot. An enum of the concrete variants
+(`enum Shape { Circle(Circle); Square(Square); }`, `Vec<Shape>`) remains the
+alternative when you need to iterate without draining.
 
 #### 3.8.3 Trait Bounds
 
@@ -2050,7 +2057,7 @@ help: or annotate the lambda parameters directly
 
 ### 3.9 Foreign Function Interface (FFI)
 
-> **Partially implemented in v0.6.** `extern "C"` blocks, unsafe foreign calls,
+> **Partially implemented.** `extern "C"` blocks, unsafe foreign calls,
 > and native static-library linking with `hew build --link-lib` are shipped.
 > Layout/export attributes and the higher-level C-string wrapper surface remain
 > planned; their subsections are marked accordingly.
@@ -2091,9 +2098,10 @@ two modules) are accepted and resolve to the one established contract.
 
 #### 3.9.2 C-Compatible Struct Layout
 
-> **Not yet implemented.** `#[repr(C)]` is not recognised by HIR lowering.
-> Annotating a type with `#[repr(C)]` produces a cutover diagnostic; layout
-> is controlled by the compiler for all types today.
+> **Not yet implemented.** `#[repr(C)]` is not recognised. Annotating a type
+> with `#[repr(C)]` is rejected at parse time with
+> `unrecognised type attribute '#[repr]' [E_UNKNOWN_TYPE_MARKER]`; layout is
+> controlled by the compiler for all types today.
 
 Use `#[repr(C)]` to ensure C-compatible memory layout:
 
@@ -2357,25 +2365,28 @@ Commonly used string operations include `+`, `==`, `!=`, `.len()`,
 
 **Bracket indexing** — a `HashMap<K, V>` supports `m[k]` subscript syntax keyed
 by the same `K: Hash + Eq` bound every HashMap method enforces. A read `m[k]`
-returns `Option<V>` (it is sugar for `m.get(k)`, so a missing key yields `None`
-rather than aborting), and an assignment `m[k] = v` inserts or overwrites the
-entry (sugar for `m.insert(k, v)`). Indexing with a key of the wrong type is a
-type error. This differs from `Vec<T>` indexing, where `v[i]` takes an `i64`
-index and returns the bare element `T`.
+returns the bare value `V`, and traps at runtime
+(`hew: trap in main context: IndexOutOfBounds`, exit 1) when the key is
+absent — it is NOT sugar for `m.get(k)`. Use `m.get(k)`, which returns
+`Option<V>`, whenever the key may be missing. An assignment `m[k] = v` inserts
+or overwrites the entry (sugar for `m.insert(k, v)`). Indexing with a key of
+the wrong type is a type error. This matches `Vec<T>` indexing, where `v[i]`
+takes an `i64` index and returns the bare element `T`.
 
 ```hew
 var m: HashMap<string, i64> = HashMap::new();
 m["answer"] = 42;        // insert/overwrite via index-assignment
-let hit = m["answer"];   // Option<i64> — Some(42)
-let miss = m["absent"];  // Option<i64> — None
+let hit = m["answer"];   // i64 — 42
+let miss = m.get("absent");  // Option<i64> — None (m["absent"] would trap)
 ```
 
-**Current implementation boundary** — although the surface spelling is generic,
-the shipped runtime/codegen ABI currently supports only `HashMap<string, V>`
-where `V` is `string`, `bool`, `char`, any integer type, any float type, or
-`duration`. Other `HashMap<K, V>` pairs are rejected during type checking.
-Key and value positions remain subject to their independent fixed-layout,
-semantic clone/drop, `Hash`, and `Eq` requirements.
+**Current implementation boundary** — the shipped runtime/codegen ABI supports
+`K` of `string`, any integer type, any float type, `bool`, or `char`, and `V`
+of `string`, `bool`, `char`, any integer type, any float type, `duration`, a
+user-defined record, or `Vec<T>`. A key whose type is not one of those (for
+example a user record) is rejected during type checking. Key and value
+positions remain subject to their independent fixed-layout, semantic
+clone/drop, `Hash`, and `Eq` requirements.
 
 **Map literal syntax** — a `HashMap<K, V>` can be constructed inline with
 brace-colon syntax.  The parser disambiguates `{` as a map literal when the
@@ -2868,7 +2879,8 @@ state variants at the receiver. See
 - Machines satisfy `Send` if all their state fields satisfy `Send`
   (same rule as structs).
 - Machines can be used as type parameters wherever the bound permits.
-- Generics over machines are not currently supported (non-goal for now).
+- A machine declaration may itself be generic (`machine Lifecycle<T> { ... }`);
+  see §3.11.7 for the type arguments the substrate admits.
 
 ---
 
@@ -3475,11 +3487,11 @@ HIR lowering:
 - `after <duration-expr>` — the timer arm; carries no binding.
 
 > A stream-next arm (`<id> from <stream>.recv()` over a `Stream<T>`) and a
-> task-await arm (`<id> from await <task>`) were specified in earlier drafts
-> but are **not** part of edition 2026's sealed set: neither has a usable
-> first-class substrate today (no `Stream<T>` handle is obtainable without
-> aggregate-extraction that fails closed; `Task<T>` is unnameable and `fork`
-> is parser-only). They return with their substrate — see HEW-FUTURE.
+> task-await arm (`<id> from await <task>`) are **not** part of edition 2026's
+> sealed set: neither has a usable first-class substrate today (no `Stream<T>`
+> handle is obtainable without aggregate-extraction that fails closed;
+> `Task<T>` is unnameable and `fork` is parser-only). They return with their
+> substrate — see HEW-FUTURE.
 
 **The three forms (closed set).** Each form is fully specified by four
 columns: what the winning arm binds, how the winning arm propagates a
@@ -4061,7 +4073,7 @@ The MessagePack format is the primary shipped binary wire encoding for Hew wire 
 
 Design goals: compact representation, fast encode/decode, language interoperability, forward/backward compatibility.
 
-**Implementation reference:** The canonical type descriptor is defined in `hew-types/src/type_descriptor.rs` (`TypeDescriptor = ResolvedTy`). The `hew-wirecodec` crate was retired; wire codec consumers should use `TypeDescriptor::canonical_string()` and the wire-kind surface in `hew-types`.
+**Implementation reference:** The canonical type descriptor is defined in `hew-types/src/type_descriptor.rs` (`TypeDescriptor = ResolvedTy`). Wire codec consumers use `TypeDescriptor::canonical_string()` and the wire-kind surface in `hew-types`.
 
 ##### 7.3.1.1 Wire Type–to–MessagePack Mapping
 
@@ -4963,10 +4975,16 @@ duration + i64      → COMPILE ERROR (type mismatch — enforced)
 ```
 
 **Accessor methods** (return `i64`): `.nanos()`, `.micros()`, `.millis()`,
-`.secs()`, `.mins()`, `.hours()`. **Instant arithmetic** is also
-available via the builtin `instant` primitive (`instant::now()` — no
-import required) — subtraction of two instants yields a `duration`. Both
-`duration` and `instant` implement `Display`.
+`.secs()`, `.mins()`, `.hours()`. `duration` implements `Display` (`5s`
+prints as `5000000000ns`).
+
+> **Instant arithmetic is not usable yet.** `instant::now()` parses,
+> type-checks, and links (no import required), but it evaluates to a constant
+> `0` rather than a real clock reading, and subtracting two instants fails
+> during lowering with ``E_MIR: unsupported HIR node reached MIR lowering:
+> integer binary result `duration` disagrees with common operand type `i64` ``.
+> Measure elapsed time through `std::time` until the `instant` substrate
+> lands.
 
 **Timeouts:**
 

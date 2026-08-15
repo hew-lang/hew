@@ -58,14 +58,14 @@ impl Checker {
             ))
             .cloned()
             .or_else(|| {
-                self.trait_method_ids
-                    .get(&format!("{trait_name}::{method_name}"))
-                    .cloned()
-            })
-            .or_else(|| {
                 let declaring_trait = self.trait_ref_lookup_key(trait_name);
                 self.trait_method_ids
                     .get(&format!("{declaring_trait}::{method_name}"))
+                    .cloned()
+            })
+            .or_else(|| {
+                self.trait_method_ids
+                    .get(&format!("{trait_name}::{method_name}"))
                     .cloned()
             })
     }

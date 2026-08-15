@@ -1899,15 +1899,34 @@ fn cmd_fmt(a: &args::FmtArgs) {
         return;
     }
 
-    if a.files.is_empty() {
+    if a.root.is_some() && !a.migrate {
+        eprintln!("Error: --root requires --migrate");
+        std::process::exit(2);
+    }
+
+    if a.files.is_empty() && !a.migrate {
         eprintln!("Usage: hew fmt [--check] (--stdin | <file.hew>...)");
         std::process::exit(1);
     }
 
+    let files = if a.migrate && a.files.is_empty() {
+        let root = a.root.clone().unwrap_or_else(|| PathBuf::from("."));
+        match migration_files(&root) {
+            Ok(files) => files,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        a.files.clone()
+    };
+
     let mut had_errors = false;
     let mut needs_formatting = false;
+    let mut formatted_files = Vec::new();
 
-    for file_path in &a.files {
+    for file_path in &files {
         let file = file_path.display().to_string();
         let source = match std::fs::read_to_string(file_path) {
             Ok(s) => s,
@@ -1918,11 +1937,33 @@ fn cmd_fmt(a: &args::FmtArgs) {
             }
         };
 
-        let Some(formatted) = format_for_display(&file, &source) else {
+        let migrated = if a.migrate {
+            if let Ok(migrated) = migrate_source_file(file_path, &file, &source) {
+                migrated
+            } else {
+                had_errors = true;
+                continue;
+            }
+        } else {
+            source.clone()
+        };
+
+        let Some(formatted) = format_for_display(&file, &migrated) else {
             had_errors = true;
             continue;
         };
 
+        formatted_files.push((file_path, file, source, formatted));
+    }
+
+    // A migration is a cross-file rewrite.  Compute every checker-backed edit
+    // against the original tree before writing anything, so one migrated import
+    // cannot affect the semantic decision for a later source file.
+    if a.migrate && had_errors {
+        std::process::exit(1);
+    }
+
+    for (file_path, file, source, formatted) in formatted_files {
         if a.check {
             if formatted != source {
                 eprintln!("{file}: needs formatting");
@@ -1940,6 +1981,162 @@ fn cmd_fmt(a: &args::FmtArgs) {
 
     if had_errors || needs_formatting {
         std::process::exit(1);
+    }
+}
+
+fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    if !root.is_dir() {
+        return Err(format!(
+            "migration root `{}` is not a directory",
+            root.display()
+        ));
+    }
+
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .map_err(|error| format!("cannot read `{}`: {error}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| format!("cannot read directory entry: {error}"))?;
+            let path = entry.path();
+            if path.is_dir() {
+                if !matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some(".git" | "target")
+                ) {
+                    pending.push(path);
+                }
+            } else if path.extension().is_some_and(|extension| extension == "hew") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    if files.is_empty() {
+        return Err(format!(
+            "migration root `{}` contains no .hew files",
+            root.display()
+        ));
+    }
+    Ok(files)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the migration must keep checker resolution, refusal reporting, and source edits in one transaction"
+)]
+fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<String, ()> {
+    let options = compile::frontend_options_for_check(&compile::CompileOptions::default());
+    let state = match hew_compile::run_file_frontend_to_typecheck(
+        &file_path.display().to_string(),
+        &options,
+    ) {
+        Ok(state) => state,
+        Err(failure) => {
+            let has_legacy_separator = hew_lexer::lex(source)
+                .iter()
+                .any(|(token, _)| matches!(token, hew_lexer::Token::DoubleColon));
+            let generated_dotted_variant = failure.diagnostics.iter().any(|diagnostic| {
+                matches!(
+                    diagnostic.kind,
+                    hew_compile::FrontendDiagnosticKind::Type(hew_types::TypeError {
+                        kind: hew_types::error::TypeErrorKind::TypeUsedAsValue,
+                        ..
+                    })
+                )
+            });
+            if !has_legacy_separator && generated_dotted_variant {
+                return hew_parser::fmt::migrate_legacy_syntax(source, &[]).map_err(|error| {
+                    for refusal in error.refusals {
+                        eprintln!(
+                            "Error: migration refused {file}:{}-{}: {}",
+                            refusal.span.start, refusal.span.end, refusal.reason
+                        );
+                    }
+                });
+            }
+            compile::render_frontend_diagnostics(&failure.diagnostics);
+            eprintln!("{file}: migration requires a successfully type-checked source file");
+            return Err(());
+        }
+    };
+
+    let Some(typecheck) = state.typecheck_result.tco.as_ref() else {
+        eprintln!("{file}: migration requires checker output");
+        return Err(());
+    };
+
+    let tokens = hew_lexer::lex(source);
+    let mut variants = Vec::new();
+    let mut refusals = Vec::new();
+    for error in &typecheck.warnings {
+        let is_expression = matches!(error.kind, hew_types::error::TypeErrorKind::BareVariantExpr);
+        let is_pattern = matches!(
+            error.kind,
+            hew_types::error::TypeErrorKind::BareVariantPattern
+        );
+        if !is_expression && !is_pattern {
+            continue;
+        }
+        if error.source_module.is_some() {
+            continue;
+        }
+        let Some((name, span)) = tokens.iter().find_map(|(token, span)| {
+            (span.start >= error.span.start && span.end <= error.span.end).then(|| match token {
+                hew_lexer::Token::Identifier(name) => {
+                    Some(((*name).to_string(), span.start..span.end))
+                }
+                _ => None,
+            })?
+        }) else {
+            refusals.push(format!(
+                "{}:{}-{}: checker-selected variant has no identifier token",
+                file, error.span.start, error.span.end
+            ));
+            continue;
+        };
+
+        let replacement = if is_pattern {
+            format!(".{name}")
+        } else if let Some(owner) = typecheck
+            .expr_types
+            .get(&hew_types::SpanKey::from(&error.span))
+            .and_then(hew_types::Ty::type_name)
+        {
+            format!("{owner}.{name}")
+        } else {
+            refusals.push(format!(
+                "{}:{}-{}: checker did not resolve a variant owner for `{name}`",
+                file, span.start, span.end
+            ));
+            continue;
+        };
+        variants.push(hew_parser::fmt::VariantMigration {
+            span,
+            name,
+            replacement,
+        });
+    }
+
+    if !refusals.is_empty() {
+        for refusal in refusals {
+            eprintln!("Error: migration refused {refusal}");
+        }
+        return Err(());
+    }
+
+    match hew_parser::fmt::migrate_legacy_syntax(source, &variants) {
+        Ok(migrated) => Ok(migrated),
+        Err(error) => {
+            for refusal in error.refusals {
+                eprintln!(
+                    "Error: migration refused {file}:{}-{}: {}",
+                    refusal.span.start, refusal.span.end, refusal.reason
+                );
+            }
+            Err(())
+        }
     }
 }
 

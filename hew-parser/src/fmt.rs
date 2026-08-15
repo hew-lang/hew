@@ -55,6 +55,111 @@ pub fn format_source(source: &str, program: &Program) -> String {
     f.output
 }
 
+/// A checker-approved replacement for a legacy bare enum variant.
+///
+/// The formatter owns the byte edit, while the caller supplies the semantic
+/// decision.  Keeping that split prevents a token rewrite from guessing whether
+/// an identifier denotes a variant or an ordinary binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantMigration {
+    pub span: Range<usize>,
+    pub name: String,
+    pub replacement: String,
+}
+
+/// A source location the legacy-syntax migrator deliberately declined to edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationRefusal {
+    pub span: Range<usize>,
+    pub reason: String,
+}
+
+/// Failure returned when the migrator cannot prove a requested source edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationError {
+    pub refusals: Vec<MigrationRefusal>,
+}
+
+impl std::fmt::Display for MigrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "legacy syntax migration refused {} site(s)",
+            self.refusals.len()
+        )
+    }
+}
+
+impl std::error::Error for MigrationError {}
+
+/// Rewrite legacy path separators and checker-approved bare variants.
+///
+/// Every edit is anchored to lexer tokens.  Comments and string literals never
+/// produce a `DoubleColon` token, and a caller-provided variant span must still
+/// point at the named identifier token before it is changed.
+///
+/// # Errors
+///
+/// Returns [`MigrationError`] when a checker-selected variant no longer points
+/// at its expected identifier token, or when requested edits overlap.
+pub fn migrate_legacy_syntax(
+    source: &str,
+    variants: &[VariantMigration],
+) -> Result<String, MigrationError> {
+    let tokens = hew_lexer::lex(source);
+    let mut edits: Vec<(Range<usize>, String)> = Vec::new();
+
+    for (index, (token, span)) in tokens.iter().enumerate() {
+        if !matches!(token, hew_lexer::Token::DoubleColon) {
+            continue;
+        }
+        let is_turbofish = tokens
+            .get(index + 1)
+            .is_some_and(|(next, _)| matches!(next, hew_lexer::Token::Less));
+        let replacement = if is_turbofish { "" } else { "." };
+        edits.push((span.start..span.end, replacement.to_string()));
+    }
+
+    let mut refusals = Vec::new();
+    for variant in variants {
+        let valid_token = tokens.iter().any(|(token, span)| {
+            span.start == variant.span.start
+                && span.end == variant.span.end
+                && matches!(token, hew_lexer::Token::Identifier(name) if *name == variant.name)
+        });
+        if !valid_token {
+            refusals.push(MigrationRefusal {
+                span: variant.span.clone(),
+                reason: format!(
+                    "expected identifier `{}` selected by the checker",
+                    variant.name
+                ),
+            });
+            continue;
+        }
+        edits.push((variant.span.clone(), variant.replacement.clone()));
+    }
+
+    edits.sort_by_key(|(span, _)| (span.start, span.end));
+    for pair in edits.windows(2) {
+        if pair[0].0.end > pair[1].0.start {
+            refusals.push(MigrationRefusal {
+                span: pair[1].0.clone(),
+                reason: "migration edits overlap".to_string(),
+            });
+        }
+    }
+    if !refusals.is_empty() {
+        return Err(MigrationError { refusals });
+    }
+
+    let mut migrated = source.to_string();
+    for (span, replacement) in edits.into_iter().rev() {
+        migrated.replace_range(span, &replacement);
+    }
+    Ok(migrated)
+}
+
 struct Formatter<'a> {
     output: String,
     indent: usize,
@@ -4048,6 +4153,65 @@ fn find_block_close(source: &str, from: usize, before: usize) -> usize {
 mod tests {
     use super::*;
     use crate::parse;
+
+    #[test]
+    fn migrates_legacy_paths_turbofish_and_checker_selected_variants() {
+        let source = concat!(
+            "import a::b::{C};\n",
+            "fn main() {\n",
+            "    let value = Some(42);\n",
+            "    f::<T>();\n",
+            "    HashMap::<string, i64>::new();\n",
+            "    Vec::new::<i64>();\n",
+            "    // keep a::b and f::<T>() in comments\n",
+            "    println(\"a::b and f::<T>()\");\n",
+            "}\n"
+        );
+        let start = source.find("Some(42)").unwrap();
+        let migrated = migrate_legacy_syntax(
+            source,
+            &[VariantMigration {
+                span: start..start + "Some".len(),
+                name: "Some".to_string(),
+                replacement: "Option.Some".to_string(),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(
+            migrated,
+            concat!(
+                "import a.b.{C};\n",
+                "fn main() {\n",
+                "    let value = Option.Some(42);\n",
+                "    f<T>();\n",
+                "    HashMap<string, i64>.new();\n",
+                "    Vec.new<i64>();\n",
+                "    // keep a::b and f::<T>() in comments\n",
+                "    println(\"a::b and f::<T>()\");\n",
+                "}\n"
+            )
+        );
+        assert_eq!(migrate_legacy_syntax(&migrated, &[]).unwrap(), migrated);
+    }
+
+    #[test]
+    fn refuses_variant_rewrite_without_the_checker_selected_token() {
+        let error = migrate_legacy_syntax(
+            "fn main() { println(\"Some\"); }\n",
+            &[VariantMigration {
+                span: 21..25,
+                name: "Some".to_string(),
+                replacement: ".Some".to_string(),
+            }],
+        )
+        .unwrap_err();
+
+        assert_eq!(error.refusals.len(), 1);
+        assert!(error.refusals[0]
+            .reason
+            .contains("expected identifier `Some` selected by the checker"));
+    }
 
     fn roundtrip(src: &str) -> String {
         let result = parse(src);

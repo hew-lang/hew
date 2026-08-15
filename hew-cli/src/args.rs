@@ -755,6 +755,12 @@ pub struct FmtArgs {
     /// Check formatting without writing (files or stdin; exit 1 if unformatted).
     #[arg(long)]
     pub check: bool,
+    /// Rewrite legacy path and variant syntax before formatting.
+    #[arg(long, conflicts_with = "stdin")]
+    pub migrate: bool,
+    /// Recursively migrate every Hew source below this directory.
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["stdin", "files"])]
+    pub root: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------

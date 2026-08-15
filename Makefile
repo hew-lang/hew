@@ -72,7 +72,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
+.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -1301,6 +1301,24 @@ hew-fmt-check: hew
 	    | xargs -0 "$(DEBUG_DIR)/hew" fmt --check \
 	    && echo "hew-fmt-check passed: all $$total .hew sources are formatted." \
 	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
+
+# Exercise migration in an isolated copy so the idempotency proof never edits
+# the checkout. The first pass must cover every source root; the second pass
+# must leave the first-pass snapshot byte-identical.
+test-migrate-corpus: hew
+	@set -e; migration_snapshot=$$(mktemp -d); migration_fixed=$$(mktemp -d); \
+	trap 'rm -rf "$$migration_snapshot" "$$migration_fixed"' 0; \
+	for migration_root in std examples tests docs repros tools; do \
+		if [ -d "$$migration_root" ]; then cp -R "$$migration_root" "$$migration_snapshot/"; fi; \
+	done; \
+	"$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_snapshot"; \
+	$(MAKE) test; \
+	$(MAKE) test-vertical-slice; \
+	$(MAKE) test-pkg-import; \
+	cp -R "$$migration_snapshot/." "$$migration_fixed/"; \
+	"$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_snapshot"; \
+	diff -ru "$$migration_fixed" "$$migration_snapshot"; \
+	"$(DEBUG_DIR)/hew" fmt --migrate --check --root "$$migration_snapshot"
 
 # Derive the compilable corpus from the tracked source roots, format a private
 # path-preserving mirror, then require the result to check and reach a fixed point.

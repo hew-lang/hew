@@ -17,7 +17,7 @@ type Stack<T> {
 
 impl<T> Stack<T> {
     fn new() -> Stack<T> {
-        Stack { items: Vec::new() }
+        Stack { items: Vec.new() }
     }
     fn push(self, x: T) {
         self.items.push(x);
@@ -28,17 +28,17 @@ impl<T> Stack<T> {
 }
 
 fn new_stack<T>() -> Stack<T> {
-    Stack { items: Vec::new() }
+    Stack { items: Vec.new() }
 }
 
 // Return-position inference: `T` comes from the enclosing fn's return type.
 fn make_strings() -> Stack<string> {
-    Stack::new()
+    Stack.new()
 }
 
 fn main() {
     // assoc-fn ctor, `T` (= i64) from the `let` annotation
-    let a: Stack<i64> = Stack::new();
+    let a: Stack<i64> = Stack.new();
     a.push(1);
     a.push(2);
     println(a.len());
@@ -57,8 +57,8 @@ fn main() {
 
     // nested: Stack<Stack<i64>> — both the outer and inner ctor are
     // return-type-polymorphic
-    let outer: Stack<Stack<i64>> = Stack::new();
-    let inner: Stack<i64> = Stack::new();
+    let outer: Stack<Stack<i64>> = Stack.new();
+    let inner: Stack<i64> = Stack.new();
     inner.push(10);
     outer.push(inner);
     println(outer.len());
@@ -67,7 +67,7 @@ fn main() {
     // type parameter is pinned at the call site, not by the expected type. This
     // surface already lowered before the F7 fix; pinning it here guards the
     // whole constructor family against regression.
-    let t = Stack::<i64>::new();
+    let t = Stack<i64>.new();
     t.push(100);
     t.push(200);
     t.push(300);

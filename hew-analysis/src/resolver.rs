@@ -125,7 +125,7 @@ impl Resolution {
 ///
 /// Intra-file definitions produce fully-resolved variants. Identifiers that
 /// only resolve via an import statement produce [`Resolution::ImportedItem`]
-/// with the import span; the caller (LSP handler, for now) chases the import
+/// with the import span; the caller (LSP handler) chases the import
 /// across files. Unresolved identifiers return [`Resolution::Unknown`]
 /// carrying the identifier text, so the caller can still attempt any
 /// fallbacks it owns.

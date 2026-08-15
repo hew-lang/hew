@@ -7671,6 +7671,12 @@ impl Checker {
         // Module-qualified calls: e.g. http.listen(addr) → lookup "http.listen" in fn_sigs
         if let Expr::Identifier(name) = &receiver.0 {
             let receiver_is_binding = self.env.lookup_ref(name).is_some();
+            let source_module_member =
+                format!("{}.{}", self.canonical_module_import_owner(name), method);
+            let receiver_is_module_binding = self.module_binding_in_current_file(name)
+                || self.modules.contains(name)
+                || self.module_fn_exports.contains(&source_module_member)
+                || self.fn_sigs.contains_key(&source_module_member);
             // A dotted expression head is resolved through the checker's one
             // nominal-declaration ladder before member lookup. Imported bare
             // bindings no longer have a leaf entry in `type_defs`, so probing
@@ -7681,10 +7687,18 @@ impl Checker {
             let canonical_type = self
                 .resolve_nominal_declaration(NominalOrigin::Lexical, name)
                 .unwrap_or_else(|| name.clone());
+            // Primitive/source aliases such as lowercase `string` may also be
+            // module namespaces. They are not nominal type heads unless the
+            // source spelling itself is the canonical builtin declaration.
+            let source_is_noncanonical_builtin_alias =
+                canonical_type != name.as_str() && self.resolved_builtin_type(name).is_some();
             let dotted_constructor = format!("{canonical_type}::{method}");
             let receiver_is_known_type = self.lookup_type_def(&canonical_type).is_some()
                 || self.resolved_builtin_type(&canonical_type).is_some();
-            if !receiver_is_binding {
+            if !receiver_is_binding
+                && !receiver_is_module_binding
+                && !source_is_noncanonical_builtin_alias
+            {
                 if let Some((type_name, _, _)) =
                     self.lookup_variant_constructor(&dotted_constructor)
                 {

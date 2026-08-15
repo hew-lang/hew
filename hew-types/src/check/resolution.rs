@@ -634,6 +634,80 @@ impl Checker {
         self.canonical_variant_surface_owner(surface_owner, expected_ty) == expected
     }
 
+    /// Whether the owner segments of an origin-preserving pattern path name
+    /// `expected_ty`'s exact nominal owner. This keeps parsed segments as the
+    /// lookup carrier instead of manufacturing a separator-composed key.
+    pub(super) fn variant_path_owner_matches(
+        &self,
+        path: &hew_parser::ast::Path,
+        expected_ty: &Ty,
+    ) -> bool {
+        let Some((_, owner_segments)) = path.segments.split_last() else {
+            return false;
+        };
+        if owner_segments.is_empty() {
+            return true;
+        }
+
+        let expected = match expected_ty {
+            Ty::Named {
+                builtin: Some(BuiltinType::Option),
+                ..
+            } => "Option",
+            Ty::Named {
+                builtin: Some(BuiltinType::Result),
+                ..
+            } => "Result",
+            Ty::Named { name, .. } => name,
+            _ => return false,
+        };
+        let expected_canonical = self
+            .canonical_nominal_name(expected)
+            .unwrap_or_else(|| expected.to_string());
+
+        let surface_components_match = |surface: &str| {
+            surface
+                .split(['.', ':'])
+                .filter(|component| !component.is_empty())
+                .eq(owner_segments.iter().map(String::as_str))
+        };
+        if self
+            .import_type_name_aliases
+            .iter()
+            .any(|((module, surface), canonical)| {
+                module == &self.current_module
+                    && surface_components_match(surface)
+                    && canonical == &expected_canonical
+            })
+        {
+            return true;
+        }
+
+        let expected_segments: Vec<&str> = expected_canonical.split('.').collect();
+        if expected_segments
+            .iter()
+            .copied()
+            .eq(owner_segments.iter().map(String::as_str))
+        {
+            return true;
+        }
+
+        if owner_segments.len() == 1
+            && expected_segments.last().copied() == owner_segments.first().map(String::as_str)
+            && !self.local_type_defs.contains(owner_segments[0].as_str())
+            && !self.source_type_defs.contains(owner_segments[0].as_str())
+        {
+            return true;
+        }
+
+        self.current_module_identity().is_some_and(|module| {
+            module
+                .split('.')
+                .chain(owner_segments.iter().map(String::as_str))
+                .eq(expected_segments.iter().copied())
+        })
+    }
+
     /// Canonicalise a type spelling that uses the current module's *declared
     /// lexical leaf* as a qualifier.  Module graph identity is full-path, so
     /// while checking `hew.selfqualtype` the source spelling

@@ -745,58 +745,14 @@ fn hover_pattern_binding(
     })
 }
 
-fn compatibility_nominal_name(path: &hew_parser::ast::Path) -> String {
-    let Some((variant, owners)) = path.segments.split_last() else {
-        return String::new();
-    };
-    let mut name = owners.first().cloned().unwrap_or_default();
-    for (separator, segment) in path
-        .separators
-        .iter()
-        .take(owners.len().saturating_sub(1))
-        .zip(owners.iter().skip(1))
-    {
-        name.push_str(match separator {
-            hew_parser::ast::PathSeparator::Dot => ".",
-            hew_parser::ast::PathSeparator::DoubleColon => "::",
-        });
-        name.push_str(segment);
-    }
-    if !name.is_empty() {
-        name.push_str("::");
-    }
-    name.push_str(variant);
-    name
+fn nominal_path_leaf(path: &hew_parser::ast::Path) -> Option<&str> {
+    path.segments.last().map(String::as_str)
 }
 
-fn compatibility_nominal_pattern(
-    name: String,
-    payload: Option<&hew_parser::ast::NominalPatternPayload>,
-) -> Pattern {
-    match payload {
-        None => Pattern::Identifier(name),
-        Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => Pattern::Constructor {
-            name,
-            patterns: patterns.clone(),
-        },
-        Some(hew_parser::ast::NominalPatternPayload::Record { fields, rest }) => Pattern::Struct {
-            name,
-            fields: fields.clone(),
-            rest: rest.clone(),
-        },
-    }
-}
-
-fn compatibility_pattern(pattern: &Pattern) -> Option<Pattern> {
-    match pattern {
-        Pattern::NominalPath { path, payload } => Some(compatibility_nominal_pattern(
-            compatibility_nominal_name(path),
-            payload.as_ref(),
-        )),
-        _ => None,
-    }
-}
-
+#[expect(
+    clippy::too_many_lines,
+    reason = "binding hover traverses every origin-preserving pattern payload shape"
+)]
 fn find_pattern_binding_type(
     pattern: &(Pattern, Span),
     source_ty: &Ty,
@@ -806,15 +762,6 @@ fn find_pattern_binding_type(
 ) -> Option<Ty> {
     if !span_contains_offset(&pattern.1, offset) {
         return None;
-    }
-    if let Some(compatibility) = compatibility_pattern(&pattern.0) {
-        return find_pattern_binding_type(
-            &(compatibility, pattern.1.clone()),
-            source_ty,
-            type_defs,
-            word,
-            offset,
-        );
     }
     match &pattern.0 {
         Pattern::Identifier(name) => (name == word).then(|| source_ty.clone()),
@@ -869,6 +816,30 @@ fn find_pattern_binding_type(
                     args: vec![],
                 })
         }
+        Pattern::NominalPath { path, payload } => match payload.as_ref() {
+            None => None,
+            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                let name = nominal_path_leaf(path)?;
+                constructor_payload_tys(source_ty, name, type_defs).and_then(|payload_tys| {
+                    patterns
+                        .iter()
+                        .zip(payload_tys.iter())
+                        .find_map(|(pattern, payload_ty)| {
+                            find_pattern_binding_type(pattern, payload_ty, type_defs, word, offset)
+                        })
+                })
+            }
+            Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                let name = nominal_path_leaf(path)?;
+                fields.iter().find_map(|field| {
+                    let field_ty =
+                        struct_pattern_field_ty(source_ty, name, &field.name, type_defs)?;
+                    field.pattern.as_ref().and_then(|pattern| {
+                        find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
+                    })
+                })
+            }
+        },
         Pattern::ContextVariant(context) => match context.payload.as_ref() {
             None => None,
             Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
@@ -895,16 +866,13 @@ fn find_pattern_binding_type(
                 })
             }
         },
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::NominalPath { .. } => None,
+        Pattern::Wildcard | Pattern::Literal(_) => None,
     }
 }
 
 fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Option<()> {
     if !span_contains_offset(&pattern.1, offset) {
         return None;
-    }
-    if let Some(compatibility) = compatibility_pattern(&pattern.0) {
-        return find_binding_name(&(compatibility, pattern.1.clone()), word, offset);
     }
     match &pattern.0 {
         Pattern::Identifier(name) => (name == word).then_some(()),
@@ -923,6 +891,20 @@ fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Op
             find_binding_name(left, word, offset).or_else(|| find_binding_name(right, word, offset))
         }
         Pattern::Regex { captures, .. } => captures.iter().find(|c| c.as_str() == word).map(|_| ()),
+        Pattern::NominalPath { payload, .. } => match payload.as_ref() {
+            None => None,
+            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => patterns
+                .iter()
+                .find_map(|pattern| find_binding_name(pattern, word, offset)),
+            Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                fields.iter().find_map(|field| {
+                    field
+                        .pattern
+                        .as_ref()
+                        .and_then(|pattern| find_binding_name(pattern, word, offset))
+                })
+            }
+        },
         Pattern::ContextVariant(context) => match context.payload.as_ref() {
             None => None,
             Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => patterns
@@ -937,7 +919,7 @@ fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Op
                 })
             }
         },
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::NominalPath { .. } => None,
+        Pattern::Wildcard | Pattern::Literal(_) => None,
     }
 }
 

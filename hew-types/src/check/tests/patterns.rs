@@ -386,6 +386,34 @@ fn foo(s: Shape) -> i64 {
         assert_eq!(circle_arm.payload_bindings[0].ty, Ty::I64);
     }
 
+    #[test]
+    fn dotted_tuple_variant_resolves_from_path_segments() {
+        let resolutions = pattern_resolutions(
+            r"
+enum Shape { Circle(i64); Square(i64) }
+fn foo(s: Shape) -> i64 {
+    match s {
+        Shape.Circle(radius) => radius,
+        Shape.Square(side) => side,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 2);
+        let circle = resolutions
+            .values()
+            .find(|resolution| {
+                resolution
+                    .variant_match
+                    .as_ref()
+                    .is_some_and(|variant| variant.variant_name == "Circle")
+            })
+            .expect("expected a dotted Circle arm");
+        assert_eq!(circle.pattern_kind, PatternKind::VariantCtor);
+        assert_eq!(circle.payload_bindings.len(), 1);
+        assert_eq!(circle.payload_bindings[0].binding_name, "radius");
+        assert_eq!(circle.payload_bindings[0].ty, Ty::I64);
+    }
+
     // ── match expression (not statement) ────────────────────────────────────
 
     #[test]

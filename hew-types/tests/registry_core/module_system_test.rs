@@ -955,13 +955,10 @@ fn same_bare_name_types_register_independent_divergent_field_layouts() {
 }
 
 #[test]
-fn unqualified_ambiguous_type_is_typed_error() {
-    // VC6: a bare reference to a type PUBLISHED bare by two imported modules
-    // (each via an explicit `::{ Value }` opt-in) must be a typed AmbiguousType
-    // error, not a silent first-wins pick. Ambiguity is decided over published
-    // bare bindings — two plain imports publish nothing and are "not in scope"
-    // instead (asserted separately below); two opt-ins are the genuine
-    // ambiguity.
+fn colliding_unqualified_imports_are_typed_error() {
+    // Publishing the same bare name from two imports is rejected while the
+    // second import is still being preflighted, before a consumer can observe
+    // an ambiguous binding.
     let value_spec = || {
         Some(ImportSpec::Names(vec![ImportName {
             name: "Value".to_string(),
@@ -1026,8 +1023,8 @@ fn unqualified_ambiguous_type_is_typed_error() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::AmbiguousType),
-        "bare `Value` with two exporters must be AmbiguousType, got: {:?}",
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::ImportBindingCollision),
+        "bare `Value` with two exporters must be ImportBindingCollision, got: {:?}",
         output.errors
     );
     assert!(

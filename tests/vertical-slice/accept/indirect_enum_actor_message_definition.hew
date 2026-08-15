@@ -3,7 +3,7 @@ indirect enum Tree {
     Node(Tree, Tree);
 }
 
-actor Sink {
+actor TestSink {
     receive fn take(t: Tree) {
         let _ = t;
     }

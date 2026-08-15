@@ -1,0 +1,3 @@
+pub fn module_value() -> i64 {
+    99
+}

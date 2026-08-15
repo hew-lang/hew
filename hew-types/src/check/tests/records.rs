@@ -287,8 +287,8 @@ mod cross_module_same_name {
             output
                 .errors
                 .iter()
-                .any(|e| matches!(e.kind, TypeErrorKind::AmbiguousType)),
-            "ambiguous bare imports must fail closed instead of falling back to the wrong record; got: {:?}",
+                .any(|e| matches!(e.kind, TypeErrorKind::ImportBindingCollision)),
+            "colliding bare imports must fail before either declaration can win; got: {:?}",
             output.errors
         );
         assert!(
@@ -1092,7 +1092,7 @@ mod assoc_types_slice1 {
         // The method's declared return type is `Self::Item`; the impl
         // binds `type Item = i64`. Checker must accept the impl's `next`
         // returning `Option<i64>` against `Option<Self::Item>`.
-        let output = check_source(
+        let output = check_source_allowing_prelude_redeclaration(
             r"
             trait Iterator {
                 type Item;

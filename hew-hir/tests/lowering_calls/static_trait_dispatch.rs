@@ -155,7 +155,7 @@ fn e2e_multi_module_same_leaf_generic_and_specialized_dispatch_stays_canonical()
     let program = multi_module_program(
         r"
 import left::render::{Render as LeftRender, Box as LeftBox, identity as left_identity};
-import right::render::{Render as RightRender, Box as RightBox, identity as right_identity};
+import right::paint::{Render as RightRender, Box as RightBox, identity as right_identity};
 
 fn use_left<T: LeftRender>(value: T) -> string { value.render() }
 fn use_right<T: RightRender>(value: T) -> string { value.render() }
@@ -186,7 +186,7 @@ impl Render for Box<i64> {
 "#,
             ),
             (
-                "right::render",
+                "right::paint",
                 r#"
 pub trait Render {
     fn render(value: Self) -> string;
@@ -250,8 +250,8 @@ impl Render for Box<string> {
                 "left.render.Render::render".to_string()
             ),
             (
-                "right.render.Render".to_string(),
-                "right.render.Render::render".to_string()
+                "right.paint.Render".to_string(),
+                "right.paint.Render::render".to_string()
             ),
         ],
         "the typechecker-selected static-call targets must preserve module ownership"
@@ -279,7 +279,7 @@ impl Render for Box<string> {
         .expect("left imported alias must retain its source declaration identity");
     let right_direct = direct_identities
         .iter()
-        .find(|identity| identity.as_str() == "right.render.identity")
+        .find(|identity| identity.as_str() == "right.paint.identity")
         .expect("right imported alias must retain its source declaration identity");
     assert_ne!(
         left_direct, right_direct,
@@ -298,11 +298,11 @@ impl Render for Box<string> {
     let right_generic = index
         .iter()
         .find(|(key, _)| {
-            key.declaring_trait.full_path() == "right.render.Render"
-                && key.self_type.nominal.declaration().full_path() == "right.render.Box"
+            key.declaring_trait.full_path() == "right.paint.Render"
+                && key.self_type.nominal.declaration().full_path() == "right.paint.Box"
                 && key.self_type.args.is_empty()
         })
-        .expect("right.render's generic impl must be indexed structurally");
+        .expect("right.paint's generic impl must be indexed structurally");
     assert_ne!(
         left_specialized.0.declaring_trait, right_generic.0.declaring_trait,
         "same leaf trait names from different modules must not collide"

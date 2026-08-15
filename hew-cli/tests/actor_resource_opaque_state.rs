@@ -181,9 +181,9 @@ fn run_imported_receiver_collision_teardown_oracle(package_import: bool) {
 
 #[resource]
 #[opaque]
-pub type Receiver {{}}
+pub type UserReceiver {{}}
 
-impl Receiver {{
+impl UserReceiver {{
     fn close(self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.try_append("{marker_literal}", "closed\n") {{
@@ -194,13 +194,13 @@ impl Receiver {{
 }}
 
 pub actor Keeper {{
-    let handle: Receiver = unsafe {{ hew_deque_new() }};
+    let handle: UserReceiver = unsafe {{ hew_deque_new() }};
     receive fn ping() -> i64 {{ 1 }}
 }}
 
 extern "C" {{
-    fn hew_deque_new() -> Receiver;
-    fn hew_deque_free(consume handle: Receiver);
+    fn hew_deque_new() -> UserReceiver;
+    fn hew_deque_free(consume handle: UserReceiver);
 }}
 "#
     );
@@ -245,18 +245,18 @@ fn main() {{
         .expect("compile imported collision IR");
     assert!(
         output.status.success(),
-        "{mode}-imported Receiver IR must compile;\n{}",
+        "{mode}-imported UserReceiver IR must compile;\n{}",
         describe_output(&output)
     );
     let ll = std::fs::read_to_string(dir.path().join("main.ll")).expect("read emitted IR");
     let drop_body = fn_body(&ll, "__hew_state_drop_");
     assert!(
-        drop_body.contains("Receiver::close"),
-        "{mode}-imported state drop must call the authored Receiver close:\n{drop_body}"
+        drop_body.contains("UserReceiver::close"),
+        "{mode}-imported state drop must call the authored UserReceiver close:\n{drop_body}"
     );
     assert!(
         !drop_body.contains("hew_channel_receiver_close"),
-        "{mode}-imported user Receiver must not route to runtime channel close:\n{drop_body}"
+        "{mode}-imported user UserReceiver must not route to runtime channel close:\n{drop_body}"
     );
 
     let output = Command::new(hew_binary())
@@ -266,13 +266,13 @@ fn main() {{
         .expect("run imported collision test");
     assert!(
         output.status.success(),
-        "{mode}-imported user Receiver must compile and run with user teardown;\n{}",
+        "{mode}-imported user UserReceiver must compile and run with user teardown;\n{}",
         describe_output(&output)
     );
     assert_eq!(
         std::fs::read_to_string(&marker).expect("close marker"),
         "closed\n",
-        "{mode}-imported Receiver must close exactly once"
+        "{mode}-imported UserReceiver must close exactly once"
     );
 }
 
@@ -318,12 +318,12 @@ fn wrapped_resource_actor_state_still_closes_once_on_teardown() {
 
 #[test]
 fn user_receiver_resource_shadow_closes_once_on_teardown() {
-    run_builtin_name_collision_teardown_oracle("Receiver");
+    run_builtin_name_collision_teardown_oracle("UserReceiver");
 }
 
 #[test]
-fn user_monitor_ref_resource_shadow_closes_once_on_teardown() {
-    run_builtin_name_collision_teardown_oracle("MonitorRef");
+fn user_monitor_ref_resource_closes_once_on_teardown() {
+    run_builtin_name_collision_teardown_oracle("UserMonitorRef");
 }
 
 #[test]

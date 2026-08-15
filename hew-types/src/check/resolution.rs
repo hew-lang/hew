@@ -98,7 +98,11 @@ impl Checker {
         };
         let canonical_owner = self
             .module_import_bindings
-            .get(&(self.current_module.clone(), surface_owner.to_string()))
+            .get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                surface_owner.to_string(),
+            ))
             .map_or(surface_owner, String::as_str);
         let canonical_source = self.canonical_std_module_sources.contains(canonical_owner);
         let lifecycle_authorized =
@@ -140,7 +144,11 @@ impl Checker {
         let bare = tail.split_once("::").map_or(tail, |(ty, _)| ty);
         let owner = match self
             .module_import_bindings
-            .get(&(self.current_module.clone(), binding.to_string()))
+            .get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                binding.to_string(),
+            ))
             .map(String::as_str)
         {
             Some("std.failure") => "std.failure",
@@ -228,10 +236,11 @@ impl Checker {
             canonical.and_then(|canonical| {
                 crate::lookup_source_owned_lifecycle_type(&canonical)?;
                 let owner = canonical.split_once('.')?.0;
-                let binding = if self
-                    .unqualified_to_module
-                    .contains_key(&(self.current_module.clone(), type_surface.to_string()))
-                {
+                let binding = if self.unqualified_to_module.contains_key(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    type_surface.to_string(),
+                )) {
                     type_surface.to_string()
                 } else {
                     owner.to_string()
@@ -277,9 +286,11 @@ impl Checker {
             );
             return Err(());
         }
-        self.used_modules
-            .borrow_mut()
-            .insert(ImportKey::new(self.current_module.clone(), binding));
+        self.used_modules.borrow_mut().insert(ImportKey::in_file(
+            self.current_module.clone(),
+            self.current_module_idx,
+            binding,
+        ));
         Ok(Some(format!("{canonical}{suffix}")))
     }
 
@@ -347,9 +358,11 @@ impl Checker {
         // load-bearing for `import foo::{ Receiver }` and flattened file
         // imports: the binding names `foo.Receiver`, not the runtime channel
         // endpoint merely because its bare spelling is builtin-shaped.
-        let identities = self
-            .published_bare_type_owners
-            .get(&(self.current_module.clone(), name.to_string()))?;
+        let identities = self.published_bare_type_owners.get(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            name.to_string(),
+        ))?;
         if identities.len() != 1 {
             return None;
         }
@@ -391,10 +404,11 @@ impl Checker {
         // inside a module importing `std.net` equal to the corresponding full
         // identities without ever collapsing unrelated same-leaf types.
         if let Some((surface_owner, short)) = name.rsplit_once('.') {
-            if let Some(canonical_owner) = self
-                .module_import_bindings
-                .get(&(self.current_module.clone(), surface_owner.to_string()))
-            {
+            if let Some(canonical_owner) = self.module_import_bindings.get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                surface_owner.to_string(),
+            )) {
                 let canonical = format!("{canonical_owner}.{short}");
                 if self.type_defs.contains_key(&canonical)
                     || self.known_types.contains(&canonical)
@@ -551,10 +565,11 @@ impl Checker {
     /// are projected to the checker-owned nominal identity here; no leaf-only
     /// scan is permitted.
     fn canonical_variant_surface_owner(&self, surface_owner: &str, expected_ty: &Ty) -> String {
-        if let Some(canonical) = self
-            .import_type_name_aliases
-            .get(&(self.current_module.clone(), surface_owner.to_string()))
-        {
+        if let Some(canonical) = self.import_type_name_aliases.get(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            surface_owner.to_string(),
+        )) {
             return canonical.clone();
         }
 
@@ -674,8 +689,9 @@ impl Checker {
         if self
             .import_type_name_aliases
             .iter()
-            .any(|((module, surface), canonical)| {
+            .any(|((module, file, surface), canonical)| {
                 module == &self.current_module
+                    && *file == self.current_module_idx
                     && surface_components_match(surface)
                     && canonical == &expected_canonical
             })
@@ -688,7 +704,11 @@ impl Checker {
             .split_first()
             .is_some_and(|(module_binding, nested_owner)| {
                 self.module_import_bindings
-                    .get(&(self.current_module.clone(), module_binding.clone()))
+                    .get(&(
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        module_binding.clone(),
+                    ))
                     .is_some_and(|canonical_module| {
                         canonical_module
                             .split('.')
@@ -1044,7 +1064,11 @@ impl Checker {
         // from `{owner}.{name}`, which would mis-name an alias's source type.
         let published_identities: Vec<String> = self
             .published_bare_type_owners
-            .get(&(self.current_module.clone(), name.to_string()))
+            .get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                name.to_string(),
+            ))
             .map(|identities| identities.iter().cloned().collect())
             .unwrap_or_default();
         if published_identities.is_empty()
@@ -1154,10 +1178,14 @@ impl Checker {
         let bindings: Vec<ImportKey> = self
             .module_import_bindings
             .iter()
-            .filter(|((importer, _), owner)| {
-                importer == &self.current_module && *owner == source_owner
+            .filter(|((importer, file, _), owner)| {
+                importer == &self.current_module
+                    && *file == self.current_module_idx
+                    && *owner == source_owner
             })
-            .map(|((importer, binding), _)| ImportKey::new(importer.clone(), binding.clone()))
+            .map(|((importer, file, binding), _)| {
+                ImportKey::in_file(importer.clone(), *file, binding.clone())
+            })
             .filter(|key| self.import_spans.contains_key(key))
             .collect();
         self.used_modules.borrow_mut().extend(bindings);
@@ -1170,8 +1198,9 @@ impl Checker {
         let owners: Vec<String> = self
             .module_import_bindings
             .iter()
-            .filter(|((importer, _), owner)| {
+            .filter(|((importer, file, _), owner)| {
                 importer == &self.current_module
+                    && *file == self.current_module_idx
                     && resolved_name
                         .strip_prefix(owner.as_str())
                         .is_some_and(|suffix| suffix.starts_with('.'))
@@ -2729,7 +2758,7 @@ impl Checker {
                     .resolve_type_expr_tracking_holes_with_context(&path.base, hole_vars, context);
                 let Some(assoc_name) = path.members.first() else {
                     self.report_error(
-                        TypeErrorKind::InvalidOperation,
+                        TypeErrorKind::PathMemberNotFound,
                         &te.1,
                         "qualified associated type path requires a member".to_string(),
                     );
@@ -2737,16 +2766,76 @@ impl Checker {
                 };
                 if path.members.len() != 1 {
                     self.report_error(
-                        TypeErrorKind::InvalidOperation,
+                        TypeErrorKind::PathKindMismatch,
                         &te.1,
                         "multi-segment qualified associated type projections are not yet supported"
                             .to_string(),
                     );
                     return Ty::Error;
                 }
+                let trait_name = path.trait_path.source_spelling();
+                let mut candidates = Vec::new();
+                if self.trait_defs.contains_key(&trait_name) {
+                    candidates.push(trait_name.clone());
+                } else if !trait_name.contains('.') && !trait_name.contains("::") {
+                    if let Some(owners) = self.published_bare_trait_owners.get(&(
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        trait_name.clone(),
+                    )) {
+                        candidates.extend(
+                            owners
+                                .iter()
+                                .filter(|owner| self.trait_defs.contains_key(*owner))
+                                .cloned(),
+                        );
+                    }
+                }
+                candidates.sort_unstable();
+                candidates.dedup();
+                if candidates.len() > 1 {
+                    self.report_error(
+                        TypeErrorKind::AssocItemAmbiguous,
+                        &te.1,
+                        format!(
+                            "associated type `{assoc_name}` is ambiguous because trait `{trait_name}` has multiple imported owners"
+                        ),
+                    );
+                    return Ty::Error;
+                }
+                let trait_key = candidates
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| self.trait_ref_lookup_key(&trait_name));
+                if let Some(info) = self.trait_defs.get(&trait_key) {
+                    if !info
+                        .associated_types
+                        .iter()
+                        .any(|associated| associated.name == *assoc_name)
+                    {
+                        let kind = if info.methods.iter().any(|method| method.name == *assoc_name) {
+                            TypeErrorKind::PathKindMismatch
+                        } else {
+                            TypeErrorKind::PathMemberNotFound
+                        };
+                        self.report_error(
+                            kind,
+                            &te.1,
+                            format!("trait `{trait_key}` has no associated type `{assoc_name}`"),
+                        );
+                        return Ty::Error;
+                    }
+                } else {
+                    self.report_error(
+                        TypeErrorKind::PathMemberNotFound,
+                        &te.1,
+                        format!("cannot resolve trait `{trait_name}`"),
+                    );
+                    return Ty::Error;
+                }
                 Ty::AssocType {
                     base: Box::new(base),
-                    trait_name: path.trait_path.source_spelling().into_boxed_str(),
+                    trait_name: trait_key.into_boxed_str(),
                     assoc_name: assoc_name.clone().into_boxed_str(),
                 }
             }
@@ -2970,7 +3059,11 @@ impl Checker {
                 // lexical binding remains available for its import-proof check.
                 let imported_module_binding = name.split_once('.').and_then(|(binding, tail)| {
                     self.module_import_bindings
-                        .get(&(self.current_module.clone(), binding.to_string()))
+                        .get(&(
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            binding.to_string(),
+                        ))
                         .filter(|owner| {
                             !matches!(owner.as_str(), "std.failure" | "std.link_monitor")
                         })
@@ -3106,9 +3199,11 @@ impl Checker {
                     }
                 }
                 let resolved_name = if let Some((canonical, binding)) = lifecycle_qualified {
-                    self.used_modules
-                        .borrow_mut()
-                        .insert(ImportKey::new(self.current_module.clone(), binding));
+                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        binding,
+                    ));
                     canonical
                 } else if is_local {
                     // A bare reference to a locally-defined type normally binds
@@ -3174,20 +3269,24 @@ impl Checker {
                     // `hew.closableerr.CloseError` would instead credit a
                     // nonexistent `hew` import and falsely warn that the
                     // actual `closableerr` binding is unused.
-                    self.used_modules
-                        .borrow_mut()
-                        .insert(ImportKey::new(self.current_module.clone(), binding));
-                } else if let Some(module) = self
-                    .unqualified_to_module
-                    .get(&(self.current_module.clone(), name.clone()))
-                {
+                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        binding,
+                    ));
+                } else if let Some(module) = self.unqualified_to_module.get(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    name.clone(),
+                )) {
                     self.mark_module_owner_bindings_used(module);
                 } else if resolved_name.contains('.') {
                     self.mark_resolved_nominal_owner_used(&resolved_name);
-                } else if let Some(module) = self
-                    .unqualified_to_module
-                    .get(&(self.current_module.clone(), resolved_name.clone()))
-                {
+                } else if let Some(module) = self.unqualified_to_module.get(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    resolved_name.clone(),
+                )) {
                     // A bare reference that resolves through a published binding
                     // (named / glob / aliased import) keeps the bare spelling but
                     // still consumes the owning module — mark it used so the

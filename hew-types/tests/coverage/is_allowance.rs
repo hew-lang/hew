@@ -284,13 +284,13 @@ fn is_after_actor_send_reads_sender_snapshot_source() {
     let src = r#"
         type Payload { data: string; }
 
-        actor Sink {
+        actor SnapshotSink {
             let _id: i64;
             receive fn consume(p: Payload) {}
         }
 
         fn main() {
-            let s = spawn Sink(_id: 0);
+            let s = spawn SnapshotSink(_id: 0);
             let h = Payload { data: "hello" };
             let q = Payload { data: "world" };
             s.consume(h);

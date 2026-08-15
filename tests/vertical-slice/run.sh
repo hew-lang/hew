@@ -3958,7 +3958,7 @@ run_accept_expect_stdout "option_result_scalar_regression"
 run_check_run_expect_stdout "p0c_all_methods_paths"
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/p0c_method_value_failclosed.hew" \
-  "undefined variable \`Option\`" \
+  "type \`Option\` cannot be used as a value" \
   "Option/Result method values are not a callable fallback around the checker intercept"
 run_accept_expect_panic "option_unwrap_none_aborts" "called 'unwrap()' on a 'None' value"
 run_accept_expect_panic "result_unwrap_err_aborts" "called 'unwrap()' on an 'Err' value"
@@ -4169,6 +4169,11 @@ run_accept_expect_status "w2006_scope_spawn" 0
 # Accept: sibling module — all-pub, single-segment import, exit 42
 # Layout: accept/sibling_module_call.hew imports accept/arith.hew
 run_accept_expect_status "sibling_module_call" 42
+
+# Accept: a flat file import publishes a pub free function into the importing
+# file's bare namespace, and the selected call target survives through native
+# lowering and execution.
+run_accept_expect_status "flat_file_import_bare_fn_call" 42
 
 # Accept: multi-level import (import lib::math;) — flat form lib/math.hew, exit 42
 # Only the flat form exists (no lib/math/math.hew) so no ambiguity fires.
@@ -5091,6 +5096,8 @@ run_check_run_expect_stdout file_import_trait_default_method
 # `CallableUnsupportedInMir`. Calls from both the root and inside the module
 # are exercised.
 run_check_run_expect_stdout dir_module_trait_default/main
+run_check_run_expect_stdout contextual_variant_resolution
+run_check_run_expect_stdout module_method_shadow/main
 
 # Regression: two peer files of a directory module that declare same-shaped
 # types at the same byte offsets must keep DISTINCT type identities. A

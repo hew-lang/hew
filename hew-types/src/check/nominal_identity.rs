@@ -144,10 +144,11 @@ impl Checker {
     /// a compiler-owned source lifecycle nominal. Anything else falls through
     /// and the ladder keeps failing closed.
     fn imported_binding_declaration(&self, name: &str) -> Option<String> {
-        if let Some(identity) = self
-            .import_type_name_aliases
-            .get(&(self.current_module.clone(), name.to_string()))
-        {
+        if let Some(identity) = self.import_type_name_aliases.get(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            name.to_string(),
+        )) {
             if self.type_defs.contains_key(identity)
                 || self.known_types.contains(identity)
                 || crate::lookup_source_owned_lifecycle_type(identity).is_some()

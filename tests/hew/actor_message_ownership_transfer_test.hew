@@ -37,7 +37,7 @@ impl Ticket {
     }
 }
 
-actor Sink {
+actor TestSink {
     receive fn take_socket(s: Socket) -> i64 {
         return s.detach();
     }
@@ -80,8 +80,8 @@ type Holder {
 }
 
 actor Racer {
-    let left: LocalPid<Sink>;
-    let right: LocalPid<Sink>;
+    let left: LocalPid<TestSink>;
+    let right: LocalPid<TestSink>;
 
     // Two DISTINCT resources, one per arm: each arm's source is issued before
     // dispatch, so each socket is transferred exactly once. The winner's exact
@@ -100,7 +100,7 @@ actor Racer {
 
 #[test]
 fn resource_transferred_to_ask_handler_is_detached_there() {
-    let sink = spawn Sink;
+    let sink = spawn TestSink;
     let s = Socket { fd: 7 };
     match await sink.take_socket(s) {
         Ok(v) => testing.assert_eq(v, 7),
@@ -110,7 +110,7 @@ fn resource_transferred_to_ask_handler_is_detached_there() {
 
 #[test]
 fn linear_transferred_to_ask_handler_is_redeemed_there() {
-    let sink = spawn Sink;
+    let sink = spawn TestSink;
     let t = Ticket { id: 13 };
     match await sink.take_ticket(t) {
         Ok(v) => testing.assert_eq(v, 13),
@@ -120,8 +120,8 @@ fn linear_transferred_to_ask_handler_is_redeemed_there() {
 
 #[test]
 fn distinct_resources_across_select_arms_each_transfer_once() {
-    let sink = spawn Sink;
-    let other = spawn Sink;
+    let sink = spawn TestSink;
+    let other = spawn TestSink;
     let racer = spawn Racer(left: sink, right: other);
     // Both arm sources run; whichever reply wins must carry one of the two
     // fds, never the deadline sentinel and never a crossed value.
@@ -134,7 +134,7 @@ fn distinct_resources_across_select_arms_each_transfer_once() {
 #[test]
 fn copyable_argument_survives_repeated_sends() {
     // A bit-copyable scalar is not an ownership transfer: the caller keeps it.
-    let sink = spawn Sink;
+    let sink = spawn TestSink;
     let n = 41;
     match await sink.count(n) {
         Ok(v) => testing.assert_eq(v, 41),
@@ -150,7 +150,7 @@ fn copyable_argument_survives_repeated_sends() {
 fn cow_argument_survives_repeated_sends() {
     // A copy-on-write value crosses the boundary as a copy; the caller's own
     // binding stays intact and usable after two sends.
-    let sink = spawn Sink;
+    let sink = spawn TestSink;
     let text = "abcde";
     match await sink.measure(text) {
         Ok(v) => testing.assert_eq(v, 5),
@@ -168,7 +168,7 @@ fn record_carrying_a_resource_transfers_it_to_the_handler() {
     // The record is a plain aggregate; the `Socket` inside it is what owns.
     // The handler detaching the exact fd proves the resource arrived intact
     // and that this frame is where it is consumed.
-    let sink = spawn Sink;
+    let sink = spawn TestSink;
     let h = Holder { socket: Socket { fd: 31 } };
     match await sink.hold(h) {
         Ok(v) => testing.assert_eq(v, 31),

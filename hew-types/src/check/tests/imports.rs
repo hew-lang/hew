@@ -5,6 +5,442 @@
 pub(super) use super::*;
 
 #[test]
+fn colliding_import_publishes_none_of_its_other_bindings() {
+    let first = make_user_import(
+        &["left"],
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "first".to_string(),
+            alias: Some("shared".to_string()),
+        }])),
+        vec![(Item::Function(make_pub_fn("first", vec![], None)), 0..5)],
+    );
+    let second = make_user_import(
+        &["right"],
+        Some(ImportSpec::Names(vec![
+            ImportName {
+                name: "second".to_string(),
+                alias: Some("shared".to_string()),
+            },
+            ImportName {
+                name: "only_second".to_string(),
+                alias: None,
+            },
+        ])),
+        vec![
+            (Item::Function(make_pub_fn("second", vec![], None)), 0..6),
+            (
+                Item::Function(make_pub_fn("only_second", vec![], None)),
+                7..18,
+            ),
+        ],
+    );
+    let output = check_items(vec![
+        (Item::Import(first), 0..20),
+        (Item::Import(second), 21..50),
+    ]);
+
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::ImportBindingCollision));
+    assert!(output.fn_sigs.contains_key("shared"));
+    assert!(!output.fn_sigs.contains_key("only_second"));
+}
+
+#[test]
+fn prelude_collision_rejects_the_entire_import() {
+    let import = make_user_import(
+        &["user", "helpers"],
+        Some(ImportSpec::Names(vec![
+            ImportName {
+                name: "custom_print".to_string(),
+                alias: Some("Iterator".to_string()),
+            },
+            ImportName {
+                name: "safe_helper".to_string(),
+                alias: None,
+            },
+        ])),
+        vec![
+            (
+                Item::Function(make_pub_fn("custom_print", vec![], None)),
+                0..12,
+            ),
+            (
+                Item::Function(make_pub_fn("safe_helper", vec![], None)),
+                13..24,
+            ),
+        ],
+    );
+    let output = check_items(vec![(Item::Import(import), 0..40)]);
+
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::ImportPreludeCollision));
+    assert!(!output.fn_sigs.contains_key("safe_helper"));
+}
+
+#[test]
+fn peer_files_resolve_same_module_alias_from_their_own_imports() {
+    let alpha = hew_parser::parse("pub fn value() -> i64 { 7 }");
+    let beta = hew_parser::parse("pub fn value() -> bool { true }");
+    let mut left =
+        hew_parser::parse("import alpha as util; pub fn from_left() -> i64 { util.value() }");
+    let mut right =
+        hew_parser::parse("import beta as util; pub fn from_right() -> bool { util.value() }");
+    for parsed in [&alpha, &beta, &left, &right] {
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture parse: {:?}",
+            parsed.errors
+        );
+    }
+    for (program, resolved) in [
+        (&mut left.program, alpha.program.items),
+        (&mut right.program, beta.program.items),
+    ] {
+        let import = program
+            .items
+            .iter_mut()
+            .find_map(|(item, _)| match item {
+                Item::Import(import) => Some(import),
+                _ => None,
+            })
+            .expect("peer import");
+        import.resolved_items = Some(resolved);
+    }
+
+    let root_id = ModuleId::root();
+    let shared_id = ModuleId::new(vec!["shared".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    let mut shared_items = left.program.items;
+    let left_count = shared_items.len();
+    shared_items.extend(right.program.items);
+    graph
+        .add_module(Module {
+            id: shared_id.clone(),
+            items: shared_items,
+            imports: vec![],
+            source_paths: vec!["shared/left.hew".into(), "shared/right.hew".into()],
+            doc: None,
+        })
+        .expect("shared module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("root module");
+    graph.item_sources.insert(
+        "shared".to_string(),
+        std::iter::repeat_n("shared/left.hew".into(), left_count)
+            .chain(std::iter::repeat_n(
+                "shared/right.hew".into(),
+                graph.modules[&shared_id].items.len() - left_count,
+            ))
+            .collect(),
+    );
+    graph.topo_order = vec![shared_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: vec![],
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert!(
+        output.errors.is_empty(),
+        "peer imports must remain file-local: {:#?}",
+        output.errors
+    );
+    let owners: HashSet<_> = output
+        .module_import_bindings
+        .iter()
+        .filter(|((module, _, binding), _)| {
+            module.as_deref() == Some("shared") && binding == "util"
+        })
+        .map(|(_, owner)| owner.as_str())
+        .collect();
+    assert_eq!(owners, HashSet::from(["alpha", "beta"]));
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the regression constructs a multi-file module graph with an early import seed"
+)]
+fn early_lifecycle_seed_uses_the_importing_peer_file_index() {
+    let failure_path: std::path::PathBuf = "std/failure.hew".into();
+    let first_peer: std::path::PathBuf = "consumer/first.hew".into();
+    let second_peer: std::path::PathBuf = "consumer/second.hew".into();
+    let failure = hew_parser::parse("pub enum CrashKind { Crashed; }");
+    let first = hew_parser::parse("pub fn untouched() {}");
+    let mut second = hew_parser::parse(
+        "import std::failure::{ CrashKind as Kind }; pub type Holder { kind: Kind; }",
+    );
+    for parsed in [&failure, &first, &second] {
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture parse: {:?}",
+            parsed.errors
+        );
+    }
+    let import = second
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("peer import");
+    import.resolved_items = Some(failure.program.items.clone());
+    import.resolved_item_source_paths =
+        std::iter::repeat_n(failure_path.clone(), failure.program.items.len()).collect();
+    import.resolved_source_paths = vec![failure_path.clone()];
+
+    let root_id = ModuleId::root();
+    let failure_id = ModuleId::new(vec!["std".to_string(), "failure".to_string()]);
+    let consumer_id = ModuleId::new(vec!["consumer".to_string()]);
+    let mut consumer_items = first.program.items;
+    let first_count = consumer_items.len();
+    consumer_items.extend(second.program.items);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: failure_id.clone(),
+            items: failure.program.items,
+            imports: vec![],
+            source_paths: vec![failure_path],
+            doc: None,
+        })
+        .expect("failure module");
+    graph
+        .add_module(Module {
+            id: consumer_id.clone(),
+            items: consumer_items,
+            imports: vec![hew_parser::module::ModuleImport {
+                target: failure_id.clone(),
+                spec: Some(ImportSpec::Names(vec![ImportName {
+                    name: "CrashKind".to_string(),
+                    alias: Some("Kind".to_string()),
+                }])),
+                span: 0..45,
+            }],
+            source_paths: vec![first_peer.clone(), second_peer.clone()],
+            doc: None,
+        })
+        .expect("consumer module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec!["main.hew".into()],
+            doc: None,
+        })
+        .expect("root module");
+    graph.item_sources.insert(
+        "consumer".to_string(),
+        std::iter::repeat_n(first_peer, first_count)
+            .chain(std::iter::repeat_n(
+                second_peer.clone(),
+                graph.modules[&consumer_id].items.len() - first_count,
+            ))
+            .collect(),
+    );
+    graph.topo_order = vec![failure_id, consumer_id, root_id];
+    let second_file_idx = graph
+        .file_span_indices()
+        .path_index(&second_peer)
+        .expect("second peer index");
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: vec![],
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert_eq!(
+        output.import_type_name_aliases.get(&(
+            Some("consumer".to_string()),
+            second_file_idx,
+            "Kind".to_string(),
+        )),
+        Some(&"std.failure.CrashKind".to_string())
+    );
+    assert!(
+        !output.import_type_name_aliases.contains_key(&(
+            Some("consumer".to_string()),
+            0,
+            "Kind".to_string(),
+        )),
+        "a non-root import must never publish under root file index 0: {:#?}",
+        output.import_type_name_aliases
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the regression constructs a complete three-module graph with source attribution"
+)]
+fn resolved_module_copy_reenters_declaring_file_import_scope() {
+    let color_path: std::path::PathBuf = "pkgs/aliassrc.hew".into();
+    let consumer_path: std::path::PathBuf = "pkgs/deepalias.hew".into();
+    let mut color = hew_parser::parse("pub enum Color { Blue(i64); }");
+    let mut consumer = hew_parser::parse(
+        r"
+        import hew::aliassrc::{ Color as Hue };
+        pub type AliasBox { item: Hue; }
+        pub enum AliasWrap { Has(Hue); }
+        pub fn make() -> Hue { Hue::Blue(7) }
+        pub fn score() -> i64 {
+            let boxed: AliasBox = AliasBox { item: make() };
+            let wrapped: AliasWrap = AliasWrap::Has(boxed.item);
+            match wrapped {
+                AliasWrap::Has(color) => match color {
+                    Hue::Blue(value) => value,
+                    _ => 0,
+                },
+            }
+        }
+        ",
+    );
+    let mut root = hew_parser::parse("import hew::deepalias;");
+    for parsed in [&color, &consumer, &root] {
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture parse: {:?}",
+            parsed.errors
+        );
+    }
+
+    let color_item_count = color.program.items.len();
+    let consumer_import = consumer
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("consumer import");
+    consumer_import.resolved_items = Some(color.program.items.clone());
+    consumer_import.resolved_item_source_paths =
+        std::iter::repeat_n(color_path.clone(), color_item_count).collect();
+    consumer_import.resolved_source_paths = vec![color_path.clone()];
+
+    let consumer_item_count = consumer.program.items.len();
+    let root_import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("root import");
+    root_import.resolved_items = Some(consumer.program.items.clone());
+    root_import.resolved_item_source_paths =
+        std::iter::repeat_n(consumer_path.clone(), consumer_item_count).collect();
+    root_import.resolved_source_paths = vec![consumer_path.clone()];
+
+    let root_id = ModuleId::root();
+    let color_id = ModuleId::new(vec!["hew".to_string(), "aliassrc".to_string()]);
+    let consumer_id = ModuleId::new(vec!["hew".to_string(), "deepalias".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: color_id.clone(),
+            items: std::mem::take(&mut color.program.items),
+            imports: vec![],
+            source_paths: vec![color_path.clone()],
+            doc: None,
+        })
+        .expect("color module");
+    graph
+        .add_module(Module {
+            id: consumer_id.clone(),
+            items: consumer.program.items.clone(),
+            imports: vec![],
+            source_paths: vec![consumer_path.clone()],
+            doc: None,
+        })
+        .expect("consumer module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec!["main.hew".into()],
+            doc: None,
+        })
+        .expect("root module");
+    graph.item_sources.insert(
+        "hew.aliassrc".to_string(),
+        std::iter::repeat_n(color_path, color_item_count).collect(),
+    );
+    graph.item_sources.insert(
+        "hew.deepalias".to_string(),
+        std::iter::repeat_n(consumer_path, consumer_item_count).collect(),
+    );
+    graph.topo_order = vec![color_id, consumer_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: root.program.items,
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert!(
+        output.errors.is_empty(),
+        "resolved module copies must keep their source-file imports: {:#?}",
+        output.errors
+    );
+    assert_eq!(
+        output
+            .fn_sigs
+            .get("hew.deepalias.make")
+            .map(|sig| &sig.return_type),
+        Some(&Ty::named("hew.aliassrc.Color", vec![]))
+    );
+}
+
+#[test]
+fn failed_member_lookup_explains_lexical_module_shadowing() {
+    let mut root =
+        hew_parser::parse("import helper as util; fn probe(util: i64) { util.missing(); }");
+    assert!(root.errors.is_empty(), "fixture parse: {:?}", root.errors);
+    let import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("fixture import");
+    import.resolved_items = Some(vec![]);
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&root.program);
+    let error = output
+        .errors
+        .iter()
+        .find(|error| error.kind == TypeErrorKind::UndefinedMethod)
+        .expect("lexical receiver should fail as an ordinary value method lookup");
+    assert!(error
+        .notes
+        .iter()
+        .any(|(_, note, _)| note.contains("shadows the imported module")));
+}
+
+#[test]
 fn should_import_name_bare_import_returns_false() {
     assert!(!Checker::should_import_name("helper", &None));
 }
@@ -173,7 +609,7 @@ fn selective_trait_import_keeps_module_qualifier_for_exact_sibling_identity() {
     assert_eq!(
         output
             .module_import_bindings
-            .get(&(None, "closableerr".to_string()))
+            .get(&(None, 0, "closableerr".to_string()))
             .map(String::as_str),
         Some("hew.closableerr"),
         "the lexical `closableerr` qualifier must retain the exact owner even \
@@ -247,7 +683,7 @@ fn imported_actor_i32_uses_exact_module_binding_and_owner() {
         output
             .module_import_bindings
             .iter()
-            .find(|((_, binding), _)| binding == "testffi")
+            .find(|((_, _, binding), _)| binding == "testffi")
             .map(|(_, owner)| owner.as_str()),
         Some("hew.testffi"),
     );
@@ -598,7 +1034,7 @@ fn bare_import_type_registers_qualified_only() {
     assert!(
         !checker
             .unqualified_to_module
-            .contains_key(&(None, "Reply".to_string())),
+            .contains_key(&(None, 0, "Reply".to_string())),
         "bare import must NOT publish the importer-scope bare binding for `Reply`"
     );
     assert!(
@@ -633,7 +1069,7 @@ fn named_import_type_publishes_bare_binding() {
     assert!(
         checker
             .unqualified_to_module
-            .contains_key(&(None, "Reply".to_string())),
+            .contains_key(&(None, 0, "Reply".to_string())),
         "named import must publish the importer-scope bare binding for `Reply`"
     );
     assert!(
@@ -664,13 +1100,13 @@ fn named_import_type_alias_publishes_alias_binding() {
     assert!(
         checker
             .unqualified_to_module
-            .contains_key(&(None, "R".to_string())),
+            .contains_key(&(None, 0, "R".to_string())),
         "aliased named import must publish the alias binding `R`"
     );
     assert!(
         !checker
             .unqualified_to_module
-            .contains_key(&(None, "Reply".to_string())),
+            .contains_key(&(None, 0, "Reply".to_string())),
         "aliased named import must NOT publish the source name `Reply`"
     );
 }
@@ -756,7 +1192,7 @@ fn alias_import_does_not_conflate_with_same_named_export() {
     assert!(
         !checker
             .unqualified_to_module
-            .contains_key(&(None, "Reply".to_string())),
+            .contains_key(&(None, 0, "Reply".to_string())),
         "the source name `Reply` is not published bare (only the alias binding `Other` is)"
     );
 }
@@ -784,7 +1220,7 @@ fn glob_import_type_publishes_bare_binding() {
     assert!(
         checker
             .unqualified_to_module
-            .contains_key(&(None, "Reply".to_string())),
+            .contains_key(&(None, 0, "Reply".to_string())),
         "glob import must publish the importer-scope bare binding for `Reply`"
     );
 }
@@ -829,7 +1265,7 @@ fn stdlib_plain_import_does_not_publish_bare_type() {
     assert!(
         !checker
             .unqualified_to_module
-            .contains_key(&(None, "Server".to_string())),
+            .contains_key(&(None, 0, "Server".to_string())),
         "plain stdlib import must NOT publish bare `Server` (qualified-by-default)"
     );
 }
@@ -853,7 +1289,7 @@ fn stdlib_named_import_publishes_bare_type() {
     assert!(
         checker
             .unqualified_to_module
-            .contains_key(&(None, "Server".to_string())),
+            .contains_key(&(None, 0, "Server".to_string())),
         "named stdlib opt-in must publish bare `Server`"
     );
 }
@@ -865,7 +1301,7 @@ fn stdlib_const_uses_full_registry_owner() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.modules.insert("codec".to_string());
     checker.module_import_bindings.insert(
-        (None, "codec".to_string()),
+        (None, 0, "codec".to_string()),
         "std.net.http.codec".to_string(),
     );
 
@@ -935,13 +1371,13 @@ fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup(
     assert!(
         checker
             .unqualified_to_module
-            .contains_key(&(None, "Connection".to_string())),
+            .contains_key(&(None, 0, "Connection".to_string())),
         "the root's named import must publish Connection even when a transitive importer registered std::net first"
     );
     assert_eq!(
         checker
             .import_type_name_aliases
-            .get(&(None, "Connection".to_string()))
+            .get(&(None, 0, "Connection".to_string()))
             .map(String::as_str),
         Some("std.net.Connection"),
         "HIR must receive the root import's exact source identity"
@@ -1007,7 +1443,7 @@ fn stdlib_prelude_publishes_bare_type() {
     assert!(
         checker
             .unqualified_to_module
-            .contains_key(&(None, "CloseError".to_string())),
+            .contains_key(&(None, 0, "CloseError".to_string())),
         "prelude bootstrap surface must publish bare `CloseError` unconditionally"
     );
 }
@@ -1497,10 +1933,10 @@ fn caller() -> i64 {
     let output = checker.check_program(&root.program);
     assert!(
         output.errors.iter().any(|err| {
-            err.kind == TypeErrorKind::UndefinedField
+            err.kind == TypeErrorKind::PathMemberNotFound
                 && err
                     .message
-                    .contains("module `config` has no exported constant `NONEXISTENT`")
+                    .contains("module `config` has no exported value `NONEXISTENT`")
         }),
         "expected targeted 'no exported constant' diagnostic, got: {:#?}",
         output.errors
@@ -1843,7 +2279,7 @@ fn file_import_without_resolved_items_emits_unresolved_error() {
 }
 
 #[test]
-fn merged_file_import_duplicate_pub_name_emits_duplicate_definition() {
+fn merged_file_import_duplicate_pub_name_rejects_the_whole_import() {
     let shared_decl = make_pub_fn(
         "shared",
         vec![],
@@ -1877,17 +2313,16 @@ fn merged_file_import_duplicate_pub_name_emits_duplicate_definition() {
     let error = output
         .errors
         .iter()
-        .find(|e| e.kind == TypeErrorKind::DuplicateDefinition)
+        .find(|e| e.kind == TypeErrorKind::ImportBindingCollision)
         .expect("merged file import should fail closed on duplicate pub names");
 
     assert!(
         error.message.contains("shared"),
         "duplicate pub name error should mention the colliding binding: {error:?}"
     );
-    assert_eq!(
-        error.notes.first().map(|(span, _, _)| span.clone()),
-        Some(0..5),
-        "duplicate pub name should point back to the first merged definition"
+    assert!(
+        !output.fn_sigs.contains_key("shared"),
+        "an internally-colliding import must publish none of its declarations"
     );
 }
 
@@ -1929,6 +2364,86 @@ fn repeated_flat_file_import_with_same_resolved_source_does_not_reregister_items
     assert!(
         output.fn_sigs.contains_key("shared"),
         "flat file import should still register the imported function"
+    );
+}
+
+#[test]
+fn flat_file_imported_pub_fn_publishes_root_call_target() {
+    let helper_path = std::path::PathBuf::from("helper.hew");
+    let helper = hew_parser::parse("pub fn double(value: i64) -> i64 { value * 2 }");
+    let mut root = hew_parser::parse(
+        r#"
+        import "helper.hew";
+        fn main() -> i64 { double(21) }
+        "#,
+    );
+    assert!(
+        helper.errors.is_empty(),
+        "helper parse: {:?}",
+        helper.errors
+    );
+    assert!(root.errors.is_empty(), "root parse: {:?}", root.errors);
+
+    let import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("root file import");
+    import.resolved_items = Some(helper.program.items.clone());
+    import.resolved_item_source_paths =
+        std::iter::repeat_n(helper_path.clone(), helper.program.items.len()).collect();
+    import.resolved_source_paths = vec![helper_path.clone()];
+
+    let root_id = ModuleId::root();
+    let helper_id = ModuleId::new(vec!["helper".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: helper_id.clone(),
+            items: helper.program.items,
+            imports: vec![],
+            source_paths: vec![helper_path.clone()],
+            doc: None,
+        })
+        .expect("helper module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec!["main.hew".into()],
+            doc: None,
+        })
+        .expect("root module");
+    graph.item_sources.insert(
+        "helper".to_string(),
+        std::iter::repeat_n(helper_path, graph.modules[&helper_id].items.len()).collect(),
+    );
+    graph.topo_order = vec![helper_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: root.program.items,
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert!(
+        output.errors.is_empty(),
+        "flat imported call must typecheck: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.direct_call_targets.values().any(|target| matches!(
+            target,
+            crate::check::dispatch::CallTarget::User(declaration)
+                if declaration.full_path() == "helper.double"
+        )),
+        "flat imported bare call must retain helper.double: {:#?}",
+        output.direct_call_targets
     );
 }
 
@@ -2315,7 +2830,7 @@ fn import_trait_from_module_glob() {
 
     let trait_decl = TraitDecl {
         visibility: Visibility::Pub,
-        name: "Display".to_string(),
+        name: "Renderable".to_string(),
         type_params: None,
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {

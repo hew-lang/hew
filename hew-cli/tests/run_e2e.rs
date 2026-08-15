@@ -4286,7 +4286,7 @@ fn run_imports_json_fluent_builders_round_trip() {
     );
 }
 
-/// W5.021 — a function returning a `(Sink<string>, Stream<string>)` tuple of
+/// W5.021 — a function returning a `(ProbeSink<string>, Stream<string>)` tuple of
 /// owned handles compiles, links, and runs with exactly-once teardown. This is
 /// the exact `std::stream::pipe` / `Connection::into_stream_sink` shape that was
 /// fail-closed before the tuple/record-of-owned-handles drop spine.
@@ -4313,7 +4313,7 @@ fn run_tuple_of_owned_handles_returns_and_drops_exactly_once() {
         &hew_src,
         "import std::stream;\n\
          \n\
-         fn make_pair() -> (Sink<string>, Stream<string>) {\n\
+         fn make_pair() -> (ProbeSink<string>, Stream<string>) {\n\
          \x20   stream.pipe(8)\n\
          }\n\
          \n\
@@ -4338,7 +4338,7 @@ fn run_tuple_of_owned_handles_returns_and_drops_exactly_once() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "pair-ok\n");
 }
 
-/// W5.021 — a `(Sink<string>, Stream<string>)` tuple bound WHOLE (not
+/// W5.021 — a `(ProbeSink<string>, Stream<string>)` tuple bound WHOLE (not
 /// destructured) and dropped at scope exit exercises the `DropKind::TupleInPlace`
 /// per-element drop helper (`__hew_tuple_drop_inplace_<key>`), the genuine
 /// tuple-in-place path the destructure case bypasses. The helper must close both
@@ -4377,10 +4377,10 @@ fn run_whole_tuple_of_handles_drops_each_member_once() {
 // The exactly-once ORACLE these tests use is the cheap authoritative one the
 // independent review used: a callee that RETURNS an aggregate of owned
 // handles must elaborate an EMPTY drop-plan for that return — no
-// `Stream::close` / `Sink::close` — because the caller (who received the
+// `Stream::close` / `ProbeSink::close` — because the caller (who received the
 // byte-copied aggregate) now owns the members. A non-empty plan IS the
 // double-free: two `Box::from_raw` of one allocation (the runtime close is an
-// unguarded free; see the codegen Stream/Sink drop comment). `leaks --atExit`
+// unguarded free; see the codegen Stream/ProbeSink drop comment). `leaks --atExit`
 // does NOT flag an un-closed handle Box and exit-success does not prove
 // no-double-free, so this dump-mir assertion is the real oracle; the paired
 // `hew run` success is the runtime negative-control. These shapes (let-bound
@@ -4418,7 +4418,7 @@ fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
     let end = rest.find("\nfn ").map_or(rest.len(), |i| i);
     let body = &rest[..end];
     // Structured renderer emits `kind=duplex_half_close(recv)` for Stream drops
-    // and `kind=duplex_half_close(send)` for Sink drops.
+    // and `kind=duplex_half_close(send)` for ProbeSink drops.
     body.matches("duplex_half_close").count()
 }
 
@@ -4435,7 +4435,7 @@ fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
 /// elaborate a `kind=lambda_actor_release`/`kind=duplex_close` drop (not
 /// `kind=duplex_half_close`), AND fail closed at codegen-front (the
 /// `SendHalf`/`RecvHalf`/`LambdaActorHandle` Place lowering is unwired), so
-/// the runtime negative-control the Stream/Sink shapes use is impossible — this
+/// the runtime negative-control the Stream/ProbeSink shapes use is impossible — this
 /// dump-mir assertion is the only oracle.
 fn return_plan_marker_count(body: &str, marker: &str) -> usize {
     let mut in_return_plan = false;
@@ -4494,7 +4494,7 @@ fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
     return_plan_marker_count(body, "lambda_actor_release")
 }
 
-/// Oracle: a `(Sink, Stream)` tuple let-bound then returned BY NAME
+/// Oracle: a `(ProbeSink, Stream)` tuple let-bound then returned BY NAME
 /// (`let pair = (s, r); pair`) — the most ordinary form — must leave the callee
 /// with an empty return drop-plan. The syntactic move-out missed this (it only
 /// saw the tail `BindingRef(pair)`), so `s`/`r` stayed drop-eligible and the
@@ -4504,7 +4504,7 @@ fn returned_let_bound_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
         "import std::stream;\n\
-         fn make_pair() -> (Sink<string>, Stream<string>) {\n\
+         fn make_pair() -> (ProbeSink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let pair = (s, r);\n\
          \x20   pair\n\
@@ -4523,14 +4523,14 @@ fn returned_let_bound_tuple_callee_does_not_drop_members() {
     );
 }
 
-/// Oracle: a `(Sink, Stream)` returned from an `if`-expression tail. `If` is a
+/// Oracle: a `(ProbeSink, Stream)` returned from an `if`-expression tail. `If` is a
 /// distinct `HirExprKind` the syntactic walk never matched → double-free.
 #[test]
 fn returned_if_tail_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
         "import std::stream;\n\
-         fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
+         fn make_pair(c: bool) -> (ProbeSink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   if c { (s, r) } else { (s, r) }\n\
          }\n\
@@ -4548,13 +4548,13 @@ fn returned_if_tail_tuple_callee_does_not_drop_members() {
     );
 }
 
-/// Oracle: a `(Sink, Stream)` returned from a `match`-expression tail.
+/// Oracle: a `(ProbeSink, Stream)` returned from a `match`-expression tail.
 #[test]
 fn returned_match_tail_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
         "import std::stream;\n\
-         fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
+         fn make_pair(c: bool) -> (ProbeSink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   match c {\n\
          \x20       true => (s, r),\n\
@@ -4602,7 +4602,7 @@ fn mir_checked_dump(source: &str) -> String {
 }
 
 /// NEW-7 oracle: `await stream.recv()` / `await sink.send(x)` over a
-/// `Stream<bytes>` / `Sink<bytes>` in an actor handler (an execution-context
+/// `Stream<bytes>` / `ProbeSink<bytes>` in an actor handler (an execution-context
 /// caller) flip to the suspending terminators; a context-free caller (`main`,
 /// free fn) keeps the blocking `hew_stream_next_layout` / `hew_sink_write_bytes`
 /// call.
@@ -4617,7 +4617,7 @@ fn suspending_stream_recv_send_flip_in_execution_context() {
         "import std::stream;\n\
          extern \"C\" {\n\
          \x20   fn hew_stream_channel(capacity: i64) -> stream.StreamPair;\n\
-         \x20   fn hew_stream_pair_sink_bytes(pair: stream.StreamPair) -> Sink<bytes>;\n\
+         \x20   fn hew_stream_pair_sink_bytes(pair: stream.StreamPair) -> ProbeSink<bytes>;\n\
          \x20   fn hew_stream_pair_stream_bytes(pair: stream.StreamPair) -> Stream<bytes>;\n\
          \x20   fn hew_stream_pair_free(consume pair: stream.StreamPair);\n\
          \x20   fn hew_string_to_bytes(s: string) -> bytes;\n\
@@ -4772,14 +4772,14 @@ fn blocking_remote_ask_in_main_keeps_blocking_terminator() {
     );
 }
 
-/// Oracle: a NESTED owned aggregate `((Sink,), Stream)` returned by name. The
+/// Oracle: a NESTED owned aggregate `((ProbeSink,), Stream)` returned by name. The
 /// value-flow decomposition must recurse through the inner `TupleConstruct`.
 #[test]
 fn returned_nested_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
         "import std::stream;\n\
-         fn make_nested() -> ((Sink<string>,), Stream<string>) {\n\
+         fn make_nested() -> ((ProbeSink<string>,), Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let inner = (s,);\n\
          \x20   let pair = (inner, r);\n\
@@ -4807,7 +4807,7 @@ fn returned_record_of_handles_callee_does_not_drop_fields() {
     require_codegen();
     let closes = callee_handle_close_drops(
         "import std::stream;\n\
-         type Pipe { sink: Sink<string>, input: Stream<string> }\n\
+         type Pipe { sink: ProbeSink<string>, input: Stream<string> }\n\
          fn make_pipe() -> Pipe {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let p = Pipe { sink: s, input: r };\n\
@@ -4930,7 +4930,7 @@ fn run_let_bound_tuple_return_no_double_free() {
     std::fs::write(
         &hew_src,
         "import std::stream;\n\
-         fn make_pair() -> (Sink<string>, Stream<string>) {\n\
+         fn make_pair() -> (ProbeSink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let pair = (s, r);\n\
          \x20   pair\n\
@@ -4964,7 +4964,7 @@ fn run_if_tail_tuple_return_no_double_free() {
     std::fs::write(
         &hew_src,
         "import std::stream;\n\
-         fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
+         fn make_pair(c: bool) -> (ProbeSink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   if c { (s, r) } else { (s, r) }\n\
          }\n\
@@ -5000,7 +5000,7 @@ fn run_record_of_handles_return_drops_each_field_once() {
     std::fs::write(
         &hew_src,
         "import std::stream;\n\
-         type Pipe { sink: Sink<string>, input: Stream<string> }\n\
+         type Pipe { sink: ProbeSink<string>, input: Stream<string> }\n\
          fn make_pipe() -> Pipe {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let p = Pipe { sink: s, input: r };\n\
@@ -5043,11 +5043,11 @@ fn clone_string_survives_consuming_send() {
     let path = dir.path().join("clone_string_send.hew");
     std::fs::write(
         &path,
-        "actor Sink { let id: i64; receive fn take(s: string) -> i64 { s.len() } }\n\
+        "actor ProbeSink { let id: i64; receive fn take(s: string) -> i64 { s.len() } }\n\
          fn main() {\n\
          \x20   let s: string = \"hello\";\n\
          \x20   let dup = clone s;\n\
-         \x20   let sink = spawn Sink(id: 0);\n\
+         \x20   let sink = spawn ProbeSink(id: 0);\n\
          \x20   let n = await sink.take(dup);\n\
          \x20   match n { Ok(len) => println(f\"len={len}\"), Err(_) => println(\"ask failed\") }\n\
          \x20   println(f\"original still usable: {s}\");\n\

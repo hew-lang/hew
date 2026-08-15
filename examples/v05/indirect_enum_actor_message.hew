@@ -10,7 +10,7 @@ fn sum(t: Tree) -> i64 {
     }
 }
 
-actor Sink {
+actor TestSink {
     receive fn take(t: Tree) {
         print(sum(t));
     }
@@ -21,7 +21,7 @@ actor Sink {
 }
 
 fn main() -> i64 {
-    let sink = spawn Sink;
+    let sink = spawn TestSink;
     sink.take(Node(Leaf(4), Node(Leaf(5), Leaf(6))));
     sink.tagged(10, Node(Leaf(1), Leaf(2)));
     0

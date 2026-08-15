@@ -1301,19 +1301,30 @@ fn materialized_default_body_plan(
 fn plan_imported_impl_bodies(
     ctx: &mut LowerCtx,
     program: &Program,
+    file_import_module_idx: &HashMap<usize, u32>,
     file_import_modules: &HashSet<hew_parser::module::ModuleId>,
     preferred_modules: &HashSet<hew_parser::module::ModuleId>,
+    span_indices: &hew_parser::module::FileSpanIndices,
 ) {
     let empty_skips = HashSet::new();
     // Source-order bodies include root declarations and flattened file imports.
     // They may be called before their tail-spliced item is emitted.
-    for (item, _) in &program.items {
+    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_module_idx = file_import_module_idx
+            .get(&item_idx)
+            .copied()
+            .unwrap_or_default();
+        ctx.current_module_name = span_indices
+            .module_name(ctx.current_module_idx)
+            .map(str::to_string);
         if let Item::Impl(impl_decl) = item {
             if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
                 plan_impl_block_symbols(ctx, impl_decl, name, &empty_skips);
             }
         }
     }
+    ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
 
     let Some(module_graph) = &program.module_graph else {
         return;
@@ -1359,7 +1370,11 @@ fn plan_imported_impl_bodies(
                 )
             })
             .collect();
-        for (item, _) in &module.items {
+        let previous_module_idx = ctx.current_module_idx;
+        for (item_idx, (item, _)) in module.items.iter().enumerate() {
+            ctx.current_module_idx = span_indices
+                .item_index(module_id, item_idx)
+                .unwrap_or_default();
             let Item::Impl(impl_decl) = item else {
                 continue;
             };
@@ -1373,6 +1388,7 @@ fn plan_imported_impl_bodies(
             let base_symbol_self_name = format!("{source_module}.{name}");
             plan_impl_block_symbols(ctx, impl_decl, &base_symbol_self_name, &skip_methods);
         }
+        ctx.current_module_idx = previous_module_idx;
         ctx.current_module_name = previous_module;
     }
 }
@@ -2007,7 +2023,7 @@ fn check_builtin_receiver_impl_program(program: &Program) -> TypeCheckOutput {
     }
     let mut checker =
         hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
-    let output = checker.check_program(&checker_program);
+    let output = checker.check_embedded_builtins(&checker_program);
     debug_assert!(
         output.errors.is_empty(),
         "std/builtins.hew receiver impls failed to type-check: {:?}",
@@ -2898,7 +2914,11 @@ pub fn lower_program_with_mono_cap(
                 // by the full dotted path) instead of freezing as a bare name
                 // that MIR cannot resolve.
                 let saved_module_name = ctx.current_module_name.replace(module_full_path.clone());
-                for (item, item_span) in &module.items {
+                let saved_module_idx = ctx.current_module_idx;
+                for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
+                    ctx.current_module_idx = span_indices
+                        .item_index(mod_id, item_idx)
+                        .unwrap_or_default();
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
                             if item_is_duplicated_in_distinct_leaf_module(
@@ -3111,6 +3131,7 @@ pub fn lower_program_with_mono_cap(
                         | Item::Supervisor(_) => {}
                     }
                 }
+                ctx.current_module_idx = saved_module_idx;
                 ctx.current_module_name = saved_module_name;
             }
         }
@@ -3175,7 +3196,14 @@ pub fn lower_program_with_mono_cap(
     // user record?" regardless of declaration order relative to the
     // function that uses it. This mirrors the fn pre-pass above and is
     // the producer half of the record-layout registry.
-    for (item, _) in &program.items {
+    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_module_idx = file_import_module_idx
+            .get(&item_idx)
+            .copied()
+            .unwrap_or_default();
+        ctx.current_module_name = span_indices
+            .module_name(ctx.current_module_idx)
+            .map(str::to_string);
         match item {
             Item::TypeDecl(decl) => {
                 let id = ctx.ids.item();
@@ -3271,6 +3299,8 @@ pub fn lower_program_with_mono_cap(
             | Item::Supervisor(_) => {}
         }
     }
+    ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
     // Pre-pass: target architecture gates (P0.1-P0.4 fail-closed runtime-panic
     // prevention). Check if the program uses coroutine-dependent constructs
     // (actors/tasks) or wasm32-unsupported constructs (blocking channel recv)
@@ -3850,11 +3880,20 @@ pub fn lower_program_with_mono_cap(
     }
     ctx.current_module_idx = 0;
     ctx.current_module_name = None;
-    for (item, _) in &program.items {
+    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_module_idx = file_import_module_idx
+            .get(&item_idx)
+            .copied()
+            .unwrap_or_default();
+        ctx.current_module_name = span_indices
+            .module_name(ctx.current_module_idx)
+            .map(str::to_string);
         if let Item::Machine(machine) = item {
             ctx.register_machine_ctor_variant_metadata(None, machine);
         }
     }
+    ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root {
@@ -3866,7 +3905,11 @@ pub fn lower_program_with_mono_cap(
                 // #2202: canonicalise this module's imported enum-payload and
                 // machine state/event member aliases under its own context.
                 let saved_module_name = ctx.current_module_name.replace(source_module.clone());
-                for (item, span) in &module.items {
+                let saved_module_idx = ctx.current_module_idx;
+                for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    ctx.current_module_idx = span_indices
+                        .item_index(mod_id, item_idx)
+                        .unwrap_or_default();
                     match item {
                         Item::TypeDecl(decl)
                             if decl.visibility.is_pub() && decl.kind == TypeDeclKind::Enum =>
@@ -3905,6 +3948,7 @@ pub fn lower_program_with_mono_cap(
                     }
                 }
                 ctx.tag_diagnostics_since(diag_start, &source_module);
+                ctx.current_module_idx = saved_module_idx;
                 ctx.current_module_name = saved_module_name;
             }
         }
@@ -3953,7 +3997,11 @@ pub fn lower_program_with_mono_cap(
                 // the HIR descriptors MIR consumes; resolve their alias-typed
                 // members under this module's own context.
                 let saved_module_name = ctx.current_module_name.replace(source_module.clone());
-                for (item, span) in &module.items {
+                let saved_module_idx = ctx.current_module_idx;
+                for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    ctx.current_module_idx = span_indices
+                        .item_index(mod_id, item_idx)
+                        .unwrap_or_default();
                     match item {
                         Item::TypeDecl(decl)
                             if decl.visibility.is_pub()
@@ -4178,6 +4226,7 @@ pub fn lower_program_with_mono_cap(
                     }
                 }
                 ctx.tag_diagnostics_since(diag_start, &source_module);
+                ctx.current_module_idx = saved_module_idx;
                 ctx.current_module_name = saved_module_name;
             }
         }
@@ -4311,7 +4360,14 @@ pub fn lower_program_with_mono_cap(
     // package method whose HIR function is emitted later in the fourth pass.
     // This plan is declaration-keyed and uses the same imported-body skip
     // authority as that fourth pass; `fn_registry` never serves as proof.
-    plan_imported_impl_bodies(&mut ctx, program, &file_import_modules, &preferred_modules);
+    plan_imported_impl_bodies(
+        &mut ctx,
+        program,
+        &file_import_module_idx,
+        &file_import_modules,
+        &preferred_modules,
+        &span_indices,
+    );
 
     // Third pass: emit all items in source order now that both fn signatures
     // and type markers are fully resolved.
@@ -6835,6 +6891,8 @@ enum AwaitPosition {
     BindableValueLet,
 }
 
+type TraitMethodBindingKey = (Option<String>, u32, String, String);
+
 #[derive(Debug)]
 struct LowerCtx {
     ids: IdGen,
@@ -6901,10 +6959,6 @@ struct LowerCtx {
     /// Missing facts lower as an explicit unsupported target; HIR never
     /// guesses from the callee spelling.
     direct_call_targets: HashMap<SpanKey, CallTarget>,
-    /// User-module names reported by the checker. This lets a missing
-    /// module-qualified call rewrite fail at the checker/HIR boundary instead
-    /// of being misreported as an ordinary receiver-method omission.
-    user_modules: HashSet<String>,
     /// Checker-published canonical `(trait, method)` declaration identities,
     /// keyed by owner-qualified source method paths. HIR only carries these
     /// declaration facts; it does not rebuild IDs from method spellings.
@@ -6913,7 +6967,7 @@ struct LowerCtx {
     /// importer binding.  This resolves default-method ownership for `impl
     /// AliasTrait for Type` without a leaf-name or suffix lookup.
     trait_method_ids_by_binding:
-        HashMap<(Option<String>, String, String), (hew_types::DefId, hew_types::DefId)>,
+        HashMap<TraitMethodBindingKey, (hew_types::DefId, hew_types::DefId)>,
     /// Checker-owned impl-method declaration identities.  Keys are linker
     /// presentation strings retained only to locate the already-allocated ID;
     /// HIR never constructs an ID from a method spelling.
@@ -6977,9 +7031,9 @@ struct LowerCtx {
     /// constructor so it returns the declared `Result`. See
     /// `TypeCheckOutput::tail_ok_coercions`.
     tail_ok_coercions: std::collections::HashSet<SpanKey>,
-    /// Checker-owned method-call receiver classifications. Used only to fail
-    /// closed when the checker classified a receiver as actor-dispatchable but
-    /// omitted the corresponding `actor_method_dispatch` discriminator.
+    /// Checker-owned method-call receiver classifications. These facts prevent
+    /// HIR from reclassifying a lexical spelling as a module and fail closed
+    /// when a classified module or actor call lacks its dispatch fact.
     method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     /// Per-call-site `T → dyn Trait` coercion side-table. Keyed by the
     /// argument expression span. `lower_expr` consults this at every
@@ -7562,13 +7616,13 @@ struct LowerCtx {
     /// Type references consult the source binding before the builtin catalog,
     /// so an explicitly imported user `Receiver` cannot become the channel
     /// endpoint. Local-shadow filtering remains checker-authoritative.
-    import_type_name_aliases: HashMap<(Option<String>, String), String>,
+    import_type_name_aliases: HashMap<(Option<String>, u32, String), String>,
     /// Exact owner identities for lexical module qualifiers. Both whole and
     /// selective module-path imports carry this fact: after
     /// `import hew::closableerr::{ Closable as C }`,
     /// `closableerr.CloseError` still resolves to
     /// `hew.closableerr.CloseError` without a leaf-name retry.
-    module_import_bindings: HashMap<(Option<String>, String), String>,
+    module_import_bindings: HashMap<(Option<String>, u32, String), String>,
 }
 
 #[derive(Debug, Clone)]
@@ -8035,7 +8089,6 @@ impl LowerCtx {
                 sigs
             },
             direct_call_targets: tc_output.direct_call_targets.clone(),
-            user_modules: tc_output.user_modules.clone(),
             trait_method_ids: tc_output.trait_method_ids.clone(),
             trait_method_ids_by_binding: tc_output.trait_method_ids_by_binding.clone(),
             impl_method_declaration_ids: tc_output.impl_method_declaration_ids.clone(),
@@ -11923,6 +11976,7 @@ impl LowerCtx {
         // Never reinterpret a final path segment as this module's owner.
         if let Some(ids) = self.trait_method_ids_by_binding.get(&(
             self.current_module_name.clone(),
+            self.current_module_idx,
             declaring_trait.to_string(),
             method_name.to_string(),
         )) {
@@ -11979,8 +12033,10 @@ impl LowerCtx {
         let mut binding_owners: Vec<String> = self
             .trait_method_ids_by_binding
             .iter()
-            .filter(|((scope, binding, _), _)| {
-                scope == &self.current_module_name && binding == trait_bound
+            .filter(|((scope, file, binding, _), _)| {
+                scope == &self.current_module_name
+                    && *file == self.current_module_idx
+                    && binding == trait_bound
             })
             .map(|(_, (trait_id, _))| trait_id.full_path().to_string())
             .collect();
@@ -17469,17 +17525,27 @@ impl LowerCtx {
         let in_bindable_value_position = await_position == AwaitPosition::BindableValueLet;
         let span = expr.1.clone();
         if let Expr::ContextVariant(context) = &expr.0 {
+            let owner = self
+                .checker_expr_ty_if_present(&span)
+                .and_then(|ty| match ty {
+                    ResolvedTy::Named { name, .. } => Some(name),
+                    _ => None,
+                });
+            let contextual_name = owner.map_or_else(
+                || context.name.clone(),
+                |owner| format!("{owner}::{}", context.name),
+            );
             let compatibility = if let Some(record) = &context.record {
                 Expr::StructInit {
-                    name: context.name.clone(),
+                    name: contextual_name,
                     fields: record.fields.clone(),
                     type_args: None,
                     base: record.base.clone(),
                 }
             } else {
-                Expr::Identifier(context.name.clone())
+                Expr::Identifier(contextual_name)
             };
-            return self.lower_expr(&(compatibility, span), intent);
+            return self.lower_expr_inner(&(compatibility, span), intent);
         }
         if let Expr::GenericApplySuffix { target, .. } = &expr.0 {
             return self.lower_expr(&(target.0.clone(), span), intent);
@@ -17723,7 +17789,45 @@ impl LowerCtx {
                 // The checker accepts only the array/Vec source forms, so any
                 // other source form is a clean checker diagnostic before this
                 // lowering boundary.
-                if let Expr::Identifier(name) = &function.0 {
+                if let Expr::ContextVariant(context) = &function.0 {
+                    let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
+                    let contextual_name = match &checker_ctor_ty {
+                        Some(ResolvedTy::Named { name, .. }) => {
+                            format!("{name}::{}", context.name)
+                        }
+                        _ => context.name.clone(),
+                    };
+                    let variant_kind_for_call = self
+                        .lookup_variant_ctor(&contextual_name, checker_ctor_ty.as_ref())
+                        .map(|(_, _, kind)| kind.clone());
+                    if let Some(HirVariantKind::Tuple(_)) = &variant_kind_for_call {
+                        let taken = std::mem::take(&mut args);
+                        self.lower_variant_ctor_tuple_call(&contextual_name, taken, &span)
+                    } else {
+                        if let Some(kind) = &variant_kind_for_call {
+                            self.report_variant_ctor_call_shape_mismatch(
+                                &contextual_name,
+                                kind,
+                                &span,
+                            );
+                        } else {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: contextual_name.clone(),
+                                    reason: "missing contextual variant constructor".to_string(),
+                                },
+                                span.clone(),
+                                "checker admitted a contextual variant call without an exact constructor",
+                            ));
+                        }
+                        (
+                            HirExprKind::Unsupported(format!(
+                                "contextual variant call `{contextual_name}` is not a tuple constructor"
+                            )),
+                            ResolvedTy::Unit,
+                        )
+                    }
+                } else if let Expr::Identifier(name) = &function.0 {
                     // Intercept payload-bearing variant constructors written
                     // as calls (`Shape::Line(5)`, bare `Line(5)`). The bare
                     // identifier path produces `MachineVariantCtor { payload:
@@ -22725,7 +22829,11 @@ impl LowerCtx {
         if name.contains('.') {
             if let Some(canonical) = self
                 .import_type_name_aliases
-                .get(&(self.current_module_name.clone(), name.to_string()))
+                .get(&(
+                    self.current_module_name.clone(),
+                    self.current_module_idx,
+                    name.to_string(),
+                ))
                 .cloned()
             {
                 if canonical != name {
@@ -22740,10 +22848,11 @@ impl LowerCtx {
         // preserves every path segment (`lmonobox.Box` →
         // `hew.lmonobox.Box`) and deliberately does not use a leaf fallback.
         if let Some((binding, tail)) = name.split_once('.') {
-            if let Some(owner) = self
-                .module_import_bindings
-                .get(&(self.current_module_name.clone(), binding.to_string()))
-            {
+            if let Some(owner) = self.module_import_bindings.get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                binding.to_string(),
+            )) {
                 let canonical = format!("{owner}.{tail}");
                 if canonical != name {
                     return self.resolve_named_type_ref(&canonical, args);
@@ -22785,7 +22894,11 @@ impl LowerCtx {
         if !name.contains('.') {
             if let Some(canonical) = self
                 .import_type_name_aliases
-                .get(&(self.current_module_name.clone(), name.to_string()))
+                .get(&(
+                    self.current_module_name.clone(),
+                    self.current_module_idx,
+                    name.to_string(),
+                ))
                 .cloned()
             {
                 return self.resolve_named_type_ref(&canonical, args);
@@ -22894,10 +23007,11 @@ impl LowerCtx {
             return None;
         }
 
-        if let Some(canonical) = self
-            .import_type_name_aliases
-            .get(&(self.current_module_name.clone(), name.to_string()))
-        {
+        if let Some(canonical) = self.import_type_name_aliases.get(&(
+            self.current_module_name.clone(),
+            self.current_module_idx,
+            name.to_string(),
+        )) {
             return Some(self.resolve_named_type_ref(canonical, args));
         }
 
@@ -23147,10 +23261,11 @@ impl LowerCtx {
             if !name.contains('.')
                 && hew_types::lookup_source_owned_lifecycle_type(&name) == Some(builtin)
             {
-                if let Some(imported) = self
-                    .import_type_name_aliases
-                    .get(&(self.current_module_name.clone(), name.clone()))
-                {
+                if let Some(imported) = self.import_type_name_aliases.get(&(
+                    self.current_module_name.clone(),
+                    self.current_module_idx,
+                    name.clone(),
+                )) {
                     if self.qualified_source_builtin(imported) == Some(builtin) {
                         return Self::resolved_source_builtin_ty(imported, builtin, args);
                     }
@@ -23188,10 +23303,11 @@ impl LowerCtx {
         if !name.contains('.')
             && !self.current_scope_declares_source_type(&name, current_module_is_file_import)
         {
-            if let Some(imported) = self
-                .import_type_name_aliases
-                .get(&(self.current_module_name.clone(), name.clone()))
-            {
+            if let Some(imported) = self.import_type_name_aliases.get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                name.clone(),
+            )) {
                 return self.qualify_current_module_record_ty(ResolvedTy::named_user(
                     imported.clone(),
                     args,
@@ -23280,10 +23396,11 @@ impl LowerCtx {
         // that *full* identity. There is intentionally no short-name retry.
         if name.contains('.') {
             if let Some((binding, tail)) = name.split_once('.') {
-                if let Some(owner) = self
-                    .module_import_bindings
-                    .get(&(self.current_module_name.clone(), binding.to_string()))
-                {
+                if let Some(owner) = self.module_import_bindings.get(&(
+                    self.current_module_name.clone(),
+                    self.current_module_idx,
+                    binding.to_string(),
+                )) {
                     return format!("{owner}.{tail}");
                 }
             }
@@ -23339,7 +23456,11 @@ impl LowerCtx {
 
     fn imported_module_member_key(&self, module_binding: &str, member: &str) -> String {
         self.module_import_bindings
-            .get(&(self.current_module_name.clone(), module_binding.to_string()))
+            .get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                module_binding.to_string(),
+            ))
             .map_or_else(
                 || format!("{module_binding}.{member}"),
                 |owner| format!("{owner}.{member}"),
@@ -23615,7 +23736,11 @@ impl LowerCtx {
                         .contains(&format!("{source_module}.{name}"))
                     || name.rsplit_once('.').is_some_and(|(binding, item)| {
                         self.module_import_bindings
-                            .get(&(Some(source_module.to_string()), binding.to_string()))
+                            .get(&(
+                                Some(source_module.to_string()),
+                                self.current_module_idx,
+                                binding.to_string(),
+                            ))
                             .is_some_and(|owner| {
                                 self.source_type_identities
                                     .contains(&format!("{owner}.{item}"))
@@ -27603,12 +27728,17 @@ impl LowerCtx {
                             ResolvedTy::Unit,
                         );
                     }
-                    if self.user_modules.contains(module_name) {
+                    if let Some(MethodCallReceiverKind::ModuleBinding {
+                        module_name: resolved_module,
+                    }) = self.method_call_receiver_kinds.get(&key)
+                    {
                         let name = format!("{module_name}.{method}");
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::CheckerBoundaryViolation {
                                 name,
-                                reason: "missing module-qualified call rewrite".to_string(),
+                                reason: format!(
+                                    "missing module-qualified call rewrite for `{resolved_module}`"
+                                ),
                             },
                             span.clone(),
                             "checker admitted a user module-qualified call without its canonical rewrite target",
@@ -27761,10 +27891,11 @@ impl LowerCtx {
             }
         }
         if let Some((prefix, variant)) = name.rsplit_once("::") {
-            if let Some(canonical_prefix) = self
-                .import_type_name_aliases
-                .get(&(self.current_module_name.clone(), prefix.to_string()))
-            {
+            if let Some(canonical_prefix) = self.import_type_name_aliases.get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                prefix.to_string(),
+            )) {
                 candidates.push(format!("{canonical_prefix}::{variant}"));
             }
             if let Some(module) = self.current_module_name.as_deref() {
@@ -32501,7 +32632,13 @@ struct SupervisorRegistry {
     /// Exact owner selected for each lexical whole-module import binding.
     /// This is semantic authority for `spawn alias.Supervisor(...)`; the
     /// module leaf is never used as a lookup fallback.
-    module_bindings: HashMap<(Option<String>, String), String>,
+    module_bindings: HashMap<(Option<String>, u32, String), String>,
+}
+
+#[derive(Clone, Copy)]
+struct SupervisorScanScope<'a> {
+    module: Option<&'a str>,
+    file: u32,
 }
 
 impl SupervisorRegistry {
@@ -32517,12 +32654,13 @@ impl SupervisorRegistry {
 
     fn resolve_module_binding<'a>(
         &'a self,
-        current_module: Option<&str>,
+        scope: SupervisorScanScope<'_>,
         lexical_binding: &'a str,
     ) -> Option<&'a str> {
         self.module_bindings
             .get(&(
-                current_module.map(str::to_string),
+                scope.module.map(str::to_string),
+                scope.file,
                 lexical_binding.to_string(),
             ))
             .map(String::as_str)
@@ -32540,7 +32678,7 @@ impl SupervisorRegistry {
 /// declared in imported modules.
 fn collect_supervisor_registry(
     program: &Program,
-    module_bindings: HashMap<(Option<String>, String), String>,
+    module_bindings: HashMap<(Option<String>, u32, String), String>,
 ) -> SupervisorRegistry {
     let mut root: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
     for (item, _) in &program.items {
@@ -32584,8 +32722,23 @@ fn check_supervisor_spawn_gate(ctx: &mut LowerCtx, program: &Program) {
 
     // Walk root items. `current_module = None` selects the root supervisor
     // set for bare-name spawn targets.
-    for (item, _span) in &program.items {
-        scan_item_for_supervisor_spawn(item, None, &registry, &mut ctx.diagnostics);
+    let root_span_indices = program
+        .module_graph
+        .as_ref()
+        .map(hew_parser::module::ModuleGraph::file_span_indices);
+    for (item_idx, (item, _span)) in program.items.iter().enumerate() {
+        let file = program
+            .module_graph
+            .as_ref()
+            .zip(root_span_indices.as_ref())
+            .and_then(|(graph, indices)| indices.item_index(&graph.root, item_idx))
+            .unwrap_or_default();
+        scan_item_for_supervisor_spawn(
+            item,
+            SupervisorScanScope { module: None, file },
+            &registry,
+            &mut ctx.diagnostics,
+        );
     }
     // Walk every non-root module in the program's module graph. A supervisor
     // spawn with args inside a function/actor/impl/machine body in an imported
@@ -32606,15 +32759,21 @@ fn check_supervisor_spawn_gate(ctx: &mut LowerCtx, program: &Program) {
     // module's `Foo` is something else entirely (false-positive). Both
     // failure modes are documented in the rev2 independent review finding.
     if let Some(mg) = &program.module_graph {
+        let span_indices = mg.file_span_indices();
         for (mod_id, module) in &mg.modules {
             if *mod_id == mg.root {
                 continue;
             }
             let module_owner = mod_id.path.join(".");
-            for (item, _) in &module.items {
+            for (item_idx, (item, _)) in module.items.iter().enumerate() {
                 scan_item_for_supervisor_spawn(
                     item,
-                    Some(&module_owner),
+                    SupervisorScanScope {
+                        module: Some(&module_owner),
+                        file: span_indices
+                            .item_index(mod_id, item_idx)
+                            .unwrap_or_default(),
+                    },
                     &registry,
                     &mut ctx.diagnostics,
                 );
@@ -33893,7 +34052,7 @@ fn scan_block_for_call_shape(
 /// `Item::Machine`'s four positions (per A242) are handled in one place.
 fn scan_item_for_supervisor_spawn(
     item: &Item,
-    current_module: Option<&str>,
+    current_module: SupervisorScanScope<'_>,
     registry: &SupervisorRegistry,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -33971,7 +34130,7 @@ fn scan_item_for_supervisor_spawn(
 
 fn scan_block_for_supervisor_spawn(
     block: &hew_parser::ast::Block,
-    current_module: Option<&str>,
+    current_module: SupervisorScanScope<'_>,
     registry: &SupervisorRegistry,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -34364,7 +34523,7 @@ fn scan_expr_for_call_shape(
 )]
 fn scan_stmt_for_supervisor_spawn(
     stmt: &hew_parser::ast::Stmt,
-    current_module: Option<&str>,
+    current_module: SupervisorScanScope<'_>,
     registry: &SupervisorRegistry,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -34445,7 +34604,7 @@ fn scan_stmt_for_supervisor_spawn(
 
 fn scan_else_block_for_supervisor_spawn(
     eb: &hew_parser::ast::ElseBlock,
-    current_module: Option<&str>,
+    current_module: SupervisorScanScope<'_>,
     registry: &SupervisorRegistry,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -34472,7 +34631,7 @@ fn scan_else_block_for_supervisor_spawn(
 )]
 fn scan_expr_for_supervisor_spawn(
     expr: &Expr,
-    current_module: Option<&str>,
+    current_module: SupervisorScanScope<'_>,
     registry: &SupervisorRegistry,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -34502,7 +34661,7 @@ fn scan_expr_for_supervisor_spawn(
             // the rev2 independent review finding on module-context threading.
             let resolved: Option<(&str, bool)> = match &target.0 {
                 Expr::Identifier(name) => {
-                    let set = match current_module {
+                    let set = match current_module.module {
                         Some(m) => registry.by_module.get(m),
                         None => Some(&registry.root),
                     };
@@ -35395,6 +35554,7 @@ mod tests {
             ctx.trait_method_ids_by_binding.insert(
                 (
                     Some("app".to_string()),
+                    0,
                     trait_name.to_string(),
                     method_name.to_string(),
                 ),
@@ -35407,6 +35567,7 @@ mod tests {
             );
             ctx.trait_method_ids_by_binding.remove(&(
                 Some("app".to_string()),
+                0,
                 trait_name.to_string(),
                 method_name.to_string(),
             ));
@@ -35579,8 +35740,10 @@ fn main() {}
             );
         }
 
-        ctx.import_type_name_aliases
-            .insert((None, "Receiver".to_string()), "foo.Receiver".to_string());
+        ctx.import_type_name_aliases.insert(
+            (None, 0, "Receiver".to_string()),
+            "foo.Receiver".to_string(),
+        );
         assert_eq!(
             ctx.resolve_named_type_ref("Receiver", Vec::new()),
             ResolvedTy::named_opaque("foo.Receiver".to_string(), Vec::new()),
@@ -35777,7 +35940,7 @@ fn main() {}
         ctx.canonical_std_source_type_identities
             .insert("std.failure.CrashInfo".to_string());
         ctx.import_type_name_aliases.insert(
-            (None, "CrashInfo".to_string()),
+            (None, 0, "CrashInfo".to_string()),
             "std.failure.CrashInfo".to_string(),
         );
         assert_eq!(
@@ -35875,7 +36038,7 @@ fn main() {}
         );
         ctx.current_module_name = Some("std.net.tls".to_string());
         ctx.module_import_bindings.insert(
-            (Some("std.net.tls".to_string()), "net".to_string()),
+            (Some("std.net.tls".to_string()), 0, "net".to_string()),
             "std.net".to_string(),
         );
         ctx.canonical_std_source_type_identities
@@ -35899,7 +36062,7 @@ fn main() {}
             TargetArch::host(),
         );
         ctx.module_import_bindings.insert(
-            (None, "codec".to_string()),
+            (None, 0, "codec".to_string()),
             "std.net.http.codec".to_string(),
         );
 
@@ -35946,7 +36109,7 @@ fn main() {}
 
         ctx.root_visible_source_type_short_names.clear();
         ctx.import_type_name_aliases.insert(
-            (None, "RemotePid".to_string()),
+            (None, 0, "RemotePid".to_string()),
             "peer.RemotePid".to_string(),
         );
         assert_eq!(
@@ -35974,7 +36137,7 @@ fn main() {}
             },
         );
         ctx.import_type_name_aliases.insert(
-            (None, "CrashNotification".to_string()),
+            (None, 0, "CrashNotification".to_string()),
             "failure.CrashNotification".to_string(),
         );
 
@@ -36008,7 +36171,7 @@ fn main() {}
     fn checker_proven_whole_module_lifecycle_alias_canonicalizes_in_hir() {
         let tc_output = TypeCheckOutput {
             import_type_name_aliases: HashMap::from([(
-                (None, "f.CrashNotification".to_string()),
+                (None, 0, "f.CrashNotification".to_string()),
                 "failure.CrashNotification".to_string(),
             )]),
             ..TypeCheckOutput::default()
@@ -36157,10 +36320,10 @@ fn main() {}
     fn named_import_identity_precedes_task_unit_and_cancellation_early_arms() {
         let tc_output = TypeCheckOutput {
             import_type_name_aliases: HashMap::from([
-                ((None, "Task".to_string()), "foo.Task".to_string()),
-                ((None, "Unit".to_string()), "foo.Unit".to_string()),
+                ((None, 0, "Task".to_string()), "foo.Task".to_string()),
+                ((None, 0, "Unit".to_string()), "foo.Unit".to_string()),
                 (
-                    (None, "CancellationToken".to_string()),
+                    (None, 0, "CancellationToken".to_string()),
                     "foo.CancellationToken".to_string(),
                 ),
             ]),
@@ -38125,7 +38288,7 @@ fn main() {}
 
     // ── Enum-layout discovery tests ──────────────────────────────────────────
 
-    /// Lower the §0 probe (`Option<i64>` instantiated at a call site and
+    /// Lower the §0 probe (`Maybe<i64>` instantiated at a call site and
     /// matched) and assert that the HIR enum-layout registry contains exactly
     /// the expected entry. The `Some` variant's payload field must be
     /// `ResolvedTy::I64` (not `ResolvedTy::Named { name: "T", args: [] }` —
@@ -38137,12 +38300,12 @@ fn main() {}
     fn generic_enum_option_i64_registered_in_enum_layouts() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum Option<T> { Some(T); None }
+            enum Maybe<T> { Some(T); None }
             fn main() -> i64 {
-                let x: Option<i64> = Option::Some(42);
+                let x: Maybe<i64> = Maybe::Some(42);
                 match x {
-                    Option::Some(v) => v,
-                    Option::None => 0,
+                    Maybe::Some(v) => v,
+                    Maybe::None => 0,
                 }
             }
             ",
@@ -38152,13 +38315,13 @@ fn main() {}
         assert_eq!(
             layouts.len(),
             1,
-            "exactly one enum-layout entry expected for Option<i64>; got {layouts:#?}"
+            "exactly one enum-layout entry expected for Maybe<i64>; got {layouts:#?}"
         );
 
         let layout = &layouts[0];
         assert_eq!(
-            layout.key.origin_name, "Option",
-            "enum origin name must be 'Option'"
+            layout.key.origin_name, "Maybe",
+            "enum origin name must be 'Maybe'"
         );
         assert_eq!(
             layout.key.type_args,
@@ -38166,12 +38329,12 @@ fn main() {}
             "type_args must be [I64]"
         );
         assert_eq!(
-            layout.mangled_name, "Option$$i64",
+            layout.mangled_name, "Maybe$$i64",
             "mangled name must follow shared scheme"
         );
 
         // Two variants: Some(T→i64) and None.
-        assert_eq!(layout.variants.len(), 2, "Option has two variants");
+        assert_eq!(layout.variants.len(), 2, "Maybe has two variants");
         let some_variant = layout
             .variants
             .iter()
@@ -38197,20 +38360,22 @@ fn main() {}
     fn authored_generic_local_records_shadow_generic_builtin_spellings() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            type Option<T> { value: T }
-            type Sink<T> { value: T }
+            type Container<T> { value: T }
+            type OutputSink<T> { value: T }
 
-            fn keep_option(value: Option<i64>) -> Option<i64> { value }
-            fn keep_sink(value: Sink<i64>) -> Sink<i64> { value }
+            fn keep_container(value: Container<i64>) -> Container<i64> { value }
+            fn keep_sink(value: OutputSink<i64>) -> OutputSink<i64> { value }
             ",
         );
         assert!(
             lowered.diagnostics.is_empty(),
-            "generic local shadows must lower cleanly: {:#?}",
+            "generic local records must lower cleanly: {:#?}",
             lowered.diagnostics
         );
 
-        for (function_name, nominal_name) in [("keep_option", "Option"), ("keep_sink", "Sink")] {
+        for (function_name, nominal_name) in
+            [("keep_container", "Container"), ("keep_sink", "OutputSink")]
+        {
             let function = function_named(&lowered, function_name);
             for ty in [&function.params[0].ty, &function.return_ty] {
                 assert_eq!(
@@ -38313,9 +38478,9 @@ fn main() {}
         );
     }
 
-    /// Nested generic instantiation: `Option<Option<i64>>` must produce two
-    /// registry entries — one for `Option<Option<i64>>` and one for
-    /// `Option<i64>`. The worklist transitively expands type args so that the
+    /// Nested generic instantiation: `Maybe<Maybe<i64>>` must produce two
+    /// registry entries — one for `Maybe<Maybe<i64>>` and one for
+    /// `Maybe<i64>`. The worklist transitively expands type args so that the
     /// inner instantiation is discovered even though only the outer type
     /// appears at the call site.
     ///
@@ -38324,44 +38489,44 @@ fn main() {}
     fn nested_generic_enum_option_option_i64_registers_both_instantiations() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum Option<T> { Some(T); None }
+            enum Maybe<T> { Some(T); None }
             fn main() -> i64 {
-                let inner: Option<i64> = Option::Some(5);
-                let outer: Option<Option<i64>> = Option::Some(inner);
+                let inner: Maybe<i64> = Maybe::Some(5);
+                let outer: Maybe<Maybe<i64>> = Maybe::Some(inner);
                 match outer {
-                    Option::Some(v) => match v {
-                        Option::Some(n) => n,
-                        Option::None => 0,
+                    Maybe::Some(v) => match v {
+                        Maybe::Some(n) => n,
+                        Maybe::None => 0,
                     },
-                    Option::None => -1,
+                    Maybe::None => -1,
                 }
             }
             ",
         );
 
         let layouts = &lowered.module.enum_layouts;
-        // Both Option<i64> and Option<Option<i64>> must be registered.
+        // Both Maybe<i64> and Maybe<Maybe<i64>> must be registered.
         assert!(
             layouts.len() >= 2,
-            "expected at least two enum-layout entries for Option<i64> and \
-             Option<Option<i64>>; got {layouts:#?}"
+            "expected at least two enum-layout entries for Maybe<i64> and \
+             Maybe<Maybe<i64>>; got {layouts:#?}"
         );
 
         let has_option_i64 = layouts
             .iter()
-            .any(|l| l.key.origin_name == "Option" && l.key.type_args == vec![ResolvedTy::I64]);
+            .any(|l| l.key.origin_name == "Maybe" && l.key.type_args == vec![ResolvedTy::I64]);
         let has_option_option_i64 = layouts.iter().any(|l| {
-            l.key.origin_name == "Option"
-                && l.key.type_args == vec![ResolvedTy::named_user("Option", vec![ResolvedTy::I64])]
+            l.key.origin_name == "Maybe"
+                && l.key.type_args == vec![ResolvedTy::named_user("Maybe", vec![ResolvedTy::I64])]
         });
 
         assert!(
             has_option_i64,
-            "registry must contain Option<i64>; got {layouts:#?}"
+            "registry must contain Maybe<i64>; got {layouts:#?}"
         );
         assert!(
             has_option_option_i64,
-            "registry must contain Option<Option<i64>>; got {layouts:#?}"
+            "registry must contain Maybe<Maybe<i64>>; got {layouts:#?}"
         );
     }
 
@@ -38653,13 +38818,13 @@ fn main() {}
     fn record_shadowing_builtin_result_keeps_actor_ask_lowerable() {
         let (_program, _tco, lowered) = parse_typecheck_and_lower(
             r#"
-            type Result { handle: i64; }
+            type QueryReply { handle: i64; }
 
             actor Db {
                 var n: i64 = 0;
-                receive fn query(sql: string) -> Result {
+                receive fn query(sql: string) -> QueryReply {
                     n = n + 1;
-                    Result { handle: n }
+                    QueryReply { handle: n }
                 }
             }
 
@@ -38693,7 +38858,7 @@ fn main() {}
             .expect("query handler");
         assert_eq!(
             handler.return_ty,
-            ResolvedTy::named_user("Result".to_string(), vec![]),
+            ResolvedTy::named_user("QueryReply".to_string(), vec![]),
             "handler return type must resolve to the user record, not the builtin enum"
         );
         // The ask site registered the builtin `Result<Result, AskError>`
@@ -38706,7 +38871,7 @@ fn main() {}
                 .iter()
                 .any(|layout| layout.key.origin_name == "Result"
                     && layout.key.type_args.first()
-                        == Some(&ResolvedTy::named_user("Result".to_string(), vec![]))),
+                        == Some(&ResolvedTy::named_user("QueryReply".to_string(), vec![]))),
             "ask-site Result<Result, AskError> layout missing from enum_layouts: {:?}",
             lowered
                 .module
@@ -38786,17 +38951,17 @@ fn main() {}
     fn same_leaf_user_enums_keep_user_constructor_identity() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum LinkError { UserLink; }
-            enum LookupError { UserLookup; }
-            enum MonitorError { UserMonitor; }
-            enum CrashAction { UserAction; }
-            enum CrashKind { UserKind; }
+            enum UserLinkError { UserLink; }
+            enum UserLookupError { UserLookup; }
+            enum UserMonitorError { UserMonitor; }
+            enum UserCrashAction { UserAction; }
+            enum UserCrashKind { UserKind; }
 
-            fn user_link() -> LinkError { LinkError::UserLink }
-            fn user_lookup() -> LookupError { LookupError::UserLookup }
-            fn user_monitor() -> MonitorError { MonitorError::UserMonitor }
-            fn user_action() -> CrashAction { CrashAction::UserAction }
-            fn user_kind() -> CrashKind { CrashKind::UserKind }
+            fn user_link() -> UserLinkError { UserLinkError::UserLink }
+            fn user_lookup() -> UserLookupError { UserLookupError::UserLookup }
+            fn user_monitor() -> UserMonitorError { UserMonitorError::UserMonitor }
+            fn user_action() -> UserCrashAction { UserCrashAction::UserAction }
+            fn user_kind() -> UserCrashKind { UserCrashKind::UserKind }
             ",
         );
         assert!(
@@ -38806,11 +38971,11 @@ fn main() {}
         );
 
         for (function_name, expected_type) in [
-            ("user_link", "LinkError"),
-            ("user_lookup", "LookupError"),
-            ("user_monitor", "MonitorError"),
-            ("user_action", "CrashAction"),
-            ("user_kind", "CrashKind"),
+            ("user_link", "UserLinkError"),
+            ("user_lookup", "UserLookupError"),
+            ("user_monitor", "UserMonitorError"),
+            ("user_action", "UserCrashAction"),
+            ("user_kind", "UserCrashKind"),
         ] {
             let function = function_named(&lowered, function_name);
             let tail = function.body.tail.as_deref().expect("constructor tail");
@@ -38957,7 +39122,7 @@ fn main() {}
         );
         assert_eq!(
             tco.import_type_name_aliases
-                .get(&(None, "Hue".to_string()))
+                .get(&(None, 0, "Hue".to_string()))
                 .map(String::as_str),
             Some("hew.aliassrc.Color"),
             "the root alias must carry the exact enum declaration owner"
@@ -39119,13 +39284,13 @@ fn main() {}
             assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
             assert_eq!(
                 tco.import_type_name_aliases
-                    .get(&(None, "Hue".to_string()))
+                    .get(&(None, 0, "Hue".to_string()))
                     .map(String::as_str),
                 Some("hew.alpha.Color")
             );
             assert_eq!(
                 tco.import_type_name_aliases
-                    .get(&(None, "Shade".to_string()))
+                    .get(&(None, 0, "Shade".to_string()))
                     .map(String::as_str),
                 Some("hew.beta.Color")
             );

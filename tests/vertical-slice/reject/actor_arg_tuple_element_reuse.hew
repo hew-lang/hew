@@ -13,14 +13,14 @@ impl Socket {
     }
 }
 
-actor Sink {
+actor TestSink {
     receive fn take(s: Socket) -> i64 {
         return s.detach();
     }
 }
 
 fn main() -> i64 {
-    let sink = spawn Sink;
+    let sink = spawn TestSink;
     let pair = (Socket { fd: 1 }, 5);
     let _ = await sink.take(pair.0);
     return pair.0.detach();

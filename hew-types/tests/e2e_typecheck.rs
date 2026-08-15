@@ -1647,14 +1647,14 @@ fn weak_breaks_recursive_value_size_cycle() {
 fn weak_rejected_at_actor_send_boundary() {
     let output = typecheck_inline(
         r"
-        actor Sink {
+        actor BoundarySink {
             let _unused: i64;
             receive fn consume(value: Weak<i64>) {}
         }
         fn main() {
             let rc = Rc::new(1);
             let weak = rc.downgrade();
-            let sink = spawn Sink(_unused: 0);
+            let sink = spawn BoundarySink(_unused: 0);
             sink.consume(weak);
         }
         ",
@@ -1776,13 +1776,13 @@ fn weak_param_return_requires_clone() {
 fn rc_rejected_at_actor_send_boundary() {
     let output = typecheck_inline(
         r"
-        actor Sink {
+        actor BoundarySink {
             let _unused: i64;
             receive fn consume(val: Rc<i64>) {}
         }
         fn main() {
             let rc: Rc<i64> = Rc::new(1);
-            let a = spawn Sink(_unused: 0);
+            let a = spawn BoundarySink(_unused: 0);
             a.consume(rc);
         }
         ",
@@ -1803,13 +1803,13 @@ fn ordinary_actor_send_keeps_sender_binding_readable() {
             payload: Vec<i64>,
         }
 
-        actor Sink {
+        actor BoundarySink {
             let _unused: i64;
             receive fn take(value: Boxed) {}
         }
 
         fn main() {
-            let sink = spawn Sink(_unused: 0);
+            let sink = spawn BoundarySink(_unused: 0);
             let value = Boxed { payload: [1, 2] };
             sink.take(value);
             sink.take(value);
@@ -1861,14 +1861,14 @@ fn nested_rc_and_weak_send_rejections_do_not_cascade() {
             value: Rc<i64>,
         }
 
-        actor Sink {
+        actor BoundarySink {
             let _unused: i64;
             receive fn take_box(value: RcBox) {}
             receive fn take_tuple(value: (i64, Weak<i64>)) {}
         }
 
         fn main() {
-            let sink = spawn Sink(_unused: 0);
+            let sink = spawn BoundarySink(_unused: 0);
             let rc = Rc::new(1);
             let weak = rc.downgrade();
             let boxed = RcBox { value: rc.clone() };

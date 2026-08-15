@@ -1,3 +1,4 @@
+use super::types::ImportBindingKey;
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -328,8 +329,8 @@ fn imported_source_result_matches(
     ty: &Ty,
     qualified: &str,
     declaration: &SourceExternDeclaration,
-    module_import_bindings: &HashMap<(Option<String>, String), String>,
-    import_type_name_aliases: &HashMap<(Option<String>, String), String>,
+    module_import_bindings: &HashMap<ImportBindingKey, String>,
+    import_type_name_aliases: &HashMap<ImportBindingKey, String>,
 ) -> bool {
     let Ty::Named { name, args, .. } = ty else {
         return false;
@@ -356,7 +357,11 @@ fn imported_source_result_matches(
     if let Some((binding, tail)) = name.split_once('.') {
         if tail == nominal
             && module_import_bindings
-                .get(&(Some(producer_module.clone()), binding.to_string()))
+                .get(&(
+                    Some(producer_module.clone()),
+                    declaration.declaring_file,
+                    binding.to_string(),
+                ))
                 .is_some_and(|target| target == owner_module)
         {
             return true;
@@ -366,9 +371,11 @@ fn imported_source_result_matches(
     // Named imports and declaration aliases can resolve directly to the
     // source identity. The alias table supplies the original declaration
     // spelling; the direct graph target supplies the full owner provenance.
-    if let Some(source_identity) =
-        import_type_name_aliases.get(&(Some(producer_module.clone()), name.clone()))
-    {
+    if let Some(source_identity) = import_type_name_aliases.get(&(
+        Some(producer_module.clone()),
+        declaration.declaring_file,
+        name.clone(),
+    )) {
         if imported_result_surface_matches(declaration, source_identity, qualified) {
             return true;
         }
@@ -531,8 +538,8 @@ fn derive_source_resource_candidate(
     producer_contract: &crate::ffi_contracts::ExternOwnershipContract,
     source_declarations: &[SourceExternDeclaration],
     fn_sigs: &HashMap<String, FnSig>,
-    module_import_bindings: &HashMap<(Option<String>, String), String>,
-    import_type_name_aliases: &HashMap<(Option<String>, String), String>,
+    module_import_bindings: &HashMap<ImportBindingKey, String>,
+    import_type_name_aliases: &HashMap<ImportBindingKey, String>,
     impl_method_declaration_ids: &HashMap<String, crate::DefId>,
     contracts_by_symbol: &std::collections::BTreeMap<
         &str,
@@ -669,8 +676,8 @@ fn source_declaration_matches_endpoint(
 fn derive_opaque_resource_candidate_graph(
     source_declarations: &[SourceExternDeclaration],
     fn_sigs: &HashMap<String, FnSig>,
-    module_import_bindings: &HashMap<(Option<String>, String), String>,
-    import_type_name_aliases: &HashMap<(Option<String>, String), String>,
+    module_import_bindings: &HashMap<ImportBindingKey, String>,
+    import_type_name_aliases: &HashMap<ImportBindingKey, String>,
     impl_method_declaration_ids: &HashMap<String, crate::DefId>,
     contracts: &[(&str, crate::ffi_contracts::ExternOwnershipContract)],
 ) -> OpaqueResourceCandidateGraph {
@@ -776,9 +783,11 @@ fn derive_opaque_resource_candidate_graph(
 
 impl Checker {
     fn mark_import_module_used_for_owner(&self, owner: Option<String>, imported_module: &str) {
-        self.used_modules
-            .borrow_mut()
-            .insert(ImportKey::new(owner, imported_module.to_string()));
+        self.used_modules.borrow_mut().insert(ImportKey::in_file(
+            owner,
+            self.current_module_idx,
+            imported_module.to_string(),
+        ));
     }
 
     fn mark_loaded_trait_owner_import_used(&self, module: Option<&str>, trait_name: &str) {
@@ -832,10 +841,11 @@ impl Checker {
                     );
                 }
             }
-        } else if let Some(imported_module) = self
-            .unqualified_to_module
-            .get(&(module.map(str::to_string), trait_name.to_string()))
-        {
+        } else if let Some(imported_module) = self.unqualified_to_module.get(&(
+            module.map(str::to_string),
+            self.current_module_idx,
+            trait_name.to_string(),
+        )) {
             self.mark_import_module_used_for_owner(
                 module.map(str::to_string),
                 imported_module.as_str(),
@@ -1560,7 +1570,11 @@ impl Checker {
                     let canonical = format!("std.builtins.{}", tr.name);
                     self.trait_defs.entry(canonical.clone()).or_insert(info);
                     self.published_bare_trait_owners
-                        .entry((self.current_module.clone(), tr.name.clone()))
+                        .entry((
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            tr.name.clone(),
+                        ))
                         .or_default()
                         .insert(canonical);
                     // Builtin traits are parsed outside the ordinary program
@@ -1851,7 +1865,11 @@ impl Checker {
             self.known_types.insert(name.to_string());
             self.record_published_bare_type(name, &canonical);
             self.unqualified_to_module.insert(
-                (self.current_module.clone(), name.to_string()),
+                (
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    name.to_string(),
+                ),
                 "std.builtins".to_string(),
             );
         }
@@ -2107,13 +2125,30 @@ impl Checker {
     /// (`std.link_monitor`'s `Crashed(CrashKind)`).  A source declaration alone
     /// is not authority: require a matching resolved graph edge, then publish
     /// exactly the same lexical/canonical bindings the later import pass would.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "lifecycle import seeding mirrors all declaration kinds atomically"
+    )]
     fn seed_resolved_lifecycle_import_bindings(
         &mut self,
         module: &hew_parser::module::Module,
         importer: Option<&str>,
         module_graph: &hew_parser::module::ModuleGraph,
     ) {
-        for (item, _) in &module.items {
+        let saved_importer_file_idx = self.current_module_idx;
+        let span_indices = module_graph.file_span_indices();
+        for (item_idx, (item, _)) in module.items.iter().enumerate() {
+            // These bindings are written before the ordinary import pass, but
+            // they still belong to the importing SOURCE FILE. A directory
+            // module can assemble imports from several peers, so module-level
+            // or ambient indexing would publish a cross-file binding.
+            self.current_module_idx = if module.id == module_graph.root {
+                0
+            } else {
+                span_indices
+                    .item_index(&module.id, item_idx)
+                    .unwrap_or_default()
+            };
             let Item::Import(decl) = item else {
                 continue;
             };
@@ -2155,7 +2190,11 @@ impl Checker {
             // type resolver to compare a short surface name against a full
             // declaration identity.
             self.module_import_bindings.insert(
-                (importer.map(str::to_owned), module_binding.clone()),
+                (
+                    importer.map(str::to_owned),
+                    self.current_module_idx,
+                    module_binding.clone(),
+                ),
                 canonical_module.clone(),
             );
 
@@ -2196,7 +2235,11 @@ impl Checker {
                         let qualified_surface = format!("{module_binding}.{source_name}");
                         if qualified_surface != source_identity {
                             self.import_type_name_aliases.insert(
-                                (importer.map(str::to_owned), qualified_surface),
+                                (
+                                    importer.map(str::to_owned),
+                                    self.current_module_idx,
+                                    qualified_surface,
+                                ),
                                 source_identity.clone(),
                             );
                         }
@@ -2210,15 +2253,24 @@ impl Checker {
                 self.known_types.insert(binding.clone());
                 self.record_published_bare_type(&binding, &source_identity);
                 self.import_type_name_aliases.insert(
-                    (importer.map(str::to_owned), binding.clone()),
+                    (
+                        importer.map(str::to_owned),
+                        self.current_module_idx,
+                        binding.clone(),
+                    ),
                     source_identity,
                 );
                 self.unqualified_to_module.insert(
-                    (importer.map(str::to_owned), binding),
+                    (
+                        importer.map(str::to_owned),
+                        self.current_module_idx,
+                        binding,
+                    ),
                     canonical_module.clone(),
                 );
             }
         }
+        self.current_module_idx = saved_importer_file_idx;
     }
 
     /// Record direct lexical authority for lifecycle types imported from an
@@ -2270,7 +2322,11 @@ impl Checker {
                     let qualified_surface = format!("{module_binding}.{source_name}");
                     if qualified_surface != source_identity {
                         self.import_type_name_aliases.insert(
-                            (importer.map(str::to_owned), qualified_surface),
+                            (
+                                importer.map(str::to_owned),
+                                self.current_module_idx,
+                                qualified_surface,
+                            ),
                             source_identity,
                         );
                     }
@@ -2344,6 +2400,7 @@ impl Checker {
         // the import path's full `register_type_decl` for pub types, and
         // are not needed for internal non-pub types).
         if let Some(ref mg) = program.module_graph {
+            let span_indices = mg.file_span_indices();
             for mod_id in &mg.topo_order {
                 if *mod_id == mg.root {
                     continue;
@@ -2404,7 +2461,10 @@ impl Checker {
                                 .insert(name);
                         }
                     }
-                    for (item, item_span) in &module.items {
+                    for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
+                        self.current_module_idx = span_indices
+                            .item_index(mod_id, item_idx)
+                            .unwrap_or_default();
                         match item {
                             Item::TypeDecl(td) => {
                                 self.pre_register_type_decl(td);
@@ -2459,6 +2519,7 @@ impl Checker {
             }
         }
         self.current_module = None;
+        self.current_module_idx = 0;
 
         // The root module follows the same source-order-independent rule as
         // imported modules: direct, canonical lifecycle import edges and every
@@ -2710,6 +2771,7 @@ impl Checker {
         self.suppress_undefined_type_report = true;
 
         if let Some(ref mg) = program.module_graph {
+            let span_indices = mg.file_span_indices();
             for mod_id in &mg.topo_order {
                 if *mod_id == mg.root {
                     continue;
@@ -2721,7 +2783,10 @@ impl Checker {
                 let saved_local_type_defs = self.local_type_defs.clone();
                 let saved_source_type_defs = self.source_type_defs.clone();
                 self.seed_member_reresolution_scope(&module.items);
-                for (item, item_span) in &module.items {
+                for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
+                    self.current_module_idx = span_indices
+                        .item_index(mod_id, item_idx)
+                        .unwrap_or_default();
                     if member_item_is_absorbed_from_distinct_child(
                         program,
                         &preferred_modules,
@@ -2739,6 +2804,7 @@ impl Checker {
         }
 
         self.current_module = None;
+        self.current_module_idx = 0;
         let saved_local_type_defs = self.local_type_defs.clone();
         let saved_source_type_defs = self.source_type_defs.clone();
         self.seed_member_reresolution_scope(&program.items);
@@ -3347,6 +3413,11 @@ impl Checker {
         name: &str,
         span: &Span,
     ) -> bool {
+        if module_short == self.current_module.as_deref()
+            && self.reject_protected_prelude_declaration(name, span)
+        {
+            return false;
+        }
         if crate::ty::is_reserved_type_name(name) {
             self.errors
                 .push(TypeError::reserved_type_name(span.clone(), name));
@@ -3384,6 +3455,12 @@ impl Checker {
         machine_name: &str,
         span: &Span,
     ) -> bool {
+        if module_short == self.current_module.as_deref()
+            && (self.reject_protected_prelude_declaration(machine_name, span)
+                || self.reject_protected_prelude_declaration(&format!("{machine_name}Event"), span))
+        {
+            return false;
+        }
         if crate::ty::is_reserved_type_name(machine_name) {
             self.errors
                 .push(TypeError::reserved_type_name(span.clone(), machine_name));
@@ -5843,6 +5920,10 @@ impl Checker {
     }
 
     /// Pass 2: Collect function signatures
+    #[expect(
+        clippy::too_many_lines,
+        reason = "signature collection maintains one ordered registration walk"
+    )]
     pub(super) fn collect_functions(&mut self, program: &Program) {
         let flat_file_import_modules = flat_file_import_module_ids(program);
         self.flat_file_import_module_names = flat_file_import_modules
@@ -5853,6 +5934,7 @@ impl Checker {
         // Skip the root module — its items are already in program.items and
         // will be processed below with current_module = None (bare names).
         if let Some(ref mg) = program.module_graph {
+            let span_indices = mg.file_span_indices();
             for mod_id in &mg.topo_order {
                 if *mod_id == mg.root {
                     continue;
@@ -5915,6 +5997,9 @@ impl Checker {
                             .as_ref()
                             .and_then(|sources| sources.get(item_idx))
                             .cloned();
+                        self.current_module_idx = span_indices
+                            .item_index(mod_id, item_idx)
+                            .unwrap_or_default();
                         self.collect_function_item(item, span);
                     }
                     self.current_item_source = None;
@@ -5938,6 +6023,7 @@ impl Checker {
 
         // Process main module items.
         self.current_module = None;
+        self.current_module_idx = 0;
         self.registration_is_flat_file_import = false;
         self.current_module_direct_imports = program
             .module_graph
@@ -5975,6 +6061,9 @@ impl Checker {
     pub(super) fn collect_function_item(&mut self, item: &Item, span: &Span) {
         match item {
             Item::Function(fd) => {
+                if self.reject_protected_prelude_declaration(&fd.name, span) {
+                    return;
+                }
                 // rc1-F1 stage A: `fn_def_spans`/`fn_visibility` are
                 // CANONICALIZED with `fn_sigs` — one key shape per
                 // declaration, so declaration-authority probes never miss on
@@ -6011,8 +6100,13 @@ impl Checker {
                     // which `ensure_executable_target` then rejects (method calls
                     // resolve through the impl-method path and were unaffected).
                     if self.registration_is_flat_file_import && fd.visibility.is_pub() {
+                        // This is a cross-context publication: the declaration
+                        // is being visited in the imported file, but the bare
+                        // binding belongs to the root importing file. Import
+                        // binding keys always use BOTH coordinates of the
+                        // lexical owner, never the ambient declaration index.
                         self.import_fn_name_aliases
-                            .entry((None, fd.name.clone()))
+                            .entry((None, 0, fd.name.clone()))
                             .or_insert_with(|| scoped_name.clone());
                     }
                     self.fn_def_spans.insert(
@@ -7308,6 +7402,7 @@ impl Checker {
                 self.trait_method_ids_by_binding.insert(
                     (
                         self.current_module.clone(),
+                        self.current_module_idx,
                         bound.name.clone(),
                         method.name.clone(),
                     ),
@@ -7888,9 +7983,11 @@ impl Checker {
         if self.local_trait_defs.contains(name) {
             return None;
         }
-        let identities = self
-            .published_bare_trait_owners
-            .get(&(importer.map(str::to_string), name.to_string()))?;
+        let identities = self.published_bare_trait_owners.get(&(
+            importer.map(str::to_string),
+            self.current_module_idx,
+            name.to_string(),
+        ))?;
         if identities.len() != 1 {
             return None;
         }
@@ -8004,7 +8101,11 @@ impl Checker {
             })
             .map(|module| {
                 self.module_import_bindings
-                    .get(&(self.current_module.clone(), module.to_string()))
+                    .get(&(
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        module.to_string(),
+                    ))
                     .cloned()
                     .unwrap_or_else(|| module.to_string())
             })
@@ -8154,7 +8255,11 @@ impl Checker {
             .map(|owner| {
                 let canonical_owner = self
                     .module_import_bindings
-                    .get(&(self.current_module.clone(), owner.clone()))
+                    .get(&(
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        owner.clone(),
+                    ))
                     .map_or(owner.as_str(), String::as_str);
                 format!("{canonical_owner}.{}", identity.source_trait_name)
             })
@@ -8642,7 +8747,11 @@ impl Checker {
             |owner| {
                 Some(
                     self.module_import_bindings
-                        .get(&(self.current_module.clone(), owner.clone()))
+                        .get(&(
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            owner.clone(),
+                        ))
                         .cloned()
                         .unwrap_or_else(|| owner.clone()),
                 )
@@ -9828,6 +9937,7 @@ impl Checker {
                     symbol_template: source_symbol_template,
                     signature_key: key.clone(),
                     declaring_module: self.current_module.clone(),
+                    declaring_file: self.current_module_idx,
                     direct_import_modules: self.current_module_direct_imports.clone(),
                     consuming_params,
                 });
@@ -10001,11 +10111,229 @@ impl Checker {
         }
     }
 
+    /// Snapshot the compiler-assumed part of the implicit prelude before source
+    /// registration begins.
+    ///
+    /// The prelude manifest is deliberately broader than this protected set:
+    /// ordinary builtins remain normal lexical bindings and may be shadowed by
+    /// user declarations. Only declaration-level lang items plus the core
+    /// enum/desugaring heads below are names the compiler cannot let source
+    /// replace without changing language semantics.
+    pub(super) fn capture_protected_prelude_bindings(&mut self) {
+        self.protected_prelude_bindings.clear();
+
+        let authority = crate::stdlib_authority::authority();
+        let prelude_exports = authority.prelude_exports();
+        let glob_modules: HashSet<String> = prelude_exports
+            .iter()
+            .filter(|export| export.kind == crate::PreludeExportKind::Glob)
+            .map(|export| export.module.replace("::", "."))
+            .collect();
+        let mut protected_names: HashSet<String> = authority
+            .lang_items()
+            .values()
+            .filter(|binding| {
+                matches!(
+                    binding.kind,
+                    crate::stdlib_authority::AuthorityDeclarationKind::Type
+                        | crate::stdlib_authority::AuthorityDeclarationKind::Trait
+                )
+            })
+            .map(|binding| binding.declaration.clone())
+            .collect();
+        // Option/Result construction and propagation, plus for-loop
+        // conversion, are compiler desugarings whose declarations predate the
+        // corresponding lang-item annotations.
+        protected_names.extend(
+            ["Option", "Result", "IntoIterator"]
+                .into_iter()
+                .map(str::to_string),
+        );
+
+        for export in prelude_exports {
+            if export.kind != crate::PreludeExportKind::Item {
+                continue;
+            }
+            let Some(source_name) = export.name.as_ref() else {
+                continue;
+            };
+            let binding = export.alias.as_ref().unwrap_or(source_name);
+            if protected_names.contains(source_name) {
+                self.protected_prelude_bindings
+                    .insert(binding.clone(), export.module.replace("::", "."));
+            }
+        }
+
+        if glob_modules.contains("std.builtins") {
+            for name in protected_names {
+                self.protected_prelude_bindings
+                    .insert(name, "std.builtins".to_string());
+            }
+        }
+    }
+
+    pub(super) fn reject_protected_prelude_declaration(&mut self, name: &str, span: &Span) -> bool {
+        let compiling_canonical_stdlib = self.checking_embedded_builtins
+            || self.in_stdlib_registration
+            || self
+                .current_module
+                .as_ref()
+                .is_some_and(|module| self.canonical_std_module_sources.contains(module))
+            || (self.current_module.is_none() && !self.canonical_std_root_sources.is_empty());
+        if compiling_canonical_stdlib || !self.protected_prelude_bindings.contains_key(name) {
+            return false;
+        }
+        self.errors.push(TypeError::new(
+            TypeErrorKind::PreludeDeclCollision,
+            span.clone(),
+            format!("declaration `{name}` collides with the protected prelude binding `{name}`"),
+        ));
+        true
+    }
+
+    fn import_publication_candidates(decl: &ImportDecl) -> Vec<(String, String)> {
+        let mut candidates = Vec::new();
+        let module_binding = decl
+            .module_alias
+            .clone()
+            .or_else(|| decl.path.last().cloned());
+        if let Some(binding) = module_binding {
+            candidates.push((binding.clone(), binding));
+        }
+
+        if let Some(ImportSpec::Names(names)) = &decl.spec {
+            candidates.extend(names.iter().map(|name| {
+                (
+                    name.alias.clone().unwrap_or_else(|| name.name.clone()),
+                    name.name.clone(),
+                )
+            }));
+            return candidates;
+        }
+
+        if !decl.path.is_empty() && !matches!(decl.spec, Some(ImportSpec::Glob)) {
+            return candidates;
+        }
+
+        let Some(items) = decl.resolved_items.as_ref() else {
+            return candidates;
+        };
+        for (item, _) in items {
+            let mut push = |name: &str| candidates.push((name.to_string(), name.to_string()));
+            match item {
+                Item::Function(item) if item.visibility.is_pub() => push(&item.name),
+                Item::Const(item) if item.visibility.is_pub() => push(&item.name),
+                Item::TypeDecl(item) if item.visibility.is_pub() => push(&item.name),
+                Item::TypeAlias(item) if item.visibility.is_pub() => push(&item.name),
+                Item::Trait(item) if item.visibility.is_pub() => push(&item.name),
+                Item::Actor(item) if item.visibility.is_pub() => push(&item.name),
+                Item::Machine(item) if item.visibility.is_pub() => {
+                    push(&item.name);
+                    push(&format!("{}Event", item.name));
+                }
+                Item::Record(item) if item.visibility.is_pub() => push(&item.name),
+                _ => {}
+            }
+        }
+        candidates
+    }
+
+    fn preflight_import_publication(&mut self, decl: &ImportDecl, span: &Span) -> bool {
+        let candidates = Self::import_publication_candidates(decl);
+        let source_owner = if decl.path.is_empty() {
+            decl.file_path.as_deref().map_or_else(
+                || "<file-import>".to_string(),
+                |path| format!("file:{path}"),
+            )
+        } else {
+            decl.path.join(".")
+        };
+        let mut seen = HashSet::new();
+        let mut valid = true;
+
+        for (binding, source_name) in &candidates {
+            if !seen.insert(binding.clone()) {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::ImportBindingCollision,
+                    span.clone(),
+                    format!(
+                        "import publishes `{binding}` more than once; no bindings from this import were added"
+                    ),
+                ));
+                valid = false;
+                continue;
+            }
+
+            if let Some(prelude_owner) = self.protected_prelude_bindings.get(binding) {
+                let reimports_same_prelude_item =
+                    prelude_owner == &source_owner && source_name == binding;
+                if !reimports_same_prelude_item {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::ImportPreludeCollision,
+                        span.clone(),
+                        format!(
+                            "import binding `{binding}` collides with the protected prelude; no bindings from this import were added"
+                        ),
+                    ));
+                    valid = false;
+                    continue;
+                }
+            }
+
+            let key = (
+                self.current_module.clone(),
+                self.current_module_idx,
+                binding.clone(),
+            );
+            let source_identity = format!("{source_owner}.{source_name}");
+            if let Some((previous_span, previous_module, previous_identity)) =
+                self.import_binding_spans.get(&key).cloned()
+            {
+                if previous_identity == source_identity {
+                    continue;
+                }
+                self.errors.push(
+                    TypeError::new(
+                        TypeErrorKind::ImportBindingCollision,
+                        span.clone(),
+                        format!(
+                            "import binding `{binding}` is already defined in this file; no bindings from this import were added"
+                        ),
+                    )
+                    .with_note_source(
+                        previous_span,
+                        "previous import binding here",
+                        previous_module,
+                    ),
+                );
+                valid = false;
+            }
+        }
+
+        if valid {
+            for (binding, source_name) in candidates {
+                let source_identity = format!("{source_owner}.{source_name}");
+                self.import_binding_spans.insert(
+                    (
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        binding,
+                    ),
+                    (span.clone(), self.current_module.clone(), source_identity),
+                );
+            }
+        }
+        valid
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "import registration consolidates stdlib, user-module, and error paths in one place"
     )]
     pub(super) fn register_import(&mut self, decl: &ImportDecl, import_span: Option<&Span>) {
+        if import_span.is_some_and(|span| !self.preflight_import_publication(decl, span)) {
+            return;
+        }
         let module_path = decl.path.join("::");
 
         // Try to load from the registry first, keeping any error detail owned so the
@@ -10115,12 +10443,20 @@ impl Checker {
                     // Register module and clean names
                     self.modules.insert(short.clone());
                     self.module_import_bindings.insert(
-                        (self.current_module.clone(), short.clone()),
+                        (
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            short.clone(),
+                        ),
                         canonical_owner.clone(),
                     );
                     if let Some(span) = import_span {
                         self.import_spans.insert(
-                            ImportKey::new(self.current_module.clone(), short.clone()),
+                            ImportKey::in_file(
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                short.clone(),
+                            ),
                             (span.clone(), self.current_module.clone()),
                         );
                     }
@@ -10366,12 +10702,20 @@ impl Checker {
                 // do. The table maps that surface binding to the exact source
                 // owner; it never grants a short-name fallback.
                 self.module_import_bindings.insert(
-                    (self.current_module.clone(), short.clone()),
+                    (
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        short.clone(),
+                    ),
                     full_dot_path.clone(),
                 );
                 if let Some(span) = import_span {
                     self.import_spans.insert(
-                        ImportKey::new(self.current_module.clone(), short.clone()),
+                        ImportKey::in_file(
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            short.clone(),
+                        ),
                         (span.clone(), self.current_module.clone()),
                     );
                 }
@@ -10397,7 +10741,13 @@ impl Checker {
                 } else {
                     // The full dot-path (e.g. "subpkg.helper") is the declaring-module
                     // identity used in access-check side tables.
-                    self.register_user_module(&short, &full_dot_path, resolved_items, &decl.spec);
+                    self.register_user_module(
+                        &short,
+                        &full_dot_path,
+                        resolved_items,
+                        &decl.resolved_item_source_paths,
+                        &decl.spec,
+                    );
                 }
             }
         } else if let Some(error) =
@@ -11095,7 +11445,11 @@ impl Checker {
         self.fn_sigs.insert(binding.clone(), sig);
         if publication.records_import_identity() {
             self.import_fn_name_aliases.insert(
-                (self.current_module.clone(), binding.clone()),
+                (
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    binding.clone(),
+                ),
                 source_identity.to_string(),
             );
         }
@@ -11104,8 +11458,14 @@ impl Checker {
             .rsplit_once('.')
             .map(|(owner, _)| owner.to_string())
             .expect("stdlib Hew function binding has an owner-qualified identity");
-        self.unqualified_to_module
-            .insert((self.current_module.clone(), binding), source_owner);
+        self.unqualified_to_module.insert(
+            (
+                self.current_module.clone(),
+                self.current_module_idx,
+                binding,
+            ),
+            source_owner,
+        );
     }
 
     fn publish_stdlib_hew_type_binding(
@@ -11127,12 +11487,22 @@ impl Checker {
             .expect("stdlib Hew type binding has an owner-qualified identity");
         if publication.records_import_identity() {
             self.import_type_name_aliases.insert(
-                (self.current_module.clone(), binding.clone()),
+                (
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    binding.clone(),
+                ),
                 source_identity,
             );
         }
-        self.unqualified_to_module
-            .insert((self.current_module.clone(), binding), source_owner);
+        self.unqualified_to_module.insert(
+            (
+                self.current_module.clone(),
+                self.current_module_idx,
+                binding,
+            ),
+            source_owner,
+        );
     }
 
     /// Register items from a file-based import as top-level names (no module namespace).
@@ -11521,6 +11891,7 @@ impl Checker {
         module_short: &str,
         module_full_path: &str,
         items: &[Spanned<Item>],
+        item_source_paths: &[std::path::PathBuf],
         spec: &Option<ImportSpec>,
     ) {
         // Record this module's own trait import bindings BEFORE any of its trait
@@ -11552,7 +11923,13 @@ impl Checker {
             }
         }
 
-        for (item, span) in items {
+        let importer_file_idx = self.current_module_idx;
+        for (item_idx, (item, span)) in items.iter().enumerate() {
+            let declaring_file_idx = item_source_paths
+                .get(item_idx)
+                .and_then(|source| self.source_file_span_indices.get(source))
+                .copied()
+                .unwrap_or(importer_file_idx);
             match item {
                 Item::Function(fd) => {
                     let qualified = format!("{module_full_path}.{}", fd.name);
@@ -11584,8 +11961,10 @@ impl Checker {
                     // never the importer's bare/surface spelling.
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
                     let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
                     self.current_module = saved_importer_module;
+                    self.current_module_idx = importer_file_idx;
                     // Only `Pub` functions are module exports: `package fn` must
                     // pass the access-allowed check at every call site, so it must
                     // NOT bypass the check by entering the exports set.  Non-pub
@@ -11620,6 +11999,7 @@ impl Checker {
                     if let Some(intrinsic_key) = &fd.intrinsic {
                         let saved_importer_module =
                             self.current_module.replace(module_full_path.to_string());
+                        self.current_module_idx = declaring_file_idx;
                         self.register_intrinsic_declaration(
                             qualified.clone(),
                             intrinsic_key,
@@ -11627,6 +12007,7 @@ impl Checker {
                             fd,
                         );
                         self.current_module = saved_importer_module;
+                        self.current_module_idx = importer_file_idx;
                     }
 
                     // If named import or glob, also register unqualified (using alias if present).
@@ -11641,7 +12022,11 @@ impl Checker {
                         // Preserve the resolver-selected source declaration
                         // identity; the binding itself may be an alias.
                         self.import_fn_name_aliases.insert(
-                            (self.current_module.clone(), binding_name.clone()),
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                binding_name.clone(),
+                            ),
                             format!("{module_full_path}.{}", fd.name),
                         );
                         self.record_published_bare_function(
@@ -11649,7 +12034,11 @@ impl Checker {
                             &format!("{module_full_path}.{}", fd.name),
                         );
                         self.unqualified_to_module.insert(
-                            (self.current_module.clone(), binding_name),
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                binding_name,
+                            ),
                             module_full_path.to_string(),
                         );
                     }
@@ -11683,9 +12072,11 @@ impl Checker {
                             self.type_defs.get(&qualified_type).cloned().or_else(|| {
                                 let saved_importer_module =
                                     self.current_module.replace(module_full_path.to_string());
+                                self.current_module_idx = declaring_file_idx;
                                 self.register_type_decl(td);
                                 let source_def = self.type_defs.get(&td.name).cloned();
                                 self.current_module = saved_importer_module;
+                                self.current_module_idx = importer_file_idx;
                                 source_def
                             });
                         if let Some(source_def) = source_def.as_ref() {
@@ -11702,9 +12093,11 @@ impl Checker {
                     // use-time ambiguity candidate naming.
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
                     self.register_type_decl(td);
                     let source_def = self.type_defs.get(&td.name).cloned();
                     self.current_module = saved_importer_module;
+                    self.current_module_idx = importer_file_idx;
                     if spec.is_none() {
                         self.register_qualified_type_alias(module_short, &td.name);
                     }
@@ -11735,12 +12128,20 @@ impl Checker {
                         // that it names `foo.Receiver`.
                         if explicit_import_name.is_some() {
                             self.import_type_name_aliases.insert(
-                                (self.current_module.clone(), binding_name.clone()),
+                                (
+                                    self.current_module.clone(),
+                                    self.current_module_idx,
+                                    binding_name.clone(),
+                                ),
                                 source_identity.clone(),
                             );
                         }
                         self.unqualified_to_module.insert(
-                            (self.current_module.clone(), binding_name),
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                binding_name,
+                            ),
                             module_full_path.to_string(),
                         );
                     }
@@ -11771,9 +12172,14 @@ impl Checker {
                     let event_name = format!("{}Event", md.name);
                     // Qualified authority is always published for the machine
                     // and its companion event enum.
+                    let saved_importer_module =
+                        self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
                     self.register_machine_decl(md, span);
                     let machine_def = self.type_defs.get(&md.name).cloned();
                     let event_def = self.type_defs.get(&event_name).cloned();
+                    self.current_module = saved_importer_module;
+                    self.current_module_idx = importer_file_idx;
                     self.register_qualified_type_alias(module_short, &md.name);
                     self.register_qualified_type_alias(module_short, &event_name);
                     if let Some(machine_def) = machine_def.as_ref() {
@@ -11808,31 +12214,52 @@ impl Checker {
                         // `E_MIR: unknown type`), while the checker's own
                         // expression facts already carried the dotted owner.
                         self.import_type_name_aliases.insert(
-                            (self.current_module.clone(), machine_binding.clone()),
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                machine_binding.clone(),
+                            ),
                             machine_identity.clone(),
                         );
                         self.import_type_name_aliases.insert(
-                            (self.current_module.clone(), event_binding.clone()),
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                event_binding.clone(),
+                            ),
                             event_identity.clone(),
                         );
                         self.unqualified_to_module.insert(
-                            (self.current_module.clone(), machine_binding),
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                machine_binding,
+                            ),
                             module_full_path.to_string(),
                         );
                         self.unqualified_to_module.insert(
-                            (self.current_module.clone(), event_binding),
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                event_binding,
+                            ),
                             module_full_path.to_string(),
                         );
                     }
                 }
                 Item::Trait(tr) => {
                     if let Some(supers) = &tr.super_traits {
+                        let saved_importer_module =
+                            self.current_module.replace(module_full_path.to_string());
+                        self.current_module_idx = declaring_file_idx;
                         for super_trait in supers {
                             self.mark_imported_trait_used(
                                 Some(module_full_path),
                                 &super_trait.name,
                             );
                         }
+                        self.current_module = saved_importer_module;
+                        self.current_module_idx = importer_file_idx;
                     }
                     // Record visibility for all traits so the enforcement check can
                     // distinguish "private, not accessible" from "unknown symbol".
@@ -11897,6 +12324,9 @@ impl Checker {
                     // import-only-`Sub` would fail to find its supertrait's method
                     // set, falsely rejecting an inline supermethod as extra).
                     if let Some(supers) = &tr.super_traits {
+                        let saved_importer_module =
+                            self.current_module.replace(module_full_path.to_string());
+                        self.current_module_idx = declaring_file_idx;
                         let super_keys: Vec<String> = supers
                             .iter()
                             .map(|s| {
@@ -11904,6 +12334,8 @@ impl Checker {
                                 self.resolve_super_trait_edge(module_full_path, &s.name)
                             })
                             .collect();
+                        self.current_module = saved_importer_module;
+                        self.current_module_idx = importer_file_idx;
                         self.trait_super
                             .insert(qualified.clone(), super_keys.clone());
                         if let Some(binding_name) = import_binding.as_ref() {
@@ -11919,7 +12351,11 @@ impl Checker {
                         // original trait name for an aliased import. `qualified` is
                         // the source identity even when `binding_name` is an alias.
                         self.published_bare_trait_owners
-                            .entry((self.current_module.clone(), binding_name.clone()))
+                            .entry((
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                binding_name.clone(),
+                            ))
                             .or_default()
                             .insert(format!("{module_full_path}.{}", tr.name));
                         let trait_id = crate::DefId::new(format!("{module_full_path}.{}", tr.name));
@@ -11935,6 +12371,7 @@ impl Checker {
                             self.trait_method_ids_by_binding.insert(
                                 (
                                     self.current_module.clone(),
+                                    self.current_module_idx,
                                     binding_name.clone(),
                                     method.name.clone(),
                                 ),
@@ -11942,7 +12379,11 @@ impl Checker {
                             );
                         }
                         self.unqualified_to_module.insert(
-                            (self.current_module.clone(), binding_name),
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                binding_name,
+                            ),
                             module_full_path.to_string(),
                         );
                     }
@@ -11951,7 +12392,12 @@ impl Checker {
                     if !cd.visibility.is_pub() {
                         continue;
                     }
+                    let saved_importer_module =
+                        self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
                     let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
+                    self.current_module = saved_importer_module;
+                    self.current_module_idx = importer_file_idx;
                     let qualified = format!("{module_full_path}.{}", cd.name);
                     self.env.define(qualified, ty.clone(), false);
                     if Self::should_import_name(&cd.name, spec) {
@@ -11977,6 +12423,7 @@ impl Checker {
                     // which are not represented in the graph.
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
                     if let TypeExpr::Named {
                         name: type_name,
                         type_args,
@@ -12040,6 +12487,7 @@ impl Checker {
                         }
                     }
                     self.current_module = saved_importer_module;
+                    self.current_module_idx = importer_file_idx;
                 }
                 Item::Actor(ad) => {
                     // Record visibility for all actors so a cross-module qualified
@@ -12103,8 +12551,10 @@ impl Checker {
                     // references and handler keys canonical.
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
                     self.register_actor_base(ad, Some(module_full_path));
                     self.current_module = saved_importer_module;
+                    self.current_module_idx = importer_file_idx;
                     self.qualify_colliding_receive_reply_tys(ad, module_full_path);
                     // The source owner is the authoritative export key.  Keep
                     // the lexical module binding as a compatibility index for
@@ -12118,7 +12568,11 @@ impl Checker {
                         let source_identity = format!("{module_full_path}.{}", ad.name);
                         self.record_published_bare_type(&binding_name, &source_identity);
                         self.unqualified_to_module.insert(
-                            (self.current_module.clone(), binding_name),
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                binding_name,
+                            ),
                             module_full_path.to_string(),
                         );
                     }
@@ -12137,8 +12591,10 @@ impl Checker {
                     if has_unregistered_signature {
                         let saved_importer_module =
                             self.current_module.replace(module_full_path.to_string());
+                        self.current_module_idx = declaring_file_idx;
                         self.register_extern_block(eb);
                         self.current_module = saved_importer_module;
+                        self.current_module_idx = importer_file_idx;
                     }
                 }
                 _ => {}
@@ -12488,7 +12944,11 @@ impl Checker {
     /// `m.U`. `published_bare_type_qualified` reads this identity back verbatim.
     pub(super) fn record_published_bare_type(&mut self, bare_binding: &str, source_identity: &str) {
         self.published_bare_type_owners
-            .entry((self.current_module.clone(), bare_binding.to_string()))
+            .entry((
+                self.current_module.clone(),
+                self.current_module_idx,
+                bare_binding.to_string(),
+            ))
             .or_default()
             .insert(source_identity.to_string());
     }
@@ -12500,7 +12960,11 @@ impl Checker {
         source_identity: &str,
     ) {
         self.published_bare_function_owners
-            .entry((self.current_module.clone(), bare_binding.to_string()))
+            .entry((
+                self.current_module.clone(),
+                self.current_module_idx,
+                bare_binding.to_string(),
+            ))
             .or_default()
             .insert(source_identity.to_string());
     }
@@ -12512,7 +12976,11 @@ impl Checker {
         source_identity: &str,
     ) {
         self.published_bare_const_owners
-            .entry((self.current_module.clone(), bare_binding.to_string()))
+            .entry((
+                self.current_module.clone(),
+                self.current_module_idx,
+                bare_binding.to_string(),
+            ))
             .or_default()
             .insert(source_identity.to_string());
     }

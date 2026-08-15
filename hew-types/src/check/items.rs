@@ -73,8 +73,9 @@ impl Checker {
         for child in &sd.children {
             if let Some((module, _)) = child.actor_type.split_once('.') {
                 if self.modules.contains(module) {
-                    self.used_modules.borrow_mut().insert(ImportKey::new(
+                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
                         self.current_module.clone(),
+                        self.current_module_idx,
                         module.to_string(),
                     ));
                 }
@@ -2248,7 +2249,10 @@ impl Checker {
         self.env.pop_scope(); // fields scope
     }
 
-    pub(super) fn check_const(&mut self, cd: &ConstDecl, _span: &Span) {
+    pub(super) fn check_const(&mut self, cd: &ConstDecl, span: &Span) {
+        if self.reject_protected_prelude_declaration(&cd.name, span) {
+            return;
+        }
         let expected =
             self.resolve_annotation_with_holes(&cd.ty, format!("constant `{}`", cd.name));
         let actual = self.check_against(&cd.value.0, &cd.value.1, &expected);

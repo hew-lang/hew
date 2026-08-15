@@ -100,14 +100,14 @@ fn clone_on_unsupported_scalar_fails_closed() {
 #[test]
 fn actor_send_snapshot_does_not_suggest_clone() {
     let source = r"
-        actor Sink {
+        actor SnapshotSink {
             let id: i64;
             receive fn take(v: Vec<i64>) {}
         }
         fn main() {
             let xs: Vec<i64> = Vec::new();
             xs.push(1);
-            let sink = spawn Sink(id: 0);
+            let sink = spawn SnapshotSink(id: 0);
             sink.take(xs);
             println(xs.len());
         }

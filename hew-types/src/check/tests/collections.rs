@@ -1638,6 +1638,14 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
             is_indirect: false,
         },
     );
+    checker.type_defs.insert(
+        "pkg.Wrap".to_string(),
+        checker
+            .type_defs
+            .get("Wrap")
+            .expect("local fixture definition")
+            .clone(),
+    );
     let ty = Ty::Named {
         name: "pkg.Wrap".to_string(),
         args: vec![Ty::I64],
@@ -2640,7 +2648,7 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
     // then fails with `found i64`. Confining the lookup to the stdlib snapshot
     // for builtin `Result`/`Option` receivers selects the builtin method for
     // ALL method names.
-    let output = check_source(
+    let output = check_source_allowing_prelude_redeclaration(
         r"
         type Result { handle: i64; }
         impl Result {
@@ -2743,7 +2751,7 @@ fn builtin_option_extractors_publish_transfer_ownership() {
 
 #[test]
 fn user_option_and_result_methods_do_not_get_builtin_rewrites() {
-    let output = check_source(
+    let output = check_source_allowing_prelude_redeclaration(
         r"
         type Option { value: i64; }
         impl Option {
@@ -2779,7 +2787,7 @@ fn user_option_and_result_methods_do_not_get_builtin_rewrites() {
 
 #[test]
 fn user_generic_option_variant_constructors_preserve_source_nominal_identity() {
-    let output = check_source(
+    let output = check_source_allowing_prelude_redeclaration(
         r"
         enum Option<T> { Some(T); None }
 
@@ -2944,7 +2952,7 @@ fn supervisor_wired_to_rejects_remote_pid_by_role() {
 
 #[test]
 fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
-    let output = check_source(
+    let output = check_source_allowing_prelude_redeclaration(
         r"
         machine MachineState {
             events {

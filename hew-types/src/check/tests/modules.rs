@@ -166,7 +166,7 @@ fn aliased_and_full_stdlib_builtin_spellings_normalize_to_one_nominal() {
         .insert("std.stream".to_string());
     checker
         .module_import_bindings
-        .insert((None, "stream".to_string()), "std.stream".to_string());
+        .insert((None, 0, "stream".to_string()), "std.stream".to_string());
 
     let aliased = Ty::Named {
         name: "stream.Stream".to_string(),
@@ -204,7 +204,7 @@ fn canonical_std_module_binding_projects_bare_enum_identity_without_leaf_retry()
         .canonical_std_module_sources
         .insert("std.net".to_string());
     checker.module_import_bindings.insert(
-        (Some("std.net.tls".to_string()), "net".to_string()),
+        (Some("std.net.tls".to_string()), 0, "net".to_string()),
         "std.net".to_string(),
     );
     checker.known_types.insert("net.NetError".to_string());
@@ -243,7 +243,7 @@ fn canonical_std_module_binding_projects_bare_enum_identity_without_leaf_retry()
     checker.local_type_defs.remove("NetError");
 
     checker.module_import_bindings.insert(
-        (Some("std.net.tls".to_string()), "sibling".to_string()),
+        (Some("std.net.tls".to_string()), 0, "sibling".to_string()),
         "acme.net".to_string(),
     );
     checker.known_types.insert("acme.net.NetError".to_string());
@@ -486,7 +486,7 @@ fn module_qualified_call_rejects_private_body_only_signature() {
         checker
             .errors
             .iter()
-            .any(|err| matches!(err.kind, TypeErrorKind::UndefinedMethod)),
+            .any(|err| matches!(err.kind, TypeErrorKind::PathMemberNotFound)),
         "module-qualified calls must not resolve against non-exported private signatures: {:?}",
         checker.errors
     );

@@ -8,7 +8,7 @@ machine Counter {
     default { state }
 }
 
-actor Sink {
+actor TestSink {
     var hits: i64;
 
     receive fn take(v: Counter) -> i64 {
@@ -24,7 +24,7 @@ actor Sink {
 fn main() {
     var x = Zero;
     x.step(Inc);
-    let s = spawn Sink(hits: 0);
+    let s = spawn TestSink(hits: 0);
     match await s.take(x) {
         Ok(n) => println(f"hits {n}"),
         Err(_) => println("err"),

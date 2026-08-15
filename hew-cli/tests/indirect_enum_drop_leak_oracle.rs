@@ -406,7 +406,7 @@ fn actor_mailbox_teardown_source(frames: usize) -> String {
         "import std::channel::channel;\n\
          indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
          fn sum(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => sum(l) + sum(r), }} }}\n\
-         actor Sink {{\n\
+         actor ProbeSink {{\n\
          \x20   receive fn hold(ready: channel.Sender<i64>) {{\n\
          \x20       ready.send(1);\n\
          \x20       sleep(10s);\n\
@@ -417,7 +417,7 @@ fn actor_mailbox_teardown_source(frames: usize) -> String {
          supervisor App {{\n\
          \x20   strategy: one_for_one;\n\
          \x20   intensity: 3 within 60s;\n\
-         \x20   child sink: Sink;\n\
+         \x20   child sink: ProbeSink;\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   let sup = spawn App;\n\

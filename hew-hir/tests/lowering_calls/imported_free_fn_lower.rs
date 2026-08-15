@@ -229,7 +229,7 @@ fn module_qualified_call_without_checker_rewrite_fails_closed_before_mir() {
             matches!(
                 diagnostic.kind,
                 HirDiagnosticKind::CheckerBoundaryViolation { ref reason, .. }
-                    if reason == "missing module-qualified call rewrite"
+                    if reason.starts_with("missing module-qualified call rewrite")
             )
         }),
         "missing module rewrite must be diagnosed before MIR: {:#?}",

@@ -6,15 +6,15 @@
 // purely a function of how many times the generic for-in yields — isolating the
 // Stage 2 VecIter desugar from the Stage 1 element-write path. Proven across
 // four concrete identities (`i64`, `string`, the Copy value-record `Point`,
-// and a user-authored clone-total `MonitorRef` that shadows the builtin):
+// and a user-authored clone-total `CursorRef` that shadows the builtin):
 // the loop runs exactly once per element for each (`3`, `4`, `2`, `1`).
 
 type Point { x: i64; y: i64 }
 
-// The builtin `MonitorRef` is an affine resource and must fail generic
+// The builtin `CursorRef` is an affine resource and must fail generic
 // VecIter clone-out. This source declaration is a distinct clone-total nominal,
 // so short-name fallback must neither steal its builtin identity nor reject it.
-type MonitorRef { ref_id: u64 }
+type CursorRef { ref_id: u64 }
 
 fn count<T>(items: Vec<T>) -> i64 {
     var c: i64 = 0;
@@ -86,7 +86,7 @@ fn main() {
     c.push(Point { x: 2, y: 2 });
     println(count(c));
 
-    let monitors: Vec<MonitorRef> = Vec::new();
-    monitors.push(MonitorRef { ref_id: 7 });
+    let monitors: Vec<CursorRef> = Vec::new();
+    monitors.push(CursorRef { ref_id: 7 });
     println(count(monitors));
 }

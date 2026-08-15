@@ -1218,6 +1218,33 @@ extern "C" {
     }
 
     #[test]
+    fn shipped_prelude_manifest_covers_implicit_modules_and_named_surfaces() {
+        let exports = authority().prelude_exports();
+        for module in ["std::math", "std::random"] {
+            assert!(exports.iter().any(|export| {
+                export.kind == PreludeExportKind::Module && export.module == module
+            }));
+        }
+        for (module, name) in [
+            ("std::failure", "CrashInfo"),
+            ("std::failure", "CrashAction"),
+            ("std::failure", "CrashNotification"),
+            ("std::failure", "CrashKind"),
+            ("std::io::closable", "Closable"),
+            ("std::io::closable", "CloseError"),
+            ("std::link_monitor", "MonitorRef"),
+            ("std::link_monitor", "MonitorError"),
+            ("std::link_monitor", "set_partition_policy"),
+        ] {
+            assert!(exports.iter().any(|export| {
+                export.kind == PreludeExportKind::Item
+                    && export.module == module
+                    && export.name.as_deref() == Some(name)
+            }));
+        }
+    }
+
+    #[test]
     fn unknown_lang_item_key_is_a_pointed_build_error() {
         let source = AuthoritySource::embedded(
             StdlibRoot::Builtins,

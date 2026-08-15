@@ -33,21 +33,21 @@ fn pipeline(source: &str) -> IrPipeline {
 
 // ─── Generic enum variant constructor tests ────────────────────────────────
 
-/// `Option::None` written as a qualified unit-variant constructor with an
-/// explicit `Option<i64>` annotation reaches MIR without type errors or
+/// `Choice::None` written as a qualified unit-variant constructor with an
+/// explicit `Choice<i64>` annotation reaches MIR without type errors or
 /// blocking diagnostics.  The HIR `MachineVariantCtor` for the `None` arm
-/// must carry `Named { "Option", [I64] }`, not the bare `Named { "Option",
+/// must carry `Named { "Choice", [I64] }`, not the bare `Named { "Choice",
 /// [] }` that the pre-fix path produced.
 #[test]
 fn unit_variant_ctor_qualified_none_carries_concrete_type_args() {
     let pipeline = pipeline(
         r"
-        enum Option<T> { Some(T); None }
+        enum Choice<T> { Some(T); None }
         fn main() -> i64 {
-            let x: Option<i64> = Option::None;
+            let x: Choice<i64> = Choice::None;
             match x {
-                Option::Some(v) => v,
-                Option::None => 99,
+                Choice::Some(v) => v,
+                Choice::None => 99,
             }
         }
         ",
@@ -66,9 +66,9 @@ fn unit_variant_ctor_qualified_none_carries_concrete_type_args() {
         .collect();
     assert!(
         bad.is_empty(),
-        "blocking MIR diagnostics for Option::None: {bad:#?}"
+        "blocking MIR diagnostics for Choice::None: {bad:#?}"
     );
-    // The enum instantiation registry must contain Option$$i64.
+    // The enum instantiation registry must contain Choice$$i64.
     let names: Vec<String> = pipeline.raw_mir.iter().map(|f| f.name.clone()).collect();
     assert!(
         names.contains(&"main".to_string()),

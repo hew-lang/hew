@@ -6,7 +6,7 @@
 // module `hew::closableerr2` exports a DISTINCT type that merely shares the
 // bare name `CloseError`.
 //
-// This `impl Closable for ClosableHandle` returns the wrong module's type
+// This `impl ForeignClosable for ClosableHandle` returns the wrong module's type
 // (`closableerr2.CloseError`). It must be REJECTED with
 // `TraitImplSignatureMismatch` at the type boundary, NOT silently accepted by
 // an over-strip that shortens both qualifiers to bare `CloseError` and compares
@@ -15,7 +15,7 @@
 // Harness verb: hew check (negative — see run.sh). Asserts the mismatch fires
 // at type-check time and names both spellings, and that the positive
 // `qualified_trait_sig` oracle (same-module spelling) still passes.
-import hew::closableerr::{Closable};
+import hew::closableerr::{Closable as ForeignClosable};
 
 import hew::closableerr2;
 
@@ -23,7 +23,7 @@ pub type ClosableHandle {
     id: i64;
 }
 
-impl Closable for ClosableHandle {
+impl ForeignClosable for ClosableHandle {
     fn close(handle: ClosableHandle) -> Result<(), closableerr2.CloseError> {
         Ok(())
     }

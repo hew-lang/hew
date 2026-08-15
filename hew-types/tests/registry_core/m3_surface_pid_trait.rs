@@ -14,37 +14,37 @@ fn user_pid_trait_does_not_inherit_builtin_serializable_policy() {
             id: i32,
         }
 
-        trait Pid {
+        trait UserPid {
             type Msg;
             fn send(pid: Self, msg: Self::Msg) -> i32;
         }
 
-        impl Pid for Local {
+        impl UserPid for Local {
             type Msg = Work;
             fn send(pid: Local, msg: Work) -> i32 {
                 pid.id + msg.id
             }
         }
 
-        fn relay<P: Pid>(pid: P, msg: P::Msg) -> i32 {
+        fn relay<P: UserPid>(pid: P, msg: P::Msg) -> i32 {
             pid.send(msg)
         }
 
-        fn relay_dyn(pid: dyn Pid<Msg = Work>, msg: Work) -> i32 {
+        fn relay_dyn(pid: dyn UserPid<Msg = Work>, msg: Work) -> i32 {
             pid.send(msg)
         }
 
         fn main() {
             let local = Local { id: 1 };
             let _a = relay(local, Work { id: 2 });
-            let local_dyn: dyn Pid<Msg = Work> = Local { id: 3 };
+            let local_dyn: dyn UserPid<Msg = Work> = Local { id: 3 };
             let _b = relay_dyn(local_dyn, Work { id: 4 });
         }
         ",
     );
     assert!(
         output.errors.is_empty(),
-        "a root user trait named Pid must not acquire std.builtins.Pid policy: {:#?}",
+        "an ordinary user trait must not acquire std.builtins.Pid policy: {:#?}",
         output.errors
     );
 }

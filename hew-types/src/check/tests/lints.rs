@@ -205,8 +205,8 @@ fn where_clause_assoc_binding_projects_iterator_item_in_generic_body() {
             I: Iterator<Item = i64>,
         {
             match it.next() {
-                Some(x) => x,
-                None => 0,
+                .Some(x) => x,
+                .None => 0,
             }
         }
 
@@ -2774,6 +2774,7 @@ fn impl_for_primitive_int_populates_primitive_trait_impl_table() {
     );
 
     let mut checker = Checker::new(test_registry());
+    checker.checking_embedded_builtins = true;
     let _output = checker.check_program(&parsed.program);
 
     let methods = checker
@@ -2814,6 +2815,7 @@ fn impl_for_builtin_vec_populates_primitive_trait_impl_table() {
     );
 
     let mut checker = Checker::new(test_registry());
+    checker.checking_embedded_builtins = true;
     let _output = checker.check_program(&parsed.program);
 
     assert!(
@@ -2853,6 +2855,7 @@ fn impl_for_user_struct_does_not_pollute_primitive_trait_impl_table() {
     );
 
     let mut checker = Checker::new(test_registry());
+    checker.checking_embedded_builtins = true;
     let _output = checker.check_program(&parsed.program);
 
     // The side table is non-empty after `register_builtins` because the ten
@@ -2895,6 +2898,7 @@ fn assert_primitive_trait_dispatch_records_metadata(
         parsed.errors
     );
     let mut checker = Checker::new(test_registry());
+    checker.checking_embedded_builtins = true;
     let output = checker.check_program(&parsed.program);
     assert!(
         output.errors.is_empty(),
@@ -3060,6 +3064,7 @@ fn primitive_impl_dispatch_preserves_builtin_numeric_conversion() {
         parsed.errors
     );
     let mut checker = Checker::new(test_registry());
+    checker.checking_embedded_builtins = true;
     let output = checker.check_program(&parsed.program);
     assert!(
         output.errors.is_empty(),
@@ -3141,6 +3146,7 @@ fn pub_type_receiver_with_user_trait_impl_still_dispatches_via_existing_path() {
         parsed.errors
     );
     let mut checker = Checker::new(test_registry());
+    checker.checking_embedded_builtins = true;
     let output = checker.check_program(&parsed.program);
     assert!(
         output.errors.is_empty(),
@@ -3261,6 +3267,7 @@ fn ufcs_over_applied_call_emits_exactly_one_arity_diagnostic() {
         parsed.errors
     );
     let mut checker = Checker::new(test_registry());
+    checker.checking_embedded_builtins = true;
     let output = checker.check_program(&parsed.program);
     let arity_errors: Vec<_> = output
         .errors
@@ -3298,6 +3305,7 @@ fn primitive_impl_dispatch_unknown_method_still_emits_error() {
         parsed.errors
     );
     let mut checker = Checker::new(test_registry());
+    checker.checking_embedded_builtins = true;
     let output = checker.check_program(&parsed.program);
     assert!(
         output
@@ -3489,6 +3497,7 @@ fn primitive_trait_dispatch_builtins_blanket_does_not_shadow_user_redeclare() {
         parsed.errors
     );
     let mut checker = Checker::new(test_registry());
+    checker.checking_embedded_builtins = true;
     let output = checker.check_program(&parsed.program);
     assert!(
         output
@@ -3886,12 +3895,17 @@ fn must_use_rejects_user_same_leaf_error_names() {
         fn ask() -> AskError { AskError::Timeout }\n\
         fn write() -> WriteError { WriteError::Disconnected }\n\
         fn caller() { send(); ask(); write(); }";
-    let (errors, warnings) = parse_and_check(src);
-    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
+    let output = check_source_allowing_prelude_redeclaration(src);
+    assert!(
+        output.errors.is_empty(),
+        "fixture should type-check: {:?}",
+        output.errors
+    );
     assert_eq!(
-        count_must_use(&warnings),
+        count_must_use(&output.warnings),
         0,
-        "same-leaf user types do not carry stdlib must-use authority: {warnings:?}"
+        "same-leaf user types do not carry stdlib must-use authority: {:?}",
+        output.warnings
     );
 }
 

@@ -1025,6 +1025,11 @@ impl Checker {
                         }
                         // Enum-variant constructor (e.g. `Some(x)`) — always refutable.
                         Pattern::Constructor { .. } => Some("enum variant"),
+                        // Qualified and contextual nominal paths retain their source
+                        // spelling in the AST, but remain refutable variant patterns.
+                        Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
+                            Some("enum variant")
+                        }
                         // Unit variant written as a bare/qualified identifier
                         // (e.g. `None`, `E::A`) — refutable; binds nothing.
                         Pattern::Identifier(_) if identifier_is_unit_variant => {

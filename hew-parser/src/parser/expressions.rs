@@ -335,7 +335,7 @@ impl Parser<'_> {
                         start..end,
                     )
                 }
-                _ => unreachable!(),
+                _ => unreachable!("prefix parser dispatches only recognized unary operators"),
             }
         } else {
             self.parse_primary()?

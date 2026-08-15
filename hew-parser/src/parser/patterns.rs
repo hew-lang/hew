@@ -160,7 +160,7 @@ impl Parser<'_> {
                             return None;
                         }
                     }
-                    _ => unreachable!(),
+                    _ => unreachable!("negative literal arm accepts only integer or float tokens"),
                 }
             }
             // Leading-dot variants retain their contextual origin in the AST.

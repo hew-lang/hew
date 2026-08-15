@@ -8397,10 +8397,20 @@ impl LowerCtx {
     /// record-shaped and the plan is missing; the caller then bails on its own
     /// fail-closed path.
     fn record_shape_missing_plan(&mut self, pattern: &Spanned<Pattern>) -> bool {
-        if !matches!(
-            pattern.0,
-            Pattern::Struct { .. } | Pattern::RecordShorthand { .. }
-        ) {
+        let record_shaped = matches!(
+            &pattern.0,
+            Pattern::Struct { .. }
+                | Pattern::RecordShorthand { .. }
+                | Pattern::NominalPath {
+                    payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
+                    ..
+                }
+                | Pattern::ContextVariant(hew_parser::ast::ContextVariantPattern {
+                    payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
+                    ..
+                })
+        );
+        if !record_shaped {
             return false;
         }
         let key = self.mk_key(&pattern.1);

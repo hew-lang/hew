@@ -71,7 +71,7 @@ semantic-leaf-name	leaf-rsplit-field	hew-types/src/stdlib_loader.rs	1	stage-1	re
 semantic-leaf-name	leaf-rsplit-identifier	hew-types/src/check/registration.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-analysis/src/completions.rs	1	stage-1	reviewed module-qualified actor completion compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-analysis/src/signature_help.rs	1	stage-1	reviewed editor-buffer binding split; the buffer holds a spelling and the binding resolves through module_import_bindings
-semantic-leaf-name	leaf-rsplit-once-field	hew-hir/src/lower.rs	6	stage-1	reviewed unique imported constructor surface compatibility seam
+semantic-leaf-name	leaf-rsplit-once-field	hew-hir/src/lower.rs	7	stage-1	reviewed unique imported constructor surface compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/calls.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/expressions.rs	4	stage-1	reviewed qualified-variant surface split resolved through expected-nominal identity
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/generics.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
@@ -115,7 +115,7 @@ string-method-identity	qualified-format-macro	hew-codegen-rs/src/runtime_abi.rs	
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/suspend.rs	11	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/thunks.rs	3	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-hir/src/dump.rs	2	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	29	stage-1	one reviewed compatibility-key factory for unique imported tagged-union constructors; exact source owner remains the authority
+string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	30	stage-1	one reviewed compatibility-key factory for unique imported tagged-union constructors; exact source owner remains the authority
 string-method-identity	qualified-format-macro	hew-hir/src/node.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/dump.rs	6	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/actor.rs	1	stage-5	reviewed qualified string identity construction

@@ -799,6 +799,7 @@ mod tests {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         })
     }
 
@@ -1240,6 +1241,7 @@ mod forced_ordering_probe {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         })
     }
 

@@ -715,7 +715,8 @@ closure_drop_closure_env_drop_cont:               ; preds = %closure_drop_closur
 
 helper_crash_cleanup_return_merge_9:              ; preds = %helper_crash_cleanup_return_retire_9_accepted, %closure_drop_closure_env_drop_cont
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
-  ret i8 0
+  %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
+  br i1 %hew_lambda_drain_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 helper_crash_cleanup_return_retire_9:             ; preds = %closure_drop_closure_env_drop_cont
   %helper_crash_cleanup_return_retire_9_call = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_return_token_9)
@@ -730,6 +731,13 @@ helper_crash_cleanup_return_retire_9_rejected:    ; preds = %helper_crash_cleanu
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
+
+hew_shutdown_exit_failed:                         ; preds = %helper_crash_cleanup_return_merge_9
+  call void @hew_exit(i64 1)
+  br label %hew_shutdown_exit_continue
+
+hew_shutdown_exit_continue:                       ; preds = %hew_shutdown_exit_failed, %helper_crash_cleanup_return_merge_9
+  ret i8 0
 }
 
 define internal i64 @__hew_closure_invoke_main_0(ptr %0, ptr %1, i64 %2) {

@@ -29156,6 +29156,7 @@ fn lower_terminator<'ctx>(
     match term {
         Terminator::Return => {
             emit_helper_crash_cleanup_retire_remaining_on_return(fn_ctx, block_id)?;
+            let mut shutdown_abandoned = None;
             // Implicit actor-drain floor: emit `hew_shutdown_initiate_implicit(0)` then
             // `hew_shutdown_wait()` before `main` returns. This ensures
             // fire-and-forget actor messages (spawned actors, pending handler
@@ -29196,10 +29197,28 @@ fn lower_terminator<'ctx>(
                         "hew_shutdown_initiate_implicit_call",
                     )
                     .llvm_ctx("hew_shutdown_initiate_implicit call")?;
-                fn_ctx
+                let wait_call = fn_ctx
                     .builder
                     .build_call(shutdown_wait, &[], "hew_shutdown_wait_call")
                     .llvm_ctx("hew_shutdown_wait call")?;
+                let wait_status = wait_call
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_shutdown_wait returned void".into())
+                    })?
+                    .into_int_value();
+                shutdown_abandoned = Some(
+                    fn_ctx
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::NE,
+                            wait_status,
+                            fn_ctx.ctx.i32_type().const_zero(),
+                            "hew_shutdown_failed",
+                        )
+                        .llvm_ctx("hew_shutdown_wait status compare")?,
+                );
             }
             // wasm32 cooperative-scheduler normal exit: run all runnable actors
             // to completion, then shut down scheduler state and clean up tracked
@@ -29215,23 +29234,7 @@ fn lower_terminator<'ctx>(
             }
             // Lambda-actor drain: each lambda actor runs on its own OS
             // thread outside the work-stealing scheduler, so the
-            // `hew_shutdown_wait` above does not cover them. Without this
-            // drain a fire-and-forget `let log = actor |s|{...}; log("hi")`
-            // races process termination and silently drops the body's
-            // `println`. `hew_lambda_drain_all` blocks until every
-            // dispatch thread has exited (or the 5 s default timeout
-            // elapses), and is a no-op when no lambda actors were
-            // spawned — so emitting unconditionally on every native
-            // `main` is cheap.
-            if fn_ctx.emit_lambda_drain_epilogue {
-                let i64_ty = fn_ctx.ctx.i64_type();
-                fn_ctx.call_runtime_void(
-                    "hew_lambda_drain_all",
-                    &[i64_ty.const_int(0, false).into()],
-                    "hew_lambda_drain_all_call",
-                    "hew_lambda_drain_all call",
-                )?;
-            }
+            // `hew_shutdown_wait` above does not cover them.
             // Supervisor-safe native shutdown: supervisor actors intentionally
             // bypass the generic idle drain because they remain live by design.
             // Close and join scheduler workers directly; the shared cleanup tail
@@ -29248,7 +29251,18 @@ fn lower_terminator<'ctx>(
             // arrive here after graceful drain; supervisor programs arrive after
             // immediate worker shutdown. Both consume registered supervisor roots
             // through free_registered_supervisors/InternalChildSpec::drop before
-            // actor cleanup and runtime detach.
+            // actor cleanup and runtime detach. This runs BEFORE the lambda drain
+            // below: actor cleanup synchronously runs each actor's codegen state
+            // drop (`free_actor_resources` -> `state_drop_fn`), which is the only
+            // release point for a `LambdaPid` an actor holds in its own state
+            // (e.g. a still-idle top-level actor never explicitly releases the
+            // field). Draining lambda dispatch threads first would wait forever
+            // on exactly that actor-held handle, since nothing else closes its
+            // mailbox. Workers are already joined by this point (via
+            // `hew_shutdown_wait` above or `hew_sched_shutdown` just above), so
+            // no actor handler is genuinely in-flight when its state is freed —
+            // this reorder only releases already-quiesced/parked state ahead of
+            // the drain, it does not let cleanup race a live handler.
             if fn_ctx.emit_runtime_cleanup_epilogue {
                 fn_ctx.call_runtime_void(
                     "hew_runtime_cleanup_after_main",
@@ -29256,6 +29270,102 @@ fn lower_terminator<'ctx>(
                     "hew_runtime_cleanup_after_main_call",
                     "hew_runtime_cleanup_after_main call",
                 )?;
+            }
+            // Lambda-actor drain: each lambda actor runs on its own OS thread
+            // outside the work-stealing scheduler, so nothing above joins its
+            // dispatch thread directly. Without this drain a fire-and-forget
+            // `let log = actor |s|{...}; log("hi")` races process termination
+            // and silently drops the body's `println`. `hew_lambda_drain_all`
+            // blocks until every dispatch thread has exited (or the 5 s default
+            // timeout elapses), and is a no-op when no lambda actors were
+            // spawned — so emitting unconditionally on every native `main` is
+            // cheap. Runs LAST, after actor cleanup above, so a `LambdaPid` held
+            // in actor state has already been released and its mailbox closed.
+            if fn_ctx.emit_lambda_drain_epilogue {
+                let i64_ty = fn_ctx.ctx.i64_type();
+                let lambda_drain = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_lambda_drain_all",
+                )?;
+                let drain_call = fn_ctx
+                    .builder
+                    .build_call(
+                        lambda_drain,
+                        &[i64_ty.const_int(0, false).into()],
+                        "hew_lambda_drain_all_call",
+                    )
+                    .llvm_ctx("hew_lambda_drain_all call")?;
+                let drain_status = drain_call
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_lambda_drain_all returned void".into())
+                    })?
+                    .into_int_value();
+                let lambda_abandoned = fn_ctx
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        drain_status,
+                        fn_ctx.ctx.i32_type().const_zero(),
+                        "hew_lambda_drain_failed",
+                    )
+                    .llvm_ctx("hew_lambda_drain_all status compare")?;
+                shutdown_abandoned = Some(match shutdown_abandoned {
+                    Some(scheduler_abandoned) => fn_ctx
+                        .builder
+                        .build_or(
+                            scheduler_abandoned,
+                            lambda_abandoned,
+                            "hew_shutdown_any_failed",
+                        )
+                        .llvm_ctx("combine shutdown failure statuses")?,
+                    None => lambda_abandoned,
+                });
+            }
+            if let Some(abandoned) = shutdown_abandoned {
+                let current_fn = fn_ctx
+                    .builder
+                    .get_insert_block()
+                    .and_then(|block| block.get_parent())
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "shutdown failure branch has no containing function".into(),
+                        )
+                    })?;
+                let failed_bb = fn_ctx
+                    .ctx
+                    .append_basic_block(current_fn, "hew_shutdown_exit_failed");
+                let continue_bb = fn_ctx
+                    .ctx
+                    .append_basic_block(current_fn, "hew_shutdown_exit_continue");
+                fn_ctx
+                    .builder
+                    .build_conditional_branch(abandoned, failed_bb, continue_bb)
+                    .llvm_ctx("branch on shutdown failure")?;
+
+                fn_ctx.builder.position_at_end(failed_bb);
+                let exit = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_exit",
+                )?;
+                fn_ctx
+                    .builder
+                    .build_call(
+                        exit,
+                        &[fn_ctx.ctx.i64_type().const_int(1, false).into()],
+                        "hew_shutdown_exit_call",
+                    )
+                    .llvm_ctx("hew_exit shutdown failure call")?;
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(continue_bb)
+                    .llvm_ctx("shutdown failure fallback continuation")?;
+                fn_ctx.builder.position_at_end(continue_bb);
             }
             // Coroutine completion (W6.010 value routing): a suspendable handler
             // does NOT `ret` its Hew value — the ramp returns the `coro.begin`

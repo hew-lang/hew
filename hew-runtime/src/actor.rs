@@ -1540,6 +1540,37 @@ pub struct HewActor {
     /// successful clone registration can transfer a borrowed initial actor to
     /// owned without resurrecting authority already consumed by crash escrow.
     pub state_drop_borrowed: AtomicBool,
+
+    /// The reply channel of the `ask` this actor's PARKED activation still
+    /// owes, retained INDEPENDENTLY for the shutdown drain gate.
+    ///
+    /// Distinct from [`Self::suspended_reply_channel`], which holds the MOVED
+    /// sender-side reference the resume edge consumes to deposit the reply.
+    /// That reference can be released by the resumed body (a deposit into an
+    /// already-cancelled channel frees the channel while the slot still holds
+    /// the stale pointer), so a foreign thread must never dereference it. This
+    /// slot instead owns its own `hew_reply_channel_retain`ed reference, taken
+    /// on the suspend edge in the same guarded block as the W6.010 stash, so
+    /// the channel allocation is pinned for as long as this slot is non-null.
+    ///
+    /// The shutdown drain scan (`live_actors::has_drain_blocking_suspended_actor`)
+    /// reads it under the live-actors registry lock to decide whether a
+    /// `Suspended` actor still represents in-flight work: a suspended handler
+    /// whose ask reply channel is `cancelled` was ABANDONED by its caller
+    /// (`await … | after d` deadline, task cancel) and must not hold the drain
+    /// open; a live ask, or a parked handler with no ask at all, still blocks.
+    /// Release sites swap this slot to null UNDER that same registry lock
+    /// (`scheduler::release_parked_ask_channel`) before dropping the reference,
+    /// so the scan's dereference can never race the free.
+    ///
+    /// Set on the suspend edge; cleared wherever the parked activation's reply
+    /// obligation resolves (resume completion, resume crash, park refusal,
+    /// stop-cancel, and every `retire_suspended_reply_channel` route). Null
+    /// between dispatches and for actors that never suspend mid-`ask`.
+    ///
+    /// **ABI note**: appended at the struct tail, after `state_drop_borrowed`,
+    /// so no previously-mirrored offset (`id` at 8, `state` at 16) moves.
+    pub parked_ask_channel: AtomicPtr<c_void>,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -3182,6 +3213,7 @@ fn build_spawned_actor(
         sys_dispatch: config.sys_dispatch,
         state_drop_consumed: AtomicBool::new(false),
         state_drop_borrowed: AtomicBool::new(false),
+        parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
     })
 }
 
@@ -8093,6 +8125,7 @@ pub mod composition_test_support {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         }))
     }
 
@@ -9689,6 +9722,7 @@ mod tests {
                 sys_dispatch: None,
                 state_drop_consumed: AtomicBool::new(false),
                 state_drop_borrowed: AtomicBool::new(false),
+                parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             }));
             (actor, mailbox)
         }
@@ -10787,6 +10821,7 @@ mod tests {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });
@@ -15509,6 +15544,7 @@ mod tests {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });

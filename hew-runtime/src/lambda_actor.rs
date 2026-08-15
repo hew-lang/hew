@@ -339,6 +339,10 @@ pub extern "C" fn hew_lambda_drain_all(timeout_ms: i64) -> i32 {
         }
         let now = std::time::Instant::now();
         if now >= deadline {
+            eprintln!(
+                "hew: lambda-actor shutdown drain timed out after {timeout:?}; abandoning \
+                 in-flight work"
+            );
             return 1;
         }
         let remaining = deadline - now;
@@ -1845,7 +1849,7 @@ mod tests {
     struct SlowReleaseState {
         started: Arc<AtomicBool>,
         finished: Arc<AtomicBool>,
-        dropped: Arc<AtomicBool>,
+        drop_count: Arc<AtomicUsize>,
     }
 
     unsafe extern "C-unwind" fn slow_release_body(
@@ -1868,7 +1872,7 @@ mod tests {
 
     unsafe extern "C-unwind" fn slow_release_state_drop(state: *mut core::ffi::c_void) {
         let state = unsafe { Box::from_raw(state.cast::<SlowReleaseState>()) };
-        state.dropped.store(true, Ord::SeqCst);
+        state.drop_count.fetch_add(1, Ord::SeqCst);
     }
 
     /// State-drop callback that increments a shared counter. Cast
@@ -2492,11 +2496,11 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         let started = Arc::new(AtomicBool::new(false));
         let finished = Arc::new(AtomicBool::new(false));
-        let dropped = Arc::new(AtomicBool::new(false));
+        let drop_count = Arc::new(AtomicUsize::new(0));
         let state = Box::new(SlowReleaseState {
             started: Arc::clone(&started),
             finished: Arc::clone(&finished),
-            dropped: Arc::clone(&dropped),
+            drop_count: Arc::clone(&drop_count),
         });
         let state_raw = Box::into_raw(state).cast::<core::ffi::c_void>();
 
@@ -2539,8 +2543,76 @@ mod tests {
             "release must join the in-flight body before returning"
         );
         assert!(
-            dropped.load(Ord::SeqCst),
-            "release must wait until state_drop has run"
+            drop_count.load(Ord::SeqCst) == 1,
+            "release must wait until state_drop has run exactly once"
+        );
+    }
+
+    #[test]
+    fn drain_timeout_reports_abandonment_without_double_dropping_state() {
+        let _guard = crate::runtime_test_guard();
+        let started = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let drop_count = Arc::new(AtomicUsize::new(0));
+        let state = Box::new(SlowReleaseState {
+            started: Arc::clone(&started),
+            finished: Arc::clone(&finished),
+            drop_count: Arc::clone(&drop_count),
+        });
+        let state_raw = Box::into_raw(state).cast::<core::ffi::c_void>();
+
+        let actor = unsafe {
+            hew_lambda_actor_new(
+                4,
+                LambdaShape::Tell as i32,
+                Some(slow_release_body),
+                state_raw,
+                Some(slow_release_state_drop),
+            )
+        };
+        assert!(!actor.is_null());
+
+        let msg = b"slow";
+        assert_eq!(
+            unsafe { hew_lambda_actor_send(actor, msg.as_ptr(), msg.len()) },
+            SendError::Ok as i32
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !started.load(Ord::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "slow body must start before the drain probe"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let actor_addr = actor as usize;
+        let releaser = std::thread::spawn(move || {
+            // SAFETY: this thread exclusively owns the live handle and release
+            // consumes it before the thread returns.
+            unsafe { hew_lambda_actor_release(actor_addr as *mut HewLambdaActorHandle) }
+        });
+
+        assert_eq!(
+            hew_lambda_drain_all(20),
+            1,
+            "an in-flight body past the budget must report abandonment"
+        );
+        assert_eq!(
+            drop_count.load(Ord::SeqCst),
+            0,
+            "timeout must not fabricate completion or release live state early"
+        );
+
+        assert_eq!(
+            releaser.join().expect("release thread must finish"),
+            SendError::Ok as i32
+        );
+        assert!(finished.load(Ord::SeqCst));
+        assert_eq!(
+            drop_count.load(Ord::SeqCst),
+            1,
+            "the eventually-finished abandoned branch must release state exactly once"
         );
     }
 

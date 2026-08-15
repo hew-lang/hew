@@ -814,14 +814,22 @@ bb10:                                             ; preds = %bb9
   %move_load19 = load i64, ptr %local_18, align 8
   store i64 %move_load19, ptr %return_slot, align 8
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
-  %ret_val = load i64, ptr %return_slot, align 8
-  ret i64 %ret_val
+  %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
+  br i1 %hew_lambda_drain_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 cancel_exit:                                      ; preds = %entry
   ret i64 0
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+hew_shutdown_exit_failed:                         ; preds = %bb10
+  call void @hew_exit(i64 1)
+  br label %hew_shutdown_exit_continue
+
+hew_shutdown_exit_continue:                       ; preds = %hew_shutdown_exit_failed, %bb10
+  %ret_val = load i64, ptr %return_slot, align 8
+  ret i64 %ret_val
 }
 
 define internal ptr @"i8::fmt"(i8 %0) {

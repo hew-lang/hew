@@ -268,7 +268,7 @@ impl Checker {
                 }
                 Ty::Named {
                     builtin: None,
-                    name: "regex.Pattern".to_string(),
+                    name: "std.text.regex.Pattern".to_string(),
                     args: vec![],
                 }
             }

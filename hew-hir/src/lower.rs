@@ -17583,7 +17583,7 @@ impl LowerCtx {
             Expr::RegexLiteral(pattern) => {
                 // A standalone `re"..."` expression. Allocate (or reuse) the
                 // module-level literal-table entry. The checker-assigned type is
-                // `regex.Pattern`; read it from `expr_types` if present (it is
+                // `std.text.regex.Pattern`; read it from `expr_types` if present (it is
                 // set by `synthesize_inner` for `Expr::RegexLiteral`), otherwise
                 // fall back to the canonical `Named` form. Using the checker's
                 // resolved type rather than hard-coding keeps capture / generic
@@ -17591,14 +17591,14 @@ impl LowerCtx {
                 let checker_key = self.mk_key(&span);
                 let resolved_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
                     ResolvedTy::from_ty(&ty).unwrap_or(ResolvedTy::Named {
-                        name: "regex.Pattern".to_string(),
+                        name: "std.text.regex.Pattern".to_string(),
                         args: Vec::new(),
                         builtin: None,
                         is_opaque: false,
                     })
                 } else {
                     ResolvedTy::Named {
-                        name: "regex.Pattern".to_string(),
+                        name: "std.text.regex.Pattern".to_string(),
                         args: Vec::new(),
                         builtin: None,
                         is_opaque: false,

@@ -4849,13 +4849,11 @@ pub fn lower_program_with_mono_cap(
                                 items.push(HirItem::Const(lowered));
                             }
                         }
-                        // Emit `HirItem::Actor` entries for imported actors
+                        // Emit `HirItem::Actor` entries for imported pub actors
                         // so MIR's actor-layout pass (which walks `module.items`)
-                        // builds every layout reachable from an imported body.
-                        // Private actors are runtime implementation details, but
-                        // a public module function or public actor may spawn or
-                        // message them. Without their layouts, those bodies fail
-                        // closed at MIR with
+                        // builds a layout keyed by the actor's bare name. Without
+                        // it, `spawn module.Actor(...)` and the subsequent
+                        // `receive fn` calls fail closed at MIR with
                         // `spawn of unknown actor` / `actor call on unknown actor`,
                         // even though HIR/types resolved the cross-module
                         // reference. Mirrors the `Item::Machine` arm above. The
@@ -4863,7 +4861,7 @@ pub fn lower_program_with_mono_cap(
                         // active (see `lower_imported_actor`) so bare same-module
                         // calls resolve to their qualified symbols, exactly like
                         // the imported free-fn path.
-                        Item::Actor(actor) => {
+                        Item::Actor(actor) if actor.visibility.is_pub() => {
                             // Skip actors of FILE-import modules: their items
                             // were spliced into `program.items` and already
                             // emitted (under the flat/root identity) by the
@@ -4932,9 +4930,10 @@ pub fn lower_program_with_mono_cap(
                                 }
                             }
                         }
-                        // Item::Record and Item::Supervisor from imported modules
-                        // are intentionally not emitted in this slice; their
-                        // cross-module lowering semantics are tracked separately.
+                        // Item::Record, Item::Supervisor and non-pub Item::Actor
+                        // from imported modules are intentionally not emitted in
+                        // this slice; their cross-module lowering semantics are
+                        // tracked as separate follow-ups.
                         //
                         // Non-pub Function/TypeDecl/Actor fall here (not
                         // visible to importers). If a new Item variant is
@@ -4944,6 +4943,7 @@ pub fn lower_program_with_mono_cap(
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
                         | Item::Record(_)
+                        | Item::Actor(_)
                         | Item::Supervisor(_) => {}
                     }
                 }

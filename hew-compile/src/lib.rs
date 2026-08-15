@@ -4748,7 +4748,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     #[test]
-    fn imported_stdlib_function_can_spawn_and_wire_private_module_actors() {
+    fn imported_stdlib_function_can_spawn_and_wire_public_module_actors() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("hew-compile lives below repository root");

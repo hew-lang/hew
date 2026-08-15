@@ -22,7 +22,7 @@ fn main() -> i64 {
     };
     let worker = spawn Worker();
     Node::register("identity-worker", worker);
-    let pid = match Node::lookup<Worker>("identity-worker") {
+    let pid = match Node.lookup<Worker>("identity-worker") {
         Ok(found) => found,
         Err(_) => return 2,
     };

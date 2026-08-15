@@ -228,6 +228,45 @@ fn foo(opt: Option<i64>) -> i64 {
     }
 
     #[test]
+    fn contextual_option_arms_preserve_constructor_origin() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(opt: Option<i64>) -> i64 {
+    match opt {
+        .Some(value) => value,
+        .None => 0,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 2, "expected two contextual arms");
+
+        let some_arm = resolutions
+            .values()
+            .find(|resolution| {
+                resolution
+                    .variant_match
+                    .as_ref()
+                    .is_some_and(|variant| variant.variant_name == "Some")
+            })
+            .expect("expected a contextual Some arm");
+        assert_eq!(some_arm.pattern_kind, PatternKind::VariantCtor);
+        assert_eq!(some_arm.payload_bindings.len(), 1);
+        assert_eq!(some_arm.payload_bindings[0].binding_name, "value");
+
+        let none_arm = resolutions
+            .values()
+            .find(|resolution| {
+                resolution
+                    .variant_match
+                    .as_ref()
+                    .is_some_and(|variant| variant.variant_name == "None")
+            })
+            .expect("expected a contextual None arm");
+        assert_eq!(none_arm.pattern_kind, PatternKind::VariantCtor);
+        assert!(none_arm.payload_bindings.is_empty());
+    }
+
+    #[test]
     fn option_some_wildcard_payload_emits_no_binding() {
         let resolutions = pattern_resolutions(
             r"

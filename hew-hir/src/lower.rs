@@ -138,10 +138,6 @@ fn compatibility_pattern(pattern: &Pattern) -> Option<Pattern> {
             compatibility_nominal_name(path),
             payload.as_ref(),
         )),
-        Pattern::ContextVariant(context) => Some(compatibility_nominal_pattern(
-            context.name.clone(),
-            context.payload.as_ref(),
-        )),
         _ => None,
     }
 }
@@ -249,14 +245,73 @@ fn collect_match_payload_predicates(
             }
             Ok(predicates)
         }
+        Pattern::ContextVariant(context) => match context.payload.as_ref() {
+            None => Ok(Vec::new()),
+            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                let field_tys = ctx
+                    .lookup_variant_ctor(&context.name, Some(scrutinee_ty))
+                    .map(|(_, _, kind)| match kind {
+                        HirVariantKind::Tuple(field_tys) => field_tys.clone(),
+                        HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
+                    })
+                    .unwrap_or_default();
+                Ok(patterns
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(field_idx, (sub_pattern, _))| {
+                        let Pattern::Literal(literal) = sub_pattern else {
+                            return None;
+                        };
+                        let Ok(field_idx) = u32::try_from(field_idx) else {
+                            return None;
+                        };
+                        let (literal, literal_ty) = literal_to_hir(literal);
+                        let ty = field_tys
+                            .get(field_idx as usize)
+                            .cloned()
+                            .unwrap_or(literal_ty);
+                        Some(HirPayloadPredicate {
+                            field_idx,
+                            literal,
+                            ty,
+                        })
+                    })
+                    .collect())
+            }
+            Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => {
+                let key = ctx.mk_key(&pattern.1);
+                let plan = ctx.pattern_plans.get(&key).ok_or_else(|| {
+                    "checker did not provide a PatternPlan for contextual record predicates"
+                        .to_string()
+                })?;
+                let mut predicates = Vec::new();
+                for field in &plan.fields {
+                    let hew_types::PlanSub::Literal(literal) = &field.sub else {
+                        continue;
+                    };
+                    let ty = ResolvedTy::from_ty(&field.ty).map_err(|err| {
+                        format!(
+                            "contextual record predicate field `{}` has unresolved plan type ({err:?})",
+                            field.name
+                        )
+                    })?;
+                    let (literal, _) = literal_to_hir(literal);
+                    predicates.push(HirPayloadPredicate {
+                        field_idx: field.decl_idx,
+                        literal,
+                        ty,
+                    });
+                }
+                Ok(predicates)
+            }
+        },
         Pattern::Wildcard
         | Pattern::Identifier(_)
         | Pattern::Literal(_)
         | Pattern::Or(_, _)
         | Pattern::Regex { .. }
         | Pattern::RecordShorthand { .. }
-        | Pattern::NominalPath { .. }
-        | Pattern::ContextVariant(_) => Ok(Vec::new()),
+        | Pattern::NominalPath { .. } => Ok(Vec::new()),
     }
 }
 

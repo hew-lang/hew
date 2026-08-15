@@ -793,10 +793,6 @@ fn compatibility_pattern(pattern: &Pattern) -> Option<Pattern> {
             compatibility_nominal_name(path),
             payload.as_ref(),
         )),
-        Pattern::ContextVariant(context) => Some(compatibility_nominal_pattern(
-            context.name.clone(),
-            context.payload.as_ref(),
-        )),
         _ => None,
     }
 }
@@ -873,10 +869,33 @@ fn find_pattern_binding_type(
                     args: vec![],
                 })
         }
-        Pattern::Wildcard
-        | Pattern::Literal(_)
-        | Pattern::NominalPath { .. }
-        | Pattern::ContextVariant(_) => None,
+        Pattern::ContextVariant(context) => match context.payload.as_ref() {
+            None => None,
+            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                constructor_payload_tys(source_ty, &context.name, type_defs).and_then(
+                    |payload_tys| {
+                        patterns
+                            .iter()
+                            .zip(payload_tys.iter())
+                            .find_map(|(pattern, payload_ty)| {
+                                find_pattern_binding_type(
+                                    pattern, payload_ty, type_defs, word, offset,
+                                )
+                            })
+                    },
+                )
+            }
+            Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                fields.iter().find_map(|field| {
+                    let field_ty =
+                        struct_pattern_field_ty(source_ty, &context.name, &field.name, type_defs)?;
+                    field.pattern.as_ref().and_then(|pattern| {
+                        find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
+                    })
+                })
+            }
+        },
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::NominalPath { .. } => None,
     }
 }
 
@@ -904,10 +923,21 @@ fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Op
             find_binding_name(left, word, offset).or_else(|| find_binding_name(right, word, offset))
         }
         Pattern::Regex { captures, .. } => captures.iter().find(|c| c.as_str() == word).map(|_| ()),
-        Pattern::Wildcard
-        | Pattern::Literal(_)
-        | Pattern::NominalPath { .. }
-        | Pattern::ContextVariant(_) => None,
+        Pattern::ContextVariant(context) => match context.payload.as_ref() {
+            None => None,
+            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => patterns
+                .iter()
+                .find_map(|pattern| find_binding_name(pattern, word, offset)),
+            Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                fields.iter().find_map(|field| {
+                    field
+                        .pattern
+                        .as_ref()
+                        .and_then(|pattern| find_binding_name(pattern, word, offset))
+                })
+            }
+        },
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::NominalPath { .. } => None,
     }
 }
 

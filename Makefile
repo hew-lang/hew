@@ -1309,14 +1309,14 @@ test-migrate-corpus: hew
 	@set -e; migration_root=$$(mktemp -d); migration_fixed=$$(mktemp -d); \
 	trap 'rm -rf "$$migration_root" "$$migration_fixed"' 0; \
 	cp -R tests/corpus/migrate/. "$$migration_root/"; \
-	echo "1/5 migrate accepted representative sources"; \
+	echo "1/6 migrate accepted representative sources"; \
 	"$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_root/accept"; \
-	echo "2/5 compare exact migrated sources"; \
+	echo "2/6 compare exact migrated sources"; \
 	for migration_source in "$$migration_root"/accept/*.hew; do \
 		migration_expected="$${migration_source%.hew}.expected"; \
 		diff -u "$$migration_expected" "$$migration_source"; \
 	done; \
-	echo "3/5 require the unresolvable source to fail loudly"; \
+	echo "3/6 require the unresolvable source to fail loudly"; \
 	migration_refusal="$$migration_root/refusal.log"; \
 	if "$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_root/reject" >"$$migration_refusal" 2>&1; then \
 		cat "$$migration_refusal"; \
@@ -1325,11 +1325,15 @@ test-migrate-corpus: hew
 	fi; \
 	grep -F 'unresolvable.hew: migration requires a successfully type-checked source file' "$$migration_refusal"; \
 	diff -u tests/corpus/migrate/reject/unresolvable.hew "$$migration_root/reject/unresolvable.hew"; \
-	echo "4/5 require a byte-identical second migration pass"; \
+	echo "4/6 prove the migrated snapshot reaches a successful typecheck"; \
+	for migration_source in "$$migration_root"/accept/*.hew; do \
+		"$(DEBUG_DIR)/hew" check "$$migration_source"; \
+	done; \
+	echo "5/6 require a byte-identical second migration pass"; \
 	cp -R "$$migration_root/accept/." "$$migration_fixed/"; \
 	"$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_root/accept"; \
 	diff -ru "$$migration_fixed" "$$migration_root/accept"; \
-	echo "5/5 require check mode to recognize the fixed point"; \
+	echo "6/6 require check mode to recognize the fixed point"; \
 	"$(DEBUG_DIR)/hew" fmt --migrate --check --root "$$migration_root/accept"
 
 # Derive the compilable corpus from the tracked source roots, format a private

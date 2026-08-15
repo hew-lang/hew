@@ -114,7 +114,7 @@ pub struct TestSummary {
 /// Filesystem inputs needed by the in-process native compiler.
 #[derive(Debug)]
 pub struct TestCompilePaths {
-    paths: crate::NativeCompilePaths,
+    paths: crate::NativeBuildPaths,
 }
 
 impl TestCompilePaths {
@@ -129,10 +129,18 @@ impl TestCompilePaths {
             target.normalized_triple(),
             target.can_run_on_host(),
         )?;
-        Self::from_explicit(module_search_paths, PathBuf::from(hew_lib))
+        Self::from_explicit(
+            project_dir.to_path_buf(),
+            module_search_paths,
+            PathBuf::from(hew_lib),
+        )
     }
 
-    fn from_explicit(module_search_paths: Vec<PathBuf>, hew_lib: PathBuf) -> Result<Self, String> {
+    fn from_explicit(
+        project_dir: PathBuf,
+        module_search_paths: Vec<PathBuf>,
+        hew_lib: PathBuf,
+    ) -> Result<Self, String> {
         let has_stdlib = module_search_paths
             .iter()
             .any(|root| root.join("std/builtins.hew").is_file());
@@ -158,7 +166,8 @@ impl TestCompilePaths {
             ));
         }
         Ok(Self {
-            paths: crate::NativeCompilePaths {
+            paths: crate::NativeBuildPaths {
+                project_dir,
                 module_search_paths,
                 hew_lib,
             },
@@ -422,10 +431,6 @@ fn compile_test(
     ffi_lib: Option<&str>,
     compile_paths: &TestCompilePaths,
 ) -> Result<CompiledTestArtifact, String> {
-    if ffi_lib.is_some() {
-        return Err("hew test FFI libraries are unavailable on the v0.5 compile path".to_string());
-    }
-
     let synthetic = format!(
         "{source}\n\nfn main() {{\n    {name}();\n}}\n",
         name = test.name,
@@ -455,12 +460,14 @@ fn compile_test(
         .file_stem()
         .ok_or_else(|| "temp source path has no file stem".to_string())?;
     let binary_path = emit_dir.path().join(binary_name);
+    let extra_libs = ffi_lib.into_iter().map(str::to_owned).collect::<Vec<_>>();
 
     crate::diagnostic::start_diagnostic_capture();
-    let compile_result = crate::compile_native_binary_with_paths(
+    let compile_result = crate::compile_test_binary_with_paths(
         tmp_source.path(),
         &binary_path,
-        Some(&compile_paths.paths),
+        &compile_paths.paths,
+        &extra_libs,
     );
     let diagnostics = crate::diagnostic::finish_diagnostic_capture();
     if compile_result.is_err() {
@@ -578,8 +585,6 @@ mod tests {
     use super::*;
     use std::sync::OnceLock;
 
-    /// Skip tests that require the linked native execution substrate while
-    /// `hew test` is still blocked by the v0.5 cutover guard.
     fn require_codegen() -> bool {
         ensure_test_toolchain()
     }
@@ -615,6 +620,7 @@ mod tests {
             let target = crate::target::TargetSpec::from_requested(None)
                 .expect("the test host target should resolve");
             TestCompilePaths::from_explicit(
+                workspace_root.clone(),
                 vec![workspace_root],
                 cargo_profile_dir.join(target.hew_lib_name()),
             )
@@ -628,8 +634,12 @@ mod tests {
         let archive = dir.path().join("libhew.a");
         std::fs::write(&archive, []).expect("create archive fixture");
 
-        let error = TestCompilePaths::from_explicit(vec![dir.path().to_path_buf()], archive)
-            .expect_err("a root without std/builtins.hew must fail");
+        let error = TestCompilePaths::from_explicit(
+            dir.path().to_path_buf(),
+            vec![dir.path().to_path_buf()],
+            archive,
+        )
+        .expect_err("a root without std/builtins.hew must fail");
 
         assert!(error.contains("standard library"), "error: {error}");
         assert!(error.contains("std/builtins.hew"), "error: {error}");
@@ -642,9 +652,12 @@ mod tests {
         std::fs::write(dir.path().join("std/builtins.hew"), []).expect("create builtins fixture");
         let archive = dir.path().join("missing-libhew.a");
 
-        let error =
-            TestCompilePaths::from_explicit(vec![dir.path().to_path_buf()], archive.clone())
-                .expect_err("a missing runtime archive must fail");
+        let error = TestCompilePaths::from_explicit(
+            dir.path().to_path_buf(),
+            vec![dir.path().to_path_buf()],
+            archive.clone(),
+        )
+        .expect_err("a missing runtime archive must fail");
 
         assert!(error.contains("runtime archive"), "error: {error}");
         assert!(
@@ -860,7 +873,8 @@ fn test_timeout() {
         ];
 
         let unused_paths = TestCompilePaths {
-            paths: crate::NativeCompilePaths {
+            paths: crate::NativeBuildPaths {
+                project_dir: PathBuf::new(),
                 module_search_paths: Vec::new(),
                 hew_lib: PathBuf::new(),
             },

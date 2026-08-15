@@ -265,20 +265,11 @@ fn lower_file_to_mir(
     input_path: &Path,
     requested_target: Option<&str>,
 ) -> Result<hew_mir::IrPipeline, ()> {
-    lower_file_to_mir_with_module_paths(input_path, requested_target, None)
-}
-
-fn lower_file_to_mir_with_module_paths(
-    input_path: &Path,
-    requested_target: Option<&str>,
-    module_search_paths: Option<&[PathBuf]>,
-) -> Result<hew_mir::IrPipeline, ()> {
     let input = input_path.display().to_string();
     let target = target::TargetSpec::from_requested(requested_target).map_err(|e| {
         eprintln!("Error: {e}");
     })?;
-    let mut fopts = compile::frontend_options(&target, &compile::CompileOptions::default());
-    fopts.module_search_paths = module_search_paths.map(<[PathBuf]>::to_vec);
+    let fopts = compile::frontend_options(&target, &compile::CompileOptions::default());
 
     let state = hew_compile::run_file_frontend_to_typecheck(&input, &fopts).map_err(|failure| {
         compile::render_frontend_diagnostics(&failure.diagnostics);
@@ -706,25 +697,7 @@ fn link_native_object_with_hew_lib(
 }
 
 pub(crate) fn compile_native_binary(input: &Path, bin_path: &Path) -> Result<(), ()> {
-    compile_native_binary_with_paths(input, bin_path, None)
-}
-
-#[derive(Debug)]
-pub(crate) struct NativeCompilePaths {
-    pub(crate) module_search_paths: Vec<PathBuf>,
-    pub(crate) hew_lib: PathBuf,
-}
-
-pub(crate) fn compile_native_binary_with_paths(
-    input: &Path,
-    bin_path: &Path,
-    paths: Option<&NativeCompilePaths>,
-) -> Result<(), ()> {
-    let pipeline = lower_file_to_mir_with_module_paths(
-        input,
-        None,
-        paths.map(|paths| paths.module_search_paths.as_slice()),
-    )?;
+    let pipeline = lower_file_to_mir(input, None)?;
     let emit_dir = bin_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = bin_path
         .file_stem()
@@ -741,7 +714,14 @@ pub(crate) fn compile_native_binary_with_paths(
     let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
         eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
     })?;
-    link_native_object_with_hew_lib(obj, bin_path, paths.map(|paths| paths.hew_lib.as_path()))
+    link_native_object(obj, bin_path)
+}
+
+#[derive(Debug)]
+pub(crate) struct NativeBuildPaths {
+    pub(crate) project_dir: PathBuf,
+    pub(crate) module_search_paths: Vec<PathBuf>,
+    pub(crate) hew_lib: PathBuf,
 }
 
 #[allow(
@@ -899,12 +879,13 @@ fn resolve_build_output_path(
 /// `from_requested(None)`), this passes the resolved `&target` so the link plan,
 /// `linker_triple()`, and cross `libhew.a` resolution are correct for cross-arch
 /// and same-arch explicit-target builds.
-fn link_native_object_for_target(
+fn link_native_object_for_target_with_hew_lib(
     obj: &Path,
     bin_path: &Path,
     target: &target::TargetSpec,
     debug: bool,
     extra_libs: &[String],
+    hew_lib: Option<&Path>,
 ) -> Result<(), ()> {
     let obj_str = obj.to_str().ok_or_else(|| {
         eprintln!("Error: object path is not valid UTF-8");
@@ -912,9 +893,10 @@ fn link_native_object_for_target(
     let bin_str = bin_path.to_str().ok_or_else(|| {
         eprintln!("Error: output path is not valid UTF-8");
     })?;
-    crate::link::link_executable(obj_str, bin_str, target, extra_libs, debug).map_err(|e| {
-        eprintln!("{e}");
-    })
+    crate::link::link_executable_with_hew_lib(obj_str, bin_str, target, extra_libs, debug, hew_lib)
+        .map_err(|e| {
+            crate::diagnostic::emit_plain_diagnostic_line(&e);
+        })
 }
 
 /// Build a native (or wasm) binary for an explicit target, writing it to
@@ -931,6 +913,32 @@ fn compile_build_binary(
     opt_level: hew_codegen_rs::OptLevel,
     extra_libs: &[String],
     options: &compile::CompileOptions,
+) -> Result<(), ()> {
+    compile_build_binary_with_hew_lib(
+        input,
+        output_path,
+        target,
+        debug,
+        opt_level,
+        extra_libs,
+        options,
+        None,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the test path adds one pre-resolved runtime archive to the shared build pipeline"
+)]
+fn compile_build_binary_with_hew_lib(
+    input: &Path,
+    output_path: &Path,
+    target: &target::TargetSpec,
+    debug: bool,
+    opt_level: hew_codegen_rs::OptLevel,
+    extra_libs: &[String],
+    options: &compile::CompileOptions,
+    hew_lib: Option<&Path>,
 ) -> Result<(), ()> {
     let (pipeline, native_pkg_dirs) = lower_file_to_mir_for_target(input, target, options)?;
     let emit_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
@@ -969,7 +977,14 @@ fn compile_build_binary(
                 eprintln!("Error: {e}");
             })?;
             let all_libs: Vec<String> = extra_libs.iter().cloned().chain(auto_libs).collect();
-            link_native_object_for_target(obj, output_path, target, debug, &all_libs)
+            link_native_object_for_target_with_hew_lib(
+                obj,
+                output_path,
+                target,
+                debug,
+                &all_libs,
+                hew_lib,
+            )
         }
         CompileEmitTarget::Wasm => {
             let wasm = artefacts.wasm_path.as_deref().ok_or_else(|| {
@@ -988,6 +1003,32 @@ fn compile_build_binary(
             Ok(())
         }
     }
+}
+
+pub(crate) fn compile_test_binary_with_paths(
+    input: &Path,
+    output_path: &Path,
+    paths: &NativeBuildPaths,
+    extra_libs: &[String],
+) -> Result<(), ()> {
+    let target = target::TargetSpec::from_requested(None).map_err(|error| {
+        eprintln!("Error: cannot determine the host target: {error}");
+    })?;
+    let options = compile::CompileOptions {
+        project_dir: Some(paths.project_dir.clone()),
+        module_search_paths: Some(paths.module_search_paths.clone()),
+        ..compile::CompileOptions::default()
+    };
+    compile_build_binary_with_hew_lib(
+        input,
+        output_path,
+        &target,
+        false,
+        hew_codegen_rs::OptLevel::O0,
+        extra_libs,
+        &options,
+        Some(&paths.hew_lib),
+    )
 }
 
 /// Emit a single relocatable object for `hew build --emit-obj`, skipping the

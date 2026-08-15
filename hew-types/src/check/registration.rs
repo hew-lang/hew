@@ -12423,9 +12423,9 @@ impl Checker {
     }
 
     /// Add a full-path declaration alias for a source module type while
-    /// retaining the historical short-key alias for lookup compatibility.
-    /// Canonical IDs and imported type resolution consume this entry; legacy
-    /// layout consumers can continue to use the short alias until Stage 5.
+    /// retaining the short-key alias required by compatibility lookups.
+    /// Canonical IDs and imported type resolution consume the full-path entry;
+    /// layout consumers use the short alias where the ABI requires it.
     fn register_full_type_alias(
         &mut self,
         module_full_path: &str,

@@ -10,7 +10,7 @@ A statically-typed, actor-oriented programming language for concurrent and distr
 curl -fsSL https://hew.sh/install | bash
 ```
 
-Pre-built binaries for Linux (x86_64) and macOS (x86_64, ARM) are available on the [Releases](https://github.com/hew-lang/hew/releases) page. Also available via [Homebrew, Docker, and system packages](https://hew.sh/docs/install).
+Pre-built binaries for Linux (x86_64, ARM64), macOS (x86_64, ARM64), FreeBSD (x86_64, ARM64), and Windows (x86_64) — plus `.deb`, `.rpm`, and Arch packages — are published on the [Releases](https://github.com/hew-lang/hew/releases) page. Also available via [Homebrew, Docker, and system packages](https://hew.sh/docs/install).
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ hew run hello.hew
 # Start a new project
 hew init my_project
 cd my_project
-# hew init creates main.hew + README.md (no hew.toml)
+# hew init scaffolds hew.toml + main.hew + a merged .gitignore
 hew check main.hew
 hew fmt --check main.hew
 hew doc main.hew --output-dir doc
@@ -35,8 +35,11 @@ hew eval
 ### Evaluation & REPL
 
 `hew eval` can run as an interactive REPL, evaluate a file in REPL context, or
-evaluate a one-off inline expression. The REPL remembers top-level items and
-`let`/`var` bindings across inputs.
+evaluate a one-off inline expression. Top-level items (`fn`, `type`, `enum`,
+`actor`, `impl`, `trait`) persist across REPL inputs so you can define a
+function then call it later; `let`/`var` bindings and bare statements are
+evaluated fresh each line and do not carry over. (Hew has no `struct`
+keyword — `type Name { ... }` declares a record.)
 
 ```bash
 hew eval
@@ -49,11 +52,11 @@ For non-interactive runs, `-f -` reads from stdin and `--target wasm32-wasi`
 uses the WASI eval path.
 
 Use `:help` inside the REPL to see the command list. Common commands include
-`:help` / `:h`, `:session` / `:show`, `:items`, `:bindings`, `:type <expr>`,
+`:help` / `:h`, `:session` / `:show`, `:items`, `:type <expr>`,
 `:load <file>`, `:clear` / `:reset`, and `:quit` / `:q`.
 
-`hew init` is the source-only scaffold: it writes `main.hew` +
-`README.md`, but no `hew.toml`.
+`hew init` scaffolds a manifest-first project: `hew.toml`, a starter
+`main.hew`, and a merged `.gitignore`.
 
 See the [Getting Started Guide](https://hew.sh/docs/getting-started) for more.
 
@@ -97,9 +100,12 @@ import std::encoding::json;
 fn main() {
     let data = fs.read("config.json");
     let obj = json.parse(data);
-    println(obj);
+    println(obj.stringify());
 }
 ```
+
+`json.Value` has no `Display` impl, so print it through `stringify()` rather
+than passing the value straight to `println`.
 
 See [`std/README.md`](std/README.md) for the canonical index of shipped stdlib modules.
 
@@ -113,8 +119,10 @@ the tree.
 `hew doc` is different: it accepts either one `.hew` file or a directory tree
 of `.hew` files to document.
 
-- `import foo;` prefers the directory-form module at `foo/foo.hew`, then falls
-  back to `foo.hew` beside the importer.
+- `import foo;` resolves to the directory-form module at `foo/foo.hew` or to
+  `foo.hew` beside the importer — whichever exists. If **both** exist the
+  import is a hard error (``import `foo` is ambiguous: both ... exist``);
+  rename or remove one.
 - Other top-level `.hew` files inside `foo/` merge into the same module
   automatically.
 - Child directories stay separate submodules, so import them explicitly — for
@@ -127,15 +135,23 @@ of `.hew` files to document.
 
 ### Module search paths & stdlib discovery
 
-Hew resolves imported modules in this order, and the first match wins:
+Hew resolves imported modules through three tiers; the first tier that
+produces a result wins and lower tiers are not consulted:
 
-1. `HEWPATH` (colon-separated entries; each entry is the parent directory that
-   contains `std/`)
-2. `HEW_STD` (the path to the `std/` directory itself; Hew uses its parent as a
-   search root)
-3. The installed `<prefix>/share/hew` tree beside the `hew` binary
-4. A development fallback to the repo root when `std/` exists two levels above
-   the binary
+1. **Explicit override** — `HEWPATH` (colon-separated entries; each entry is
+   the parent directory that contains `std/`) or `HEW_STD` (the path to the
+   `std/` directory itself; Hew uses its parent as a search root). If either
+   is set, only those paths are used.
+2. **In-worktree development** — otherwise, Hew walks up from the source
+   file (or the current directory) looking for an enclosing Hew checkout (a
+   directory containing `std/builtins.hew`). This anchors a file inside one
+   Hew worktree to that worktree's own `std/`, even when the binary running
+   it was built in a different worktree.
+3. **Installed / external project** — otherwise Hew searches, in order: the
+   FHS layout beside the binary (`<prefix>/share/hew`), XDG
+   (`~/.local/share/hew`), `~/.hew`, `/usr/local/share/hew`,
+   `/usr/share/hew`, and a development fallback to the repo root when
+   `std/` exists two levels above the binary.
 
 `hew.toml` does not configure module search paths. Use `HEWPATH` or `HEW_STD`
 when you need Hew to search a non-default stdlib or module root.
@@ -149,7 +165,7 @@ hew doc std/ --output-dir doc/std
 This writes a browsable index page for the modules under `std/`. The canonical
 module list also lives in [`std/README.md`](std/README.md).
 
-For the current wildcard-import warning caveat, see
+For import-resolution problems, see
 [`docs/troubleshooting.md`](docs/troubleshooting.md).
 
 ### Wire Types
@@ -158,9 +174,9 @@ Wire types define versioned serialization schemas for use with actors and distri
 
 ```hew
 #[wire]
-struct UserMessage {
-    name: string @1;
-    age:  i32    @2;
+type UserMessage {
+    name: string @1,
+    age:  i32    @2,
     // Adding a new @3 field later is backwards-compatible; reusing @1 is not.
 }
 ```
@@ -169,28 +185,53 @@ See [`examples/playground/types/wire_types.hew`](examples/playground/types/wire_
 
 ### Distributed Actors
 
-Actors communicate across nodes with the same syntax used locally. The runtime handles transport, registry gossip, and remote dispatch transparently.
+Actors communicate across nodes with a wire-tagged message enum and `.send()`, transparently across the network. The runtime handles transport, registry gossip, and remote dispatch.
 
 ```hew
+// shared by both nodes: the wire-tagged message enum, bound to the actor
+#[wire]
+enum CounterMsg { Increment(i64); }
+
+actor Counter {
+    var count: i64;
+    receive fn handle(msg: CounterMsg) {
+        match msg { CounterMsg::Increment(n) => { count = count + n; }, }
+    }
+}
+
+impl ActorMsg for Counter {
+    type Msg = CounterMsg;
+    type Reply = ();
+}
+
 // server node
-Node::set_transport("quic");
+Node::set_transport("quic-mesh");
+Node::load_keys("node.key");     // mints/loads this node's stable identity
 Node::start("127.0.0.1:9000");
 let counter = spawn Counter;
 Node::register("counter", counter);
 
 // client node (separate process)
-Node::set_transport("quic");
+Node::set_transport("quic-mesh");
+Node::load_keys("client.key");
 Node::start("127.0.0.1:9001");
 Node::connect("127.0.0.1:9000");
-let counter: Counter = Node::lookup("counter");
-counter.increment(42);   // remote message — same syntax as local
+let found: Result<RemotePid<Counter>, LookupError> = Node::lookup("counter");
+match found {
+    Ok(counter) => { let _ = counter.send(CounterMsg::Increment(42)); },  // remote message
+    Err(_) => println("counter actor not found"),
+}
 ```
 
-See [`examples/quic_mesh/`](examples/quic_mesh/) for a complete two-process QUIC mesh demo.
+`impl ActorMsg for Counter { type Msg = CounterMsg; ... }` is what makes
+`RemotePid<Counter>::send` accept a `CounterMsg` — without it the remote send
+does not typecheck.
+
+See [`examples/quic_mesh/`](examples/quic_mesh/) for a complete two-process QUIC mesh demo, and [`examples/distributed_hello.hew`](examples/distributed_hello.hew) for the full key-backed identity and peer-pinning sequence.
 
 ## Architecture
 
-The v0.5 compiler is a Rust pipeline: **frontend** → **HIR/MIR** →
+The compiler is a Rust pipeline: **frontend** → **HIR/MIR** →
 **codegen-rs LLVM emission**. `hew-codegen-rs` is the sole backend and is
 linked into the `hew` binary as a normal Cargo dependency.
 

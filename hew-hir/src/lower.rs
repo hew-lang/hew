@@ -1397,41 +1397,86 @@ fn collect_inherent_impl_consuming_methods_from_items(
 fn collect_trait_default_methods(
     program: &Program,
     file_import_module_idx: &HashMap<usize, u32>,
+    trait_method_ids_by_binding: &HashMap<
+        (Option<String>, String, String),
+        (hew_types::DefId, hew_types::DefId),
+    >,
 ) -> (HashMap<String, Vec<TraitMethod>>, HashMap<String, u32>) {
+    fn checker_binding_owner(
+        scope: Option<&str>,
+        trait_name: &str,
+        defaults: &[TraitMethod],
+        trait_method_ids_by_binding: &HashMap<
+            (Option<String>, String, String),
+            (hew_types::DefId, hew_types::DefId),
+        >,
+    ) -> Option<String> {
+        let scope = scope.map(str::to_string);
+        let mut owners = defaults
+            .iter()
+            .map(|method| {
+                trait_method_ids_by_binding
+                    .get(&(scope.clone(), trait_name.to_string(), method.name.clone()))
+                    .map(|(trait_id, _)| trait_id.full_path().to_string())
+            })
+            .collect::<Option<Vec<_>>>()?;
+        owners.sort_unstable();
+        owners.dedup();
+        (owners.len() == 1).then(|| owners.pop().expect("checked length"))
+    }
+
     let mut owner_module_idx: HashMap<String, u32> = HashMap::new();
     let mut out: HashMap<String, Vec<TraitMethod>> = HashMap::new();
-    let mut collect =
-        |items: &[(Item, Span)], owner: Option<&str>, idx_for: &dyn Fn(usize) -> u32| {
-            for (item_idx, (item, _)) in items.iter().enumerate() {
-                let Item::Trait(trait_decl) = item else {
-                    continue;
-                };
-                let defaults: Vec<TraitMethod> = trait_decl
-                    .items
-                    .iter()
-                    .filter_map(|ti| match ti {
-                        TraitItem::Method(method) if method.body.is_some() => Some(method.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                if !defaults.is_empty() {
-                    let key = owner.map_or_else(
+    let mut collect = |items: &[(Item, Span)],
+                       owner: Option<&str>,
+                       flat_file_items: Option<&HashMap<usize, u32>>,
+                       idx_for: &dyn Fn(usize) -> u32| {
+        for (item_idx, (item, _)) in items.iter().enumerate() {
+            let Item::Trait(trait_decl) = item else {
+                continue;
+            };
+            let defaults: Vec<TraitMethod> = trait_decl
+                .items
+                .iter()
+                .filter_map(|ti| match ti {
+                    TraitItem::Method(method) if method.body.is_some() => Some(method.clone()),
+                    _ => None,
+                })
+                .collect();
+            if !defaults.is_empty() {
+                let key = if flat_file_items.is_some_and(|items| items.contains_key(&item_idx)) {
+                    let Some(owner) = checker_binding_owner(
+                        None,
+                        &trait_decl.name,
+                        &defaults,
+                        trait_method_ids_by_binding,
+                    ) else {
+                        continue;
+                    };
+                    owner
+                } else {
+                    owner.map_or_else(
                         || trait_decl.name.clone(),
                         |owner| format!("{owner}.{}", trait_decl.name),
-                    );
-                    // A trait spliced into the ROOT items by a file import keeps
-                    // its bare root spelling, but the checker validated it during
-                    // the module walk under that file's own index. A trait in a
-                    // directory module's peer file likewise owns that PEER's index,
-                    // not the assembled module's base — recover both per item.
-                    owner_module_idx.insert(key.clone(), idx_for(item_idx));
-                    out.insert(key, defaults);
-                }
+                    )
+                };
+                // A trait spliced into the ROOT items by a file import keeps
+                // its root binding spelling, but its declaration identity is
+                // the exact canonical owner published by the checker. A trait
+                // in a directory module's peer file likewise owns that PEER's
+                // index, not the assembled module's base — recover both per
+                // item.
+                owner_module_idx.insert(key.clone(), idx_for(item_idx));
+                out.insert(key, defaults);
             }
-        };
-    collect(&program.items, None, &|item_idx| {
-        file_import_module_idx.get(&item_idx).copied().unwrap_or(0)
-    });
+        }
+    };
+    collect(
+        &program.items,
+        None,
+        Some(file_import_module_idx),
+        &|item_idx| file_import_module_idx.get(&item_idx).copied().unwrap_or(0),
+    );
     if let Some(graph) = &program.module_graph {
         let span_indices = graph.file_span_indices();
         for module_id in &graph.topo_order {
@@ -1442,7 +1487,7 @@ fn collect_trait_default_methods(
                 continue;
             };
             let owner = module_id.path.join(".");
-            collect(&module.items, Some(&owner), &|item_idx| {
+            collect(&module.items, Some(&owner), None, &|item_idx| {
                 span_indices.item_index(module_id, item_idx).unwrap_or(0)
             });
         }
@@ -2442,8 +2487,11 @@ pub fn lower_program_with_mono_cap(
 
     // Pre-pre-pass: harvest trait default method bodies so that impl-block
     // lowering can emit them for impls that do not override them.
-    let (trait_defaults, trait_default_module_idx) =
-        collect_trait_default_methods(program, &file_import_module_idx);
+    let (trait_defaults, trait_default_module_idx) = collect_trait_default_methods(
+        program,
+        &file_import_module_idx,
+        &ctx.trait_method_ids_by_binding,
+    );
     ctx.trait_default_methods = trait_defaults;
     ctx.trait_default_module_idx = trait_default_module_idx;
     let (trait_super, trait_declared_methods) = collect_trait_declaring_surfaces(program);
@@ -35177,6 +35225,44 @@ mod tests {
     use super::*;
     use hew_types::module_registry::ModuleRegistry;
     use hew_types::Checker;
+
+    #[test]
+    fn flat_file_trait_defaults_use_checker_published_owner() {
+        let parsed = hew_parser::parse(
+            r#"
+trait Greet {
+    fn simple(self) -> i64 { 42 }
+    fn greeting(self) -> string { "hello" }
+}
+"#,
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+        let owner = hew_types::DefId::new("support.greeting.Greet");
+        let bindings = ["simple", "greeting"]
+            .into_iter()
+            .map(|method| {
+                (
+                    (None, "Greet".to_string(), method.to_string()),
+                    (
+                        owner.clone(),
+                        hew_types::DefId::new(format!("{}::{method}", owner.full_path())),
+                    ),
+                )
+            })
+            .collect();
+        let file_import_module_idx = HashMap::from([(0, 7)]);
+
+        let (defaults, module_indices) =
+            collect_trait_default_methods(&parsed.program, &file_import_module_idx, &bindings);
+
+        assert!(defaults.contains_key("support.greeting.Greet"));
+        assert!(!defaults.contains_key("Greet"));
+        assert_eq!(module_indices.get("support.greeting.Greet"), Some(&7));
+    }
 
     #[test]
     fn trait_method_identity_prefers_local_and_imported_same_leaf_traits_over_prelude_items() {

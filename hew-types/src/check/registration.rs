@@ -6220,13 +6220,15 @@ impl Checker {
                                         )
                                     })
                                 };
-                                if let Ok(receiver_args) = self_type_args
-                                    .iter()
-                                    .map(ResolvedTy::from_ty)
-                                    .collect::<Result<Vec<_>, _>>()
-                                {
+                                if let (Ok(receiver_args), Some((declaring_trait, _))) = (
+                                    self_type_args
+                                        .iter()
+                                        .map(ResolvedTy::from_ty)
+                                        .collect::<Result<Vec<_>, _>>(),
+                                    self.trait_method_call_target_ids(&tb.name, &m.name),
+                                ) {
                                     let declaration = crate::default_impl_method_declaration(
-                                        &crate::DefId::new(trait_key.clone()),
+                                        &declaring_trait,
                                         &crate::NominalInstance {
                                             nominal: crate::NominalId::new(receiver_name),
                                             args: receiver_args,

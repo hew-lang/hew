@@ -14,7 +14,7 @@ checker-hir-fact-relation	checker-relation-use	hew-hir/src/lower.rs	7	stage-2	re
 checker-hir-fact-relation	checker-relation-use	hew-types/src/check/expressions.rs	11	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	checker-relation-use	hew-types/src/check/mod.rs	15	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	checker-relation-variant	hew-types/src/check/types.rs	6	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	358	stage-2	rc1-F1 stage F reads plus four impl_method_declaration_ids reads that register lang-item Display bodies ahead of the third pass (direct primitive .fmt() dispatch, mirrors plan_imported_impl_bodies)
+checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	359	stage-2	rc1-F1 stage F reads plus canonical flat-file trait default owner harvest and four impl_method_declaration_ids reads that register lang-item Display bodies ahead of the third pass (direct primitive .fmt() dispatch, mirrors plan_imported_impl_bodies)
 checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/node.rs	5	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-consumer	hew-hir/src/verify.rs	8	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-consumer	hew-mir/src/lower/ownership.rs	4	stage-2	real checker/HIR produced-value carrier inventory

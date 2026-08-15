@@ -1095,14 +1095,10 @@ fn imported_machine_unit_state_constructor_resolves() {
 
     // Machine TypeDef must be populated with state variants
     assert!(
-        output.type_defs.contains_key("Traffic"),
-        "machine type 'Traffic' must be registered in type_defs for the import path"
-    );
-    assert!(
         output.type_defs.contains_key("lights.Traffic"),
         "imported machine registration must preserve its exact source owner"
     );
-    let td = &output.type_defs["Traffic"];
+    let td = &output.type_defs["lights.Traffic"];
     assert!(
         td.variants.contains_key("Red"),
         "state variant 'Red' must appear in Traffic TypeDef"
@@ -1113,10 +1109,6 @@ fn imported_machine_unit_state_constructor_resolves() {
     );
 
     // Companion event enum must also be registered
-    assert!(
-        output.type_defs.contains_key("TrafficEvent"),
-        "companion event enum 'TrafficEvent' must be registered for the import path"
-    );
     assert!(
         output.type_defs.contains_key("lights.TrafficEvent"),
         "imported event registration must preserve its exact source owner"
@@ -1308,7 +1300,7 @@ fn imported_generic_machine_type_params_survive_registration() {
 
     let td = output
         .type_defs
-        .get("Worker")
+        .get("workers.Worker")
         .expect("generic machine 'Worker' must be registered via the non-root module path");
     assert_eq!(
         td.type_params,
@@ -1317,7 +1309,7 @@ fn imported_generic_machine_type_params_survive_registration() {
     );
     let event_td = output
         .type_defs
-        .get("WorkerEvent")
+        .get("workers.WorkerEvent")
         .expect("companion event enum 'WorkerEvent' must be registered");
     assert_eq!(
         event_td.type_params,

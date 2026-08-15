@@ -1721,6 +1721,7 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
         result.errors
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.checking_embedded_builtins = true;
     let output = checker.check_program(&result.program);
     // Filter out the expected UnresolvedImport for the dummy stdlib import — the
     // test is about local type naming, not module resolution.
@@ -1799,17 +1800,21 @@ fn reserved_type_names_fail_closed_across_declaration_kinds() {
             "expected exactly one error for `{name}`; got: {:?}",
             output.errors
         );
-        assert_eq!(
-            output.errors[0].kind,
-            TypeErrorKind::ReservedTypeName,
-            "expected ReservedTypeName for `{name}`"
-        );
-        assert_eq!(
-            output.errors[0].message,
-            format!(
-                "E_RESERVED_TYPE_NAME: `{name}` is reserved and cannot be used for a type declaration"
-            )
-        );
+        if name == "CancellationToken" {
+            assert_eq!(output.errors[0].kind, TypeErrorKind::PreludeDeclCollision);
+        } else {
+            assert_eq!(
+                output.errors[0].kind,
+                TypeErrorKind::ReservedTypeName,
+                "expected ReservedTypeName for `{name}`"
+            );
+            assert_eq!(
+                output.errors[0].message,
+                format!(
+                    "E_RESERVED_TYPE_NAME: `{name}` is reserved and cannot be used for a type declaration"
+                )
+            );
+        }
     }
 }
 

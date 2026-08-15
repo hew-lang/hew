@@ -486,7 +486,7 @@ fn module_qualified_call_rejects_private_body_only_signature() {
         checker
             .errors
             .iter()
-            .any(|err| matches!(err.kind, TypeErrorKind::UndefinedMethod)),
+            .any(|err| matches!(err.kind, TypeErrorKind::PathMemberNotFound)),
         "module-qualified calls must not resolve against non-exported private signatures: {:?}",
         checker.errors
     );

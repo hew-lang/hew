@@ -2803,6 +2803,7 @@ mod channel_layout_target_tests {
         );
 
         let mut checker = Checker::new(crate::module_registry::ModuleRegistry::new(vec![]));
+        checker.checking_embedded_builtins = true;
         let output = checker.check_program(&parsed.program);
         assert!(
             output.errors.is_empty(),

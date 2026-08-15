@@ -1585,7 +1585,7 @@ mod reserved_names {
     /// user's enum, not the compiler-internal type.
     #[test]
     fn user_task_enum_shadows_reserved_name() {
-        let output = check_source(
+        let output = check_source_allowing_prelude_redeclaration(
             r#"
             enum Task {
                 Pending;

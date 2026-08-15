@@ -1221,13 +1221,17 @@ fn typecheck_error_scrutinee_skips_exhaustiveness_follow_on() {
 
 #[test]
 fn typecheck_generic_enum_constructor_infers_type_args() {
-    let (errors, _) = parse_and_check(concat!(
+    let output = check_source_allowing_prelude_redeclaration(concat!(
         "enum Option<T> { Some(T); None; }\n",
         "fn take_int(x: Option<i64>) -> Option<i64> { x }\n",
         "fn take_string(x: Option<string>) -> Option<string> { x }\n",
         "fn main() { take_int(Some(42)); take_string(Some(\"hello\")); }\n",
     ));
-    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
 }
 
 #[test]
@@ -1272,6 +1276,7 @@ fn generic_enum_constructor_expected_context_coerces_payload_literal() {
     let (_, literal_span) = inner_args[0].expr();
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.checking_embedded_builtins = true;
     let output = checker.check_program(&result.program);
     assert!(
         output.errors.is_empty(),

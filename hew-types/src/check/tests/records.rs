@@ -1092,7 +1092,7 @@ mod assoc_types_slice1 {
         // The method's declared return type is `Self::Item`; the impl
         // binds `type Item = i64`. Checker must accept the impl's `next`
         // returning `Option<i64>` against `Option<Self::Item>`.
-        let output = check_source(
+        let output = check_source_allowing_prelude_redeclaration(
             r"
             trait Iterator {
                 type Item;

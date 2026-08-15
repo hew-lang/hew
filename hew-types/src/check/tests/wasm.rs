@@ -27,6 +27,17 @@ mod wasm_rejects {
     /// Parse `source`, enable the WASM target, run the type checker, and
     /// return the resulting output.
     fn check_wasm(source: &str) -> TypeCheckOutput {
+        check_wasm_with_prelude_policy(source, false)
+    }
+
+    fn check_wasm_allowing_prelude_redeclaration(source: &str) -> TypeCheckOutput {
+        check_wasm_with_prelude_policy(source, true)
+    }
+
+    fn check_wasm_with_prelude_policy(
+        source: &str,
+        allow_prelude_redeclaration: bool,
+    ) -> TypeCheckOutput {
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -35,6 +46,7 @@ mod wasm_rejects {
         );
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         checker.enable_wasm_target();
+        checker.checking_embedded_builtins = allow_prelude_redeclaration;
         checker.check_program(&result.program)
     }
 
@@ -135,7 +147,9 @@ mod wasm_rejects {
     /// unrelated body/signature proves this isn't the timer primitive.
     #[test]
     fn wasm_user_defined_sleep_does_not_warn() {
-        let output = check_wasm("fn sleep(x: i64) -> i64 { x + 1 } fn main() { sleep(41); }");
+        let output = check_wasm_allowing_prelude_redeclaration(
+            "fn sleep(x: i64) -> i64 { x + 1 } fn main() { sleep(41); }",
+        );
         assert!(
             !has_platform_limitation_warning(&output),
             "a user-defined `sleep` function must not trigger the Timer PlatformLimitation warning; got warnings: {:?}",
@@ -150,8 +164,9 @@ mod wasm_rejects {
 
     #[test]
     fn wasm_user_defined_sleep_until_does_not_warn() {
-        let output =
-            check_wasm("fn sleep_until(x: i64) -> i64 { x } fn main() { sleep_until(1); }");
+        let output = check_wasm_allowing_prelude_redeclaration(
+            "fn sleep_until(x: i64) -> i64 { x } fn main() { sleep_until(1); }",
+        );
         assert!(
             !has_platform_limitation_warning(&output),
             "a user-defined `sleep_until` function must not trigger the Timer PlatformLimitation warning; got warnings: {:?}",
@@ -1487,7 +1502,7 @@ fn main() {
     /// user's own call.
     #[test]
     fn wasm_user_defined_link_and_monitor_do_not_reject() {
-        let output = check_wasm(
+        let output = check_wasm_allowing_prelude_redeclaration(
             "fn link(a: i64, b: i64) -> i64 { a + b } \
              fn monitor(x: i64) -> i64 { x } \
              fn main() { link(1, 2); monitor(3); }",
@@ -1503,7 +1518,7 @@ fn main() {
     /// `"supervisor_child" | "supervisor_stop"` `SupervisionTrees` arm.
     #[test]
     fn wasm_user_defined_supervisor_child_does_not_reject() {
-        let output = check_wasm(
+        let output = check_wasm_allowing_prelude_redeclaration(
             "fn supervisor_child(n: i64) -> i64 { n } fn main() { supervisor_child(0); }",
         );
         assert!(

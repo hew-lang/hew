@@ -1922,6 +1922,10 @@ fn cmd_fmt(a: &args::FmtArgs) {
         a.files.clone()
     };
 
+    if checked_migration_in_snapshot(a, &files) {
+        return;
+    }
+
     let mut had_errors = false;
     let mut needs_formatting = false;
     let mut formatted_files = Vec::new();
@@ -1984,6 +1988,20 @@ fn cmd_fmt(a: &args::FmtArgs) {
     }
 }
 
+fn checked_migration_in_snapshot(a: &args::FmtArgs, files: &[PathBuf]) -> bool {
+    if !a.migrate || !a.check {
+        return false;
+    }
+    let root = a
+        .files
+        .is_empty()
+        .then(|| a.root.as_deref().unwrap_or_else(|| Path::new(".")));
+    match migration_snapshot_needs_changes(files, root) {
+        Ok(false) => true,
+        Ok(true) | Err(()) => std::process::exit(1),
+    }
+}
+
 fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     if !root.is_dir() {
         return Err(format!(
@@ -2020,6 +2038,126 @@ fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
         ));
     }
     Ok(files)
+}
+
+fn migration_snapshot_needs_changes(files: &[PathBuf], root: Option<&Path>) -> Result<bool, ()> {
+    let snapshot = tempfile::tempdir().map_err(|error| {
+        eprintln!("Error: cannot create migration check snapshot: {error}");
+    })?;
+    let mut mapped_files = Vec::with_capacity(files.len());
+
+    if let Some(root) = root {
+        let snapshot_root = snapshot.path().join("root");
+        copy_migration_snapshot_tree(root, &snapshot_root).map_err(|error| {
+            eprintln!("Error: cannot create migration check snapshot: {error}");
+        })?;
+        for file in files {
+            let relative = file.strip_prefix(root).map_err(|error| {
+                eprintln!(
+                    "Error: cannot map {} into migration check snapshot: {error}",
+                    file.display()
+                );
+            })?;
+            mapped_files.push((file.clone(), snapshot_root.join(relative)));
+        }
+    } else {
+        for (index, file) in files.iter().enumerate() {
+            let parent = file
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let snapshot_parent = snapshot.path().join(format!("input-{index}"));
+            copy_migration_snapshot_tree(parent, &snapshot_parent).map_err(|error| {
+                eprintln!("Error: cannot create migration check snapshot: {error}");
+            })?;
+            let Some(file_name) = file.file_name() else {
+                eprintln!(
+                    "Error: migration input has no file name: {}",
+                    file.display()
+                );
+                return Err(());
+            };
+            mapped_files.push((file.clone(), snapshot_parent.join(file_name)));
+        }
+    }
+
+    let mut regenerated = Vec::with_capacity(mapped_files.len());
+    for (original, mapped) in &mapped_files {
+        let file = original.display().to_string();
+        let source = std::fs::read_to_string(mapped).map_err(|error| {
+            eprintln!("Error: cannot read migration snapshot for {file}: {error}");
+        })?;
+        let migrated = migrate_source_file(mapped, &file, &source)?;
+        let Some(formatted) = format_for_display(&file, &migrated) else {
+            return Err(());
+        };
+        regenerated.push((mapped, source, formatted));
+    }
+
+    for (mapped, source, formatted) in regenerated {
+        if formatted != source {
+            std::fs::write(mapped, formatted).map_err(|error| {
+                eprintln!(
+                    "Error: cannot write migration check snapshot {}: {error}",
+                    mapped.display()
+                );
+            })?;
+        }
+    }
+
+    let mut needs_changes = false;
+    for (original, mapped) in mapped_files {
+        let original_bytes = std::fs::read(&original).map_err(|error| {
+            eprintln!("Error: cannot read {}: {error}", original.display());
+        })?;
+        let regenerated_bytes = std::fs::read(&mapped).map_err(|error| {
+            eprintln!(
+                "Error: cannot read migration check snapshot {}: {error}",
+                mapped.display()
+            );
+        })?;
+        if original_bytes != regenerated_bytes {
+            eprintln!("{}: needs formatting", original.display());
+            needs_changes = true;
+        }
+    }
+    Ok(needs_changes)
+}
+
+fn copy_migration_snapshot_tree(source: &Path, destination: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(destination)
+        .map_err(|error| format!("cannot create `{}`: {error}", destination.display()))?;
+    let entries = std::fs::read_dir(source)
+        .map_err(|error| format!("cannot read `{}`: {error}", source.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("cannot read directory entry: {error}"))?;
+        let path = entry.path();
+        let target = destination.join(entry.file_name());
+        if path.is_dir() {
+            if !matches!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some(".git" | "target")
+            ) {
+                copy_migration_snapshot_tree(&path, &target)?;
+            }
+            continue;
+        }
+        let is_hew_source = path.extension().is_some_and(|extension| extension == "hew");
+        let is_project_metadata = matches!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("hew.toml" | "hew.lock")
+        );
+        if is_hew_source || is_project_metadata {
+            std::fs::copy(&path, &target).map_err(|error| {
+                format!(
+                    "cannot copy `{}` to `{}`: {error}",
+                    path.display(),
+                    target.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
 }
 
 #[expect(

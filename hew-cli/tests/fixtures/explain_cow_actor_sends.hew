@@ -7,13 +7,11 @@
 // The golden test verifies that both sites appear in --explain-cow output
 // with MIR-authored ownership modes.
 actor Printer {
-    receive fn print_message(msg: string) {
-    }
+    receive fn print_message(msg: string) {}
 }
 
 actor Counter {
-    receive fn increment(amount: i64) {
-    }
+    receive fn increment(amount: i64) {}
 }
 
 fn main() {

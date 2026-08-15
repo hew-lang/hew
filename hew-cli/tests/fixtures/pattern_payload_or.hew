@@ -17,10 +17,10 @@ fn describe(e: ParseError) -> string {
 }
 
 fn main() {
-    print(describe(ParseError::UnclosedBlock("block-msg")));
+    print(describe(ParseError.UnclosedBlock("block-msg")));
     print("\n");
-    print(describe(ParseError::UnknownDirective("dir-msg")));
+    print(describe(ParseError.UnknownDirective("dir-msg")));
     print("\n");
-    print(describe(ParseError::Empty));
+    print(describe(ParseError.Empty));
     print("\n");
 }

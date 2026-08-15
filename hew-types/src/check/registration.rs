@@ -2752,6 +2752,7 @@ impl Checker {
         self.suppress_undefined_type_report = true;
 
         if let Some(ref mg) = program.module_graph {
+            let span_indices = mg.file_span_indices();
             for mod_id in &mg.topo_order {
                 if *mod_id == mg.root {
                     continue;
@@ -2763,7 +2764,10 @@ impl Checker {
                 let saved_local_type_defs = self.local_type_defs.clone();
                 let saved_source_type_defs = self.source_type_defs.clone();
                 self.seed_member_reresolution_scope(&module.items);
-                for (item, item_span) in &module.items {
+                for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
+                    self.current_module_idx = span_indices
+                        .item_index(mod_id, item_idx)
+                        .unwrap_or_default();
                     if member_item_is_absorbed_from_distinct_child(
                         program,
                         &preferred_modules,
@@ -2781,6 +2785,7 @@ impl Checker {
         }
 
         self.current_module = None;
+        self.current_module_idx = 0;
         let saved_local_type_defs = self.local_type_defs.clone();
         let saved_source_type_defs = self.source_type_defs.clone();
         self.seed_member_reresolution_scope(&program.items);
@@ -10718,7 +10723,13 @@ impl Checker {
                 } else {
                     // The full dot-path (e.g. "subpkg.helper") is the declaring-module
                     // identity used in access-check side tables.
-                    self.register_user_module(&short, &full_dot_path, resolved_items, &decl.spec);
+                    self.register_user_module(
+                        &short,
+                        &full_dot_path,
+                        resolved_items,
+                        &decl.resolved_item_source_paths,
+                        &decl.spec,
+                    );
                 }
             }
         } else if let Some(error) =
@@ -11862,6 +11873,7 @@ impl Checker {
         module_short: &str,
         module_full_path: &str,
         items: &[Spanned<Item>],
+        item_source_paths: &[std::path::PathBuf],
         spec: &Option<ImportSpec>,
     ) {
         // Record this module's own trait import bindings BEFORE any of its trait
@@ -11893,7 +11905,13 @@ impl Checker {
             }
         }
 
-        for (item, span) in items {
+        let importer_file_idx = self.current_module_idx;
+        for (item_idx, (item, span)) in items.iter().enumerate() {
+            let declaring_file_idx = item_source_paths
+                .get(item_idx)
+                .and_then(|source| self.source_file_span_indices.get(source))
+                .copied()
+                .unwrap_or(importer_file_idx);
             match item {
                 Item::Function(fd) => {
                     let qualified = format!("{module_full_path}.{}", fd.name);
@@ -11925,8 +11943,10 @@ impl Checker {
                     // never the importer's bare/surface spelling.
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
                     let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
                     self.current_module = saved_importer_module;
+                    self.current_module_idx = importer_file_idx;
                     // Only `Pub` functions are module exports: `package fn` must
                     // pass the access-allowed check at every call site, so it must
                     // NOT bypass the check by entering the exports set.  Non-pub
@@ -11961,6 +11981,7 @@ impl Checker {
                     if let Some(intrinsic_key) = &fd.intrinsic {
                         let saved_importer_module =
                             self.current_module.replace(module_full_path.to_string());
+                        self.current_module_idx = declaring_file_idx;
                         self.register_intrinsic_declaration(
                             qualified.clone(),
                             intrinsic_key,
@@ -11968,6 +11989,7 @@ impl Checker {
                             fd,
                         );
                         self.current_module = saved_importer_module;
+                        self.current_module_idx = importer_file_idx;
                     }
 
                     // If named import or glob, also register unqualified (using alias if present).
@@ -12032,9 +12054,11 @@ impl Checker {
                             self.type_defs.get(&qualified_type).cloned().or_else(|| {
                                 let saved_importer_module =
                                     self.current_module.replace(module_full_path.to_string());
+                                self.current_module_idx = declaring_file_idx;
                                 self.register_type_decl(td);
                                 let source_def = self.type_defs.get(&td.name).cloned();
                                 self.current_module = saved_importer_module;
+                                self.current_module_idx = importer_file_idx;
                                 source_def
                             });
                         if let Some(source_def) = source_def.as_ref() {
@@ -12051,9 +12075,11 @@ impl Checker {
                     // use-time ambiguity candidate naming.
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
                     self.register_type_decl(td);
                     let source_def = self.type_defs.get(&td.name).cloned();
                     self.current_module = saved_importer_module;
+                    self.current_module_idx = importer_file_idx;
                     if spec.is_none() {
                         self.register_qualified_type_alias(module_short, &td.name);
                     }
@@ -12128,9 +12154,14 @@ impl Checker {
                     let event_name = format!("{}Event", md.name);
                     // Qualified authority is always published for the machine
                     // and its companion event enum.
+                    let saved_importer_module =
+                        self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
                     self.register_machine_decl(md, span);
                     let machine_def = self.type_defs.get(&md.name).cloned();
                     let event_def = self.type_defs.get(&event_name).cloned();
+                    self.current_module = saved_importer_module;
+                    self.current_module_idx = importer_file_idx;
                     self.register_qualified_type_alias(module_short, &md.name);
                     self.register_qualified_type_alias(module_short, &event_name);
                     if let Some(machine_def) = machine_def.as_ref() {
@@ -12200,12 +12231,17 @@ impl Checker {
                 }
                 Item::Trait(tr) => {
                     if let Some(supers) = &tr.super_traits {
+                        let saved_importer_module =
+                            self.current_module.replace(module_full_path.to_string());
+                        self.current_module_idx = declaring_file_idx;
                         for super_trait in supers {
                             self.mark_imported_trait_used(
                                 Some(module_full_path),
                                 &super_trait.name,
                             );
                         }
+                        self.current_module = saved_importer_module;
+                        self.current_module_idx = importer_file_idx;
                     }
                     // Record visibility for all traits so the enforcement check can
                     // distinguish "private, not accessible" from "unknown symbol".
@@ -12270,6 +12306,9 @@ impl Checker {
                     // import-only-`Sub` would fail to find its supertrait's method
                     // set, falsely rejecting an inline supermethod as extra).
                     if let Some(supers) = &tr.super_traits {
+                        let saved_importer_module =
+                            self.current_module.replace(module_full_path.to_string());
+                        self.current_module_idx = declaring_file_idx;
                         let super_keys: Vec<String> = supers
                             .iter()
                             .map(|s| {
@@ -12277,6 +12316,8 @@ impl Checker {
                                 self.resolve_super_trait_edge(module_full_path, &s.name)
                             })
                             .collect();
+                        self.current_module = saved_importer_module;
+                        self.current_module_idx = importer_file_idx;
                         self.trait_super
                             .insert(qualified.clone(), super_keys.clone());
                         if let Some(binding_name) = import_binding.as_ref() {
@@ -12333,7 +12374,12 @@ impl Checker {
                     if !cd.visibility.is_pub() {
                         continue;
                     }
+                    let saved_importer_module =
+                        self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
                     let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
+                    self.current_module = saved_importer_module;
+                    self.current_module_idx = importer_file_idx;
                     let qualified = format!("{module_full_path}.{}", cd.name);
                     self.env.define(qualified, ty.clone(), false);
                     if Self::should_import_name(&cd.name, spec) {
@@ -12359,6 +12405,7 @@ impl Checker {
                     // which are not represented in the graph.
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
                     if let TypeExpr::Named {
                         name: type_name,
                         type_args,
@@ -12422,6 +12469,7 @@ impl Checker {
                         }
                     }
                     self.current_module = saved_importer_module;
+                    self.current_module_idx = importer_file_idx;
                 }
                 Item::Actor(ad) => {
                     // Record visibility for all actors so a cross-module qualified
@@ -12485,8 +12533,10 @@ impl Checker {
                     // references and handler keys canonical.
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
                     self.register_actor_base(ad, Some(module_full_path));
                     self.current_module = saved_importer_module;
+                    self.current_module_idx = importer_file_idx;
                     self.qualify_colliding_receive_reply_tys(ad, module_full_path);
                     // The source owner is the authoritative export key.  Keep
                     // the lexical module binding as a compatibility index for
@@ -12523,8 +12573,10 @@ impl Checker {
                     if has_unregistered_signature {
                         let saved_importer_module =
                             self.current_module.replace(module_full_path.to_string());
+                        self.current_module_idx = declaring_file_idx;
                         self.register_extern_block(eb);
                         self.current_module = saved_importer_module;
+                        self.current_module_idx = importer_file_idx;
                     }
                 }
                 _ => {}

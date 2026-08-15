@@ -1301,19 +1301,30 @@ fn materialized_default_body_plan(
 fn plan_imported_impl_bodies(
     ctx: &mut LowerCtx,
     program: &Program,
+    file_import_module_idx: &HashMap<usize, u32>,
     file_import_modules: &HashSet<hew_parser::module::ModuleId>,
     preferred_modules: &HashSet<hew_parser::module::ModuleId>,
+    span_indices: &hew_parser::module::FileSpanIndices,
 ) {
     let empty_skips = HashSet::new();
     // Source-order bodies include root declarations and flattened file imports.
     // They may be called before their tail-spliced item is emitted.
-    for (item, _) in &program.items {
+    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_module_idx = file_import_module_idx
+            .get(&item_idx)
+            .copied()
+            .unwrap_or_default();
+        ctx.current_module_name = span_indices
+            .module_name(ctx.current_module_idx)
+            .map(str::to_string);
         if let Item::Impl(impl_decl) = item {
             if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
                 plan_impl_block_symbols(ctx, impl_decl, name, &empty_skips);
             }
         }
     }
+    ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
 
     let Some(module_graph) = &program.module_graph else {
         return;
@@ -1359,7 +1370,11 @@ fn plan_imported_impl_bodies(
                 )
             })
             .collect();
-        for (item, _) in &module.items {
+        let previous_module_idx = ctx.current_module_idx;
+        for (item_idx, (item, _)) in module.items.iter().enumerate() {
+            ctx.current_module_idx = span_indices
+                .item_index(module_id, item_idx)
+                .unwrap_or_default();
             let Item::Impl(impl_decl) = item else {
                 continue;
             };
@@ -1373,6 +1388,7 @@ fn plan_imported_impl_bodies(
             let base_symbol_self_name = format!("{source_module}.{name}");
             plan_impl_block_symbols(ctx, impl_decl, &base_symbol_self_name, &skip_methods);
         }
+        ctx.current_module_idx = previous_module_idx;
         ctx.current_module_name = previous_module;
     }
 }
@@ -2898,7 +2914,11 @@ pub fn lower_program_with_mono_cap(
                 // by the full dotted path) instead of freezing as a bare name
                 // that MIR cannot resolve.
                 let saved_module_name = ctx.current_module_name.replace(module_full_path.clone());
-                for (item, item_span) in &module.items {
+                let saved_module_idx = ctx.current_module_idx;
+                for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
+                    ctx.current_module_idx = span_indices
+                        .item_index(mod_id, item_idx)
+                        .unwrap_or_default();
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
                             if item_is_duplicated_in_distinct_leaf_module(
@@ -3111,6 +3131,7 @@ pub fn lower_program_with_mono_cap(
                         | Item::Supervisor(_) => {}
                     }
                 }
+                ctx.current_module_idx = saved_module_idx;
                 ctx.current_module_name = saved_module_name;
             }
         }
@@ -3175,7 +3196,14 @@ pub fn lower_program_with_mono_cap(
     // user record?" regardless of declaration order relative to the
     // function that uses it. This mirrors the fn pre-pass above and is
     // the producer half of the record-layout registry.
-    for (item, _) in &program.items {
+    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_module_idx = file_import_module_idx
+            .get(&item_idx)
+            .copied()
+            .unwrap_or_default();
+        ctx.current_module_name = span_indices
+            .module_name(ctx.current_module_idx)
+            .map(str::to_string);
         match item {
             Item::TypeDecl(decl) => {
                 let id = ctx.ids.item();
@@ -3271,6 +3299,8 @@ pub fn lower_program_with_mono_cap(
             | Item::Supervisor(_) => {}
         }
     }
+    ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
     // Pre-pass: target architecture gates (P0.1-P0.4 fail-closed runtime-panic
     // prevention). Check if the program uses coroutine-dependent constructs
     // (actors/tasks) or wasm32-unsupported constructs (blocking channel recv)
@@ -3850,11 +3880,20 @@ pub fn lower_program_with_mono_cap(
     }
     ctx.current_module_idx = 0;
     ctx.current_module_name = None;
-    for (item, _) in &program.items {
+    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_module_idx = file_import_module_idx
+            .get(&item_idx)
+            .copied()
+            .unwrap_or_default();
+        ctx.current_module_name = span_indices
+            .module_name(ctx.current_module_idx)
+            .map(str::to_string);
         if let Item::Machine(machine) = item {
             ctx.register_machine_ctor_variant_metadata(None, machine);
         }
     }
+    ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root {
@@ -3866,7 +3905,11 @@ pub fn lower_program_with_mono_cap(
                 // #2202: canonicalise this module's imported enum-payload and
                 // machine state/event member aliases under its own context.
                 let saved_module_name = ctx.current_module_name.replace(source_module.clone());
-                for (item, span) in &module.items {
+                let saved_module_idx = ctx.current_module_idx;
+                for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    ctx.current_module_idx = span_indices
+                        .item_index(mod_id, item_idx)
+                        .unwrap_or_default();
                     match item {
                         Item::TypeDecl(decl)
                             if decl.visibility.is_pub() && decl.kind == TypeDeclKind::Enum =>
@@ -3905,6 +3948,7 @@ pub fn lower_program_with_mono_cap(
                     }
                 }
                 ctx.tag_diagnostics_since(diag_start, &source_module);
+                ctx.current_module_idx = saved_module_idx;
                 ctx.current_module_name = saved_module_name;
             }
         }
@@ -3953,7 +3997,11 @@ pub fn lower_program_with_mono_cap(
                 // the HIR descriptors MIR consumes; resolve their alias-typed
                 // members under this module's own context.
                 let saved_module_name = ctx.current_module_name.replace(source_module.clone());
-                for (item, span) in &module.items {
+                let saved_module_idx = ctx.current_module_idx;
+                for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    ctx.current_module_idx = span_indices
+                        .item_index(mod_id, item_idx)
+                        .unwrap_or_default();
                     match item {
                         Item::TypeDecl(decl)
                             if decl.visibility.is_pub()
@@ -4178,6 +4226,7 @@ pub fn lower_program_with_mono_cap(
                     }
                 }
                 ctx.tag_diagnostics_since(diag_start, &source_module);
+                ctx.current_module_idx = saved_module_idx;
                 ctx.current_module_name = saved_module_name;
             }
         }
@@ -4311,7 +4360,14 @@ pub fn lower_program_with_mono_cap(
     // package method whose HIR function is emitted later in the fourth pass.
     // This plan is declaration-keyed and uses the same imported-body skip
     // authority as that fourth pass; `fn_registry` never serves as proof.
-    plan_imported_impl_bodies(&mut ctx, program, &file_import_modules, &preferred_modules);
+    plan_imported_impl_bodies(
+        &mut ctx,
+        program,
+        &file_import_module_idx,
+        &file_import_modules,
+        &preferred_modules,
+        &span_indices,
+    );
 
     // Third pass: emit all items in source order now that both fn signatures
     // and type markers are fully resolved.

@@ -466,9 +466,11 @@ impl Checker {
         self.canonical_std_root_sources.clear();
         self.module_source_paths.clear();
         self.module_item_sources.clear();
+        self.source_file_span_indices.clear();
         self.current_item_source = None;
         self.file_type_decls.clear();
         if let Some(module_graph) = &program.module_graph {
+            let span_indices = module_graph.file_span_indices();
             self.module_item_sources
                 .clone_from(&module_graph.item_sources);
             // `hew check std/foo.hew` rewrites the graph root to a synthetic,
@@ -485,6 +487,13 @@ impl Checker {
                 if !module.source_paths.is_empty() {
                     self.module_source_paths
                         .insert(module_full_path.clone(), module.source_paths.clone());
+                    for source in &module.source_paths {
+                        if let Some(index) = span_indices.path_index(source) {
+                            self.source_file_span_indices
+                                .entry(source.clone())
+                                .or_insert(index);
+                        }
+                    }
                 }
                 if module.source_paths.iter().any(|source| {
                     crate::module_registry::is_canonical_stdlib_module_source(

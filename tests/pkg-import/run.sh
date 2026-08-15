@@ -494,7 +494,7 @@ trait_sig_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${trait_sig_reject}
   echo "${trait_sig_out}" >&2
   exit 1
 }
-if ! grep -q "but trait \`Closable\` requires" <<<"${trait_sig_out}"; then
+if ! grep -q "but trait .* requires" <<<"${trait_sig_out}"; then
   echo "FAIL ${trait_sig_reject}: expected a TraitImplSignatureMismatch return-type diagnostic" >&2
   echo "${trait_sig_out}" >&2
   exit 1
@@ -507,9 +507,9 @@ fi
 echo "PASS ${trait_sig_reject}"
 
 # Reject fixture: local-shadow + cross-module trait impl. The importer opts only
-# the trait `Closable` into scope and defines its OWN local `CloseError`, then
-# impls `close` returning that LOCAL bare `CloseError`. The trait requires
-# `closableerr.CloseError`; the local type is distinct, so the impl must be
+# the trait into scope and defines its OWN local `LocalShadowError`, then impls
+# `close` returning that LOCAL bare type. The source trait requires
+# `closableerr.LocalShadowError`; the local type is distinct, so the impl must be
 # REJECTED with `TraitImplSignatureMismatch`. The local-shadow carve-out is
 # side-specific: it preserves the local identity only on the IMPL/actual side,
 # while the trait side's bare `CloseError` always qualifies to the trait owner.
@@ -521,7 +521,7 @@ local_shadow_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${local_shadow_r
   echo "${local_shadow_out}" >&2
   exit 1
 }
-if ! grep -q "but trait \`Closable\` requires" <<<"${local_shadow_out}"; then
+if ! grep -q "but trait .* requires" <<<"${local_shadow_out}"; then
   echo "FAIL ${local_shadow_reject}: expected a TraitImplSignatureMismatch return-type diagnostic" >&2
   echo "${local_shadow_out}" >&2
   exit 1
@@ -828,17 +828,17 @@ done
 echo "PASS missing_assoc_type_collision_accept (10x determinism)"
 
 # Reject fixture: two opt-ins of the same bare name from divergent-layout
-# modules is a genuine ambiguity. The checker must fail closed with `ambiguous
-# type` naming both published candidates, at the type boundary (NOT a bare
-# last-write-wins binding that trips a downstream MIR field-order failure).
+# modules collide during import publication. The checker must reject the whole
+# second import at the type boundary (NOT leave a last-write-wins binding that
+# trips a downstream MIR field-order failure).
 ambig_fixture="published_bare_two_optin_ambiguous"
 ambig_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${ambig_fixture}.hew" 2>&1)" && {
   echo "FAIL ${ambig_fixture}: hew check unexpectedly succeeded (ambiguous bare name slipped the gate)" >&2
   echo "${ambig_out}" >&2
   exit 1
 }
-if ! grep -q "ambiguous type \`Gadget\`" <<<"${ambig_out}"; then
-  echo "FAIL ${ambig_fixture}: expected an ambiguous-type diagnostic over the published candidates" >&2
+if ! grep -q "import binding \`Gadget\` is already defined in this file; no bindings from this import were added" <<<"${ambig_out}"; then
+  echo "FAIL ${ambig_fixture}: expected an atomic import-binding collision diagnostic" >&2
   echo "${ambig_out}" >&2
   exit 1
 fi

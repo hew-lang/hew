@@ -2524,6 +2524,10 @@ pub struct Checker {
     /// no file identity, so this table is the sole sound authority for "which
     /// file declared item N of directory module M" (rc1-F1 stage C).
     pub(super) module_item_sources: HashMap<String, Vec<std::path::PathBuf>>,
+    /// Checker span-key index assigned to each non-root source file. Resolved
+    /// import copies use this table to re-enter their declaration's file-local
+    /// import scope instead of resolving signatures in the importing file.
+    pub(super) source_file_span_indices: HashMap<std::path::PathBuf, u32>,
     /// Defining source file of the item currently being registered, when the
     /// enclosing module recorded per-item attribution. `None` for the root
     /// unit and for hand-built module graphs.
@@ -3588,6 +3592,7 @@ impl Checker {
             canonical_std_module_sources: HashSet::new(),
             module_source_paths: HashMap::new(),
             module_item_sources: HashMap::new(),
+            source_file_span_indices: HashMap::new(),
             current_item_source: None,
             file_type_decls: HashMap::new(),
             canonical_std_root_sources: HashSet::new(),

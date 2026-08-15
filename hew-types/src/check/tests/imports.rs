@@ -169,6 +169,133 @@ fn peer_files_resolve_same_module_alias_from_their_own_imports() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the regression constructs a complete three-module graph with source attribution"
+)]
+fn resolved_module_copy_reenters_declaring_file_import_scope() {
+    let color_path: std::path::PathBuf = "pkgs/aliassrc.hew".into();
+    let consumer_path: std::path::PathBuf = "pkgs/deepalias.hew".into();
+    let mut color = hew_parser::parse("pub enum Color { Blue(i64); }");
+    let mut consumer = hew_parser::parse(
+        r"
+        import hew::aliassrc::{ Color as Hue };
+        pub type AliasBox { item: Hue; }
+        pub enum AliasWrap { Has(Hue); }
+        pub fn make() -> Hue { Hue::Blue(7) }
+        pub fn score() -> i64 {
+            let boxed: AliasBox = AliasBox { item: make() };
+            let wrapped: AliasWrap = AliasWrap::Has(boxed.item);
+            match wrapped {
+                AliasWrap::Has(color) => match color {
+                    Hue::Blue(value) => value,
+                    _ => 0,
+                },
+            }
+        }
+        ",
+    );
+    let mut root = hew_parser::parse("import hew::deepalias;");
+    for parsed in [&color, &consumer, &root] {
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture parse: {:?}",
+            parsed.errors
+        );
+    }
+
+    let color_item_count = color.program.items.len();
+    let consumer_import = consumer
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("consumer import");
+    consumer_import.resolved_items = Some(color.program.items.clone());
+    consumer_import.resolved_item_source_paths =
+        std::iter::repeat_n(color_path.clone(), color_item_count).collect();
+    consumer_import.resolved_source_paths = vec![color_path.clone()];
+
+    let consumer_item_count = consumer.program.items.len();
+    let root_import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("root import");
+    root_import.resolved_items = Some(consumer.program.items.clone());
+    root_import.resolved_item_source_paths =
+        std::iter::repeat_n(consumer_path.clone(), consumer_item_count).collect();
+    root_import.resolved_source_paths = vec![consumer_path.clone()];
+
+    let root_id = ModuleId::root();
+    let color_id = ModuleId::new(vec!["hew".to_string(), "aliassrc".to_string()]);
+    let consumer_id = ModuleId::new(vec!["hew".to_string(), "deepalias".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: color_id.clone(),
+            items: std::mem::take(&mut color.program.items),
+            imports: vec![],
+            source_paths: vec![color_path.clone()],
+            doc: None,
+        })
+        .expect("color module");
+    graph
+        .add_module(Module {
+            id: consumer_id.clone(),
+            items: consumer.program.items.clone(),
+            imports: vec![],
+            source_paths: vec![consumer_path.clone()],
+            doc: None,
+        })
+        .expect("consumer module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec!["main.hew".into()],
+            doc: None,
+        })
+        .expect("root module");
+    graph.item_sources.insert(
+        "hew.aliassrc".to_string(),
+        std::iter::repeat_n(color_path, color_item_count).collect(),
+    );
+    graph.item_sources.insert(
+        "hew.deepalias".to_string(),
+        std::iter::repeat_n(consumer_path, consumer_item_count).collect(),
+    );
+    graph.topo_order = vec![color_id, consumer_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: root.program.items,
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert!(
+        output.errors.is_empty(),
+        "resolved module copies must keep their source-file imports: {:#?}",
+        output.errors
+    );
+    assert_eq!(
+        output
+            .fn_sigs
+            .get("hew.deepalias.make")
+            .map(|sig| &sig.return_type),
+        Some(&Ty::named("hew.aliassrc.Color", vec![]))
+    );
+}
+
+#[test]
 fn failed_member_lookup_explains_lexical_module_shadowing() {
     let mut root =
         hew_parser::parse("import helper as util; fn probe(util: i64) { util.missing(); }");

@@ -7604,10 +7604,34 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        if let Expr::GenericApplySuffix { target, type_args } = &receiver.0 {
+            if let Expr::Identifier(type_name) = &target.0 {
+                if self.env.lookup_ref(type_name).is_none()
+                    && (self.type_defs.contains_key(type_name)
+                        || crate::lookup_builtin_type(type_name).is_some())
+                {
+                    let function = (
+                        Expr::Identifier(format!("{type_name}::{method}")),
+                        target.1.clone(),
+                    );
+                    return self.check_call(&function, Some(type_args), args, span);
+                }
+            }
+        }
         // Module-qualified calls: e.g. http.listen(addr) → lookup "http.listen" in fn_sigs
         if let Expr::Identifier(name) = &receiver.0 {
             let receiver_is_binding = self.env.lookup_ref(name).is_some();
             let receiver_is_known_type = self.type_defs.contains_key(name);
+            let dotted_constructor = format!("{name}::{method}");
+            if !receiver_is_binding
+                && receiver_is_known_type
+                && self
+                    .lookup_variant_constructor(&dotted_constructor)
+                    .is_some()
+            {
+                let constructor = (Expr::Identifier(dotted_constructor), receiver.1.clone());
+                return self.check_call(&constructor, None, args, span);
+            }
             let receiver_shadows_module = receiver_is_binding
                 && self.module_import_bindings.contains_key(&(
                     self.current_module.clone(),

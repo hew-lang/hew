@@ -2103,7 +2103,11 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
             continue;
         };
 
-        let replacement = if is_pattern {
+        let is_contextual_expression = error
+            .suggestions
+            .iter()
+            .any(|suggestion| suggestion == &format!("replace `{name}` with `.{name}`"));
+        let replacement = if is_pattern || is_contextual_expression {
             format!(".{name}")
         } else if let Some(owner) = typecheck
             .expr_types

@@ -256,7 +256,11 @@ fn fmt_file_parse_errors_render_cli_diagnostics() {
 fn fmt_migrate_uses_checker_resolved_variant_owners_and_check_is_non_destructive() {
     let dir = support::tempdir();
     let path = dir.path().join("legacy.hew");
-    let source = "enum Choice { Present(i64); }\n\nfn main() -> Choice { Present(42) }\n";
+    let source = concat!(
+        "enum Choice { Present(i64); }\n\n",
+        "fn contextual() -> Choice { Present(42) }\n",
+        "fn inferred() { let value = Present(7); }\n"
+    );
     std::fs::write(&path, source).unwrap();
 
     let check = Command::new(hew_binary())
@@ -281,8 +285,9 @@ fn fmt_migrate_uses_checker_resolved_variant_owners_and_check_is_non_destructive
         String::from_utf8_lossy(&migrate.stderr)
     );
     let migrated = std::fs::read_to_string(&path).unwrap();
+    assert!(migrated.contains(".Present(42)"), "migrated: {migrated}");
     assert!(
-        migrated.contains("Choice.Present(42)"),
+        migrated.contains("Choice.Present(7)"),
         "migrated: {migrated}"
     );
 
@@ -322,7 +327,7 @@ fn fmt_migrate_root_discovers_nested_hew_sources() {
     );
     assert!(std::fs::read_to_string(path)
         .unwrap()
-        .contains("Choice.Present(42)"));
+        .contains(".Present(42)"));
 }
 
 #[test]

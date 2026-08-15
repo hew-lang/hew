@@ -17524,6 +17524,83 @@ impl LowerCtx {
         let in_stmt_position = await_position == AwaitPosition::Statement;
         let in_bindable_value_position = await_position == AwaitPosition::BindableValueLet;
         let span = expr.1.clone();
+        if let Expr::Call {
+            function,
+            type_args,
+            args,
+            is_tail_call,
+        } = &expr.0
+        {
+            if let Expr::FieldAccess { object, field } = &function.0 {
+                if let Expr::Identifier(owner) = &object.0 {
+                    if hew_types::lookup_builtin_type(owner).is_some() {
+                        let compatibility = Expr::Call {
+                            function: Box::new((
+                                Expr::Identifier(format!("{owner}::{field}")),
+                                function.1.clone(),
+                            )),
+                            type_args: type_args.clone(),
+                            args: args.clone(),
+                            is_tail_call: *is_tail_call,
+                        };
+                        return self.lower_expr_inner(&(compatibility, span), intent);
+                    }
+                }
+            }
+        }
+        if let Expr::FieldAccess { object, field } = &expr.0 {
+            if let Expr::Identifier(owner) = &object.0 {
+                let qualified = format!("{owner}::{field}");
+                let checker_ty = self.checker_expr_ty_if_present(&span);
+                if matches!(
+                    self.lookup_variant_ctor(&qualified, checker_ty.as_ref()),
+                    Some((_, _, HirVariantKind::Unit))
+                ) {
+                    return self.lower_expr_inner(&(Expr::Identifier(qualified), span), intent);
+                }
+            }
+        }
+        if let Expr::MethodCall {
+            receiver,
+            method,
+            args,
+        } = &expr.0
+        {
+            if let Expr::GenericApplySuffix { target, type_args } = &receiver.0 {
+                if let Expr::Identifier(owner) = &target.0 {
+                    let compatibility = Expr::Call {
+                        function: Box::new((
+                            Expr::Identifier(format!("{owner}::{method}")),
+                            target.1.clone(),
+                        )),
+                        type_args: Some(type_args.clone()),
+                        args: args.clone(),
+                        is_tail_call: false,
+                    };
+                    return self.lower_expr_inner(&(compatibility, span), intent);
+                }
+            }
+            if let Expr::Identifier(owner) = &receiver.0 {
+                let qualified = format!("{owner}::{method}");
+                let checker_ty = self.checker_expr_ty_if_present(&span);
+                if !self
+                    .method_call_receiver_kinds
+                    .contains_key(&self.mk_key(&span))
+                    && matches!(
+                        self.lookup_variant_ctor(&qualified, checker_ty.as_ref()),
+                        Some((_, _, HirVariantKind::Tuple(_)))
+                    )
+                {
+                    let compatibility = Expr::Call {
+                        function: Box::new((Expr::Identifier(qualified), receiver.1.clone())),
+                        type_args: None,
+                        args: args.clone(),
+                        is_tail_call: false,
+                    };
+                    return self.lower_expr_inner(&(compatibility, span), intent);
+                }
+            }
+        }
         if let Expr::ContextVariant(context) = &expr.0 {
             let owner = self
                 .checker_expr_ty_if_present(&span)

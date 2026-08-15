@@ -88,6 +88,46 @@ fn read(value: Choice) -> i64 {
 }
 
 #[test]
+fn bare_variant_expression_suggestions_preserve_expected_type_context() {
+    let output = check_source(
+        r"
+enum Choice { Present(i64) }
+fn contextual() -> Choice { Present(7) }
+fn inferred() { let value = Present(9); }
+",
+    );
+    assert!(output.errors.is_empty(), "legacy form remains accepted");
+    let suggestions = output
+        .warnings
+        .iter()
+        .filter(|warning| warning.kind == TypeErrorKind::BareVariantExpr)
+        .flat_map(|warning| warning.suggestions.iter())
+        .collect::<Vec<_>>();
+    assert!(suggestions
+        .iter()
+        .any(|suggestion| suggestion.contains("with `.Present`")));
+    assert!(suggestions
+        .iter()
+        .any(|suggestion| suggestion.contains("with `Choice.Present`")));
+}
+
+#[test]
+fn dotted_owner_variants_typecheck_in_expression_position() {
+    let output = check_source(
+        r"
+enum Choice { Present(i64); Absent }
+fn tuple() -> Choice { Choice.Present(7) }
+fn unit() -> Choice { Choice.Absent }
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "dotted owner variants must typecheck: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn uppercase_pattern_binding_is_not_classified_as_a_variant() {
     let output = check_source(
         r"

@@ -4,7 +4,7 @@ enum Choice {
 }
 
 fn make() -> Choice {
-    Choice.Present(42)
+    .Present(42)
 }
 
 fn read(value: Choice) -> i64 {

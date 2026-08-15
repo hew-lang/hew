@@ -2522,10 +2522,58 @@ impl Checker {
                             };
                             resolution
                         }
-                        Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => {
-                            let payload_bindings = self
-                                .pending_pattern_plans
-                                .get(&key)
+                        Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                            let plan = self.pending_pattern_plans.get(&key).cloned();
+                            if let Some(plan) = &plan {
+                                for source_field in fields {
+                                    let Some((subpattern, sub_span)) = &source_field.pattern else {
+                                        continue;
+                                    };
+                                    let field_ty = plan
+                                        .fields
+                                        .iter()
+                                        .find(|field| field.name == source_field.name)
+                                        .map_or(Ty::Error, |field| field.ty.clone());
+                                    let nested_constructor = match subpattern {
+                                        Pattern::Identifier(name) => {
+                                            let resolved_field = self.project_assoc_types(
+                                                &self.subst.resolve(&field_ty),
+                                            );
+                                            self.resolve_variant_match(name, &resolved_field)
+                                                .is_some()
+                                        }
+                                        Pattern::NominalPath { .. }
+                                        | Pattern::ContextVariant(_) => true,
+                                        _ => false,
+                                    };
+                                    let label = if nested_constructor {
+                                        Some("nested constructor")
+                                    } else {
+                                        unsupported_payload_subpattern_label(subpattern)
+                                    };
+                                    if let Some(label) = label {
+                                        self.report_error_with_note(
+                                            crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
+                                                variant_name: name.to_string(),
+                                                kind_label: label.to_string(),
+                                            },
+                                            sub_span,
+                                            format!(
+                                                "payload subpattern `{label}` in `{name} {{ {} }}` is not yet supported",
+                                                source_field.name
+                                            ),
+                                            pattern_span,
+                                            "v0.5 payload subpatterns must be a plain binding (`x`) or wildcard (`_`); \
+                                             and literal predicates; nested patterns are reserved for a future \
+                                             match-destructure stage"
+                                                .to_string(),
+                                        );
+                                        return;
+                                    }
+                                }
+                            }
+                            let payload_bindings = plan
+                                .as_ref()
                                 .map(|plan| {
                                     plan.fields
                                         .iter()

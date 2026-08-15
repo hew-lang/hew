@@ -58,32 +58,15 @@ impl Checker {
             ))
             .cloned()
             .or_else(|| {
-                self.current_module.as_ref().and_then(|module| {
-                    self.trait_method_ids
-                        .get(&format!("{module}.{trait_name}::{method_name}"))
-                        .cloned()
-                })
+                self.trait_method_ids
+                    .get(&format!("{trait_name}::{method_name}"))
+                    .cloned()
             })
             .or_else(|| {
                 let declaring_trait = self.trait_ref_lookup_key(trait_name);
                 self.trait_method_ids
                     .get(&format!("{declaring_trait}::{method_name}"))
                     .cloned()
-            })
-            .or_else(|| {
-                self.trait_method_ids
-                    .get(&format!("{trait_name}::{method_name}"))
-                    .cloned()
-            })
-            .or_else(|| {
-                self.trait_method_ids.iter().find_map(|(key, ids)| {
-                    let (owner, method) = key.rsplit_once("::")?;
-                    let owner_leaf = owner.rsplit_once('.').map_or(owner, |(_, leaf)| leaf);
-                    let trait_leaf = trait_name
-                        .rsplit_once('.')
-                        .map_or(trait_name, |(_, leaf)| leaf);
-                    (method == method_name && owner_leaf == trait_leaf).then_some(ids.clone())
-                })
             })
     }
 }

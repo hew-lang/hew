@@ -484,6 +484,35 @@ fn foo(p: Point) -> i64 {
     }
 
     #[test]
+    fn qualified_record_variant_builds_pattern_plan() {
+        let output = check_source(
+            r#"
+enum State {
+    Loaded { label: string };
+    Empty;
+}
+
+fn label(state: State) -> string {
+    match state {
+        State::Loaded { label } => label,
+        State::Empty => "empty",
+    }
+}
+"#,
+        );
+        assert!(
+            output.errors.is_empty(),
+            "qualified record variant should check cleanly: {:#?}",
+            output.errors
+        );
+        assert_eq!(output.pattern_plans.len(), 1);
+        let plan = output.pattern_plans.values().next().unwrap();
+        assert_eq!(plan.fields.len(), 1);
+        assert_eq!(plan.fields[0].name, "label");
+        assert_eq!(plan.fields[0].sub, PlanSub::Binding("label".to_string()));
+    }
+
+    #[test]
     fn record_rest_unknown_or_duplicate_fields_publish_no_plan() {
         for (source, expected) in [
             (

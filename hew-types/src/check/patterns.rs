@@ -631,6 +631,10 @@ impl Checker {
         reason = "building the canonical plan keeps validation, declaration ordering, and subpattern classification in one authority"
     )]
     fn prepare_record_pattern_plan(&mut self, pattern: &Pattern, ty: &Ty, span: &Span) {
+        if let Some(compatibility) = compatibility_pattern(pattern) {
+            self.prepare_record_pattern_plan(&compatibility, ty, span);
+            return;
+        }
         let key = super::types::SpanKey::in_module(span, self.current_module_idx);
         if self.pending_pattern_plans.contains_key(&key)
             || self.invalid_pattern_plan_spans.contains(&key)

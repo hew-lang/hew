@@ -7344,10 +7344,10 @@ machine Traffic {
             include_str!("../../tests/fixtures/v05_result_option_ctors.hew"),
             "result_option_probe",
             &[
-                "Result",
+                "Outcome",
                 "Ok",
                 "Err",
-                "Option",
+                "Maybe",
                 "Some",
                 "None",
                 "result_option_probe",
@@ -7568,7 +7568,7 @@ machine Traffic {
         assert_v05_hover_contains("v05_record_decl", source, offset, "i64");
     }
 
-    // ── Group G: Result/Option constructors — enum-variant goto-definition ────
+    // ── Group G: generic enum constructors — enum-variant goto-definition ────
     //
     // Stage 2 targeted coverage for the `v05_result_option_ctors` fixture.
     // The Stage 0/1 smoke test (`v05_result_option_ctors_lsp_coverage`) only
@@ -7576,44 +7576,44 @@ machine Traffic {
     // that enum variant constructors at their call sites are navigable via
     // goto-definition.
     //
-    // Substrate note: `enum Result<T, E>` and `enum Option<T>` are both parsed
+    // Substrate note: `enum Outcome<T, E>` and `enum Maybe<T>` are both parsed
     // as `Item::TypeDecl(TypeDeclKind::Enum)`; their variant names are
     // `TypeBodyItem::Variant` nodes that `find_definition_in_ast` (via
     // `hew_analysis::definition::find_definition`) locates by name.
     // `rfind` therefore navigates from the last call-site occurrence of each
     // variant name to the variant declaration in the enum body.
 
-    /// `Result::Ok(…)` call site (last "Ok") must navigate to the `Ok(T);`
-    /// variant declaration in `enum Result`.
+    /// `Outcome::Ok(…)` call site (last "Ok") must navigate to the `Ok(T);`
+    /// variant declaration in `enum Outcome`.
     #[test]
     fn v05_result_option_ctors_ok_constructor_has_goto_definition() {
         let source = include_str!("../../tests/fixtures/v05_result_option_ctors.hew");
-        // rfind("Ok") = Result::Ok(result_option_probe()) constructor call site
+        // rfind("Ok") = Outcome::Ok(result_option_probe()) constructor call site
         assert_v05_goto_definition("v05_result_option_ctors", source, "Ok");
     }
 
-    /// `Result::Err(true)` call site (last "Err") must navigate to the `Err(E);`
-    /// variant declaration in `enum Result`.
+    /// `Outcome::Err(true)` call site (last "Err") must navigate to the `Err(E);`
+    /// variant declaration in `enum Outcome`.
     #[test]
     fn v05_result_option_ctors_err_constructor_has_goto_definition() {
         let source = include_str!("../../tests/fixtures/v05_result_option_ctors.hew");
         assert_v05_goto_definition("v05_result_option_ctors", source, "Err");
     }
 
-    /// `Option::Some(…)` call site (last "Some") must navigate to the `Some(T);`
-    /// variant declaration in `enum Option`.
+    /// `Maybe::Some(…)` call site (last "Some") must navigate to the `Some(T);`
+    /// variant declaration in `enum Maybe`.
     #[test]
     fn v05_result_option_ctors_some_constructor_has_goto_definition() {
         let source = include_str!("../../tests/fixtures/v05_result_option_ctors.hew");
         assert_v05_goto_definition("v05_result_option_ctors", source, "Some");
     }
 
-    /// `Option::None` unit-variant site (last "None") must navigate to the
-    /// `None;` variant declaration in `enum Option`.
+    /// `Maybe::None` unit-variant site (last "None") must navigate to the
+    /// `None;` variant declaration in `enum Maybe`.
     #[test]
     fn v05_result_option_ctors_none_unit_variant_has_goto_definition() {
         let source = include_str!("../../tests/fixtures/v05_result_option_ctors.hew");
-        // rfind("None") = Option::None; unit variant — no payload, still navigable
+        // rfind("None") = Maybe::None; unit variant — no payload, still navigable
         assert_v05_goto_definition("v05_result_option_ctors", source, "None");
     }
 

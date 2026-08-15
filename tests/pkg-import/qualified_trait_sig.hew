@@ -17,9 +17,9 @@
 //
 // Harness verb: hew run
 // Expected: conformance passes, `close` returns Ok, the match prints `ok`.
-import hew::closableerr::{Closable as ForeignClosable};
+import hew.closableerr.{Closable as ForeignClosable};
 
-import hew::closableerr;
+import hew.closableerr;
 
 pub type ClosableHandle {
     id: i64;

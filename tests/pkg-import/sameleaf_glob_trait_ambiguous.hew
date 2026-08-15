@@ -1,13 +1,19 @@
-import ambiguity::trait_left::*;
-import ambiguity::trait_right::*;
+import ambiguity.trait_left.{ ClashTrait as LeftTrait };
+import ambiguity.trait_right.{ ClashTrait as RightTrait };
 
 pub type Local {
     value: i64;
 }
 
-impl ClashTrait for Local {
+impl LeftTrait for Local {
     fn tag(value: Local) -> i64 {
         value.value
+    }
+}
+
+impl RightTrait for Local {
+    fn tag(value: Local) -> i64 {
+        value.value + 1
     }
 }
 

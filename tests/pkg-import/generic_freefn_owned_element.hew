@@ -5,7 +5,7 @@
 // specialised body must agree on owned-vs-BitCopy, or the drop falls through
 // the codegen fail-closed (guards `container-abi-ctor-op-agreement`). Reading
 // `b.payload[0]` back proves the element survived the call end-to-end.
-import hew::genhelpers;
+import hew.genhelpers;
 
 type Boxed {
     payload: [i64];

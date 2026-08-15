@@ -6,7 +6,7 @@
 // not — so this must REJECT with "is missing required method(s): tag", never
 // silently accept. Guards the inherited-method relaxation from leaking onto the
 // sub-trait's own required methods.
-import hew::supertraits::{Base, Redecl};
+import hew.supertraits.{Base, Redecl};
 
 type W {
     id: i64;

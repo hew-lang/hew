@@ -2,7 +2,7 @@
 // glue required, yet still classified `UserRecord` at the env free-thunk
 // site). The caller binding is a byte-copy alias and stays readable after
 // the capture.
-import hew::capturestats;
+import hew.capturestats;
 
 fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
     f(x)

@@ -18,7 +18,7 @@
 //
 // Harness verb: hew run
 // Expected: the aliased construction reads its field back as 7.
-import hew::aliassrc::{ Payload as Tag };
+import hew.aliassrc.{ Payload as Tag };
 
 fn main() {
     let x = Tag { code: 7 };

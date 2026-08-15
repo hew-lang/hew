@@ -6,7 +6,7 @@
 // `Top -> reexmid.Mid -> reexbase.Base`, following an import binding at each hop.
 // The impl is REJECTED with `TraitImplSignatureMismatch`. Guards the chain fix at
 // the deepest level — the origin, two hops from the apex.
-import hew::reexchaina::{Top};
+import hew.reexchaina.{Top};
 
 type W {
     id: i64;

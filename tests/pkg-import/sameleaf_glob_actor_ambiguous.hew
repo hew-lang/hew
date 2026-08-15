@@ -1,8 +1,10 @@
-import ambiguity::actor_left::*;
-import ambiguity::actor_right::*;
+import ambiguity.actor_left.{ ClashActor as LeftActor };
+import ambiguity.actor_right.{ ClashActor as RightActor };
 
 fn main() {
-    let worker = spawn ClashActor();
+    let left = spawn LeftActor();
+    let right = spawn RightActor();
+    let worker = if true { left } else { right };
     match await worker.ping() {
         Ok(value) => println(value),
         Err(_) => println("ask failed"),

@@ -17,7 +17,7 @@
 //
 // Harness verb: hew run
 // Expected: the code carried in the aliased state field after two steps.
-import hew::aliassrc::{ Payload as Tag };
+import hew.aliassrc.{ Payload as Tag };
 
 machine Holder {
     events {
@@ -43,12 +43,12 @@ machine Holder {
 }
 
 fn main() {
-    var h = Holder::Vacant;
+    var h = Holder.Vacant;
     h.step(Fill);
     h.step(Bump);
     let code = match h {
-        Holder::Full { item } => item.code,
-        Holder::Vacant => 0,
+        Holder.Full { item } => item.code,
+        Holder.Vacant => 0,
     };
     println(code);
 }

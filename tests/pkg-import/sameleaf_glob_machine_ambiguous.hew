@@ -1,6 +1,7 @@
-import ambiguity::machine_left::*;
-import ambiguity::machine_right::*;
+import ambiguity.machine_left.{ ClashMachine as LeftMachine };
+import ambiguity.machine_right.{ ClashMachine as RightMachine };
 
 fn main() {
-    let _state = ClashMachine::Idle;
+    let _left = LeftMachine.Idle;
+    let _right = RightMachine.Idle;
 }

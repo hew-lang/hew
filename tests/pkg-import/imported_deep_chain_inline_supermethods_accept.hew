@@ -5,7 +5,7 @@
 // and per-method signature check resolve `base`/`mid` against their declaring
 // owners two levels up — not the importer namespace. Run e2e so every level's
 // method dispatches.
-import hew::supertraits::{ Deep };
+import hew.supertraits.{ Deep };
 
 type DW {
     id: i64;

@@ -27,7 +27,12 @@ REPL commands:
 
 /// The Hew programming language compiler.
 #[derive(Debug, Parser)]
-#[command(name = "hew", version, about, propagate_version = true)]
+#[command(
+    name = "hew",
+    version = env!("HEW_VERSION"),
+    about,
+    propagate_version = true
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,

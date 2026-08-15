@@ -4218,7 +4218,11 @@ pub fn lower_program_with_mono_cap(
                 let imported_symbol_self_name =
                     ctx.current_module_name.as_deref().and_then(|module| {
                         match &impl_decl.target_type.0 {
-                            TypeExpr::Named { name, .. } => Some(format!("{module}.{name}")),
+                            TypeExpr::Named { name, .. }
+                                if !ctx.cross_module_colliding_record_names.contains(name) =>
+                            {
+                                Some(format!("{module}.{name}"))
+                            }
                             _ => None,
                         }
                     });
@@ -23320,18 +23324,6 @@ impl LowerCtx {
         if expected
             .as_deref()
             .is_some_and(|expected| expected != symbol)
-            && self
-                .current_module_name
-                .as_deref()
-                .is_some_and(|module| self.file_import_module_names.contains(module))
-            && symbol.contains('.')
-        {
-            self.impl_body_plan
-                .symbols
-                .insert(declaration.clone(), symbol.to_string());
-            return true;
-        }
-        if expected.is_none()
             && self
                 .current_module_name
                 .as_deref()

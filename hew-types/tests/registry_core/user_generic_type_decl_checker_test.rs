@@ -1,5 +1,5 @@
 // Tests that the checker correctly registers `pub type Box<T>`, `pub type Pair<A, B>`,
-// and `pub enum Result<T, E>` as generic type definitions, and that malformed cases
+// and `pub enum Outcome<T, E>` as generic type definitions, and that malformed cases
 // (duplicate type params) produce clear errors.
 use crate::common;
 
@@ -34,8 +34,8 @@ fn checker_registers_pub_type_pair_ab_with_two_type_params() {
 }
 
 #[test]
-fn checker_registers_pub_enum_result_te_with_two_type_params() {
-    let tco = check("pub enum Result<T, E> { Ok(T); Err(E) }");
+fn checker_registers_pub_enum_outcome_te_with_two_type_params() {
+    let tco = check("pub enum Outcome<T, E> { Ok(T); Err(E) }");
     assert!(
         tco.errors.is_empty(),
         "expected no checker errors: {:?}",

@@ -35,7 +35,7 @@
 
 use crate::common;
 
-use common::typecheck_isolated;
+use common::typecheck_embedded_builtins_isolated;
 
 /// The Q001-superseded trait surface as shipped in `std/builtins.hew`:
 /// `next` takes a mutable `var self` receiver so an iterator can advance its
@@ -77,7 +77,7 @@ impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
 }
 "
     );
-    let output = typecheck_isolated(&src);
+    let output = typecheck_embedded_builtins_isolated(&src);
     assert!(
         output.errors.is_empty(),
         "Map::next must type-check post-Q004 (inner item projects to `A`, not the impl's `B`); got: {:#?}",
@@ -113,7 +113,7 @@ impl<I> Iterator for IsPositive<I> where I: Iterator<Item = i64> {
 }
 "
     );
-    let output = typecheck_isolated(&src);
+    let output = typecheck_embedded_builtins_isolated(&src);
     assert!(
         output.errors.is_empty(),
         "inherent impl `next` must type-check post-Q004 (inner item projects to `i64`, not the impl's `bool`); got: {:#?}",
@@ -147,7 +147,7 @@ pub fn fold<I, A, B>(it: I, init: B, f: fn(B, A) -> B) -> B where I: Iterator<It
 }
 "
     );
-    let output = typecheck_isolated(&src);
+    let output = typecheck_embedded_builtins_isolated(&src);
     assert!(
         output.errors.is_empty(),
         "free-function fold must type-check (item projects to `A`); got: {:#?}",

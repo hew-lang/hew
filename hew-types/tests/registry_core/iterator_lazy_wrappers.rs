@@ -24,7 +24,7 @@
 
 use crate::common;
 
-use common::typecheck_isolated;
+use common::typecheck_embedded_builtins_isolated;
 use hew_parser::ast::{ImplDecl, Item, Program, TraitItem, TypeBodyItem, TypeDecl, TypeExpr};
 
 /// The Stage-1 trait surface, inlined to keep these tests independent of
@@ -262,7 +262,7 @@ fn wrapper_surface_parses_and_typechecks() {
         "wrapper surface must parse: {:#?}",
         parsed.errors
     );
-    let output = typecheck_isolated(&src);
+    let output = typecheck_embedded_builtins_isolated(&src);
     assert_no_errors("Stage-2 wrapper surface", &output);
 }
 
@@ -410,7 +410,7 @@ pub fn drive() {
 }
 ";
     let src = format!("{ITER_TRAIT_PRELUDE}{ITER_WRAPPER_SURFACE}{driver}");
-    let output = typecheck_isolated(&src);
+    let output = typecheck_embedded_builtins_isolated(&src);
     assert_no_errors("chained map.filter.take.skip", &output);
 }
 
@@ -440,7 +440,7 @@ pub fn drive() {
 }
 ";
     let src = format!("{ITER_TRAIT_PRELUDE}{ITER_WRAPPER_SURFACE}{driver}");
-    let output = typecheck_isolated(&src);
+    let output = typecheck_embedded_builtins_isolated(&src);
     assert_no_errors("fold/count/collect on Counter", &output);
 }
 

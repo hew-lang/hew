@@ -19,7 +19,7 @@
 
 use crate::common;
 
-use common::typecheck_isolated;
+use common::typecheck_embedded_builtins_isolated;
 use hew_parser::ast::{Item, TraitItem};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
@@ -53,7 +53,7 @@ fn assert_no_errors(label: &str, output: &hew_types::TypeCheckOutput) {
 
 #[test]
 fn iterator_trait_surface_parses_and_typechecks() {
-    let output = typecheck_isolated(ITER_TRAIT_PRELUDE);
+    let output = typecheck_embedded_builtins_isolated(ITER_TRAIT_PRELUDE);
     assert_no_errors("Iterator + IntoIterator prelude", &output);
 }
 
@@ -201,7 +201,7 @@ impl Iterator for FakeCounter {{
 }}
 "
     );
-    let output = typecheck_isolated(&src);
+    let output = typecheck_embedded_builtins_isolated(&src);
     assert_no_errors("impl Iterator for FakeCounter", &output);
 }
 
@@ -228,7 +228,7 @@ impl Iterator for BadCounter {{
 }}
 "
     );
-    let output = typecheck_isolated(&src);
+    let output = typecheck_embedded_builtins_isolated(&src);
     assert!(
         !output.errors.is_empty(),
         "impl Iterator missing `type Item = ...` must produce a checker error; got no errors"
@@ -252,7 +252,7 @@ fn intoiterator_bound_resolves_in_generic_function() {
 pub fn drive<I: IntoIterator>(_x: I) {{}}
 "
     );
-    let output = typecheck_isolated(&src);
+    let output = typecheck_embedded_builtins_isolated(&src);
     assert_no_errors("fn drive<I: IntoIterator>", &output);
 }
 
@@ -295,5 +295,5 @@ fn stdlib_builtins_carries_iterator_and_intoiterator_decls() {
     // Run the checker end-to-end so registration paths execute. Pre-existing
     // reds are tolerated — this test asserts trait surface, not stdlib cleanness.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let _ = checker.check_program(&parsed.program);
+    let _ = checker.check_embedded_builtins(&parsed.program);
 }

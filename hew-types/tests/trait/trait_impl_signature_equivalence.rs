@@ -20,7 +20,7 @@
 
 use crate::common;
 
-use common::typecheck_isolated;
+use common::{typecheck_embedded_builtins_isolated, typecheck_isolated};
 use hew_types::error::TypeErrorKind;
 
 /// Trait prelude shared by the negative tests. Mirrors `std/builtins.hew`'s
@@ -58,7 +58,7 @@ impl Iterator for Counter {{
 }}
 "
     );
-    let output = typecheck_isolated(&src);
+    let output = typecheck_embedded_builtins_isolated(&src);
     assert!(
         output.errors.is_empty(),
         "correct signature must not emit TraitImplSignatureMismatch; got: {:#?}",
@@ -84,7 +84,7 @@ impl Iterator for Counter {{
 }}
 "
     );
-    let output = typecheck_isolated(&src);
+    let output = typecheck_embedded_builtins_isolated(&src);
     assert!(
         has_trait_impl_sig_mismatch(&output, "return type"),
         "wrong return type must surface TraitImplSignatureMismatch with `return type` detail; \
@@ -124,7 +124,7 @@ impl Iterator for Counter {{
 }}
 "
     );
-    let output = typecheck_isolated(&src);
+    let output = typecheck_embedded_builtins_isolated(&src);
     assert!(
         has_trait_impl_sig_mismatch(&output, "arity"),
         "wrong receiver shape must surface TraitImplSignatureMismatch with `arity` detail; \
@@ -151,7 +151,7 @@ impl Iterator for Counter {{
 }}
 "
     );
-    let output = typecheck_isolated(&src);
+    let output = typecheck_embedded_builtins_isolated(&src);
     assert!(
         has_trait_impl_sig_mismatch(&output, "arity"),
         "extra parameter must surface TraitImplSignatureMismatch with `arity` detail; \
@@ -163,10 +163,10 @@ impl Iterator for Counter {{
 #[test]
 fn impl_with_wrong_parameter_type_rejected_at_impl_site() {
     // A non-self-receiver trait method whose impl supplies a wrong parameter
-    // type at a non-receiver position. Uses the Index trait as it has an
+    // type at a non-receiver position. Uses a two-parameter trait so it has an
     // additional argument beyond the receiver.
     let src = r"
-pub trait Index {
+pub trait Lookup {
     type Output;
     fn at(self, key: i32) -> Self::Output;
 }
@@ -175,7 +175,7 @@ pub type Bag {
     val: i64;
 }
 
-impl Index for Bag {
+impl Lookup for Bag {
     type Output = i64;
     fn at(self_bag: Bag, key: string) -> i64 {
         0

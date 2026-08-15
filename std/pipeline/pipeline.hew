@@ -1,0 +1,92 @@
+//! Temporary S1 admission-proof shim for a concrete two-stage i64 pipeline.
+//!
+//! WHY: actor monomorphisation and closure-valued actor state are S2 work.
+//! WHEN: S2 lands, retire `SourceI64`, `StageI64`, `SinkI64`, and this shim.
+//! WHAT: the generic `Pipeline<T>` combinator is the planned S3 surface.
+
+actor SinkI64 {
+    var count: i64;
+    var first: i64;
+    var second: i64;
+    var third: i64;
+
+    mailbox 1;
+    receive fn enqueue(value: i64) {
+        if count == 0 {
+            first = value;
+        } else if count == 1 {
+            second = value;
+        } else if count == 2 {
+            third = value;
+        }
+        count = count + 1;
+    }
+    receive fn push(value: i64) -> bool {
+        this.enqueue(value);
+        true
+    }
+    receive fn count() -> i64 {
+        count
+    }
+    receive fn item(index: i64) -> i64 {
+        if index == 0 {
+            first
+        } else if index == 1 {
+            second
+        } else {
+            third
+        }
+    }
+}
+
+actor StageI64 {
+    let next: LocalPid<SinkI64>;
+
+    mailbox 1;
+    receive fn push(value: i64) -> bool {
+        let transformed = value * 2;
+        next.enqueue(transformed);
+        true
+    }
+}
+
+actor SourceI64 {
+    let next: LocalPid<StageI64>;
+    let sink: LocalPid<SinkI64>;
+
+    mailbox 1;
+    receive fn push(value: i64) -> bool {
+        match await next.push(value) {
+            Ok(accepted) => accepted,
+            Err(_) => false,
+        }
+    }
+    receive fn count() -> i64 {
+        match await sink.count() {
+            Ok(value) => value,
+            Err(_) => -1,
+        }
+    }
+    receive fn item(index: i64) -> i64 {
+        match await sink.item(index) {
+            Ok(value) => value,
+            Err(_) => -1,
+        }
+    }
+}
+
+/// Concrete S1 chain with one bounded mailbox per stage.
+pub type PipelineI64TwoStage = LocalPid<SourceI64>;
+
+// The compiler currently cannot lower actor spawns from an imported stdlib
+// module; the compiled root fixture supplies the wiring proof until S2's
+// actor-mono seam lands.
+/// Temporary construction spelling retained only for the S1 shim.
+pub fn from(source: LocalPid<SourceI64>) -> LocalPid<SourceI64> {
+    source
+}
+
+/// Return the wired source endpoint. Callers await `push` for admission.
+pub fn run(pipeline: LocalPid<SourceI64>) -> LocalPid<SourceI64> {
+    pipeline
+}

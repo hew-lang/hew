@@ -1,0 +1,236 @@
+//! S1 compiled proof for the concrete bounded two-stage pipeline shim.
+//!
+//! The transform is fixed at x * 2. Every boundary has mailbox capacity one.
+//! Source admission is an ask: `await source.push(x)` completes only after the
+//! stage handler has admitted its direct downstream send.
+
+import std::testing;
+
+actor Gate {
+    var permits: i64;
+    var started: bool;
+    var completed: bool;
+    var first_done: bool;
+
+    receive fn grant() {
+        permits = permits + 1;
+    }
+
+    receive fn take() -> bool {
+        if permits > 0 {
+            permits = permits - 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    receive fn mark_started() -> bool {
+        started = true;
+        true
+    }
+
+    receive fn mark_completed() -> bool {
+        completed = true;
+        true
+    }
+
+    receive fn mark_first_done() -> bool {
+        first_done = true;
+        true
+    }
+
+    receive fn is_started() -> bool {
+        started
+    }
+
+    receive fn is_completed() -> bool {
+        completed
+    }
+
+    receive fn is_first_done() -> bool {
+        first_done
+    }
+}
+
+actor SinkI64 {
+    var count: i64;
+    var first: i64;
+    var second: i64;
+    var third: i64;
+    let gate: LocalPid<Gate>;
+    mailbox 1;
+    receive fn enqueue(value: i64) {
+        if count < 2 {
+            var admitted = false;
+            while !admitted {
+                match await gate.take() {
+                    Ok(open) => { admitted = open; },
+                    Err(_) => { admitted = false; },
+                }
+                if !admitted {
+                    sleep(1ms);
+                }
+            }
+        }
+        if count == 0 { first = value; } else if count == 1 { second = value; } else if count == 2 { third = value; }
+        count = count + 1;
+        if count == 1 {
+            match await gate.mark_first_done() {
+                Ok(_) => {},
+                Err(_) => {},
+            }
+        }
+    }
+    receive fn push(value: i64) -> bool { this.enqueue(value); true }
+    receive fn count() -> i64 { count }
+    receive fn item(index: i64) -> i64 { if index == 0 { first } else if index == 1 { second } else { third } }
+}
+
+actor StageI64 {
+    let next: LocalPid<SinkI64>;
+    mailbox 1;
+    receive fn push(value: i64) -> bool { let transformed = value * 2; next.enqueue(transformed); true }
+}
+
+actor SourceI64 {
+    let next: LocalPid<StageI64>;
+    mailbox 1;
+    receive fn push(value: i64) -> bool { match await next.push(value) { Ok(accepted) => accepted, Err(_) => false } }
+}
+
+actor Runner {
+    let source: LocalPid<SourceI64>;
+    let gate: LocalPid<Gate>;
+    mailbox 1;
+
+    receive fn start(value: i64) {
+        match await gate.mark_started() {
+            Ok(_) => {},
+            Err(_) => {},
+        }
+        match await source.push(value) {
+            Ok(_) => match await gate.mark_completed() {
+                Ok(_) => {},
+                Err(_) => {},
+            },
+            Err(_) => {}
+        }
+    }
+}
+#[test]
+fn two_stage_preserves_wire_order_and_exactly_once_receipt() {
+    let gate = spawn Gate(permits: 2, started: false, completed: false, first_done: false);
+    let sink = spawn SinkI64(count: 0, first: 0, second: 0, third: 0, gate: gate);
+    let stage = spawn StageI64(next: sink);
+    let source = spawn SourceI64(next: stage);
+
+    match await source.push(3) {
+        Ok(admitted) => testing.assert_true(admitted),
+        Err(_) => testing.assert_true(false),
+    }
+    match await source.push(7) {
+        Ok(admitted) => testing.assert_true(admitted),
+        Err(_) => testing.assert_true(false),
+    }
+    match await source.push(11) {
+        Ok(admitted) => testing.assert_true(admitted),
+        Err(_) => testing.assert_true(false),
+    }
+
+    match await sink.count() {
+        Ok(count) => testing.assert_eq(count, 3),
+        Err(_) => testing.assert_true(false),
+    }
+    match await sink.item(0) {
+        Ok(value) => testing.assert_eq(value, 6),
+        Err(_) => testing.assert_true(false),
+    }
+    match await sink.item(1) {
+        Ok(value) => testing.assert_eq(value, 14),
+        Err(_) => testing.assert_true(false),
+    }
+    match await sink.item(2) {
+        Ok(value) => testing.assert_eq(value, 22),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn explicit_ack_is_true_after_stage_admission() {
+    let gate = spawn Gate(permits: 1, started: false, completed: false, first_done: false);
+    let sink = spawn SinkI64(count: 0, first: 0, second: 0, third: 0, gate: gate);
+    let stage = spawn StageI64(next: sink);
+    let source = spawn SourceI64(next: stage);
+
+    match await source.push(5) {
+        Ok(admitted) => testing.assert_true(admitted),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+
+#[test]
+fn backpressure_stalls_source_until_sink_release() {
+    let gate = spawn Gate(permits: 1, started: false, completed: false, first_done: false);
+    let sink = spawn SinkI64(count: 0, first: 0, second: 0, third: 0, gate: gate);
+    let stage = spawn StageI64(next: sink);
+    let source = spawn SourceI64(next: stage);
+    let runner = spawn Runner(source: source, gate: gate);
+
+    match await source.push(1) {
+        Ok(admitted) => testing.assert_true(admitted),
+        Err(_) => testing.assert_true(false),
+    }
+    match await source.push(2) {
+        Ok(admitted) => testing.assert_true(admitted),
+        Err(_) => testing.assert_true(false),
+    }
+
+    var first_done = false;
+    while !first_done {
+        match await gate.is_first_done() {
+            Ok(done) => { first_done = done; },
+            Err(_) => { first_done = false; },
+        }
+        if !first_done {
+            sleep(1ms);
+        }
+    }
+    match await source.push(3) {
+        Ok(admitted) => testing.assert_true(admitted),
+        Err(_) => testing.assert_true(false),
+    }
+
+    runner.start(4);
+    var started = false;
+    while !started {
+        match await gate.is_started() {
+            Ok(value) => { started = value; },
+            Err(_) => { started = false; },
+        }
+        if !started {
+            sleep(1ms);
+        }
+    }
+    match await gate.is_completed() {
+        Ok(completed) => testing.assert_true(!completed),
+        Err(_) => testing.assert_true(false),
+    }
+
+    gate.grant();
+    var completed = false;
+    while !completed {
+        match await gate.is_completed() {
+            Ok(value) => { completed = value; },
+            Err(_) => { completed = false; },
+        }
+        if !completed {
+            sleep(1ms);
+        }
+    }
+    match await sink.count() {
+        Ok(count) => testing.assert_eq(count, 4),
+        Err(_) => testing.assert_true(false),
+    }
+}

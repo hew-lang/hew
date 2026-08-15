@@ -100,6 +100,14 @@ impl Checker {
             if let Some(owner) = self.extern_nominal_file_owner(name) {
                 return Some(owner);
             }
+            // A declaration in the root source file keeps its bare canonical
+            // identity. `local_type_defs` is the lexical declaration set, not
+            // a process-wide leaf registry, so this rung cannot select an
+            // imported same-leaf type. Expression callers still apply value
+            // binding precedence before consulting the nominal ladder.
+            if self.current_module.is_none() && self.local_type_defs.contains(name) {
+                return Some(name.to_string());
+            }
         }
         if let Some(canonical) = self.canonical_nominal_name(name) {
             return Some(canonical);

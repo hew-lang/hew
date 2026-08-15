@@ -3455,6 +3455,22 @@ fn imported_associated_calls_use_canonical_owner() {
     );
 }
 
+#[test]
+fn explicit_generic_module_path_obeys_lexical_value_precedence() {
+    let output = check_qualified_variant_root(
+        "import m;\n\nfn build(m: i64) -> i64 {\n    let boxed: m.Box<i64> = m.Box<i64>.make(42);\n    boxed.value\n}\n",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "a parameter named `m` must block explicit generic module dispatch"
+    );
+    assert!(
+        output.method_call_rewrites.is_empty(),
+        "a shadowed explicit generic path must publish no executable rewrite: {:?}",
+        output.method_call_rewrites
+    );
+}
+
 /// A qualified unit-variant expression (`Mode::A`) in a position whose
 /// expected type is the module-owned nominal resolves through that expected
 /// identity — mirroring pattern position — without requiring the bare name

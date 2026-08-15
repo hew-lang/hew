@@ -7723,15 +7723,19 @@ impl Checker {
                     }),
                 Expr::FieldAccess { object, field } => {
                     if let Expr::Identifier(module_short) = &object.0 {
-                        self.resolve_module_type(module_short, field)
-                            .map(|type_def| {
-                                self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                                    self.current_module.clone(),
-                                    self.current_module_idx,
-                                    module_short.clone(),
-                                ));
-                                type_def.name
-                            })
+                        if self.env.lookup_ref(module_short).is_none() {
+                            self.resolve_module_type(module_short, field)
+                                .map(|type_def| {
+                                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                                        self.current_module.clone(),
+                                        self.current_module_idx,
+                                        module_short.clone(),
+                                    ));
+                                    type_def.name
+                                })
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }

@@ -1576,9 +1576,9 @@ struct Builder {
     /// `drops_for_exit` dataflow filter narrows the drop per control-flow
     /// path and codegen gates the surviving close on `flag == 0` — exactly
     /// once on a `MaybeConsumed` join. A user resource absent here (no flag
-    /// allocated) falls back to the legacy path-insensitive
+    /// allocated) falls back to the path-insensitive
     /// `mark_binding_moved` removal: fail-closed to no-double-close (it may
-    /// leak on a not-consumed branch, the pre-#1933 posture, but never
+    /// leak on a not-consumed branch, but never
     /// double-frees the non-idempotent close).
     pub(crate) affine_release_flags: HashMap<BindingId, Place>,
     /// #2301 (extends #53): runtime drop-flags for an owned
@@ -1630,7 +1630,7 @@ struct Builder {
     /// #2418: runtime drop-flags for an owned collection local (owned-element
     /// `Vec`, plain `Vec`, `HashMap`/`HashSet` handle) that the pre-pass saw
     /// genuinely consumed (`intent=Consume`, a move-out such as `let ys = xs`)
-    /// somewhere in the body. The legacy path-insensitive `mark_binding_moved`
+    /// somewhere in the body. The path-insensitive `mark_binding_moved`
     /// retraction at the consume site removed the binding from the scope-exit
     /// set entirely, so a binding moved out on only SOME control-flow paths
     /// (`MaybeConsumed` at the converging join) leaked on the not-moved path —

@@ -2091,9 +2091,9 @@ two modules) are accepted and resolve to the one established contract.
 
 #### 3.9.2 C-Compatible Struct Layout
 
-> **v0.6+.** `#[repr(C)]` is not recognised by the v0.5 HIR lowering pass.
+> **Not yet implemented.** `#[repr(C)]` is not recognised by HIR lowering.
 > Annotating a type with `#[repr(C)]` produces a cutover diagnostic; layout
-> is controlled by the compiler for all v0.5 types.
+> is controlled by the compiler for all types today.
 
 Use `#[repr(C)]` to ensure C-compatible memory layout:
 
@@ -2147,20 +2147,24 @@ Ordinary Hew declarations use `T`, and mutable foreign access uses `*mut T`.
 
 #### 3.9.4 Exporting Functions to C
 
-> **v0.6+.** `#[export]` is not recognised by the v0.5 compiler. Annotating
-> a function with `#[export]` produces a cutover diagnostic. Hew functions
-> are not linkable from C in v0.5.
+> **Accepted, not yet wired to codegen.** `#[export]` parses on a Hew function
+> without error, but has no effect on the emitted binary today: the function
+> keeps its original name and internal (non-exported) linkage, so it is not
+> yet callable from C. `extern "C"` prefixing a Hew function body (as opposed
+> to a foreign declaration in an `extern "C" { ... }` block, §3.9.1) is not
+> valid syntax — `#[export]` applies directly to an ordinary `fn`.
 
-Use `#[export]` to make Hew functions callable from C:
+Use `#[export]` to make Hew functions callable from C once codegen support lands:
 
 ```hew
 #[export("hew_process_data")]
 fn process_data(data: *const u8, len: usize) -> i32 {
-    // Implementation accessible from C as hew_process_data()
+    // Intended to be accessible from C as hew_process_data() once wired.
+    0
 }
 
 #[export]  // Uses the function name as-is
-extern "C" fn my_callback(value: i32) -> i32 {
+fn my_callback(value: i32) -> i32 {
     value * 2
 }
 ```
@@ -2835,12 +2839,15 @@ Because `machine` is a value type, assigning a machine variable copies it.
 The `step()` method mutates the variable in place — it does not return a new
 value.
 
-**Implementation status (v0.5.1):** machine-typed actor state fields are
+**Implementation status:** machine-typed actor state fields are
 supported, including heap-payload states (the field rides the enum
 clone/drop substrate; `step()` on a field stores back through the
-state-field overwrite-release path). Generic machine instantiations other
-than all-`i64` type arguments are refused at compile time (the machine
-substrate keeps one bare-named layout per declaration). Machine-state
+state-field overwrite-release path). Generic machine instantiations work for
+bit-copy type arguments (scalars such as `i64`/`f64`/`bool`, and records made
+only of bit-copy fields); a heap-owning type argument (`string`, `Vec<T>`, or
+a record with an owned field) is refused at codegen with a fail-closed
+diagnostic (`requires tag-aware drop`) because the generic machine substrate
+does not yet carry a tag-aware drop plan for an owned payload. Machine-state
 actors are not yet admitted as supervisor children (state constructors are
 not literal child-init values), so supervisor restart-clone of machine
 state is unreachable until that slice widens.
@@ -2918,7 +2925,7 @@ Task<T>
 
 ### 4.2 Scope: Structured Concurrency Boundary
 
-> **Partially implemented in edition 2026 / v0.5.0.** The shipped surface is
+> **Partially implemented.** The shipped surface is
 > `scope { fork { call(); } }` in suspendable contexts (actor handlers,
 > closures, task entries), where the forked call takes no arguments and the
 > scope joins all children at its closing brace. The name-bound form
@@ -2965,7 +2972,7 @@ scope {
 
 `fork name = expr` (or bare `fork expr`) is only legal dynamically inside a
 `scope` block. `scope { ... }` opens the structured-concurrency block;
-`fork` is exclusively the child-start verb. In v0.5.0 the accepted child
+`fork` is exclusively the child-start verb. Today the accepted child
 form is the block form `fork { call(); }` with a zero-argument callee; the
 name-bound form parses but is rejected pending its type-checking slice.
 Outside a scope-block, a child-form `fork` is a `ForkOutsideScopeBlock`
@@ -4751,7 +4758,7 @@ mailbox 100 overflow coalesce(request_id);
 
 ## 11. Distributed computing
 
-The cross-node actor surface shipped across v0.5.x and is the default
+The cross-node actor surface is shipped and is the default
 runtime mode when a Hew program runs as a cluster node. The normative
 specification is [`HEW-DIST-SPEC.md`](./HEW-DIST-SPEC.md); this section
 summarises what is shipped and stable.
@@ -4811,7 +4818,7 @@ When the grammar files and this specification disagree, the parser implementatio
 
 **Type aliases** (compile-time synonyms only — the aliased type is what the checker sees):
 
-> **No active aliases.** The `byte` alias was retired in v0.5 and is now a compile-time error. Use `u8` directly.
+> **No active aliases.** There is no `byte` alias — using `byte` as a type name is a compile-time error. Use `u8` directly.
 
 Integer literals default to `i64`. Float literals default to `f64`.
 
@@ -4942,8 +4949,8 @@ let precise = 500us;     // i64: 500_000 nanoseconds
 
 `duration` is a distinct type — it does not implicitly convert to or from integers.
 
-Duration arithmetic operators and accessor methods are fully implemented
-(shipped in v0.5.4). Duration literals compile to `i64` nanosecond values;
+Duration arithmetic operators and accessor methods are fully implemented.
+Duration literals compile to `i64` nanosecond values;
 arithmetic results are also `duration`.
 
 ```

@@ -322,8 +322,8 @@ fn user_receiver_resource_shadow_closes_once_on_teardown() {
 }
 
 #[test]
-fn user_monitor_ref_resource_shadow_closes_once_on_teardown() {
-    run_builtin_name_collision_teardown_oracle("MonitorRef");
+fn user_monitor_ref_resource_closes_once_on_teardown() {
+    run_builtin_name_collision_teardown_oracle("UserMonitorRef");
 }
 
 #[test]

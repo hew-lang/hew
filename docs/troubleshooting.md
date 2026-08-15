@@ -14,10 +14,8 @@ on a single entry-point file and resolve imports recursively from there. Pass
 `main.hew` (or your real top-level entry file), not every file in the tree.
 
 For the standard bootstrap flow, start with `hew init <name>` so you get
-`hew.toml`, `main.hew`, and `.gitignore`, then begin with
-`hew check main.hew` / `hew compile main.hew`. `hew init` remains the lighter
-source-only scaffold: it writes `main.hew` plus `README.md`, but no
-`hew.toml`.
+`hew.toml`, `main.hew`, and a merged `.gitignore`, then begin with
+`hew check main.hew` / `hew compile main.hew`.
 
 ## Build & linking
 
@@ -98,14 +96,18 @@ What to check:
   example `import text_stats::words;`.
 - Standard library imports are available under the last path segment:
   `import std::fs;` gives `fs`, and `import std::encoding::json;` gives `json`.
-- Search roots are tried in this exact order, first match wins:
-  1. `HEWPATH` (colon-separated entries; each entry is the parent directory of
-     `std/`)
-  2. `HEW_STD` (the path to `std/` itself; Hew uses its parent as the search
-     root)
-  3. the installed `<prefix>/share/hew` tree relative to the `hew` binary
-  4. a development fallback to the repo root when `std/` exists two levels
-     above the binary
+- Search roots are tried in three tiers; the first tier that produces a
+  result wins:
+  1. Explicit override — `HEWPATH` (colon-separated entries; each entry is
+     the parent directory of `std/`) or `HEW_STD` (the path to `std/`
+     itself; Hew uses its parent as the search root).
+  2. In-worktree development — Hew walks up from the source file (or the
+     current directory) looking for an enclosing Hew checkout (a directory
+     containing `std/builtins.hew`).
+  3. Installed / external project — the FHS layout beside the binary
+     (`<prefix>/share/hew`), XDG (`~/.local/share/hew`), `~/.hew`,
+     `/usr/local/share/hew`, `/usr/share/hew`, and a development fallback to
+     the repo root when `std/` exists two levels above the binary.
 - `hew.toml` does not configure module search paths. Use `HEWPATH` or
   `HEW_STD` when you need Hew to look in a non-default module root.
 - If the missing module is a package dependency, run `hew install`. If it is

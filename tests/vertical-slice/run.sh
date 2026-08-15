@@ -4170,6 +4170,11 @@ run_accept_expect_status "w2006_scope_spawn" 0
 # Layout: accept/sibling_module_call.hew imports accept/arith.hew
 run_accept_expect_status "sibling_module_call" 42
 
+# Accept: a flat file import publishes a pub free function into the importing
+# file's bare namespace, and the selected call target survives through native
+# lowering and execution.
+run_accept_expect_status "flat_file_import_bare_fn_call" 42
+
 # Accept: multi-level import (import lib::math;) — flat form lib/math.hew, exit 42
 # Only the flat form exists (no lib/math/math.hew) so no ambiguity fires.
 run_accept_expect_status "multilevel_import" 42

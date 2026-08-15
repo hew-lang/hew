@@ -171,6 +171,122 @@ fn peer_files_resolve_same_module_alias_from_their_own_imports() {
 #[test]
 #[expect(
     clippy::too_many_lines,
+    reason = "the regression constructs a multi-file module graph with an early import seed"
+)]
+fn early_lifecycle_seed_uses_the_importing_peer_file_index() {
+    let failure_path: std::path::PathBuf = "std/failure.hew".into();
+    let first_peer: std::path::PathBuf = "consumer/first.hew".into();
+    let second_peer: std::path::PathBuf = "consumer/second.hew".into();
+    let failure = hew_parser::parse("pub enum CrashKind { Crashed; }");
+    let first = hew_parser::parse("pub fn untouched() {}");
+    let mut second = hew_parser::parse(
+        "import std::failure::{ CrashKind as Kind }; pub type Holder { kind: Kind; }",
+    );
+    for parsed in [&failure, &first, &second] {
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture parse: {:?}",
+            parsed.errors
+        );
+    }
+    let import = second
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("peer import");
+    import.resolved_items = Some(failure.program.items.clone());
+    import.resolved_item_source_paths =
+        std::iter::repeat_n(failure_path.clone(), failure.program.items.len()).collect();
+    import.resolved_source_paths = vec![failure_path.clone()];
+
+    let root_id = ModuleId::root();
+    let failure_id = ModuleId::new(vec!["std".to_string(), "failure".to_string()]);
+    let consumer_id = ModuleId::new(vec!["consumer".to_string()]);
+    let mut consumer_items = first.program.items;
+    let first_count = consumer_items.len();
+    consumer_items.extend(second.program.items);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: failure_id.clone(),
+            items: failure.program.items,
+            imports: vec![],
+            source_paths: vec![failure_path],
+            doc: None,
+        })
+        .expect("failure module");
+    graph
+        .add_module(Module {
+            id: consumer_id.clone(),
+            items: consumer_items,
+            imports: vec![hew_parser::module::ModuleImport {
+                target: failure_id.clone(),
+                spec: Some(ImportSpec::Names(vec![ImportName {
+                    name: "CrashKind".to_string(),
+                    alias: Some("Kind".to_string()),
+                }])),
+                span: 0..45,
+            }],
+            source_paths: vec![first_peer.clone(), second_peer.clone()],
+            doc: None,
+        })
+        .expect("consumer module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec!["main.hew".into()],
+            doc: None,
+        })
+        .expect("root module");
+    graph.item_sources.insert(
+        "consumer".to_string(),
+        std::iter::repeat_n(first_peer, first_count)
+            .chain(std::iter::repeat_n(
+                second_peer.clone(),
+                graph.modules[&consumer_id].items.len() - first_count,
+            ))
+            .collect(),
+    );
+    graph.topo_order = vec![failure_id, consumer_id, root_id];
+    let second_file_idx = graph
+        .file_span_indices()
+        .path_index(&second_peer)
+        .expect("second peer index");
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: vec![],
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert_eq!(
+        output.import_type_name_aliases.get(&(
+            Some("consumer".to_string()),
+            second_file_idx,
+            "Kind".to_string(),
+        )),
+        Some(&"std.failure.CrashKind".to_string())
+    );
+    assert!(
+        !output.import_type_name_aliases.contains_key(&(
+            Some("consumer".to_string()),
+            0,
+            "Kind".to_string(),
+        )),
+        "a non-root import must never publish under root file index 0: {:#?}",
+        output.import_type_name_aliases
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
     reason = "the regression constructs a complete three-module graph with source attribution"
 )]
 fn resolved_module_copy_reenters_declaring_file_import_scope() {
@@ -2248,6 +2364,86 @@ fn repeated_flat_file_import_with_same_resolved_source_does_not_reregister_items
     assert!(
         output.fn_sigs.contains_key("shared"),
         "flat file import should still register the imported function"
+    );
+}
+
+#[test]
+fn flat_file_imported_pub_fn_publishes_root_call_target() {
+    let helper_path = std::path::PathBuf::from("helper.hew");
+    let helper = hew_parser::parse("pub fn double(value: i64) -> i64 { value * 2 }");
+    let mut root = hew_parser::parse(
+        r#"
+        import "helper.hew";
+        fn main() -> i64 { double(21) }
+        "#,
+    );
+    assert!(
+        helper.errors.is_empty(),
+        "helper parse: {:?}",
+        helper.errors
+    );
+    assert!(root.errors.is_empty(), "root parse: {:?}", root.errors);
+
+    let import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("root file import");
+    import.resolved_items = Some(helper.program.items.clone());
+    import.resolved_item_source_paths =
+        std::iter::repeat_n(helper_path.clone(), helper.program.items.len()).collect();
+    import.resolved_source_paths = vec![helper_path.clone()];
+
+    let root_id = ModuleId::root();
+    let helper_id = ModuleId::new(vec!["helper".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: helper_id.clone(),
+            items: helper.program.items,
+            imports: vec![],
+            source_paths: vec![helper_path.clone()],
+            doc: None,
+        })
+        .expect("helper module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec!["main.hew".into()],
+            doc: None,
+        })
+        .expect("root module");
+    graph.item_sources.insert(
+        "helper".to_string(),
+        std::iter::repeat_n(helper_path, graph.modules[&helper_id].items.len()).collect(),
+    );
+    graph.topo_order = vec![helper_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: root.program.items,
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert!(
+        output.errors.is_empty(),
+        "flat imported call must typecheck: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.direct_call_targets.values().any(|target| matches!(
+            target,
+            crate::check::dispatch::CallTarget::User(declaration)
+                if declaration.full_path() == "helper.double"
+        )),
+        "flat imported bare call must retain helper.double: {:#?}",
+        output.direct_call_targets
     );
 }
 

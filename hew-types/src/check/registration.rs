@@ -2135,7 +2135,20 @@ impl Checker {
         importer: Option<&str>,
         module_graph: &hew_parser::module::ModuleGraph,
     ) {
-        for (item, _) in &module.items {
+        let saved_importer_file_idx = self.current_module_idx;
+        let span_indices = module_graph.file_span_indices();
+        for (item_idx, (item, _)) in module.items.iter().enumerate() {
+            // These bindings are written before the ordinary import pass, but
+            // they still belong to the importing SOURCE FILE. A directory
+            // module can assemble imports from several peers, so module-level
+            // or ambient indexing would publish a cross-file binding.
+            self.current_module_idx = if module.id == module_graph.root {
+                0
+            } else {
+                span_indices
+                    .item_index(&module.id, item_idx)
+                    .unwrap_or_default()
+            };
             let Item::Import(decl) = item else {
                 continue;
             };
@@ -2257,6 +2270,7 @@ impl Checker {
                 );
             }
         }
+        self.current_module_idx = saved_importer_file_idx;
     }
 
     /// Record direct lexical authority for lifecycle types imported from an
@@ -2386,6 +2400,7 @@ impl Checker {
         // the import path's full `register_type_decl` for pub types, and
         // are not needed for internal non-pub types).
         if let Some(ref mg) = program.module_graph {
+            let span_indices = mg.file_span_indices();
             for mod_id in &mg.topo_order {
                 if *mod_id == mg.root {
                     continue;
@@ -2446,7 +2461,10 @@ impl Checker {
                                 .insert(name);
                         }
                     }
-                    for (item, item_span) in &module.items {
+                    for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
+                        self.current_module_idx = span_indices
+                            .item_index(mod_id, item_idx)
+                            .unwrap_or_default();
                         match item {
                             Item::TypeDecl(td) => {
                                 self.pre_register_type_decl(td);
@@ -2501,6 +2519,7 @@ impl Checker {
             }
         }
         self.current_module = None;
+        self.current_module_idx = 0;
 
         // The root module follows the same source-order-independent rule as
         // imported modules: direct, canonical lifecycle import edges and every
@@ -6081,8 +6100,13 @@ impl Checker {
                     // which `ensure_executable_target` then rejects (method calls
                     // resolve through the impl-method path and were unaffected).
                     if self.registration_is_flat_file_import && fd.visibility.is_pub() {
+                        // This is a cross-context publication: the declaration
+                        // is being visited in the imported file, but the bare
+                        // binding belongs to the root importing file. Import
+                        // binding keys always use BOTH coordinates of the
+                        // lexical owner, never the ambient declaration index.
                         self.import_fn_name_aliases
-                            .entry((None, self.current_module_idx, fd.name.clone()))
+                            .entry((None, 0, fd.name.clone()))
                             .or_insert_with(|| scoped_name.clone());
                     }
                     self.fn_def_spans.insert(

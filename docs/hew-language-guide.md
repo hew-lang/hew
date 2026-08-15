@@ -1928,9 +1928,8 @@ type Stack<T> { items: Vec<T> }
 
 impl<T> Stack<T> {
     fn push_item(s: Stack<T>, v: T) -> Stack<T> {
-        let items = s.items;
-        items.push(v);
-        Stack { items: items }
+        s.items.push(v);
+        s
     }
     fn len(s: Stack<T>) -> i64 {
         s.items.len()
@@ -1949,7 +1948,7 @@ fn main() {
 }
 ```
 
-Construct the empty generic record through the constructor function `new_stack`, either with turbofish (`new_stack::<i64>()`) or a `let` type annotation and no turbofish at all (`let s: Stack<i64> = new_stack();`) — both resolve `T` from the call site and lower identically, the same return-type-driven inference covered in the Turbofish section above. `hew fmt` normalizes an explicit `::<T>` call to `<T>` (`new_stack::<i64>()` becomes `new_stack<i64>()`); every one of these spellings type-checks and runs identically — write whichever you like and let the formatter settle it. A bare `Stack { items: Vec::new() }` construction with no surrounding annotation is still ambiguous and needs one.
+Construct the empty generic record through the constructor function `new_stack`, either with turbofish (`new_stack::<i64>()`) or a `let` type annotation and no turbofish at all (`let s: Stack<i64> = new_stack();`) — both resolve `T` from the call site and lower identically, the same return-type-driven inference covered in the Turbofish section above. `hew fmt` normalizes an explicit `::<T>` call to `<T>` (`new_stack::<i64>()` becomes `new_stack<i64>()`); every one of these spellings type-checks and runs identically — write whichever you like and let the formatter settle it. A bare `Stack { items: Vec::new() }` construction with no surrounding annotation is still ambiguous and needs one. `push_item` mutates the `items` field in place and returns the receiver — this is the pattern to use for a generic record with an owned heap field; extracting the field into a local, pushing, and reconstructing a new `Stack { items: ... }` value is a known crash today (the generic-record drop plan double-releases the extracted field).
 
 ### Generic functions as values (cross-module)
 
@@ -2538,14 +2537,14 @@ fn main() {
     let diff = datetime.diff_secs(tomorrow, now);
     println(diff);                  // 86400
 
-    match datetime.try_parse("2026-01-01", "%Y-%m-%d") {
+    match datetime.try_parse("2026-01-01T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ") {
         Ok(ts) => println(datetime.year(ts)),   // 2026
         Err(e) => println(f"parse error: {e}"),
     }
 }
 ```
 
-Timestamps are `i64` epoch milliseconds throughout. `to_iso8601` formats as RFC 3339 UTC; `format(ts, fmt)` uses strftime-style patterns. `year`/`month`/`day`/`hour`/`minute`/`second`/`weekday` extract components. `add_days` / `add_hours` perform arithmetic; `diff_secs` returns the signed difference. Use `try_parse` when the input may be malformed.
+Timestamps are `i64` epoch milliseconds throughout. `to_iso8601` formats as RFC 3339 UTC; `format(ts, fmt)` uses strftime-style patterns. `year`/`month`/`day`/`hour`/`minute`/`second`/`weekday` extract components. `add_days` / `add_hours` perform arithmetic; `diff_secs` returns the signed difference. Use `try_parse` when the input may be malformed; the format string must describe a complete date and time (a date-only pattern such as `"%Y-%m-%d"` fails with "input is not enough for unique date and time").
 
 ### std::deque — double-ended queue
 
@@ -2575,7 +2574,7 @@ import std::iter;
 fn main() {
     println(string.from_int(math.max(2, 9)));   // 9
     let v: Vec<i64> = [1, 2, 3];
-    println(iter.sum(v.into_iter()));            // 6
+    println(iter.sum(v.iter()));                 // 6
 }
 ```
 
@@ -3055,7 +3054,10 @@ user-defined `impl Drop`.
 
 The `close` method (for `#[resource]`) and any `consuming self` method (for
 `#[linear]`) must be declared in a sibling `impl` block, never inline in the
-type body — an inline declaration is rejected at parse time.
+type body — an inline declaration is rejected at parse time. A factory
+function that constructs and returns a `#[resource]` or `#[linear]` value
+works the same whether it lives in the current module or an imported one —
+close/consume discipline is enforced on the value, not on where it was built.
 
 Full example (`#[linear]`): [`examples/v05/linear/accept/linear_consumed_via_rollback_on_err.hew`](../examples/v05/linear/accept/linear_consumed_via_rollback_on_err.hew). For `#[resource]`, see HEW-SPEC-2026.md §3.7.8.
 
@@ -3220,7 +3222,7 @@ Go-style template — `{{.key}}` substitutes, `{{if .key}}…{{end}}` is conditi
 `{{range .list}}…{{.}}…{{end}}` iterates with `.` bound to each item. Render with
 the free function `template.render_template(t, ctx)` (panics on error) or
 `template.render_try(t, ctx)` (returns `Result`); the method form `t.render(ctx)`
-is deferred in v0.5. `TemplateError` has no `Display`, so handle the `Err` arm
+is not yet implemented. `TemplateError` has no `Display`, so handle the `Err` arm
 with a literal message rather than interpolating it. Full example:
 [`examples/v05/surfaces/template_render.hew`](../examples/v05/surfaces/template_render.hew).
 
@@ -3283,7 +3285,7 @@ scanner plus `Option<string>`. Full example:
 
 ### HTTP over `await` — async client + server
 
-The flagship v0.5 networking surface is an `await`-suspended HTTP/1.1 client and
+The flagship networking surface is an `await`-suspended HTTP/1.1 client and
 server built on `net.connect` / `net.listen` plus the pure-Hew codecs in
 `std::net::http::http_async_client` / `http_async_server`. A server handler
 `await`s a connection, drives an `await conn.read_string()` loop until the
@@ -3489,7 +3491,7 @@ The complete protocol and identity rules are normative in
 messaging, and link/monitor propagation are native-only; wasm32 rejects these
 surfaces.
 
-### TLS client — free-function surface (with a v0.5 data-plane caveat)
+### TLS client — free-function surface
 
 ```hew
 import std::net::tls;
@@ -3512,9 +3514,11 @@ with `bytes.to_string()`. The method form (`stream.read(n)`) is NOT supported ye
 
 > **Known gap:** `tls.connect` does not record a failed handshake in
 > `last_error()` — a failed connect returns a zero-value `TlsStream` with no
-> way to retrieve why. The encrypted round-trip itself (`tls.write` /
-> `tls.read`) works correctly; the data-plane FFI bridge takes `bytes` by
-> pointer to a `BytesTriple`, matching the runtime's representation.
+> way to retrieve why. `tls.write` sends correctly against a real endpoint,
+> but `tls.read` currently crashes the process with a memory-safety panic
+> (`ptr::copy_nonoverlapping` alignment violation) on a real connection —
+> do not call it yet; the commented-out line above shows the intended shape
+> once the data-plane FFI bridge is fixed.
 
 Full example: [`examples/net/tls_client.hew`](../examples/net/tls_client.hew).
 

@@ -7,7 +7,7 @@
 //! type and lower cleanly (they were fail-closed before the or-leaf
 //! reclassifier was deleted).
 
-import std::testing;
+import std.testing;
 
 type Point {
     x: i64;
@@ -70,9 +70,9 @@ fn nested_record_rest_binds_correctly() {
 /// `Corner { x: 1, .. } | Corner { x: 2, .. }` matches either literal.
 #[test]
 fn or_pattern_struct_leaves_match_either_literal() {
-    let first = classify(Shape::Corner { x: 1, y: 9 });
-    let second = classify(Shape::Corner { x: 2, y: 8 });
-    let other = classify(Shape::Corner { x: 7, y: 7 });
+    let first = classify(Shape.Corner { x: 1, y: 9 });
+    let second = classify(Shape.Corner { x: 2, y: 8 });
+    let other = classify(Shape.Corner { x: 7, y: 7 });
     testing.assert_eq(first, 100);
     testing.assert_eq(second, 100);
     testing.assert_eq(other, 7);
@@ -80,8 +80,8 @@ fn or_pattern_struct_leaves_match_either_literal() {
 
 fn classify(s: Shape) -> i64 {
     match s {
-        Shape::Corner { x: 1, .. } | Shape::Corner { x: 2, .. } => 100,
-        Shape::Corner { x, .. } => x,
-        Shape::Origin => 0,
+        Shape.Corner { x: 1, .. } | Shape.Corner { x: 2, .. } => 100,
+        Shape.Corner { x, .. } => x,
+        Shape.Origin => 0,
     }
 }

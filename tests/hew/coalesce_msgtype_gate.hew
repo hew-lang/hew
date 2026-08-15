@@ -4,7 +4,7 @@
 //! queue-order coverage lives in `hew-runtime`; this compiled fixture proves
 //! the generated callback and spawn wiring preserve both message kinds.
 
-import std::testing;
+import std.testing;
 
 actor KindCoalescer {
     var alpha_count: i64 = 0;
@@ -39,37 +39,31 @@ actor KindCoalescer {
 
 #[test]
 fn coalesce_same_key_different_message_types_do_not_merge() {
-    let worker = spawn KindCoalescer(
-        alpha_count: 0,
-        beta_count: 0,
-        alpha_latest: -1,
-    );
-
-    for id in 0..64 {
+    let worker = spawn KindCoalescer(alpha_count: 0, beta_count: 0, alpha_latest: -1);
+    for id in 0 .. 64 {
         worker.beta(id, id);
     }
-    for id in 0..64 {
+    for id in 0 .. 64 {
         worker.alpha(id, id + 1000);
     }
-
-    sleep(2000ms);
+    sleep(2s);
     var alpha_count: i64 = -1;
     var beta_count: i64 = -1;
     match await worker.alpha_seen() {
-        Ok(value) => {
+        .Ok(value) => {
             alpha_count = value;
         },
-        Err(_) => testing.assert_true(false),
+        .Err(_) => testing.assert_true(false),
     }
     match await worker.beta_seen() {
-        Ok(value) => {
+        .Ok(value) => {
             beta_count = value;
         },
-        Err(_) => testing.assert_true(false),
+        .Err(_) => testing.assert_true(false),
     }
     testing.assert_true(beta_count > alpha_count);
     match await worker.latest() {
-        Ok(value) => testing.assert_true(value == -1 || value >= 1000),
-        Err(_) => testing.assert_true(false),
+        .Ok(value) => testing.assert_true(value == -1 || value >= 1000),
+        .Err(_) => testing.assert_true(false),
     }
 }

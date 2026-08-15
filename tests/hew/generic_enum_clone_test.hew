@@ -12,19 +12,31 @@
 //! Was a tracked NYI (`no method clone on Maybe<i64>`); promoted to a positive
 //! guard when top-level enum clone landed.
 
-import std::testing;
+import std.testing;
 
-enum Maybe<T> { Some(T); None }
-enum Shape { Named(string); Tagged(string); Empty }
-enum Counter { Value(i64); Zero }
+enum Maybe<T> {
+    Some(T);
+    None;
+}
+
+enum Shape {
+    Named(string);
+    Tagged(string);
+    Empty;
+}
+
+enum Counter {
+    Value(i64);
+    Zero;
+}
 
 #[test]
 fn test_generic_enum_clone() {
-    let m = Maybe::Some(42);
+    let m = Maybe.Some(42);
     let n = clone m;
     let v = match n {
-        Maybe::Some(x) => x,
-        Maybe::None => 0,
+        Maybe.Some(x) => x,
+        Maybe.None => 0,
     };
     testing.assert_eq(v, 42);
 }
@@ -32,10 +44,16 @@ fn test_generic_enum_clone() {
 #[test]
 fn test_generic_enum_clone_source_still_live() {
     // The clone is independent: the source `m` remains usable afterwards.
-    let m = Maybe::Some(7);
+    let m = Maybe.Some(7);
     let n = clone m;
-    let a = match m { Maybe::Some(x) => x, Maybe::None => -1 };
-    let b = match n { Maybe::Some(x) => x, Maybe::None => -1 };
+    let a = match m {
+        Maybe.Some(x) => x,
+        Maybe.None => -1,
+    };
+    let b = match n {
+        Maybe.Some(x) => x,
+        Maybe.None => -1,
+    };
     testing.assert_eq(a, 7);
     testing.assert_eq(b, 7);
 }
@@ -46,10 +64,16 @@ fn test_generic_enum_clone_owned_string_payload() {
     // source and the clone are consumed (each drops its payload); if the clone
     // aliased the source buffer at rc==1 this would double-free under a strict
     // allocator.
-    let m = Maybe::Some("a heap allocated generic payload string");
+    let m = Maybe.Some("a heap allocated generic payload string");
     let n = clone m;
-    let sa = match m { Maybe::Some(s) => s, Maybe::None => "" };
-    let sb = match n { Maybe::Some(s) => s, Maybe::None => "" };
+    let sa = match m {
+        Maybe.Some(s) => s,
+        Maybe.None => "",
+    };
+    let sb = match n {
+        Maybe.Some(s) => s,
+        Maybe.None => "",
+    };
     testing.assert_eq_str(sa, "a heap allocated generic payload string");
     testing.assert_eq_str(sb, "a heap allocated generic payload string");
 }
@@ -57,10 +81,18 @@ fn test_generic_enum_clone_owned_string_payload() {
 #[test]
 fn test_concrete_enum_clone_owned_payload() {
     // Concrete (non-generic) enum with a string payload routes the same path.
-    let a = Shape::Named("first owned payload xxxxxxxxxxxxxxxxxxxx");
+    let a = Shape.Named("first owned payload xxxxxxxxxxxxxxxxxxxx");
     let b = clone a;
-    let ta = match a { Shape::Named(s) => 1, Shape::Tagged(s) => 2, Shape::Empty => 0 };
-    let tb = match b { Shape::Named(s) => 1, Shape::Tagged(s) => 2, Shape::Empty => 0 };
+    let ta = match a {
+        Shape.Named(s) => 1,
+        Shape.Tagged(s) => 2,
+        Shape.Empty => 0,
+    };
+    let tb = match b {
+        Shape.Named(s) => 1,
+        Shape.Tagged(s) => 2,
+        Shape.Empty => 0,
+    };
     testing.assert_eq(ta, 1);
     testing.assert_eq(tb, 1);
 }
@@ -70,11 +102,17 @@ fn test_enum_clone_mutation_independence() {
     // Rebinding the original to a different variant must not affect the clone.
     // This guards that clone produces a genuine independent copy, not a shared
     // reference to the same discriminant cell.
-    var orig = Counter::Value(10);
+    var orig = Counter.Value(10);
     let cloned = clone orig;
-    orig = Counter::Zero;
-    let ov = match orig { Counter::Value(x) => x, Counter::Zero => -1 };
-    let cv = match cloned { Counter::Value(x) => x, Counter::Zero => -1 };
+    orig = Counter.Zero;
+    let ov = match orig {
+        Counter.Value(x) => x,
+        Counter.Zero => -1,
+    };
+    let cv = match cloned {
+        Counter.Value(x) => x,
+        Counter.Zero => -1,
+    };
     testing.assert_eq(ov, -1);
     testing.assert_eq(cv, 10);
 }
@@ -82,10 +120,16 @@ fn test_enum_clone_mutation_independence() {
 #[test]
 fn test_unit_variant_enum_clone() {
     // Enums with no payload (all BitCopy discriminant) clone correctly.
-    let a = Counter::Zero;
+    let a = Counter.Zero;
     let b = clone a;
-    let av = match a { Counter::Value(x) => x, Counter::Zero => 0 };
-    let bv = match b { Counter::Value(x) => x, Counter::Zero => 0 };
+    let av = match a {
+        Counter.Value(x) => x,
+        Counter.Zero => 0,
+    };
+    let bv = match b {
+        Counter.Value(x) => x,
+        Counter.Zero => 0,
+    };
     testing.assert_eq(av, 0);
     testing.assert_eq(bv, 0);
 }

@@ -8,7 +8,7 @@
 //! High-bit-set values are constructed via `(-1) as u64` because Hew
 //! integer literals are capped at i64::MAX (no unsigned literal suffix).
 
-import std::testing;
+import std.testing;
 
 // ── u64: high-bit-set operands ───────────────────────────────────────
 #[test]

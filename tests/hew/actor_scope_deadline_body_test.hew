@@ -12,7 +12,7 @@
 //! deadline does NOT run the body. A regression that runs the body on the
 //! success path, or skips it on the timeout path, fails the exact value.
 
-import std::testing;
+import std.testing;
 
 actor Deadliner {
     var fired: i64 = 0;
@@ -89,8 +89,8 @@ fn deadline_body_runs_when_timeout_wins() {
     let d = spawn Deadliner(fired: 0);
     // Work takes 100ms, deadline is 20ms → the deadline wins and the body runs.
     match await d.run_timeout_wins() {
-        Ok(v) => testing.assert_eq(v, 7),
-        Err(_) => testing.assert_true(false),
+        .Ok(v) => testing.assert_eq(v, 7),
+        .Err(_) => testing.assert_true(false),
     }
 }
 
@@ -100,8 +100,8 @@ fn deadline_body_skipped_when_work_finishes_first() {
     // Work takes 10ms, deadline is 200ms → the scope completes first and the
     // body is skipped, so `fired` stays 0.
     match await d.run_work_wins() {
-        Ok(v) => testing.assert_eq(v, 0),
-        Err(_) => testing.assert_true(false),
+        .Ok(v) => testing.assert_eq(v, 0),
+        .Err(_) => testing.assert_true(false),
     }
 }
 
@@ -113,7 +113,7 @@ fn nested_scope_deadlines_each_take_their_own_branch() {
     // Exactly 1 proves the inner timeout fired and the outer skipped — a swapped
     // branch (101, 100, or 0) would fail.
     match await d.run_nested() {
-        Ok(v) => testing.assert_eq(v, 1),
-        Err(_) => testing.assert_true(false),
+        .Ok(v) => testing.assert_eq(v, 1),
+        .Err(_) => testing.assert_true(false),
     }
 }

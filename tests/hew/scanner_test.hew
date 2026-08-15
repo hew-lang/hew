@@ -1,9 +1,10 @@
 //! Tests for std::io::scanner — bufio.Scanner-style line/word iteration.
 
-import std::io::scanner;
+import std.io.scanner;
 
-import std::fs;
-import std::testing;
+import std.fs;
+
+import std.testing;
 
 // ── lines() batch API ─────────────────────────────────────────────────
 #[test]
@@ -88,7 +89,7 @@ fn test_lines_crlf_trailing() {
 #[test]
 fn test_scan_iterate_three_lines() {
     var sc = scanner.from_string("line1\nline2\nline3");
-    let result: Vec<string> = Vec::new();
+    let result: Vec<string> = Vec.new();
     sc = scanner.scan(sc);
     while scanner.has_next(sc) {
         result.push(scanner.text(sc));
@@ -120,7 +121,7 @@ fn test_scan_single_line_without_newline() {
 #[test]
 fn test_scan_blank_lines_emitted() {
     var sc = scanner.from_string("a\n\nb");
-    let result: Vec<string> = Vec::new();
+    let result: Vec<string> = Vec.new();
     sc = scanner.scan(sc);
     while scanner.has_next(sc) {
         result.push(scanner.text(sc));
@@ -135,7 +136,7 @@ fn test_scan_blank_lines_emitted() {
 #[test]
 fn test_scan_crlf_stripped() {
     var sc = scanner.from_string("p\r\nq\r\nr");
-    let result: Vec<string> = Vec::new();
+    let result: Vec<string> = Vec.new();
     sc = scanner.scan(sc);
     while scanner.has_next(sc) {
         result.push(scanner.text(sc));
@@ -150,7 +151,7 @@ fn test_scan_crlf_stripped() {
 #[test]
 fn test_scan_trailing_newline_no_extra_token() {
     var sc = scanner.from_string("x\ny\n");
-    let result: Vec<string> = Vec::new();
+    let result: Vec<string> = Vec.new();
     sc = scanner.scan(sc);
     while scanner.has_next(sc) {
         result.push(scanner.text(sc));
@@ -165,55 +166,50 @@ fn test_scan_trailing_newline_no_extra_token() {
 #[test]
 fn test_next_line_returns_some_for_real_empty_line_only() {
     var sc = scanner.from_string("alpha\n\nomega\n");
-
     let (sc1, first) = scanner.next_line(sc);
     sc = sc1;
     match first {
-        Some(line) => testing.assert_eq_str(line, "alpha"),
-        None => {
+        .Some(line) => testing.assert_eq_str(line, "alpha"),
+        .None => {
             panic("expected first line");
         },
     }
-
     let (sc2, blank) = scanner.next_line(sc);
     sc = sc2;
     match blank {
-        Some(line) => testing.assert_eq_str(line, ""),
-        None => {
+        .Some(line) => testing.assert_eq_str(line, ""),
+        .None => {
             panic("expected blank line");
         },
     }
-
     let (sc3, third) = scanner.next_line(sc);
     sc = sc3;
     match third {
-        Some(line) => testing.assert_eq_str(line, "omega"),
-        None => {
+        .Some(line) => testing.assert_eq_str(line, "omega"),
+        .None => {
             panic("expected third line");
         },
     }
-
     let (_sc4, eof) = scanner.next_line(sc);
     match eof {
-        Some(line) => {
+        .Some(line) => {
             panic("unexpected EOF token: " + line);
         },
-        None => testing.assert_true(true),
+        .None => testing.assert_true(true),
     }
 }
 
 #[test]
 fn test_next_line_uses_line_mode_without_changing_split() {
     var sc = scanner.from_string("one two\nthree");
-    sc = scanner.with_split(sc, SplitMode::SplitWords);
+    sc = scanner.with_split(sc, SplitMode.SplitWords);
     let (next, line) = scanner.next_line(sc);
     match line {
-        Some(value) => testing.assert_eq_str(value, "one two"),
-        None => {
+        .Some(value) => testing.assert_eq_str(value, "one two"),
+        .None => {
             panic("expected line");
         },
     }
-
     let after = scanner.scan(next);
     testing.assert_true(scanner.has_next(after));
     testing.assert_eq_str(scanner.text(after), "three");
@@ -268,8 +264,8 @@ fn test_words_only_whitespace_returns_empty() {
 #[test]
 fn test_with_split_switches_to_words_mode() {
     var sc = scanner.from_string("foo bar baz");
-    sc = scanner.with_split(sc, SplitMode::SplitWords);
-    let result: Vec<string> = Vec::new();
+    sc = scanner.with_split(sc, SplitMode.SplitWords);
+    let result: Vec<string> = Vec.new();
     sc = scanner.scan(sc);
     while scanner.has_next(sc) {
         result.push(scanner.text(sc));
@@ -286,7 +282,7 @@ fn test_with_split_resets_position() {
     var sc = scanner.from_string("a\nb\nc");
     // Advance past first line, then reset via with_split.
     sc = scanner.scan(sc);
-    sc = scanner.with_split(sc, SplitMode::SplitLines);
+    sc = scanner.with_split(sc, SplitMode.SplitLines);
     sc = scanner.scan(sc);
     // Should see "a" again after reset.
     testing.assert_true(scanner.has_next(sc));
@@ -336,51 +332,45 @@ fn test_from_file_scans_real_empty_line_and_eof() {
     // in a fresh worktree.  mkdir_all is idempotent on an existing directory.
     let _ = fs.mkdir_all(".tmp");
     let _ = fs.write(path, "red\n\nblue\n");
-
     match scanner.from_file(path) {
-        Ok(sc0) => {
+        .Ok(sc0) => {
             var sc = sc0;
-
             let (sc1, first) = scanner.next_line(sc);
             sc = sc1;
             match first {
-                Some(line) => testing.assert_eq_str(line, "red"),
-                None => {
+                .Some(line) => testing.assert_eq_str(line, "red"),
+                .None => {
                     panic("expected red");
                 },
             }
-
             let (sc2, blank) = scanner.next_line(sc);
             sc = sc2;
             match blank {
-                Some(line) => testing.assert_eq_str(line, ""),
-                None => {
+                .Some(line) => testing.assert_eq_str(line, ""),
+                .None => {
                     panic("expected blank line");
                 },
             }
-
             let (sc3, third) = scanner.next_line(sc);
             sc = sc3;
             match third {
-                Some(line) => testing.assert_eq_str(line, "blue"),
-                None => {
+                .Some(line) => testing.assert_eq_str(line, "blue"),
+                .None => {
                     panic("expected blue");
                 },
             }
-
             let (_sc4, eof) = scanner.next_line(sc);
             match eof {
-                Some(line) => {
+                .Some(line) => {
                     panic("unexpected EOF token: " + line);
                 },
-                None => testing.assert_true(true),
+                .None => testing.assert_true(true),
             }
         },
-        Err(e) => {
+        .Err(e) => {
             panic(fs.io_error_message(e));
         },
     }
-
     let _ = fs.delete(path);
 }
 
@@ -388,11 +378,11 @@ fn test_from_file_scans_real_empty_line_and_eof() {
 #[serial]
 fn test_from_file_missing_path_returns_io_error() {
     match scanner.from_file(".tmp/scanner-test-definitely-missing.txt") {
-        Ok(_) => {
+        .Ok(_) => {
             panic("expected missing-file error");
         },
-        Err(e) => match e {
-            IoError::NotFound(_) => testing.assert_true(true),
+        .Err(e) => match e {
+            IoError.NotFound(_) => testing.assert_true(true),
             _ => {
                 panic("expected NotFound");
             },

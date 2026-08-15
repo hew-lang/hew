@@ -23,12 +23,12 @@ fn main() -> i64 {
     b.take(value, 8);
     value.payload.push(9);
     let av = match await a.read() {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     };
     let bv = match await b.read() {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     };
     let sender = value.payload[0] * 10000 + value.payload[1] * 100 + value.payload[2];
     if av == 10207 && bv == 10208 && sender == 10209 {

@@ -7806,7 +7806,18 @@ impl Checker {
                     // linked through unification.
                     if canonical_owner == "std.channel" && method == "new" {
                         let t = Ty::Var(TypeVar::fresh());
-                        return Ty::Tuple(vec![Ty::sender(t.clone()), Ty::receiver(t)]);
+                        return Ty::Tuple(vec![
+                            Ty::Named {
+                                name: "std.channel.Sender".to_string(),
+                                args: vec![t.clone()],
+                                builtin: Some(BuiltinType::Sender),
+                            },
+                            Ty::Named {
+                                name: "std.channel.Receiver".to_string(),
+                                args: vec![t],
+                                builtin: Some(BuiltinType::Receiver),
+                            },
+                        ]);
                     }
                     if let Some(op) = self.intrinsic_math_generic_op_for_signature(&key) {
                         self.record_method_call_rewrite(

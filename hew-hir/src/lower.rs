@@ -4215,7 +4215,29 @@ pub fn lower_program_with_mono_cap(
                 }
             }
             Item::Impl(impl_decl) => {
-                ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);
+                let imported_symbol_self_name =
+                    ctx.current_module_name.as_deref().and_then(|module| {
+                        match &impl_decl.target_type.0 {
+                            TypeExpr::Named { name, .. } => Some(format!("{module}.{name}")),
+                            _ => None,
+                        }
+                    });
+                let rewrites = HashMap::new();
+                let skip_methods = HashSet::new();
+                let imported = imported_symbol_self_name
+                    .as_deref()
+                    .map(|symbol_self_name| ImportedImplLowering {
+                        rewrites: &rewrites,
+                        skip_methods: &skip_methods,
+                        symbol_self_name: Some(symbol_self_name),
+                    });
+                ctx.lower_impl_block(
+                    impl_decl,
+                    span.clone(),
+                    &mut items,
+                    false,
+                    imported.as_ref(),
+                );
             }
             Item::Machine(machine) => {
                 if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
@@ -4624,6 +4646,12 @@ pub fn lower_program_with_mono_cap(
                         // function signature, so visibility cannot discard its
                         // runtime layout and value-class identity here.
                         Item::Machine(machine) => {
+                            // File imports are flattened into the source-order
+                            // pass above. Lowering them again here would mint
+                            // duplicate machine mono/layout entries.
+                            if file_import_modules.contains(mod_id) {
+                                continue;
+                            }
                             if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
                                 items.push(HirItem::Machine(hir_machine));
                             }
@@ -23289,6 +23317,32 @@ impl LowerCtx {
         span: &Span,
     ) -> bool {
         let expected = self.impl_body_plan.symbols.get(declaration).cloned();
+        if expected
+            .as_deref()
+            .is_some_and(|expected| expected != symbol)
+            && self
+                .current_module_name
+                .as_deref()
+                .is_some_and(|module| self.file_import_module_names.contains(module))
+            && symbol.contains('.')
+        {
+            self.impl_body_plan
+                .symbols
+                .insert(declaration.clone(), symbol.to_string());
+            return true;
+        }
+        if expected.is_none()
+            && self
+                .current_module_name
+                .as_deref()
+                .is_some_and(|module| self.file_import_module_names.contains(module))
+            && symbol.contains('.')
+        {
+            self.impl_body_plan
+                .symbols
+                .insert(declaration.clone(), symbol.to_string());
+            return true;
+        }
         if expected.as_deref() == Some(symbol) {
             return true;
         }

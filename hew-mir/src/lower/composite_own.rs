@@ -1232,6 +1232,14 @@ pub(super) fn derive_enum_composite_drop_allowed(
             )
         })
     };
+    let local_has_user_close = |local: u32| -> bool {
+        local_tys.get(local as usize).is_some_and(|ty| {
+            matches!(
+                super::drop_plan::resource_drop_fn(ty, type_classes),
+                Some(crate::model::DropFnSpec::UserClose(_))
+            )
+        })
+    };
     let local_is_opaque_resource = |local: u32| -> bool {
         local_tys.get(local as usize).is_some_and(|ty| {
             matches!(
@@ -1243,6 +1251,14 @@ pub(super) fn derive_enum_composite_drop_allowed(
             ) && lifecycle_registry.opaque_resource_for_ty(ty).is_some()
         })
     };
+    let neutralized_payload_slots: HashSet<Place> = blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::NeutralizePayloadSlot { place, .. } => Some(*place),
+            _ => None,
+        })
+        .collect();
     // The candidate composite locals: base locals of heap-owning enum
     // composite bindings.
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
@@ -1359,12 +1375,14 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // the interior projection's aliased source (its `alias_of` root is the
     // candidate local) and carried along every onward hand-off below.
     let mut payload_binder_candidate_root: HashMap<u32, PayloadBinderRoot> = HashMap::new();
-    // A direct opaque-resource payload has its own lifecycle, while the enum's
-    // structural shell drop deliberately treats that slot as a no-op. Moving
-    // such a payload out must not suppress the shell drop needed by sibling
-    // variants. Track its forwarding chain so only the independent resource
-    // owner escapes; nested resource records keep the conservative exclusion.
-    let mut direct_opaque_resource_payloads: HashSet<u32> = HashSet::new();
+    // An opaque resource payload has an independent lifecycle. A field-bearing
+    // user-close payload gains the same status only when its carrier slot is
+    // neutralized by a proven consuming result handoff. Track those forwarding
+    // chains so the generic escape scan does not suppress sibling cleanup for
+    // the handoff, while an ordinary borrowed resource method keeps the legacy
+    // binder-owned close. The declared-release neutralize rule below still
+    // excludes the unsafe zeroed-record carrier itself.
+    let mut direct_independent_resource_payloads: HashSet<u32> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
             if let Instr::Move { dest, src } = instr {
@@ -1379,8 +1397,11 @@ pub(super) fn derive_enum_composite_drop_allowed(
                                 // out — tracking it would over-exclude the
                                 // composite drop and leak.
                                 if local_is_heap_owning(dl) {
-                                    if local_is_opaque_resource(dl) {
-                                        direct_opaque_resource_payloads.insert(dl);
+                                    if local_is_opaque_resource(dl)
+                                        || (local_has_user_close(dl)
+                                            && neutralized_payload_slots.contains(src))
+                                    {
+                                        direct_independent_resource_payloads.insert(dl);
                                     }
                                     // The binder's real declaring scope
                                     // (`None` for a synthetic transient with no
@@ -1478,8 +1499,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
                                 sl,
                                 dl,
                             );
-                            if direct_opaque_resource_payloads.contains(&sl) {
-                                direct_opaque_resource_payloads.insert(dl);
+                            if direct_independent_resource_payloads.contains(&sl) {
+                                direct_independent_resource_payloads.insert(dl);
                             }
                             changed = true;
                         }
@@ -1748,7 +1769,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         note_alias_escape(l, &mut excluded_roots);
                     }
                     if payload_binders.contains_key(&l)
-                        && !direct_opaque_resource_payloads.contains(&l)
+                        && !direct_independent_resource_payloads.contains(&l)
                     {
                         note_payload_escape(
                             &payload_binder_candidate_root,
@@ -1825,7 +1846,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             && dest_local.is_some_and(|dl| !local_is_heap_owning(dl));
                         if !benign_handoff
                             && !benign_bitcopy_extract
-                            && !direct_opaque_resource_payloads.contains(&sl)
+                            && !direct_independent_resource_payloads.contains(&sl)
                         {
                             note_payload_escape(
                                 &payload_binder_candidate_root,
@@ -1904,7 +1925,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             && !place_is_tag_read(p)
                             && !binder_read_is_borrow_safe_instr(instr, l)
                             && !vec_iter_cursor_ingress_of(instr, l)
-                            && !direct_opaque_resource_payloads.contains(&l)
+                            && !direct_independent_resource_payloads.contains(&l)
                         {
                             note_payload_escape(
                                 &payload_binder_candidate_root,
@@ -2024,7 +2045,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             module_generic_fn_names,
                             extern_contracts,
                         ));
-                    if !read_is_borrow && !direct_opaque_resource_payloads.contains(&l) {
+                    if !read_is_borrow && !direct_independent_resource_payloads.contains(&l) {
                         note_payload_escape(
                             &payload_binder_candidate_root,
                             l,

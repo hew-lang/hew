@@ -312,8 +312,10 @@ fn from_call_resource_match_result_neutralizes_the_payload_slot() {
     let p = pipeline_with_tc(
         r#"
 #[resource]
+type Handle { raw: Raw; }
+
 #[opaque]
-type Handle {}
+type Raw {}
 
 impl Handle {
     fn close(self) {}
@@ -343,14 +345,23 @@ fn main() -> i64 {
         .iter()
         .find(|function| function.name == "main")
         .expect("raw fn main");
+    let neutralized_fields = main
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::NeutralizePayloadSlot {
+                place: hew_mir::Place::MachineVariant { field_idx, .. },
+                ..
+            } => Some(*field_idx),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        main.blocks
-            .iter()
-            .flat_map(|block| block.instructions.iter())
-            .filter(|instr| matches!(instr, Instr::NeutralizePayloadSlot { .. }))
-            .count(),
-        1,
-        "the selected resource payload must transfer out of its carrier once"
+        neutralized_fields,
+        vec![0, 0],
+        "the selected resource and skipped error payloads must each transfer out of their \
+         carrier on their own arm"
     );
 }
 

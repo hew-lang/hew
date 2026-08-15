@@ -355,6 +355,31 @@ fn fmt_migrate_lists_typecheck_failure_sites_instead_of_succeeding() {
     );
 }
 
+#[test]
+fn fmt_migrate_refuses_checker_variants_missing_migration_warnings() {
+    let dir = support::tempdir();
+    let path = dir.path().join("missing-warning.hew");
+    let source = concat!(
+        "enum Shape { Box { w: i64, h: i64 }; }\n\n",
+        "fn make() -> Shape { Box { w: 3, h: 4 } }\n"
+    );
+    std::fs::write(&path, source).unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["fmt", "--migrate"])
+        .arg(&path)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "migration must fail closed");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("checker resolved bare variant `Box` without a migration warning"),
+        "stderr: {stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Multi-file --check batch behavior
 // ---------------------------------------------------------------------------

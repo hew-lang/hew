@@ -2129,6 +2129,17 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         });
     }
 
+    let selected_variant_spans = variants
+        .iter()
+        .map(|variant| (variant.span.start, variant.span.end))
+        .collect::<std::collections::HashSet<_>>();
+    refusals.extend(unlisted_bare_variant_refusals(
+        typecheck,
+        &tokens,
+        &selected_variant_spans,
+        file,
+    ));
+
     if !refusals.is_empty() {
         for refusal in refusals {
             eprintln!("Error: migration refused {refusal}");
@@ -2148,6 +2159,94 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
             Err(())
         }
     }
+}
+
+fn unlisted_bare_variant_refusals(
+    typecheck: &hew_types::check::TypeCheckOutput,
+    tokens: &[(hew_lexer::Token<'_>, hew_lexer::Span)],
+    selected: &std::collections::HashSet<(usize, usize)>,
+    file: &str,
+) -> Vec<String> {
+    let mut refusals = Vec::new();
+    let mut refused = std::collections::HashSet::new();
+
+    for (expression_span, ty) in &typecheck.expr_types {
+        if expression_span.module_idx != 0 {
+            continue;
+        }
+        let Some(owner) = ty.type_name() else {
+            continue;
+        };
+        let type_def = typecheck.type_defs.get(owner).or_else(|| {
+            typecheck
+                .type_defs
+                .values()
+                .find(|type_def| type_def.name == owner)
+        });
+        let Some(type_def) = type_def else {
+            continue;
+        };
+        for (index, (token, span)) in tokens.iter().enumerate() {
+            let hew_lexer::Token::Identifier(name) = token else {
+                continue;
+            };
+            if span.start < expression_span.start
+                || span.end > expression_span.end
+                || !type_def.variants.contains_key(*name)
+                || selected.contains(&(span.start, span.end))
+                || token_has_variant_qualifier(tokens, index)
+                || !refused.insert((span.start, span.end))
+            {
+                continue;
+            }
+            refusals.push(format!(
+                "{file}:{}-{}: checker resolved bare variant `{name}` without a migration warning",
+                span.start, span.end
+            ));
+        }
+    }
+
+    for (pattern_span, resolution) in &typecheck.pattern_resolutions {
+        if pattern_span.module_idx != 0 {
+            continue;
+        }
+        let Some(variant_match) = &resolution.variant_match else {
+            continue;
+        };
+        for (index, (token, span)) in tokens.iter().enumerate() {
+            if span.start < pattern_span.start || span.end > pattern_span.end {
+                continue;
+            }
+            let hew_lexer::Token::Identifier(name) = token else {
+                continue;
+            };
+            if *name != variant_match.variant_name.as_str()
+                || selected.contains(&(span.start, span.end))
+                || token_has_variant_qualifier(tokens, index)
+                || !refused.insert((span.start, span.end))
+            {
+                continue;
+            }
+            refusals.push(format!(
+                "{file}:{}-{}: checker resolved bare variant `{name}` without a migration warning",
+                span.start, span.end
+            ));
+        }
+    }
+
+    refusals
+}
+
+fn token_has_variant_qualifier(
+    tokens: &[(hew_lexer::Token<'_>, hew_lexer::Span)],
+    index: usize,
+) -> bool {
+    index.checked_sub(1).is_some_and(|previous| {
+        matches!(
+            tokens[previous].0,
+            hew_lexer::Token::Dot | hew_lexer::Token::DoubleColon
+        )
+    })
 }
 
 fn format_for_display(input_name: &str, source: &str) -> Option<String> {

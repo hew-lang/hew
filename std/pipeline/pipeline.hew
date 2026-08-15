@@ -72,8 +72,12 @@ pub actor SinkI64 {
         var admitted = false;
         while !admitted {
             match await control.take_permit() {
-                Ok(open) => { admitted = open; },
-                Err(_) => { return; },
+                Ok(open) => {
+                    admitted = open;
+                },
+                Err(_) => {
+                    return;
+                },
             }
             if !admitted {
                 sleep(1ms);
@@ -128,16 +132,14 @@ pub actor StageI64 {
     receive fn push(item: PipelineItemI64) -> bool {
         match await control.mark_stage_attempt() {
             Ok(_) => {},
-            Err(_) => { return false; },
+            Err(_) => {
+                return false;
+            },
         }
         if item.crash_stage {
             panic("pipeline S1 stage crash");
         }
-        let transformed = PipelineItemI64 {
-            value: item.value * 2,
-            label: item.label + ":stage",
-            crash_stage: false,
-        };
+        let transformed = PipelineItemI64 { value: item.value * 2, label: item.label + ":stage", crash_stage: false };
         next.push(transformed);
         match await control.mark_stage_post_send() {
             Ok(_) => true,
@@ -232,21 +234,8 @@ pub fn from(sink_permits: i64) -> PipelineI64TwoStage {
 
 /// Spawn and wire the source, fixed transform stage, sink, and control actor.
 pub fn run(pipeline: PipelineI64TwoStage) -> LocalPid<SourceI64> {
-    let control = spawn AdmissionControlI64(
-        permits: pipeline.sink_permits,
-        stage_attempts: 0,
-        stage_post_sends: 0,
-    );
-    let sink = spawn SinkI64(
-        count: 0,
-        sum: 0,
-        first: 0,
-        second: 0,
-        third: 0,
-        last_value: 0,
-        last_label: "",
-        control: control,
-    );
+    let control = spawn AdmissionControlI64(permits: pipeline.sink_permits, stage_attempts: 0, stage_post_sends: 0);
+    let sink = spawn SinkI64(count: 0, sum: 0, first: 0, second: 0, third: 0, last_value: 0, last_label: "", control: control);
     let stage = spawn StageI64(next: sink, control: control);
     spawn SourceI64(next: stage, sink: sink, control: control)
 }

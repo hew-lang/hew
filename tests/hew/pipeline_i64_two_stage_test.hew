@@ -1,14 +1,11 @@
 //! S1 compiled proofs for the shipped `std::pipeline` surface.
 
 import std::pipeline;
+
 import std::testing;
 
 fn item(value: i64, label: string, crash_stage: bool) -> pipeline.PipelineItemI64 {
-    PipelineItemI64 {
-        value: value,
-        label: label,
-        crash_stage: crash_stage,
-    }
+    PipelineItemI64 { value: value, label: label, crash_stage: crash_stage }
 }
 
 actor PushProbe {
@@ -37,8 +34,12 @@ actor PushRunner {
 
     receive fn start(value: i64, label: string) {
         match await source.push(item(value, label, false)) {
-            Ok(result) => { probe.finish(result); },
-            Err(_) => { probe.finish(false); },
+            Ok(result) => {
+                probe.finish(result);
+            },
+            Err(_) => {
+                probe.finish(false);
+            },
         }
     }
 }
@@ -48,8 +49,12 @@ fn wait_for_count(source: LocalPid<pipeline.SourceI64>, expected: i64) {
     var polls = 0;
     while count != expected && polls < 5000 {
         match await source.count() {
-            Ok(value) => { count = value; },
-            Err(_) => { count = -1; },
+            Ok(value) => {
+                count = value;
+            },
+            Err(_) => {
+                count = -1;
+            },
         }
         polls = polls + 1;
         if count != expected {
@@ -66,8 +71,12 @@ fn wait_for_attempts(control: LocalPid<pipeline.AdmissionControlI64>, expected: 
     var polls = 0;
     while attempts != expected && polls < 5000 {
         match await control.attempts() {
-            Ok(value) => { attempts = value; },
-            Err(_) => { attempts = -1; },
+            Ok(value) => {
+                attempts = value;
+            },
+            Err(_) => {
+                attempts = -1;
+            },
         }
         polls = polls + 1;
         if attempts != expected {
@@ -84,8 +93,12 @@ fn wait_for_probe(probe: LocalPid<PushProbe>) {
     var polls = 0;
     while !completed && polls < 5000 {
         match await probe.is_completed() {
-            Ok(value) => { completed = value; },
-            Err(_) => { completed = false; },
+            Ok(value) => {
+                completed = value;
+            },
+            Err(_) => {
+                completed = false;
+            },
         }
         polls = polls + 1;
         if !completed {
@@ -100,7 +113,6 @@ fn wait_for_probe(probe: LocalPid<PushProbe>) {
 #[test]
 fn shipped_surface_constructs_wires_and_delivers_owned_items_once() {
     let source = pipeline.run(pipeline.from(3));
-
     match await source.push(item(3, "alpha", false)) {
         Ok(admitted) => testing.assert_true(admitted),
         Err(_) => testing.assert_true(false),
@@ -113,7 +125,6 @@ fn shipped_surface_constructs_wires_and_delivers_owned_items_once() {
         Ok(admitted) => testing.assert_true(admitted),
         Err(_) => testing.assert_true(false),
     }
-
     wait_for_count(source, 3);
     match await source.item(0) {
         Ok(value) => testing.assert_eq(value, 6),
@@ -146,7 +157,6 @@ fn admission_reply_waits_for_downstream_post_send_barrier() {
     };
     let probe = spawn PushProbe(completed: false, accepted: false);
     let runner = spawn PushRunner(source: source, probe: probe);
-
     match await source.push(item(1, "held-one", false)) {
         Ok(admitted) => testing.assert_true(admitted),
         Err(_) => testing.assert_true(false),
@@ -155,10 +165,8 @@ fn admission_reply_waits_for_downstream_post_send_barrier() {
         Ok(admitted) => testing.assert_true(admitted),
         Err(_) => testing.assert_true(false),
     }
-
     runner.start(3, "blocked-three");
     wait_for_attempts(control, 3);
-
     match await control.post_sends() {
         Ok(value) => testing.assert_eq(value, 2),
         Err(_) => testing.assert_true(false),
@@ -167,7 +175,6 @@ fn admission_reply_waits_for_downstream_post_send_barrier() {
         Ok(value) => testing.assert_true(!value),
         Err(_) => testing.assert_true(false),
     }
-
     control.release();
     wait_for_probe(probe);
     match await probe.was_accepted() {
@@ -178,7 +185,6 @@ fn admission_reply_waits_for_downstream_post_send_barrier() {
         Ok(value) => testing.assert_eq(value, 3),
         Err(_) => testing.assert_true(false),
     }
-
     control.release();
     control.release();
     wait_for_count(source, 3);
@@ -191,7 +197,6 @@ fn cancelled_admission_settles_and_pipeline_continues() {
         Ok(value) => value,
         Err(_) => panic("pipeline control handle unavailable"),
     };
-
     match await source.push(item(1, "cancel-one", false)) {
         Ok(admitted) => testing.assert_true(admitted),
         Err(_) => testing.assert_true(false),
@@ -200,18 +205,19 @@ fn cancelled_admission_settles_and_pipeline_continues() {
         Ok(admitted) => testing.assert_true(admitted),
         Err(_) => testing.assert_true(false),
     }
-
     let outcome = select {
-        reply from source.push(item(3, "cancel-three", false)) => if reply { 1 } else { -1 },
+        reply from source.push(item(3, "cancel-three", false)) => if reply {
+            1
+        } else {
+            -1
+        },
         after 5ms => 0,
     };
     testing.assert_eq(outcome, 0);
-
     control.release();
     control.release();
     control.release();
     wait_for_count(source, 3);
-
     control.release();
     match await source.push(item(4, "after-cancel", false)) {
         Ok(admitted) => testing.assert_true(admitted),
@@ -223,7 +229,6 @@ fn cancelled_admission_settles_and_pipeline_continues() {
 #[test]
 fn crash_mid_pipeline_settles_without_sink_delivery() {
     let source = pipeline.run(pipeline.from(1));
-
     match await source.push(item(9, "crash-owned", true)) {
         Ok(admitted) => testing.assert_true(!admitted),
         Err(_) => testing.assert_true(false),
@@ -251,19 +256,15 @@ fn graceful_shutdown_drains_queued_owned_items() {
     let first = spawn PushRunner(source: source, probe: first_probe);
     let second = spawn PushRunner(source: source, probe: second_probe);
     let third = spawn PushRunner(source: source, probe: third_probe);
-
     first.start(4, "drain-one");
     second.start(5, "drain-two");
     third.start(6, "drain-three");
-
     control.release();
     control.release();
     control.release();
-
     wait_for_probe(first_probe);
     wait_for_probe(second_probe);
     wait_for_probe(third_probe);
-
     match await source.shutdown(3) {
         Ok(drained) => testing.assert_true(drained),
         Err(_) => testing.assert_true(false),

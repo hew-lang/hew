@@ -994,6 +994,7 @@ struct ImportedImplLowering<'a> {
 #[derive(Debug, Default)]
 struct ImplBodyPlan {
     symbols: HashMap<hew_types::DefId, String>,
+    symbol_self_names: HashMap<*const hew_parser::ast::ImplDecl, String>,
 }
 
 fn plan_impl_block_symbols(
@@ -1002,6 +1003,28 @@ fn plan_impl_block_symbols(
     base_symbol_self_name: &str,
     skip_methods: &HashSet<String>,
 ) {
+    let declaration_key = impl_decl as *const _;
+    if let Some(existing) = ctx
+        .impl_body_plan
+        .symbol_self_names
+        .insert(declaration_key, base_symbol_self_name.to_string())
+    {
+        if existing != base_symbol_self_name {
+            ctx.impl_body_plan
+                .symbol_self_names
+                .remove(&declaration_key);
+            ctx.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "impl body owner".to_string(),
+                    reason: format!(
+                        "conflicting pre-lowering owners `{existing}` and `{base_symbol_self_name}`"
+                    ),
+                },
+                0..0,
+                "one implementation declaration selected two distinct canonical owners",
+            ));
+        }
+    }
     if impl_decl.where_clause.is_some() && classify_unsupported_where_clause(impl_decl).is_some() {
         return;
     }
@@ -1137,16 +1160,22 @@ fn materialized_default_body_plan(
 fn plan_imported_impl_bodies(
     ctx: &mut LowerCtx,
     program: &Program,
+    file_import_module_idx: &HashMap<usize, u32>,
+    span_indices: &hew_parser::module::FileSpanIndices,
     file_import_modules: &HashSet<hew_parser::module::ModuleId>,
     preferred_modules: &HashSet<hew_parser::module::ModuleId>,
 ) {
     let empty_skips = HashSet::new();
     // Source-order bodies include root declarations and flattened file imports.
     // They may be called before their tail-spliced item is emitted.
-    for (item, _) in &program.items {
+    for (item_idx, (item, _)) in program.items.iter().enumerate() {
         if let Item::Impl(impl_decl) = item {
             if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
-                plan_impl_block_symbols(ctx, impl_decl, name, &empty_skips);
+                let symbol_self_name = file_import_module_idx
+                    .get(&item_idx)
+                    .and_then(|module_idx| span_indices.module_name(*module_idx))
+                    .map_or_else(|| name.clone(), |module| format!("{module}.{name}"));
+                plan_impl_block_symbols(ctx, impl_decl, &symbol_self_name, &empty_skips);
             }
         }
     }
@@ -4138,7 +4167,14 @@ pub fn lower_program_with_mono_cap(
     // package method whose HIR function is emitted later in the fourth pass.
     // This plan is declaration-keyed and uses the same imported-body skip
     // authority as that fourth pass; `fn_registry` never serves as proof.
-    plan_imported_impl_bodies(&mut ctx, program, &file_import_modules, &preferred_modules);
+    plan_imported_impl_bodies(
+        &mut ctx,
+        program,
+        &file_import_module_idx,
+        &span_indices,
+        &file_import_modules,
+        &preferred_modules,
+    );
 
     // Third pass: emit all items in source order now that both fn signatures
     // and type markers are fully resolved.
@@ -4215,17 +4251,12 @@ pub fn lower_program_with_mono_cap(
                 }
             }
             Item::Impl(impl_decl) => {
-                let imported_symbol_self_name =
-                    ctx.current_module_name.as_deref().and_then(|module| {
-                        match &impl_decl.target_type.0 {
-                            TypeExpr::Named { name, .. }
-                                if !ctx.cross_module_colliding_record_names.contains(name) =>
-                            {
-                                Some(format!("{module}.{name}"))
-                            }
-                            _ => None,
-                        }
-                    });
+                let imported_symbol_self_name = ctx.current_module_name.as_ref().and_then(|_| {
+                    ctx.impl_body_plan
+                        .symbol_self_names
+                        .get(&(impl_decl as *const _))
+                        .cloned()
+                });
                 let rewrites = HashMap::new();
                 let skip_methods = HashSet::new();
                 let imported = imported_symbol_self_name
@@ -4819,14 +4850,30 @@ pub fn lower_program_with_mono_cap(
                                     &source_module,
                                     &same_module_fn_rewrites,
                                 );
-                                let qualified_identity =
-                                    format!("{source_module}.{self_type_name}");
                                 // Impl method symbols are declaration-owned,
-                                // not collision-owned.  Always use the full
-                                // source module path so two modules ending in
-                                // `render` cannot emit the same `Box::render`
-                                // linker label.
-                                let qualified_symbol_self_name = Some(qualified_identity);
+                                // not collision-owned. Consume the canonical
+                                // owner established by the declaration-keyed
+                                // pre-lowering plan rather than reconstructing
+                                // it from the source spelling.
+                                let planned_symbol_self_name = ctx
+                                    .impl_body_plan
+                                    .symbol_self_names
+                                    .get(&(impl_decl as *const _))
+                                    .cloned();
+                                if planned_symbol_self_name.is_none() {
+                                    ctx.diagnostics.push(HirDiagnostic::new(
+                                        HirDiagnosticKind::CheckerBoundaryViolation {
+                                            name: format!(
+                                                "impl body `{source_module}.{self_type_name}`"
+                                            ),
+                                            reason:
+                                                "no pre-lowering canonical owner".to_string(),
+                                        },
+                                        span.clone(),
+                                        "imported implementation body has no declaration-keyed owner plan",
+                                    ));
+                                    continue;
+                                }
                                 ctx.lower_impl_block(
                                     impl_decl,
                                     span.clone(),
@@ -4835,7 +4882,7 @@ pub fn lower_program_with_mono_cap(
                                     Some(&ImportedImplLowering {
                                         rewrites: &same_module_fn_rewrites,
                                         skip_methods: &skip_methods,
-                                        symbol_self_name: qualified_symbol_self_name.as_deref(),
+                                        symbol_self_name: planned_symbol_self_name.as_deref(),
                                     }),
                                 );
                             }
@@ -12275,12 +12322,11 @@ impl LowerCtx {
         // previous value (almost always `None`) on exit so nested
         // impl-lowering reentry — should it ever arise — does not leak state.
         // `HirImplBlock::self_type_name` is receiver identity metadata, not a
-        // callable-symbol prefix. Imported non-colliding impls deliberately
-        // retain a bare prefix (`Value::push_int`) for the checker-aligned
-        // function registry, while their resolved receiver type carries the
-        // source identity (`toml.Value`). Preserve both facts: MIR compares
-        // this metadata with parameter zero to distinguish a true receiver
-        // from an associated function's ordinary first argument.
+        // callable-symbol prefix. Imported impl symbols carry the canonical
+        // declaration owner from `impl_body_plan`, while their resolved receiver
+        // type independently carries the source identity. Preserve both facts:
+        // MIR compares this metadata with parameter zero to distinguish a true
+        // receiver from an associated function's ordinary first argument.
         let hir_impl_self_type_name = match &resolved_impl_self_ty {
             ResolvedTy::Named {
                 builtin: Some(BuiltinType::VecIter),
@@ -23321,20 +23367,6 @@ impl LowerCtx {
         span: &Span,
     ) -> bool {
         let expected = self.impl_body_plan.symbols.get(declaration).cloned();
-        if expected
-            .as_deref()
-            .is_some_and(|expected| expected != symbol)
-            && self
-                .current_module_name
-                .as_deref()
-                .is_some_and(|module| self.file_import_module_names.contains(module))
-            && symbol.contains('.')
-        {
-            self.impl_body_plan
-                .symbols
-                .insert(declaration.clone(), symbol.to_string());
-            return true;
-        }
         if expected.as_deref() == Some(symbol) {
             return true;
         }

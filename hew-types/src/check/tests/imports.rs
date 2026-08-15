@@ -3307,7 +3307,7 @@ fn test_file_import_private_items_not_visible() {
 /// reaches `Mode` only through the call's expected parameter type.
 fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     let module = hew_parser::parse(
-        "pub enum Mode {\n    A;\n    B;\n    Present(i64);\n    Named { value: i64 }\n}\n\npub type Box<T> {\n    value: T;\n}\n\nimpl<T> Box<T> {\n    pub fn make(value: T) -> Box<T> {\n        Box<T> { value: value }\n    }\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode::A => 1,\n        Mode::B => 2,\n        Mode::Present(value) => value,\n        Mode::Named { value } => value,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode::A == Mode::A);\n}\n",
+        "pub enum Mode {\n    A;\n    B;\n    Present(i64);\n    Named { value: i64 }\n}\n\npub type Box<T> {\n    value: T;\n}\n\nimpl<T> Box<T> {\n    pub fn make(value: T) -> Box<T> {\n        Box<T> { value: value }\n    }\n}\n\npub type Factory {\n    marker: i64;\n}\n\nimpl Factory {\n    pub fn make(value: i64) -> i64 {\n        value\n    }\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode::A => 1,\n        Mode::B => 2,\n        Mode::Present(value) => value,\n        Mode::Named { value } => value,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode::A == Mode::A);\n}\n",
     );
     assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
     let mut root = hew_parser::parse(root_source);
@@ -3402,14 +3402,47 @@ fn imported_dotted_struct_variants_use_canonical_owner() {
 }
 
 #[test]
+fn dotted_struct_variant_roots_obey_lexical_value_precedence() {
+    let module_shadow = check_qualified_variant_root(
+        "import m;\n\nfn build(m: i64) -> i64 {\n    let selected: m.Mode = m.Mode.Named { value: 7 };\n    0\n}\n",
+    );
+    assert!(
+        module_shadow.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType && error.message.contains("m.Mode.Named")
+        }),
+        "a parameter named `m` must block module-path struct construction: {:?}",
+        module_shadow.errors
+    );
+
+    let type_shadow = check_qualified_variant_root(
+        "import m.{ Mode };\n\nfn build() -> i64 {\n    let Mode: i64 = 0;\n    let selected: m.Mode = Mode.Named { value: 7 };\n    0\n}\n",
+    );
+    assert!(
+        type_shadow.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType && error.message.contains("Mode.Named")
+        }),
+        "a binding named `Mode` must block selected-type struct construction: {:?}",
+        type_shadow.errors
+    );
+}
+
+#[test]
 fn imported_associated_calls_use_canonical_owner() {
     let selected = check_qualified_variant_root(
-        "import m.{ Box };\n\nfn main() {\n    let inferred: Box<i64> = Box.make(42);\n    let explicit: Box<i64> = Box<i64>.make(42);\n    assert(inferred.value == explicit.value);\n}\n",
+        "import m.{ Box, Factory };\n\nfn main() {\n    let inferred: Box<i64> = Box.make(42);\n    let explicit: Box<i64> = Box<i64>.make(42);\n    let plain = Factory.make(42);\n    assert(inferred.value == explicit.value);\n    assert(plain == 42);\n}\n",
     );
     assert!(
         selected.errors.is_empty(),
         "selected imported associated calls must resolve canonically: {:?}",
         selected.errors
+    );
+    assert!(
+        !selected
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == TypeErrorKind::UnusedImport),
+        "selected generic and non-generic associated calls must credit their imports: {:?}",
+        selected.warnings
     );
 
     let qualified = check_qualified_variant_root(

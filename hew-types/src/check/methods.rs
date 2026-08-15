@@ -7747,6 +7747,7 @@ impl Checker {
                     args,
                     span,
                 ) {
+                    self.mark_resolved_nominal_owner_used(&canonical_type);
                     return result;
                 }
             }
@@ -7825,6 +7826,7 @@ impl Checker {
                     args,
                     span,
                 ) {
+                    self.mark_resolved_nominal_owner_used(&canonical_type);
                     return result;
                 }
             }

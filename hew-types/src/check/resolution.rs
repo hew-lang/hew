@@ -1206,7 +1206,7 @@ impl Checker {
     /// Credit the lexical binding whose exact source owner prefixes a resolved
     /// nominal identity. Full owners may themselves be dotted package paths,
     /// so `split_once('.')` is neither sufficient nor sound here.
-    fn mark_resolved_nominal_owner_used(&self, resolved_name: &str) {
+    pub(super) fn mark_resolved_nominal_owner_used(&self, resolved_name: &str) {
         let owners: Vec<String> = self
             .module_import_bindings
             .iter()

@@ -1,6 +1,7 @@
 //! Execute discovered test cases via the native compilation pipeline.
 
 use super::discovery::TestCase;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::process::Command;
@@ -43,8 +44,6 @@ fn physical_core_count() -> Option<usize> {
 
 #[cfg(target_os = "linux")]
 fn physical_core_count() -> Option<usize> {
-    use std::collections::HashSet;
-
     let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").ok()?;
     let mut physical_id = None;
     let mut core_id = None;
@@ -420,8 +419,70 @@ fn summarize(results: Vec<TestResult>) -> TestSummary {
 
 struct CompiledTestArtifact {
     _source: tempfile::NamedTempFile,
+    _source_tree: tempfile::TempDir,
     _emit_dir: tempfile::TempDir,
     binary_path: PathBuf,
+}
+
+fn mirrored_source_path(root: &Path, source: &Path) -> PathBuf {
+    let mut mirrored = root.join("source");
+    for component in source.components() {
+        if let std::path::Component::Normal(component) = component {
+            mirrored.push(component);
+        }
+    }
+    mirrored
+}
+
+fn mirror_file_imports(
+    source: &str,
+    source_dir: &Path,
+    mirror_root: &Path,
+    visited: &mut HashSet<PathBuf>,
+) -> Result<(), String> {
+    let parsed = hew_parser::parse(source);
+    for (item, _) in &parsed.program.items {
+        let hew_parser::ast::Item::Import(import) = item else {
+            continue;
+        };
+        let Some(file_path) = import.file_path.as_deref() else {
+            continue;
+        };
+        let imported_source = source_dir
+            .join(file_path)
+            .canonicalize()
+            .map_err(|error| format!("cannot resolve imported test file `{file_path}`: {error}"))?;
+        if !visited.insert(imported_source.clone()) {
+            continue;
+        }
+        let imported_contents = std::fs::read_to_string(&imported_source).map_err(|error| {
+            format!(
+                "cannot read imported test file `{}`: {error}",
+                imported_source.display()
+            )
+        })?;
+        let mirrored = mirrored_source_path(mirror_root, &imported_source);
+        let mirrored_parent = mirrored
+            .parent()
+            .ok_or_else(|| "mirrored imported source has no parent directory".to_string())?;
+        std::fs::create_dir_all(mirrored_parent).map_err(|error| {
+            format!(
+                "cannot create mirrored import directory `{}`: {error}",
+                mirrored_parent.display()
+            )
+        })?;
+        std::fs::write(&mirrored, &imported_contents).map_err(|error| {
+            format!(
+                "cannot write mirrored imported test file `{}`: {error}",
+                mirrored.display()
+            )
+        })?;
+        let imported_dir = imported_source
+            .parent()
+            .ok_or_else(|| "imported test source has no parent directory".to_string())?;
+        mirror_file_imports(&imported_contents, imported_dir, mirror_root, visited)?;
+    }
+    Ok(())
 }
 
 /// Compile a synthetic test program to a native binary.
@@ -436,15 +497,28 @@ fn compile_test(
         name = test.name,
     );
 
-    // Write synthetic source and the emit dir to the system temp directory,
-    // NOT to the test file's own parent.  If the process is killed mid-run,
-    // a leftover hew_test_*.hew inside a tests/ directory would be picked up
-    // by the next discovery scan and cause a spurious "main is defined multiple
-    // times" compile error.  The OS temp dir is outside any scanned tree.
+    // Mirror only the fixture's relative file-import closure into a writable
+    // temporary tree. The synthetic source keeps the original absolute parent
+    // shape inside that tree, so quoted imports resolve identically without
+    // requiring write access to the source checkout.
+    let source_path = Path::new(&test.file)
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve test source `{}`: {error}", test.file))?;
+    let source_dir = source_path
+        .parent()
+        .ok_or_else(|| "test source path has no parent directory".to_string())?;
+    let source_tree = tempfile::Builder::new()
+        .prefix("hew_test_source_")
+        .tempdir_in(std::env::temp_dir())
+        .map_err(|e| format!("cannot create temp source tree: {e}"))?;
+    mirror_file_imports(source, source_dir, source_tree.path(), &mut HashSet::new())?;
+    let mirrored_source_dir = mirrored_source_path(source_tree.path(), source_dir);
+    std::fs::create_dir_all(&mirrored_source_dir)
+        .map_err(|e| format!("cannot create mirrored test source directory: {e}"))?;
     let tmp_source = tempfile::Builder::new()
         .prefix("hew_test_")
         .suffix(".hew")
-        .tempfile_in(std::env::temp_dir())
+        .tempfile_in(mirrored_source_dir)
         .map_err(|e| format!("cannot create temp file: {e}"))?;
 
     std::fs::write(tmp_source.path(), &synthetic)
@@ -480,6 +554,7 @@ fn compile_test(
 
     Ok(CompiledTestArtifact {
         _source: tmp_source,
+        _source_tree: source_tree,
         _emit_dir: emit_dir,
         binary_path,
     })

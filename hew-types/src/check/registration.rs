@@ -6220,13 +6220,15 @@ impl Checker {
                                         )
                                     })
                                 };
-                                if let Ok(receiver_args) = self_type_args
-                                    .iter()
-                                    .map(ResolvedTy::from_ty)
-                                    .collect::<Result<Vec<_>, _>>()
-                                {
+                                if let (Ok(receiver_args), Some((declaring_trait, _))) = (
+                                    self_type_args
+                                        .iter()
+                                        .map(ResolvedTy::from_ty)
+                                        .collect::<Result<Vec<_>, _>>(),
+                                    self.trait_method_call_target_ids(&tb.name, &m.name),
+                                ) {
                                     let declaration = crate::default_impl_method_declaration(
-                                        &crate::DefId::new(trait_key.clone()),
+                                        &declaring_trait,
                                         &crate::NominalInstance {
                                             nominal: crate::NominalId::new(receiver_name),
                                             args: receiver_args,
@@ -6501,8 +6503,13 @@ impl Checker {
             );
         let trait_id = crate::DefId::new(declaration_key.clone());
         let method_id = crate::DefId::new(format!("{}::{}", trait_id.full_path(), method.name));
+        let ids = (trait_id, method_id);
         self.trait_method_ids
-            .insert(method_id.full_path().to_string(), (trait_id, method_id));
+            .insert(ids.1.full_path().to_string(), ids.clone());
+        if self.registration_is_flat_file_import {
+            self.trait_method_ids_by_binding
+                .insert((None, trait_name.to_string(), method.name.clone()), ids);
+        }
         // The owner-qualified key (`{module}.{trait}::{method}`) is collision-free
         // even when two imported modules export a same-named trait. The bare
         // `{trait}::{method}` key is first-write-wins, so with a same-name
@@ -11855,6 +11862,28 @@ impl Checker {
                             .entry(format!("{module_short}.{}", tr.name))
                             .or_insert_with(|| info.clone());
                     }
+                    // A whole-module import exposes the trait through the exact
+                    // qualified source binding (`alias.Trait`) rather than a
+                    // published bare name. Record the checker-owned declaration
+                    // IDs under that binding too, so call-target selection never
+                    // has to recover an owner from the trait's leaf spelling.
+                    let trait_id = crate::DefId::new(qualified.clone());
+                    let qualified_binding = format!("{module_short}.{}", tr.name);
+                    for trait_item in &tr.items {
+                        let TraitItem::Method(method) = trait_item else {
+                            continue;
+                        };
+                        let method_id =
+                            crate::DefId::new(format!("{}::{}", trait_id.full_path(), method.name));
+                        self.trait_method_ids_by_binding.insert(
+                            (
+                                self.current_module.clone(),
+                                qualified_binding.clone(),
+                                method.name.clone(),
+                            ),
+                            (trait_id.clone(), method_id),
+                        );
+                    }
 
                     // Record super-trait relationships for both qualified and
                     // unqualified bindings. A supertrait reference written inside
@@ -11895,7 +11924,6 @@ impl Checker {
                             .entry((self.current_module.clone(), binding_name.clone()))
                             .or_default()
                             .insert(format!("{module_full_path}.{}", tr.name));
-                        let trait_id = crate::DefId::new(format!("{module_full_path}.{}", tr.name));
                         for trait_item in &tr.items {
                             let TraitItem::Method(method) = trait_item else {
                                 continue;

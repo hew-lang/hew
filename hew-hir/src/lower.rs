@@ -994,6 +994,15 @@ struct ImportedImplLowering<'a> {
 #[derive(Debug, Default)]
 struct ImplBodyPlan {
     symbols: HashMap<hew_types::DefId, String>,
+    symbol_self_names: HashMap<*const hew_parser::ast::ImplDecl, String>,
+}
+
+fn imported_impl_symbol_self_name(source_module: &str, source_name: &str) -> String {
+    if source_name.contains('.') {
+        source_name.to_string()
+    } else {
+        format!("{source_module}.{source_name}")
+    }
 }
 
 fn plan_impl_block_symbols(
@@ -1002,6 +1011,28 @@ fn plan_impl_block_symbols(
     base_symbol_self_name: &str,
     skip_methods: &HashSet<String>,
 ) {
+    let declaration_key = impl_decl as *const _;
+    if let Some(existing) = ctx
+        .impl_body_plan
+        .symbol_self_names
+        .insert(declaration_key, base_symbol_self_name.to_string())
+    {
+        if existing != base_symbol_self_name {
+            ctx.impl_body_plan
+                .symbol_self_names
+                .remove(&declaration_key);
+            ctx.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "impl body owner".to_string(),
+                    reason: format!(
+                        "conflicting pre-lowering owners `{existing}` and `{base_symbol_self_name}`"
+                    ),
+                },
+                0..0,
+                "one implementation declaration selected two distinct canonical owners",
+            ));
+        }
+    }
     if impl_decl.where_clause.is_some() && classify_unsupported_where_clause(impl_decl).is_some() {
         return;
     }
@@ -1137,16 +1168,25 @@ fn materialized_default_body_plan(
 fn plan_imported_impl_bodies(
     ctx: &mut LowerCtx,
     program: &Program,
+    file_import_module_idx: &HashMap<usize, u32>,
+    span_indices: &hew_parser::module::FileSpanIndices,
     file_import_modules: &HashSet<hew_parser::module::ModuleId>,
     preferred_modules: &HashSet<hew_parser::module::ModuleId>,
 ) {
     let empty_skips = HashSet::new();
     // Source-order bodies include root declarations and flattened file imports.
     // They may be called before their tail-spliced item is emitted.
-    for (item, _) in &program.items {
+    for (item_idx, (item, _)) in program.items.iter().enumerate() {
         if let Item::Impl(impl_decl) = item {
             if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
-                plan_impl_block_symbols(ctx, impl_decl, name, &empty_skips);
+                let symbol_self_name = file_import_module_idx
+                    .get(&item_idx)
+                    .and_then(|module_idx| span_indices.module_name(*module_idx))
+                    .map_or_else(
+                        || name.clone(),
+                        |module| imported_impl_symbol_self_name(module, name),
+                    );
+                plan_impl_block_symbols(ctx, impl_decl, &symbol_self_name, &empty_skips);
             }
         }
     }
@@ -1206,7 +1246,7 @@ fn plan_imported_impl_bodies(
                 continue;
             };
             let skip_methods = ctx.imported_impl_skip_methods(impl_decl, &source_module, &rewrites);
-            let base_symbol_self_name = format!("{source_module}.{name}");
+            let base_symbol_self_name = imported_impl_symbol_self_name(&source_module, name);
             plan_impl_block_symbols(ctx, impl_decl, &base_symbol_self_name, &skip_methods);
         }
         ctx.current_module_name = previous_module;
@@ -1357,41 +1397,86 @@ fn collect_inherent_impl_consuming_methods_from_items(
 fn collect_trait_default_methods(
     program: &Program,
     file_import_module_idx: &HashMap<usize, u32>,
+    trait_method_ids_by_binding: &HashMap<
+        (Option<String>, String, String),
+        (hew_types::DefId, hew_types::DefId),
+    >,
 ) -> (HashMap<String, Vec<TraitMethod>>, HashMap<String, u32>) {
+    fn checker_binding_owner(
+        scope: Option<&str>,
+        trait_name: &str,
+        defaults: &[TraitMethod],
+        trait_method_ids_by_binding: &HashMap<
+            (Option<String>, String, String),
+            (hew_types::DefId, hew_types::DefId),
+        >,
+    ) -> Option<String> {
+        let scope = scope.map(str::to_string);
+        let mut owners = defaults
+            .iter()
+            .map(|method| {
+                trait_method_ids_by_binding
+                    .get(&(scope.clone(), trait_name.to_string(), method.name.clone()))
+                    .map(|(trait_id, _)| trait_id.full_path().to_string())
+            })
+            .collect::<Option<Vec<_>>>()?;
+        owners.sort_unstable();
+        owners.dedup();
+        (owners.len() == 1).then(|| owners.pop().expect("checked length"))
+    }
+
     let mut owner_module_idx: HashMap<String, u32> = HashMap::new();
     let mut out: HashMap<String, Vec<TraitMethod>> = HashMap::new();
-    let mut collect =
-        |items: &[(Item, Span)], owner: Option<&str>, idx_for: &dyn Fn(usize) -> u32| {
-            for (item_idx, (item, _)) in items.iter().enumerate() {
-                let Item::Trait(trait_decl) = item else {
-                    continue;
-                };
-                let defaults: Vec<TraitMethod> = trait_decl
-                    .items
-                    .iter()
-                    .filter_map(|ti| match ti {
-                        TraitItem::Method(method) if method.body.is_some() => Some(method.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                if !defaults.is_empty() {
-                    let key = owner.map_or_else(
+    let mut collect = |items: &[(Item, Span)],
+                       owner: Option<&str>,
+                       flat_file_items: Option<&HashMap<usize, u32>>,
+                       idx_for: &dyn Fn(usize) -> u32| {
+        for (item_idx, (item, _)) in items.iter().enumerate() {
+            let Item::Trait(trait_decl) = item else {
+                continue;
+            };
+            let defaults: Vec<TraitMethod> = trait_decl
+                .items
+                .iter()
+                .filter_map(|ti| match ti {
+                    TraitItem::Method(method) if method.body.is_some() => Some(method.clone()),
+                    _ => None,
+                })
+                .collect();
+            if !defaults.is_empty() {
+                let key = if flat_file_items.is_some_and(|items| items.contains_key(&item_idx)) {
+                    let Some(owner) = checker_binding_owner(
+                        None,
+                        &trait_decl.name,
+                        &defaults,
+                        trait_method_ids_by_binding,
+                    ) else {
+                        continue;
+                    };
+                    owner
+                } else {
+                    owner.map_or_else(
                         || trait_decl.name.clone(),
                         |owner| format!("{owner}.{}", trait_decl.name),
-                    );
-                    // A trait spliced into the ROOT items by a file import keeps
-                    // its bare root spelling, but the checker validated it during
-                    // the module walk under that file's own index. A trait in a
-                    // directory module's peer file likewise owns that PEER's index,
-                    // not the assembled module's base — recover both per item.
-                    owner_module_idx.insert(key.clone(), idx_for(item_idx));
-                    out.insert(key, defaults);
-                }
+                    )
+                };
+                // A trait spliced into the ROOT items by a file import keeps
+                // its root binding spelling, but its declaration identity is
+                // the exact canonical owner published by the checker. A trait
+                // in a directory module's peer file likewise owns that PEER's
+                // index, not the assembled module's base — recover both per
+                // item.
+                owner_module_idx.insert(key.clone(), idx_for(item_idx));
+                out.insert(key, defaults);
             }
-        };
-    collect(&program.items, None, &|item_idx| {
-        file_import_module_idx.get(&item_idx).copied().unwrap_or(0)
-    });
+        }
+    };
+    collect(
+        &program.items,
+        None,
+        Some(file_import_module_idx),
+        &|item_idx| file_import_module_idx.get(&item_idx).copied().unwrap_or(0),
+    );
     if let Some(graph) = &program.module_graph {
         let span_indices = graph.file_span_indices();
         for module_id in &graph.topo_order {
@@ -1402,7 +1487,7 @@ fn collect_trait_default_methods(
                 continue;
             };
             let owner = module_id.path.join(".");
-            collect(&module.items, Some(&owner), &|item_idx| {
+            collect(&module.items, Some(&owner), None, &|item_idx| {
                 span_indices.item_index(module_id, item_idx).unwrap_or(0)
             });
         }
@@ -2402,8 +2487,11 @@ pub fn lower_program_with_mono_cap(
 
     // Pre-pre-pass: harvest trait default method bodies so that impl-block
     // lowering can emit them for impls that do not override them.
-    let (trait_defaults, trait_default_module_idx) =
-        collect_trait_default_methods(program, &file_import_module_idx);
+    let (trait_defaults, trait_default_module_idx) = collect_trait_default_methods(
+        program,
+        &file_import_module_idx,
+        &ctx.trait_method_ids_by_binding,
+    );
     ctx.trait_default_methods = trait_defaults;
     ctx.trait_default_module_idx = trait_default_module_idx;
     let (trait_super, trait_declared_methods) = collect_trait_declaring_surfaces(program);
@@ -2870,8 +2958,8 @@ pub fn lower_program_with_mono_cap(
                                     || classify_unsupported_where_clause(impl_decl).is_none()
                                 {
                                     let impl_type_params = impl_type_param_names(impl_decl);
-                                    let qualified_identity = format!("{module_full_path}.{name}");
-                                    let symbol_self_name = qualified_identity;
+                                    let symbol_self_name =
+                                        imported_impl_symbol_self_name(&module_full_path, name);
                                     for method in &impl_decl.methods {
                                         ctx.register_impl_method_fn_entry(
                                             &symbol_self_name,
@@ -4138,7 +4226,14 @@ pub fn lower_program_with_mono_cap(
     // package method whose HIR function is emitted later in the fourth pass.
     // This plan is declaration-keyed and uses the same imported-body skip
     // authority as that fourth pass; `fn_registry` never serves as proof.
-    plan_imported_impl_bodies(&mut ctx, program, &file_import_modules, &preferred_modules);
+    plan_imported_impl_bodies(
+        &mut ctx,
+        program,
+        &file_import_module_idx,
+        &span_indices,
+        &file_import_modules,
+        &preferred_modules,
+    );
 
     // Third pass: emit all items in source order now that both fn signatures
     // and type markers are fully resolved.
@@ -4215,7 +4310,28 @@ pub fn lower_program_with_mono_cap(
                 }
             }
             Item::Impl(impl_decl) => {
-                ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);
+                let imported_symbol_self_name = ctx.current_module_name.as_ref().and_then(|_| {
+                    ctx.impl_body_plan
+                        .symbol_self_names
+                        .get(&(impl_decl as *const _))
+                        .cloned()
+                });
+                let rewrites = HashMap::new();
+                let skip_methods = HashSet::new();
+                let imported = imported_symbol_self_name
+                    .as_deref()
+                    .map(|symbol_self_name| ImportedImplLowering {
+                        rewrites: &rewrites,
+                        skip_methods: &skip_methods,
+                        symbol_self_name: Some(symbol_self_name),
+                    });
+                ctx.lower_impl_block(
+                    impl_decl,
+                    span.clone(),
+                    &mut items,
+                    false,
+                    imported.as_ref(),
+                );
             }
             Item::Machine(machine) => {
                 if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
@@ -4624,6 +4740,12 @@ pub fn lower_program_with_mono_cap(
                         // function signature, so visibility cannot discard its
                         // runtime layout and value-class identity here.
                         Item::Machine(machine) => {
+                            // File imports are flattened into the source-order
+                            // pass above. Lowering them again here would mint
+                            // duplicate machine mono/layout entries.
+                            if file_import_modules.contains(mod_id) {
+                                continue;
+                            }
                             if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
                                 items.push(HirItem::Machine(hir_machine));
                             }
@@ -4787,14 +4909,30 @@ pub fn lower_program_with_mono_cap(
                                     &source_module,
                                     &same_module_fn_rewrites,
                                 );
-                                let qualified_identity =
-                                    format!("{source_module}.{self_type_name}");
                                 // Impl method symbols are declaration-owned,
-                                // not collision-owned.  Always use the full
-                                // source module path so two modules ending in
-                                // `render` cannot emit the same `Box::render`
-                                // linker label.
-                                let qualified_symbol_self_name = Some(qualified_identity);
+                                // not collision-owned. Consume the canonical
+                                // owner established by the declaration-keyed
+                                // pre-lowering plan rather than reconstructing
+                                // it from the source spelling.
+                                let planned_symbol_self_name = ctx
+                                    .impl_body_plan
+                                    .symbol_self_names
+                                    .get(&(impl_decl as *const _))
+                                    .cloned();
+                                if planned_symbol_self_name.is_none() {
+                                    ctx.diagnostics.push(HirDiagnostic::new(
+                                        HirDiagnosticKind::CheckerBoundaryViolation {
+                                            name: format!(
+                                                "impl body `{source_module}.{self_type_name}`"
+                                            ),
+                                            reason:
+                                                "no pre-lowering canonical owner".to_string(),
+                                        },
+                                        span.clone(),
+                                        "imported implementation body has no declaration-keyed owner plan",
+                                    ));
+                                    continue;
+                                }
                                 ctx.lower_impl_block(
                                     impl_decl,
                                     span.clone(),
@@ -4803,7 +4941,7 @@ pub fn lower_program_with_mono_cap(
                                     Some(&ImportedImplLowering {
                                         rewrites: &same_module_fn_rewrites,
                                         skip_methods: &skip_methods,
-                                        symbol_self_name: qualified_symbol_self_name.as_deref(),
+                                        symbol_self_name: planned_symbol_self_name.as_deref(),
                                     }),
                                 );
                             }
@@ -12243,12 +12381,11 @@ impl LowerCtx {
         // previous value (almost always `None`) on exit so nested
         // impl-lowering reentry — should it ever arise — does not leak state.
         // `HirImplBlock::self_type_name` is receiver identity metadata, not a
-        // callable-symbol prefix. Imported non-colliding impls deliberately
-        // retain a bare prefix (`Value::push_int`) for the checker-aligned
-        // function registry, while their resolved receiver type carries the
-        // source identity (`toml.Value`). Preserve both facts: MIR compares
-        // this metadata with parameter zero to distinguish a true receiver
-        // from an associated function's ordinary first argument.
+        // callable-symbol prefix. Imported impl symbols carry the canonical
+        // declaration owner from `impl_body_plan`, while their resolved receiver
+        // type independently carries the source identity. Preserve both facts:
+        // MIR compares this metadata with parameter zero to distinguish a true
+        // receiver from an associated function's ordinary first argument.
         let hir_impl_self_type_name = match &resolved_impl_self_ty {
             ResolvedTy::Named {
                 builtin: Some(BuiltinType::VecIter),
@@ -35088,6 +35225,44 @@ mod tests {
     use super::*;
     use hew_types::module_registry::ModuleRegistry;
     use hew_types::Checker;
+
+    #[test]
+    fn flat_file_trait_defaults_use_checker_published_owner() {
+        let parsed = hew_parser::parse(
+            r#"
+trait Greet {
+    fn simple(self) -> i64 { 42 }
+    fn greeting(self) -> string { "hello" }
+}
+"#,
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+        let owner = hew_types::DefId::new("support.greeting.Greet");
+        let bindings = ["simple", "greeting"]
+            .into_iter()
+            .map(|method| {
+                (
+                    (None, "Greet".to_string(), method.to_string()),
+                    (
+                        owner.clone(),
+                        hew_types::DefId::new(format!("{}::{method}", owner.full_path())),
+                    ),
+                )
+            })
+            .collect();
+        let file_import_module_idx = HashMap::from([(0, 7)]);
+
+        let (defaults, module_indices) =
+            collect_trait_default_methods(&parsed.program, &file_import_module_idx, &bindings);
+
+        assert!(defaults.contains_key("support.greeting.Greet"));
+        assert!(!defaults.contains_key("Greet"));
+        assert_eq!(module_indices.get("support.greeting.Greet"), Some(&7));
+    }
 
     #[test]
     fn trait_method_identity_prefers_local_and_imported_same_leaf_traits_over_prelude_items() {

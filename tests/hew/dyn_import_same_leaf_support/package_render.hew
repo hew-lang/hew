@@ -1,0 +1,22 @@
+pub trait Render {
+    fn render(value: Self) -> string;
+}
+
+pub type Box {
+    label: string;
+}
+
+impl Render for Box {
+    fn render(value: Box) -> string {
+        f"package:{value.label}"
+    }
+}
+
+pub fn make_package_box() -> Box {
+    Box { label: "right" }
+}
+
+pub fn render_package_box() -> string {
+    let value: dyn Render = make_package_box();
+    value.render()
+}

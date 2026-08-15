@@ -2069,13 +2069,13 @@ mod tests {
         reason = "the import-order regression keeps both declaration-owner permutations in one proof"
     )]
     fn mixed_file_and_package_impls_keep_declaration_owned_dispatch_in_both_import_orders() {
-        // A file import is flattened into the root program, whereas a package
-        // import retains its package-qualified declaration owner.  The two
+        // A file import shares the root checker declaration namespace, while
+        // its emitted HIR body retains the source-file symbol owner. A package
+        // import retains a package-qualified owner at both boundaries. The two
         // sources intentionally declare same-leaf `Result` / `ResultMethods`
-        // impls.  The checker must select the root-owned file declaration for
-        // `local.tag()` and the package-owned declaration for `r.rows()`;
-        // choosing an owner by the shared leaf name makes HIR's body lookup
-        // ambiguous or attaches the call to the wrong implementation.
+        // impls. The checker must select the root declaration for `local.tag()`
+        // and the package declaration for `r.rows()`; HIR's direct-call index
+        // must then project each declaration to its distinct emitted body.
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("hew-compile has a workspace parent");
@@ -2176,7 +2176,10 @@ mod tests {
                 hir.diagnostics
             );
             let symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
-            assert_eq!(symbols.get(&root_tag), Some(&"Result::tag".to_string()));
+            assert_eq!(
+                symbols.get(&root_tag),
+                Some(&"mixed_import_impl_collision_lib.Result::tag".to_string())
+            );
             assert_eq!(
                 symbols.get(&package_rows),
                 Some(&"hew.testffi.Result::rows".to_string())

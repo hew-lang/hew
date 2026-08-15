@@ -489,6 +489,38 @@ fn foo(w: Weird) -> i64 {
     }
 
     #[test]
+    fn let_else_record_variant_records_payload_bindings() {
+        let resolutions = pattern_resolutions(
+            r"
+enum Packet {
+    Data { a: string, b: string };
+    Empty;
+}
+
+fn probe(packet: Packet) -> i64 {
+    let Packet::Data { a, b: _ } = packet else {
+        return 0;
+    };
+    a.len()
+}
+",
+        );
+        let arm = resolutions
+            .values()
+            .find(|resolution| {
+                resolution
+                    .variant_match
+                    .as_ref()
+                    .is_some_and(|variant| variant.variant_name == "Data")
+            })
+            .expect("let-else record variant must publish its resolution");
+        assert_eq!(arm.payload_bindings.len(), 1);
+        assert_eq!(arm.payload_bindings[0].binding_name, "a");
+        assert_eq!(arm.payload_bindings[0].field_idx, 0);
+        assert_eq!(arm.payload_bindings[0].ty, Ty::String);
+    }
+
+    #[test]
     fn record_match_omitted_field_without_rest_fails_closed() {
         let output = check_source(
             r"

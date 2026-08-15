@@ -3260,7 +3260,7 @@ fn test_file_import_private_items_not_visible() {
 /// reaches `Mode` only through the call's expected parameter type.
 fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     let module = hew_parser::parse(
-        "pub enum Mode {\n    A;\n    B;\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode::A => 1,\n        Mode::B => 2,\n    }\n}\n",
+        "pub enum Mode {\n    A;\n    B;\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode::A => 1,\n        Mode::B => 2,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode::A == Mode::A);\n}\n",
     );
     assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
     let mut root = hew_parser::parse(root_source);

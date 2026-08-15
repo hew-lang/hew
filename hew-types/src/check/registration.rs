@@ -2875,15 +2875,14 @@ impl Checker {
         bare_name.to_string()
     }
 
-    /// Commit a re-resolved `TypeDef`: insert the bare entry (last-write-wins
-    /// across modules) and, for a non-root module, copy it to the
-    /// collision-free `{module_short}.{name}` qualified key while mirroring the
-    /// marker tables — exactly the bare+qualified pairing `pre_register_type_decl`
-    /// and `register_qualified_type_alias` establish during normal registration.
+    /// Commit a re-resolved `TypeDef` under its declaration identity.
+    /// Non-root declarations publish only their full owner; root declarations
+    /// retain the bare key because that is their canonical identity.
     fn commit_reresolved_type_def(&mut self, name: &str, type_def: TypeDef) {
-        self.type_defs.insert(name.to_string(), type_def);
         if let Some(module_owner) = self.current_module_identity().map(str::to_string) {
-            self.register_qualified_type_alias(&module_owner, name);
+            self.register_canonical_type_def(&module_owner, name, &type_def);
+        } else {
+            self.type_defs.insert(name.to_string(), type_def);
         }
         self.handle_bearing_dirty = true;
     }

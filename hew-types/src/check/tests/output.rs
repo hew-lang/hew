@@ -447,6 +447,31 @@ fn tail_ok_publication_preserves_the_source_payload_type() {
     );
 }
 
+#[test]
+fn scope_body_with_spawned_call_and_trailing_value_checks_cleanly() {
+    let output = check_source(
+        r"
+        actor Worker {
+            receive fn run() {}
+        }
+
+        fn main() {
+            scope {
+                let worker = spawn Worker();
+                worker.run();
+                0
+            };
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "scope body with a spawned worker and trailing value must typecheck cleanly; got: {:#?}",
+        output.errors
+    );
+}
+
 fn ownership_graph_key(start: usize, module_idx: u32) -> SpanKey {
     SpanKey {
         start,

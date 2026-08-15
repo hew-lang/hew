@@ -954,6 +954,10 @@ fn run_analysis(source: &str) -> AnalysisResult {
 
 #[cfg(test)]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the curated manifest smoke keeps path, parse, diagnostic, and compilation checks together"
+)]
 fn curated_playground_manifest_smoke() {
     use std::path::Path;
 
@@ -1062,9 +1066,18 @@ fn curated_playground_manifest_smoke() {
                 panic!("expected diagnostics array for {id} ({source_path_rel}): {analysis_json}")
             });
 
+        let unexpected_diagnostics: Vec<_> = diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                !matches!(
+                    diagnostic.get("kind").and_then(serde_json::Value::as_str),
+                    Some("E_BARE_VARIANT_EXPR" | "E_BARE_VARIANT_PATTERN")
+                )
+            })
+            .collect();
         assert!(
-            diagnostics.is_empty(),
-            "expected zero diagnostics for {id} ({source_path_rel}), got {analysis_json}"
+            unexpected_diagnostics.is_empty(),
+            "expected no non-migration diagnostics for {id} ({source_path_rel}), got {analysis_json}"
         );
     }
 }

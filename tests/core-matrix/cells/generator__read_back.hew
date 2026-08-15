@@ -1,18 +1,15 @@
 fn main() {
-    let x = gen {
-        yield 1;
-        yield 2;
-    };
-    let v: Vec<Generator<i64, ()>> = Vec::new();
+    let x = gen { yield 1; yield 2; };
+    let v: Vec<Generator<i64, ()>> = Vec.new();
     v.push(x);
     match v.get(0) {
-        Some(e) => {
+        .Some(e) => {
             var e_sum = 0;
             for e_y in e {
                 e_sum = e_sum + e_y;
             }
             println(f"sum {e_sum}");
         },
-        None => println("missing"),
+        .None => println("missing"),
     }
 }

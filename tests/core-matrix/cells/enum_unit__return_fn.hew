@@ -4,11 +4,14 @@ enum Colour {
 }
 
 fn make() -> Colour {
-    let m: Colour = Red;
+    let m: Colour = .Red;
     m
 }
 
 fn main() {
     let x = make();
-    match x { Red => println("Red"), Green => println("Green"), }
+    match x {
+        .Red => println("Red"),
+        .Green => println("Green"),
+    }
 }

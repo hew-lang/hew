@@ -23,7 +23,7 @@ extern "C" {
 
 fn main() {
     let x = Dq { handle: unsafe { hew_deque_new() }, tag: 1 };
-    let m: HashMap<string, Dq> = HashMap::new();
+    let m: HashMap<string, Dq> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
         Some(e) => {

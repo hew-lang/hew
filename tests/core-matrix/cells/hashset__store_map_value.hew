@@ -1,15 +1,15 @@
 fn main() {
-    let x: HashSet<i64> = HashSet::new();
+    let x: HashSet<i64> = HashSet.new();
     x.insert(1);
     x.insert(2);
-    let m: HashMap<string, HashSet<i64>> = HashMap::new();
+    let m: HashMap<string, HashSet<i64>> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
+        .Some(e) => {
             let e_l = e.len();
             let e_h = e.contains(1);
             println(f"len={e_l} has1={e_h}");
         },
-        None => println("missing"),
+        .None => println("missing"),
     }
 }

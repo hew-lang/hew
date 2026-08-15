@@ -1,6 +1,6 @@
 fn main() {
     let k = |v: i64| v * 2;
-    let m: HashMap<fn(i64) -> i64, i64> = HashMap::new();
+    let m: HashMap<fn(i64) -> i64, i64> = HashMap.new();
     m.insert(k, 9);
     match m.get(k) {
         Some(v) => println(f"got {v}"),

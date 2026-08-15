@@ -1,11 +1,14 @@
 fn main() {
     let x: Result<i64, string> = Ok(6);
-    let m: HashMap<string, Result<i64, string>> = HashMap::new();
+    let m: HashMap<string, Result<i64, string>> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
-            match e { Ok(e_v) => println(f"ok {e_v}"), Err(e_e) => println(f"err {e_e}"), }
+        .Some(e) => {
+            match e {
+                .Ok(e_v) => println(f"ok {e_v}"),
+                .Err(e_e) => println(f"err {e_e}"),
+            }
         },
-        None => println("missing"),
+        .None => println("missing"),
     }
 }

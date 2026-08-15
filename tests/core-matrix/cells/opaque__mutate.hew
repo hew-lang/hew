@@ -10,7 +10,9 @@ type Dq {
 
 impl Dq {
     fn close(self) {
-        unsafe { hew_deque_free(self.handle) };
+        unsafe {
+            hew_deque_free(self.handle)
+        };
         println(f"close {self.tag}");
     }
 }
@@ -22,9 +24,15 @@ extern "C" {
 }
 
 fn main() {
-    var x = Dq { handle: unsafe { hew_deque_new() }, tag: 1 };
-    x = Dq { handle: unsafe { hew_deque_new() }, tag: 2 };
-    let x_l = unsafe { hew_deque_len(x.handle) };
+    var x = Dq { handle: unsafe {
+        hew_deque_new()
+    }, tag: 1 };
+    x = Dq { handle: unsafe {
+        hew_deque_new()
+    }, tag: 2 };
+    let x_l = unsafe {
+        hew_deque_len(x.handle)
+    };
     let x_t = x.tag;
     println(f"dq {x_t} len={x_l}");
 }

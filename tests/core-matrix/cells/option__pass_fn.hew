@@ -1,5 +1,8 @@
 fn use_it(v: Option<i64>) {
-    match v { Some(v_v) => println(f"some {v_v}"), None => println("none"), }
+    match v {
+        .Some(v_v) => println(f"some {v_v}"),
+        .None => println("none"),
+    }
 }
 
 fn main() {

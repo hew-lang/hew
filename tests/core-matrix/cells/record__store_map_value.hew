@@ -5,14 +5,14 @@ type Rec {
 
 fn main() {
     let x = Rec { a: 1, b: "x0" };
-    let m: HashMap<string, Rec> = HashMap::new();
+    let m: HashMap<string, Rec> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
+        .Some(e) => {
             let e_a = e.a;
             let e_b = e.b;
             println(f"{e_a} {e_b}");
         },
-        None => println("missing"),
+        .None => println("missing"),
     }
 }

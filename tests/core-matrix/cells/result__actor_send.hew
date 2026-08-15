@@ -2,7 +2,10 @@ actor TestSink {
     var hits: i64;
 
     receive fn take(v: Result<i64, string>) -> i64 {
-        match v { Ok(v_v) => println(f"ok {v_v}"), Err(v_e) => println(f"err {v_e}"), }
+        match v {
+            .Ok(v_v) => println(f"ok {v_v}"),
+            .Err(v_e) => println(f"err {v_e}"),
+        }
         hits = hits + 1;
         hits
     }
@@ -12,7 +15,7 @@ fn main() {
     let x: Result<i64, string> = Ok(6);
     let s = spawn TestSink(hits: 0);
     match await s.take(x) {
-        Ok(n) => println(f"hits {n}"),
-        Err(_) => println("err"),
+        .Ok(n) => println(f"hits {n}"),
+        .Err(_) => println("err"),
     }
 }

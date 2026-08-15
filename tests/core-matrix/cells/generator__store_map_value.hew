@@ -1,18 +1,15 @@
 fn main() {
-    let x = gen {
-        yield 1;
-        yield 2;
-    };
-    let m: HashMap<string, Generator<i64, ()>> = HashMap::new();
+    let x = gen { yield 1; yield 2; };
+    let m: HashMap<string, Generator<i64, ()>> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
+        .Some(e) => {
             var e_sum = 0;
             for e_y in e {
                 e_sum = e_sum + e_y;
             }
             println(f"sum {e_sum}");
         },
-        None => println("missing"),
+        .None => println("missing"),
     }
 }

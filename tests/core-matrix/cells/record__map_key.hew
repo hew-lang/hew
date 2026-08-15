@@ -5,7 +5,7 @@ type Rec {
 
 fn main() {
     let k = Rec { a: 1, b: "x0" };
-    let m: HashMap<Rec, i64> = HashMap::new();
+    let m: HashMap<Rec, i64> = HashMap.new();
     m.insert(k, 9);
     match m.get(k) {
         Some(v) => println(f"got {v}"),

@@ -5,5 +5,8 @@ fn make() -> Result<i64, string> {
 
 fn main() {
     let x = make();
-    match x { Ok(x_v) => println(f"ok {x_v}"), Err(x_e) => println(f"err {x_e}"), }
+    match x {
+        .Ok(x_v) => println(f"ok {x_v}"),
+        .Err(x_e) => println(f"err {x_e}"),
+    }
 }

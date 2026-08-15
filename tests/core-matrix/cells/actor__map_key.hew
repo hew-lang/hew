@@ -9,7 +9,7 @@ actor Echo {
 
 fn main() {
     let k = spawn Echo(seen: 0);
-    let m: HashMap<LocalPid<Echo>, i64> = HashMap::new();
+    let m: HashMap<LocalPid<Echo>, i64> = HashMap.new();
     m.insert(k, 9);
     match m.get(k) {
         Some(v) => println(f"got {v}"),

@@ -1,15 +1,15 @@
 fn main() {
-    let x: HashSet<i64> = HashSet::new();
+    let x: HashSet<i64> = HashSet.new();
     x.insert(1);
     x.insert(2);
-    let v: Vec<HashSet<i64>> = Vec::new();
+    let v: Vec<HashSet<i64>> = Vec.new();
     v.push(x);
     match v.get(0) {
-        Some(e) => {
+        .Some(e) => {
             let e_l = e.len();
             let e_h = e.contains(1);
             println(f"len={e_l} has1={e_h}");
         },
-        None => println("missing"),
+        .None => println("missing"),
     }
 }

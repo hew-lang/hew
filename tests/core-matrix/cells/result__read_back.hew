@@ -1,6 +1,6 @@
 fn main() {
     let x: Result<i64, string> = Ok(6);
-    let v: Vec<Result<i64, string>> = Vec::new();
+    let v: Vec<Result<i64, string>> = Vec.new();
     v.push(x);
     match v.get(0) {
         Some(e) => {

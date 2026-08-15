@@ -11,7 +11,7 @@ machine Counter {
 fn main() {
     var k = Zero;
     k.step(Inc);
-    let m: HashMap<Counter, i64> = HashMap::new();
+    let m: HashMap<Counter, i64> = HashMap.new();
     m.insert(k, 9);
     match m.get(k) {
         Some(v) => println(f"got {v}"),

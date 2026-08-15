@@ -10,7 +10,9 @@ type Dq {
 
 impl Dq {
     fn close(self) {
-        unsafe { hew_deque_free(self.handle) };
+        unsafe {
+            hew_deque_free(self.handle)
+        };
         println(f"close {self.tag}");
     }
 }
@@ -22,8 +24,10 @@ extern "C" {
 }
 
 fn run() -> i64 {
-    let h = Dq { handle: unsafe { hew_deque_new() }, tag: 1 };
-    let v: Vec<i64> = Vec::new();
+    let h = Dq { handle: unsafe {
+        hew_deque_new()
+    }, tag: 1 };
+    let v: Vec<i64> = Vec.new();
     println("before trap");
     v[3]
 }

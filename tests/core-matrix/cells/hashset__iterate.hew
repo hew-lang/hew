@@ -1,5 +1,5 @@
 fn main() {
-    let s: HashSet<i64> = HashSet::new();
+    let s: HashSet<i64> = HashSet.new();
     s.insert(7);
     let v = s.to_vec();
     for e in v {

@@ -1,7 +1,7 @@
 fn main() {
     let a: f64 = 3.5;
     let b: f64 = 4.5;
-    let v: Vec<f64> = Vec::new();
+    let v: Vec<f64> = Vec.new();
     v.push(a);
     v.push(b);
     let e = v[0];

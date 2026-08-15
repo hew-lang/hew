@@ -5,7 +5,7 @@ enum Colour {
 
 fn main() {
     let k: Colour = Red;
-    let m: HashMap<Colour, i64> = HashMap::new();
+    let m: HashMap<Colour, i64> = HashMap.new();
     m.insert(k, 9);
     match m.get(k) {
         Some(v) => println(f"got {v}"),

@@ -1,9 +1,9 @@
 fn main() {
     let k: i32 = 7;
-    let m: HashMap<i32, i64> = HashMap::new();
+    let m: HashMap<i32, i64> = HashMap.new();
     m.insert(k, 9);
     match m.get(k) {
-        Some(v) => println(f"got {v}"),
-        None => println("missing"),
+        .Some(v) => println(f"got {v}"),
+        .None => println("missing"),
     }
 }

@@ -1,8 +1,5 @@
 fn main() {
-    let x = gen {
-        yield 1;
-        yield 2;
-    };
+    let x = gen { yield 1; yield 2; };
     let y = x;
     var y_sum = 0;
     for y_y in y {

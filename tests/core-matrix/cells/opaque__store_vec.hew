@@ -10,7 +10,9 @@ type Dq {
 
 impl Dq {
     fn close(self) {
-        unsafe { hew_deque_free(self.handle) };
+        unsafe {
+            hew_deque_free(self.handle)
+        };
         println(f"close {self.tag}");
     }
 }
@@ -22,9 +24,13 @@ extern "C" {
 }
 
 fn main() {
-    let x = Dq { handle: unsafe { hew_deque_new() }, tag: 1 };
-    let y = Dq { handle: unsafe { hew_deque_new() }, tag: 2 };
-    let v: Vec<Dq> = Vec::new();
+    let x = Dq { handle: unsafe {
+        hew_deque_new()
+    }, tag: 1 };
+    let y = Dq { handle: unsafe {
+        hew_deque_new()
+    }, tag: 2 };
+    let v: Vec<Dq> = Vec.new();
     v.push(x);
     v.push(y);
     let n = v.len();

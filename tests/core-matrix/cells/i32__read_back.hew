@@ -1,11 +1,11 @@
 fn main() {
     let x: i32 = 7;
-    let v: Vec<i32> = Vec::new();
+    let v: Vec<i32> = Vec.new();
     v.push(x);
     match v.get(0) {
-        Some(e) => {
+        .Some(e) => {
             println(f"{e}");
         },
-        None => println("missing"),
+        .None => println("missing"),
     }
 }

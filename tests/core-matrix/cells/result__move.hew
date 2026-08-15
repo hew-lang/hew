@@ -1,5 +1,8 @@
 fn main() {
     let x: Result<i64, string> = Ok(6);
     let y = x;
-    match y { Ok(y_v) => println(f"ok {y_v}"), Err(y_e) => println(f"err {y_e}"), }
+    match y {
+        .Ok(y_v) => println(f"ok {y_v}"),
+        .Err(y_e) => println(f"err {y_e}"),
+    }
 }

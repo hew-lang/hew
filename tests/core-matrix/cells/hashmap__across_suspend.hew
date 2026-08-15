@@ -4,7 +4,10 @@ actor Holder {
     receive fn hold(v: HashMap<string, i64>) -> i64 {
         sleep(2ms);
         let v_l = v.len();
-        let v_a = match v.get("a") { Some(v_g) => v_g, None => -1, };
+        let v_a = match v.get("a") {
+            .Some(v_g) => v_g,
+            .None => -1,
+        };
         println(f"len={v_l} a={v_a}");
         ready = true;
         1
@@ -12,12 +15,12 @@ actor Holder {
 }
 
 fn main() {
-    let x: HashMap<string, i64> = HashMap::new();
+    let x: HashMap<string, i64> = HashMap.new();
     x.insert("a", 1);
     x.insert("b", 2);
     let h = spawn Holder(ready: false);
     match await h.hold(x) {
-        Ok(n) => println(f"held {n}"),
-        Err(_) => println("err"),
+        .Ok(n) => println(f"held {n}"),
+        .Err(_) => println("err"),
     }
 }

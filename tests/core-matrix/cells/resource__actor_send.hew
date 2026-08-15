@@ -1,6 +1,6 @@
 #[resource]
 type Tok {
-    id: i64
+    id: i64;
 }
 
 impl Tok {
@@ -24,7 +24,7 @@ fn main() {
     let x = Tok { id: 1 };
     let s = spawn TestSink(hits: 0);
     match await s.take(x) {
-        Ok(n) => println(f"hits {n}"),
-        Err(_) => println("err"),
+        .Ok(n) => println(f"hits {n}"),
+        .Err(_) => println("err"),
     }
 }

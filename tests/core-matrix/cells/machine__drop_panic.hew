@@ -21,7 +21,7 @@ machine Gate {
 fn run() -> i64 {
     var h = Closed;
     h.step(Open);
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     println("before trap");
     v[3]
 }

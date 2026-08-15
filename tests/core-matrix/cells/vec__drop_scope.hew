@@ -1,6 +1,6 @@
 #[resource]
 type Tok {
-    id: i64
+    id: i64;
 }
 
 impl Tok {
@@ -10,7 +10,7 @@ impl Tok {
 }
 
 fn main() {
-    let h: Vec<Tok> = Vec::new();
+    let h: Vec<Tok> = Vec.new();
     h.push(Tok { id: 1 });
     println("body");
 }

@@ -1,11 +1,11 @@
 fn main() {
     let x: string = "ab";
-    let m: HashMap<string, string> = HashMap::new();
+    let m: HashMap<string, string> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
+        .Some(e) => {
             println(f"{e}");
         },
-        None => println("missing"),
+        .None => println("missing"),
     }
 }

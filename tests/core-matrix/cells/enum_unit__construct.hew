@@ -4,6 +4,9 @@ enum Colour {
 }
 
 fn main() {
-    let x: Colour = Red;
-    match x { Red => println("Red"), Green => println("Green"), }
+    let x: Colour = .Red;
+    match x {
+        .Red => println("Red"),
+        .Green => println("Green"),
+    }
 }

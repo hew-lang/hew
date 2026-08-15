@@ -9,12 +9,15 @@ actor Echo {
 
 fn main() {
     let x = spawn Echo(seen: 0);
-    let m: HashMap<string, LocalPid<Echo>> = HashMap::new();
+    let m: HashMap<string, LocalPid<Echo>> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
-            match await e.take(1) { Ok(e_v) => println(f"echo {e_v}"), Err(_) => println("err"), }
+        .Some(e) => {
+            match await e.take(1) {
+                .Ok(e_v) => println(f"echo {e_v}"),
+                .Err(_) => println("err"),
+            }
         },
-        None => println("missing"),
+        .None => println("missing"),
     }
 }

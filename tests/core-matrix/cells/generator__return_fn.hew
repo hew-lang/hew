@@ -1,8 +1,5 @@
 fn make() -> Generator<i64, ()> {
-    let m = gen {
-        yield 1;
-        yield 2;
-    };
+    let m = gen { yield 1; yield 2; };
     m
 }
 

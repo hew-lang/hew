@@ -29,7 +29,7 @@ fn show_named(v: dyn Named) {
 
 fn main() {
     let k: dyn Named = P { n: "p0" };
-    let m: HashMap<dyn Named, i64> = HashMap::new();
+    let m: HashMap<dyn Named, i64> = HashMap.new();
     m.insert(k, 9);
     match m.get(k) {
         Some(v) => println(f"got {v}"),

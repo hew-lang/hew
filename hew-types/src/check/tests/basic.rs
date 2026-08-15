@@ -113,6 +113,16 @@ fn prelude_declarations_are_protected_before_source_registration() {
 }
 
 #[test]
+fn prelude_variant_names_do_not_become_protected_top_level_bindings() {
+    let output = check_source("actor Local { receive fn ping() {} }");
+    assert!(
+        output.errors.is_empty(),
+        "an imported enum variant must not reserve its spelling across namespaces: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn modules_and_types_are_rejected_in_value_position() {
     let output = check_source("fn main() { let module_value = math; let type_value = Vec; }");
     assert!(output

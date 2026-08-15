@@ -10093,7 +10093,14 @@ impl Checker {
     pub(super) fn capture_protected_prelude_bindings(&mut self) {
         self.protected_prelude_bindings.clear();
 
-        for export in crate::stdlib_authority::authority().prelude_exports() {
+        let prelude_exports = crate::stdlib_authority::authority().prelude_exports();
+        let glob_modules: HashSet<String> = prelude_exports
+            .iter()
+            .filter(|export| export.kind == crate::PreludeExportKind::Glob)
+            .map(|export| export.module.replace("::", "."))
+            .collect();
+
+        for export in prelude_exports {
             if export.kind != crate::PreludeExportKind::Item {
                 continue;
             }
@@ -10105,31 +10112,36 @@ impl Checker {
                 .insert(binding.clone(), export.module.replace("::", "."));
         }
 
-        for name in self.fn_sigs.keys() {
-            if !name.contains('.') && !name.contains("::") {
-                self.protected_prelude_bindings
-                    .entry(name.clone())
-                    .or_insert_with(|| "std.builtins".to_string());
+        if glob_modules.contains("std.builtins") {
+            let parsed = hew_parser::parse(include_str!("../../../std/builtins.hew"));
+            debug_assert!(
+                parsed.errors.is_empty(),
+                "embedded builtins must parse while collecting protected names: {:?}",
+                parsed.errors
+            );
+            for (item, _) in &parsed.program.items {
+                let name = match item {
+                    Item::Function(item) if item.visibility.is_pub() => Some(&item.name),
+                    Item::Const(item) if item.visibility.is_pub() => Some(&item.name),
+                    Item::TypeDecl(item) if item.visibility.is_pub() => Some(&item.name),
+                    Item::TypeAlias(item) if item.visibility.is_pub() => Some(&item.name),
+                    Item::Trait(item) if item.visibility.is_pub() => Some(&item.name),
+                    Item::Actor(item) if item.visibility.is_pub() => Some(&item.name),
+                    Item::Machine(item) if item.visibility.is_pub() => Some(&item.name),
+                    Item::Record(item) if item.visibility.is_pub() => Some(&item.name),
+                    _ => None,
+                };
+                if let Some(name) = name {
+                    self.protected_prelude_bindings
+                        .insert(name.clone(), "std.builtins".to_string());
+                }
             }
         }
-        for name in &self.known_types {
-            if !name.contains('.') && !name.contains("::") {
-                self.protected_prelude_bindings
-                    .entry(name.clone())
-                    .or_insert_with(|| "std.builtins".to_string());
-            }
-        }
+
         for builtin in crate::builtin_types() {
             self.protected_prelude_bindings
                 .entry(builtin.canonical_name.to_string())
                 .or_insert_with(|| "std.builtins".to_string());
-        }
-        for name in self.trait_defs.keys() {
-            if !name.contains('.') && !name.contains("::") {
-                self.protected_prelude_bindings
-                    .entry(name.clone())
-                    .or_insert_with(|| "std.builtins".to_string());
-            }
         }
 
         for owners in [
@@ -10144,11 +10156,13 @@ impl Checker {
                         .iter()
                         .next()
                         .expect("single prelude owner must be present");
-                    let owner = identity
-                        .rsplit_once('.')
-                        .map_or("std.builtins", |(owner, _)| owner);
-                    self.protected_prelude_bindings
-                        .insert(binding.clone(), owner.to_string());
+                    let Some((owner, declaration_name)) = identity.rsplit_once('.') else {
+                        continue;
+                    };
+                    if declaration_name == binding && glob_modules.contains(owner) {
+                        self.protected_prelude_bindings
+                            .insert(binding.clone(), owner.to_string());
+                    }
                 }
             }
         }

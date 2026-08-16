@@ -644,6 +644,19 @@ pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
         .flatten()
 }
 
+/// Test an associated-item key through the builtin discriminator carried by
+/// its canonical owner, rather than comparing the rendered qualified key.
+#[must_use]
+pub fn has_builtin_associated_item_identity(
+    identity: &str,
+    builtin: BuiltinType,
+    member: &str,
+) -> bool {
+    identity
+        .rsplit_once("::")
+        .is_some_and(|(owner, leaf)| leaf == member && lookup_builtin_type(owner) == Some(builtin))
+}
+
 /// One stdlib module that declares source-imported lifecycle types.
 ///
 /// `binding` is the module binding the owner is written as in Hew source

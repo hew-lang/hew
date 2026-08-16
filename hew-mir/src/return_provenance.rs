@@ -4560,7 +4560,14 @@ fn callee_is_proven_pure_item(
 /// summary (consulted FIRST) resolves.
 #[must_use]
 pub fn is_builtin_fresh_ctor(name: &str) -> bool {
-    matches!(name, "Vec::new" | "HashMap::new" | "HashSet::new")
+    matches!(
+        hew_types::runtime_call::RuntimeCallFamily::from_checker_signature(name),
+        Some(
+            hew_types::runtime_call::RuntimeCallFamily::VecNew
+                | hew_types::runtime_call::RuntimeCallFamily::HashMapNew
+                | hew_types::runtime_call::RuntimeCallFamily::HashSetNew
+        )
+    )
 }
 
 /// The stdlib catalog's IDENTITY JOIN: the emitted runtime symbol a body-less

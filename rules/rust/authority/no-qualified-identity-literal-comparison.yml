@@ -1,0 +1,34 @@
+id: no-qualified-identity-literal-comparison
+language: rust
+severity: error
+message: >-
+  Qualified compiler identity compared as a rendered `Type::member` string.
+  Resolve the spelling once and guard on the checker-owned typed identity.
+note: >-
+  Literal tables may define the canonical spelling, but guards and dispatch
+  must consume RuntimeCallFamily, BuiltinType, DefId, or another typed key so
+  dotted and namespaced source spellings cannot diverge.
+files:
+  - 'hew-types/src/**'
+  - 'hew-hir/src/**'
+  - 'hew-mir/src/**'
+ignores:
+  - '**/tests/**'
+  - '**/test/**'
+  - '**/*_test.rs'
+  - '**/*_tests.rs'
+  - '**/tests.rs'
+rule:
+  all:
+    - kind: binary_expression
+    - regex: '(==|!=)'
+    - has:
+        kind: string_literal
+        regex: '^"[A-Z][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+"$'
+  not:
+    inside:
+      kind: mod_item
+      stopBy: end
+      follows:
+        kind: attribute_item
+        regex: 'cfg\(.*\btest\b'

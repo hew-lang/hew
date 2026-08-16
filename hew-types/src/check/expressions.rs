@@ -5326,7 +5326,12 @@ impl Checker {
             Expr::Call { function, args, .. }
                 if self.callee_is_aggregate_constructor(&function.0) =>
             {
-                if matches!(&function.0, Expr::Identifier(name) if name == "Rc::new") {
+                if matches!(
+                    &function.0,
+                    Expr::Identifier(name)
+                        if crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
+                            == Some(crate::runtime_call::RuntimeCallFamily::RcNew)
+                ) {
                     return;
                 }
                 for arg in args {
@@ -5546,7 +5551,12 @@ impl Checker {
             Expr::Call { function, args, .. }
                 if self.callee_is_aggregate_constructor(&function.0) =>
             {
-                if matches!(&function.0, Expr::Identifier(name) if name == "Rc::new") {
+                if matches!(
+                    &function.0,
+                    Expr::Identifier(name)
+                        if crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
+                            == Some(crate::runtime_call::RuntimeCallFamily::RcNew)
+                ) {
                     return None;
                 }
                 for arg in args {

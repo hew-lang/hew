@@ -438,7 +438,7 @@ impl Checker {
                   would only obscure the pipeline order"
     )]
     pub fn check_program(&mut self, program: &Program) -> TypeCheckOutput {
-        self.root_value_bindings.clear();
+        self.reset_for_program();
         // Mint the compile's module identities FIRST (rc1-F1 stage A): every
         // registration pass below resolves declaration identity through this
         // table, so it must be complete before any key is minted.
@@ -1430,6 +1430,35 @@ impl Checker {
         output.cycle_capable_actors = cycle_capable;
 
         output
+    }
+
+    /// Restore the checker to the same program-owned state as a fresh instance.
+    ///
+    /// A checker may be reused by front ends, but every table populated while
+    /// checking one program must be absent from the next program.  Rebuilding
+    /// the checker is less error-prone than maintaining a second, incomplete
+    /// list of registries whenever a new checker-side cache is added.  Keep
+    /// only the caller-owned configuration and the module loader cache, which
+    /// deliberately outlive a single compilation.
+    fn reset_for_program(&mut self) {
+        let module_registry = std::mem::replace(
+            &mut self.module_registry,
+            crate::module_registry::ModuleRegistry::new(vec![]),
+        );
+        let wasm_target = self.wasm_target;
+        let repl_fragment = self.repl_fragment;
+        let is_stdlib_source = self.is_stdlib_source;
+        let consume_receiver_methods = std::mem::take(&mut self.consume_receiver_methods);
+        let lint_levels = self.lint_levels.clone();
+        let lint_sources = self.lint_sources.clone();
+
+        *self = Self::new(module_registry);
+        self.wasm_target = wasm_target;
+        self.repl_fragment = repl_fragment;
+        self.is_stdlib_source = is_stdlib_source;
+        self.consume_receiver_methods = consume_receiver_methods;
+        self.lint_levels = lint_levels;
+        self.lint_sources = lint_sources;
     }
 
     /// Validate the raw checker-authored ownership graph before following any

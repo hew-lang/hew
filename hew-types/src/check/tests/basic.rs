@@ -1568,6 +1568,95 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
     );
 }
 
+#[test]
+fn checker_reuse_does_not_leak_result_shadowing_into_stdlib() {
+    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-types lives under the repo root")
+        .to_path_buf();
+    let string_path = repo_root.join("std/string.hew");
+    let string_source = std::fs::read_to_string(&string_path).expect("read std/string.hew");
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![repo_root.clone()]));
+
+    let first = hew_parser::parse("pub type Result { handle: i64 }\n");
+    assert!(
+        first.errors.is_empty(),
+        "first parse errors: {:?}",
+        first.errors
+    );
+    let first_output = checker.check_program(&first.program);
+    assert!(
+        first_output.errors.is_empty(),
+        "first compile should be clean, got: {:?}",
+        first_output.errors
+    );
+
+    let parsed = hew_parser::parse(&string_source);
+    assert!(
+        parsed.errors.is_empty(),
+        "std/string.hew parse errors: {:?}",
+        parsed.errors
+    );
+    let root_id = ModuleId::root();
+    let mod_id = ModuleId::new(vec!["std".to_string(), "string".to_string()]);
+    let module = Module {
+        id: mod_id.clone(),
+        items: parsed.program.items,
+        imports: vec![],
+        source_paths: vec![string_path],
+        doc: None,
+    };
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(module).unwrap();
+    mg.topo_order = vec![mod_id, root_id];
+    let program = Program {
+        module_graph: Some(mg),
+        items: vec![],
+        module_doc: None,
+    };
+
+    let second_output = checker.check_program(&program);
+    assert!(
+        second_output.errors.is_empty(),
+        "checker reuse leaked `Result` shadowing into std::string: {:?}",
+        second_output.errors
+    );
+}
+
+#[test]
+fn checker_reuse_does_not_leak_type_definitions() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+    let first = hew_parser::parse("pub type Stale { value: i64 }\n");
+    assert!(
+        first.errors.is_empty(),
+        "first parse errors: {:?}",
+        first.errors
+    );
+    let first_output = checker.check_program(&first.program);
+    assert!(
+        first_output.errors.is_empty(),
+        "first compile should be clean, got: {:?}",
+        first_output.errors
+    );
+
+    let second = hew_parser::parse("fn main(value: Stale) {}\n");
+    assert!(
+        second.errors.is_empty(),
+        "second parse errors: {:?}",
+        second.errors
+    );
+    let second_output = checker.check_program(&second.program);
+    assert!(
+        second_output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType && error.message.contains("Stale")
+        }),
+        "second compile accepted Stale leaked from the prior program: {:?}",
+        second_output.errors
+    );
+}
+
 // --- Reserved compiler type fragments ---
 
 #[test]

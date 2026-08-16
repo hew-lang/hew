@@ -2095,7 +2095,7 @@ impl Checker {
                 export.alias.as_deref().unwrap_or_else(|| {
                     export
                         .module
-                        .rsplit_once("::")
+                        .rsplit_once('.')
                         .map_or(export.module.as_str(), |(_, leaf)| leaf)
                 }) == module_name
             })

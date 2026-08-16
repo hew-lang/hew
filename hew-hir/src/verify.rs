@@ -310,7 +310,10 @@ fn seed_resolved_produced_value_facts(
         if !matches!(fact.ownership, Ownership::Unknown | Ownership::Borrowed) {
             continue;
         }
-        if let Some(ownership) = crate::stdlib_catalog::result_ownership(endpoint) {
+        let ownership = crate::stdlib_catalog::result_ownership(endpoint).or_else(|| {
+            RuntimeCallFamily::from_checker_signature(endpoint).map(resolved_runtime_call_ownership)
+        });
+        if let Some(ownership) = ownership {
             fact.ownership = ownership;
         }
     }

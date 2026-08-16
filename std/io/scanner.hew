@@ -68,9 +68,9 @@
 //! | `SplitLines` | Lines split on `\n`; `\r\n` stripped (default).   |
 //! | `SplitWords` | Fields split on any run of ASCII whitespace.       |
 
-import std::fs;
+import std.fs;
 
-import std::io;
+import std.io;
 
 // ── Split mode ────────────────────────────────────────────────────────
 /// How the scanner tokenises its source.
@@ -249,7 +249,7 @@ pub fn text(sc: Scanner) -> string {
 /// }
 /// ```
 pub fn lines(s: string) -> Vec<string> {
-    let result: Vec<string> = Vec::new();
+    let result: Vec<string> = Vec.new();
     if s.len() == 0 {
         return result;
     }
@@ -279,7 +279,7 @@ pub fn lines(s: string) -> Vec<string> {
 /// }
 /// ```
 pub fn words(s: string) -> Vec<string> {
-    let result: Vec<string> = Vec::new();
+    let result: Vec<string> = Vec.new();
     if s.len() == 0 {
         return result;
     }
@@ -313,7 +313,7 @@ pub fn words(s: string) -> Vec<string> {
 /// }
 /// ```
 pub fn collect(sc: Scanner) -> Vec<string> {
-    let result: Vec<string> = Vec::new();
+    let result: Vec<string> = Vec.new();
     if has_next(sc) {
         result.push(sc.current);
     }

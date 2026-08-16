@@ -39,7 +39,7 @@
 //! }
 //! ```
 
-import std::fs;
+import std.fs;
 
 /// A readable stream handle, parameterised by element type.
 pub type Stream<T> {

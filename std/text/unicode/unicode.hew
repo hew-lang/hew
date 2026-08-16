@@ -375,7 +375,7 @@ pub fn try_rune_len(cp: i64) -> Result<i64, string> {
 /// ```
 pub fn runes(s: string) -> Vec<i64> {
     let n = s.char_count_utf8();
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     for i in 0 .. n {
         // In-bounds loop over the codepoint count: always Some. The
         // unreachable None is skipped rather than pushed as a sentinel.

@@ -62,7 +62,7 @@
 //! }
 //! ```
 
-import std::string;
+import std.string;
 
 // ── Hardening limits (fail-closed DoS / injection bounds) ─────────────
 /// Maximum bytes accepted in the request head (request line + headers). A head

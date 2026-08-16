@@ -654,7 +654,7 @@ pub fn split(s: string, sep: string) -> Vec<string> {
 /// let trail = string.lines("foo\n");     // ["foo", ""]
 /// ```
 pub fn lines(s: string) -> Vec<string> {
-    let result: Vec<string> = Vec::new();
+    let result: Vec<string> = Vec.new();
     let slen = s.len();
     var start = 0;
     while start < slen {
@@ -760,11 +760,11 @@ impl string {
     }
     #[extern_symbol(hew_string_split)]
     fn split(s: string, sep: string) -> Vec<string> {
-        Vec::new()
+        Vec.new()
     }
     #[extern_symbol(hew_string_lines)]
     fn lines(s: string) -> Vec<string> {
-        Vec::new()
+        Vec.new()
     }
     /// Return `Some` of the byte index of the first occurrence of `needle`,
     /// or `None` when `needle` does not occur.
@@ -796,7 +796,7 @@ impl string {
     }
     #[extern_symbol(hew_string_chars)]
     fn chars(s: string) -> Vec<char> {
-        Vec::new()
+        Vec.new()
     }
     /// Return the number of Unicode codepoints (runes) in this string.
     ///
@@ -820,7 +820,7 @@ impl string {
     /// reaching for raw FFI. The inverse is `bytes.to_string()`.
     #[extern_symbol(hew_string_to_bytes)]
     fn to_bytes(s: string) -> bytes {
-        bytes::new()
+        bytes.new()
     }
 }
 

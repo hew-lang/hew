@@ -739,7 +739,7 @@ impl Checker {
                 format!(
                     "E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: in supervisor `{supervisor_name}`, \
                      child `{dependent_child_name}` (`{dependent_actor_type}`) is wired via key \
-                     `{param_key}` but `{dependent_actor_type}::init` has no parameter named \
+                     `{param_key}` but `{dependent_actor_type}.init` has no parameter named \
                      `{param_key}`"
                 ),
             ));
@@ -761,7 +761,7 @@ impl Checker {
                 format!(
                     "E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: in supervisor `{supervisor_name}`, \
                      child `{dependent_child_name}` wires `{param_key}` to sibling of type \
-                     `{expected_sibling_type}`, but `{dependent_actor_type}::init` parameter \
+                     `{expected_sibling_type}`, but `{dependent_actor_type}.init` parameter \
                      `{param_key}` has type `{}` (expected `LocalPid<{expected_sibling_type}>`)",
                     param.ty.user_facing()
                 ),
@@ -1682,7 +1682,7 @@ impl Checker {
                         p.ty.1.clone(),
                         format!(
                             "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` parameter \
-                             must have type `CrashInfo` (from `std::failure`)",
+                             must have type `CrashInfo` (from `std.failure`)",
                             hook.name
                         ),
                     ));
@@ -1725,7 +1725,7 @@ impl Checker {
                     rt.1.clone(),
                     format!(
                         "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` must \
-                         return `CrashAction` (from `std::failure`)",
+                         return `CrashAction` (from `std.failure`)",
                         hook.name
                     ),
                 ));
@@ -1737,7 +1737,7 @@ impl Checker {
                 hook.decl_span.clone(),
                 format!(
                     "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` must declare \
-                     a return type of `CrashAction` (from `std::failure`)",
+                     a return type of `CrashAction` (from `std.failure`)",
                     hook.name
                 ),
             ));
@@ -1828,7 +1828,7 @@ impl Checker {
                         p.ty.1.clone(),
                         format!(
                             "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` parameter \
-                             must have type `CrashNotification` (from `std::failure`)",
+                             must have type `CrashNotification` (from `std.failure`)",
                             hook.name
                         ),
                     ));
@@ -1911,7 +1911,7 @@ impl Checker {
                         p.ty.1.clone(),
                         format!(
                             "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` parameter \
-                             must have type `DownNotification` (from `std::link_monitor`)",
+                             must have type `DownNotification` (from `std.link_monitor`)",
                             hook.name
                         ),
                     ));

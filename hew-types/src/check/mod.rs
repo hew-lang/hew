@@ -3272,8 +3272,8 @@ fn report_cross_actor_msg_id_collisions(
         reported_msg_ids.push(*msg_id_i);
         let message = format!(
             "actors `{actor_j}` and `{actor_i}` have `receive fn`s with the same \
-             cross-node msg_id 0x{msg_id_i:08x}: `{actor_j}::{handler_j}` and \
-             `{actor_i}::{handler_i}` — the 32-bit wire discriminant is ambiguous"
+             cross-node msg_id 0x{msg_id_i:08x}: `{actor_j}.{handler_j}` and \
+             `{actor_i}.{handler_i}` — the 32-bit wire discriminant is ambiguous"
         );
         let mut err = TypeError::new(
             TypeErrorKind::CrossActorProtocolCollision {
@@ -3287,7 +3287,7 @@ fn report_cross_actor_msg_id_collisions(
             message,
         );
         err = err.with_suggestion(format!(
-            "rename `{actor_j}::{handler_j}` or `{actor_i}::{handler_i}` so their \
+            "rename `{actor_j}.{handler_j}` or `{actor_i}.{handler_i}` so their \
              fully-qualified names hash to distinct msg_ids; explicit `#[msg_id(N)]` \
              pinning is reserved for a future release (not yet supported)"
         ));

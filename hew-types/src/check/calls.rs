@@ -442,7 +442,7 @@ impl Checker {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "expected-type constructor checking shares variant, Option/Result, and Vec::new context"
+        reason = "expected-type constructor checking shares variant, Option/Result, and Vec.new context"
     )]
     pub(super) fn check_call_against_expected_constructor(
         &mut self,
@@ -453,7 +453,7 @@ impl Checker {
         span: &Span,
     ) -> Option<Ty> {
         // Resolve the function name first so we can route turbofish for
-        // `Vec::new` before the blanket early-return for other constructors.
+        // `Vec.new` before the blanket early-return for other constructors.
         let mut contextual_name = None;
         let func_name = match &func.0 {
             Expr::Identifier(name) => name.clone(),
@@ -2115,7 +2115,7 @@ impl Checker {
                         .resolve(payload_ty)
                         .materialize_literal_defaults();
                     self.validate_rc_payload_type(&resolved_payload, arg_span);
-                    self.reject_borrowed_parameter_consumption(arg_expr, arg_span, "Rc::new");
+                    self.reject_borrowed_parameter_consumption(arg_expr, arg_span, "Rc.new");
                     if let Ok(payload_ty) = ResolvedTy::from_ty(&resolved_payload) {
                         self.method_call_rewrites.insert(
                             SpanKey::in_module(span, self.current_module_idx),

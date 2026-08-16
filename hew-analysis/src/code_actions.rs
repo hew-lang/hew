@@ -760,7 +760,7 @@ mod tests {
     #[test]
     fn unused_import_action() {
         let source = "import std.os;\nfn main() {}";
-        let d = diag("UnusedImport", "unused import `std::os`", 0, 15);
+        let d = diag("UnusedImport", "unused import `std.os`", 0, 15);
         let actions = build_code_actions(source, &[d]);
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].title, "Remove unused import");

@@ -2956,7 +2956,7 @@ fn aliased_member_matches_qualified_member_type() {
 // -- Trait import from module --
 
 #[test]
-fn import_trait_from_module_glob() {
+fn import_selected_trait_from_module() {
     use hew_parser::ast::{TraitDecl, TraitItem, TraitMethod};
 
     let trait_decl = TraitDecl {
@@ -2982,7 +2982,7 @@ fn import_trait_from_module_glob() {
     };
     let import = make_user_import(
         &["mylib", "fmt"],
-        Some(selected_import(&["Display"])),
+        Some(selected_import(&["Renderable"])),
         vec![(Item::Trait(trait_decl), 0..0)],
     );
     let output = check_items(vec![(Item::Import(import), 0..0)]);

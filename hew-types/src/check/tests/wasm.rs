@@ -791,7 +791,7 @@ mod wasm_rejects {
             output.errors
         );
         assert!(
-            platform_error_contains(&output, "std::net::tls"),
+            platform_error_contains(&output, "std.net.tls"),
             "error message should mention TLS feature; got: {:?}",
             output.errors
         );
@@ -810,7 +810,7 @@ mod wasm_rejects {
             output.errors
         );
         assert!(
-            platform_error_contains(&output, "std::net::quic"),
+            platform_error_contains(&output, "std.net.quic"),
             "error message should mention QUIC feature; got: {:?}",
             output.errors
         );
@@ -833,7 +833,7 @@ mod wasm_rejects {
             "websocket calls and values should fail closed on WASM: {:?}",
             output.errors
         );
-        assert!(platform_error_contains(&output, "std::net::websocket"));
+        assert!(platform_error_contains(&output, "std.net.websocket"));
     }
 
     #[test]
@@ -854,7 +854,7 @@ mod wasm_rejects {
             "aliased websocket calls and values should fail closed on WASM: {:?}",
             output.errors
         );
-        assert!(platform_error_contains(&output, "std::net::websocket"));
+        assert!(platform_error_contains(&output, "std.net.websocket"));
     }
 
     #[test]
@@ -896,7 +896,7 @@ mod wasm_rejects {
             "websocket handle methods should fail closed on WASM: {:?}",
             output.errors
         );
-        assert!(platform_error_contains(&output, "std::net::websocket"));
+        assert!(platform_error_contains(&output, "std.net.websocket"));
     }
 
     #[test]
@@ -912,7 +912,7 @@ mod wasm_rejects {
             output.errors
         );
         assert!(
-            platform_error_contains(&output, "std::net::dns"),
+            platform_error_contains(&output, "std.net.dns"),
             "error message should mention DNS feature; got: {:?}",
             output.errors
         );
@@ -928,7 +928,7 @@ mod wasm_rejects {
             output.errors
         );
         assert!(
-            platform_error_contains(&output, "std::os"),
+            platform_error_contains(&output, "std.os"),
             "error message should mention OS feature; got: {:?}",
             output.errors
         );

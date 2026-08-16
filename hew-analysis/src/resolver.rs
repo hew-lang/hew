@@ -77,7 +77,7 @@ pub enum Resolution {
         visible_name: String,
         import_span: OffsetSpan,
     },
-    /// A module-qualified identifier like `mod::Item` or `mod.item`. The
+    /// A module-qualified identifier like `mod.Item`. The
     /// resolver records both halves so downstream callers can either chase
     /// the module prefix or jump to the trailing segment.
     ModuleQualified {
@@ -380,7 +380,7 @@ pub fn find_matching_import(
 
 /// Compute whether `offset` lies within the tail identifier of a
 /// module-qualified word. Used by `Resolution::ModuleQualified` so callers
-/// can prefer the tail when the cursor is on it (e.g. `mod::Item|` with
+/// can prefer the tail when the cursor is on it (e.g. `mod.Item|` with
 /// cursor after `Item`) versus the prefix.
 fn offset_is_on_tail(source: &str, offset: usize, word: &str, separator: &str) -> bool {
     // Locate `word` starting at a position near `offset`. The search is

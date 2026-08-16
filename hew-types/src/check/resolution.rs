@@ -2034,7 +2034,7 @@ impl Checker {
                 TypeErrorKind::UndefinedType,
                 span,
                 format!(
-                    "associated-type projection `{base_name}::{assoc_name}` requires \
+                    "associated-type projection `{base_name}.{assoc_name}` requires \
                      a trait bound on `{base_name}` that declares `{assoc_name}`; \
                      no bounds are declared on `{base_name}`"
                 ),
@@ -2086,9 +2086,9 @@ impl Checker {
                     TypeErrorKind::InvalidOperation,
                     span,
                     format!(
-                        "ambiguous associated-type projection `{base_name}::{assoc_name}`: \
+                        "ambiguous associated-type projection `{base_name}.{assoc_name}`: \
                          declared by multiple bounds on `{base_name}`: [{cites}]. \
-                         Same-name binding syntax `<Trait::Item>` is not yet supported"
+                         Same-name binding syntax `<Trait.Item>` is not yet supported"
                     ),
                 );
                 Some(Ty::Error)

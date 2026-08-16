@@ -1251,8 +1251,8 @@ mod tests {
     }
 
     #[test]
-    fn completions_enum_variant_after_double_colon() {
-        let source = "enum Color { Blue; Point { x: i32, y: i32 }; Rgb(u8, u8, u8); }\nfn main() { let color = Color::Blue; }";
+    fn completions_enum_variant_after_dot() {
+        let source = "enum Color { Blue; Point { x: i32, y: i32 }; Rgb(u8, u8, u8); }\nfn main() { let color = Color.Blue; }";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1274,7 +1274,7 @@ mod tests {
             type_output: Some(type_output),
             diagnostics_by_uri: HashMap::new(),
         };
-        let offset = source.find("Color::Blue").unwrap() + "Color::".len();
+        let offset = source.find("Color.Blue").unwrap() + "Color.".len();
         let items = hew_analysis::completions::complete(
             &doc.source,
             &doc.parse_result,
@@ -1560,23 +1560,6 @@ impl Worker {
     }
 
     #[test]
-    fn goto_def_double_colon_method_fallback() {
-        let source = "actor Counter {\n    receive fn increment(n: i32) {\n        n\n    }\n}\nfn main() { Counter::increment(1); }";
-        let parse_result = hew_parser::parse(source);
-        let lo = compute_line_offsets(source);
-        let call_offset = source.rfind("increment").unwrap();
-        let word = word_at_offset(source, call_offset).unwrap();
-        assert_eq!(word, "Counter::increment");
-        assert!(find_definition_in_ast(source, &lo, &parse_result, &word).is_none());
-        let method = word.rsplit("::").next().unwrap();
-        let found = find_definition_in_ast(source, &lo, &parse_result, method);
-        assert!(
-            found.is_some(),
-            "should find receive method definition via :: fallback"
-        );
-    }
-
-    #[test]
     fn goto_def_resolves_local_binding_fallback() {
         let source = "fn main() {\n    let result = 41;\n    result + 1\n}";
         let doc = make_doc(source);
@@ -1723,13 +1706,6 @@ impl Worker {
         );
         assert!(find_definition_in_ast(source, &lo, &parse_result, "c_abs").is_some());
         assert!(find_definition_in_ast(source, &lo, &parse_result, "Item").is_some());
-    }
-
-    #[test]
-    fn word_at_offset_double_colon() {
-        let source = "Counter::increment";
-        let word = word_at_offset(source, 10);
-        assert_eq!(word, Some("Counter::increment".to_string()));
     }
 
     #[test]
@@ -3156,7 +3132,7 @@ machine Traffic {
             range: offset_range_to_lsp(source, &doc.line_offsets, 0, import_end),
             severity: Some(DiagnosticSeverity::WARNING),
             source: Some("hew-types".to_string()),
-            message: "Unused import `foo::bar`".to_string(),
+            message: "Unused import `foo.bar`".to_string(),
             data: Some(diagnostic_data(&TypeErrorKind::UnusedImport, &[])),
             ..Default::default()
         };
@@ -3198,7 +3174,7 @@ machine Traffic {
             range: offset_range_to_lsp(source, &doc.line_offsets, 0, source.find('\n').unwrap()),
             severity: Some(DiagnosticSeverity::WARNING),
             source: Some("hew-types".to_string()),
-            message: "Unused import `foo::bar`".to_string(),
+            message: "Unused import `foo.bar`".to_string(),
             data: Some(diagnostic_data(&TypeErrorKind::UnusedImport, &[])),
             ..Default::default()
         };
@@ -7043,12 +7019,14 @@ machine Traffic {
             .as_ref()
             .expect("cross-module machine fixture should be type checked");
         assert!(
-            type_output.type_defs.contains_key("Toggle"),
-            "imported machine type should be visible in type defs"
+            type_output.type_defs.contains_key("machines.toggle.Toggle"),
+            "imported machine type should retain its canonical owner in type defs"
         );
         assert!(
-            type_output.type_defs.contains_key("ToggleEvent"),
-            "imported machine event type should be visible in type defs"
+            type_output
+                .type_defs
+                .contains_key("machines.toggle.ToggleEvent"),
+            "imported machine event type should retain its canonical owner in type defs"
         );
 
         let state_name_offset = main_source

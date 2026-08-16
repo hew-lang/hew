@@ -380,9 +380,7 @@ impl StdlibAuthority {
         module_name: &str,
         declaration: &str,
     ) -> Option<ExternRuntimeCapability> {
-        let relative_module = module_name
-            .strip_prefix("std.")
-            .or_else(|| module_name.strip_prefix("std::"))?;
+        let relative_module = module_name.strip_prefix("std.")?;
         let qualified = format!("{}::{declaration}", relative_module.replace('.', "::"));
         self.extern_runtime_capabilities
             .get(&qualified)
@@ -1003,7 +1001,7 @@ fn make_binding(
 fn qualified(source: AuthoritySource<'_>, declaration: &str) -> String {
     source.root.map_or_else(
         || declaration.to_string(),
-        |root| format!("{}.{declaration}", root.module_name()),
+        |root| format!("{}::{declaration}", root.module_name()),
     )
 }
 
@@ -1015,7 +1013,7 @@ fn type_name(ty: &TypeExpr) -> String {
 }
 
 fn collect_prelude_export(exports: &mut Vec<PreludeExport>, import: hew_parser::ast::ImportDecl) {
-    let module = import.path.join(".");
+    let module = import.path.join("::");
     match import.spec {
         None => exports.push(PreludeExport {
             module,
@@ -1201,7 +1199,7 @@ extern "C" {
             Some(ExternRuntimeCapability::BlockingOffload)
         );
         assert_eq!(
-            authority.extern_runtime_capability("std::net::dns", "hew_dns_resolve"),
+            authority.extern_runtime_capability("std.net.dns", "hew_dns_resolve"),
             Some(ExternRuntimeCapability::BlockingOffload)
         );
         assert_eq!(

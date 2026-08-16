@@ -331,7 +331,7 @@ fn multi_param_turbofish_records_all_call_type_args() {
 /// after `check_against` unifies the annotation in — is what makes the entry
 /// concrete. Without it, HIR/MIR find no monomorphisation data and MIR falls
 /// through to the "function call NYI" diagnostic. Covers both the inherent-impl
-/// associated fn (`Stack::new()`) and the free fn (`new_stack()`).
+/// associated fn (`Stack.new()`) and the free fn (`new_stack()`).
 #[test]
 fn return_type_polymorphic_call_records_call_type_args() {
     let source = r"
@@ -365,7 +365,7 @@ fn return_type_polymorphic_call_records_call_type_args() {
                     .iter()
                     .filter_map(|(stmt, _)| match stmt {
                         Stmt::Let {
-                            value: Some((Expr::Call { .. }, span)),
+                            value: Some((Expr::Call { .. } | Expr::MethodCall { .. }, span)),
                             ..
                         } => Some(span.clone()),
                         _ => None,
@@ -385,11 +385,11 @@ fn return_type_polymorphic_call_records_call_type_args() {
         output.errors
     );
 
-    // assoc-fn `Stack::new()` records T=i64 from the `let` annotation.
+    // assoc-fn `Stack.new()` records T=i64 from the `let` annotation.
     assert_eq!(
         output.call_type_args.get(&SpanKey::from(&call_spans[0])),
         Some(&vec![Ty::I64]),
-        "return-type-polymorphic `Stack::new()` must record T=i64; got {:?}",
+        "return-type-polymorphic `Stack.new()` must record T=i64; got {:?}",
         output.call_type_args
     );
     // free-fn `new_stack()` records T=string from the `let` annotation.
@@ -417,7 +417,7 @@ fn call_type_arg_recorder_defers_inference_var_then_reresolves() {
 
     // An unresolved var arg is snapshotted (deferred), not dropped: the
     // return-type-polymorphic constructor pattern (`let s: Stack<i64> =
-    // Stack::new()`) depends on this entry surviving until the expected type
+    // Stack.new()`) depends on this entry surviving until the expected type
     // pins `T` at the output boundary.
     checker.record_concrete_call_type_args(&span, &[Ty::Var(var)]);
     assert_eq!(

@@ -21918,7 +21918,7 @@ impl LowerCtx {
                     reason: format!("no Vec push runtime symbol for element type `{elem_ty}`"),
                 },
                 span,
-                "array literal desugar reuses Vec::push infrastructure and cannot fabricate an element ABI",
+                "array literal desugar reuses Vec.push infrastructure and cannot fabricate an element ABI",
             ));
             return None;
         };
@@ -22326,9 +22326,9 @@ impl LowerCtx {
     ) -> (HirExprKind, ResolvedTy) {
         use hew_types::VecHigherOrderOp as HofOp;
         let (label, expected_args) = match op {
-            HofOp::Map => ("Vec::map", 1),
-            HofOp::Filter => ("Vec::filter", 1),
-            HofOp::Reduce => ("Vec::reduce", 2),
+            HofOp::Map => ("Vec.map", 1),
+            HofOp::Filter => ("Vec.filter", 1),
+            HofOp::Reduce => ("Vec.reduce", 2),
         };
         if args.len() != expected_args {
             self.diagnostics.push(HirDiagnostic::new(
@@ -22478,7 +22478,7 @@ impl LowerCtx {
                     self.pop_scope();
                     return (
                         HirExprKind::Unsupported(
-                            "Vec::map result element type has no Vec push ABI".into(),
+                            "Vec.map result element type has no Vec push ABI".into(),
                         ),
                         result_ty,
                     );
@@ -22522,7 +22522,7 @@ impl LowerCtx {
                     self.pop_scope();
                     return (
                         HirExprKind::Unsupported(
-                            "Vec::filter element type has no Vec push ABI".into(),
+                            "Vec.filter element type has no Vec push ABI".into(),
                         ),
                         result_ty,
                     );
@@ -27356,7 +27356,7 @@ impl LowerCtx {
                 out_ty,
             }) => self.lower_builtin_vec_higher_order(receiver, args, op, &elem_ty, &out_ty, span),
             Some(MethodCallRewrite::VecFrom) => (
-                HirExprKind::Unsupported("Vec::from is a static-call rewrite".to_string()),
+                HirExprKind::Unsupported("Vec.from is a static-call rewrite".to_string()),
                 ResolvedTy::Unit,
             ),
             Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) => {
@@ -28437,10 +28437,10 @@ impl LowerCtx {
         let arms = match method {
             OptionResultMethod::OptionIsSome => {
                 let Some(some) = variant(self, BuiltinType::Option, "Some") else {
-                    return self.unsupported_postfix_try(&span, "Option::Some predicate");
+                    return self.unsupported_postfix_try(&span, "Option.Some predicate");
                 };
                 let Some(none) = variant(self, BuiltinType::Option, "None") else {
-                    return self.unsupported_postfix_try(&span, "Option::None predicate");
+                    return self.unsupported_postfix_try(&span, "Option.None predicate");
                 };
                 vec![
                     HirMatchArm {
@@ -28467,10 +28467,10 @@ impl LowerCtx {
             }
             OptionResultMethod::OptionIsNone => {
                 let Some(some) = variant(self, BuiltinType::Option, "Some") else {
-                    return self.unsupported_postfix_try(&span, "Option::Some predicate");
+                    return self.unsupported_postfix_try(&span, "Option.Some predicate");
                 };
                 let Some(none) = variant(self, BuiltinType::Option, "None") else {
-                    return self.unsupported_postfix_try(&span, "Option::None predicate");
+                    return self.unsupported_postfix_try(&span, "Option.None predicate");
                 };
                 vec![
                     HirMatchArm {
@@ -28497,10 +28497,10 @@ impl LowerCtx {
             }
             OptionResultMethod::ResultIsOk => {
                 let Some(ok) = variant(self, BuiltinType::Result, "Ok") else {
-                    return self.unsupported_postfix_try(&span, "Result::Ok predicate");
+                    return self.unsupported_postfix_try(&span, "Result.Ok predicate");
                 };
                 let Some(err) = variant(self, BuiltinType::Result, "Err") else {
-                    return self.unsupported_postfix_try(&span, "Result::Err predicate");
+                    return self.unsupported_postfix_try(&span, "Result.Err predicate");
                 };
                 vec![
                     HirMatchArm {
@@ -28527,10 +28527,10 @@ impl LowerCtx {
             }
             OptionResultMethod::ResultIsErr => {
                 let Some(ok) = variant(self, BuiltinType::Result, "Ok") else {
-                    return self.unsupported_postfix_try(&span, "Result::Ok predicate");
+                    return self.unsupported_postfix_try(&span, "Result.Ok predicate");
                 };
                 let Some(err) = variant(self, BuiltinType::Result, "Err") else {
-                    return self.unsupported_postfix_try(&span, "Result::Err predicate");
+                    return self.unsupported_postfix_try(&span, "Result.Err predicate");
                 };
                 vec![
                     HirMatchArm {
@@ -28862,12 +28862,12 @@ impl LowerCtx {
         let Some((ok_predicate, _)) =
             self.builtin_variant_predicate(BuiltinType::Result, "Ok", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Result::Ok predicate");
+            return self.unsupported_postfix_try(span, "`?` Result.Ok predicate");
         };
         let Some((err_predicate, err_idx)) =
             self.builtin_variant_predicate(BuiltinType::Result, "Err", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Result::Err predicate");
+            return self.unsupported_postfix_try(span, "`?` Result.Err predicate");
         };
 
         let ok_binding = self.ids.binding();
@@ -28938,12 +28938,12 @@ impl LowerCtx {
         let Some((some_predicate, _)) =
             self.builtin_variant_predicate(BuiltinType::Option, "Some", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Option::Some predicate");
+            return self.unsupported_postfix_try(span, "`?` Option.Some predicate");
         };
         let Some((none_predicate, none_idx)) =
             self.builtin_variant_predicate(BuiltinType::Option, "None", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Option::None predicate");
+            return self.unsupported_postfix_try(span, "`?` Option.None predicate");
         };
 
         let some_binding = self.ids.binding();
@@ -29221,7 +29221,7 @@ impl LowerCtx {
                         variant: name.to_string(),
                     },
                     span.clone(),
-                    "struct-variant constructors require named-field syntax (e.g. `Shape::Box { w: ..., h: ... }`)",
+                    "struct-variant constructors require named-field syntax (e.g. `Shape.Box { w: ..., h: ... }`)",
                 ));
             }
             HirVariantKind::Tuple(_) => {
@@ -39533,7 +39533,7 @@ impl Widget {
         let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
         assert!(
             lowered.diagnostics.is_empty(),
-            "the `Hue` binding must resolve `Hue::Red` and `Hue::Blue` through \
+            "the `Hue` binding must resolve `Hue.Red` and `Hue.Blue` through \
              `hew.aliassrc.Color`: {:#?}",
             lowered.diagnostics
         );

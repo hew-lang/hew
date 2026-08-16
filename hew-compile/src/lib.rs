@@ -276,6 +276,7 @@ pub fn validate_imports_against_manifest(
             continue;
         }
         let module_str = decl.path.join("::");
+        let source_module = decl.path.join(".");
         if is_builtin_module(&module_str) {
             continue;
         }
@@ -284,7 +285,7 @@ pub fn validate_imports_against_manifest(
         }
         if !manifest_deps.contains(&module_str) {
             errors.push(format!(
-                "Error: module `{module_str}` is not declared in hew.toml\n  hint: add it with `hew add {module_str}`"
+                "Error: module `{source_module}` is not declared in hew.toml\n  hint: add it with `hew add {source_module}`"
             ));
         }
     }
@@ -928,7 +929,7 @@ fn check_ambiguous_module_import_bindings(
             if import.path.is_empty() || import.spec.is_some() {
                 continue;
             }
-            let source = import.path.join("::");
+            let source = import.path.join(".");
             let binding = import
                 .module_alias
                 .clone()
@@ -937,9 +938,10 @@ fn check_ambiguous_module_import_bindings(
             if let Some(existing) = seen.insert(binding.clone(), source.clone()) {
                 if existing != source {
                     return Err(format!(
-                        "Error: module `{owner_id}` imports both `{existing}` and `{source}` \
+                        "Error: module `{}` imports both `{existing}` and `{source}` \
                          under the ambiguous binding `{binding}`. \
-                         Give one import a distinct module alias."
+                         Give one import a distinct module alias.",
+                        owner_id.to_string().replace("::", ".")
                     ));
                 }
             }
@@ -1189,6 +1191,7 @@ fn resolve_file_imports_internal(
             }
             Item::Import(decl) if !decl.path.is_empty() => {
                 let module_str = decl.path.join("::");
+                let source_module = decl.path.join(".");
                 let is_local = ctx
                     .package_name
                     .is_some_and(|pkg| decl.path.first().is_some_and(|seg| seg == pkg));
@@ -1343,7 +1346,7 @@ fn resolve_file_imports_internal(
                         .collect::<Vec<_>>()
                         .join("` and `");
                     return Err(FrontendFailure::message_only(format!(
-                        "Error: import `{module_str}` is ambiguous: both `{paths}` exist.\n  Rename or remove one to resolve the ambiguity."
+                        "Error: import `{source_module}` is ambiguous: both `{paths}` exist.\n  Rename or remove one to resolve the ambiguity."
                     )));
                 }
 
@@ -1366,7 +1369,7 @@ fn resolve_file_imports_internal(
                         ""
                     };
                     return Err(FrontendFailure::message_only(format!(
-                        "Error: module `{module_str}` not found (tried: {tried}){hint}"
+                        "Error: module `{source_module}` not found (tried: {tried}){hint}"
                     )));
                 }
             }
@@ -1474,7 +1477,7 @@ fn build_resolved_import_internal(
             if decl.path.is_empty() {
                 canonical.display().to_string()
             } else {
-                decl.path.join("::")
+                decl.path.join(".")
             }
         } else {
             canonical.display().to_string()
@@ -3536,17 +3539,17 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 ..Default::default()
             },
         )
-        .expect_err("std::bogus must not resolve from --pkg-path/bogus.hew");
+        .expect_err("std.bogus must not resolve from --pkg-path/bogus.hew");
 
         assert!(
-            failure.message.contains("module `std::bogus` not found"),
-            "expected std::bogus to fail closed, got: {}",
+            failure.message.contains("module `std.bogus` not found"),
+            "expected std.bogus to fail closed, got: {}",
             failure.message
         );
         let stripped_pkg_candidate = pkg_root.join("bogus.hew").display().to_string();
         assert!(
             !failure.message.contains(&stripped_pkg_candidate),
-            "std:: imports must not try stripped --pkg-path tail candidate `{stripped_pkg_candidate}`: {}",
+            "std. imports must not try stripped --pkg-path tail candidate `{stripped_pkg_candidate}`: {}",
             failure.message
         );
     }
@@ -3572,17 +3575,17 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 ..Default::default()
             },
         )
-        .expect_err("std::bogus must not resolve from --pkg-path/std/bogus.hew");
+        .expect_err("std.bogus must not resolve from --pkg-path/std/bogus.hew");
 
         assert!(
-            failure.message.contains("module `std::bogus` not found"),
-            "expected std::bogus to fail closed, got: {}",
+            failure.message.contains("module `std.bogus` not found"),
+            "expected std.bogus to fail closed, got: {}",
             failure.message
         );
         let fake_std_candidate = fake_std_dir.join("bogus.hew").display().to_string();
         assert!(
             !failure.message.contains(&fake_std_candidate),
-            "std:: imports must not try --pkg-path std-root candidate `{fake_std_candidate}`: {}",
+            "std. imports must not try --pkg-path std-root candidate `{fake_std_candidate}`: {}",
             failure.message
         );
     }
@@ -3607,17 +3610,17 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 ..Default::default()
             },
         )
-        .expect_err("std::bogus must not resolve from .hew/packages/std/bogus.hew");
+        .expect_err("std.bogus must not resolve from .hew/packages/std/bogus.hew");
 
         assert!(
-            failure.message.contains("module `std::bogus` not found"),
-            "expected std::bogus to fail closed, got: {}",
+            failure.message.contains("module `std.bogus` not found"),
+            "expected std.bogus to fail closed, got: {}",
             failure.message
         );
         let fake_std_candidate = pkg_std_dir.join("bogus.hew").display().to_string();
         assert!(
             !failure.message.contains(&fake_std_candidate),
-            "std:: imports must not try .hew std-root candidate `{fake_std_candidate}`: {}",
+            "std. imports must not try .hew std-root candidate `{fake_std_candidate}`: {}",
             failure.message
         );
     }
@@ -4733,14 +4736,11 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     #[test]
-    fn std_concurrency_peer_bodies_accept_both_import_spellings() {
+    fn std_concurrency_peer_bodies_accept_dotted_import_spelling() {
         let dir = tempfile::tempdir().expect("create temp project");
-        for (name, import) in [
-            ("dotted.hew", "import std.concurrency.{ScopeError};"),
-            ("legacy.hew", "import std::concurrency::{ScopeError};"),
-        ] {
-            let source = format!(
-                "{import}\n\
+        let import = "import std.concurrency.{ScopeError};";
+        let source = format!(
+            "{import}\n\
                  \n\
                  fn main() {{\n\
                      let error: ScopeError<i64> = ScopeError {{\n\
@@ -4750,15 +4750,14 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                      }};\n\
                      let _ = error;\n\
                  }}\n"
-            );
-            let input = write_source(dir.path(), name, &source);
-            let result = check_file(&input, &FrontendOptions::default());
-            assert!(
-                result.is_ok(),
-                "{import} must check the assembled std.concurrency peer bodies: {:#?}",
-                result.err()
-            );
-        }
+        );
+        let input = write_source(dir.path(), "dotted.hew", &source);
+        let result = check_file(&input, &FrontendOptions::default());
+        assert!(
+            result.is_ok(),
+            "{import} must check the assembled std.concurrency peer bodies: {:#?}",
+            result.err()
+        );
     }
 
     #[test]

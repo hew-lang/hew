@@ -137,20 +137,6 @@ fn word_at_offset_exact(source: &str, offset: usize) -> Option<String> {
         return None;
     }
 
-    // Check for double-colon-qualified prefix (e.g. `Counter::increment`).
-    if word_start >= 3 && bytes[word_start - 1] == b':' && bytes[word_start - 2] == b':' {
-        let prefix_end = word_start - 2;
-        let prefix_len = source[..prefix_end]
-            .bytes()
-            .rev()
-            .take_while(|b| is_ident(*b))
-            .count();
-        if prefix_len > 0 {
-            let qualified = &source[prefix_end - prefix_len..word_end];
-            return Some(qualified.to_string());
-        }
-    }
-
     // Check for dot-qualified prefix (e.g. `http.listen`).
     if word_start >= 2 && bytes[word_start - 1] == b'.' {
         let prefix_end = word_start - 1;
@@ -218,7 +204,7 @@ pub fn find_name_span(source: &str, search_from: usize, name: &str) -> OffsetSpa
     }
 }
 
-/// Find the simple identifier name at the given byte offset (no `dot/::` qualifiers).
+/// Find the simple identifier name at the given byte offset (no dotted qualifier).
 /// Returns the word and its byte-offset span.
 #[must_use]
 pub fn simple_word_at_offset(source: &str, offset: usize) -> Option<(String, OffsetSpan)> {

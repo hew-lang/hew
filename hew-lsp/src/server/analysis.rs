@@ -183,7 +183,7 @@ pub(super) fn populate_user_module_imports_impl(
                 ambiguities.push(AmbiguousImport {
                     source_path: current_source.to_path_buf(),
                     span: span.clone(),
-                    module: decl.path.join("::"),
+                    module: decl.path.join("."),
                     paths: distinct,
                 });
                 // Leave `resolved_items` as `None` so the import is treated as
@@ -2338,7 +2338,7 @@ mod tests {
         root
     }
 
-    /// A dotted import `a::b` that resolves BOTH to the package-directory form
+    /// A dotted import `a.b` that resolves BOTH to the package-directory form
     /// (`a/b/b.hew`) and the flat form (`a/b.hew`) is ambiguous. The compiler's
     /// resolver (`resolve_file_imports_internal`, hew-compile/src/lib.rs:1045-
     /// 1064) fails closed on exactly this shape: it collects every candidate
@@ -2372,8 +2372,8 @@ mod tests {
         assert!(
             diags
                 .iter()
-                .any(|d| d.message.contains("is ambiguous") && d.message.contains("a::b")),
-            "expected a fail-closed ambiguity diagnostic for `a::b` matching the compiler, got: {:?}",
+                .any(|d| d.message.contains("is ambiguous") && d.message.contains("a.b")),
+            "expected a fail-closed ambiguity diagnostic for `a.b` matching the compiler, got: {:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
 
@@ -2386,7 +2386,7 @@ mod tests {
             "exactly one ambiguous import expected, got {ambiguities:?}"
         );
         let left_unresolved = program.items.iter().any(|(item, _)| {
-            matches!(item, Item::Import(d) if d.path.join("::") == "a::b" && d.resolved_items.is_none())
+            matches!(item, Item::Import(d) if d.path.join(".") == "a.b" && d.resolved_items.is_none())
         });
         assert!(
             left_unresolved,

@@ -5856,7 +5856,7 @@ impl Checker {
                     TypeErrorKind::BoundsNotSatisfied,
                     &entry_span,
                     format!(
-                        "associated type `{}::{}` in impl for `{}` is bound by trait \
+                        "associated type `{}.{}` in impl for `{}` is bound by trait \
                          `{}` but `{}` does not implement `{}`",
                         trait_name,
                         assoc.name,
@@ -5886,9 +5886,7 @@ impl Checker {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
                             &err_span,
-                            format!(
-                                "associated type `Self::{alias}` recursively references itself"
-                            ),
+                            format!("associated type `Self.{alias}` recursively references itself"),
                         );
                     }
                     return Some(Ty::Error);
@@ -5903,7 +5901,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::UndefinedType,
                         &err_span,
-                        format!("type alias `Self::{alias}` is not defined in this impl"),
+                        format!("type alias `Self.{alias}` is not defined in this impl"),
                     );
                 }
                 return Some(Ty::Error);

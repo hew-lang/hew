@@ -2335,7 +2335,7 @@ impl Checker {
                             },
                             span,
                             format!(
-                                "could not project associated type `<{} as Index>::Output` \
+                                "could not project associated type `<{} as Index>.Output` \
                                  while checking `[]`; ensure the impl defines \
                                  `type Output = ...`",
                                 resolved_obj.user_facing()

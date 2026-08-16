@@ -1345,7 +1345,7 @@ mod assoc_types_slice2 {
 
     #[test]
     fn tbar_missing_bound_diagnostic() {
-        // `fn bad<T>(_: T) -> T::Item` with no bound on `T`. The resolver
+        // `fn bad<T>(_: T) -> T.Item` with no bound on `T`. The resolver
         // must reject with a typed diagnostic naming the missing-bound
         // surface — not silently treat `T::Item` as an opaque named type.
         let output = check_source(
@@ -1365,7 +1365,7 @@ mod assoc_types_slice2 {
                 .errors
                 .iter()
                 .any(|e| matches!(e.kind, TypeErrorKind::UndefinedType)
-                    && e.message.contains("T::Item")
+                    && e.message.contains("T.Item")
                     && (e.message.contains("no bounds") || e.message.contains("no trait bound"))),
             "expected projection-missing-bound diagnostic; got: {:?}",
             output.errors

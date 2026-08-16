@@ -3141,9 +3141,9 @@ impl Checker {
             TypeErrorKind::BoundsNotSatisfied,
             span,
             format!(
-                "generic `Pid::send` on `{type_param_name}` is fail-closed: `{}` must be proven \
+                "generic `Pid.send` on `{type_param_name}` is fail-closed: `{}` must be proven \
                  Serializable, but the current checker cannot express the required \
-                 `P::Msg: Serializable` associated-type projection bound yet (TODO A640)",
+                 `P.Msg: Serializable` associated-type projection bound yet (TODO A640)",
                 ty.user_facing()
             ),
         );
@@ -3219,7 +3219,7 @@ impl Checker {
                             TypeErrorKind::InvalidOperation,
                             span,
                             format!(
-                                "actor ask `{name}::{method_name}` requires `await`; \
+                                "actor ask `{name}.{method_name}` requires `await`; \
                                  write `let v? = await ref.{method_name}(...)` \
                                  or `match await ref.{method_name}(...) {{ Ok(v) => ..., Err(e) => ... }}`",
                             ),
@@ -4835,7 +4835,7 @@ impl Checker {
                     span,
                     format!(
                         "`{}` does not satisfy the required bounds for \
-                         `Map::{method}` ({bound_summary})",
+                         `Map.{method}` ({bound_summary})",
                         witness_ty.user_facing()
                     ),
                 );
@@ -4846,7 +4846,7 @@ impl Checker {
                     span,
                     format!(
                         "internal compiler error: collection resolver could \
-                         not locate `Map::{method}` for receiver `{receiver:?}`"
+                         not locate `Map.{method}` for receiver `{receiver:?}`"
                     ),
                 );
             }
@@ -4959,14 +4959,14 @@ impl Checker {
     ) {
         let message = match reason {
             crate::vec_authority::VecUnsupported::FunctionGet => {
-                "`Vec::get` on a function/closure element is not supported under \
+                "`Vec.get` on a function/closure element is not supported under \
                  the `Option<T>` accessor model: the element owns a heap-boxed \
                  closure environment that the fresh-owner get choke point does \
                  not yet clone (tracked gap)"
                     .to_string()
             }
             crate::vec_authority::VecUnsupported::FunctionSharedCopy => format!(
-                "`Vec::{}` is not supported for function-valued elements: each element \
+                "`Vec.{}` is not supported for function-valued elements: each element \
                  owns its closure environment, and a shallow buffer copy would create \
                  two owners of one environment",
                 method.name()
@@ -4978,14 +4978,14 @@ impl Checker {
                 if bitcopy_supported {
                     let why = self.vec_element_rejection_reason(elem_ty);
                     format!(
-                        "`{}` cannot be a `Vec` element for `Vec::{}`: {why} \
+                        "`{}` cannot be a `Vec` element for `Vec.{}`: {why} \
                          (runtime symbol `{expected_symbol}`)",
                         elem_ty.user_facing(),
                         method.name()
                     )
                 } else {
                     format!(
-                        "`Vec::{}` on layout-backed element type `{}` is not \
+                        "`Vec.{}` on layout-backed element type `{}` is not \
                          runtime-backed yet (runtime symbol `{expected_symbol}`); supported \
                          layout Vec methods are push/get/set/pop/remove/clone for Copy \
                          record/tuple elements",
@@ -5121,7 +5121,7 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`Vec::{method}` is not supported for trait-object elements: \
+                    "`Vec.{method}` is not supported for trait-object elements: \
                      the source Vec retains each HeapBoxed owner and `dyn Trait` has no \
                      semantic clone operation; consume the Vec with `into_iter()` instead"
                 ),
@@ -5133,7 +5133,7 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`Vec::{method}` is not supported for function-valued elements: \
+                    "`Vec.{method}` is not supported for function-valued elements: \
                      each element owns its closure environment, and reading elements \
                      into a pipeline result would create a second owner of one \
                      environment"
@@ -5433,7 +5433,7 @@ impl Checker {
         // keeps the accessor model uniform with `Vec`, while the trapping
         // `m[k]` read is the sibling `Index::at` (`-> V`).
         if method == "get" {
-            self.check_arity(args, 1, "`HashMap::get`", span);
+            self.check_arity(args, 1, "`HashMap.get`", span);
             if let Some(arg) = args.first() {
                 let (expr, sp) = arg.expr();
                 self.check_against(expr, sp, &key_ty);
@@ -5464,7 +5464,7 @@ impl Checker {
         // MOVE the value out into the `Some` payload; drop-safe — the map keeps
         // no copy, so exactly one owner of V). `remove(absent)` yields `None`.
         if method == "remove" {
-            self.check_arity(args, 1, "`HashMap::remove`", span);
+            self.check_arity(args, 1, "`HashMap.remove`", span);
             if let Some(arg) = args.first() {
                 let (expr, sp) = arg.expr();
                 self.check_against(expr, sp, &key_ty);
@@ -5488,7 +5488,7 @@ impl Checker {
         // HashMap` is intentionally absent — its body would project on an
         // abstract receiver the checker cannot admit (see std/builtins.hew).
         if method == "into_iter" {
-            self.check_arity(args, 0, "`HashMap::into_iter`", span);
+            self.check_arity(args, 0, "`HashMap.into_iter`", span);
             let keys_span = span.start..span.start;
             let values_span = span.end..span.end;
             let mut iter_ty = Ty::Error;
@@ -5568,7 +5568,7 @@ impl Checker {
         match method {
             // rc.clone() increments the reference count and returns a new Rc<T>
             "clone" => {
-                self.check_arity(args, 0, "`Rc::clone`", span);
+                self.check_arity(args, 0, "`Rc.clone`", span);
                 record(self, RcIntrinsicOp::Clone);
                 Ty::rc(inner_ty)
             }
@@ -5577,7 +5577,7 @@ impl Checker {
             // types (no ownership to duplicate).  For non-Copy `T`, callers
             // share access via `rc.clone()` instead.
             "get" => {
-                self.check_arity(args, 0, "`Rc::get`", span);
+                self.check_arity(args, 0, "`Rc.get`", span);
                 if !self
                     .registry
                     .implements_marker(&inner_ty, MarkerTrait::Copy)
@@ -5586,7 +5586,7 @@ impl Checker {
                         TypeErrorKind::BoundsNotSatisfied,
                         span,
                         format!(
-                            "`Rc::get` requires `T: Copy`; `{}` is not `Copy` — \
+                            "`Rc.get` requires `T: Copy`; `{}` is not `Copy` — \
                              use `rc.clone()` to share the reference instead",
                             inner_ty.user_facing()
                         ),
@@ -5597,34 +5597,34 @@ impl Checker {
                 inner_ty
             }
             "set" => {
-                self.check_arity(args, 1, "`Rc::set`", span);
+                self.check_arity(args, 1, "`Rc.set`", span);
                 if let Some(arg) = args.first() {
                     let (expr, arg_span) = arg.expr();
                     let arg_ty = self.synthesize(expr, arg_span);
                     self.expect_type(&inner_ty, &arg_ty, arg_span);
-                    self.reject_borrowed_parameter_consumption(expr, arg_span, "Rc::set");
+                    self.reject_borrowed_parameter_consumption(expr, arg_span, "Rc.set");
                 }
                 record(self, RcIntrinsicOp::Set);
                 Ty::Unit
             }
             "downgrade" => {
-                self.check_arity(args, 0, "`Rc::downgrade`", span);
+                self.check_arity(args, 0, "`Rc.downgrade`", span);
                 record(self, RcIntrinsicOp::Downgrade);
                 Ty::weak(inner_ty)
             }
             // rc.strong_count() returns the current reference count as i64
             "strong_count" => {
-                self.check_arity(args, 0, "`Rc::strong_count`", span);
+                self.check_arity(args, 0, "`Rc.strong_count`", span);
                 record(self, RcIntrinsicOp::StrongCount);
                 Ty::I64
             }
             "weak_count" => {
-                self.check_arity(args, 0, "`Rc::weak_count`", span);
+                self.check_arity(args, 0, "`Rc.weak_count`", span);
                 record(self, RcIntrinsicOp::WeakCount);
                 Ty::I64
             }
             "is_unique" => {
-                self.check_arity(args, 0, "`Rc::is_unique`", span);
+                self.check_arity(args, 0, "`Rc.is_unique`", span);
                 record(self, RcIntrinsicOp::IsUnique);
                 Ty::Bool
             }
@@ -5708,24 +5708,24 @@ impl Checker {
 
         let reason = match eligibility {
             EqEligibility::Eligible => format!(
-                "`Vec::contains` on layout-backed element type `{}` is equality-eligible, \
+                "`Vec.contains` on layout-backed element type `{}` is equality-eligible, \
                  but layout contains is not yet supported for this element type",
                 elem_ty.user_facing()
             ),
             EqEligibility::IneligibleManaged(managed_ty) => format!(
-                "`Vec::contains` on layout-backed element type `{}` requires aggregate \
+                "`Vec.contains` on layout-backed element type `{}` requires aggregate \
                  equality, but `{}` is layout-managed/non-Copy data",
                 elem_ty.user_facing(),
                 managed_ty.user_facing()
             ),
             EqEligibility::IneligibleOwned(owned_ty) => format!(
-                "`Vec::contains` on layout-backed element type `{}` requires aggregate \
+                "`Vec.contains` on layout-backed element type `{}` requires aggregate \
                  equality, but `{}` is owned or heap-backed data",
                 elem_ty.user_facing(),
                 owned_ty.user_facing()
             ),
             EqEligibility::IneligibleUnknown => format!(
-                "`Vec::contains` on layout-backed element type `{}` requires aggregate \
+                "`Vec.contains` on layout-backed element type `{}` requires aggregate \
                  equality, but equality eligibility is unknown",
                 elem_ty.user_facing()
             ),
@@ -6407,7 +6407,7 @@ impl Checker {
         sig.extern_symbol.as_ref()?;
 
         if matches!(method, "push" | "pop" | "remove" | "clear" | "clone") {
-            self.check_arity(args, sig.params.len(), &format!("`Vec::{method}`"), span);
+            self.check_arity(args, sig.params.len(), &format!("`Vec.{method}`"), span);
         }
 
         for (index, expected) in sig.params.iter().enumerate() {
@@ -6458,11 +6458,11 @@ impl Checker {
             .lookup_builtin_vec_method_sig(type_args, method)
             .is_some();
         if method == "clone" && matches!(self.subst.resolve(&elem_ty), Ty::TraitObject { .. }) {
-            self.check_arity(args, 0, "`Vec::clone`", span);
+            self.check_arity(args, 0, "`Vec.clone`", span);
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
-                "`Vec<dyn Trait>::clone()` is not supported because trait objects have no \
+                "`Vec<dyn Trait>.clone()` is not supported because trait objects have no \
                  semantic clone operation; use `into_iter()` to transfer the existing owners"
                     .to_string(),
             );
@@ -6470,7 +6470,7 @@ impl Checker {
         }
         let result = match method {
             "into_iter" => {
-                self.check_arity(args, 0, "`Vec::into_iter`", span);
+                self.check_arity(args, 0, "`Vec.into_iter`", span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
                 if !self.validate_vec_iter_element_clone_type(&resolved_elem, span) {
                     return Ty::Error;
@@ -6518,13 +6518,13 @@ impl Checker {
                 // uses, including per-monomorphisation re-resolution for an
                 // abstract element). Mirrors how `HashMap::into_iter` pre-records
                 // its `keys()`/`values()` projections.
-                self.check_arity(args, 0, "`Vec::iter`", span);
+                self.check_arity(args, 0, "`Vec.iter`", span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
                 if matches!(resolved_elem, Ty::TraitObject { .. }) {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
-                        "`Vec<dyn Trait>::iter()` is not supported because a borrowed iterator \
+                        "`Vec<dyn Trait>.iter()` is not supported because a borrowed iterator \
                          needs an independent clone of each trait object; use `into_iter()` to \
                          transfer the existing owners"
                             .to_string(),
@@ -6559,7 +6559,7 @@ impl Checker {
                 // explicit arm preserves the index-site widening ergonomic
                 // (i8/i16/i32 → i64) that the strict trait signature would
                 // otherwise reject.
-                self.check_arity(args, 1, "`Vec::get`", span);
+                self.check_arity(args, 1, "`Vec.get`", span);
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     let actual = self.synthesize(expr, sp);
@@ -6576,7 +6576,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
-                        "`Vec<dyn Trait>::get()` is not supported because returning an owned \
+                        "`Vec<dyn Trait>.get()` is not supported because returning an owned \
                          element would require a semantic trait-object clone; use pop/remove or \
                          consuming iteration to move an owner out"
                             .to_string(),
@@ -6632,7 +6632,7 @@ impl Checker {
                             TypeErrorKind::InvalidOperation,
                             span,
                             format!(
-                                "`Vec::contains` on layout-backed element type `{}` requires \
+                                "`Vec.contains` on layout-backed element type `{}` requires \
                                  the element to be `Copy`; layout-managed records require \
                                  clone/drop semantics that are not implemented for \
                                  equality-based contains",
@@ -6652,7 +6652,7 @@ impl Checker {
                 Ty::Bool
             }
             "join" if runtime_method_declared => {
-                self.check_arity(args, 1, "`Vec::join`", span);
+                self.check_arity(args, 1, "`Vec.join`", span);
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::String);
@@ -6668,7 +6668,7 @@ impl Checker {
                         TypeErrorKind::UndefinedMethod,
                         span,
                         format!(
-                            "`Vec::join` is only available on Vec<string>, not Vec<{}>",
+                            "`Vec.join` is only available on Vec<string>, not Vec<{}>",
                             elem_ty.user_facing()
                         ),
                     );
@@ -6676,7 +6676,7 @@ impl Checker {
                 Ty::String
             }
             "map" => {
-                self.check_arity(args, 1, "`Vec::map`", span);
+                self.check_arity(args, 1, "`Vec.map`", span);
                 let ret_ty = Ty::Var(TypeVar::fresh());
                 let expected_fn = Ty::Function {
                     params: vec![elem_ty.clone()],
@@ -6699,7 +6699,7 @@ impl Checker {
                 self.make_vec_type(resolved_ret, span)
             }
             "filter" => {
-                self.check_arity(args, 1, "`Vec::filter`", span);
+                self.check_arity(args, 1, "`Vec.filter`", span);
                 let expected_fn = Ty::Function {
                     params: vec![elem_ty.clone()],
                     ret: Box::new(Ty::Bool),
@@ -6726,7 +6726,7 @@ impl Checker {
                 // documents this seeded form). A seedless 1-arg `reduce`
                 // is deliberately not provided: it would need an
                 // empty-vector answer, and we refuse to invent one.
-                self.check_arity(args, 2, "`Vec::reduce`", span);
+                self.check_arity(args, 2, "`Vec.reduce`", span);
                 let acc_ty = if let Some(arg) = args.get(1) {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp)
@@ -6754,7 +6754,7 @@ impl Checker {
                 resolved_acc
             }
             "fold" => {
-                self.check_arity(args, 2, "`Vec::fold`", span);
+                self.check_arity(args, 2, "`Vec.fold`", span);
                 let acc_ty = if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp)
@@ -8728,7 +8728,7 @@ impl Checker {
                                 TypeErrorKind::InvalidOperation,
                                 span,
                                 format!(
-                                    "actor ask `{actor_identity}::{method}` requires `await`; \
+                                    "actor ask `{actor_identity}.{method}` requires `await`; \
                                      write `let v? = await ref.{method}(...)` \
                                      or `match await ref.{method}(...) {{ Ok(v) => ..., Err(e) => ... }}`",
                                 ),
@@ -9562,7 +9562,7 @@ impl Checker {
                                 TypeErrorKind::InvalidOperation,
                                 span,
                                 format!(
-                                    "actor ask `{name}::{method}` requires `await`; \
+                                    "actor ask `{name}.{method}` requires `await`; \
                                      write `let v? = await ref.{method}(...)` \
                                      or `match await ref.{method}(...) {{ Ok(v) => ..., Err(e) => ... }}`",
                                 ),
@@ -10096,7 +10096,7 @@ impl Checker {
                                     TypeErrorKind::MutabilityError,
                                     span,
                                     format!(
-                                        "trait method `{declaring_trait}::{method}` \
+                                        "trait method `{declaring_trait}.{method}` \
                                          (statically dispatched on type parameter `{name}`) \
                                          requires a mutable binding receiver; \
                                          {receiver_label} is not declared with `var`",

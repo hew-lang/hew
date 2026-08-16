@@ -1242,7 +1242,7 @@ fn scan_disk_importers_for_conflicts(
         let parse_result = hew_parser::parse(&source);
 
         // Only proceed if this file imports `renamed_name` (non-aliased) from
-        // `definition_uri`.  Aliased importers (`import foo::{ x as y }`) only
+        // `definition_uri`. Aliased importers (`import foo.{ x as y }`) only
         // rewrite the imported token — the visible binding remains the alias, so
         // they cannot introduce a `renamed_name`-visible conflict (#1285 quality).
         let imports_target_nonaliased =

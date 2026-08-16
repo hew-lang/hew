@@ -468,7 +468,7 @@ fn vec_layout_unsupported_method_remains_fail_closed() {
 
     assert!(
         output.errors.iter().any(|error| {
-            error.message.contains("`Vec::clear`")
+            error.message.contains("`Vec.clear`")
                 && error.message.contains("not")
                 && error.message.contains("runtime-backed yet")
         }),
@@ -1316,7 +1316,7 @@ fn vec_contains_layout_managed_record_rejected_with_eq_eligibility_diagnostic() 
 
     assert!(
         output.errors.iter().any(|error| {
-            error.message.contains("`Vec::contains`")
+            error.message.contains("`Vec.contains`")
                 && error.message.contains("layout-managed/non-Copy")
                 && error.message.contains("bytes")
         }),
@@ -2336,7 +2336,7 @@ fn vec_trait_object_clone_dependent_surfaces_remain_refused() {
     assert!(
         messages
             .iter()
-            .any(|message| message.contains("Vec<dyn Trait>::clone()")
+            .any(|message| message.contains("Vec<dyn Trait>.clone()")
                 && message.contains("no semantic clone")),
         "Vec clone must fail with the trait-object clone diagnostic: {:#?}",
         output.errors
@@ -2344,7 +2344,7 @@ fn vec_trait_object_clone_dependent_surfaces_remain_refused() {
     assert!(
         messages
             .iter()
-            .any(|message| message.contains("Vec<dyn Trait>::get()")
+            .any(|message| message.contains("Vec<dyn Trait>.get()")
                 && message.contains("semantic trait-object clone")),
         "Vec get must fail with the trait-object clone diagnostic: {:#?}",
         output.errors
@@ -2359,7 +2359,7 @@ fn vec_trait_object_clone_dependent_surfaces_remain_refused() {
     assert!(
         messages
             .iter()
-            .any(|message| message.contains("Vec<dyn Trait>::iter()")
+            .any(|message| message.contains("Vec<dyn Trait>.iter()")
                 && message.contains("into_iter()")),
         "Vec iter() must fail with the trait-object clone diagnostic naming into_iter(): {:#?}",
         output.errors
@@ -2374,7 +2374,7 @@ fn vec_trait_object_clone_dependent_surfaces_remain_refused() {
     );
     assert!(
         messages.iter().any(|message| message
-            .contains("`Vec::map` is not supported for trait-object elements")
+            .contains("`Vec.map` is not supported for trait-object elements")
             && message.contains("into_iter()")),
         "Vec::map on trait-object elements must fail naming into_iter(): {:#?}",
         output.errors

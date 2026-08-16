@@ -4331,6 +4331,65 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     #[test]
+    fn state_constructor_error_in_peer_routes_to_its_source_line() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let workflow_dir = dir.path().join("workflow");
+        fs::create_dir(&workflow_dir).expect("create workflow dir");
+        let main = write_source(
+            dir.path(),
+            "main.hew",
+            "import workflow.{Workflow};\nfn main() {}\n",
+        );
+        write_source(
+            &workflow_dir,
+            "workflow.hew",
+            "pub type Marker { value: i64; }\n",
+        );
+        let peer_source = concat!(
+            "pub machine Workflow {\n",
+            "    events { Crash; }\n",
+            "    state Ready;\n",
+            "    state Faulted { code: i64; }\n",
+            "    on Crash: Ready => Faulted {\n",
+            "        Workflow.Faulted { wrong: 1 }\n",
+            "    }\n",
+            "    default { state }\n",
+            "}\n",
+        );
+        write_source(&workflow_dir, "state.hew", peer_source);
+
+        let failure = check_file(&main, &FrontendOptions::default())
+            .expect_err("the deliberate state-field error must reject the fixture");
+        let diagnostic = failure
+            .diagnostics
+            .iter()
+            .find_map(|diagnostic| match &diagnostic.kind {
+                FrontendDiagnosticKind::Type(error)
+                    if error.message.contains("no field `wrong`") =>
+                {
+                    Some((diagnostic, error))
+                }
+                _ => None,
+            })
+            .expect("state constructor field diagnostic");
+        assert!(
+            diagnostic
+                .0
+                .filename
+                .as_deref()
+                .is_some_and(|filename| filename.ends_with("workflow/state.hew")),
+            "diagnostic must name the declaring peer, got {:?}",
+            diagnostic.0.filename
+        );
+        let line = peer_source[..diagnostic.1.span.start]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1;
+        assert_eq!(line, 6, "diagnostic must point at the deliberate error");
+    }
+
+    #[test]
     fn hir_diagnostic_routes_to_imported_module_source() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let main = write_source(

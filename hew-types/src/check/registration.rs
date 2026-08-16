@@ -9578,7 +9578,7 @@ impl Checker {
     /// source (a peer file of a directory module), else `None` (the module
     /// identity routes as before). The CLI/LSP source maps carry an entry per
     /// source file keyed by this exact rendering.
-    fn item_file_routing_token(
+    pub(super) fn item_file_routing_token(
         &self,
         module: Option<&str>,
         file: Option<&std::path::PathBuf>,

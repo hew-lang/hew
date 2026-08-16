@@ -224,16 +224,16 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
     while pos < tlen {
         let rest = tmpl.slice(pos, tlen);
         let open = match rest.find("{{") {
-            Some(i) => i,
-            None => {
+            .Some(i) => i,
+            .None => {
                 return Err(TemplateError::UnclosedBlock("template: unclosed `{{if}}` — missing `{{end}}`"));
             },
         };
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
         let close = match after_open.find("}}") {
-            Some(i) => i,
-            None => {
+            .Some(i) => i,
+            .None => {
                 return Err(TemplateError::UnclosedDirective("template: unclosed `{{` inside `{{if}}` body"));
             },
         };
@@ -274,8 +274,8 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
         let branch = tmpl.slice(start, true_end);
         let rendered = render_segment(branch, ctx, range_elem, in_range);
         match rendered {
-            Ok(s) => Ok(RenderPair { text: s, next_pos: end_pos }),
-            Err(e) => Err(e),
+            .Ok(s) => Ok(RenderPair { text: s, next_pos: end_pos }),
+            .Err(e) => Err(e),
         }
     } else {
         if false_start >= 0 {
@@ -287,8 +287,8 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
             let branch = tmpl.slice(false_start, false_end);
             let rendered = render_segment(branch, ctx, range_elem, in_range);
             match rendered {
-                Ok(s) => Ok(RenderPair { text: s, next_pos: end_pos }),
-                Err(e) => Err(e),
+                .Ok(s) => Ok(RenderPair { text: s, next_pos: end_pos }),
+                .Err(e) => Err(e),
             }
         } else {
             Ok(RenderPair { text: "", next_pos: end_pos })
@@ -308,16 +308,16 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
     while pos < tlen {
         let rest = tmpl.slice(pos, tlen);
         let open = match rest.find("{{") {
-            Some(i) => i,
-            None => {
+            .Some(i) => i,
+            .None => {
                 return Err(TemplateError::UnclosedBlock("template: unclosed `{{range}}` — missing `{{end}}`"));
             },
         };
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
         let close = match after_open.find("}}") {
-            Some(i) => i,
-            None => {
+            .Some(i) => i,
+            .None => {
                 return Err(TemplateError::UnclosedDirective("template: unclosed `{{` inside `{{range}}` body"));
             },
         };
@@ -351,10 +351,10 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
             let elem = ctx.litems[list_start + i];
             let rendered = render_segment(body, ctx, elem, true);
             match rendered {
-                Ok(s) => {
+                .Ok(s) => {
                     out = out + s;
                 },
-                Err(e) => {
+                .Err(e) => {
                     return Err(e);
                 },
             }
@@ -371,8 +371,8 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
     while pos < tlen {
         let rest = tmpl.slice(pos, tlen);
         let open = match rest.find("{{") {
-            Some(i) => i,
-            None => {
+            .Some(i) => i,
+            .None => {
                 out = out + rest;
                 return Ok(out);
             },
@@ -382,8 +382,8 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
         let close = match after_open.find("}}") {
-            Some(i) => i,
-            None => {
+            .Some(i) => i,
+            .None => {
                 return Err(TemplateError::UnclosedDirective("template: unclosed `{{` directive"));
             },
         };
@@ -402,11 +402,11 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
             let cond = is_truthy(ctx, key);
             let r = consume_if_body(tmpl, pos, tlen, ctx, range_elem, in_range, cond);
             match r {
-                Ok(pair) => {
+                .Ok(pair) => {
                     out = out + pair.text;
                     pos = pair.next_pos;
                 },
-                Err(e) => {
+                .Err(e) => {
                     return Err(e);
                 },
             }
@@ -414,11 +414,11 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
             let key = range_key(tag);
             let r = consume_range_body(tmpl, pos, tlen, ctx, key);
             match r {
-                Ok(pair) => {
+                .Ok(pair) => {
                     out = out + pair.text;
                     pos = pair.next_pos;
                 },
-                Err(e) => {
+                .Err(e) => {
                     return Err(e);
                 },
             }
@@ -449,8 +449,8 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
     while pos < tlen {
         let rest = tmpl.slice(pos, tlen);
         let open = match rest.find("{{") {
-            Some(i) => i,
-            None => {
+            .Some(i) => i,
+            .None => {
                 if stack.len() > 0 {
                     let top = stack[stack.len() - 1];
                     return Err(unclosed_block_error(top));
@@ -461,8 +461,8 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
         let close = match after_open.find("}}") {
-            Some(i) => i,
-            None => {
+            .Some(i) => i,
+            .None => {
                 return Err(TemplateError::UnclosedDirective("template: unclosed `{{` directive"));
             },
         };
@@ -514,8 +514,8 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
 /// Parse and validate a template string.
 pub fn try_parse(src: string) -> Result<Template, TemplateError> {
     match validate(src) {
-        Ok(_) => Ok(Template { src: src }),
-        Err(err) => Err(err),
+        .Ok(_) => Ok(Template { src: src }),
+        .Err(err) => Err(err),
     }
 }
 
@@ -525,8 +525,8 @@ pub fn parse(src: string) -> Template {
     // result, so matching the call directly would alias `src` (caller-owned).
     let parsed = try_parse(src);
     match parsed {
-        Ok(t) => t,
-        Err(err) => {
+        .Ok(t) => t,
+        .Err(err) => {
             panic(template_error_message(err));
             Template { src: "" }
         },
@@ -544,8 +544,8 @@ pub fn render_template(t: Template, ctx: Ctx) -> string {
     // caller-owned `t.src` place, so the call is not matched directly.
     let rendered = render_segment(t.src, ctx, "", false);
     match rendered {
-        Ok(s) => s,
-        Err(err) => {
+        .Ok(s) => s,
+        .Err(err) => {
             panic(template_error_message(err));
             ""
         },
@@ -658,13 +658,13 @@ pub fn render(tmpl: string, ctx: Ctx) -> Result<string, string> {
     // result, so matching the call directly would alias `tmpl` (caller-owned).
     let parsed = try_parse(tmpl);
     match parsed {
-        Ok(t) => {
+        .Ok(t) => {
             let rendered = render_segment(t.src, ctx, "", false);
             match rendered {
-                Ok(s) => Ok(s),
-                Err(err) => Err(template_error_message(err)),
+                .Ok(s) => Ok(s),
+                .Err(err) => Err(template_error_message(err)),
             }
         },
-        Err(err) => Err(template_error_message(err)),
+        .Err(err) => Err(template_error_message(err)),
     }
 }

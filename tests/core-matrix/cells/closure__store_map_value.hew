@@ -3,7 +3,7 @@ fn main() {
     let m: HashMap<string, fn(i64) -> i64> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
+        Option.Some(e) => {
             let e_r = e(21);
             println(f"{e_r}");
         },

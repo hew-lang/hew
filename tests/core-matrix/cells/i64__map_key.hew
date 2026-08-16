@@ -3,7 +3,7 @@ fn main() {
     let m: HashMap<i64, i64> = HashMap.new();
     m.insert(k, 9);
     match m.get(k) {
-        .Some(v) => println(f"got {v}"),
-        .None => println("missing"),
+        Option.Some(v) => println(f"got {v}"),
+        None => println("missing"),
     }
 }

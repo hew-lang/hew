@@ -26,7 +26,7 @@ fn main() {
     let m: HashMap<string, Dq> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
+        Option.Some(e) => {
             let e_l = unsafe { hew_deque_len(e.handle) };
             let e_t = e.tag;
             println(f"dq {e_t} len={e_l}");

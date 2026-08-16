@@ -1,5 +1,5 @@
 fn make() -> HashSet<i64> {
-    let m: HashSet<i64> = HashSet.new();
+    let m: HashSet<i64> = HashSet::new();
     m.insert(1);
     m.insert(2);
     m

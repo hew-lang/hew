@@ -2,11 +2,11 @@ fn main() {
     let m: HashMap<string, i64> = HashMap.new();
     m.insert("a", 1);
     match m.get("a") {
-        .Some(v) => m.insert("a", v + 5),
-        .None => {},
+        Option.Some(v) => m.insert("a", v + 5),
+        None => {},
     }
     match m.get("a") {
-        .Some(v) => println(f"a={v}"),
-        .None => println("missing"),
+        Option.Some(v) => println(f"a={v}"),
+        None => println("missing"),
     }
 }

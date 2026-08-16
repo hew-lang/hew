@@ -3,7 +3,7 @@ fn main() {
     let v: Vec<fn(i64) -> i64> = Vec.new();
     v.push(x);
     match v.get(0) {
-        Some(e) => {
+        Option.Some(e) => {
             let e_r = e(21);
             println(f"{e_r}");
         },

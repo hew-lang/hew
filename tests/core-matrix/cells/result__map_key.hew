@@ -1,9 +1,9 @@
 fn main() {
-    let k: Result<i64, string> = Ok(6);
+    let k: Result<i64, string> = Result.Ok(6);
     let m: HashMap<Result<i64, string>, i64> = HashMap.new();
     m.insert(k, 9);
     match m.get(k) {
-        Some(v) => println(f"got {v}"),
+        Option.Some(v) => println(f"got {v}"),
         None => println("missing"),
     }
 }

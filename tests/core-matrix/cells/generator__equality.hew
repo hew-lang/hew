@@ -1,7 +1,16 @@
 fn main() {
-    let a = gen { yield 1; yield 2; };
-    let b = gen { yield 1; yield 2; };
-    let c = gen { yield 2; yield 3; };
+    let a = gen {
+        yield 1;
+        yield 2;
+    };
+    let b = gen {
+        yield 1;
+        yield 2;
+    };
+    let c = gen {
+        yield 2;
+        yield 3;
+    };
     let same = a == b;
     let diff = a == c;
     println(f"{same} {diff}");

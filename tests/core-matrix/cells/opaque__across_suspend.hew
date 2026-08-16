@@ -38,7 +38,7 @@ fn main() {
     let x = Dq { handle: unsafe { hew_deque_new() }, tag: 1 };
     let h = spawn Holder(ready: false);
     match await h.hold(x) {
-        Ok(n) => println(f"held {n}"),
+        Result.Ok(n) => println(f"held {n}"),
         Err(_) => println("err"),
     }
 }

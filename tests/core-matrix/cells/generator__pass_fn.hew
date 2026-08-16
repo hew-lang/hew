@@ -7,6 +7,9 @@ fn use_it(v: Generator<i64, ()>) {
 }
 
 fn main() {
-    let x = gen { yield 1; yield 2; };
+    let x = gen {
+        yield 1;
+        yield 2;
+    };
     use_it(x);
 }

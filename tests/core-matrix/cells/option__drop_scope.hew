@@ -1,6 +1,6 @@
 #[resource]
 type Tok {
-    id: i64;
+    id: i64
 }
 
 impl Tok {
@@ -10,6 +10,6 @@ impl Tok {
 }
 
 fn main() {
-    let h: Option<Tok> = Some(Tok { id: 1 });
+    let h: Option<Tok> = Option.Some(Tok { id: 1 });
     println("body");
 }

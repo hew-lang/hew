@@ -14,7 +14,7 @@ fn main() {
     let m: HashMap<string, Counter> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
+        Option.Some(e) => {
             match e {
                 Zero => println("zero"),
                 NonZero { value } => println(f"n {value}"),

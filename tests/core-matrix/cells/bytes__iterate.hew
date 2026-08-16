@@ -1,5 +1,5 @@
 fn main() {
-    let b: bytes = bytes.new();
+    let b: bytes = bytes::new();
     b.push(65);
     b.push(66);
     var i = 0;

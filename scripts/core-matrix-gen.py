@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import sys
 
@@ -69,6 +70,15 @@ impl Tok {
 def ind(text: str, n: int = 4) -> str:
     pad = " " * n
     return "\n".join(pad + line if line.strip() else line for line in text.splitlines())
+
+
+def ratify_surface(src: str) -> str:
+    """Emit dotted constructors and owner-qualified enum variants."""
+    src = src.replace("Vec::new()", "Vec.new()")
+    src = src.replace("HashMap::new()", "HashMap.new()")
+    src = re.sub(r"(?<![.\w])Some\(", "Option.Some(", src)
+    src = re.sub(r"(?<![.\w])Ok\(", "Result.Ok(", src)
+    return src
 
 
 class Row:
@@ -245,7 +255,7 @@ ROWS.append(
     Row(
         "option",
         "Option<i64>",
-        mk=lambda n, i: f"let {n}: Option<i64> = Some({5 + i});",
+        mk=lambda n, i: f"let {n}: Option<i64> = Option.Some({5 + i});",
         show=lambda n: (
             f'match {n} {{ Some({n}_v) => println(f"some {{{n}_v}}"), None => println("none"), }}'
         ),
@@ -253,7 +263,7 @@ ROWS.append(
         display=False,
         owns_resource=(
             TOK,
-            lambda n: f"let {n}: Option<Tok> = Some(Tok {{ id: 1 }});",
+            lambda n: f"let {n}: Option<Tok> = Option.Some(Tok {{ id: 1 }});",
             ["close 1"],
         ),
     )
@@ -264,7 +274,7 @@ ROWS.append(
     Row(
         "result",
         "Result<i64, string>",
-        mk=lambda n, i: f"let {n}: Result<i64, string> = Ok({6 + i});",
+        mk=lambda n, i: f"let {n}: Result<i64, string> = Result.Ok({6 + i});",
         show=lambda n: (
             f'match {n} {{ Ok({n}_v) => println(f"ok {{{n}_v}}"), Err({n}_e) => println(f"err {{{n}_e}}"), }}'
         ),
@@ -272,7 +282,7 @@ ROWS.append(
         display=False,
         owns_resource=(
             TOK,
-            lambda n: f"let {n}: Result<Tok, string> = Ok(Tok {{ id: 1 }});",
+            lambda n: f"let {n}: Result<Tok, string> = Result.Ok(Tok {{ id: 1 }});",
             ["close 1"],
         ),
     )
@@ -1097,7 +1107,7 @@ def generate(outdir):
                 exp = apply_close_trace(r, c, exp)
             name = f"{r.id}__{c}"
             with open(os.path.join(outdir, name + ".hew"), "w") as f:
-                f.write(src)
+                f.write(ratify_surface(src))
             with open(os.path.join(outdir, name + ".expected"), "w") as f:
                 f.write("\n".join(exp) + "\n")
             if trap:

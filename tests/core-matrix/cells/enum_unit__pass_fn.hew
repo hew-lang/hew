@@ -4,13 +4,10 @@ enum Colour {
 }
 
 fn use_it(v: Colour) {
-    match v {
-        .Red => println("Red"),
-        .Green => println("Green"),
-    }
+    match v { Red => println("Red"), Green => println("Green"), }
 }
 
 fn main() {
-    let x: Colour = .Red;
+    let x: Colour = Red;
     use_it(x);
 }

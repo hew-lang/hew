@@ -1,10 +1,10 @@
 fn main() {
-    let x: Result<i64, string> = Ok(6);
+    let x: Result<i64, string> = Result.Ok(6);
     let v: Vec<Result<i64, string>> = Vec.new();
     v.push(x);
     match v.get(0) {
-        Some(e) => {
-            match e { Ok(e_v) => println(f"ok {e_v}"), Err(e_e) => println(f"err {e_e}"), }
+        Option.Some(e) => {
+            match e { Result.Ok(e_v) => println(f"ok {e_v}"), Err(e_e) => println(f"err {e_e}"), }
         },
         None => println("missing"),
     }

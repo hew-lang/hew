@@ -32,7 +32,7 @@ fn main() {
     let v: Vec<dyn Named> = Vec.new();
     v.push(x);
     match v.get(0) {
-        Some(e) => {
+        Option.Some(e) => {
             show_named(e);
         },
         None => println("missing"),

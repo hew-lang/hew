@@ -1,11 +1,11 @@
 fn main() {
-    let k: bytes = bytes.new();
+    let k: bytes = bytes::new();
     k.push(65);
     k.push(66);
     let m: HashMap<bytes, i64> = HashMap.new();
     m.insert(k, 9);
     match m.get(k) {
-        .Some(v) => println(f"got {v}"),
-        .None => println("missing"),
+        Option.Some(v) => println(f"got {v}"),
+        None => println("missing"),
     }
 }

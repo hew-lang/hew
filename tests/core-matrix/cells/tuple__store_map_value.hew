@@ -3,10 +3,10 @@ fn main() {
     let m: HashMap<string, (i64, string)> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        .Some(e) => {
+        Option.Some(e) => {
             let (e_a, e_b) = e;
             println(f"{e_a} {e_b}");
         },
-        .None => println("missing"),
+        None => println("missing"),
     }
 }

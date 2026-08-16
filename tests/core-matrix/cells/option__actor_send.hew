@@ -1,21 +1,18 @@
-actor TestSink {
+actor Sink {
     var hits: i64;
 
     receive fn take(v: Option<i64>) -> i64 {
-        match v {
-            .Some(v_v) => println(f"some {v_v}"),
-            .None => println("none"),
-        }
+        match v { Option.Some(v_v) => println(f"some {v_v}"), None => println("none"), }
         hits = hits + 1;
         hits
     }
 }
 
 fn main() {
-    let x: Option<i64> = Some(5);
-    let s = spawn TestSink(hits: 0);
+    let x: Option<i64> = Option.Some(5);
+    let s = spawn Sink(hits: 0);
     match await s.take(x) {
-        .Ok(n) => println(f"hits {n}"),
-        .Err(_) => println("err"),
+        Result.Ok(n) => println(f"hits {n}"),
+        Err(_) => println("err"),
     }
 }

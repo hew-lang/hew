@@ -1,5 +1,5 @@
 fn main() {
-    let x: HashSet<i64> = HashSet.new();
+    let x: HashSet<i64> = HashSet::new();
     x.insert(1);
     x.insert(2);
     let y = clone x;

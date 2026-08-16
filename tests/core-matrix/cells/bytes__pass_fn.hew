@@ -5,7 +5,7 @@ fn use_it(v: bytes) {
 }
 
 fn main() {
-    let x: bytes = bytes.new();
+    let x: bytes = bytes::new();
     x.push(65);
     x.push(66);
     use_it(x);

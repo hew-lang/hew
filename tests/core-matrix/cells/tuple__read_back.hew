@@ -3,10 +3,10 @@ fn main() {
     let v: Vec<(i64, string)> = Vec.new();
     v.push(x);
     match v.get(0) {
-        .Some(e) => {
+        Option.Some(e) => {
             let (e_a, e_b) = e;
             println(f"{e_a} {e_b}");
         },
-        .None => println("missing"),
+        None => println("missing"),
     }
 }

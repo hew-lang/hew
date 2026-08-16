@@ -9,7 +9,7 @@ fn main() {
     let m: HashMap<string, Shape> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
+        Option.Some(e) => {
             match e {
                 Empty => println("empty"),
                 Circle(e_r) => println(f"circle {e_r}"),

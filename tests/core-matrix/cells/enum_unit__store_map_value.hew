@@ -4,16 +4,13 @@ enum Colour {
 }
 
 fn main() {
-    let x: Colour = .Red;
+    let x: Colour = Red;
     let m: HashMap<string, Colour> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        .Some(e) => {
-            match e {
-                .Red => println("Red"),
-                .Green => println("Green"),
-            }
+        Option.Some(e) => {
+            match e { Red => println("Red"), Green => println("Green"), }
         },
-        .None => println("missing"),
+        None => println("missing"),
     }
 }

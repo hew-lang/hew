@@ -1,8 +1,5 @@
 fn main() {
-    let x: Option<i64> = Some(5);
+    let x: Option<i64> = Option.Some(5);
     let y = x;
-    match y {
-        .Some(y_v) => println(f"some {y_v}"),
-        .None => println("none"),
-    }
+    match y { Option.Some(y_v) => println(f"some {y_v}"), None => println("none"), }
 }

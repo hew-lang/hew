@@ -9,7 +9,7 @@ fn main() {
     let v: Vec<Shape> = Vec.new();
     v.push(x);
     match v.get(0) {
-        Some(e) => {
+        Option.Some(e) => {
             match e {
                 Empty => println("empty"),
                 Circle(e_r) => println(f"circle {e_r}"),

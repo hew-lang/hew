@@ -12,7 +12,7 @@ fn main() {
     let m: HashMap<LocalPid<Echo>, i64> = HashMap.new();
     m.insert(k, 9);
     match m.get(k) {
-        Some(v) => println(f"got {v}"),
+        Option.Some(v) => println(f"got {v}"),
         None => println("missing"),
     }
 }

@@ -12,12 +12,12 @@ actor Holder {
 }
 
 fn main() {
-    let x: HashSet<i64> = HashSet.new();
+    let x: HashSet<i64> = HashSet::new();
     x.insert(1);
     x.insert(2);
     let h = spawn Holder(ready: false);
     match await h.hold(x) {
-        .Ok(n) => println(f"held {n}"),
-        .Err(_) => println("err"),
+        Result.Ok(n) => println(f"held {n}"),
+        Err(_) => println("err"),
     }
 }

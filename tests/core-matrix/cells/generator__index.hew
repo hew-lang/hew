@@ -1,6 +1,12 @@
 fn main() {
-    let a = gen { yield 1; yield 2; };
-    let b = gen { yield 2; yield 3; };
+    let a = gen {
+        yield 1;
+        yield 2;
+    };
+    let b = gen {
+        yield 2;
+        yield 3;
+    };
     let v: Vec<Generator<i64, ()>> = Vec.new();
     v.push(a);
     v.push(b);

@@ -1,14 +1,11 @@
 fn main() {
-    let x: Option<i64> = Some(5);
+    let x: Option<i64> = Option.Some(5);
     let m: HashMap<string, Option<i64>> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        .Some(e) => {
-            match e {
-                .Some(e_v) => println(f"some {e_v}"),
-                .None => println("none"),
-            }
+        Option.Some(e) => {
+            match e { Option.Some(e_v) => println(f"some {e_v}"), None => println("none"), }
         },
-        .None => println("missing"),
+        None => println("missing"),
     }
 }

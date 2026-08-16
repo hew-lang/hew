@@ -1,6 +1,6 @@
 #[resource]
 type Tok {
-    id: i64;
+    id: i64
 }
 
 impl Tok {
@@ -10,7 +10,7 @@ impl Tok {
 }
 
 fn run(early: bool) -> i64 {
-    let h: Option<Tok> = Some(Tok { id: 1 });
+    let h: Option<Tok> = Option.Some(Tok { id: 1 });
     if early {
         println("early");
         return 1;

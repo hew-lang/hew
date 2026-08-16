@@ -27,7 +27,7 @@ fn show_named(v: dyn Named) {
     println(s);
 }
 
-actor TestSink {
+actor Sink {
     var hits: i64;
 
     receive fn take(v: dyn Named) -> i64 {
@@ -39,9 +39,9 @@ actor TestSink {
 
 fn main() {
     let x: dyn Named = P { n: "p0" };
-    let s = spawn TestSink(hits: 0);
+    let s = spawn Sink(hits: 0);
     match await s.take(x) {
-        Ok(n) => println(f"hits {n}"),
+        Result.Ok(n) => println(f"hits {n}"),
         Err(_) => println("err"),
     }
 }

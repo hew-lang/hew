@@ -4,15 +4,12 @@ enum Colour {
 }
 
 fn main() {
-    let a: Colour = .Red;
-    let b: Colour = .Green;
+    let a: Colour = Red;
+    let b: Colour = Green;
     let v: Vec<Colour> = Vec.new();
     v.push(a);
     v.push(b);
     for e in v {
-        match e {
-            .Red => println("Red"),
-            .Green => println("Green"),
-        }
+        match e { Red => println("Red"), Green => println("Green"), }
     }
 }

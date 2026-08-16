@@ -1,14 +1,11 @@
 fn main() {
-    let x: Option<i64> = Some(5);
+    let x: Option<i64> = Option.Some(5);
     let v: Vec<Option<i64>> = Vec.new();
     v.push(x);
     match v.get(0) {
-        .Some(e) => {
-            match e {
-                .Some(e_v) => println(f"some {e_v}"),
-                .None => println("none"),
-            }
+        Option.Some(e) => {
+            match e { Option.Some(e_v) => println(f"some {e_v}"), None => println("none"), }
         },
-        .None => println("missing"),
+        None => println("missing"),
     }
 }

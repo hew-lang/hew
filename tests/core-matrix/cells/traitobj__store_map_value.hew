@@ -32,7 +32,7 @@ fn main() {
     let m: HashMap<string, dyn Named> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
+        Option.Some(e) => {
             show_named(e);
         },
         None => println("missing"),

@@ -1,13 +1,13 @@
 enum Shape {
     Empty;
     Circle(i64);
-    Rect { w: i64, h: i64 };
+    Rect { w: i64; h: i64 }
 }
 
 fn main() {
-    let a: Shape = .Circle(3);
-    let b: Shape = .Circle(3);
-    let c: Shape = .Circle(4);
+    let a: Shape = Circle(3);
+    let b: Shape = Circle(3);
+    let c: Shape = Circle(4);
     let same = a == b;
     let diff = a == c;
     println(f"{same} {diff}");

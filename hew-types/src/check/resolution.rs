@@ -1449,7 +1449,7 @@ impl Checker {
             span: first_infer_span_in_type_expr(annotation).unwrap_or_else(|| annotation.1.clone()),
             context: context.into(),
             hole_vars,
-            source_module: self.current_module.clone(),
+            source_module: self.current_diagnostic_source_module(),
         });
     }
 
@@ -1468,7 +1468,7 @@ impl Checker {
             actual: actual.clone(),
             target: target.clone(),
             target_hole_vars,
-            source_module: self.current_module.clone(),
+            source_module: self.current_diagnostic_source_module(),
         });
     }
 
@@ -1485,7 +1485,7 @@ impl Checker {
                 context: context.into(),
                 ty: ty.clone(),
                 more_specific_hole_vars,
-                source_module: self.current_module.clone(),
+                source_module: self.current_diagnostic_source_module(),
             });
     }
 

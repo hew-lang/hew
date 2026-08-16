@@ -9588,6 +9588,17 @@ impl Checker {
         (file != primary).then(|| file.display().to_string())
     }
 
+    /// Capture the source identity that diagnostic emission must use after the
+    /// current item frame has been cleared. Peer files need their path rather
+    /// than the assembled directory module's identity.
+    pub(super) fn current_diagnostic_source_module(&self) -> Option<String> {
+        self.item_file_routing_token(
+            self.current_module.as_deref(),
+            self.current_item_source.as_ref(),
+        )
+        .or_else(|| self.current_module.clone())
+    }
+
     /// Resolve one extern declaration against the single-owner table
     /// (rc1-F1 stage B): mint the symbol's contract, or run the canonicalized
     /// structural compare against the established one — adopt on agreement,

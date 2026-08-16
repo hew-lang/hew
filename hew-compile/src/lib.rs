@@ -4355,6 +4355,10 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "    }\n",
             "    default { state }\n",
             "}\n",
+            "\n",
+            "pub fn deferred_error() {\n",
+            "    let value: Vec<_> = [];\n",
+            "}\n",
         );
         write_source(&workflow_dir, "state.hew", peer_source);
 
@@ -4387,6 +4391,37 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             .count()
             + 1;
         assert_eq!(line, 6, "diagnostic must point at the deliberate error");
+
+        let inference = failure
+            .diagnostics
+            .iter()
+            .find_map(|diagnostic| match &diagnostic.kind {
+                FrontendDiagnosticKind::Type(error)
+                    if error.message.contains("cannot infer type") =>
+                {
+                    Some((diagnostic, error))
+                }
+                _ => None,
+            })
+            .expect("deferred inference diagnostic");
+        assert!(
+            inference
+                .0
+                .filename
+                .as_deref()
+                .is_some_and(|filename| filename.ends_with("workflow/state.hew")),
+            "deferred diagnostic must name the declaring peer, got {:?}",
+            inference.0.filename
+        );
+        let inference_line = peer_source[..inference.1.span.start]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1;
+        assert_eq!(
+            inference_line, 12,
+            "deferred diagnostic must point at the inference error"
+        );
     }
 
     #[test]

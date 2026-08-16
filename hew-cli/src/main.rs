@@ -453,16 +453,14 @@ fn mir_pointer_width(target: &target::TargetSpec) -> hew_mir::PointerWidth {
     }
 }
 
-/// `true` when `input` is the compiler's own `std/builtins.hew` substrate
-/// inside a Hew source checkout. Recognised by canonical path shape plus an
-/// enclosing checkout root (so an unrelated external `std/builtins.hew` is not
-/// matched). The substrate is pre-registered via `include_str!` and never
-/// compiled standalone, so `hew check` skips its HIR/MIR deep gates.
-fn is_embedded_stdlib_builtins(input: &str) -> bool {
+/// `true` when `input` is a compiler-owned, import-only stdlib substrate in a
+/// Hew source checkout. Recognised by canonical path shape plus an enclosing
+/// checkout root, so lookalike external paths cannot skip deep gates.
+fn is_embedded_stdlib_substrate(input: &str, source: &str) -> bool {
     let Ok(path) = std::path::Path::new(input).canonicalize() else {
         return false;
     };
-    if !path.ends_with("std/builtins.hew") {
+    if !path.ends_with(source) {
         return false;
     }
     hew_types::module_registry::find_enclosing_hew_root(&path).is_some()
@@ -474,15 +472,15 @@ fn run_check_deep_gates(
     state: &hew_compile::FileFrontendState,
     levels: &hew_types::LintLevels,
 ) -> Result<(), ()> {
-    // `std/builtins.hew` is the compiler's embedded builtin-surface substrate:
-    // it is consumed by the checker's builtins pre-registration (`include_str!`)
-    // and is never compiled as a standalone program. It carries inherent impls
-    // on builtin pid types (`LocalPid`/`RemotePid`) and `Display` blanket impls
-    // that route through the compiler-magic `to_string` — constructs the
-    // user-facing HIR/MIR deep gates correctly reject in user position. The
-    // type-check above already validated its declarations; the substrate has no
-    // standalone lowering to gate, so stop here.
-    if is_embedded_stdlib_builtins(input) {
+    // `std/builtins.hew` is compiler-embedded, while `std/prelude.hew` is an
+    // import-only authority manifest. Neither has a standalone lowering
+    // surface: the former is pre-registered by the checker and the latter's
+    // imports are consumed by later user programs. Their type-check above is
+    // authoritative, so do not lower their imported implementation bodies as
+    // though they belonged to a standalone executable.
+    if is_embedded_stdlib_substrate(input, "std/builtins.hew")
+        || is_embedded_stdlib_substrate(input, "std/prelude.hew")
+    {
         return Ok(());
     }
     let Some(tco) = state.typecheck_result.tco.as_ref() else {
@@ -2563,7 +2561,8 @@ fn exec_sibling_binary(binary_name: &str, extra_args: &[String]) -> ! {
 
 #[cfg(test)]
 mod version_tests {
-    use super::format_version;
+    use super::{format_version, is_embedded_stdlib_substrate};
+    use std::path::PathBuf;
 
     #[test]
     fn version_formats_present_git_metadata() {
@@ -2601,5 +2600,25 @@ mod version_tests {
                 "hash={hash:?}, dirty={dirty:?}"
             );
         }
+    }
+
+    #[test]
+    fn embedded_stdlib_substrates_require_their_canonical_checkout_path() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-cli is in the workspace root")
+            .to_path_buf();
+        assert!(is_embedded_stdlib_substrate(
+            &root.join("std/builtins.hew").display().to_string(),
+            "std/builtins.hew"
+        ));
+        assert!(is_embedded_stdlib_substrate(
+            &root.join("std/prelude.hew").display().to_string(),
+            "std/prelude.hew"
+        ));
+        assert!(!is_embedded_stdlib_substrate(
+            &root.join("std/prelude.hew").display().to_string(),
+            "std/builtins.hew"
+        ));
     }
 }

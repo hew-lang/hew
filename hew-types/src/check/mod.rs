@@ -745,6 +745,9 @@ impl Checker {
         // reference on later inputs, so suppress this lint for eval fragments.
         if !self.repl_fragment {
             for (key, (import_span, stored_module)) in &self.import_spans {
+                if self.is_canonical_prelude_manifest_import(stored_module.as_deref()) {
+                    continue;
+                }
                 if !self.used_modules.borrow().contains(key) {
                     self.warnings.push(TypeError {
                         severity: crate::error::Severity::Warning,
@@ -1449,6 +1452,13 @@ impl Checker {
         output.cycle_capable_actors = cycle_capable;
 
         output
+    }
+
+    /// The canonical prelude is an import-only authority manifest: its imports
+    /// are intentionally consumed by later user programs, not by its own body.
+    fn is_canonical_prelude_manifest_import(&self, stored_module: Option<&str>) -> bool {
+        stored_module == Some("std.prelude")
+            || (stored_module.is_none() && self.canonical_std_root_sources.contains("std.prelude"))
     }
 
     /// Validate the raw checker-authored ownership graph before following any

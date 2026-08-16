@@ -103,6 +103,18 @@ fn no_warn_underscore_prefix() {
 // Lint / warning regression tests
 // -----------------------------------------------------------------------
 
+#[test]
+fn canonical_prelude_manifest_imports_are_exempt_from_unused_imports() {
+    let mut checker = Checker::default();
+    checker
+        .canonical_std_root_sources
+        .insert("std.prelude".to_string());
+
+    assert!(checker.is_canonical_prelude_manifest_import(None));
+    assert!(checker.is_canonical_prelude_manifest_import(Some("std.prelude")));
+    assert!(!checker.is_canonical_prelude_manifest_import(Some("std.math")));
+}
+
 /// `set_repl_fragment` suppresses the four whole-program completeness lints
 /// (`UnusedImport`, `DeadCode`, `UnusedVariable`, `UnusedMut`) that misfire on
 /// a synthetic `hew eval` fragment, while the default checker still emits every

@@ -2300,7 +2300,8 @@ impl Checker {
             // Orphan rule check: if implementing a trait, either the type or the
             // trait must be defined in the current compilation unit.
             if let Some(tb) = &id.trait_bound {
-                let type_is_local = self.local_type_defs.contains(type_name);
+                let type_is_local = self.local_type_defs.contains(type_name)
+                    || self.intrinsic_type_is_local_to_builtin_surface(type_name);
                 // Route through the one canonical resolver: a trait reference is
                 // "local" exactly when it resolves to a local declaration (the
                 // resolver's local-shadow step), so the orphan-rule warning keys
@@ -2433,6 +2434,17 @@ impl Checker {
                 self.generic_ctx.pop();
             }
         }
+    }
+
+    /// Compiler-intrinsic types have no source declaration to seed
+    /// `local_type_defs`. Their canonical declarative surface owns their impls
+    /// for coherence purposes.
+    fn intrinsic_type_is_local_to_builtin_surface(&self, type_name: &str) -> bool {
+        self.checking_canonical_stdlib_source("std.builtins")
+            && (Ty::from_name(type_name).is_some()
+                || self
+                    .resolved_builtin_type(type_name)
+                    .is_some_and(|builtin| !builtin.requires_source_import()))
     }
 }
 

@@ -3090,6 +3090,90 @@ fn orphan_impl_emits_warning() {
 }
 
 #[test]
+fn canonical_builtin_surface_owns_intrinsic_impls_for_coherence() {
+    use hew_parser::ast::TraitBound;
+
+    let impl_decl = ImplDecl {
+        type_params: None,
+        trait_bound: Some(TraitBound {
+            name: "ExternalTrait".to_string(),
+            type_args: None,
+            assoc_type_bindings: vec![],
+        }),
+        target_type: (
+            TypeExpr::Named {
+                name: "Vec".to_string(),
+                type_args: None,
+            },
+            0..0,
+        ),
+        where_clause: None,
+        type_aliases: vec![],
+        methods: vec![],
+    };
+    let mut checker = Checker {
+        current_module: Some("std.builtins".to_string()),
+        ..Default::default()
+    };
+    checker
+        .canonical_std_module_sources
+        .insert("std.builtins".to_string());
+    checker.check_impl(&impl_decl, &(0..0));
+    let mut primitive_impl = impl_decl;
+    primitive_impl.target_type.0 = TypeExpr::Named {
+        name: "i8".to_string(),
+        type_args: None,
+    };
+    checker.check_impl(&primitive_impl, &(0..0));
+
+    assert!(
+        !checker
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == crate::error::TypeErrorKind::OrphanImpl),
+        "the canonical builtin surface owns intrinsic type impls: {:?}",
+        checker.warnings
+    );
+}
+
+#[test]
+fn noncanonical_builtin_spelling_does_not_own_intrinsic_impls() {
+    use hew_parser::ast::TraitBound;
+
+    let impl_decl = ImplDecl {
+        type_params: None,
+        trait_bound: Some(TraitBound {
+            name: "ExternalTrait".to_string(),
+            type_args: None,
+            assoc_type_bindings: vec![],
+        }),
+        target_type: (
+            TypeExpr::Named {
+                name: "Vec".to_string(),
+                type_args: None,
+            },
+            0..0,
+        ),
+        where_clause: None,
+        type_aliases: vec![],
+        methods: vec![],
+    };
+    let mut checker = Checker {
+        current_module: Some("std.builtins".to_string()),
+        ..Default::default()
+    };
+    checker.check_impl(&impl_decl, &(0..0));
+
+    assert!(
+        checker
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == crate::error::TypeErrorKind::OrphanImpl),
+        "a lookalike module must not gain intrinsic coherence authority"
+    );
+}
+
+#[test]
 fn local_type_impl_no_orphan_warning() {
     use hew_parser::ast::TraitBound;
     // Locally defined type: impl SomeExternalTrait for LocalType → no orphan warning

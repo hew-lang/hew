@@ -7400,7 +7400,7 @@ impl Checker {
             let segments = name.split('.').collect::<Vec<_>>();
             match segments.as_slice() {
                 [surface_type, variant] if self.env.lookup_ref(surface_type).is_none() => self
-                    .resolve_nominal_declaration(NominalOrigin::Lexical, surface_type)
+                    .source_nominal_declaration(surface_type)
                     .and_then(|canonical_type| {
                         self.lookup_type_def(&canonical_type)
                             .filter(|type_def| {

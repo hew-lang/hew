@@ -651,13 +651,6 @@ impl Checker {
                         }
                     }
 
-                    // Snapshot error/warning counts before body-checking this module.
-                    // Everything emitted during the body check that still has
-                    // `source_module: None` is tagged below with the module name,
-                    // so the CLI can route it to the correct source file.
-                    let err_before = self.errors.len();
-                    let warn_before = self.warnings.len();
-
                     // Builtin/standard-library modules (`std::`, `hew::`,
                     // `ecosystem::`) ship with the compiler; scope-level lints
                     // inside them (UnusedVariable, UnusedMut) are implementation
@@ -692,24 +685,43 @@ impl Checker {
                         self.current_module_idx = span_indices
                             .item_index(mod_id, item_idx)
                             .unwrap_or(self.current_module_idx);
+                        let diagnostic_source = self
+                            .item_file_routing_token(
+                                Some(&module_name),
+                                self.current_item_source.as_ref(),
+                            )
+                            .unwrap_or_else(|| module_name.clone());
+                        let err_before = self.errors.len();
+                        let warn_before = self.warnings.len();
                         self.check_item(item, span);
+
+                        // An assembled peer retains file-relative spans, so
+                        // tag each item's diagnostics before advancing to the
+                        // next file. Replace the aggregate module fallback as
+                        // well as an absent source, while preserving an
+                        // explicitly different diagnostic owner.
+                        for error in &mut self.errors[err_before..] {
+                            if error
+                                .source_module
+                                .as_deref()
+                                .is_none_or(|source| source == module_name)
+                            {
+                                error.source_module = Some(diagnostic_source.clone());
+                            }
+                        }
+                        for warning in &mut self.warnings[warn_before..] {
+                            if warning
+                                .source_module
+                                .as_deref()
+                                .is_none_or(|source| source == module_name)
+                            {
+                                warning.source_module = Some(diagnostic_source.clone());
+                            }
+                        }
                     }
                     self.current_item_source = None;
 
                     self.is_stdlib_source = saved_is_stdlib_source;
-
-                    // Tag diagnostics that were not already tagged (e.g. by a
-                    // nested call that already knew the origin).
-                    for e in &mut self.errors[err_before..] {
-                        if e.source_module.is_none() {
-                            e.source_module = Some(module_name.clone());
-                        }
-                    }
-                    for w in &mut self.warnings[warn_before..] {
-                        if w.source_module.is_none() {
-                            w.source_module = Some(module_name.clone());
-                        }
-                    }
 
                     self.local_type_defs = saved_local_type_defs;
                     self.source_type_defs = saved_source_type_defs;

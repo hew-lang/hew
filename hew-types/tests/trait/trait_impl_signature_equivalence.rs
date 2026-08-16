@@ -29,7 +29,7 @@ const ITER_TRAIT_PRELUDE: &str = r"
 pub trait Iterator {
     type Item;
 
-    fn next(self) -> Option<Self::Item>;
+    fn next(self) -> Option<Self.Item>;
 }
 ";
 
@@ -62,6 +62,172 @@ impl Iterator for Counter {{
     assert!(
         output.errors.is_empty(),
         "correct signature must not emit TraitImplSignatureMismatch; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn impl_projects_direct_dotted_associated_return_type() {
+    let src = r"
+pub trait Source {
+    type Item;
+    fn item(self) -> Self.Item;
+}
+
+pub type Counter {
+    n: i64;
+}
+
+impl Source for Counter {
+    type Item = i64;
+    fn item(counter: Counter) -> i64 {
+        counter.n
+    }
+}
+";
+    let output = typecheck_isolated(src);
+    assert!(
+        output.errors.is_empty(),
+        "direct `Self.Item` must project through the impl binding; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn primitive_impl_targets_project_dotted_associated_types() {
+    let src = r"
+pub trait Container {
+    type Item;
+    fn item(self) -> Self.Item;
+}
+
+impl Container for i64 {
+    type Item = i64;
+    fn item(value: i64) -> i64 { value }
+}
+
+impl Container for bool {
+    type Item = bool;
+    fn item(value: bool) -> bool { value }
+}
+
+impl Container for string {
+    type Item = string;
+    fn item(value: string) -> string { value }
+}
+";
+    let output = typecheck_isolated(src);
+    assert!(
+        output.errors.is_empty(),
+        "flat primitive impl targets must project through their constructor binding; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn impl_projects_associated_type_inside_tuple() {
+    let src = r"
+pub trait Pairing {
+    type Item;
+    fn pair(self) -> (Self.Item, bool);
+}
+
+pub type Counter {
+    n: i64;
+}
+
+impl Pairing for Counter {
+    type Item = i64;
+    fn pair(counter: Counter) -> (i64, bool) {
+        (counter.n, true)
+    }
+}
+";
+    let output = typecheck_isolated(src);
+    assert!(
+        output.errors.is_empty(),
+        "tuple children must retain associated-type projection; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_applied_impl_projects_deeper_generic_composition() {
+    let src = r"
+pub trait Container {
+    type Item;
+    fn items(self) -> Vec<Option<Self.Item>>;
+}
+
+pub type Boxed<T> {
+    value: T;
+}
+
+impl<T> Container for Boxed<T> {
+    type Item = T;
+    fn items(value: Boxed<T>) -> Vec<Option<T>> {
+        [Some(value.value)]
+    }
+}
+";
+    let output = typecheck_isolated(src);
+    assert!(
+        output.errors.is_empty(),
+        "a generic-applied impl target must project through Vec<Option<Self.Item>>; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn nested_generic_associated_type_mismatch_is_rejected() {
+    let src = r"
+pub trait Container {
+    type Item;
+    fn item(self) -> Option<Self.Item>;
+}
+
+pub type Counter {
+    n: i64;
+}
+
+impl Container for Counter {
+    type Item = i64;
+    fn item(counter: Counter) -> Option<string> {
+        None
+    }
+}
+";
+    let output = typecheck_isolated(src);
+    assert!(
+        has_trait_impl_sig_mismatch(&output, "return type"),
+        "Option<string> must not match required Option<Self.Item> when Item = i64; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn impl_projects_dotted_generic_binding_in_associated_parameter() {
+    let src = r"
+pub trait Message {
+    type Body;
+}
+
+pub trait Sender {
+    type Body;
+    fn send(self, body: Self.Body);
+}
+
+pub type LocalSender<T> {}
+
+impl<T: Message> Sender for LocalSender<T> {
+    type Body = T.Body;
+    fn send(sender: LocalSender<T>, body: Self.Body) {}
+}
+";
+    let output = typecheck_isolated(src);
+    assert!(
+        output.errors.is_empty(),
+        "dotted generic and Self projections must share canonical carriers; got: {:#?}",
         output.errors
     );
 }

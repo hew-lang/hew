@@ -7804,20 +7804,18 @@ impl Checker {
     /// * `Ty::Named { name: "Self", args: [] }` → `impl_self`
     /// * `Ty::Named { name: <trait type param>, args: [] }` → the impl-supplied
     ///   type arg from `trait_param_map`
-    /// * `Ty::AssocType { base: Self, trait_name == trait_name, assoc_name }`
-    ///   → the impl's `type <assoc_name> = X` binding when present
+    /// * `Ty::AssocType { base: Self, .. }` → a concrete projection carrier
+    ///   over `impl_self`, then resolves it through `project_assoc_types`
     ///
     /// Used by [`Self::check_impl_method_against_trait`] to project the trait
     /// method's declared signature into the concrete shape the impl method
     /// must match. Returns the input unchanged for any subterm the
-    /// substitution cannot resolve (so comparison errs on the side of
-    /// accepting rather than firing on partial information).
+    /// substitution cannot resolve, so the later structural comparison remains
+    /// fail-closed instead of guessing from presentation spellings.
     fn substitute_trait_sig_for_impl(
         &self,
         ty: &Ty,
         impl_self: &Ty,
-        impl_target_name: &str,
-        trait_name: &str,
         trait_param_map: &HashMap<String, Ty>,
     ) -> Ty {
         match ty {
@@ -7833,38 +7831,15 @@ impl Checker {
                 trait_name: tn,
                 assoc_name,
             } => {
-                let base_is_self = matches!(&**base, Ty::Named { name, args, .. } if name == "Self" && args.is_empty());
-                if base_is_self && tn.as_ref() == trait_name {
-                    let key = (
-                        impl_target_name.to_string(),
-                        trait_name.to_string(),
-                        assoc_name.as_ref().to_string(),
-                    );
-                    if let Some(resolved) = self.impl_assoc_type_bindings.get(&key) {
-                        return resolved.clone();
-                    }
-                }
-                let new_base = self.substitute_trait_sig_for_impl(
-                    base,
-                    impl_self,
-                    impl_target_name,
-                    trait_name,
-                    trait_param_map,
-                );
-                Ty::AssocType {
+                let new_base = self.substitute_trait_sig_for_impl(base, impl_self, trait_param_map);
+                self.project_assoc_types(&Ty::AssocType {
                     base: Box::new(new_base),
                     trait_name: tn.clone(),
                     assoc_name: assoc_name.clone(),
-                }
+                })
             }
             _ => ty.map_children_pub(&|child| {
-                self.substitute_trait_sig_for_impl(
-                    child,
-                    impl_self,
-                    impl_target_name,
-                    trait_name,
-                    trait_param_map,
-                )
+                self.substitute_trait_sig_for_impl(child, impl_self, trait_param_map)
             }),
         }
     }
@@ -8752,12 +8727,6 @@ impl Checker {
             },
         );
 
-        // The DECLARING trait's canonical key drives `Self::Assoc` projection
-        // and associated-type-binding lookup. For an inline supermethod this is
-        // the exact supertrait owner that declared the associated type, not the
-        // sub-trait spelling written in the impl.
-        let declaring_trait_name = declaring_key.clone();
-
         // Build trait-type-param substitution map.
         let mut trait_param_map: HashMap<String, Ty> = HashMap::new();
         if let Some(args) = trait_bound.type_args.as_ref() {
@@ -8823,13 +8792,7 @@ impl Checker {
             .params
             .iter()
             .map(|p| {
-                let projected = self.substitute_trait_sig_for_impl(
-                    p,
-                    &impl_self,
-                    &impl_self_name,
-                    &declaring_trait_name,
-                    &trait_param_map,
-                );
+                let projected = self.substitute_trait_sig_for_impl(p, &impl_self, &trait_param_map);
                 Self::rename_method_type_params(
                     &projected,
                     trait_method.type_params.as_ref(),
@@ -8841,8 +8804,6 @@ impl Checker {
             let projected = self.substitute_trait_sig_for_impl(
                 &trait_sig.return_type,
                 &impl_self,
-                &impl_self_name,
-                &declaring_trait_name,
                 &trait_param_map,
             );
             Self::rename_method_type_params(

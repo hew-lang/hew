@@ -114,7 +114,7 @@ mod wasm_rejects {
 
     #[test]
     fn wasm_warns_sleep_until() {
-        let output = check_wasm("fn main() { let t = instant::now(); sleep_until(t); }");
+        let output = check_wasm("fn main() { let t = instant.now(); sleep_until(t); }");
         assert!(
             has_platform_limitation_warning(&output),
             "sleep_until should emit a PlatformLimitation warning on WASM; got warnings: {:?}",
@@ -649,24 +649,24 @@ mod wasm_rejects {
     fn wasm_rejects_native_rc1_resource_modules() {
         let cases = [
             (
-                "std::net::http",
+                "std.net.http",
                 "http.listen(\"127.0.0.1:0\")",
                 "HTTP server operations",
             ),
             (
-                "std::process",
+                "std.process",
                 "process.run(\"echo hew\")",
                 "Process execution operations",
             ),
             (
-                "std::net::smtp",
+                "std.net.smtp",
                 "smtp.connect(\"127.0.0.1\", 25, \"\", \"\")",
-                "std::net::smtp operations",
+                "std.net.smtp operations",
             ),
         ];
 
         for (module, expression, diagnostic_name) in cases {
-            let short_name = module.rsplit("::").next().expect("module short name");
+            let short_name = module.rsplit('.').next().expect("module short name");
             let source =
                 format!("import {module};\nfn main() {{ let _resource = {expression}; }}\n");
             let output = check_wasm_with_registry(&source);
@@ -1536,7 +1536,7 @@ fn main() {
             actor Crasher {
                 #[on(crash)]
                 fn on_crash(info: CrashInfo) -> CrashAction {
-                    CrashAction::Restart
+                    CrashAction.Restart
                 }
             }
 
@@ -1744,7 +1744,7 @@ fn main() {
 
     #[test]
     fn wasm_rejects_node_start() {
-        let output = check_wasm(r#"fn main() { Node::start("a@127.0.0.1:9000"); }"#);
+        let output = check_wasm(r#"fn main() { Node.start("a@127.0.0.1:9000"); }"#);
         assert!(
             has_platform_limitation_error(&output),
             "Node::start should be a compile-time error on WASM; got errors: {:?}",
@@ -1759,7 +1759,7 @@ fn main() {
 
     #[test]
     fn wasm_rejects_node_connect() {
-        let output = check_wasm(r#"fn main() { Node::connect("b@127.0.0.1:9001"); }"#);
+        let output = check_wasm(r#"fn main() { Node.connect("b@127.0.0.1:9001"); }"#);
         assert!(
             platform_error_contains(&output, "Distributed node"),
             "Node::connect should be a Distributed-node WASM error; got: {:?}",
@@ -1769,7 +1769,7 @@ fn main() {
 
     #[test]
     fn wasm_rejects_node_load_keys() {
-        let output = check_wasm(r#"fn main() { Node::load_keys("/keys/node.pem"); }"#);
+        let output = check_wasm(r#"fn main() { Node.load_keys("/keys/node.pem"); }"#);
         assert!(
             platform_error_contains(&output, "Distributed node"),
             "Node::load_keys should be a Distributed-node WASM error; got: {:?}",
@@ -1785,8 +1785,8 @@ fn main() {
             "actor Worker { receive fn ping() {} }\n",
             "fn main() {\n",
             "    let w = spawn Worker;\n",
-            "    Node::register(\"w\", w);\n",
-            "    let _ = Node::lookup<Worker>(\"w\");\n",
+            "    Node.register(\"w\", w);\n",
+            "    let _ = Node.lookup<Worker>(\"w\");\n",
             "}\n",
         );
         let output = check_wasm(source);
@@ -1809,9 +1809,9 @@ fn main() {
     fn native_node_calls_no_platform_error() {
         let source = concat!(
             "fn main() {\n",
-            "    Node::start(\"a@127.0.0.1:9000\");\n",
-            "    Node::connect(\"b@127.0.0.1:9001\");\n",
-            "    Node::load_keys(\"/keys/node.pem\");\n",
+            "    Node.start(\"a@127.0.0.1:9000\");\n",
+            "    Node.connect(\"b@127.0.0.1:9001\");\n",
+            "    Node.load_keys(\"/keys/node.pem\");\n",
             "}\n",
         );
         let output = check_native(source);

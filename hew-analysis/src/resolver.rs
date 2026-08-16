@@ -181,20 +181,17 @@ pub fn resolve_symbol_at_raw(
     }
 
     // ── Module-qualified identifier ──────────────────────────────────
-    for separator in [".", "::"] {
-        if let Some((prefix, tail)) = word.split_once(separator) {
-            if !prefix.is_empty() && !tail.is_empty() {
-                // The exact character at the cursor relative to the
-                // separator tells us which side to prefer when the caller
-                // asks for a definition.
-                let cursor_on_tail = offset_is_on_tail(source, offset, &word, separator);
-                return Some(Resolution::ModuleQualified {
-                    uri: uri.to_string(),
-                    prefix: prefix.to_string(),
-                    tail: tail.to_string(),
-                    cursor_on_tail,
-                });
-            }
+    if let Some((prefix, tail)) = word.split_once('.') {
+        if !prefix.is_empty() && !tail.is_empty() {
+            // The exact character at the cursor relative to the dot tells us
+            // which side to prefer when the caller asks for a definition.
+            let cursor_on_tail = offset_is_on_tail(source, offset, &word, ".");
+            return Some(Resolution::ModuleQualified {
+                uri: uri.to_string(),
+                prefix: prefix.to_string(),
+                tail: tail.to_string(),
+                cursor_on_tail,
+            });
         }
     }
 
@@ -554,11 +551,11 @@ mod tests {
 
     #[test]
     fn module_qualified_exposes_prefix_and_tail() {
-        // `Counter::new` is a module-qualified name. The resolver may not
+        // `Counter.new` is a module-qualified name. The resolver may not
         // find a local definition for the whole word, so it surfaces
         // ModuleQualified with both halves.
-        let source = "fn main() { Counter::new() }\n";
-        let offset = source.find("Counter::new").unwrap() + "Counter::".len();
+        let source = "fn main() { Counter.new() }\n";
+        let offset = source.find("Counter.new").unwrap() + "Counter.".len();
         let resolution = resolve(source, offset).unwrap();
         match resolution {
             Resolution::ModuleQualified {
@@ -571,7 +568,7 @@ mod tests {
                 assert_eq!(tail, "new");
                 assert!(
                     cursor_on_tail,
-                    "cursor placed after :: should be flagged on tail"
+                    "cursor placed after the dot should be flagged on tail"
                 );
             }
             other => panic!("expected ModuleQualified, got {other:?}"),

@@ -1460,12 +1460,12 @@ type Worker {
             else_if_local
         } else {
             match result {
-                Result::Ok(ok_value) => {
+                Result.Ok(ok_value) => {
                     let Point { x, y: y_value } = point;
                     let match_local = ok_value + x + y_value;
                     match_local
                 },
-                Result::Err(err_a) | Result::Err(err_b) => {
+                Result.Err(err_a) | Result.Err(err_b) => {
                     err_a + err_b
                 },
             }
@@ -1475,7 +1475,7 @@ type Worker {
 
 impl Worker {
     fn apply(code: i32, result: Result) -> i32 {
-        let Result::Ok(inner) = result;
+        let Result.Ok(inner) = result;
         inner + code
     }
 }
@@ -4404,9 +4404,8 @@ machine Traffic {
     }
 
     #[test]
-    fn cross_file_goto_glob_import_resolves_to_open_document() {
-        // `import counter::*` — any name can come from counter.hew.
-        let main_source = "import counter.*;\nfn main() {}";
+    fn cross_file_goto_selected_import_resolves_to_open_document() {
+        let main_source = "import counter.{ Counter };\nfn main() {}";
         let counter_source = "type Counter { value: i32 }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -4419,7 +4418,7 @@ machine Traffic {
         let imports = collect_imports(main_source);
         let result = find_cross_file_definition(&main_uri, &imports, "Counter", &documents);
 
-        assert!(result.is_some(), "glob import should resolve Counter");
+        assert!(result.is_some(), "selected import should resolve Counter");
         let (uri, _range) = result.unwrap();
         assert_eq!(uri, counter_uri);
     }
@@ -7506,7 +7505,7 @@ machine Traffic {
 
     // ── Group D: Match enum — pattern-binding hover ───────────────────────────
 
-    /// `r` in `Shape::Circle(r)` is a constructor-pattern binding.
+    /// `r` in `Shape.Circle(r)` is a constructor-pattern binding.
     /// `hover_pattern_binding` must resolve its type from the `Circle(i64)`
     /// variant definition and surface `r: i64`.
     #[test]
@@ -7514,9 +7513,9 @@ machine Traffic {
         let source = include_str!("../../tests/fixtures/v05_match_enum_variant.hew");
         // Position inside the constructor pattern, not the arm body.
         let offset = source
-            .find("Shape::Circle(r)")
+            .find("Shape.Circle(r)")
             .expect("Circle pattern in match arm")
-            + "Shape::Circle(".len();
+            + "Shape.Circle(".len();
         assert_v05_hover_contains("v05_match_enum_variant", source, offset, "r: i64");
     }
 

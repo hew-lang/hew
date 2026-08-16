@@ -1210,7 +1210,7 @@ impl Checker {
                     TypeErrorKind::InvalidOperation,
                     span_key.start..span_key.end,
                     format!(
-                        "internal compiler error: builtin {}::{} is missing runtime rewrite metadata",
+                        "internal compiler error: builtin {}.{} is missing runtime rewrite metadata",
                         entry.handle_kind, entry.method
                     ),
                 );
@@ -2012,7 +2012,7 @@ impl Checker {
             TypeErrorKind::InvalidOperation,
             span,
             format!(
-                "internal compiler error: builtin {builtin}::{method} is missing {item} metadata"
+                "internal compiler error: builtin {builtin}.{method} is missing {item} metadata"
             ),
         );
     }
@@ -4119,7 +4119,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::ArityMismatch,
                         span,
-                        "Duplex::send expects one argument (the message)".to_string(),
+                        "Duplex.send expects one argument (the message)".to_string(),
                     );
                 }
                 // Synthesize extra args for recovery diagnostics.
@@ -4151,7 +4151,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::ArityMismatch,
                         span,
-                        "Duplex::try_send expects one argument (the message)".to_string(),
+                        "Duplex.try_send expects one argument (the message)".to_string(),
                     );
                 }
                 for arg in args.iter().skip(1) {
@@ -4298,7 +4298,7 @@ impl Checker {
                         TypeErrorKind::ArityMismatch,
                         span,
                         format!(
-                            "LambdaPid::send expects one argument (the message), but {} were supplied",
+                            "LambdaPid.send expects one argument (the message), but {} were supplied",
                             args.len()
                         ),
                     );
@@ -4342,7 +4342,7 @@ impl Checker {
                         TypeErrorKind::ArityMismatch,
                         span,
                         format!(
-                            "LambdaPid::close expects no arguments, but {} were supplied",
+                            "LambdaPid.close expects no arguments, but {} were supplied",
                             args.len()
                         ),
                     );
@@ -4759,7 +4759,7 @@ impl Checker {
                     span,
                     format!(
                         "`{}` does not satisfy the required bounds for \
-                         `{trait_name}::{method}` ({bound_summary})",
+                         `{trait_name}.{method}` ({bound_summary})",
                         witness_ty.user_facing()
                     ),
                 );
@@ -4775,7 +4775,7 @@ impl Checker {
                     span,
                     format!(
                         "internal compiler error: collection resolver could \
-                         not locate `{trait_name}::{method}` for receiver \
+                         not locate `{trait_name}.{method}` for receiver \
                          `{receiver:?}`"
                     ),
                 );
@@ -5385,7 +5385,7 @@ impl Checker {
             return self.collection_method_fallback(kind, cx, method, args, span);
         };
         if let Some(arity) = desc.arity {
-            self.check_arity(args, arity, &format!("`{}::{method}`", kind.name()), span);
+            self.check_arity(args, arity, &format!("`{}.{method}`", kind.name()), span);
         }
         if !self.check_collection_args(kind, desc.arg_templates, cx, args, span) {
             return Ty::Error;
@@ -5656,12 +5656,12 @@ impl Checker {
             .unwrap_or(Ty::Var(TypeVar::fresh()));
         match method {
             "clone" => {
-                self.check_arity(args, 0, "`Weak::clone`", span);
+                self.check_arity(args, 0, "`Weak.clone`", span);
                 self.record_rc_intrinsic(span, RcIntrinsicOp::WeakClone, &inner_ty);
                 Ty::weak(inner_ty)
             }
             "upgrade" => {
-                self.check_arity(args, 0, "`Weak::upgrade`", span);
+                self.check_arity(args, 0, "`Weak.upgrade`", span);
                 self.record_rc_intrinsic(span, RcIntrinsicOp::WeakUpgrade, &inner_ty);
                 Ty::option(Ty::rc(inner_ty))
             }
@@ -7242,7 +7242,7 @@ impl Checker {
             trailing_args,
             span,
             SignatureArgApplication::PositionalOnly {
-                arity_context: format!("method `{trait_name}::{method_name}`"),
+                arity_context: format!("method `{trait_name}.{method_name}`"),
             },
             true,
         );
@@ -7640,6 +7640,22 @@ impl Checker {
             ) {
                 self.mark_resolved_nominal_owner_used(&head.canonical_type);
                 return result;
+            }
+            let source_member = format!("{}.{method}", head.canonical_type);
+            if !self.fn_sigs.contains_key(&source_member) {
+                for arg in args {
+                    let (expr, arg_span) = arg.expr();
+                    self.synthesize(expr, arg_span);
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedFunction,
+                    span,
+                    format!(
+                        "undefined static function `{}.{method}`",
+                        head.canonical_type
+                    ),
+                );
+                return Ty::Error;
             }
         }
         // Module-qualified calls: e.g. http.listen(addr) → lookup "http.listen" in fn_sigs
@@ -9265,7 +9281,7 @@ impl Checker {
                             return Ty::Error;
                         };
                         if !self.inside_await_expr {
-                            self.warn_if_blocking_in_receive_fn("Receiver::recv", span);
+                            self.warn_if_blocking_in_receive_fn("Receiver.recv", span);
                         }
                         if matches!(resolved_inner, Ty::Var(_)) {
                             // No argument to unify against — the return-type
@@ -9381,9 +9397,9 @@ impl Checker {
                 let elem_ty = range_args.first().cloned().unwrap_or(Ty::I64);
                 let range_ty = Ty::range(elem_ty.clone());
                 if method == "rev" {
-                    self.check_arity(args, 0, "`Range::rev`", span);
+                    self.check_arity(args, 0, "`Range.rev`", span);
                 } else {
-                    self.check_arity(args, 1, "`Range::step_by`", span);
+                    self.check_arity(args, 1, "`Range.step_by`", span);
                     if let Some(arg) = args.first() {
                         let (expr, sp) = arg.expr();
                         // The stride is counted in the range's element type so a
@@ -10090,7 +10106,7 @@ impl Checker {
                                 self.env.mark_written(n);
                                 self.reject_private_param_mutable_receiver_call(
                                     n,
-                                    &format!("trait method `{declaring_trait}::{method}`"),
+                                    &format!("trait method `{declaring_trait}.{method}`"),
                                     span,
                                 );
                             }
@@ -10141,7 +10157,7 @@ impl Checker {
                             .map_or_else(
                                 || CallTarget::Unsupported {
                                     reason: format!(
-                                        "trait method `{declaring_trait}::{method}` has no registered declaration identity"
+                                        "trait method `{declaring_trait}.{method}` has no registered declaration identity"
                                     ),
                                 },
                                 |(declaring_trait, method)| CallTarget::StaticTraitMethod {
@@ -10407,7 +10423,7 @@ impl Checker {
                                     .map_or_else(
                                         || CallTarget::Unsupported {
                                             reason: format!(
-                                                "dynamic trait method `{}::{method}` has no registered declaration identity",
+                                                "dynamic trait method `{}.{method}` has no registered declaration identity",
                                                 bound.trait_name
                                             ),
                                         },

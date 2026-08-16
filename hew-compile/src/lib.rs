@@ -2286,7 +2286,7 @@ mod tests {
             impl ActorMsg for Echo { type Msg = i64; type Reply = i64; }
             actor Client {
                 receive fn go(unused: i64) {
-                    let found: Result<RemotePid<Echo>, LookupError> = Node::lookup("echo");
+                    let found: Result<RemotePid<Echo>, LookupError> = Node.lookup("echo");
                     match found {
                         Ok(peer) => { let reply = peer.ask(7, 1000); },
                         Err(_) => {},

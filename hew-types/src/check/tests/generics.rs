@@ -337,11 +337,11 @@ fn return_type_polymorphic_call_records_call_type_args() {
     let source = r"
         type Stack<T> { items: Vec<T>; }
         impl<T> Stack<T> {
-            fn new() -> Stack<T> { Stack { items: Vec::new() } }
+            fn new() -> Stack<T> { Stack { items: Vec.new() } }
         }
-        fn new_stack<T>() -> Stack<T> { Stack { items: Vec::new() } }
+        fn new_stack<T>() -> Stack<T> { Stack { items: Vec.new() } }
         fn main() {
-            let a: Stack<i64> = Stack::new();
+            let a: Stack<i64> = Stack.new();
             let b: Stack<string> = new_stack();
         }
     ";
@@ -3274,7 +3274,7 @@ fn record_init_type_args_enum_struct_variant_fully_bound() {
             Right { err: E };
         }
         fn main() {
-            let _x: Either<i64, string> = Either::Left { value: 1 };
+            let _x: Either<i64, string> = Either.Left { value: 1 };
         }
     ";
     let tco = check_source(source);
@@ -3295,7 +3295,7 @@ fn record_init_type_args_enum_struct_variant_partial_inference_pruned() {
             Left { value: T };
             Right { err: E };
         }
-        fn main() { let _x = Either::Left { value: 42 }; }
+        fn main() { let _x = Either.Left { value: 42 }; }
     ";
     let tco = check_source(source);
     // The source emits an InferenceFailed error for `_x` (E unresolved) — we
@@ -3482,7 +3482,7 @@ fn generic_decl_bound_rejects_enum_tuple_variant_constructor_site() {
             None;
         }
         fn main() {
-            let _maybe = Maybe::Some(NoDisplay { n: 1 });
+            let _maybe = Maybe.Some(NoDisplay { n: 1 });
         }
         ",
     );
@@ -3498,7 +3498,7 @@ fn generic_decl_bound_rejects_enum_struct_variant_constructor_site() {
             None;
         }
         fn main() {
-            let _maybe = Maybe::Some { value: NoDisplay { n: 1 } };
+            let _maybe = Maybe.Some { value: NoDisplay { n: 1 } };
         }
         ",
     );

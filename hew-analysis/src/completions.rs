@@ -351,15 +351,15 @@ fn try_enum_variant_completions(
     offset: usize,
 ) -> Option<Vec<CompletionItem>> {
     let bytes = source.as_bytes();
-    let mut colon_pos = offset;
-    while colon_pos > 0 && bytes[colon_pos - 1].is_ascii_whitespace() {
-        colon_pos -= 1;
+    let mut dot_pos = offset;
+    while dot_pos > 0 && bytes[dot_pos - 1].is_ascii_whitespace() {
+        dot_pos -= 1;
     }
-    if colon_pos < 2 || &bytes[colon_pos - 2..colon_pos] != b"::" {
+    if dot_pos == 0 || bytes[dot_pos - 1] != b'.' {
         return None;
     }
 
-    let type_name = extract_type_name_before(source, colon_pos - 2)?;
+    let type_name = extract_type_name_before(source, dot_pos - 1)?;
     let tc = type_output?;
     let type_def = method_resolution::lookup_type_def(&tc.type_defs, type_name)?;
     if type_def.kind != TypeDefKind::Enum {
@@ -1271,7 +1271,7 @@ trait MatcherMethods {
 }
 impl MatcherMethods for Matcher {
     fn captures(m: Matcher, input: string) -> Caps { Caps { count: 0 } }
-    fn find_all(m: Matcher, input: string) -> Vec<string> { Vec::new() }
+    fn find_all(m: Matcher, input: string) -> Vec<string> { Vec.new() }
 }
 fn probe(mat: Matcher, s: string) {
     let c = mat.captures(s);
@@ -1448,7 +1448,7 @@ fn example() {
 }
 
 fn example() {
-    let color = Color::/*cursor*/Blue;
+    let color = Color./*cursor*/Blue;
 }";
         let tc = type_check(&source.replace(CURSOR, ""));
         let labels: Vec<_> = items_at_cursor(source, Some(&tc))
@@ -1469,7 +1469,7 @@ fn example() {
 }
 
 fn example() {
-    let point = Point::/*cursor*/new();
+    let point = Point./*cursor*/new();
 }";
         let tc = type_check(&source.replace(CURSOR, ""));
         let labels: Vec<_> = items_at_cursor(source, Some(&tc))
@@ -1485,7 +1485,7 @@ fn example() {
     #[test]
     fn enum_variant_completions_do_not_fire_for_unknown_type() {
         let source = r"fn example() {
-    let value = Unknown::/*cursor*/Missing;
+    let value = Unknown./*cursor*/Missing;
 }";
         let tc = type_check(&source.replace(CURSOR, ""));
         let labels: Vec<_> = items_at_cursor(source, Some(&tc))
@@ -1493,7 +1493,7 @@ fn example() {
             .map(|item| item.label)
             .collect();
 
-        assert!(labels.iter().any(|label| label == "fn"));
+        assert!(labels.is_empty());
         assert!(!labels.iter().any(|label| label == "Missing"));
     }
 
@@ -1506,7 +1506,7 @@ fn example() {
 }
 
 fn example() {
-    let color = Color::/*cursor*/Blue;
+    let color = Color./*cursor*/Blue;
 }";
         let tc = type_check(&source.replace(CURSOR, ""));
         let items = items_at_cursor(source, Some(&tc));

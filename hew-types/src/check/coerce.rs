@@ -134,7 +134,7 @@ impl Checker {
                     },
                     span,
                     format!(
-                        "could not project associated type `<{} as {trait_name}>::{assoc_name}` while checking `dyn {trait_name}<{assoc_name} = {}>`; ensure the impl for `{}` defines `type {assoc_name} = ...`",
+                        "could not project associated type `<{} as {trait_name}>.{assoc_name}` while checking `dyn {trait_name}<{assoc_name} = {}>`; ensure the impl for `{}` defines `type {assoc_name} = ...`",
                         concrete_type.user_facing(),
                         binding_ty.user_facing(),
                         concrete_type.user_facing()
@@ -150,7 +150,7 @@ impl Checker {
                     },
                     span,
                     format!(
-                        "`dyn {trait_name}<{assoc_name} = {}>` does not match `{}`'s impl binding `{trait_name}::{assoc_name} = {}`",
+                        "`dyn {trait_name}<{assoc_name} = {}>` does not match `{}`'s impl binding `{trait_name}.{assoc_name} = {}`",
                         binding_ty.user_facing(),
                         concrete_type.user_facing(),
                         projected.user_facing()
@@ -646,7 +646,7 @@ impl Checker {
                 // the checker metadata is internally inconsistent; fabricating
                 // an empty signature would poison the vtable.
                 unreachable!(
-                    "trait method `{trait_name}::{}` is listed in trait_defs but is not resolvable",
+                    "trait method `{trait_name}.{}` is listed in trait_defs but is not resolvable",
                     method.name
                 );
             };

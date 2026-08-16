@@ -2413,7 +2413,7 @@ impl Checker {
             .map_or_else(
                 || crate::check::dispatch::CallTarget::Unsupported {
                     reason: format!(
-                        "dynamic trait method `{trait_name}::at` has no registered declaration identity"
+                        "dynamic trait method `{trait_name}.at` has no registered declaration identity"
                     ),
                 },
                 |(declaring_trait, method)| crate::check::dispatch::CallTarget::DynamicVtable {
@@ -3114,7 +3114,7 @@ impl Checker {
                         TypeErrorKind::PathKindMismatch,
                         span,
                         format!(
-                            "E_PATH_KIND_MISMATCH: variant `{owner}::{}` does not use this constructor form",
+                            "E_PATH_KIND_MISMATCH: variant `{owner}.{}` does not use this constructor form",
                             context.name
                         ),
                     );
@@ -5339,6 +5339,27 @@ impl Checker {
                     self.check_expr_is_rc_param_return(e, s, scopes);
                 }
             }
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } if self
+                .dotted_static_aggregate_identity(&receiver.0, method)
+                .is_some() =>
+            {
+                let identity = self
+                    .dotted_static_aggregate_identity(&receiver.0, method)
+                    .expect("guarded by a successful static aggregate lookup");
+                if crate::runtime_call::RuntimeCallFamily::from_checker_signature(&identity)
+                    == Some(crate::runtime_call::RuntimeCallFamily::RcNew)
+                {
+                    return;
+                }
+                for arg in args {
+                    let (e, s) = arg.expr();
+                    self.check_expr_is_rc_param_return(e, s, scopes);
+                }
+            }
             // Tuple literals: (r, 0), (r,) embed the borrowed Rc param.
             Expr::Tuple(elems) => {
                 for (e, s) in elems {
@@ -5424,6 +5445,24 @@ impl Checker {
         // User enum / struct tuple-variant constructors, resolved by name
         // (any casing) rather than an uppercase-first heuristic.
         self.lookup_variant_constructor(name).is_some()
+    }
+
+    /// Return the checker identity for a dotted static call whose receiver is
+    /// a declared type, rather than a value binding. Dotted variant/static
+    /// calls parse as `MethodCall`, so the escape scanner must classify this
+    /// shape alongside the internal qualified `Call` representation.
+    fn dotted_static_aggregate_identity(&self, receiver: &Expr, method: &str) -> Option<String> {
+        let Expr::Identifier(owner) = receiver else {
+            return None;
+        };
+        if self.env.lookup_ref(owner).is_some() {
+            return None;
+        }
+        let identity = format!("{owner}::{method}");
+        (self.lookup_variant_constructor(&identity).is_some()
+            || self.source_nominal_declaration(owner).is_some()
+            || crate::lookup_builtin_type(owner).is_some())
+        .then_some(identity)
     }
 
     /// Return the nearest visible dangerous Rc binding for `name`.
@@ -5557,6 +5596,30 @@ impl Checker {
                         if crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
                             == Some(crate::runtime_call::RuntimeCallFamily::RcNew)
                 ) {
+                    return None;
+                }
+                for arg in args {
+                    let (e, _) = arg.expr();
+                    if let Some(hit) = self.dangerous_source_in_expr(e, scopes) {
+                        return Some(hit);
+                    }
+                }
+                None
+            }
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } if self
+                .dotted_static_aggregate_identity(&receiver.0, method)
+                .is_some() =>
+            {
+                let identity = self
+                    .dotted_static_aggregate_identity(&receiver.0, method)
+                    .expect("guarded by a successful static aggregate lookup");
+                if crate::runtime_call::RuntimeCallFamily::from_checker_signature(&identity)
+                    == Some(crate::runtime_call::RuntimeCallFamily::RcNew)
+                {
                     return None;
                 }
                 for arg in args {
@@ -7307,8 +7370,8 @@ impl Checker {
                     TypeErrorKind::UndefinedField,
                     span,
                     format!(
-                        "variant `{module_short}.{type_name}::{variant_name}` is a struct \
-                         variant; use `{module_short}.{type_name}::{variant_name} {{ ... }}` \
+                        "variant `{module_short}.{type_name}.{variant_name}` is a struct \
+                         variant; use `{module_short}.{type_name}.{variant_name} {{ ... }}` \
                          to construct it"
                     ),
                 );

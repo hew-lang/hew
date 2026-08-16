@@ -2269,7 +2269,7 @@ mod tests {
         let source = "import std.io.scanner;\n\
                       fn probe() {\n\
                       \x20   var sc = scanner.from_string(\"one two\");\n\
-                      \x20   sc = scanner.with_split(sc, SplitMode::SplitWords);\n\
+                      \x20   sc = scanner.with_split(sc, SplitMode.SplitWords);\n\
                       \x20   sc = scanner.scan(sc);\n\
                       \x20   let ok = scanner.has_next(sc);\n\
                       \x20   let token = scanner.text(sc);\n\

@@ -822,7 +822,7 @@ fn main() {
     fn vector_index_expression_emits_bounds_trapping_index_opcode() {
         let source = r"
 fn main() {
-    let values: Vec<i64> = Vec::new();
+    let values: Vec<i64> = Vec.new();
     values.push(7);
     println(values[0]);
 }
@@ -1630,7 +1630,7 @@ fn main() {
         assert_profile_rejection(
             r"
 fn main() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     let all = v[..];
     let tail = v[1..];
     let prefix = v[..2];

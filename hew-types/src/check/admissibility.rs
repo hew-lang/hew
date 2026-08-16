@@ -4130,7 +4130,7 @@ mod tests {
         let source = r"
             record Point { x: i64, y: i64 }
             fn main() {
-                let m: HashMap<Point, i64> = HashMap::new();
+                let m: HashMap<Point, i64> = HashMap.new();
                 m.insert(Point { x: 1, y: 2 }, 10);
             }
         ";

@@ -5985,7 +5985,7 @@ pub(crate) mod tests {
                     0 if { return p; } => 0,
                     _ => 1,
                 };
-                let out: Vec<i64> = Vec::new();
+                let out: Vec<i64> = Vec.new();
                 out.push(d);
                 out
             }
@@ -6144,9 +6144,9 @@ pub(crate) mod tests {
             fn parse(input: string, fail: bool) -> Status {
                 let result = match fail {
                     true => {
-                        return Status::Bad;
+                        return Status.Bad;
                     },
-                    false => Status::Good(input),
+                    false => Status.Good(input),
                 };
                 result
             }
@@ -6302,7 +6302,7 @@ pub(crate) mod tests {
         // literal's non-tail push statement, which a tail-only walk misses.
         let (m, prov) = provenance_of_source(
             r"
-            fn helper(xs: Vec<Vec<i64>>, x: i64) { xs.push(Vec::new()); }
+            fn helper(xs: Vec<Vec<i64>>, x: i64) { xs.push(Vec.new()); }
             fn caller(h: Vec<i64>, x: i64) -> Vec<i64> {
                 helper([h], x);
                 h

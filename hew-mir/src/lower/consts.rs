@@ -1013,7 +1013,7 @@ pub(super) fn unresolved_fn_sig_reason(sig: &hew_types::FnSig) -> Option<String>
                 trait_name,
                 assoc_name,
             } => Some(format!(
-                "unresolved Ty::AssocType `{}::{assoc_name}` on base `{}`",
+                "unresolved Ty::AssocType `{}.{assoc_name}` on base `{}`",
                 trait_name,
                 base.user_facing()
             )),

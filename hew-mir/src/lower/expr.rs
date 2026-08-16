@@ -5141,7 +5141,7 @@ impl Builder {
                             reason: reason.clone(),
                         },
                         note: format!(
-                            "dyn-trait method call `{trait_name}::{method_name}` reached MIR with \
+                            "dyn-trait method call `{trait_name}.{method_name}` reached MIR with \
                              an unresolved caller-side FnSig: {reason}. The checker's \
                              trait-object bound substitution at the receiver's coercion site \
                              must produce a fully resolved signature; codegen (W3.031 Stage 7) \
@@ -8792,9 +8792,8 @@ impl Builder {
                     ),
                     site,
                 },
-                note:
-                    "MIR will not reconstruct a var-self method endpoint from `Type::method` text"
-                        .to_string(),
+                note: "MIR will not reconstruct a var-self method endpoint from `Type.method` text"
+                    .to_string(),
             });
             return None;
         };

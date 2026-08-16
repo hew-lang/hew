@@ -40,13 +40,10 @@ pub struct ModuleRegistry {
     drop_funcs: HashMap<String, String>,
 }
 
-/// Parse a module identity at the registry boundary. Source declarations use
-/// canonical dotted owners (`std.math`) while import syntax and the loader use
-/// `::` (`std::math`); both denote the same exact `ModuleId`.
+/// Parse a canonical dotted module identity at the registry boundary.
 fn module_id_from_identity(module_path: &str) -> ModuleId {
     ModuleId::new(
         module_path
-            .replace("::", ".")
             .split('.')
             .filter(|segment| !segment.is_empty())
             .map(String::from)

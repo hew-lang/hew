@@ -537,7 +537,7 @@ impl Checker {
         if let Some(targs) = type_args {
             match constructor_family {
                 Some(crate::runtime_call::RuntimeCallFamily::HashMapNew) => {
-                    self.check_arity(args, 0, "`HashMap::new`", span);
+                    self.check_arity(args, 0, "`HashMap.new`", span);
                     let Some(result_ty) = self.lower_turbofish_collection_constructor(
                         "HashMap",
                         crate::BuiltinType::HashMap,
@@ -551,7 +551,7 @@ impl Checker {
                     return Some(result_ty);
                 }
                 Some(crate::runtime_call::RuntimeCallFamily::HashSetNew) => {
-                    self.check_arity(args, 0, "`HashSet::new`", span);
+                    self.check_arity(args, 0, "`HashSet.new`", span);
                     let Some(result_ty) = self.lower_turbofish_collection_constructor(
                         "HashSet",
                         crate::BuiltinType::HashSet,
@@ -569,7 +569,7 @@ impl Checker {
         }
 
         if constructor_family == Some(crate::runtime_call::RuntimeCallFamily::VecNew) {
-            self.check_arity(args, 0, "`Vec::new`", span);
+            self.check_arity(args, 0, "`Vec.new`", span);
 
             // Determine element type. Turbofish (`Vec::<T>::new()` or
             // `Vec::new::<T>()`) takes priority over the expected-type
@@ -937,7 +937,7 @@ impl Checker {
                  promptly; see examples/net/http_await_service.hew"
                 .to_string();
             self.warn_if_blocking_in_receive_fn_with_fix(
-                &format!("{type_name}::{method}"),
+                &format!("{type_name}.{method}"),
                 span,
                 Some((
                     "use the suspending `await` form instead of the blocking call",
@@ -1696,7 +1696,7 @@ impl Checker {
                 && crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
                     == Some(crate::runtime_call::RuntimeCallFamily::VecNew) =>
             {
-                self.check_arity(args, 0, "`Vec::new`", span);
+                self.check_arity(args, 0, "`Vec.new`", span);
                 let targs = type_args.expect("guarded by `is_some()` above");
                 let Some(mut lowered) = self.lower_turbofish_elem("Vec", 1, targs, span) else {
                     return Ty::Error;
@@ -1757,7 +1757,7 @@ impl Checker {
                 && crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
                     == Some(crate::runtime_call::RuntimeCallFamily::HashMapNew) =>
             {
-                self.check_arity(args, 0, "`HashMap::new`", span);
+                self.check_arity(args, 0, "`HashMap.new`", span);
                 let targs = type_args.expect("guarded by `is_some()` above");
                 let Some(result_ty) = self.lower_turbofish_collection_constructor(
                     "HashMap",
@@ -1774,7 +1774,7 @@ impl Checker {
                 && crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
                     == Some(crate::runtime_call::RuntimeCallFamily::HashSetNew) =>
             {
-                self.check_arity(args, 0, "`HashSet::new`", span);
+                self.check_arity(args, 0, "`HashSet.new`", span);
                 let targs = type_args.expect("guarded by `is_some()` above");
                 let Some(result_ty) = self.lower_turbofish_collection_constructor(
                     "HashSet",
@@ -1840,7 +1840,7 @@ impl Checker {
                 return Ty::Error;
             }
             "bytes::from" => {
-                self.check_arity(args, 1, "`bytes::from`", span);
+                self.check_arity(args, 1, "`bytes.from`", span);
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
@@ -1853,7 +1853,7 @@ impl Checker {
                 "from",
             ) =>
             {
-                self.check_arity(args, 1, "`Vec::from`", span);
+                self.check_arity(args, 1, "`Vec.from`", span);
                 let elem = Ty::Var(TypeVar::fresh());
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
@@ -1874,7 +1874,7 @@ impl Checker {
                                 TypeErrorKind::InvalidOperation,
                                 span,
                                 format!(
-                                    "`Vec::from` accepts an array or Vec source; `{}` is not supported",
+                                    "`Vec.from` accepts an array or Vec source; `{}` is not supported",
                                     other.user_facing()
                                 ),
                             );

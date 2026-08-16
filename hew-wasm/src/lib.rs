@@ -1110,7 +1110,7 @@ mod tests {
     #[test]
     fn analyze_reports_needless_range_loop_lint() {
         let source = "fn main() {\n\
-             let xs: Vec<i64> = Vec::new();\n\
+             let xs: Vec<i64> = Vec.new();\n\
              for i in 0..xs.len() {\n\
              let _ = xs[i];\n\
              }\n\
@@ -1128,7 +1128,7 @@ mod tests {
     #[test]
     fn analyze_honours_in_source_allow_directive() {
         let source = "fn main() {\n\
-             let xs: Vec<i64> = Vec::new();\n\
+             let xs: Vec<i64> = Vec.new();\n\
              // hew:allow(needless_range_loop)\n\
              for i in 0..xs.len() {\n\
              let _ = xs[i];\n\
@@ -2023,7 +2023,7 @@ mod tests {
     /// the argument list untouched.
     #[test]
     fn code_actions_qualified_path_replaces_full_callee_path() {
-        let source = "fn main() { let _ = Vec::neww(); }";
+        let source = "fn main() { let _ = Vec.neww(); }";
         //                                   ^       ^
         //                                  20      29 = start of '('
 
@@ -2077,7 +2077,7 @@ mod tests {
             &source[edit_end..]
         );
         assert_eq!(
-            corrected, "fn main() { let _ = Vec::new(); }",
+            corrected, "fn main() { let _ = Vec.new(); }",
             "applying the edit must yield Vec::new() with parentheses intact"
         );
     }

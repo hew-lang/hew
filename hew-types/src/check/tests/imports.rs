@@ -310,13 +310,13 @@ fn resolved_module_copy_reenters_declaring_file_import_scope() {
         import hew.aliassrc.{ Color as Hue };
         pub type AliasBox { item: Hue; }
         pub enum AliasWrap { Has(Hue); }
-        pub fn make() -> Hue { Hue::Blue(7) }
+        pub fn make() -> Hue { Hue.Blue(7) }
         pub fn score() -> i64 {
             let boxed: AliasBox = AliasBox { item: make() };
-            let wrapped: AliasWrap = AliasWrap::Has(boxed.item);
+            let wrapped: AliasWrap = AliasWrap.Has(boxed.item);
             match wrapped {
-                AliasWrap::Has(color) => match color {
-                    Hue::Blue(value) => value,
+                AliasWrap.Has(color) => match color {
+                    Hue.Blue(value) => value,
                     _ => 0,
                 },
             }
@@ -1390,7 +1390,7 @@ fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup(
 fn canonical_stdlib_source_signature_replaces_registry_surface_signature() {
     let parsed = hew_parser::parse(
         "pub enum NetError { Failed(i64); }\n\
-         pub fn net_error() -> NetError { NetError::Failed(1) }\n",
+         pub fn net_error() -> NetError { NetError.Failed(1) }\n",
     );
     assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
 
@@ -3267,7 +3267,7 @@ fn project_local_std_builtins_source_cannot_claim_intrinsic_coherence() {
 #[test]
 fn imported_foreign_trait_impl_for_intrinsic_type_warns() {
     let foreign_source = "pub trait ForeignTrait {}";
-    let consumer_source = "import vendor::{ ForeignTrait }; impl ForeignTrait for Vec<i64> {}";
+    let consumer_source = "import vendor.{ ForeignTrait }; impl ForeignTrait for Vec<i64> {}";
     let foreign = hew_parser::parse(foreign_source);
     let mut consumer = hew_parser::parse(consumer_source);
     assert!(
@@ -3553,7 +3553,7 @@ fn test_file_import_private_items_not_visible() {
 /// reaches `Mode` only through the call's expected parameter type.
 fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     let module = hew_parser::parse(
-        "pub enum Mode {\n    A;\n    B;\n    Present(i64);\n    Named { value: i64 }\n}\n\npub type Box<T> {\n    value: T;\n}\n\nimpl<T> Box<T> {\n    pub fn make(value: T) -> Box<T> {\n        Box<T> { value: value }\n    }\n}\n\npub type Factory {\n    marker: i64;\n}\n\nimpl Factory {\n    pub fn make(value: i64) -> i64 {\n        value\n    }\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode::A => 1,\n        Mode::B => 2,\n        Mode::Present(value) => value,\n        Mode::Named { value } => value,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode::A == Mode::A);\n}\n",
+        "pub enum Mode {\n    A;\n    B;\n    Present(i64);\n    Named { value: i64 }\n}\n\npub type Box<T> {\n    value: T;\n}\n\nimpl<T> Box<T> {\n    pub fn make(value: T) -> Box<T> {\n        Box<T> { value: value }\n    }\n}\n\npub type Factory {\n    marker: i64;\n}\n\nimpl Factory {\n    pub fn make(value: i64) -> i64 {\n        value\n    }\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode.A => 1,\n        Mode.B => 2,\n        Mode.Present(value) => value,\n        Mode.Named { value } => value,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode.A == Mode.A);\n}\n",
     );
     assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
     let mut root = hew_parser::parse(root_source);
@@ -3724,7 +3724,7 @@ fn explicit_generic_module_path_obeys_lexical_value_precedence() {
 #[test]
 fn qualified_variant_expression_resolves_through_expected_nominal_identity() {
     let output = check_qualified_variant_root(
-        "import m;\n\nfn main() {\n    let x = m.pick(Mode::A);\n    print(\"{x}\");\n}\n",
+        "import m;\n\nfn main() {\n    let x = m.pick(Mode.A);\n    print(\"{x}\");\n}\n",
     );
     assert!(
         output.errors.is_empty(),
@@ -3739,7 +3739,7 @@ fn qualified_variant_expression_resolves_through_expected_nominal_identity() {
 #[test]
 fn local_same_leaf_enum_does_not_merge_with_expected_module_nominal() {
     let output = check_qualified_variant_root(
-        "import m;\n\nenum Mode {\n    A;\n    Z;\n}\n\nfn main() {\n    let x = m.pick(Mode::A);\n    print(\"{x}\");\n}\n",
+        "import m;\n\nenum Mode {\n    A;\n    Z;\n}\n\nfn main() {\n    let x = m.pick(Mode.A);\n    print(\"{x}\");\n}\n",
     );
     assert!(
         output
@@ -3756,7 +3756,7 @@ fn local_same_leaf_enum_does_not_merge_with_expected_module_nominal() {
 #[test]
 fn wrong_owner_variant_prefix_is_rejected_against_expected_nominal() {
     let output = check_qualified_variant_root(
-        "import m;\n\nenum Other {\n    A;\n}\n\nfn main() {\n    let x = m.pick(Other::A);\n    print(\"{x}\");\n}\n",
+        "import m;\n\nenum Other {\n    A;\n}\n\nfn main() {\n    let x = m.pick(Other.A);\n    print(\"{x}\");\n}\n",
     );
     assert!(
         output

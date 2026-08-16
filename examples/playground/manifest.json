@@ -510,7 +510,7 @@
     "id": "types/vec_f64_nonfinite_contains",
     "category": "types",
     "name": "Vec<f64> Non-Finite Contains",
-    "description": "Vec<f64>::contains follows native fcmp-OEQ semantics for NaN and +-Infinity",
+    "description": "Vec<f64>.contains follows native fcmp-OEQ semantics for NaN and +-Infinity",
     "source_path": "types/vec_f64_nonfinite_contains.hew",
     "expected_path": "types/vec_f64_nonfinite_contains.expected",
     "capabilities": {

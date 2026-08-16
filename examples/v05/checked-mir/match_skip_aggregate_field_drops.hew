@@ -3,7 +3,7 @@
 //
 // Every arm binds only the BitCopy `n` field and wildcards one owned
 // aggregate sibling. The raw golden pins that each skipped aggregate emits
-// `drop_field_in_place` (the `Instr.FieldDropInPlace` op, type-directed at
+// `drop_field_in_place` (the `Instr::FieldDropInPlace` op, type-directed at
 // codegen through `emit_heap_slot_drop`), never a field load + `drop` pair
 // (the load path has no wired release for aggregates and would be a
 // wrong-ABI free):

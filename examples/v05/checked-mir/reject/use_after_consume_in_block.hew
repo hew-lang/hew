@@ -1,4 +1,4 @@
-// Reject fixture for `MirCheck.UseAfterConsume` inside a block
+// Reject fixture for `MirCheck::UseAfterConsume` inside a block
 // expression.
 //
 // The nested block consumes `s` via `let t = s` (string is a

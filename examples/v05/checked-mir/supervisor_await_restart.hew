@@ -4,7 +4,7 @@
 // emitted by the contextless `await_restart` lowering path. When `main` (or a
 // free fn) calls `await_restart sup.child`, MIR lowers to a blocking wait on
 // the supervisor restart Condvar (safe here because main runs off the
-// cooperative scheduler). The resulting `Instr.CallRuntimeAbi` carries the
+// cooperative scheduler). The resulting `Instr::CallRuntimeAbi` carries the
 // quoted callee symbol, covering the SupervisorRestartAwaitBlocking family in
 // the coverage ratchet.
 actor Worker {

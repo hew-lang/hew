@@ -8,16 +8,16 @@
 // This baseline keeps owner and observer in one actor; the cross-actor
 // split (channel handles travelling through actor messages) builds on
 // the same shape.
-import std.concurrency.lifecycle;
+import std.concurrency.lifecycle.{Lifecycle, LifecycleEvent};
 
 import std.channel.channel;
 
 actor Combined {
     receive fn run() {
         let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(8);
-        var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle.Created;
+        var lc: Lifecycle<i64> = .Created;
         let before = lc.state_name();
-        lc.step(std.concurrency.lifecycle.LifecycleEvent.Initialise);
+        lc.step(LifecycleEvent.Initialise);
         let after_step = lc.state_name();
         if before != after_step {
             tx.send(f"{before} -> {after_step}");

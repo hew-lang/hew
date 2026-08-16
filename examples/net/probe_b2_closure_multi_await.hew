@@ -1,6 +1,6 @@
 //! Multi-suspend suspendable-callee: a closure whose body `await`s a captured
 //! Connection TWICE across the coroutine boundary. The driver
-//! (`Terminator.SuspendingCallClosure`) must re-park the calling actor on the
+//! (`Terminator::SuspendingCallClosure`) must re-park the calling actor on the
 //! SECOND await as well as the first — exercising the multi-suspend `.resume`
 //! edge (every park matched by exactly one resume). The first read binds the
 //! server's payload; the second read resumes on EOF (server close) and binds an

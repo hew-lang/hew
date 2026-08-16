@@ -2,7 +2,7 @@
 //
 // `read_once` awaits the captured Connection but DISCARDS the read value, so the
 // closure's logical return is unit. The call site still lowers to
-// `Terminator.SuspendingCallClosure` (the body carries an `await` suspend), and
+// `Terminator::SuspendingCallClosure` (the body carries an `await` suspend), and
 // the driver's finish path takes the unit branch — which must release BOTH the
 // retained sender ref and the creator ref so the driver reply channel is
 // reclaimed exactly once (no leaked sender reference). Running it under both

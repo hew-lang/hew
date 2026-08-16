@@ -6,7 +6,7 @@
 //
 // In Go you'd write a goroutine pool with a WaitGroup, a work channel,
 // a results channel, and manual panic recovery in each goroutine (~80
-// lines). In Rust you'd use tokio.JoinSet or rayon, plus Arc<Mutex>
+// lines). In Rust you'd use tokio::JoinSet or rayon, plus Arc<Mutex>
 // for shared state.
 //
 // In Hew:

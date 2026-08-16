@@ -7,7 +7,7 @@
 //
 // In Go you'd build this with channels, a map[string][]chan, and a
 // select loop (~120 lines plus race-condition debugging). In Rust
-// you'd use tokio.broadcast or a manual Arc<RwLock<HashMap>>.
+// you'd use tokio::broadcast or a manual Arc<RwLock<HashMap>>.
 //
 // In Hew the broker is an actor. Subscriptions are just state.
 // Fan-out is just a loop calling receive handlers. No locks, no

@@ -15,7 +15,7 @@
 // transition in the machine carries a guard. Reaching `unreachable` there
 // would be undefined behaviour, not a diagnostic. The fix routes any
 // guard-bearing machine's fall-through to a real
-// `TrapKind.ExhaustivenessFallthrough` trap instead.
+// `TrapKind::ExhaustivenessFallthrough` trap instead.
 //
 // `m` starts `Closed { code: 1 }`; the guard evaluates false; the fixture
 // must exit non-zero with a "trap in main context" diagnostic on stderr —

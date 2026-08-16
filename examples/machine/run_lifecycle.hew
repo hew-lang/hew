@@ -1,22 +1,22 @@
 // Runnable fixture: generic stdlib Lifecycle<T> state machine.
-import std.concurrency.lifecycle;
+import std.concurrency.lifecycle.{Lifecycle, LifecycleEvent};
 
 fn main() {
-    var service: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle.Created;
+    var service: Lifecycle<i64> = .Created;
     println(service.state_name());
-    service.step(std.concurrency.lifecycle.LifecycleEvent.Initialise);
+    service.step(LifecycleEvent.Initialise);
     println(service.state_name());
-    service.step(lifecycle.LifecycleEvent.Started { handle: 42 });
+    service.step(LifecycleEvent.Started { handle: 42 });
     println(service.state_name());
-    service.step(std.concurrency.lifecycle.LifecycleEvent.Stop);
+    service.step(LifecycleEvent.Stop);
     println(service.state_name());
-    service.step(std.concurrency.lifecycle.LifecycleEvent.Stop);
+    service.step(LifecycleEvent.Stop);
     println(service.state_name());
-    var crashing: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle.Created;
+    var crashing: Lifecycle<i64> = .Created;
     println(crashing.state_name());
-    crashing.step(std.concurrency.lifecycle.LifecycleEvent.Initialise);
+    crashing.step(LifecycleEvent.Initialise);
     println(crashing.state_name());
     let err = Error.Code(7);
-    crashing.step(lifecycle.LifecycleEvent.Crashed { error: err });
+    crashing.step(LifecycleEvent.Crashed { error: err });
     println(crashing.state_name());
 }

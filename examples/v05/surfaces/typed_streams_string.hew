@@ -6,7 +6,7 @@
 //! single `await stream.recv()`). `Stream<string>.recv` resolves to the
 //! layout-witness runtime entry `hew_stream_next_layout` (one symbol for
 //! every describable element type). Each `await input.recv()`
-//! lowers to `Terminator.SuspendingStreamNext`;
+//! lowers to `Terminator::SuspendingStreamNext`;
 //! the resume edge pops the item via `hew_stream_pop_layout` and binds an
 //! `Option<string>`. EOF is the sole `None`; an empty item surfaces as
 //! `Some("")` and the loop continues — the empty-item drain here is the

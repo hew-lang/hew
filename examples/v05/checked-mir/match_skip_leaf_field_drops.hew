@@ -6,14 +6,14 @@
 // the safety-drop loop emits per leaf shape:
 //
 //   - `string` (record AND tuple parents) — `drop_field_in_place` (the
-//     in-place `Instr.FieldDropInPlace`, raw slot load + `hew_string_drop`
+//     in-place `Instr::FieldDropInPlace`, raw slot load + `hew_string_drop`
 //     + pointer-word null-store at codegen). NOT a `RecordFieldLoad` /
 //     `TupleFieldLoad` + `drop` pair: string-typed field loads retain via
 //     `hew_string_clone`, so a load+drop pair retain-cancels and leaks the
 //     original slot value.
 //   - `Vec<string>` — field load into a temp + `drop` with the element-kind
 //     release symbol `hew_vec_free` (`string` is a Plain element: the
-//     runtime's buffer free walks `ElemKind.String` and frees each element;
+//     runtime's buffer free walks `ElemKind::String` and frees each element;
 //     non-string loads do not retain, so the load+drop pair stays the
 //     correct discharge).
 //   - `bytes` — field load + `drop` with `hew_bytes_drop`.

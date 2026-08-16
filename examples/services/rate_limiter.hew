@@ -5,7 +5,7 @@
 // at a fixed rate up to a maximum, and each request consumes one token.
 //
 // In Go you'd use golang.org/x/time/rate (mutex-guarded float64 state).
-// In Rust you'd use governor or tower.limit (generic middleware layers).
+// In Rust you'd use governor or tower::limit (generic middleware layers).
 // In Hew the rate limiter is an actor — requests are serialised through
 // its mailbox, so there are no races, no mutexes, and no channels to
 // wire up. Callers simply `await limiter.acquire()`.

@@ -14,7 +14,7 @@
 // so the value must be in 0..=255. 42 is the canonical fixture value.
 //
 // Cancel-loser proof: the compiler lowers the loser path through
-// hew_reply_channel_cancel + hew_reply_channel_free (see Terminator.Select
+// hew_reply_channel_cancel + hew_reply_channel_free (see Terminator::Select
 // codegen in hew-codegen-rs/src/llvm.rs). This fixture exercises that path
 // every run: SlowWorker is always the loser and its channel is cancelled.
 actor FastWorker {

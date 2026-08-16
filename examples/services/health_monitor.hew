@@ -6,7 +6,7 @@
 // (Envoy, Linkerd) and orchestrators (Kubernetes liveness probes).
 //
 // In Go you'd write a goroutine with a time.Ticker, a map of health
-// statuses, and a mutex to protect it. In Rust you'd use tokio.time
+// statuses, and a mutex to protect it. In Rust you'd use tokio::time
 // with Arc<RwLock<HashMap>>.
 //
 // In Hew the monitor is an actor. Health state is actor state — no

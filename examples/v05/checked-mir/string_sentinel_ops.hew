@@ -1,6 +1,6 @@
 // MIR-corpus fixture: sentinel->Option string inspectors (D46).
 //
-// Pins the codegen-intercepted `Terminator.Call` producers for
+// Pins the codegen-intercepted `Terminator::Call` producers for
 // `hew_string_find` (`find -> Option<i64>`), `hew_string_char_at`
 // (`char_at -> Option<char>`), and `hew_string_char_at_utf8`
 // (`codepoint_at_utf8 -> Option<i64>`): each carries an Option dest the

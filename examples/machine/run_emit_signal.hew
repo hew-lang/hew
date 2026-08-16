@@ -12,14 +12,14 @@
 //      never emitted, so it is always 0.
 //
 // The emit call (`emit Ready {}`) is a unit-payload Mealy output. It lowers
-// through `Instr.MachineEmitPlaceholder` → `call void @hew_machine_emit_push`
+// through `Instr::MachineEmitPlaceholder` → `call void @hew_machine_emit_push`
 // in the LLVM IR, tagged with the machine's stable type id. The thread-local
 // EmitQueue keeps the event (the step-exit wrapper calls
 // `hew_machine_emit_step_exit_keep`, never draining) until `m.take_emits(ev)`
 // removes it — delivery is per-thread, per-machine-TYPE (see
 // docs/specs/MACHINE-SPEC.md's emit section).
 //
-// `tests/exec/machine_exec.rs.run_emit_signal_fixture_executes` is the
+// `tests/exec/machine_exec.rs::run_emit_signal_fixture_executes` is the
 // end-to-end signal for this fixture.
 machine Signal {
     events {

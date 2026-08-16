@@ -1,8 +1,6 @@
-// Runnable fixture: exercises qualified-path machine state and event
-// constructors. Mirrors `run_traffic_light.hew` but uses the explicit
-// `Counter.Idle` and `CounterEvent.Tick` forms instead of bare names,
-// so the HIR module-scope ctor-resolution path is exercised through
-// the qualified registry entry rather than the unambiguous-bare one.
+// Runnable fixture: exercises contextual machine state and event constructors.
+// Mirrors `run_traffic_light.hew` but uses `.Idle` and `.Tick` instead of bare
+// names, so the HIR expected-type constructor path is exercised directly.
 machine Counter {
     events {
         Tick;
@@ -20,10 +18,10 @@ machine Counter {
 }
 
 fn main() {
-    var c: Counter = Counter.Idle;
+    var c: Counter = .Idle;
     println(c.state_name());
-    c.step(CounterEvent.Tick);
+    c.step(.Tick);
     println(c.state_name());
-    c.step(CounterEvent.Tick);
+    c.step(.Tick);
     println(c.state_name());
 }

@@ -1,5 +1,7 @@
 fn live() -> i64 {
-    let rc = Rc.new(7);
+    // Rc construction keeps the deprecated-accepted spelling until S7
+    // supplies a dotted specialized-builtin target.
+    let rc = Rc::new(7);
     let alias = rc.clone();
     let weak = rc.downgrade();
     let _weak_alias = weak.clone();
@@ -19,7 +21,7 @@ fn live() -> i64 {
 }
 
 fn expired() -> Weak<i64> {
-    let rc = Rc.new(1);
+    let rc = Rc::new(1);
     rc.downgrade()
 }
 

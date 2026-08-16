@@ -1012,7 +1012,7 @@ trait Renderable {
 
 trait Sequence {
     type Item;
-    fn next(iter: Self) -> Option<Self::Item>;
+    fn next(iter: Self) -> Option<Self.Item>;
 }
 
 trait Duplicable {
@@ -1407,7 +1407,7 @@ fn eval(e: Expr) -> i64 {
 - Non-atomic refcount (fast, single-threaded)
 - Cannot cross actor boundaries (does not implement `Send`)
 - Use for shared ownership within one actor
-- `Rc::new(value)` consumes `value`; `.clone()` creates another strong owner
+- `Rc.new(value)` consumes `value`; `.clone()` creates another strong owner
 - `.get()` copies the payload and therefore requires `T: Copy`
 - `.set(value)` consumes and replaces the entire shared payload; every strong alias observes the replacement
 - `.downgrade()` creates a `Weak<T>`; `.strong_count()`, `.weak_count()`, and `.is_unique()` inspect the allocation
@@ -1419,14 +1419,14 @@ fn eval(e: Expr) -> i64 {
   independent key, value, `Eq`, `Hash`, and ABI restrictions
 
 ```hew
-let data: Rc<string> = Rc::new(expensive_computation());
+let data: Rc<string> = Rc.new(expensive_computation());
 let alias = data.clone();  // refcount++, no data copy
 // data and alias share the same string
 ```
 
 **`Weak<T>` — non-owning cycle-breaking handle:**
 
-- `rc.downgrade()` is the only constructor; there is no empty `Weak::new()`
+- `rc.downgrade()` is the only constructor; there is no empty `Weak.new()`
 - `weak.clone()` creates another weak owner
 - `weak.upgrade()` returns exactly `Some(Rc<T>)` while a strong owner exists,
   and exactly `None` after the last strong owner is released
@@ -1440,14 +1440,14 @@ type Node {
 }
 
 fn main() {
-    let root = Rc::new(Node { label: "root", parent: None });
+    let root = Rc.new(Node { label: "root", parent: None });
     let weak = root.downgrade();
     root.set(Node { label: "child", parent: Some(weak.clone()) });
 }
 ```
 
 Strong `Rc` cycles leak because Hew does not run a tracing collector. Use weak
-back-edges to break cycles. `Rc::new_cyclic`, dereference/borrow access to an Rc
+back-edges to break cycles. `Rc.new_cyclic`, dereference/borrow access to an Rc
 payload, and cross-actor transfer are not supported in edition 2026.
 
 > See HEW-FUTURE.md §2.3 for the user-facing `Arc<T>` surface — targeted

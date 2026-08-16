@@ -905,13 +905,13 @@ reference type. Writing `&x` is rejected with a diagnostic pointing you at
 ### Shared ownership inside one actor with Rc and Weak
 
 `Rc<T>` gives multiple bindings ownership of one payload inside a single
-actor. Construct it with `Rc::new(value)` and create another strong owner with
+actor. Construct it with `Rc.new(value)` and create another strong owner with
 `.clone()`. Both handles are affine: assigning one without cloning moves it.
 Neither `Rc<T>` nor `Weak<T>` can be sent to another actor.
 
 ```hew
 fn main() {
-    let value = Rc::new(7);
+    let value = Rc.new(7);
     let alias = value.clone();
     value.set(9);
     println(alias.get());          // 9
@@ -931,7 +931,7 @@ type Node {
 }
 
 fn main() {
-    let root = Rc::new(Node { label: "root", parent: None });
+    let root = Rc.new(Node { label: "root", parent: None });
     let weak = root.downgrade();
     root.set(Node { label: "child", parent: Some(weak.clone()) });
 
@@ -943,8 +943,8 @@ fn main() {
 ```
 
 `upgrade()` returns `Some` only while at least one strong owner exists. There
-is no `Weak::new()`; construction starts with `Option<Weak<T>>::None`, then uses
-`downgrade()` and `set()`. Strong `Rc` cycles leak. `Rc::new_cyclic`, direct
+is no `Weak.new()`; construction starts with `Option<Weak<T>>.None`, then uses
+`downgrade()` and `set()`. Strong `Rc` cycles leak. `Rc.new_cyclic`, direct
 deref/borrow access to the payload, and cross-actor transfer are not supported.
 
 ### Struct value param and returning a struct
@@ -2356,7 +2356,7 @@ An explicitly-implemented trait method is callable directly with dot-syntax.
 ```hew
 trait Counter {
     type Item;
-    fn next_val(c: Self) -> Self::Item;
+    fn next_val(c: Self) -> Self.Item;
 }
 type Ticker { current: i64 }
 impl Counter for Ticker {

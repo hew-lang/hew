@@ -29,7 +29,7 @@ const ITER_TRAIT_PRELUDE: &str = r"
 pub trait Iterator {
     type Item;
 
-    fn next(self) -> Option<Self::Item>;
+    fn next(self) -> Option<Self.Item>;
 }
 ";
 
@@ -62,6 +62,60 @@ impl Iterator for Counter {{
     assert!(
         output.errors.is_empty(),
         "correct signature must not emit TraitImplSignatureMismatch; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn impl_projects_direct_dotted_associated_return_type() {
+    let src = r"
+pub trait Source {
+    type Item;
+    fn item(self) -> Self.Item;
+}
+
+pub type Counter {
+    n: i64;
+}
+
+impl Source for Counter {
+    type Item = i64;
+    fn item(counter: Counter) -> i64 {
+        counter.n
+    }
+}
+";
+    let output = typecheck_isolated(src);
+    assert!(
+        output.errors.is_empty(),
+        "direct `Self.Item` must project through the impl binding; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn impl_projects_dotted_generic_binding_in_associated_parameter() {
+    let src = r"
+pub trait Message {
+    type Body;
+}
+
+pub trait Sender {
+    type Body;
+    fn send(self, body: Self.Body);
+}
+
+pub type LocalSender<T> {}
+
+impl<T: Message> Sender for LocalSender<T> {
+    type Body = T.Body;
+    fn send(sender: LocalSender<T>, body: Self.Body) {}
+}
+";
+    let output = typecheck_isolated(src);
+    assert!(
+        output.errors.is_empty(),
+        "dotted generic and Self projections must share canonical carriers; got: {:#?}",
         output.errors
     );
 }

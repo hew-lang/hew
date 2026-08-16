@@ -2206,8 +2206,12 @@ impl Checker {
                     // the full nominal owner, so a miss must remain a miss.
                     let nominal_identity = Self::canonical_primitive_or_builtin_key(&resolved_base)
                         .or_else(|| {
-                            self.resolved_builtin_type(name)
-                                .map(|builtin| builtin.canonical_name().to_string())
+                            self.resolved_builtin_type(name).and_then(|builtin| {
+                                Self::canonical_primitive_or_builtin_key(&Ty::builtin_named(
+                                    builtin,
+                                    args.clone(),
+                                ))
+                            })
                         })
                         .unwrap_or_else(|| {
                             self.canonical_nominal_name(name)
@@ -2858,7 +2862,10 @@ impl Checker {
                         return Ty::normalize_named(self_type_name.clone(), self_type_args.clone());
                     }
                 }
-                if let Some(alias_name) = name.strip_prefix("Self::") {
+                if let Some(alias_name) = name
+                    .strip_prefix("Self.")
+                    .or_else(|| name.strip_prefix("Self::"))
+                {
                     // Resolving a trait method's declared signature: the
                     // `Self::Bar` projection must materialise as a deferred
                     // `Ty::AssocType` carrier so downstream call sites (where
@@ -2929,7 +2936,20 @@ impl Checker {
                 // bounds), missing-assoc (no bound declares `Bar`), and
                 // ambiguous (more than one bound declares `Bar`) are all
                 // typed errors here. No silent pass-through.
-                if !name.starts_with("Self::") {
+                if !name.starts_with("Self::") && !name.starts_with("Self.") {
+                    // Dotted paths are also the module-qualified nominal
+                    // surface. Treat a direct `T.Item` as an associated-type
+                    // projection only when `T` is a type parameter in scope;
+                    // otherwise leave it for nominal resolution below.
+                    if let Some((base_name, assoc_name)) = name.split_once('.') {
+                        if !assoc_name.contains('.') {
+                            if let Some(ty) =
+                                self.try_resolve_assoc_projection(base_name, assoc_name, &te.1)
+                            {
+                                return ty;
+                            }
+                        }
+                    }
                     if let Some((base_name, assoc_name)) = name.split_once("::") {
                         // Reject multi-segment projections (`T::Iter::Bar`)
                         // explicitly — deferred per the precursor plan.

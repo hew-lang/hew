@@ -10984,9 +10984,17 @@ impl Checker {
                         continue;
                     }
                     let event_name = format!("{}Event", md.name);
+                    // Resolved stdlib items are registered while the importer
+                    // is the active checker frame. Re-enter the declaration's
+                    // assembled module before building the machine and its
+                    // generated event/method signatures, matching the module-
+                    // graph pre-registration and ordinary source-body context.
+                    let saved_importer_module =
+                        self.current_module.replace(module_full_path.to_string());
                     self.register_machine_decl(md, span);
                     let machine_def = self.type_defs.get(&md.name).cloned();
                     let event_def = self.type_defs.get(&event_name).cloned();
+                    self.current_module = saved_importer_module;
                     self.known_types.insert(md.name.clone());
                     self.known_types.insert(event_name.clone());
                     self.register_qualified_type_alias(module_short, &md.name);

@@ -4651,6 +4651,35 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     #[test]
+    fn std_concurrency_peer_bodies_accept_both_import_spellings() {
+        let dir = tempfile::tempdir().expect("create temp project");
+        for (name, import) in [
+            ("dotted.hew", "import std.concurrency.{ScopeError};"),
+            ("legacy.hew", "import std::concurrency::{ScopeError};"),
+        ] {
+            let source = format!(
+                "{import}\n\
+                 \n\
+                 fn main() {{\n\
+                     let error: ScopeError<i64> = ScopeError {{\n\
+                         primary: 1,\n\
+                         also_failed: [],\n\
+                         cancelled_count: 0,\n\
+                     }};\n\
+                     let _ = error;\n\
+                 }}\n"
+            );
+            let input = write_source(dir.path(), name, &source);
+            let result = check_file(&input, &FrontendOptions::default());
+            assert!(
+                result.is_ok(),
+                "{import} must check the assembled std.concurrency peer bodies: {:#?}",
+                result.err()
+            );
+        }
+    }
+
+    #[test]
     fn bundled_empty_type_decls_publish_owner_qualified_mir_layouts() {
         fn lower_to_mir(input: &str) -> hew_mir::IrPipeline {
             let state = run_file_frontend_to_typecheck(input, &FrontendOptions::default())

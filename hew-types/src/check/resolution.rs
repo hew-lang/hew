@@ -334,6 +334,20 @@ impl Checker {
         if crate::lookup_builtin_type(name).is_some() || builtin_named_type(name).is_some() {
             return None;
         }
+        // A directory module checks every peer body in the assembled module's
+        // lexical namespace while retaining the peer file as source provenance.
+        // Prefer that module-local declaration before the file-oriented nominal
+        // ladder: the latter exists for ABI declarations that must retain their
+        // minting file identity, whereas ordinary source types are registered
+        // under the assembled module owner.
+        if !name.contains('.') && self.local_type_defs.contains(name) {
+            if let Some(module) = self.current_module_identity() {
+                let local = format!("{module}.{name}");
+                if self.type_defs.contains_key(&local) || self.known_types.contains(&local) {
+                    return Some(local);
+                }
+            }
+        }
         let declaration = self.resolve_nominal_declaration(NominalOrigin::Lexical, name)?;
         // Compiler catalog nominals keep their own namespace. `Location`,
         // `NodeId` and the other entries the compiler declares in

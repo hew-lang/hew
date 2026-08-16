@@ -48,7 +48,7 @@ impl Checker {
                     return None;
                 }
                 let canonical = self
-                    .resolve_nominal_declaration(NominalOrigin::Lexical, surface)
+                    .source_nominal_declaration(surface)
                     .filter(|identity| {
                         self.lookup_type_def(identity).is_some()
                             || self.resolved_builtin_type(identity).is_some()

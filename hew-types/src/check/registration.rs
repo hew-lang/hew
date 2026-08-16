@@ -9578,7 +9578,7 @@ impl Checker {
     /// source (a peer file of a directory module), else `None` (the module
     /// identity routes as before). The CLI/LSP source maps carry an entry per
     /// source file keyed by this exact rendering.
-    fn item_file_routing_token(
+    pub(super) fn item_file_routing_token(
         &self,
         module: Option<&str>,
         file: Option<&std::path::PathBuf>,
@@ -9586,6 +9586,17 @@ impl Checker {
         let file = file?;
         let primary = self.module_source_paths.get(module?)?.first()?;
         (file != primary).then(|| file.display().to_string())
+    }
+
+    /// Capture the source identity that diagnostic emission must use after the
+    /// current item frame has been cleared. Peer files need their path rather
+    /// than the assembled directory module's identity.
+    pub(super) fn current_diagnostic_source_module(&self) -> Option<String> {
+        self.item_file_routing_token(
+            self.current_module.as_deref(),
+            self.current_item_source.as_ref(),
+        )
+        .or_else(|| self.current_module.clone())
     }
 
     /// Resolve one extern declaration against the single-owner table
@@ -10984,9 +10995,17 @@ impl Checker {
                         continue;
                     }
                     let event_name = format!("{}Event", md.name);
+                    // Resolved stdlib items are registered while the importer
+                    // is the active checker frame. Re-enter the declaration's
+                    // assembled module before building the machine and its
+                    // generated event/method signatures, matching the module-
+                    // graph pre-registration and ordinary source-body context.
+                    let saved_importer_module =
+                        self.current_module.replace(module_full_path.to_string());
                     self.register_machine_decl(md, span);
                     let machine_def = self.type_defs.get(&md.name).cloned();
                     let event_def = self.type_defs.get(&event_name).cloned();
+                    self.current_module = saved_importer_module;
                     self.known_types.insert(md.name.clone());
                     self.known_types.insert(event_name.clone());
                     self.register_qualified_type_alias(module_short, &md.name);

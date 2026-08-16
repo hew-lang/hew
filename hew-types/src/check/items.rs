@@ -2439,7 +2439,7 @@ impl Checker {
     /// Compiler-intrinsic types have no source declaration to seed
     /// `local_type_defs`. Their canonical declarative surface owns their impls
     /// for coherence purposes, but only when the active item's canonical path
-    /// is below the stdlib root selected for this checker invocation.
+    /// is below the stdlib root owned by the running compiler installation.
     fn intrinsic_type_is_local_to_builtin_surface(&self, type_name: &str) -> bool {
         self.current_item_source.as_ref().is_some_and(|source| {
             self.module_registry

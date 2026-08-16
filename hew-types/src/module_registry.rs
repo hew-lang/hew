@@ -21,6 +21,13 @@ pub struct ModuleRegistry {
     modules: HashMap<ModuleId, ModuleInfo>,
     /// Ordered search paths for module resolution.
     search_paths: Vec<PathBuf>,
+    /// Compiler-owned root that may confer stdlib-only authority.
+    ///
+    /// This is resolved exclusively from the running compiler's installation
+    /// or development-binary layout. It is deliberately independent of
+    /// `search_paths`, which may contain project-, cwd-, or environment-owned
+    /// roots.
+    compiler_stdlib_root: Option<PathBuf>,
     /// Accumulated handle types from all loaded modules.
     handle_types: HashSet<String>,
     /// Accumulated fielded `#[resource]` handle-wrapper types from all loaded
@@ -70,6 +77,40 @@ pub fn find_enclosing_hew_root(from: &std::path::Path) -> Option<PathBuf> {
             None => return None,
         }
     }
+}
+
+/// Resolve the standard-library root owned by the running compiler binary.
+///
+/// Installed binaries use `<bin>/../share/hew`; development binaries use the
+/// checkout above `target/<profile>`. Rust test executables add a `deps/`
+/// component below the same development layout. No project path, cwd, or
+/// environment override participates in this decision. If neither layout has
+/// the compiler's `std/builtins.hew`, authority is unavailable and callers
+/// must fail closed.
+#[must_use]
+pub fn compiler_stdlib_root() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
+    compiler_stdlib_root_for_executable(&executable)
+}
+
+fn compiler_stdlib_root_for_executable(executable: &std::path::Path) -> Option<PathBuf> {
+    let executable_dir = executable.parent()?;
+    let installed = executable_dir.parent()?.join("share/hew");
+    let development = if executable_dir
+        .file_name()
+        .is_some_and(|name| name == "deps")
+    {
+        executable_dir.parent()?.parent()?.parent()?.to_path_buf()
+    } else {
+        executable_dir.parent()?.parent()?.to_path_buf()
+    };
+
+    [installed, development].into_iter().find_map(|root| {
+        root.join("std/builtins.hew")
+            .is_file()
+            .then(|| root.canonicalize().ok())
+            .flatten()
+    })
 }
 
 /// Build the stdlib search-path list, applying exclusive precedence tiers.
@@ -142,14 +183,10 @@ pub fn build_module_search_paths_for(source_hint: Option<&std::path::Path>) -> V
     // --- Tier 3: installed binary / external project ---
     let mut tier3: Vec<PathBuf> = Vec::new();
 
-    // FHS: <exe>/../share/hew
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            let share_hew = exe_dir.join("../share/hew");
-            if share_hew.join("std").exists() && !tier3.contains(&share_hew) {
-                tier3.push(share_hew);
-            }
-        }
+    // Compiler-owned installed or development layout. This resolver is also
+    // the sole source of stdlib authority inside `ModuleRegistry`.
+    if let Some(root) = compiler_stdlib_root() {
+        tier3.push(root);
     }
 
     // XDG: ~/.local/share/hew
@@ -173,22 +210,6 @@ pub fn build_module_search_paths_for(source_hint: Option<&std::path::Path>) -> V
         let p = PathBuf::from(prefix);
         if p.join("std").exists() && !tier3.contains(&p) {
             tier3.push(p);
-        }
-    }
-
-    // Dev fallback: two levels above the binary (e.g. target/debug/hew → repo root).
-    // Only reached for an installed/external project when tier-2 found nothing —
-    // i.e. a developer binary compiling a project outside any Hew checkout.
-    // WHY: `cargo run` builds land in target/debug/ so exe/../.. is the repo root.
-    // WHEN obsolete: when Hew has a proper install prefix and std is co-installed.
-    // WHAT the real solution is: install std alongside the binary under share/hew.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            if let Some(repo_root) = exe_dir.parent().and_then(|p| p.parent()) {
-                if repo_root.join("std").exists() && !tier3.contains(&repo_root.to_path_buf()) {
-                    tier3.push(repo_root.to_path_buf());
-                }
-            }
         }
     }
 
@@ -505,6 +526,7 @@ impl ModuleRegistry {
         Self {
             modules: HashMap::new(),
             search_paths,
+            compiler_stdlib_root: compiler_stdlib_root(),
             handle_types: HashSet::new(),
             resource_wrapper_types: HashSet::new(),
             drop_types: HashSet::new(),
@@ -516,19 +538,24 @@ impl ModuleRegistry {
         !self.search_paths.is_empty()
     }
 
-    /// Whether `source_file` is the exact source for `dotted_module` below one
-    /// of this registry's configured stdlib roots.
+    /// Whether `source_file` is the exact source for `dotted_module` below the
+    /// running compiler's own stdlib root.
     ///
-    /// Unlike [`is_canonical_stdlib_module_source`], this does not rediscover a
-    /// root from the source path. The compiler selects these search roots before
-    /// constructing the registry, so a project-local `std/builtins.hew` cannot
-    /// make its own ancestor authoritative merely by existing.
+    /// Module search paths are intentionally excluded: projects, cwd, `HEWPATH`,
+    /// and `HEW_STD` may affect resolution but cannot confer compiler authority.
+    /// A missing compiler-owned root returns `false`.
     pub(crate) fn source_has_stdlib_authority(
         &self,
         source_file: &std::path::Path,
         dotted_module: &str,
     ) -> bool {
-        canonical_stdlib_module_source_in_roots(source_file, dotted_module, &self.search_paths)
+        self.compiler_stdlib_root.as_ref().is_some_and(|root| {
+            canonical_stdlib_module_source_in_roots(
+                source_file,
+                dotted_module,
+                std::slice::from_ref(root),
+            )
+        })
     }
 
     /// Load a module by its full path (e.g. `std::encoding::json`).
@@ -1038,6 +1065,43 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn compiler_stdlib_root_uses_only_binary_relative_layouts() {
+        let installed = TestDir::new("compiler-stdlib-installed");
+        let installed_root = installed.root.join("share/hew");
+        fs::create_dir_all(installed_root.join("std")).unwrap();
+        fs::write(
+            installed_root.join("std/builtins.hew"),
+            "// installed compiler std\n",
+        )
+        .unwrap();
+        let installed_executable = installed.root.join("bin/hew");
+        assert_eq!(
+            compiler_stdlib_root_for_executable(&installed_executable),
+            installed_root.canonicalize().ok()
+        );
+
+        let development = TestDir::new("compiler-stdlib-development");
+        fs::create_dir_all(development.root.join("std")).unwrap();
+        fs::write(
+            development.root.join("std/builtins.hew"),
+            "// development compiler std\n",
+        )
+        .unwrap();
+        let development_executable = development.root.join("target/debug/hew");
+        assert_eq!(
+            compiler_stdlib_root_for_executable(&development_executable),
+            development.root.canonicalize().ok()
+        );
+
+        let missing = TestDir::new("compiler-stdlib-missing");
+        assert_eq!(
+            compiler_stdlib_root_for_executable(&missing.root.join("bin/hew")),
+            None,
+            "a compiler without its own stdlib layout must fail closed"
+        );
     }
 
     #[test]
@@ -1673,6 +1737,20 @@ mod tests {
         fn root(&self) -> &PathBuf {
             &self.dir.root
         }
+    }
+
+    #[test]
+    fn missing_compiler_stdlib_root_confers_no_authority() {
+        let project = TestHewTree::new("missing-compiler-authority");
+        let mut registry = ModuleRegistry::new(vec![project.root().clone()]);
+        registry.compiler_stdlib_root = None;
+        assert!(
+            !registry.source_has_stdlib_authority(
+                &project.root().join("std/builtins.hew"),
+                "std.builtins"
+            ),
+            "project search paths cannot replace unavailable compiler authority"
+        );
     }
 
     /// HEWPATH set → tier-1 returns exactly those paths, no dev/cwd leakage.

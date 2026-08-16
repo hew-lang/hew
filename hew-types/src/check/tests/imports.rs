@@ -3091,51 +3091,20 @@ fn orphan_impl_emits_warning() {
 
 #[test]
 fn canonical_builtin_source_owns_intrinsic_impls_for_coherence() {
-    use hew_parser::ast::TraitBound;
-
-    let impl_decl = ImplDecl {
-        type_params: None,
-        trait_bound: Some(TraitBound {
-            name: "ExternalTrait".to_string(),
-            type_args: None,
-            assoc_type_bindings: vec![],
-        }),
-        target_type: (
-            TypeExpr::Named {
-                name: "Vec".to_string(),
-                type_args: None,
-            },
-            0..0,
-        ),
-        where_clause: None,
-        type_aliases: vec![],
-        methods: vec![],
-    };
-    let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("hew-types has a workspace parent")
-        .to_path_buf();
-    let mut checker = Checker {
-        current_module: Some("std.builtins".to_string()),
-        current_item_source: Some(workspace_root.join("std/builtins.hew")),
-        module_registry: ModuleRegistry::new(vec![workspace_root]),
-        ..Default::default()
-    };
-    checker.check_impl(&impl_decl, &(0..0));
-    let mut primitive_impl = impl_decl;
-    primitive_impl.target_type.0 = TypeExpr::Named {
-        name: "i8".to_string(),
-        type_args: None,
-    };
-    checker.check_impl(&primitive_impl, &(0..0));
+    let compiler_root = crate::module_registry::compiler_stdlib_root()
+        .expect("test executable must resolve its compiler-owned development stdlib");
+    let output = check_intrinsic_coherence_source(
+        &compiler_root.join("std/builtins.hew"),
+        ModuleRegistry::new(vec![]),
+    );
 
     assert!(
-        !checker
+        !output
             .warnings
             .iter()
             .any(|warning| warning.kind == crate::error::TypeErrorKind::OrphanImpl),
         "the canonical builtin source owns intrinsic type impls: {:?}",
-        checker.warnings
+        output.warnings
     );
 }
 
@@ -3186,11 +3155,7 @@ impl IntrinsicCoherenceFixture {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock is after the Unix epoch")
             .as_nanos();
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("hew-types has a workspace parent")
-            .join("target/test-workdirs")
-            .join(format!("{name}-{}-{unique}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("{name}-{}-{unique}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create coherence fixture root");
         Self { root }
     }
@@ -3210,8 +3175,10 @@ impl Drop for IntrinsicCoherenceFixture {
     }
 }
 
-#[test]
-fn project_local_std_builtins_source_cannot_claim_intrinsic_coherence() {
+fn check_intrinsic_coherence_source(
+    source_path: &std::path::Path,
+    registry: ModuleRegistry,
+) -> TypeCheckOutput {
     let source = r"
         impl ForeignTrait for Vec<i64> {}
         impl ForeignTrait for i8 {}
@@ -3223,8 +3190,6 @@ fn project_local_std_builtins_source_cannot_claim_intrinsic_coherence() {
         parsed.errors
     );
 
-    let fixture = IntrinsicCoherenceFixture::new("user-std-builtins-coherence");
-    let user_builtins = fixture.write("std/builtins.hew", source);
     let root_id = ModuleId::root();
     let builtins_id = ModuleId::new(vec!["std".to_string(), "builtins".to_string()]);
     let mut graph = ModuleGraph::new(root_id.clone());
@@ -3233,26 +3198,87 @@ fn project_local_std_builtins_source_cannot_claim_intrinsic_coherence() {
             id: builtins_id.clone(),
             items: parsed.program.items,
             imports: vec![],
-            source_paths: vec![user_builtins],
+            source_paths: vec![source_path.to_path_buf()],
             doc: None,
         })
-        .expect("add user-owned std.builtins module");
+        .expect("add std.builtins module");
     graph.topo_order = vec![builtins_id, root_id];
 
-    let output = Checker::new(test_registry()).check_program(&Program {
+    Checker::new(registry).check_program(&Program {
         module_graph: Some(graph),
         items: vec![],
         module_doc: None,
-    });
-    let orphan_warnings = output
-        .warnings
-        .iter()
-        .filter(|warning| warning.kind == TypeErrorKind::OrphanImpl)
-        .count();
-    assert_eq!(
-        orphan_warnings, 2,
-        "project-local std/builtins.hew must not own Vec or primitive impls: {:?}",
-        output.warnings
+    })
+}
+
+#[test]
+fn project_local_std_builtins_source_cannot_claim_intrinsic_coherence() {
+    const CHILD_MARKER: &str = "HEW_INTRINSIC_COHERENCE_ATTACK_CHILD";
+
+    if std::env::var_os(CHILD_MARKER).is_some() {
+        let attacker_root = std::env::current_dir().expect("attacker cwd is available");
+        let search_paths = crate::module_registry::build_module_search_paths_for(None);
+        assert_eq!(
+            search_paths
+                .first()
+                .and_then(|path| path.canonicalize().ok()),
+            attacker_root.canonicalize().ok(),
+            "production module discovery must select the attacker's std root"
+        );
+        let compiler_root = crate::module_registry::compiler_stdlib_root()
+            .expect("test executable must resolve its compiler-owned development stdlib");
+        assert_ne!(
+            attacker_root.canonicalize().ok(),
+            Some(compiler_root.clone()),
+            "attacker cwd must be distinct from compiler authority"
+        );
+
+        let attacker_builtins = attacker_root.join("std/builtins.hew");
+        let output =
+            check_intrinsic_coherence_source(&attacker_builtins, ModuleRegistry::new(search_paths));
+        let orphan_warnings = output
+            .warnings
+            .iter()
+            .filter(|warning| warning.kind == TypeErrorKind::OrphanImpl)
+            .count();
+        println!("attack module root: {}", attacker_root.display());
+        println!("compiler authority root: {}", compiler_root.display());
+        println!("attack orphan warnings: {orphan_warnings}");
+        assert_eq!(
+            orphan_warnings, 2,
+            "project-local std/builtins.hew must not own Vec or primitive impls: {:?}",
+            output.warnings
+        );
+        return;
+    }
+
+    let fixture = IntrinsicCoherenceFixture::new("user-std-builtins-coherence");
+    fixture.write(
+        "std/builtins.hew",
+        "// attacker-controlled builtins marker\n",
+    );
+    let child = std::process::Command::new(
+        std::env::current_exe().expect("resolve current hew-types test executable"),
+    )
+    .args([
+        "--exact",
+        "check::tests::imports::project_local_std_builtins_source_cannot_claim_intrinsic_coherence",
+        "--nocapture",
+    ])
+    .current_dir(&fixture.root)
+    .env(CHILD_MARKER, "1")
+    .env_remove("HEWPATH")
+    .env_remove("HEW_STD")
+    .output()
+    .expect("run production-shaped attacker-cwd check_program child");
+    let stdout = String::from_utf8_lossy(&child.stdout);
+    let stderr = String::from_utf8_lossy(&child.stderr);
+    print!("{stdout}");
+    eprint!("{stderr}");
+    assert!(
+        child.status.success(),
+        "attacker-cwd child failed with {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        child.status
     );
 }
 

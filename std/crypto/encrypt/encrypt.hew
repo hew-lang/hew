@@ -86,9 +86,10 @@ pub fn last_seal_error() -> CryptoError {
 /// key is not a valid AES-256 key or the ciphertext cannot be produced; use
 /// `try_seal` to handle that instead.
 pub fn seal(key: bytes, plaintext: string) -> bytes {
-    match try_seal(key, plaintext) {
-        Ok(ciphertext) => ciphertext,
-        Err(err) => {
+    let result = try_seal(key, plaintext);
+    match result {
+        .Ok(ciphertext) => ciphertext,
+        .Err(err) => {
             panic(f"encrypt.seal failed: {error_message(err)}");
             "".to_bytes()
         },
@@ -132,8 +133,8 @@ pub fn try_open(key: bytes, ciphertext: bytes) -> Result<string, CryptoError> {
 /// structured error handling of attacker-controlled ciphertext.
 pub fn open(key: bytes, ciphertext: bytes) -> string {
     match try_open(key, ciphertext) {
-        Ok(plaintext) => plaintext,
-        Err(err) => {
+        .Ok(plaintext) => plaintext,
+        .Err(err) => {
             panic(f"encrypt.open failed: {error_message(err)}");
             ""
         },

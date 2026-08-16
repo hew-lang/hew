@@ -279,12 +279,6 @@ tests/pkg-import/reexport_aliased_super_inline_supermethod_accept.hew
 tests/pkg-import/reexport_chain_inline_supermethods_accept.hew
 tests/pkg-import/reexport_super_inline_supermethod_accept.hew
 tests/pkg-import/root_shadow_actor_ask.hew
-tests/pkg-import/sameleaf_glob_actor_ambiguous.hew
-tests/pkg-import/sameleaf_glob_const_ambiguous.hew
-tests/pkg-import/sameleaf_glob_function_ambiguous.hew
-tests/pkg-import/sameleaf_glob_machine_ambiguous.hew
-tests/pkg-import/sameleaf_glob_trait_ambiguous.hew
-tests/pkg-import/sameleaf_glob_type_ambiguous.hew
 tests/pkg-import/sameleaf_named_actor_ambiguous.hew
 tests/pkg-import/sameleaf_named_const_ambiguous.hew
 tests/pkg-import/sameleaf_named_function_ambiguous.hew

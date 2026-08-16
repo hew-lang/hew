@@ -877,13 +877,16 @@ assert_sameleaf_binding_ambiguous() {
   echo "PASS ${fixture}"
 }
 
-for import_form in named glob; do
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_function_ambiguous" "clash_fn"
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_const_ambiguous" "CLASH_CONST"
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_trait_ambiguous" "ClashTrait"
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_type_ambiguous" "ClashType"
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_actor_ambiguous" "ClashActor"
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_machine_ambiguous" "ClashMachine"
+for namespace in function const trait type actor machine; do
+  case "$namespace" in
+    function) symbol="clash_fn" ;;
+    const) symbol="CLASH_CONST" ;;
+    trait) symbol="ClashTrait" ;;
+    type) symbol="ClashType" ;;
+    actor) symbol="ClashActor" ;;
+    machine) symbol="ClashMachine" ;;
+  esac
+  assert_sameleaf_binding_ambiguous "sameleaf_named_${namespace}_ambiguous" "$symbol"
 done
 
 # Positive complement: distinct qualifiers/aliases for the working function,

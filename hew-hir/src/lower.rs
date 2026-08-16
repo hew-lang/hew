@@ -11917,7 +11917,7 @@ impl LowerCtx {
         span: &Span,
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
-        // Namespaced module-qualified call `module::fn(args)`: the callee is a
+        // Module-qualified call `module.fn(args)`: the callee is a
         // `FieldAccess` on a module identifier, not a value. The checker
         // recorded a `RewriteModuleQualifiedToFunction` on this call span (the
         // same rewrite the dot form `module.fn(args)` records via the
@@ -12250,7 +12250,7 @@ impl LowerCtx {
         match &function.0 {
             Expr::Identifier(name) => name.clone(),
             Expr::FieldAccess { object, field } => match &object.0 {
-                Expr::Identifier(owner) => format!("{owner}::{field}"),
+                Expr::Identifier(owner) => format!("{owner}.{field}"),
                 _ => "<call expression>".to_string(),
             },
             _ => "<call expression>".to_string(),
@@ -34493,8 +34493,9 @@ fn scan_expr_for_call_shape(
                                  `actor |params| { body }` to create a lambda actor"
                                     .to_string()
                             } else {
+                                let source_name = name.replace("::", ".");
                                 format!(
-                                    "call to `{name}` has no MIR body or runtime-ABI lowering; \
+                                    "call to `{source_name}` has no MIR body or runtime-ABI lowering; \
                                      only module functions, extern fns, monomorphisation \
                                      instantiations, and recognised runtime symbols are \
                                      callable here"

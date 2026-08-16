@@ -1158,6 +1158,77 @@ struct ImportedImplLowering<'a> {
 #[derive(Debug, Default)]
 struct ImplBodyPlan {
     symbols: HashMap<hew_types::DefId, String>,
+    /// Declarations whose executable bodies are supplied by the compiler,
+    /// rather than selected from source/import traversal.
+    compiler_selected: HashSet<hew_types::DefId>,
+}
+
+/// Whether two linker spellings are compatibility projections of one
+/// checker-owned impl declaration.
+///
+/// The checker publishes an imported impl under both its canonical owner
+/// (`pkg.Type::method`) and, where the surface permits it, the bare dispatch
+/// alias (`Type::method`).  Reaching the same source through two import paths
+/// can therefore present both spellings to the HIR planner.  The declaration
+/// key is the authority: both symbols must name its exact receiver and method.
+/// A merely same-shaped symbol for another receiver remains a genuine
+/// conflict and fails closed.
+fn impl_body_symbol_matches_declaration(declaration: &hew_types::DefId, symbol: &str) -> bool {
+    let Some((receiver, declaration_tail)) = declaration.full_path().split_once("::<") else {
+        return false;
+    };
+    let Some((_, method)) = declaration_tail.rsplit_once(">::") else {
+        return false;
+    };
+    let Some((symbol_owner, symbol_method)) = symbol.rsplit_once("::") else {
+        return false;
+    };
+    if symbol_method != method {
+        return false;
+    }
+    let receiver_leaf = hew_types::short_name(receiver);
+    symbol_owner == receiver
+        || symbol_owner == receiver_leaf
+        || symbol_owner
+            .strip_prefix(receiver)
+            .is_some_and(|suffix| suffix.starts_with("$$"))
+        || symbol_owner
+            .strip_prefix(receiver_leaf)
+            .is_some_and(|suffix| suffix.starts_with("$$"))
+}
+
+fn impl_body_symbols_alias_one_declaration(
+    declaration: &hew_types::DefId,
+    left: &str,
+    right: &str,
+) -> bool {
+    left != right
+        && impl_body_symbol_matches_declaration(declaration, left)
+        && impl_body_symbol_matches_declaration(declaration, right)
+}
+
+fn declaration_owned_impl_body_symbol<'a>(
+    declaration: &hew_types::DefId,
+    left: &'a str,
+    right: &'a str,
+) -> &'a str {
+    let receiver = declaration
+        .full_path()
+        .split_once("::<")
+        .map_or("", |(receiver, _)| receiver);
+    let is_declaration_owned = |symbol: &str| {
+        symbol.rsplit_once("::").is_some_and(|(owner, _)| {
+            owner == receiver
+                || owner
+                    .strip_prefix(receiver)
+                    .is_some_and(|suffix| suffix.starts_with("$$"))
+        })
+    };
+    if is_declaration_owned(right) && !is_declaration_owned(left) {
+        right
+    } else {
+        left
+    }
 }
 
 fn plan_impl_block_symbols(
@@ -1230,6 +1301,16 @@ fn plan_impl_block_symbols(
             .insert(declaration.clone(), symbol.clone())
         {
             if existing != symbol {
+                if impl_body_symbols_alias_one_declaration(&declaration, &existing, &symbol) {
+                    let selected = if ctx.impl_body_plan.compiler_selected.contains(&declaration) {
+                        existing
+                    } else {
+                        declaration_owned_impl_body_symbol(&declaration, &existing, &symbol)
+                            .to_string()
+                    };
+                    ctx.impl_body_plan.symbols.insert(declaration, selected);
+                    continue;
+                }
                 ctx.impl_body_plan.symbols.remove(&declaration);
                 ctx.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
@@ -1239,7 +1320,10 @@ fn plan_impl_block_symbols(
                         ),
                     },
                     0..0,
-                    "one implementation declaration selected two distinct emitted-body symbols",
+                    format!(
+                        "implementation declaration `{}` selected two distinct emitted-body symbols: `{existing}` and `{symbol}`",
+                        declaration.full_path()
+                    ),
                 ));
             }
         }
@@ -1305,6 +1389,7 @@ fn plan_imported_impl_bodies(
     file_import_modules: &HashSet<hew_parser::module::ModuleId>,
     preferred_modules: &HashSet<hew_parser::module::ModuleId>,
     span_indices: &hew_parser::module::FileSpanIndices,
+    skip_imported_builtin_impls: bool,
 ) {
     let empty_skips = HashSet::new();
     // Source-order bodies include root declarations and flattened file imports.
@@ -1338,6 +1423,9 @@ fn plan_imported_impl_bodies(
         }
         let module = &module_graph.modules[module_id];
         let source_module = module_id.path.join(".");
+        if skip_imported_builtin_impls && source_module == "std.builtins" {
+            continue;
+        }
         let previous_module = ctx.current_module_name.replace(source_module.clone());
         let private_fns: HashSet<String> = module
             .items
@@ -2571,6 +2659,16 @@ pub fn lower_program_with_mono_cap(
     target_arch: TargetArch,
 ) -> LowerOutput {
     let mut ctx = LowerCtx::new(type_check_output, mono_cap, target_arch);
+    let compiling_prelude_manifest = program.module_graph.as_ref().is_some_and(|graph| {
+        graph
+            .modules
+            .get(&graph.root)
+            .is_some_and(|root| root.items.is_empty() && root.source_paths.is_empty())
+            && graph
+                .modules
+                .keys()
+                .any(|module| module.path.join(".") == "std.prelude")
+    });
     ctx.type_aliases = collect_type_aliases(program);
     let file_import_module_idx = file_import_item_module_indices(program);
     // Source items flattened from a file import still belong to that file's
@@ -4365,6 +4463,9 @@ pub fn lower_program_with_mono_cap(
                             })
                         {
                             ctx.impl_body_plan
+                                .compiler_selected
+                                .insert(declaration.clone());
+                            ctx.impl_body_plan
                                 .symbols
                                 .entry(declaration)
                                 .or_insert(emitted_symbol);
@@ -4388,6 +4489,7 @@ pub fn lower_program_with_mono_cap(
         &file_import_modules,
         &preferred_modules,
         &span_indices,
+        compiling_prelude_manifest,
     );
 
     // Third pass: emit all items in source order now that both fn signatures
@@ -4961,6 +5063,15 @@ pub fn lower_program_with_mono_cap(
                         // private-helper closure reachable from impl methods, a
                         // follow-up to the free-fn closure already wired here.)
                         Item::Impl(impl_decl) => {
+                            // `std/prelude.hew` is the compiler's import-only
+                            // authority manifest. Its explicit `std.builtins`
+                            // edge selects the same implicit declarations whose
+                            // executable receiver bodies are injected below;
+                            // it must not materialise a second body set through
+                            // the package-import path.
+                            if compiling_prelude_manifest && source_module == "std.builtins" {
+                                continue;
+                            }
                             // Skip impl blocks of FILE-import modules: their
                             // items were spliced into `program.items` and
                             // already lowered by the source-order third pass.
@@ -8268,6 +8379,10 @@ impl LowerCtx {
                 &mut self.resolved_expr_types,
                 tc_output.resolved_expr_types.clone(),
             ),
+            std::mem::replace(
+                &mut self.record_init_type_args,
+                tc_output.record_init_type_args.clone(),
+            ),
         );
 
         let result = f(self);
@@ -8287,6 +8402,7 @@ impl LowerCtx {
             self.produced_value_ownership,
             self.produced_value_dependencies,
             self.resolved_expr_types,
+            self.record_init_type_args,
         ) = saved;
 
         result
@@ -12589,6 +12705,20 @@ impl LowerCtx {
                 }
             }
             let symbol = crate::node::HirImplBlock::method_symbol(&symbol_self_name, &method.name);
+            let declaration = self.impl_method_declaration_ids.get(&symbol).cloned();
+            if let Some((declaration, selected)) = declaration.as_ref().and_then(|declaration| {
+                self.impl_body_plan
+                    .symbols
+                    .get(declaration)
+                    .map(|selected| (declaration, selected))
+            }) {
+                if impl_body_symbols_alias_one_declaration(declaration, selected, &symbol) {
+                    // This AST body is a second import-path view of the exact
+                    // declaration already selected by the plan. Only the
+                    // selected spelling may materialise a HIR function.
+                    continue;
+                }
+            }
             // Pass impl-level type params so that methods of e.g. `impl<U> Trait for Wrapper<U>`
             // carry `U` as a `HirFn::type_params` entry — required for monomorphization
             // of generic-over-generic impl methods (W3.022 Stage 3).
@@ -12617,13 +12747,12 @@ impl LowerCtx {
             // The plan deliberately excludes imported methods skipped for an
             // unresolved body/signature, so a checker compatibility alias can
             // never be promoted into a callable implementation body.
-            if let Some(declaration) = self.impl_method_declaration_ids.get(&symbol) {
-                let declaration = declaration.clone();
+            if let Some(declaration) = &declaration {
                 if self.lowering_injected_items
-                    || self.validate_impl_body_plan(&declaration, &symbol, &span)
+                    || self.validate_impl_body_plan(declaration, &symbol, &span)
                 {
                     self.impl_method_body_symbols
-                        .entry(declaration)
+                        .entry(declaration.clone())
                         .or_insert_with(|| symbol.clone());
                 }
             }
@@ -12646,7 +12775,7 @@ impl LowerCtx {
             method_declaring_traits.push(declaring_trait);
             method_declaring_trait_ids.push(ids.as_ref().map(|(trait_id, _)| trait_id.clone()));
             method_trait_method_ids.push(ids.as_ref().map(|(_, method_id)| method_id.clone()));
-            method_ids.push(self.impl_method_declaration_ids.get(&symbol).cloned());
+            method_ids.push(declaration);
         }
 
         // Lower trait default methods that are NOT overridden in this impl.
@@ -35833,6 +35962,67 @@ fn main() {}
             lowered.into_result().is_err(),
             "a conflicting pre-lowering body plan must remain fatal"
         );
+    }
+
+    #[test]
+    fn two_import_paths_select_one_declaration_owned_impl_body_symbol() {
+        let parsed = hew_parser::parse(
+            r"
+type Widget { value: i64 }
+
+impl Widget {
+    fn run(self) -> i64 { self.value }
+}
+",
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+        let impl_decl = parsed
+            .program
+            .items
+            .iter()
+            .find_map(|(item, _)| match item {
+                Item::Impl(decl) => Some(decl),
+                _ => None,
+            })
+            .expect("fixture impl");
+        let declaration = hew_types::DefId::new(
+            "fixture.owner.Widget::<impl inherent for fixture.owner.Widget>::run",
+        );
+
+        for paths in [
+            ["Widget", "fixture.owner.Widget"],
+            ["fixture.owner.Widget", "Widget"],
+        ] {
+            let mut output = TypeCheckOutput::default();
+            output
+                .impl_method_declaration_ids
+                .insert("Widget::run".to_string(), declaration.clone());
+            output
+                .impl_method_declaration_ids
+                .insert("fixture.owner.Widget::run".to_string(), declaration.clone());
+            let mut ctx = LowerCtx::new(&output, MONOMORPHISATION_REGISTRY_CAP, TargetArch::host());
+            for path in paths {
+                plan_impl_block_symbols(&mut ctx, impl_decl, path, &HashSet::new());
+            }
+
+            assert!(
+                ctx.diagnostics.is_empty(),
+                "two paths to one declaration are aliases, not duplicate bodies: {:#?}",
+                ctx.diagnostics
+            );
+            assert_eq!(
+                ctx.impl_body_plan
+                    .symbols
+                    .get(&declaration)
+                    .map(String::as_str),
+                Some("fixture.owner.Widget::run"),
+                "declaration identity must choose the same emitted symbol in either path order"
+            );
+        }
     }
 
     #[test]

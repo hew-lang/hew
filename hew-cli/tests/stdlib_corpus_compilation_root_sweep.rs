@@ -76,6 +76,28 @@ fn check(args: &[&std::path::Path]) -> Verdict {
     }
 }
 
+fn compile_to_mir(file: &std::path::Path) -> Verdict {
+    let output = Command::new(hew_binary())
+        .arg("compile")
+        .arg(file)
+        .args(["--dump-mir", "elab"])
+        .current_dir(repo_root())
+        .output()
+        .expect("run hew compile --dump-mir elab");
+    #[cfg(unix)]
+    let killed_by = {
+        use std::os::unix::process::ExitStatusExt;
+        output.status.signal()
+    };
+    #[cfg(not(unix))]
+    let killed_by = None;
+    Verdict {
+        ok: output.status.success(),
+        killed_by,
+        detail: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
 /// Every `.hew` file under `std/`, which is exactly the set
 /// `scripts/stdlib-ratchet.sh` walks.
 fn corpus() -> Vec<std::path::PathBuf> {
@@ -141,6 +163,22 @@ fn every_stdlib_file_checks_clean_as_a_root_compilation_unit() {
             .map(|(f, d)| format!("  {f}: {d}"))
             .collect::<Vec<_>>()
             .join("\n")
+    );
+}
+
+#[test]
+fn prelude_compiles_to_mir_cleanly_as_a_root_compilation_unit() {
+    let prelude = repo_root().join("std/prelude.hew");
+    let verdict = compile_to_mir(&prelude);
+    assert_eq!(
+        verdict.killed_by, None,
+        "prelude root compilation must diagnose rather than abort: {}",
+        verdict.detail
+    );
+    assert!(
+        verdict.ok,
+        "prelude must compile through HIR and MIR as a root unit: {}",
+        verdict.detail
     );
 }
 

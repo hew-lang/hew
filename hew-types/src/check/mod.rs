@@ -47,6 +47,8 @@ mod resolution;
 mod statements;
 #[cfg(test)]
 mod tests;
+mod type_members;
+use self::type_members::DottedTypeMemberUse;
 mod types;
 mod util;
 mod visibility;

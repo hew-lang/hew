@@ -6210,6 +6210,16 @@ impl Checker {
             return Ty::Error;
         }
 
+        if let Some(head) = self.resolve_dotted_type_head(object) {
+            if let Some(result) = self.dispatch_dotted_type_member(
+                &head,
+                field,
+                &DottedTypeMemberUse::Reference { span },
+            ) {
+                return result;
+            }
+        }
+
         if let Expr::Identifier(name) = &object.0 {
             if name == "self" {
                 if let Some(ty) = self.check_machine_transition_self_field_access(field, span) {
@@ -6237,15 +6247,9 @@ impl Checker {
                 }
             }
 
-            if self.env.lookup_ref(name).is_none() {
-                let canonical_type = self
-                    .resolve_nominal_declaration(NominalOrigin::Lexical, name)
-                    .unwrap_or_else(|| name.clone());
-                let dotted_variant = format!("{canonical_type}::{field}");
-                if self.lookup_variant_constructor(&dotted_variant).is_some() {
-                    return self.synthesize_identifier(&dotted_variant, span);
-                }
-            }
+            // Dotted type members were dispatched from the canonical head
+            // above. Remaining identifiers are ordinary value projections or
+            // unresolved names and continue through the existing diagnostics.
         }
 
         // Dotted module-qualified unit constructor:

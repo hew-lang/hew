@@ -1,14 +1,15 @@
 fn live -> i64
   statements:
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=Rc<i64>
     bind BindingId(0) rc site=SiteId(0) ty=Rc<i64>
     use BindingId(0) rc site=SiteId(3) ty=Rc<i64> intent=Read
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(2) ty=Rc<i64>
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(2) ty=Rc<i64>
     bind BindingId(1) alias site=SiteId(2) ty=Rc<i64>
     use BindingId(0) rc site=SiteId(5) ty=Rc<i64> intent=Read
-    bind BindingId(4294967230) __hew_produced_value site=SiteId(4) ty=Weak<i64>
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(4) ty=Weak<i64>
     bind BindingId(2) weak site=SiteId(4) ty=Weak<i64>
     use BindingId(2) weak site=SiteId(7) ty=Weak<i64> intent=Read
-    bind BindingId(4294967229) __hew_produced_value site=SiteId(6) ty=Weak<i64>
+    bind BindingId(4294967228) __hew_produced_value site=SiteId(6) ty=Weak<i64>
     bind BindingId(3) _weak_alias site=SiteId(6) ty=Weak<i64>
     use BindingId(0) rc site=SiteId(11) ty=Rc<i64> intent=Read
     use BindingId(0) rc site=SiteId(14) ty=Rc<i64> intent=Read
@@ -16,7 +17,7 @@ fn live -> i64
     use BindingId(0) rc site=SiteId(17) ty=Rc<i64> intent=Read
     bind BindingId(5) uniqueness site=SiteId(15) ty=i64
     use BindingId(2) weak site=SiteId(24) ty=Weak<i64> intent=Read
-    bind BindingId(4294967228) __hew_call_scrutinee site=SiteId(23) ty=Option<Rc<i64>>
+    bind BindingId(4294967227) __hew_call_scrutinee site=SiteId(23) ty=Option<Rc<i64>>
     return site=Some(SiteId(22)) ty=i64
     bind BindingId(6) upgraded site=SiteId(25) ty=Rc<i64>
     use BindingId(0) rc site=SiteId(27) ty=Rc<i64> intent=Read
@@ -25,7 +26,7 @@ fn live -> i64
     use BindingId(6) upgraded site=SiteId(35) ty=Rc<i64> intent=Read
     use BindingId(1) alias site=SiteId(38) ty=Rc<i64> intent=Read
     use BindingId(5) uniqueness site=SiteId(39) ty=i64 intent=Read
-    drop BindingId(4294967228) __hew_call_scrutinee ty=Option<Rc<i64>>
+    drop BindingId(4294967227) __hew_call_scrutinee ty=Option<Rc<i64>>
     drop BindingId(3) _weak_alias ty=Weak<i64>
     drop BindingId(2) weak ty=Weak<i64>
     drop BindingId(1) alias ty=Rc<i64>
@@ -120,9 +121,10 @@ fn live -> i64
 
 fn expired -> Weak<i64>
   statements:
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(41) ty=Rc<i64>
     bind BindingId(7) rc site=SiteId(41) ty=Rc<i64>
     use BindingId(7) rc site=SiteId(44) ty=Rc<i64> intent=Read
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(43) ty=Weak<i64>
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(43) ty=Weak<i64>
     return site=Some(SiteId(43)) ty=Weak<i64>
     drop BindingId(7) rc ty=Rc<i64>
   drop_plans:

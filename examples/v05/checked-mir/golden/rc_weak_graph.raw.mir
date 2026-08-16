@@ -18,15 +18,16 @@ fn build() -> Weak<Node> [conv=default]
     _15: ()
   bb0:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1) ty=Node
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(0) ty=Rc<Node>
     stmt: bind BindingId(0) root site=SiteId(0) ty=Rc<Node>
     stmt: use BindingId(0) root site=SiteId(5) ty=Rc<Node> intent=Read
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(4) ty=Weak<Node>
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(4) ty=Weak<Node>
     stmt: bind BindingId(1) weak site=SiteId(4) ty=Weak<Node>
     stmt: use BindingId(0) root site=SiteId(7) ty=Rc<Node> intent=Read
     stmt: use BindingId(1) weak site=SiteId(12) ty=Weak<Node> intent=Read
-    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(11) ty=Weak<Node>
-    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(10) ty=Option<Weak<Node>>
-    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(8) ty=Node
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(11) ty=Weak<Node>
+    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(10) ty=Option<Weak<Node>>
+    stmt: bind BindingId(4294967226) __hew_produced_value site=SiteId(8) ty=Node
     stmt: eval site=SiteId(6) ty=()
     stmt: use BindingId(1) weak site=SiteId(13) ty=Weak<Node> intent=Read
     stmt: return site=Some(SiteId(13)) ty=Weak<Node>

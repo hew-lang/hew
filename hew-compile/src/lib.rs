@@ -2189,7 +2189,7 @@ mod tests {
 
     #[test]
     fn imported_generic_impl_bodies_publish_each_checker_owned_declaration() {
-        // `privslot` deliberately combines all three conditions that used to
+        // `privslot` deliberately combines all three conditions that
         // make a body lookup tempting to recover from a leaf spelling: its
         // module-private generic `Slot<T>` is nested in a public `Store<T>`,
         // and the consumer dispatches two inherent methods after the root body
@@ -4399,9 +4399,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
 
     /// `std::misc::log` ships `pub const JSON: i64 = 1` and `pub const TEXT: i64 = 0`
     /// in its Hew source layer.  The stdlib registration path routes these through
-    /// `register_stdlib_hew_items`, which previously had no `Item::Const` arm and
-    /// silently dropped them so `log.JSON` / `log.TEXT` were unknown to the type
-    /// checker.
+    /// `register_stdlib_hew_items` registers these constants so `log.JSON` /
+    /// `log.TEXT` are available to the type checker.
     ///
     /// This test verifies the real stdlib const resolution works end-to-end: the
     /// source goes through import resolution (which populates `resolved_items` on
@@ -4440,8 +4439,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         );
     }
 
-    /// Importing `std::fs` and `std::path` together previously produced two
-    /// defects caused by `SpanKey` lacking a per-module discriminator:
+    /// Importing `std::fs` and `std::path` together uses a per-module
+    /// discriminator in `SpanKey`:
     ///
     /// * Defect A — `hew check`: `unsupported unary - for operand i64 -> string`
     ///   at `std/path.hew:227` (ordinary `return -1;`).  The negation was

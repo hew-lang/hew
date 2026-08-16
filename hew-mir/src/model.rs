@@ -6432,7 +6432,7 @@ pub enum MirCheck {
     /// Rather than emit the double-free, the elaborator refuses. This is the
     /// catch-all gate for the combinatorial aggregate-extraction shapes (re-
     /// aggregation, nested aggregates, multi-hop extraction) whose precise
-    /// exact-once proof is deferred to v0.5.1: the invariant is "no owned handle
+    /// The exact-once proof is incomplete: the invariant is "no owned handle
     /// reaches codegen with more than one live free path; unprovable → refuse".
     ///
     /// `name` is the source binding's name; `handle_ty` is its rendered type for

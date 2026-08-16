@@ -1007,7 +1007,6 @@ fn parse_negative_i64_min_literal_pattern() {
 #[test]
 fn parse_pattern_contextual_keywords() {
     // All contextual keywords that can appear as identifiers in patterns.
-    // state/event/on/when/join were previously missing from the inline list.
     let keywords = [
         "after",
         "from",
@@ -1394,10 +1393,6 @@ fn parse_empty_actor_body() {
 
 #[test]
 fn parse_actor_lifecycle_hook_and_receive_attributes() {
-    // The `terminate { }` block surface was removed in favour of the
-    // annotation-based hook surface; cleanup logic is expressed as a
-    // plain `fn` annotated with `#[on(stop)]` (and `#[on(start)]` for
-    // startup logic).
     let source = r"actor Worker {
     #[on(stop)]
     fn shutdown() { stop(); }
@@ -2369,7 +2364,6 @@ fn parse_visibility_modifiers() {
 }
 #[test]
 fn parse_generic_lambda_removed_emits_typed_diagnostic() {
-    // Generic lambda `<T>(params) => body` was removed in v0.5.
     // The parser must emit a typed E_CLOSURE_PIPE_SYNTAX diagnostic,
     // not silently accept or produce a cryptic error.
     for source in [
@@ -2392,7 +2386,6 @@ fn parse_generic_lambda_removed_emits_typed_diagnostic() {
 
 #[test]
 fn parse_paren_lambda_removed_emits_typed_diagnostic() {
-    // Parenthesized `(params) => body` was removed in v0.5.
     // The parser must emit a typed E_CLOSURE_PIPE_SYNTAX diagnostic.
     for source in [
         "fn main() { let f = (x) => x; }",

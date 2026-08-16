@@ -5180,7 +5180,7 @@ fn dedup_whole_value_handoff(
 /// the candidate view, to a fixpoint (each round strictly shrinks the view,
 /// and removing a candidate only removes escape notes, so admissions grow
 /// monotonically). The excluded binding itself ends unregistered — the same
-/// leak-not-double-free posture the legacy path had for that shape.
+/// leak-not-double-free safety posture for that shape.
 fn admit_with_flagged_fallback<C, F>(
     owned_locals_snapshot: &[(BindingId, String, ResolvedTy)],
     collection_drop_flags: &HashMap<BindingId, Place>,

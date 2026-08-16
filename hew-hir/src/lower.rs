@@ -505,8 +505,8 @@ const SYNTHETIC_INSTANT_NOW_ITEM: ItemId = ItemId(u32::MAX / 2 - 19);
 /// the same `u32::MAX / 2` band, just below `monitor`.
 ///
 /// The sibling checker builtin `duplex` (detached) is deliberately NOT seeded
-/// here: `duplex` has no runtime constructor (`hew_duplex_new` was removed in
-/// the M2 runtime refactor). Registering it would pass `verify_hir` but fail
+/// here: `duplex` has no runtime constructor (`hew_duplex_new`). Registering it
+/// would pass `verify_hir` but fail
 /// closed at the MIR boundary — pretend-support rather than a real lowering
 /// path. The runnable Stream/Sink constructor surface is `std::stream`'s
 /// `pipe`/`bytes_pipe` (real `fn` items).

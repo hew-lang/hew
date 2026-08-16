@@ -3347,8 +3347,8 @@ impl Builder {
             //
             // Capture places: typed as I64 (opaque pointer). The runtime returns
             // a NUL-terminated C string as *mut u8 cast to i64 (zero = null).
-            // Slice 5 will introduce proper CString/StrPtr semantics; for now the
-            // i64 opaque representation is substrate-correct for null-check dispatch.
+            // The i64 opaque representation is substrate-correct for null-check
+            // dispatch until nullable pointer types are available.
             //
             // WHY I64 for a pointer: MIR has no nullable-pointer type today. I64
             // is the convention used by other handle places (lambda-actor handles

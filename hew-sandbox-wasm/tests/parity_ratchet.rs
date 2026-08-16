@@ -143,8 +143,8 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("pattern_matching"),
     },
     Construct {
-        id: "Vec::new + push/get/len",
-        probe: "fn main() {\n    var v = Vec.new();\n    v.push(1);\n    v.push(2);\n    println(v.len());\n}\n",
+        id: "Vec.new + push/get/len",
+        probe: "fn main() {\n    var v = Vec<i64>.new();\n    v.push(1);\n    v.push(2);\n    println(v.len());\n}\n",
         coverage: Coverage::Parity("collections"),
     },
     Construct {
@@ -786,13 +786,13 @@ const CONSTRUCTS: &[Construct] = &[
         // Vec<T>::contains: linear equality scan via canonical comparison.
         // Emits `vector.contains` opcode (added in this parity sweep).
         id: "Vec<T>::contains",
-        probe: "fn main() {\n    let v: Vec<i64> = Vec.new();\n    v.push(10);\n    println(v.contains(10));\n}\n",
+        probe: "fn main() {\n    let v = Vec<i64>.new();\n    v.push(10);\n    println(v.contains(10));\n}\n",
         coverage: Coverage::Parity("vec_operations"),
     },
     Construct {
         // v[start..end] exclusive range slice: emits `vector.range_slice` opcode.
         id: "Vec<T> range slice v[start..end]",
-        probe: "fn main() {\n    let v: Vec<i64> = Vec.new();\n    v.push(1);\n    v.push(2);\n    v.push(3);\n    let s = v[0..2];\n    println(s.len());\n}\n",
+        probe: "fn main() {\n    let v = Vec<i64>.new();\n    v.push(1);\n    v.push(2);\n    v.push(3);\n    let s = v[0..2];\n    println(s.len());\n}\n",
         coverage: Coverage::Parity("vec_operations"),
     },
     Construct {
@@ -800,7 +800,7 @@ const CONSTRUCTS: &[Construct] = &[
         // exclusive end (`end + 1`) and delegates to `vector.range_slice`.
         // End element is included in the result slice.
         id: "Vec<T> inclusive range slice v[start..=end]",
-        probe: "fn main() {\n    let v: Vec<i64> = Vec.new();\n    v.push(10);\n    v.push(20);\n    v.push(30);\n    let s = v[0..=1];\n    println(s.len());\n    println(s[1]);\n}\n",
+        probe: "fn main() {\n    let v = Vec<i64>.new();\n    v.push(10);\n    v.push(20);\n    v.push(30);\n    let s = v[0..=1];\n    println(s.len());\n    println(s[1]);\n}\n",
         coverage: Coverage::Parity("vec_inclusive_slice"),
     },
     Construct {
@@ -827,7 +827,7 @@ const CONSTRUCTS: &[Construct] = &[
         // three compared equal (silent wrong-result).  valuesEqual fixes this
         // by routing f64 pairs through JS === (OEQ) instead of canonicalComparable.
         id: "Vec<f64>::contains with NaN / +-Infinity (fcmp-OEQ semantics)",
-        probe: "fn main() {\n    let zero: f64 = 0.0;\n    let nan: f64 = zero / zero;\n    let inf: f64 = 1.0 / zero;\n    let nans: Vec<f64> = Vec.new();\n    nans.push(nan);\n    println(nans.contains(nan));\n    println(nans.contains(inf));\n    let nums: Vec<f64> = Vec.new();\n    nums.push(2.5);\n    println(nums.contains(2.5));\n}\n",
+        probe: "fn main() {\n    let zero: f64 = 0.0;\n    let nan: f64 = zero / zero;\n    let inf: f64 = 1.0 / zero;\n    let nans = Vec<f64>.new();\n    nans.push(nan);\n    println(nans.contains(nan));\n    println(nans.contains(inf));\n    let nums = Vec<f64>.new();\n    nums.push(2.5);\n    println(nums.contains(2.5));\n}\n",
         coverage: Coverage::Parity("vec_f64_nonfinite_contains"),
     },
     Construct {
@@ -839,7 +839,7 @@ const CONSTRUCTS: &[Construct] = &[
         // `Option::clone`/`Result::clone` (checker reports `UndefinedMethod`),
         // so no valid program can reach the emitter with one.
         id: "Vec/String/Array/Slice method `clone()`",
-        probe: "fn takes(xs: [i64]) -> i64 {\n    let ys = xs.clone();\n    ys.len()\n}\nfn main() {\n    let v: Vec<i64> = Vec.new();\n    v.push(1);\n    let vc = v.clone();\n    println(vc.len());\n    let s = \"hi\";\n    let sc = s.clone();\n    println(sc);\n    let xs = [1, 2, 3];\n    let xc = xs.clone();\n    println(xc[0]);\n    println(takes(v));\n}\n",
+        probe: "fn takes(xs: [i64]) -> i64 {\n    let ys = xs.clone();\n    ys.len()\n}\nfn main() {\n    let v = Vec<i64>.new();\n    v.push(1);\n    let vc = v.clone();\n    println(vc.len());\n    let s = \"hi\";\n    let sc = s.clone();\n    println(sc);\n    let xs = [1, 2, 3];\n    let xc = xs.clone();\n    println(xc[0]);\n    println(takes(v));\n}\n",
         coverage: Coverage::Parity("method_clone"),
     },
     Construct {
@@ -873,7 +873,7 @@ const CONSTRUCTS: &[Construct] = &[
         // `[start..]`, and `[..end]` fail-closed at the profile gate rather
         // than admitting bytecode that later traps as unsupported.
         id: "open-ended Vec range slices",
-        probe: "fn main() {\n    let v: Vec<i64> = Vec.new();\n    let all = v[..];\n    let tail = v[1..];\n    let prefix = v[..2];\n    println(all.len() + tail.len() + prefix.len());\n}\n",
+        probe: "fn main() {\n    let v = Vec<i64>.new();\n    let all = v[..];\n    let tail = v[1..];\n    let prefix = v[..2];\n    println(all.len() + tail.len() + prefix.len());\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
         },

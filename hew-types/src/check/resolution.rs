@@ -2159,12 +2159,12 @@ impl Checker {
 
     /// Walk a `Ty` and collapse `Ty::AssocType { base, trait_name, assoc_name }`
     /// carriers whose `base` resolves to either an in-scope type parameter
-    /// with a where-clause associated-type binding or a concrete
-    /// `Ty::Named { name, .. }` for which an impl is registered. Carriers whose
-    /// base is still abstract and unconstrained (a generic type param without
-    /// a matching associated-type binding, an unresolved inference variable,
-    /// another `Ty::AssocType`, etc.) pass through unchanged so they can be
-    /// diagnosed or collapsed later when more substitutions arrive.
+    /// with a where-clause associated-type binding or a concrete impl target
+    /// for which an impl is registered. Carriers whose base is still abstract
+    /// and unconstrained (a generic type param without a matching associated-
+    /// type binding, an unresolved inference variable, another
+    /// `Ty::AssocType`, etc.) pass through unchanged so they can be diagnosed
+    /// or collapsed later when more substitutions arrive.
     ///
     /// Lookup goes through `impl_assoc_type_bindings`, populated at impl-
     /// registration. When no binding exists for `(base_type, trait, assoc)`,
@@ -2201,11 +2201,20 @@ impl Checker {
                             assoc_name: assoc_name.clone(),
                         };
                     }
-                    // Associated-type projection is executable conformance
-                    // authority. Both registration and the resolved base carry
-                    // the full nominal owner, so a miss must remain a miss.
-                    let nominal_identity = Self::canonical_primitive_or_builtin_key(&resolved_base)
-                        .or_else(|| {
+                }
+
+                // Associated-type projection is executable conformance
+                // authority. Registration keys primitive targets by their flat
+                // `Ty` variant and named targets by their constructor identity;
+                // projection must accept both classes. Generic arguments remain
+                // instance data used only to substitute the selected binding.
+                let named_base = match &resolved_base {
+                    Ty::Named { name, args, .. } => Some((name, args)),
+                    _ => None,
+                };
+                let nominal_identity = Self::canonical_primitive_or_builtin_key(&resolved_base)
+                    .or_else(|| {
+                        named_base.and_then(|(name, args)| {
                             self.resolved_builtin_type(name).and_then(|builtin| {
                                 Self::canonical_primitive_or_builtin_key(&Ty::builtin_named(
                                     builtin,
@@ -2213,10 +2222,14 @@ impl Checker {
                                 ))
                             })
                         })
-                        .unwrap_or_else(|| {
+                    })
+                    .or_else(|| {
+                        named_base.map(|(name, _)| {
                             self.canonical_nominal_name(name)
                                 .unwrap_or_else(|| name.clone())
-                        });
+                        })
+                    });
+                if let Some(nominal_identity) = nominal_identity {
                     let key = (
                         nominal_identity.clone(),
                         trait_key.clone(),
@@ -2254,6 +2267,7 @@ impl Checker {
                         // available) zipped with `args`. The fallback when
                         // `type_params` is absent is to return the binding
                         // unchanged — sound when the impl is non-generic.
+                        let args = named_base.map_or(&[][..], |(_, args)| args.as_slice());
                         let bound = if let Some(td) = self.type_defs.get(&nominal_identity) {
                             let map: HashMap<String, Ty> = td
                                 .type_params
@@ -2262,7 +2276,9 @@ impl Checker {
                                 .map(|(p, a)| (p.clone(), a.clone()))
                                 .collect();
                             binding.substitute_named_params_parallel(&map)
-                        } else if let Some(type_params) = builtin_generic_type_params(name) {
+                        } else if let Some(type_params) =
+                            named_base.and_then(|(name, _)| builtin_generic_type_params(name))
+                        {
                             let map: HashMap<String, Ty> = type_params
                                 .iter()
                                 .zip(args.iter())

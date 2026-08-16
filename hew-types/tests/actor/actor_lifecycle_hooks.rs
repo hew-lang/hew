@@ -300,9 +300,9 @@ fn whole_module_aliases_keep_canonical_exit_and_down_hook_identity() {
         }
 
         fn main() {
-            let _kind = f.CrashKind::Crashed;
-            let _target = lm.DownTarget::Local(7);
-            let _reason = lm.DownReason::Exited;
+            let _kind = f.CrashKind.Crashed;
+            let _target = lm.DownTarget.Local(7);
+            let _reason = lm.DownReason.Exited;
         }
         ",
     );
@@ -476,25 +476,25 @@ fn named_imports_do_not_grant_unrequested_qualified_lifecycle_authority() {
         r"
         import std.failure.{CrashAction};
         fn main() {
-            let _kind = failure.CrashKind::Crashed;
+            let _kind = failure.CrashKind.Crashed;
         }
         ",
         r"
         import std.failure.{CrashKind};
         fn main() {
-            let _kind = failure.CrashKind::Crashed;
+            let _kind = failure.CrashKind.Crashed;
         }
         ",
         r"
         import std.link_monitor.{MonitorId};
         fn main() {
-            let _reason = link_monitor.DownReason::Exited;
+            let _reason = link_monitor.DownReason.Exited;
         }
         ",
         r"
         import std.link_monitor.{DownReason};
         fn main() {
-            let _reason = link_monitor.DownReason::Exited;
+            let _reason = link_monitor.DownReason.Exited;
         }
         ",
     ] {
@@ -620,14 +620,14 @@ fn named_imported_down_payload_and_nested_types_consume_import() {
             fn on_down(note: DownNotification) {
                 let _id = note.monitor.value;
                 match note.target {
-                    DownTarget::Local(slot) => { let _slot = slot; }
-                    DownTarget::Remote(location) => { let _location = location; }
+                    DownTarget.Local(slot) => { let _slot = slot; }
+                    DownTarget.Remote(location) => { let _location = location; }
                 }
                 match note.reason {
-                    DownReason::Exited => {}
-                    DownReason::Crashed(kind) => { let _kind = kind; }
-                    DownReason::MonitorLost => {}
-                    DownReason::LocalShutdown => {}
+                    DownReason.Exited => {}
+                    DownReason.Crashed(kind) => { let _kind = kind; }
+                    DownReason.MonitorLost => {}
+                    DownReason.LocalShutdown => {}
                 }
             }
         }
@@ -752,7 +752,7 @@ fn transitive_std_failure_defs_do_not_authorize_qualified_constructors_or_varian
         r"
         import app.helper;
         fn main() {
-            let _note = failure.CrashNotification::Forged {
+            let _note = failure.CrashNotification.Forged {
                 actor_id: 1,
             };
         }
@@ -760,7 +760,7 @@ fn transitive_std_failure_defs_do_not_authorize_qualified_constructors_or_varian
         r"
         import app.helper;
         fn main() {
-            let _kind = failure.CrashKind::HeapExceeded;
+            let _kind = failure.CrashKind.HeapExceeded;
         }
         ",
     ] {
@@ -782,7 +782,7 @@ fn transitive_std_link_monitor_defs_do_not_authorize_qualified_constructors_or_v
         r"
         import app.helper;
         fn main() {
-            let _note = link_monitor.DownNotification::Forged {
+            let _note = link_monitor.DownNotification.Forged {
                 monitor: 1,
             };
         }
@@ -790,13 +790,13 @@ fn transitive_std_link_monitor_defs_do_not_authorize_qualified_constructors_or_v
         r"
         import app.helper;
         fn main() {
-            let _target = link_monitor.DownTarget::Remote;
+            let _target = link_monitor.DownTarget.Remote;
         }
         ",
         r"
         import app.helper;
         fn main() {
-            let _reason = link_monitor.DownReason::MonitorLost;
+            let _reason = link_monitor.DownReason.MonitorLost;
         }
         ",
     ] {
@@ -1295,7 +1295,7 @@ fn accept_crash_action_tail_return() {
         actor Worker {
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
-                CrashAction::Restart
+                CrashAction.Restart
             }
         }
 
@@ -1316,7 +1316,7 @@ fn accept_crash_action_explicit_return_stmt() {
         actor Worker {
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
-                return CrashAction::Restart;
+                return CrashAction.Restart;
             }
         }
 
@@ -1338,7 +1338,7 @@ fn accept_crash_action_nonfinal_return_before_more_stmts() {
         actor Worker {
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
-                return CrashAction::Restart;
+                return CrashAction.Restart;
                 panic("dead code after the early return")
             }
         }
@@ -1365,9 +1365,9 @@ fn accept_crash_action_return_inside_if_then_more_code() {
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
                 if flag == 1 {
-                    return CrashAction::Escalate;
+                    return CrashAction.Escalate;
                 }
-                CrashAction::Kill
+                CrashAction.Kill
             }
         }
 
@@ -1430,7 +1430,7 @@ fn accept_closure_inside_crash_hook_returning_crash_action() {
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
                 let handler = || -> CrashAction {
-                    return CrashAction::Restart;
+                    return CrashAction.Restart;
                 };
                 panic("diverging hook body")
             }
@@ -1563,7 +1563,7 @@ fn reject_on_crash_missing_param() {
         actor Worker {
             #[on(crash)]
             fn on_crash() -> CrashAction {
-                CrashAction::Restart
+                CrashAction.Restart
             }
         }
 
@@ -1585,7 +1585,7 @@ fn reject_on_crash_wrong_param_type() {
         actor Worker {
             #[on(crash)]
             fn on_crash(info: i32) -> CrashAction {
-                CrashAction::Restart
+                CrashAction.Restart
             }
         }
 
@@ -1664,7 +1664,7 @@ fn crash_action_variants_recognised_by_type_checker() {
             actor Worker {{
                 #[on(crash)]
                 fn on_crash(info: CrashInfo) -> CrashAction {{
-                    CrashAction::{variant}
+                    CrashAction.{variant}
                 }}
             }}
 

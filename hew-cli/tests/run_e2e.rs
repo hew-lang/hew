@@ -214,10 +214,10 @@ fn qualified_variant_tuple_payload_binds_nested_values() {
 enum Pair { Both((i64, i64)); None }
 
 fn main() {
-    let pair = Pair::Both((19, 23));
+    let pair = Pair.Both((19, 23));
     match pair {
-        Pair::Both((a, b)) => println(a * 100 + b),
-        Pair::None => println(0),
+        Pair.Both((a, b)) => println(a * 100 + b),
+        Pair.None => println(0),
     }
 }
 ",
@@ -386,15 +386,15 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
         }
 
         fn main() {
-            Node::set_transport("quic-mesh");
-            Node::load_keys("node.key");
-            let me = Node::identity_key();
-            Node::allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
-            Node::start("127.0.0.1:0");
+            Node.set_transport("quic-mesh");
+            Node.load_keys("node.key");
+            let me = Node.identity_key();
+            Node.allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
+            Node.start("127.0.0.1:0");
             let counter = spawn Counter(count: 0);
-            Node::register("counter", counter);
+            Node.register("counter", counter);
             counter.increment(5);
-            Node::shutdown();
+            Node.shutdown();
             println(f"peer-auth ok id={me}");
         }
         "#,
@@ -459,9 +459,9 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
         &path,
         r#"
         fn main() {
-            Node::set_transport("quic-mesh");
-            Node::allow_peer(2, "zznothexzz");
-            Node::start("127.0.0.1:0");
+            Node.set_transport("quic-mesh");
+            Node.allow_peer(2, "zznothexzz");
+            Node.start("127.0.0.1:0");
             println("after-start");
         }
         "#,
@@ -503,9 +503,9 @@ fn run_node_load_keys_corrupt_keyfile_is_surfaced_and_start_fails_closed() {
         &path,
         r#"
         fn main() {
-            Node::set_transport("quic-mesh");
-            Node::load_keys("node.key");
-            Node::start("127.0.0.1:0");
+            Node.set_transport("quic-mesh");
+            Node.load_keys("node.key");
+            Node.start("127.0.0.1:0");
             println("after-start");
         }
         "#,
@@ -544,9 +544,9 @@ fn run_node_start_fails_closed_when_identity_cannot_be_established() {
         &path,
         r#"
         fn main() {
-            Node::set_transport("quic-mesh");
-            Node::load_keys("no_such_dir/node.key");
-            Node::start("127.0.0.1:0");
+            Node.set_transport("quic-mesh");
+            Node.load_keys("no_such_dir/node.key");
+            Node.start("127.0.0.1:0");
             println("after-start");
         }
         "#,
@@ -591,7 +591,7 @@ fn run_generic_vec_into_iter_static_dispatch_outputs_first_value() {
         }
 
         fn main() {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             v.push(42);
             println(first_or_zero(v.into_iter()));
         }
@@ -1211,7 +1211,7 @@ fn var_self_cowvalue_receiver_survives_storeback_without_double_drop() {
         &source,
         r#"
 fn main() {
-    let words: Vec<string> = Vec::new();
+    let words: Vec<string> = Vec.new();
     words.push("first");
     words.push("second");
     var it = words.into_iter();
@@ -1340,7 +1340,7 @@ pub type Slot<T> { x: T; n: i64; }
 
 trait Tick {
     type Item;
-    fn next(var self) -> Option<Self::Item>;
+    fn next(var self) -> Option<Self.Item>;
 }
 
 impl<T> Tick for Slot<T> {
@@ -1433,7 +1433,7 @@ fn second_or_zero<I>(var it: I) -> i64 where I: Iterator<Item = i64> {
 }
 
 fn main() {
-    let values: Vec<i64> = Vec::new();
+    let values: Vec<i64> = Vec.new();
     values.push(1);
     values.push(2);
     println(second_or_zero(values.into_iter()));
@@ -4123,7 +4123,7 @@ fn owned_record_vec_field_by_value_round_trips() {
         }
 
         fn build() -> Histogram {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             v.push(10);
             v.push(20);
             Histogram { counts: v, total: 30 }
@@ -4286,7 +4286,7 @@ fn run_imports_json_fluent_builders_round_trip() {
     );
 }
 
-/// W5.021 — a function returning a `(ProbeSink<string>, Stream<string>)` tuple of
+/// W5.021 — a function returning a `(Sink<string>, Stream<string>)` tuple of
 /// owned handles compiles, links, and runs with exactly-once teardown. This is
 /// the exact `std::stream::pipe` / `Connection::into_stream_sink` shape that was
 /// fail-closed before the tuple/record-of-owned-handles drop spine.
@@ -4311,9 +4311,9 @@ fn run_tuple_of_owned_handles_returns_and_drops_exactly_once() {
     let hew_src = dir.path().join("tuple_handle_drop.hew");
     std::fs::write(
         &hew_src,
-        "import std.stream;\n\
+        "import std.stream.{ Sink, Stream };\n\
          \n\
-         fn make_pair() -> (ProbeSink<string>, Stream<string>) {\n\
+         fn make_pair() -> (Sink<string>, Stream<string>) {\n\
          \x20   stream.pipe(8)\n\
          }\n\
          \n\
@@ -4338,7 +4338,7 @@ fn run_tuple_of_owned_handles_returns_and_drops_exactly_once() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "pair-ok\n");
 }
 
-/// W5.021 — a `(ProbeSink<string>, Stream<string>)` tuple bound WHOLE (not
+/// W5.021 — a `(Sink<string>, Stream<string>)` tuple bound WHOLE (not
 /// destructured) and dropped at scope exit exercises the `DropKind::TupleInPlace`
 /// per-element drop helper (`__hew_tuple_drop_inplace_<key>`), the genuine
 /// tuple-in-place path the destructure case bypasses. The helper must close both
@@ -4351,7 +4351,7 @@ fn run_whole_tuple_of_handles_drops_each_member_once() {
     let hew_src = dir.path().join("whole_tuple_handle_drop.hew");
     std::fs::write(
         &hew_src,
-        "import std.stream;\n\
+        "import std.stream.{ Sink, Stream };\n\
          \n\
          fn main() {\n\
          \x20   let pair = stream.pipe(8);\n\
@@ -4377,10 +4377,10 @@ fn run_whole_tuple_of_handles_drops_each_member_once() {
 // The exactly-once ORACLE these tests use is the cheap authoritative one the
 // independent review used: a callee that RETURNS an aggregate of owned
 // handles must elaborate an EMPTY drop-plan for that return — no
-// `Stream::close` / `ProbeSink::close` — because the caller (who received the
+// `Stream.close` / `Sink.close` — because the caller (who received the
 // byte-copied aggregate) now owns the members. A non-empty plan IS the
 // double-free: two `Box::from_raw` of one allocation (the runtime close is an
-// unguarded free; see the codegen Stream/ProbeSink drop comment). `leaks --atExit`
+// unguarded free; see the codegen Stream/Sink drop comment). `leaks --atExit`
 // does NOT flag an un-closed handle Box and exit-success does not prove
 // no-double-free, so this dump-mir assertion is the real oracle; the paired
 // `hew run` success is the runtime negative-control. These shapes (let-bound
@@ -4418,7 +4418,7 @@ fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
     let end = rest.find("\nfn ").map_or(rest.len(), |i| i);
     let body = &rest[..end];
     // Structured renderer emits `kind=duplex_half_close(recv)` for Stream drops
-    // and `kind=duplex_half_close(send)` for ProbeSink drops.
+    // and `kind=duplex_half_close(send)` for Sink drops.
     body.matches("duplex_half_close").count()
 }
 
@@ -4435,7 +4435,7 @@ fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
 /// elaborate a `kind=lambda_actor_release`/`kind=duplex_close` drop (not
 /// `kind=duplex_half_close`), AND fail closed at codegen-front (the
 /// `SendHalf`/`RecvHalf`/`LambdaActorHandle` Place lowering is unwired), so
-/// the runtime negative-control the Stream/ProbeSink shapes use is impossible — this
+/// the runtime negative-control the Stream/Sink shapes use is impossible — this
 /// dump-mir assertion is the only oracle.
 fn return_plan_marker_count(body: &str, marker: &str) -> usize {
     let mut in_return_plan = false;
@@ -4494,7 +4494,7 @@ fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
     return_plan_marker_count(body, "lambda_actor_release")
 }
 
-/// Oracle: a `(ProbeSink, Stream)` tuple let-bound then returned BY NAME
+/// Oracle: a `(Sink, Stream)` tuple let-bound then returned BY NAME
 /// (`let pair = (s, r); pair`) — the most ordinary form — must leave the callee
 /// with an empty return drop-plan. The syntactic move-out missed this (it only
 /// saw the tail `BindingRef(pair)`), so `s`/`r` stayed drop-eligible and the
@@ -4503,8 +4503,8 @@ fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
 fn returned_let_bound_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
-        "import std.stream;\n\
-         fn make_pair() -> (ProbeSink<string>, Stream<string>) {\n\
+        "import std.stream.{ Sink, Stream };\n\
+         fn make_pair() -> (Sink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let pair = (s, r);\n\
          \x20   pair\n\
@@ -4523,14 +4523,14 @@ fn returned_let_bound_tuple_callee_does_not_drop_members() {
     );
 }
 
-/// Oracle: a `(ProbeSink, Stream)` returned from an `if`-expression tail. `If` is a
+/// Oracle: a `(Sink, Stream)` returned from an `if`-expression tail. `If` is a
 /// distinct `HirExprKind` the syntactic walk never matched → double-free.
 #[test]
 fn returned_if_tail_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
-        "import std.stream;\n\
-         fn make_pair(c: bool) -> (ProbeSink<string>, Stream<string>) {\n\
+        "import std.stream.{ Sink, Stream };\n\
+         fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   if c { (s, r) } else { (s, r) }\n\
          }\n\
@@ -4548,13 +4548,13 @@ fn returned_if_tail_tuple_callee_does_not_drop_members() {
     );
 }
 
-/// Oracle: a `(ProbeSink, Stream)` returned from a `match`-expression tail.
+/// Oracle: a `(Sink, Stream)` returned from a `match`-expression tail.
 #[test]
 fn returned_match_tail_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
-        "import std.stream;\n\
-         fn make_pair(c: bool) -> (ProbeSink<string>, Stream<string>) {\n\
+        "import std.stream.{ Sink, Stream };\n\
+         fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   match c {\n\
          \x20       true => (s, r),\n\
@@ -4602,7 +4602,7 @@ fn mir_checked_dump(source: &str) -> String {
 }
 
 /// NEW-7 oracle: `await stream.recv()` / `await sink.send(x)` over a
-/// `Stream<bytes>` / `ProbeSink<bytes>` in an actor handler (an execution-context
+/// `Stream<bytes>` / `Sink<bytes>` in an actor handler (an execution-context
 /// caller) flip to the suspending terminators; a context-free caller (`main`,
 /// free fn) keeps the blocking `hew_stream_next_layout` / `hew_sink_write_bytes`
 /// call.
@@ -4614,10 +4614,10 @@ fn suspending_stream_recv_send_flip_in_execution_context() {
         // `stream.StreamPair`, not a private opaque, and the free consumes it.
         // A private handle type or a borrowing free is a real contract
         // disagreement and the checker rejects it.
-        "import std.stream;\n\
+        "import std.stream.{ Sink, Stream };\n\
          extern \"C\" {\n\
          \x20   fn hew_stream_channel(capacity: i64) -> stream.StreamPair;\n\
-         \x20   fn hew_stream_pair_sink_bytes(pair: stream.StreamPair) -> ProbeSink<bytes>;\n\
+         \x20   fn hew_stream_pair_sink_bytes(pair: stream.StreamPair) -> Sink<bytes>;\n\
          \x20   fn hew_stream_pair_stream_bytes(pair: stream.StreamPair) -> Stream<bytes>;\n\
          \x20   fn hew_stream_pair_free(consume pair: stream.StreamPair);\n\
          \x20   fn hew_string_to_bytes(s: string) -> bytes;\n\
@@ -4722,7 +4722,7 @@ fn suspending_remote_ask_flip_in_execution_context() {
          }\n\
          actor Client {\n\
          \x20   receive fn go(unused: i64) {\n\
-         \x20       let found: Result<RemotePid<Echo>, LookupError> = Node::lookup(\"echo\");\n\
+         \x20       let found: Result<RemotePid<Echo>, LookupError> = Node.lookup(\"echo\");\n\
          \x20       match found {\n\
          \x20           Ok(peer) => { let _ = peer.ask(7, 1000); },\n\
          \x20           Err(_) => {},\n\
@@ -4755,7 +4755,7 @@ fn blocking_remote_ask_in_main_keeps_blocking_terminator() {
          \x20   type Reply = i64;\n\
          }\n\
          fn main() {\n\
-         \x20   let found: Result<RemotePid<Echo>, LookupError> = Node::lookup(\"echo\");\n\
+         \x20   let found: Result<RemotePid<Echo>, LookupError> = Node.lookup(\"echo\");\n\
          \x20   match found {\n\
          \x20       Ok(peer) => { let _ = peer.ask(7, 1000); },\n\
          \x20       Err(_) => {},\n\
@@ -4772,14 +4772,14 @@ fn blocking_remote_ask_in_main_keeps_blocking_terminator() {
     );
 }
 
-/// Oracle: a NESTED owned aggregate `((ProbeSink,), Stream)` returned by name. The
+/// Oracle: a NESTED owned aggregate `((Sink,), Stream)` returned by name. The
 /// value-flow decomposition must recurse through the inner `TupleConstruct`.
 #[test]
 fn returned_nested_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
-        "import std.stream;\n\
-         fn make_nested() -> ((ProbeSink<string>,), Stream<string>) {\n\
+        "import std.stream.{ Sink, Stream };\n\
+         fn make_nested() -> ((Sink<string>,), Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let inner = (s,);\n\
          \x20   let pair = (inner, r);\n\
@@ -4806,8 +4806,8 @@ fn returned_nested_tuple_callee_does_not_drop_members() {
 fn returned_record_of_handles_callee_does_not_drop_fields() {
     require_codegen();
     let closes = callee_handle_close_drops(
-        "import std.stream;\n\
-         type Pipe { sink: ProbeSink<string>, input: Stream<string> }\n\
+        "import std.stream.{ Sink, Stream };\n\
+         type Pipe { sink: Sink<string>, input: Stream<string> }\n\
          fn make_pipe() -> Pipe {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let p = Pipe { sink: s, input: r };\n\
@@ -4929,8 +4929,8 @@ fn run_let_bound_tuple_return_no_double_free() {
     let hew_src = dir.path().join("let_bound_return.hew");
     std::fs::write(
         &hew_src,
-        "import std.stream;\n\
-         fn make_pair() -> (ProbeSink<string>, Stream<string>) {\n\
+        "import std.stream.{ Sink, Stream };\n\
+         fn make_pair() -> (Sink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let pair = (s, r);\n\
          \x20   pair\n\
@@ -4963,8 +4963,8 @@ fn run_if_tail_tuple_return_no_double_free() {
     let hew_src = dir.path().join("if_tail_return.hew");
     std::fs::write(
         &hew_src,
-        "import std.stream;\n\
-         fn make_pair(c: bool) -> (ProbeSink<string>, Stream<string>) {\n\
+        "import std.stream.{ Sink, Stream };\n\
+         fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   if c { (s, r) } else { (s, r) }\n\
          }\n\
@@ -4999,8 +4999,8 @@ fn run_record_of_handles_return_drops_each_field_once() {
     let hew_src = dir.path().join("record_handle_return.hew");
     std::fs::write(
         &hew_src,
-        "import std.stream;\n\
-         type Pipe { sink: ProbeSink<string>, input: Stream<string> }\n\
+        "import std.stream.{ Sink, Stream };\n\
+         type Pipe { sink: Sink<string>, input: Stream<string> }\n\
          fn make_pipe() -> Pipe {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let p = Pipe { sink: s, input: r };\n\
@@ -5112,7 +5112,7 @@ fn clone_vec_is_independent_copy() {
     std::fs::write(
         &path,
         "fn main() {\n\
-         \x20   let xs: Vec<i64> = Vec::new();\n\
+         \x20   let xs: Vec<i64> = Vec.new();\n\
          \x20   xs.push(1); xs.push(2);\n\
          \x20   let dup = clone xs;\n\
          \x20   dup.push(99);\n\
@@ -5144,7 +5144,7 @@ fn existing_vec_method_clone_still_runs() {
     std::fs::write(
         &path,
         "fn main() {\n\
-         \x20   let xs: Vec<i64> = Vec::new();\n\
+         \x20   let xs: Vec<i64> = Vec.new();\n\
          \x20   xs.push(1); xs.push(2);\n\
          \x20   let b = xs.clone();\n\
          \x20   b.push(99);\n\

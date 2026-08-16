@@ -156,7 +156,7 @@ fn builtins_sleep_until_declares_instant_runtime_symbol() {
     let ll = emit_ll(
         r#"
         fn main() -> i64 {
-            let t = instant::now();
+            let t = instant.now();
             sleep_until(t);
             0
         }

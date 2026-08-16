@@ -178,7 +178,7 @@ fn vec_i32_into_iter_resolves_through_trait_surface() {
     // contract ("works for at least Vec<i32> and Vec<i64>"; worker task).
     let src = r"
         fn main() {
-            let v: Vec<i32> = Vec::new();
+            let v: Vec<i32> = Vec.new();
             let _it = v.into_iter();
         }
     ";
@@ -202,7 +202,7 @@ fn vec_i64_into_iter_resolves_through_trait_surface() {
     // catalog speaks (`hew_vec_get_i64`).
     let src = r"
         fn main() {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             let _it = v.into_iter();
         }
     ";

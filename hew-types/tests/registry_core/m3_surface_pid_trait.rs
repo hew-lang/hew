@@ -16,7 +16,7 @@ fn user_pid_trait_does_not_inherit_builtin_serializable_policy() {
 
         trait UserPid {
             type Msg;
-            fn send(pid: Self, msg: Self::Msg) -> i32;
+            fn send(pid: Self, msg: Self.Msg) -> i32;
         }
 
         impl UserPid for Local {
@@ -26,7 +26,7 @@ fn user_pid_trait_does_not_inherit_builtin_serializable_policy() {
             }
         }
 
-        fn relay<P: UserPid>(pid: P, msg: P::Msg) -> i32 {
+        fn relay<P: UserPid>(pid: P, msg: P.Msg) -> i32 {
             pid.send(msg)
         }
 
@@ -68,7 +68,7 @@ fn pid_trait_generic_send_fails_closed_without_serializable_projection_bound() {
             type Reply = ();
         }
 
-        fn ping<P: Pid>(p: P, m: P::Msg) -> Result<(), SendError> {
+        fn ping<P: Pid>(p: P, m: P.Msg) -> Result<(), SendError> {
             p.send(m)
         }
 
@@ -109,7 +109,7 @@ fn local_pid_generic_pid_send_still_fails_closed_without_projection_bound() {
             type Reply = ();
         }
 
-        fn takes_pid<P: Pid>(pid: P, msg: P::Msg) -> Result<(), SendError> {
+        fn takes_pid<P: Pid>(pid: P, msg: P.Msg) -> Result<(), SendError> {
             pid.send(msg)
         }
 

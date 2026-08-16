@@ -44,10 +44,10 @@ fn unit_variant_ctor_qualified_none_carries_concrete_type_args() {
         r"
         enum Choice<T> { Some(T); None }
         fn main() -> i64 {
-            let x: Choice<i64> = Choice::None;
+            let x: Choice<i64> = Choice.None;
             match x {
-                Choice::Some(v) => v,
-                Choice::None => 99,
+                Choice.Some(v) => v,
+                Choice.None => 99,
             }
         }
         ",
@@ -85,10 +85,10 @@ fn struct_variant_ctor_carries_concrete_type_args() {
         r"
         enum Maybe<T> { Just { value: T }; Nothing }
         fn main() -> i64 {
-            let x: Maybe<i64> = Maybe::Just { value: 42 };
+            let x: Maybe<i64> = Maybe.Just { value: 42 };
             match x {
-                Maybe::Just { value } => value,
-                Maybe::Nothing => 0,
+                Maybe.Just { value } => value,
+                Maybe.Nothing => 0,
             }
         }
         ",

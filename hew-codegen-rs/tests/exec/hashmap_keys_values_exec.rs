@@ -131,7 +131,7 @@ fn hashmap_values_sum_oracle_exits_42() {
     let output = run_hew_source(
         "hashmap_values_sum",
         r#"fn main() -> i64 {
-    var m: HashMap<string, i64> = HashMap::new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("a", 10);
     m.insert("b", 20);
     m.insert("c", 12);
@@ -153,7 +153,7 @@ fn hashmap_keys_len_is_map_size() {
     let output = run_hew_source(
         "hashmap_keys_len",
         r#"fn main() -> i64 {
-    var m: HashMap<string, i64> = HashMap::new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("x", 1);
     m.insert("y", 2);
     m.insert("z", 3);
@@ -184,7 +184,7 @@ fn hashmap_values_get_layout_path_copy_record_returns_correct_fields() {
         r#"record Point { x: i64, y: i64 }
 
 fn main() -> i64 {
-    var m: HashMap<i64, Point> = HashMap::new();
+    var m: HashMap<i64, Point> = HashMap.new();
     m.insert(1, Point { x: 10, y: 20 });
     let vs = m.values();
     let got = vs[0];
@@ -213,7 +213,7 @@ fn hashmap_keys_get_layout_path_copy_record_returns_correct_fields() {
         r#"record Point { x: i64, y: i64 }
 
 fn main() -> i64 {
-    var m: HashMap<Point, i64> = HashMap::new();
+    var m: HashMap<Point, i64> = HashMap.new();
     m.insert(Point { x: 3, y: 7 }, 99);
     let ks = m.keys();
     let got = ks[0];
@@ -260,7 +260,7 @@ fn hashmap_keys_values_empty_map_returns_empty_vecs() {
     let output = run_hew_source(
         "hashmap_kv_empty",
         r#"fn main() -> i64 {
-    var m: HashMap<string, i64> = HashMap::new();
+    var m: HashMap<string, i64> = HashMap.new();
     let ks = m.keys();
     let vs = m.values();
     ks.len() + vs.len()
@@ -278,7 +278,7 @@ fn hashmap_entries_scalar_map_has_exact_set_equality() {
     let output = run_hew_source(
         "hashmap_entries_scalar_set",
         r#"fn main() -> i64 {
-    var m: HashMap<string, i64> = HashMap::new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("alpha", 11);
     m.insert("beta", 22);
     m.insert("gamma", 33);
@@ -304,7 +304,7 @@ fn hashmap_entries_owned_pair_survives_map_drop_without_double_free() {
     let output = run_hew_source_env(
         "hashmap_entries_owned_after_map_drop",
         r#"fn snapshot() -> Vec<(string, string)> {
-    var m: HashMap<string, string> = HashMap::new();
+    var m: HashMap<string, string> = HashMap.new();
     m.insert("one", "first");
     m.insert("two", "second");
     m.entries()
@@ -330,7 +330,7 @@ fn hashmap_entries_empty_map_returns_empty_vec() {
     let output = run_hew_source(
         "hashmap_entries_empty",
         r#"fn main() -> i64 {
-    let m: HashMap<string, string> = HashMap::new();
+    let m: HashMap<string, string> = HashMap.new();
     m.entries().len()
 }
 "#,

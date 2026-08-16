@@ -50,7 +50,7 @@ enum ScalarBox {
 }
 
 fn direct(i: i64) -> i64 {
-    var opt = Box::Full(f"direct-{i}");
+    var opt = Box.Full(f"direct-{i}");
     var n = 0;
     match opt {
         Full(s) => {
@@ -58,12 +58,12 @@ fn direct(i: i64) -> i64 {
         },
         Empty => {},
     }
-    opt = Box::Empty;
+    opt = Box.Empty;
     n
 }
 
 fn nested(i: i64) -> i64 {
-    var opt = Box::Full(f"nested-{i}");
+    var opt = Box.Full(f"nested-{i}");
     var n = 0;
     {
         match opt {
@@ -73,22 +73,22 @@ fn nested(i: i64) -> i64 {
             Empty => {},
         }
     }
-    opt = Box::Empty;
+    opt = Box.Empty;
     n
 }
 
 fn expression_arm(i: i64) -> i64 {
-    var opt = Box::Full(f"expression-{i}");
+    var opt = Box.Full(f"expression-{i}");
     let n = match opt {
         Full(s) => s.len(),
         Empty => 0,
     };
-    opt = Box::Empty;
+    opt = Box.Empty;
     n
 }
 
 fn joined(i: i64) -> i64 {
-    var opt = Box::Full(f"joined-{i}");
+    var opt = Box.Full(f"joined-{i}");
     var n = 0;
     if i % 2 == 0 {
         match opt {
@@ -107,13 +107,13 @@ fn joined(i: i64) -> i64 {
             }
         }
     }
-    opt = Box::Empty;
+    opt = Box.Empty;
     n
 }
 
 fn fresh_nonempty(i: i64) -> i64 {
-    var opt = Box::Full(f"old-{i}");
-    opt = Box::Full(f"new-{i}");
+    var opt = Box.Full(f"old-{i}");
+    opt = Box.Full(f"new-{i}");
     match opt {
         Full(s) => s.len(),
         Empty => 0,
@@ -121,7 +121,7 @@ fn fresh_nonempty(i: i64) -> i64 {
 }
 
 fn guarded(i: i64) -> i64 {
-    var opt = Box::Full(f"guard-old-{i}");
+    var opt = Box.Full(f"guard-old-{i}");
     if i < 0 {
         let moved = opt;
         return match moved {
@@ -129,7 +129,7 @@ fn guarded(i: i64) -> i64 {
             Empty => 0,
         };
     }
-    opt = Box::Full(f"guard-new-{i}");
+    opt = Box.Full(f"guard-new-{i}");
     match opt {
         Full(s) => s.len(),
         Empty => 0,
@@ -137,11 +137,11 @@ fn guarded(i: i64) -> i64 {
 }
 
 fn whole_forward(i: i64) -> i64 {
-    var opt = Outer::Full(Inner::Text(f"forward-{i}"));
+    var opt = Outer.Full(Inner.Text(f"forward-{i}"));
     match opt {
         Full(inner) => {
             let owner = inner;
-            opt = Outer::Empty;
+            opt = Outer.Empty;
             match owner {
                 Text(s) => s.len(),
                 Empty => 0,
@@ -152,7 +152,7 @@ fn whole_forward(i: i64) -> i64 {
 }
 
 fn scalar(i: i64) -> i64 {
-    var opt = ScalarBox::Full(i);
+    var opt = ScalarBox.Full(i);
     var n = 0;
     match opt {
         Full(v) => {
@@ -160,7 +160,7 @@ fn scalar(i: i64) -> i64 {
         },
         Empty => {},
     }
-    opt = ScalarBox::Empty;
+    opt = ScalarBox.Empty;
     n
 }
 
@@ -188,10 +188,10 @@ enum PairBox {
 }
 
 fn live_alias(i: i64) -> i64 {
-    var opt = Box::Full(f"live-{i}");
+    var opt = Box.Full(f"live-{i}");
     match opt {
         Full(s) => {
-            opt = Box::Empty;
+            opt = Box.Empty;
             s.len()
         },
         Empty => 0,
@@ -199,10 +199,10 @@ fn live_alias(i: i64) -> i64 {
 }
 
 fn live_alias_return(i: i64) -> i64 {
-    var opt = Box::Full(f"return-{i}");
+    var opt = Box.Full(f"return-{i}");
     match opt {
         Full(s) => {
-            opt = Box::Empty;
+            opt = Box.Empty;
             return s.len();
         },
         Empty => 0,
@@ -210,11 +210,11 @@ fn live_alias_return(i: i64) -> i64 {
 }
 
 fn repeated_live_alias(i: i64) -> i64 {
-    var opt = Box::Full(f"repeat-old-{i}");
+    var opt = Box.Full(f"repeat-old-{i}");
     match opt {
         Full(s) => {
-            opt = Box::Full(f"repeat-one-{i}");
-            opt = Box::Full(f"repeat-two-{i}");
+            opt = Box.Full(f"repeat-one-{i}");
+            opt = Box.Full(f"repeat-two-{i}");
             let old_len = s.len();
             let new_len = match opt {
                 Full(current) => current.len(),
@@ -227,10 +227,10 @@ fn repeated_live_alias(i: i64) -> i64 {
 }
 
 fn multiple_live_aliases(i: i64) -> i64 {
-    var opt = PairBox::Both(f"left-{i}", f"right-{i}");
+    var opt = PairBox.Both(f"left-{i}", f"right-{i}");
     match opt {
         Both(left, right) => {
-            opt = PairBox::Empty;
+            opt = PairBox.Empty;
             left.len() + right.len()
         },
         Empty => 0,
@@ -255,7 +255,7 @@ enum Box {
 }
 
 fn self_alias(i: i64) -> i64 {
-    var opt = Box::Full(f"self-{i}");
+    var opt = Box.Full(f"self-{i}");
     opt = opt;
     match opt {
         Full(s) => s.len(),
@@ -280,10 +280,10 @@ enum Box {
 }
 
 fn exercise(take: bool, i: i64) -> string {
-    var opt = Box::Full(f"conditional-consume-{i}");
+    var opt = Box.Full(f"conditional-consume-{i}");
     match opt {
         Full(s) => {
-            opt = Box::Empty;
+            opt = Box.Empty;
             if take {
                 return s;
             }
@@ -311,11 +311,11 @@ const UNSUPPORTED_LIVE_ALIAS_CASES: &[(&str, &str, &str)] = &[
         r#"
 enum Mixed { Full(string, Vec<i64>); Empty }
 fn main() {
-    let values: Vec<i64> = Vec::new();
-    var opt = Mixed::Full(f"mixed", values);
+    let values: Vec<i64> = Vec.new();
+    var opt = Mixed.Full(f"mixed", values);
     match opt {
         Full(s, xs) => {
-            opt = Mixed::Empty;
+            opt = Mixed.Empty;
             s.len() + xs.len();
         },
         Empty => {},
@@ -330,10 +330,10 @@ fn main() {
 type Row { text: string }
 enum Box { Full(Row); Empty }
 fn main() {
-    var opt = Box::Full(Row { text: f"record" });
+    var opt = Box.Full(Row { text: f"record" });
     match opt {
         Full(row) => {
-            opt = Box::Empty;
+            opt = Box.Empty;
             row.text.len();
         },
         Empty => {},
@@ -348,10 +348,10 @@ fn main() {
 enum Inner { Text(string); Empty }
 enum Outer { Full(Inner); Empty }
 fn main() {
-    var opt = Outer::Full(Inner::Text(f"nested"));
+    var opt = Outer.Full(Inner.Text(f"nested"));
     match opt {
         Full(inner) => {
-            opt = Outer::Empty;
+            opt = Outer.Empty;
             match inner {
                 Text(s) => { s.len(); },
                 Empty => {},
@@ -368,10 +368,10 @@ fn main() {
         r#"
 enum Box { Full(string); Empty }
 fn main() {
-    var opt = Box::Full(f"guard");
+    var opt = Box.Full(f"guard");
     let n = match opt {
         Full(s) if {
-            opt = Box::Empty;
+            opt = Box.Empty;
             false
         } => s.len(),
         _ => 0,

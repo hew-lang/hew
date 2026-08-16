@@ -15,7 +15,7 @@ use support::{hew_binary, repo_root, strip_ansi, tempdir};
 /// indexes `xs` with `i` and does nothing else with `i`, so iterating the
 /// collection directly is exactly equivalent.
 const NEEDLESS: &str = "fn main() {\n\
-     let xs: Vec<i64> = Vec::new();\n\
+     let xs: Vec<i64> = Vec.new();\n\
      for i in 0..xs.len() {\n\
      let _ = xs[i];\n\
      }\n\
@@ -23,7 +23,7 @@ const NEEDLESS: &str = "fn main() {\n\
 
 /// The same program with an in-source allow directive on the line above.
 const NEEDLESS_SUPPRESSED: &str = "fn main() {\n\
-     let xs: Vec<i64> = Vec::new();\n\
+     let xs: Vec<i64> = Vec.new();\n\
      // hew:allow(needless_range_loop)\n\
      for i in 0..xs.len() {\n\
      let _ = xs[i];\n\
@@ -163,13 +163,13 @@ fn unknown_lint_name_is_rejected() {
 /// A program whose only diagnostic is `len_zero_comparison`: `xs.len() == 0`
 /// is exactly `xs.is_empty()`.
 const LEN_ZERO: &str = "fn main() {\n\
-     let xs: Vec<i64> = Vec::new();\n\
+     let xs: Vec<i64> = Vec.new();\n\
      let _ = xs.len() == 0;\n\
      }\n";
 
 /// The same program with an in-source allow directive on the line above.
 const LEN_ZERO_SUPPRESSED: &str = "fn main() {\n\
-     let xs: Vec<i64> = Vec::new();\n\
+     let xs: Vec<i64> = Vec.new();\n\
      // hew:allow(len_zero_comparison)\n\
      let _ = xs.len() == 0;\n\
      }\n";

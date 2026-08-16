@@ -72,7 +72,7 @@ const SLOPE_TOLERANCE: usize = 5;
 fn hashmap_overwrite_loop_source(frames: usize) -> String {
     format!(
         "fn main() -> i64 {{\n\
-         \x20   let m: HashMap<string, i64> = HashMap::new();\n\
+         \x20   let m: HashMap<string, i64> = HashMap.new();\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let k: string = \"fixed-overwrite-key-\" + \"z\";\n\
@@ -90,7 +90,7 @@ fn hashmap_overwrite_loop_source(frames: usize) -> String {
 fn hashset_overwrite_loop_source(frames: usize) -> String {
     format!(
         "fn main() -> i64 {{\n\
-         \x20   let s: HashSet<string> = HashSet::new();\n\
+         \x20   let s: HashSet<string> = HashSet.new();\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let e: string = \"fixed-overwrite-elem-\" + \"z\";\n\
@@ -110,7 +110,7 @@ fn hashset_overwrite_loop_source(frames: usize) -> String {
 /// key the map owns.
 const VACANT_SHAPE_SOURCE: &str = "\
 fn main() {\n\
-\x20   let m: HashMap<string, i64> = HashMap::new();\n\
+\x20   let m: HashMap<string, i64> = HashMap.new();\n\
 \x20   m.insert(\"k\" + \"1\", 1);\n\
 \x20   m.insert(\"k\" + \"2\", 2);\n\
 \x20   m.insert(\"k\" + \"3\", 3);\n\
@@ -126,7 +126,7 @@ fn main() {\n\
 /// missing release (leak) is caught by the allocator / the size assertion.
 const OVERWRITE_SHAPE_SOURCE: &str = "\
 fn main() {\n\
-\x20   let m: HashMap<string, i64> = HashMap::new();\n\
+\x20   let m: HashMap<string, i64> = HashMap.new();\n\
 \x20   m.insert(\"dup\" + \"key\", 1);\n\
 \x20   m.insert(\"dup\" + \"key\", 2);\n\
 \x20   m.insert(\"dup\" + \"key\", 3);\n\

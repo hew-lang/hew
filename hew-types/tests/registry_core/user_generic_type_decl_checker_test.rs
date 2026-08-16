@@ -105,7 +105,7 @@ fn checker_accepts_generic_enum_variant_construction() {
         r"
         pub enum Either<A, B> { Left(A); Right(B) }
         fn main() {
-            let x: Either<i64, string> = Either::Left(42);
+            let x: Either<i64, string> = Either.Left(42);
         }
     ",
     );

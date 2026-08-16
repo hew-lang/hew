@@ -65,7 +65,7 @@ fn module_qualified_struct_variant_initialiser_resolves() {
         import myapp.m;
 
         fn main() {
-            let _e = m.Lifecycle::Started { handle: 42 };
+            let _e = m.Lifecycle.Started { handle: 42 };
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);
@@ -84,7 +84,7 @@ fn module_qualified_unit_variant_resolves() {
         import myapp.m;
 
         fn main() {
-            let _e = m.Lifecycle::Stopped;
+            let _e = m.Lifecycle.Stopped;
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);
@@ -104,7 +104,7 @@ fn module_qualified_tuple_variant_call_resolves() {
         import myapp.m;
 
         fn main() {
-            let _e = m.Lifecycle::Failed(7);
+            let _e = m.Lifecycle.Failed(7);
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);
@@ -127,7 +127,7 @@ fn module_qualified_unknown_module_alias_is_fail_closed() {
         import myapp.m;
 
         fn main() {
-            let _e = nosuch.Lifecycle::Stopped;
+            let _e = nosuch.Lifecycle.Stopped;
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);
@@ -152,7 +152,7 @@ fn module_qualified_unknown_type_is_fail_closed() {
         import myapp.m;
 
         fn main() {
-            let _e = m.NoSuch::Started;
+            let _e = m.NoSuch.Started;
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);
@@ -178,7 +178,7 @@ fn module_qualified_struct_init_unknown_variant_is_fail_closed() {
         import myapp.m;
 
         fn main() {
-            let _e = m.Lifecycle::NoSuch { handle: 1 };
+            let _e = m.Lifecycle.NoSuch { handle: 1 };
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);
@@ -205,7 +205,7 @@ fn module_qualified_struct_init_unknown_field_is_fail_closed() {
         import myapp.m;
 
         fn main() {
-            let _e = m.Lifecycle::Started { unknown_field: 1 };
+            let _e = m.Lifecycle.Started { unknown_field: 1 };
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);
@@ -239,7 +239,7 @@ fn module_qualified_struct_init_unknown_module_is_fail_closed() {
         import myapp.m;
 
         fn main() {
-            let _e = nosuch.Lifecycle::Started { handle: 1 };
+            let _e = nosuch.Lifecycle.Started { handle: 1 };
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);

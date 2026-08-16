@@ -278,7 +278,7 @@ fn returned_dyn_transfers_heap_boxed_drop_authority_to_the_caller() {
         }
         fn hold_then_panic() {
             let value = make("panic-owner");
-            let empty: Vec<i64> = Vec::new();
+            let empty: Vec<i64> = Vec.new();
             let missing = empty[0];
         }
         fn main() {

@@ -79,7 +79,7 @@ fn control_record_scalar_read_source() -> String {
 type Pair {{ a: i64, b: Vec<i64> }}
 
 fn make(n: i64) -> Pair {{
-    let inner: Vec<i64> = Vec::new();
+    let inner: Vec<i64> = Vec.new();
     inner.push(n);
     inner.push(n + 1);
     Pair {{ a: n, b: inner }}
@@ -113,7 +113,7 @@ fn record_collection_field_read_source() -> String {
 type Pair {{ a: i64, b: Vec<i64> }}
 
 fn make(n: i64) -> Pair {{
-    let inner: Vec<i64> = Vec::new();
+    let inner: Vec<i64> = Vec.new();
     inner.push(n);
     inner.push(n + 1);
     Pair {{ a: n, b: inner }}
@@ -145,7 +145,7 @@ fn bare_record_collection_field_read_source() -> String {
 type Boxed {{ payload: Vec<i64> }}
 
 fn make(n: i64) -> Boxed {{
-    let inner: Vec<i64> = Vec::new();
+    let inner: Vec<i64> = Vec.new();
     inner.push(n);
     inner.push(n + 1);
     Boxed {{ payload: inner }}
@@ -176,7 +176,7 @@ fn tuple_collection_member_read_source() -> String {
     format!(
         "\
 fn make(n: i64) -> (Vec<i64>, i64) {{
-    let inner: Vec<i64> = Vec::new();
+    let inner: Vec<i64> = Vec.new();
     inner.push(n);
     inner.push(n + 1);
     (inner, n)
@@ -211,7 +211,7 @@ type Inner {{ payload: Vec<i64> }}
 type Outer {{ inner: Inner }}
 
 fn make(n: i64) -> Outer {{
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(n);
     v.push(n + 1);
     Outer {{ inner: Inner {{ payload: v }} }}
@@ -244,7 +244,7 @@ fn record_collection_index_read_source() -> String {
 type Boxed {{ payload: Vec<i64> }}
 
 fn make(n: i64) -> Boxed {{
-    let inner: Vec<i64> = Vec::new();
+    let inner: Vec<i64> = Vec.new();
     inner.push(n);
     inner.push(n + 1);
     Boxed {{ payload: inner }}
@@ -306,12 +306,12 @@ const NO_DOUBLE_FREE_SOURCE: &str = "\
 type Pair { a: i64, b: Vec<i64> }
 
 fn main() {
-    let inner: Vec<i64> = Vec::new();
+    let inner: Vec<i64> = Vec.new();
     inner.push(10);
     inner.push(20);
     let p = Pair { a: 5, b: inner };
     let n = p.b.len();
-    let ns: Vec<i64> = Vec::new();
+    let ns: Vec<i64> = Vec.new();
     ns.push(7);
     let sum = p.a + n + ns[0];
     print(sum);

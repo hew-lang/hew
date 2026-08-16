@@ -33,14 +33,14 @@ const ITER_TRAIT_PRELUDE: &str = r"
 pub trait Iterator {
     type Item;
 
-    fn next(self) -> Option<Self::Item>;
+    fn next(self) -> Option<Self.Item>;
 }
 
 pub trait IntoIterator {
     type Item;
-    type IntoIter: Iterator<Item = Self::Item>;
+    type IntoIter: Iterator<Item = Self.Item>;
 
-    fn into_iter(self) -> Self::IntoIter;
+    fn into_iter(self) -> Self.IntoIter;
 }
 
 // Mirrors the real `panic` builtin (std/builtins.hew). The Stage-2
@@ -66,7 +66,7 @@ where
 {
     type Item = B;
     fn next(it: Map<I, A, B>) -> Option<B> {
-        panic("Map::next deferred pending Q004");
+        panic("Map.next deferred pending Q004");
         None
     }
 }
@@ -82,7 +82,7 @@ where
 {
     type Item = A;
     fn next(it: Filter<I, A>) -> Option<A> {
-        panic("Filter::next deferred (by-move self cannot loop)");
+        panic("Filter.next deferred (by-move self cannot loop)");
         None
     }
 }
@@ -98,7 +98,7 @@ where
 {
     type Item = A;
     fn next(it: Take<I>) -> Option<A> {
-        panic("Take::next deferred (by-move self cannot persist remaining)");
+        panic("Take.next deferred (by-move self cannot persist remaining)");
         None
     }
 }
@@ -114,7 +114,7 @@ where
 {
     type Item = A;
     fn next(it: Skip<I>) -> Option<A> {
-        panic("Skip::next deferred (by-move self cannot loop)");
+        panic("Skip.next deferred (by-move self cannot loop)");
         None
     }
 }
@@ -151,7 +151,7 @@ pub fn fold<I, A, B>(it: I, init: B, f: fn(B, A) -> B) -> B
 where
     I: Iterator<Item = A>,
 {
-    panic("iter::fold deferred pending Q004");
+    panic("iter.fold deferred pending Q004");
     init
 }
 
@@ -159,7 +159,7 @@ pub fn count<I, A>(it: I) -> i64
 where
     I: Iterator<Item = A>,
 {
-    panic("iter::count deferred pending Q004");
+    panic("iter.count deferred pending Q004");
     0
 }
 
@@ -167,8 +167,8 @@ pub fn collect<I, A>(it: I) -> Vec<A>
 where
     I: Iterator<Item = A>,
 {
-    panic("iter::collect deferred pending Q004");
-    Vec::new()
+    panic("iter.collect deferred pending Q004");
+    Vec.new()
 }
 "#;
 

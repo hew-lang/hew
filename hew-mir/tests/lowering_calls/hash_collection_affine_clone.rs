@@ -181,7 +181,7 @@ fn generic_hashmap_clone_rejects_resource_value_after_substitution() {
             values.clone()
         }}
         fn main() {{
-            var values: HashMap<string, Token> = HashMap::new();
+            var values: HashMap<string, Token> = HashMap.new();
             values.insert("live", Token {{ id: 1 }});
             let _copy = duplicate(values);
         }}
@@ -197,7 +197,7 @@ fn hashmap_get_and_index_reject_resource_clone_out() {
         r#"
         {RESOURCE_TYPE}
         fn main() {{
-            var values: HashMap<string, Token> = HashMap::new();
+            var values: HashMap<string, Token> = HashMap.new();
             values.insert("live", Token {{ id: 2 }});
             let _copy = values.get("live");
         }}
@@ -210,7 +210,7 @@ fn hashmap_get_and_index_reject_resource_clone_out() {
         r#"
         {RESOURCE_TYPE}
         fn main() -> i64 {{
-            var values: HashMap<string, Token> = HashMap::new();
+            var values: HashMap<string, Token> = HashMap.new();
             values.insert("live", Token {{ id: 3 }});
             let copy = values["live"];
             copy.id
@@ -321,7 +321,7 @@ fn legal_hash_collection_clone_out_and_remove_paths_remain_admitted() {
         }
 
         fn main() -> i64 {
-            var values: HashMap<string, i64> = HashMap::new();
+            var values: HashMap<string, i64> = HashMap.new();
             values.insert("live", 9);
             let copy = duplicate(values);
             let got = copy.get("live");
@@ -330,7 +330,7 @@ fn legal_hash_collection_clone_out_and_remove_paths_remain_admitted() {
             let vals = copy.values();
             let removed = copy.remove("live");
 
-            var set: HashSet<i64> = HashSet::new();
+            var set: HashSet<i64> = HashSet.new();
             set.insert(10);
             let set_copy = set.clone();
             var total = indexed + keys.len() + vals.len() + set_copy.len();

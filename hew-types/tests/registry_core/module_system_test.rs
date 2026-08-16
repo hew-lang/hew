@@ -175,8 +175,8 @@ fn test_qualified_name_resolution() {
 }
 
 #[test]
-fn test_glob_import_resolution() {
-    // `import utils::*;` → both qualified and unqualified should be accessible.
+fn test_selected_import_resolution() {
+    // A selective import makes both named functions accessible unqualified.
     let fn_helper = make_pub_fn("helper");
     let fn_other = make_pub_fn("other");
     let import = make_user_import(
@@ -259,7 +259,7 @@ fn test_named_import_selective_resolution() {
 #[test]
 fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_impl() {
     let root_source = r#"
-        import myapp.widgets.*;
+        import myapp.widgets.{Describable, Label, describe};
 
         fn main() -> string {
             describe(Label { text: "hello" })
@@ -1328,8 +1328,8 @@ fn test_actor_bare_import_registers_type_and_methods() {
 }
 
 #[test]
-fn test_actor_glob_import_registers_unqualified() {
-    // `import mymod::*;` → actor should be accessible unqualified
+fn test_actor_selected_import_registers_unqualified() {
+    // A selective actor import makes the actor accessible unqualified.
     let recv_greet = make_receive_fn("greet", &[("name", "string")], Some("string"));
     let actor = make_actor("Greeter", vec![recv_greet]);
 

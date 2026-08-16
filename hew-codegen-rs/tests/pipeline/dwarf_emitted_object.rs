@@ -49,14 +49,14 @@ enum Status {
 
 fn probe(selector: i32) -> i64 {
     let pt = Point { x: 10, y: 20 };
-    let status = Status::Packet { code: 7, payload: Mixed { tiny: 1, wide: 99, flag: true, mid: 3, tail: 4 } };
+    let status = Status.Packet { code: 7, payload: Mixed { tiny: 1, wide: 99, flag: true, mid: 3, tail: 4 } };
     let first = selector + 1;
     {
         let first = selector + 2;
         println(first);
     }
     pt.y + first as i64 + match status {
-        Status::Packet { code, payload } => code as i64 + payload.wide,
+        Status.Packet { code, payload } => code as i64 + payload.wide,
         _ => 0,
     }
 }

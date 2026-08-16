@@ -39,15 +39,15 @@ fn index<V>(values: HashMap<string, V>) -> V {
 }
 
 fn main() {
-    var cloned: HashMap<string, Token> = HashMap::new();
+    var cloned: HashMap<string, Token> = HashMap.new();
     cloned.insert("live", Token { id: 1 });
     let _copy = duplicate(cloned);
 
-    var looked_up: HashMap<string, Token> = HashMap::new();
+    var looked_up: HashMap<string, Token> = HashMap.new();
     looked_up.insert("live", Token { id: 2 });
     let _value = lookup(looked_up);
 
-    var indexed: HashMap<string, Token> = HashMap::new();
+    var indexed: HashMap<string, Token> = HashMap.new();
     indexed.insert("live", Token { id: 3 });
     let _value = index(indexed);
 }

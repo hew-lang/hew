@@ -560,7 +560,7 @@ pub type CaptureMatches {
 impl Foo {
     pub fn captures(f: Foo) -> CaptureMatches {
         CaptureMatches {
-            groups: Vec::<string>::new(),
+            groups: Vec<string>.new(),
             group_count: f.n,
         }
     }

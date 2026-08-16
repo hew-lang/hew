@@ -134,14 +134,14 @@ actor Watcher {
     fn on_down(note: DownNotification) {
         let _monitor = note.monitor.value;
         let _target = match note.target {
-            DownTarget::Local(slot) => slot,
-            DownTarget::Remote(_) => 0,
+            DownTarget.Local(slot) => slot,
+            DownTarget.Remote(_) => 0,
         };
         let _reason = match note.reason {
-            DownReason::Exited => 1,
-            DownReason::Crashed(_) => 2,
-            DownReason::MonitorLost => 3,
-            DownReason::LocalShutdown => 4,
+            DownReason.Exited => 1,
+            DownReason.Crashed(_) => 2,
+            DownReason.MonitorLost => 3,
+            DownReason.LocalShutdown => 4,
         };
     }
 }

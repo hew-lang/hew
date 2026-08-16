@@ -51,9 +51,9 @@ import std.net;\n\
 \n\
 fn main() {\n\
 \x20   let addr = \"10.11.12.13:8080\".to_upper();\n\
-\x20   let Endpoint { host, port } = match net::try_parse_endpoint(\"oracle\", addr) {\n\
+\x20   let Endpoint { host, port } = match net.try_parse_endpoint(\"oracle\", addr) {\n\
 \x20       Ok(e) => e,\n\
-\x20       Err(err) => { panic(f\"bad: {net::net_error_message(err)}\"); }\n\
+\x20       Err(err) => { panic(f\"bad: {net.net_error_message(err)}\"); }\n\
 \x20   };\n\
 \x20   println(host);\n\
 \x20   println(f\"{port}\");\n\
@@ -69,9 +69,9 @@ import std.net;\n\
 \n\
 fn main() {\n\
 \x20   let addr = \"10.11.12.13:8080\".to_upper();\n\
-\x20   let e = match net::try_parse_endpoint(\"oracle\", addr) {\n\
+\x20   let e = match net.try_parse_endpoint(\"oracle\", addr) {\n\
 \x20       Ok(x) => x,\n\
-\x20       Err(err) => { panic(f\"bad: {net::net_error_message(err)}\"); }\n\
+\x20       Err(err) => { panic(f\"bad: {net.net_error_message(err)}\"); }\n\
 \x20   };\n\
 \x20   println(e.host);\n\
 }\n";
@@ -88,7 +88,7 @@ fn parse_destructure_loop_source(frames: usize) -> String {
          \n\
          fn cycle() -> i64 {{\n\
          \x20   let addr = \"10.0.0.1:8080\".to_upper();\n\
-         \x20   let Endpoint {{ host, port }} = match net::try_parse_endpoint(\"oracle\", addr) {{\n\
+         \x20   let Endpoint {{ host, port }} = match net.try_parse_endpoint(\"oracle\", addr) {{\n\
          \x20       Ok(e) => e,\n\
          \x20       Err(err) => {{ panic(\"bad\"); }}\n\
          \x20   }};\n\

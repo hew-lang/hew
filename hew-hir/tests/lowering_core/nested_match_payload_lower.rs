@@ -279,8 +279,8 @@ enum Pair { Both((i64, i64)); None }
 
 fn sum(pair: Pair) -> i64 {
     match pair {
-        Pair::Both((a, b)) => a + b,
-        Pair::None => 0,
+        Pair.Both((a, b)) => a + b,
+        Pair.None => 0,
     }
 }",
     );
@@ -460,7 +460,7 @@ enum Packet {
 }
 
 fn sum(value: Packet) -> i64 {
-    let Packet::Data { pair: (a, b) } = value else { return 0 };
+    let Packet.Data { pair: (a, b) } = value else { return 0 };
     a + b
 }",
     );

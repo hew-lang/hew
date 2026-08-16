@@ -64,15 +64,15 @@ enum Packet {
 }
 
 fn make() -> Packet {
-    Packet::Data { a: "a".to_upper(), b: "b".to_upper() }
+    Packet.Data { a: "a".to_upper(), b: "b".to_upper() }
 }
 
 fn main() {
     var p = make();
     var total = 0;
-    while let Packet::Data { a, .. } = p {
+    while let Packet.Data { a, .. } = p {
         total = total + a.len();
-        p = Packet::Empty;
+        p = Packet.Empty;
     }
     if total > 0 {
         print("w");
@@ -97,15 +97,15 @@ enum Packet {
 }
 
 fn make() -> Packet {
-    Packet::Data { a: "a".to_upper(), b: "b".to_upper() }
+    Packet.Data { a: "a".to_upper(), b: "b".to_upper() }
 }
 
 fn main() {
     var p = make();
     var total = 0;
-    while let Packet::Data { a, b: _ } = p {
+    while let Packet.Data { a, b: _ } = p {
         total = total + a.len();
-        p = Packet::Empty;
+        p = Packet.Empty;
     }
     if total > 0 {
         print("w");
@@ -130,15 +130,15 @@ enum Pairs {
 }
 
 fn make() -> Pairs {
-    Pairs::Pair { x: 1, y: 2 }
+    Pairs.Pair { x: 1, y: 2 }
 }
 
 fn main() {
     var p = make();
     var total = 0;
-    while let Pairs::Pair { x, .. } = p {
+    while let Pairs.Pair { x, .. } = p {
         total = total + x;
-        p = Pairs::Empty;
+        p = Pairs.Empty;
     }
     if total > 0 {
         print("ok");
@@ -163,15 +163,15 @@ enum Packet {
 }
 
 fn make() -> Packet {
-    Packet::Data { a: "a".to_upper(), b: "b".to_upper() }
+    Packet.Data { a: "a".to_upper(), b: "b".to_upper() }
 }
 
 fn main() {
     var p = make();
     var total = 0;
-    while let Packet::Data { a, b } = p {
+    while let Packet.Data { a, b } = p {
         total = total + a.len() + b.len();
-        p = Packet::Empty;
+        p = Packet.Empty;
     }
     if total > 0 {
         print("w");

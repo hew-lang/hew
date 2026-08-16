@@ -109,12 +109,12 @@ fn wasm_rc_weak_set_upgrade_and_counts_are_exact() {
         &source,
         r#"
 fn expired() -> Weak<i64> {
-    let rc = Rc::new(1);
+    let rc = Rc.new(1);
     rc.downgrade()
 }
 
 fn main() {
-    let rc = Rc::new(7);
+    let rc = Rc.new(7);
     print(rc.strong_count());
     print(rc.weak_count());
     let alias = rc.clone();

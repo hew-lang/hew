@@ -75,8 +75,8 @@ fn test_exhaustive_or_option_match() {
         r"
         fn check(opt: Option<i64>) -> i64 {
             match opt {
-                Option::Some(x) => x,
-                Option::None => 1,
+                Option.Some(x) => x,
+                Option.None => 1,
             }
         }
         fn main() {
@@ -180,8 +180,8 @@ fn test_exhaustive_or_result_match() {
         r"
         fn check(res: Result<i64, i64>) -> i64 {
             match res {
-                Result::Ok(x) => x,
-                Result::Err(e) => e,
+                Result.Ok(x) => x,
+                Result.Err(e) => e,
             }
         }
         fn main() {

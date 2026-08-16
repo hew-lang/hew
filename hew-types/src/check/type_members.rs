@@ -63,13 +63,17 @@ impl Checker {
                 if self.env.lookup_ref(module_short).is_some() {
                     return None;
                 }
-                let type_def = self.resolve_module_type(module_short, field)?;
+                self.resolve_module_type(module_short, field)?;
                 self.used_modules.borrow_mut().insert(ImportKey::in_file(
                     self.current_module.clone(),
                     self.current_module_idx,
                     module_short.clone(),
                 ));
-                let canonical = type_def.name;
+                let canonical = format!(
+                    "{}.{}",
+                    self.canonical_module_import_owner(module_short),
+                    field
+                );
                 let builtin = self.resolved_builtin_type(&canonical);
                 (canonical, builtin)
             }

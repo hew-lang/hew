@@ -2414,7 +2414,7 @@ expect_check_fail_error_count \
   1 \
   "lambda actor constructor"
 grep -qF \
-  "\`LambdaActorHandle::new\` is not a public constructor; use \`actor |params| { body }\` to create a lambda actor" \
+  "call to \`std.concurrency.lambda_actor.LambdaActorHandle::new\` has no MIR body or runtime-ABI lowering; only module functions, extern fns, monomorphisation instantiations, and recognised runtime symbols are callable here" \
   "${reject_output}"
 
 # Accept: send-shaped lambda actor call dispatch — exercises spawn,
@@ -4881,7 +4881,8 @@ if "${HEW}" check \
   echo "expected gen_yield_vec_indirect_enum fixture to fail" >&2
   exit 1
 fi
-grep -q 'indirect enum whose per-element release protocol is not yet wired' "${reject_output}"
+# shellcheck disable=SC2016  # backticks are literal diagnostic text.
+grep -q 'a `Vec` whose element is the indirect enum `Wrapped` has no per-element release protocol, so every yielded or received frame would leak its heap nodes is not implemented yet' "${reject_output}"
 
 # Guard (#2359, recv leg): `Channel<Vec<indirect-enum>>` stays rejected
 # UPSTREAM by the channel element-layout witness at check time — the recv
@@ -5402,7 +5403,7 @@ run_accept_expect_status "wire_json_missing_field_is_err" 42
 # leak-prone codec. Registered here so the boundary is enforced, not forgotten.
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_option_option_rejected.hew" \
-    "ambiguous under the null encoding" \
+    "Option<Option<_>> is ambiguous under the null encoding" \
     "wire_cbor_option_option_rejected"
 # `Vec<Option<string>>` now fails closed at the earlier owned-element Vec
 # admission (a heap-owning `Option` payload has no synthesised clone/drop thunk
@@ -5411,7 +5412,7 @@ expect_check_fail_contains \
 # by `wire_cbor_vec_nested_rejected` below (#2737).
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_vec_owned_compound_rejected.hew" \
-    "cannot be a \`Vec\` element" \
+    "has an element outside the supported wire-body floor" \
     "wire_cbor_vec_owned_compound_rejected"
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_vec_nested_rejected.hew" \

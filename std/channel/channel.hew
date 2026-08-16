@@ -166,8 +166,8 @@ impl ReceiverMethods for Receiver {
 /// ```
 pub fn new(capacity: i64) -> (Sender, Receiver) {
     match try_new(capacity) {
-        Ok(pair) => pair,
-        Err(err) => panic(err),
+        .Ok(pair) => pair,
+        .Err(err) => panic(err),
     }
 }
 

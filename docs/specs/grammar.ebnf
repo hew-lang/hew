@@ -59,9 +59,9 @@ AttrArg        = Ident ( "=" (StringLit | Ident) )?
                | StringLit ;
 
 (* Module system.
-   During the dot-path integration cutover, legacy `::` module separators,
-   `::{...}` selections, and `::*` globs remain accepted. New source uses
-   dotted module paths and `.{...}` selections. *)
+   Dotted module paths and `.{...}` selections are the primary surface.
+   Deprecated `::` separators, `::{...}` selections, and `::*` globs remain
+   accepted until the hard cutover. *)
 Import          = "import" ( StringLit | ModuleImport ) ";" ;
 ModuleImport    = ModulePath ( ModuleAlias
                              | ImportSelection
@@ -69,7 +69,7 @@ ModuleImport    = ModulePath ( ModuleAlias
                              | LegacyGlobImport )? ;
 ModuleAlias     = "as" Ident ;
 ModulePath      = Ident { ModulePathSeparator Ident } ;
-ModulePathSeparator = "." | "::" ;
+ModulePathSeparator = "." | "::" ;  (* `::` is deprecated until S7. *)
 ImportSelection = "." "{" ImportBinding { "," ImportBinding } [ "," ] "}" ;
 (* The existing parser temporarily accepts an empty legacy `::{}` for corpus
    continuity, but the new dotted selection requires at least one binding. *)
@@ -285,10 +285,10 @@ GenericApplyScanType = Ident { "." Ident }
                        [ "<" GenericApplyScanType
                          { "," GenericApplyScanType } ">" ] ;
 GenericApplyFollow = "(" | "." | "{" ;
-LegacyTurbofishSuffix = "::" TypeArgs ;  (* Temporary dual-accept scaffold. *)
+LegacyTurbofishSuffix = "::" TypeArgs ;  (* Deprecated until S7. *)
 CallSuffix     = "(" [ Args ] ")" ;
 MemberSuffix   = "." Ident ;
-LegacyMemberSuffix = "::" Ident ;        (* Temporary dual-accept scaffold. *)
+LegacyMemberSuffix = "::" Ident ;        (* Deprecated until S7. *)
 TupleIndexSuffix = "." IntLit ;           (* Existing depth-one tuple indexing *)
 RecordInitSuffix = "{" [ FieldInitList ] "}" ;
 (* RecordInitSuffix is legal only after a chain resolving to a record type or
@@ -385,7 +385,7 @@ PathRoot       = Ident | "Self" ;
 Path           = PathRoot { PathSeparator Ident } ;
 TypePath       = Path ;
 TraitPath      = Path ;
-PathSeparator  = "." | "::" ;  (* `::` is a temporary accepted separator. *)
+PathSeparator  = "." | "::" ;  (* `::` is deprecated until S7. *)
 QualifiedAssocBase = "<" Type "as" TraitPath ">" ;
 QualifiedAssocPath = QualifiedAssocBase "." Ident { "." Ident } ;
 NamedType      = TypePath TypeArgs?

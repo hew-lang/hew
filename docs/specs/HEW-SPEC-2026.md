@@ -456,7 +456,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 `bytes` is a built-in compiler type with stdlib-registered methods: a mutable, heap-allocated byte buffer — semantically a `Vec<u8>` — but with a dedicated type name:
 
 ```hew
-let buf: bytes = bytes::new();
+let buf: bytes = bytes.new();
 buf.push(0x48);    // push a byte value (i64)
 buf.push(72);      // same as 'H' in ASCII
 let n = buf.len(); // i64
@@ -716,7 +716,7 @@ This is enforced at compile time: any captured value in a `spawn` expression mus
 
 ```hew
 actor Example {
-    var data: Vec<i64> = Vec::new();
+    var data: Vec<i64> = Vec.new();
 
     receive fn demo() {
         // Multiple mutable references - ALLOWED (single-threaded)
@@ -732,7 +732,7 @@ actor Example {
         y.push(4);        // ok - same actor, sequential execution
 
         // Returning references to local data - ALLOWED
-        let local = Vec::new();
+        let local = Vec.new();
         process(local);   // works because single-threaded
     }
 }
@@ -779,7 +779,7 @@ Hew uses a file-based module system inspired by Rust:
 
 ```hew
 // src/network/tcp.hew
-// This is module network::tcp
+// This is module network.tcp
 
 pub type Connection {
     address: string;       // public fields via pub keyword on type
@@ -798,10 +798,10 @@ fn helper() {  // private to this module
 **Import syntax:**
 
 ```hew
-import network::tcp;                    // Import module
-import network::tcp::Connection;        // Import specific symbol
-import network::tcp::{Connection, connect};  // Import multiple
-import network::tcp::*;                 // Import all public symbols (discouraged)
+import network.tcp;                    // Import module
+import network.tcp.Connection;        // Import specific symbol
+import network.tcp.{Connection, connect};  // Import multiple
+import network.tcp.*;                 // Import all public symbols (discouraged)
 ```
 
 **Module dot-syntax for standard library:**
@@ -809,10 +809,10 @@ import network::tcp::*;                 // Import all public symbols (discourage
 When importing a standard library module, the **last segment** of the module path becomes the local alias for the module. All access uses this short name, not the full path:
 
 ```hew
-import std::net::http;     // Available as "http", not "std::net::http"
-import std::fs;            // Available as "fs"
-import std::io;            // Available as "io"
-import std::text::regex;   // Available as "regex"
+import std.net.http;     // Available as "http", not "std.net.http"
+import std.fs;            // Available as "fs"
+import std.io;            // Available as "io"
+import std.text.regex;   // Available as "regex"
 
 // Call module functions with dot-syntax: module.function(args)
 match http.listen("127.0.0.1:0") { // Returns Result<Server, NetError>
@@ -1006,16 +1006,16 @@ Traits define shared behaviour that types can implement. Hew has built-in marker
 **Trait declaration:**
 
 ```hew
-trait Display {
+trait Renderable {
     fn fmt(val: Self) -> string;
 }
 
-trait Iterator {
+trait Sequence {
     type Item;
     fn next(iter: Self) -> Option<Self::Item>;
 }
 
-trait Clone {
+trait Duplicable {
     fn clone(val: Self) -> Self;
 }
 ```
@@ -1023,9 +1023,13 @@ trait Clone {
 **Trait implementation:**
 
 ```hew
+trait PointRenderer {
+    fn fmt(val: Self) -> string;
+}
+
 type Point { x: f64; y: f64 }
 
-impl Display for Point {
+impl PointRenderer for Point {
     fn fmt(p: Point) -> string {
         f"({p.x}, {p.y})"
     }
@@ -1057,11 +1061,13 @@ impl Display for Point {
 Hew uses **named receivers** instead of a `self` keyword. In trait declarations and `impl` blocks, the first parameter whose type matches the implementing type (or `Self` in traits) is the **receiver**. The receiver is what makes a function callable with dot-syntax:
 
 ```hew
-trait Display {
+type Point { x: f64; y: f64 }
+
+trait Formattable {
     fn fmt(val: Self) -> string;       // val is the receiver (type Self)
 }
 
-impl Display for Point {
+impl Formattable for Point {
     fn fmt(p: Point) -> string {       // p is the receiver (type Point)
         f"({p.x}, {p.y})"
     }
@@ -1074,7 +1080,7 @@ The compiler identifies the receiver by matching the parameter type against the 
 
 ```hew
 let p = Point { x: 1.0, y: 2.0 };
-p.fmt();    // desugars to Point::fmt(p) — p is consumed (by-value)
+p.fmt();    // desugars to Point.fmt(p) — p is consumed (by-value)
 // p is no longer valid here
 ```
 
@@ -1374,7 +1380,7 @@ indirect enum Expr {
 **Construction** works identically to regular enums:
 
 ```hew
-let e = Expr::Add(Expr::Lit(1), Expr::Neg(Expr::Lit(2)));
+let e = Expr.Add(Expr.Lit(1), Expr.Neg(Expr.Lit(2)));
 ```
 
 **Pattern matching** works identically to regular enums:
@@ -1537,7 +1543,7 @@ exists in stdlib — for file reading use `fs::try_read`):
 <!-- doctest: skip -->
 ```hew
 fn read_config(path: string) -> Result<Config, IoError> {
-    let f = File::open(path)?;
+    let f = File.open(path)?;
     let bytes = f.read_all()?;
     parse(bytes)
     // f drops at scope exit; the fd is closed automatically.
@@ -1549,7 +1555,7 @@ Early close, surfacing the I/O error to the caller (illustrative):
 <!-- doctest: skip -->
 ```hew
 fn read_and_process(path: string) -> Result<Summary, AppError> {
-    let f = File::open(path)?;
+    let f = File.open(path)?;
     let bytes = f.read_all()?;
     f.close()?;                 // close early; the error is visible.
     Ok(crunch(bytes))           // do CPU work after the fd is released.
@@ -1843,7 +1849,7 @@ Traits can declare associated types that implementors must specify:
 ```hew
 trait Iterator {
     type Item;
-    fn next(iter: Self) -> Option<Self::Item>;
+    fn next(iter: Self) -> Option<Self.Item>;
 }
 
 impl Iterator for RangeIter {
@@ -2275,11 +2281,11 @@ functions instead.
 The following traits are representative of the current trait style:
 
 ```hew
-trait Display {
+trait Printable {
     fn fmt(val: Self) -> string;
 }
 
-trait Drop {
+trait Releasable {
     fn drop(val: Self);
 }
 ```
@@ -2312,7 +2318,7 @@ pub enum IoError {
 }
 
 pub fn io_error_from_message(message: string) -> IoError {
-    IoError::Other(0)
+    IoError.Other(0)
 }
 ```
 
@@ -2360,7 +2366,7 @@ type error. This differs from `Vec<T>` indexing, where `v[i]` takes an `i64`
 index and returns the bare element `T`.
 
 ```hew
-var m: HashMap<string, i64> = HashMap::new();
+var m: HashMap<string, i64> = HashMap.new();
 m["answer"] = 42;        // insert/overwrite via index-assignment
 let hit = m["answer"];   // Option<i64> — Some(42)
 let miss = m["absent"];  // Option<i64> — None
@@ -2437,16 +2443,16 @@ The standard library exposes concrete modules rather than a large trait
 hierarchy. Representative APIs include:
 
 ```hew
-import std::deque;
-import std::fmt;
-import std::io;
-import std::iter;
-import std::math;
-import std::sort;
-import std::testing;
+import std.deque;
+import std.fmt;
+import std.io;
+import std.iter;
+import std.math;
+import std.sort;
+import std.testing;
 
-let ints: Vec<i64> = Vec::new();
-let set: HashSet<i64> = HashSet::new();
+let ints: Vec<i64> = Vec.new();
+let set: HashSet<i64> = HashSet.new();
 let dq = deque.new();
 
 println(math.abs(-5));
@@ -2794,9 +2800,9 @@ The compiler generates the following for every `machine Name { ... }`:
 accepted:
 
 ```hew
-var light = Light::Off;
+var light = Light.Off;
 light.step(Toggle);                // unqualified (preferred for brevity)
-light.step(LightEvent::Toggle);   // fully qualified (also valid)
+light.step(LightEvent.Toggle);   // fully qualified (also valid)
 ```
 
 **Pattern matching** — machine values can be destructured in `match`, `if let`,
@@ -2816,7 +2822,7 @@ Machines are values — they are commonly embedded as actor fields:
 
 ```hew
 actor ConnectionManager {
-    var tcp: TcpState = TcpState::Closed;
+    var tcp: TcpState = TcpState.Closed;
 
     receive fn handle(event: TcpStateEvent) {
         tcp.step(event);
@@ -3200,11 +3206,11 @@ When a scope-block is cancelled:
 
 ```hew
 receive fn download_files(urls: Vec<string>) -> Result<Vec<Data>, Error> {
-    var results: Vec<Data> = Vec::new();
+    var results: Vec<Data> = Vec.new();
     scope {
         for url in urls {
             scope {
-                let data = http::get(url)?;  // Safepoint — cancellation checked here
+                let data = http.get(url)?;  // Safepoint — cancellation checked here
                 results.push(process(data)); // If cancelled, stack unwinds; defer blocks run
             };
         }
@@ -3309,8 +3315,8 @@ handle type — reads and writes are free functions:
 <!-- doctest: skip -->
 ```hew
 fn read_config(path: string) -> Result<Config, string> {
-    let content = fs::try_read(path)?;
-    json::parse(content)
+    let content = fs.try_read(path)?;
+    json.parse(content)
 }
 ```
 
@@ -3318,8 +3324,8 @@ fn read_config(path: string) -> Result<Config, string> {
 
 ```hew
 // If the enclosing scope-block is cancelled while waiting for response,
-// http::get returns Err(Cancelled)
-let response = http::get(url)?;
+// http.get returns Err(Cancelled)
+let response = http.get(url)?;
 ```
 
 **Blocking operations:**
@@ -3359,7 +3365,7 @@ reachable from inside a child body.
 <!-- doctest: skip -->
 ```hew
 actor DataProcessor {
-    var cache: HashMap<string, Data> = HashMap::new();
+    var cache: HashMap<string, Data> = HashMap.new();
 
     receive fn prefetch(ids: Vec<string>) {
         scope {
@@ -3939,7 +3945,7 @@ Both handle types are `Send` (safe to pass to other actors), opaque (backed by a
 #### 6.5.1 Current `std::stream` surface
 
 ```hew
-import std::stream;
+import std.stream;
 
 // Canonical in-memory bounded bytes pipe
 let (bytes_sink, bytes_stream) = stream.bytes_pipe(16);
@@ -3992,7 +3998,7 @@ splits into a `(Stream<bytes>, Sink<bytes>)` pair via `.into_stream_sink()`:
 
 <!-- doctest: skip -->
 ```hew
-import std::net;
+import std.net;
 
 let conn = net.connect("127.0.0.1:8080")?;
 let (rx, tx) = conn.into_stream_sink();
@@ -4114,9 +4120,9 @@ emitted alongside the wire type codec path, unified on the CBOR body format.
 #[wire]
 enum Status { Pending; Active; Completed; }
 
-// Status::Pending   -> CBOR integer: 0
-// Status::Active    -> CBOR integer: 1
-// Status::Completed -> CBOR integer: 2
+// Status.Pending   -> CBOR integer: 0
+// Status.Active    -> CBOR integer: 1
+// Status.Completed -> CBOR integer: 2
 ```
 
 ##### 7.3.1.4 Optional Field Handling

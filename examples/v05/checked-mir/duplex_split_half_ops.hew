@@ -11,27 +11,27 @@ fn main() {
     let tx = a.send_half();
     let rx = b.recv_half();
     match tx.send(7) {
-        Ok(_) => {},
-        Err(_) => {},
+        .Ok(_) => {},
+        .Err(_) => {},
     }
     match tx.try_send(8) {
-        Ok(_) => {},
-        Err(_) => {},
+        .Ok(_) => {},
+        .Err(_) => {},
     }
     match rx.recv() {
-        Ok(_) => {},
-        Err(_) => {},
+        .Ok(_) => {},
+        .Err(_) => {},
     }
     match rx.try_recv() {
-        Ok(_) => {},
-        Err(_) => {},
+        .Ok(_) => {},
+        .Err(_) => {},
     }
     match tx.close() {
-        Ok(_) => {},
-        Err(_) => {},
+        .Ok(_) => {},
+        .Err(_) => {},
     }
     match rx.close() {
-        Ok(_) => {},
-        Err(_) => {},
+        .Ok(_) => {},
+        .Err(_) => {},
     }
 }

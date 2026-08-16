@@ -5,11 +5,11 @@
 // Searches for a pattern in files and prints matching lines.
 //
 // Usage: hew_grep <pattern> <file1> [file2...]
-import std::os;
+import std.os;
 
-import std::fs;
+import std.fs;
 
-import std::string;
+import std.string;
 
 fn search_file(filename: string, pattern: string, nl: string) -> i32 {
     if !fs.exists(filename) {

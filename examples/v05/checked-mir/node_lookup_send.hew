@@ -1,4 +1,4 @@
-// Accept: Node::lookup(name) -> Result::Ok(RemotePid<T>) -> pid.send(msg)
+// Accept: Node.lookup(name) -> Result.Ok(RemotePid<T>) -> pid.send(msg)
 // delivers to a locally registered actor through the in-process send-by-id path.
 record Ping {
     n: i64
@@ -20,38 +20,38 @@ impl ActorMsg for Worker {
 }
 
 fn main() -> i64 {
-    Node::set_transport("tcp");
-    // Protocol v2 requires a durable identity before Node::start; without it
+    Node.set_transport("tcp");
+    // Protocol v2 requires a durable identity before Node.start; without it
     // start fails, register/lookup never see a running node, and main returns
     // the lookup-failure code 30.
-    Node::load_keys("/tmp/hew-checked-mir-node-lookup-send.key");
-    Node::start("127.0.0.1:0");
+    Node.load_keys("/tmp/hew-checked-mir-node-lookup-send.key");
+    Node.start("127.0.0.1:0");
     let worker = spawn Worker(count: 0);
-    Node::register("node-lookup-worker", worker);
-    let missing: Result<RemotePid<Worker>, LookupError> = Node::lookup("node-lookup-missing");
+    Node.register("node-lookup-worker", worker);
+    let missing: Result<RemotePid<Worker>, LookupError> = Node.lookup("node-lookup-missing");
     let missing_code = match missing {
-        Result::Ok(pid) => {
+        Result.Ok(pid) => {
             let unexpected = pid.send(Ping { n: 1 });
             match unexpected {
-                Result::Ok(_) => 10,
-                Result::Err(_) => 11,
+                Result.Ok(_) => 10,
+                Result.Err(_) => 11,
             }
         },
-        Result::Err(_) => 0,
+        Result.Err(_) => 0,
     };
     assert_eq(missing_code, 0);
-    let found: Result<RemotePid<Worker>, LookupError> = Node::lookup("node-lookup-worker");
+    let found: Result<RemotePid<Worker>, LookupError> = Node.lookup("node-lookup-worker");
     let status = match found {
-        Result::Ok(pid) => {
+        Result.Ok(pid) => {
             let delivered = pid.send(Ping { n: 42 });
             let send_code = match delivered {
-                Result::Ok(_) => 0,
-                Result::Err(_) => 20,
+                Result.Ok(_) => 0,
+                Result.Err(_) => 20,
             };
             if send_code == 0 {
                 let total = match await worker.total() {
-                    Ok(v) => v,
-                    Err(_e) => -1,
+                    .Ok(v) => v,
+                    .Err(_e) => -1,
                 };
                 assert_eq(total, 42);
                 0
@@ -59,8 +59,8 @@ fn main() -> i64 {
                 send_code
             }
         },
-        Result::Err(_) => 30,
+        Result.Err(_) => 30,
     };
-    Node::shutdown();
+    Node.shutdown();
     status
 }

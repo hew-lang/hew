@@ -1,5 +1,5 @@
 fn pascal(n: i64) -> i64 {
-    let row = Vec::new();
+    let row = Vec.new();
     row.push(1);
     for i in 0 .. n {
         row.push(0);

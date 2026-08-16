@@ -12,23 +12,23 @@ enum Colour {
 
 fn pick(c: Colour) -> i64 {
     let n: i64 = match c {
-        Colour::Red => 10,
-        Colour::Green => 20,
-        Colour::Blue => 30,
+        Colour.Red => 10,
+        Colour.Green => 20,
+        Colour.Blue => 30,
     };
     n
 }
 
 fn report(c: Colour) {
     match c {
-        Colour::Green => println("green-twenty"),
+        Colour.Green => println("green-twenty"),
         _ => println("not-green"),
     }
 }
 
 fn main() {
-    let _n: i64 = pick(Colour::Green);
-    report(Colour::Green);
-    report(Colour::Red);
+    let _n: i64 = pick(Colour.Green);
+    report(Colour.Green);
+    report(Colour.Red);
     println("done");
 }

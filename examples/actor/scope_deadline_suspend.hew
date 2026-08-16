@@ -58,14 +58,14 @@ fn main() {
     // Deadline (20ms) beats the 500ms child: the recovery body runs.
     let t = await w.timeout_wins();
     match t {
-        Ok(v) => println(f"timeout={v}"),
-        Err(_) => println("timeout failed"),
+        .Ok(v) => println(f"timeout={v}"),
+        .Err(_) => println("timeout failed"),
     }
     // The 10ms child beats the 200ms deadline: the body is skipped.
     let g = spawn Worker(fired: 0);
     let s = await g.work_wins();
     match s {
-        Ok(v) => println(f"work={v}"),
-        Err(_) => println("work failed"),
+        .Ok(v) => println(f"work={v}"),
+        .Err(_) => println("work failed"),
     }
 }

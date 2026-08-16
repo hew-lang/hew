@@ -13,13 +13,13 @@
 //! an opaque handle in actor state is rejected by the supervisor-restart clone
 //! gate.
 
-import std::net;
+import std.net;
 
-import std::net::http::http_async_server;
+import std.net.http.http_async_server;
 
-import std::net::http::http_async_client;
+import std.net.http.http_async_client;
 
-import std::string;
+import std.string;
 
 actor Server {
     let addr: string;

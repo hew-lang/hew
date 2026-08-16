@@ -9,7 +9,7 @@ fn counting_sort(v: Vec<i64>) -> Vec<i64> {
             max_val = v[i];
         }
     }
-    let count: Vec<i64> = Vec::new();
+    let count: Vec<i64> = Vec.new();
     for i in 0 .. max_val + 1 {
         count.push(0);
     }
@@ -30,7 +30,7 @@ fn counting_sort(v: Vec<i64>) -> Vec<i64> {
 }
 
 fn make_test_array() -> Vec<i64> {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     var i = 100;
     while i > 0 {
         v.push(i);

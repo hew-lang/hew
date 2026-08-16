@@ -1,5 +1,5 @@
 fn main() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(42);
     v.push(3);

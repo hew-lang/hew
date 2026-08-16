@@ -99,8 +99,8 @@ fn avl_insert(nodes: Vec<i64>, root: i64, val: i64, NIL: i64) -> i64 {
         return add_node(nodes, val, NIL);
     }
     // Track path from root to insertion point
-    let path: Vec<i64> = Vec::new();
-    let dirs: Vec<i64> = Vec::new(); // 0=left, 1=right
+    let path: Vec<i64> = Vec.new();
+    let dirs: Vec<i64> = Vec.new(); // 0=left, 1=right
     var cur = root;
     var placed = false;
     while !placed {
@@ -179,7 +179,7 @@ fn inorder(nodes: Vec<i64>, root: i64, result: Vec<i64>, NIL: i64) -> i64 {
     if root == NIL {
         return 0;
     }
-    let stack: Vec<i64> = Vec::new();
+    let stack: Vec<i64> = Vec.new();
     var cur = root;
     var running = true;
     while running {
@@ -217,7 +217,7 @@ fn check_avl(nodes: Vec<i64>, root: i64, NIL: i64) -> bool {
     if root == NIL {
         return true;
     }
-    let stack: Vec<i64> = Vec::new();
+    let stack: Vec<i64> = Vec.new();
     stack.push(root);
     var ok = true;
     while stack.len() > 0 {
@@ -243,7 +243,7 @@ fn check_avl(nodes: Vec<i64>, root: i64, NIL: i64) -> bool {
 
 fn test_basic_insert() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     var root = NIL;
     root = avl_insert(nodes, root, 5, NIL);
     root = avl_insert(nodes, root, 3, NIL);
@@ -252,7 +252,7 @@ fn test_basic_insert() -> i64 {
     root = avl_insert(nodes, root, 4, NIL);
     root = avl_insert(nodes, root, 6, NIL);
     root = avl_insert(nodes, root, 8, NIL);
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     let _ = inorder(nodes, root, result, NIL);
     if is_sorted(result) {
         if result.len() == 7 {
@@ -266,13 +266,13 @@ fn test_basic_insert() -> i64 {
 
 fn test_left_left() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     var root = NIL;
     root = avl_insert(nodes, root, 30, NIL);
     root = avl_insert(nodes, root, 20, NIL);
     root = avl_insert(nodes, root, 10, NIL);
     let balanced = check_avl(nodes, root, NIL);
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     let _ = inorder(nodes, root, result, NIL);
     if balanced {
         if is_sorted(result) {
@@ -288,13 +288,13 @@ fn test_left_left() -> i64 {
 
 fn test_right_right() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     var root = NIL;
     root = avl_insert(nodes, root, 10, NIL);
     root = avl_insert(nodes, root, 20, NIL);
     root = avl_insert(nodes, root, 30, NIL);
     let balanced = check_avl(nodes, root, NIL);
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     let _ = inorder(nodes, root, result, NIL);
     if balanced {
         if is_sorted(result) {
@@ -310,13 +310,13 @@ fn test_right_right() -> i64 {
 
 fn test_left_right() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     var root = NIL;
     root = avl_insert(nodes, root, 30, NIL);
     root = avl_insert(nodes, root, 10, NIL);
     root = avl_insert(nodes, root, 20, NIL);
     let balanced = check_avl(nodes, root, NIL);
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     let _ = inorder(nodes, root, result, NIL);
     if balanced {
         if is_sorted(result) {
@@ -332,7 +332,7 @@ fn test_left_right() -> i64 {
 
 fn test_many_inserts() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     var root = NIL;
     var i = 1;
     while i <= 20 {
@@ -340,7 +340,7 @@ fn test_many_inserts() -> i64 {
         i = i + 1;
     }
     let balanced = check_avl(nodes, root, NIL);
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     let _ = inorder(nodes, root, result, NIL);
     let h = node_height(nodes, root);
     if balanced {

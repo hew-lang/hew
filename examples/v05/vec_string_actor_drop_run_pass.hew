@@ -36,7 +36,7 @@ actor WordHolder {
 fn main() {
     // Populate with heap-owned strings so state-drop frees NON-EMPTY per-slot
     // storage through `hew_vec_free_managed`.
-    let words: Vec<string> = Vec::new();
+    let words: Vec<string> = Vec.new();
     words.push("alpha");
     words.push("beta");
     words.push("gamma");
@@ -46,11 +46,11 @@ fn main() {
     // "ok" is gated on both the populated-vec count (real data flow) and the
     // actor ack; teardown then exercises the managed per-slot string free.
     match r {
-        Ok(acked) => {
+        .Ok(acked) => {
             if acked == 1 && count == 3 {
                 println("ok");
             }
         },
-        Err(_) => {},
+        .Err(_) => {},
     }
 }

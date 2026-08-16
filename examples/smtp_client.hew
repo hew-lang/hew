@@ -1,7 +1,7 @@
 //! Status: runnable
-//! Description: smtp_client.hew — std::net::smtp usage example
+//! Description: smtp_client.hew — std.net.smtp usage example
 
-// smtp_client.hew — std::net::smtp usage example
+// smtp_client.hew — std.net.smtp usage example
 //
 // This example requires a real SMTP server to run.  It is provided as a
 // documentation / API-discovery surface and is NOT part of the automated CI
@@ -18,34 +18,34 @@
 // payload type is unit — the checker treats the inner () as a zero-element
 // tuple destructor rather than the unit type.  The workaround is Ok(_).
 // Tracked: see hew-lang/hew#1598
-import std::net::smtp;
+import std.net.smtp;
 
 fn send_plain(host: string, port: i64, username: string, password: string, from: string, to: string) -> Result<i64, string> {
     match smtp.connect(host, port, username, password) {
-        Ok(conn) => {
+        .Ok(conn) => {
             let result = conn.try_send(from, to, "Hello from Hew", "This is a plain-text test email.");
             conn.close();
             match result {
-                Ok(_) => Ok(0),
-                Err(msg) => Err(msg),
+                .Ok(_) => Ok(0),
+                .Err(msg) => Err(msg),
             }
         },
-        Err(msg) => Err(msg),
+        .Err(msg) => Err(msg),
     }
 }
 
 fn send_html(host: string, port: i64, username: string, password: string, from: string, to: string) -> Result<i64, string> {
     match smtp.connect_tls(host, port, username, password) {
-        Ok(conn) => {
+        .Ok(conn) => {
             let body = "<h1>Hello</h1><p>This is an <b>HTML</b> test email sent from Hew.</p>";
             let result = conn.try_send_html(from, to, "HTML email from Hew", body);
             conn.close();
             match result {
-                Ok(_) => Ok(0),
-                Err(msg) => Err(msg),
+                .Ok(_) => Ok(0),
+                .Err(msg) => Err(msg),
             }
         },
-        Err(msg) => Err(msg),
+        .Err(msg) => Err(msg),
     }
 }
 
@@ -56,11 +56,11 @@ fn main() {
     let from = "sender@example.com";
     let to = "recipient@example.com";
     match send_plain(host, 587, username, password, from, to) {
-        Ok(_) => println("Plain-text email sent."),
-        Err(msg) => println("Error: " + msg),
+        .Ok(_) => println("Plain-text email sent."),
+        .Err(msg) => println("Error: " + msg),
     }
     match send_html(host, 465, username, password, from, to) {
-        Ok(_) => println("HTML email sent."),
-        Err(msg) => println("Error: " + msg),
+        .Ok(_) => println("HTML email sent."),
+        .Err(msg) => println("Error: " + msg),
     }
 }

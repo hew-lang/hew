@@ -1,7 +1,7 @@
 fn coin_change(coins: Vec<i64>, num_coins: i64, amount: i64) -> i64 {
     let INF = 999999;
     let sz = amount + 1;
-    let dp: Vec<i64> = Vec::new();
+    let dp: Vec<i64> = Vec.new();
     for idx in 0 .. sz {
         dp.push(INF);
     }
@@ -23,7 +23,7 @@ fn coin_change(coins: Vec<i64>, num_coins: i64, amount: i64) -> i64 {
 const ITERS: i64 = 100000;
 
 fn main() {
-    let coins: Vec<i64> = Vec::new();
+    let coins: Vec<i64> = Vec.new();
     coins.push(1);
     coins.push(5);
     coins.push(10);

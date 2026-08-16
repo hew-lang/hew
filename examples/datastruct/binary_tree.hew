@@ -16,7 +16,7 @@ fn insert_level_order(nodes: Vec<i64>, val: i64, NIL: i64) -> i64 {
         let _ = add_node(nodes, val, NIL);
         return 0;
     }
-    let queue: Vec<i64> = Vec::new();
+    let queue: Vec<i64> = Vec.new();
     queue.push(0);
     var head = 0;
     var done = false;
@@ -52,7 +52,7 @@ fn inorder(nodes: Vec<i64>, result: Vec<i64>, NIL: i64) -> i64 {
     if nodes.len() == 0 {
         return 0;
     }
-    let stack: Vec<i64> = Vec::new();
+    let stack: Vec<i64> = Vec.new();
     var cur = 0;
     var running = true;
     while running {
@@ -76,7 +76,7 @@ fn preorder(nodes: Vec<i64>, result: Vec<i64>, NIL: i64) -> i64 {
     if nodes.len() == 0 {
         return 0;
     }
-    let stack: Vec<i64> = Vec::new();
+    let stack: Vec<i64> = Vec.new();
     stack.push(0);
     while stack.len() > 0 {
         let cur = stack.pop();
@@ -98,8 +98,8 @@ fn postorder(nodes: Vec<i64>, result: Vec<i64>, NIL: i64) -> i64 {
     if nodes.len() == 0 {
         return 0;
     }
-    let s1: Vec<i64> = Vec::new();
-    let s2: Vec<i64> = Vec::new();
+    let s1: Vec<i64> = Vec.new();
+    let s2: Vec<i64> = Vec.new();
     s1.push(0);
     while s1.len() > 0 {
         let cur = s1.pop();
@@ -127,7 +127,7 @@ fn height(nodes: Vec<i64>, NIL: i64) -> i64 {
         return 0;
     }
     // Compute height for each node bottom-up
-    let heights: Vec<i64> = Vec::new();
+    let heights: Vec<i64> = Vec.new();
     for i in 0 .. count {
         heights.push(0);
     }
@@ -179,7 +179,7 @@ fn print_vec(v: Vec<i64>) -> i64 {
 
 fn test_inorder() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     //        1
     //       / \
     //      2   3
@@ -188,9 +188,9 @@ fn test_inorder() -> i64 {
     for i in 1 .. 8 {
         let _ = insert_level_order(nodes, i, NIL);
     }
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     let _ = inorder(nodes, result, NIL);
-    let expected: Vec<i64> = Vec::new();
+    let expected: Vec<i64> = Vec.new();
     expected.push(4);
     expected.push(2);
     expected.push(5);
@@ -210,13 +210,13 @@ fn test_inorder() -> i64 {
 
 fn test_preorder() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     for i in 1 .. 8 {
         let _ = insert_level_order(nodes, i, NIL);
     }
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     let _ = preorder(nodes, result, NIL);
-    let expected: Vec<i64> = Vec::new();
+    let expected: Vec<i64> = Vec.new();
     expected.push(1);
     expected.push(2);
     expected.push(4);
@@ -236,13 +236,13 @@ fn test_preorder() -> i64 {
 
 fn test_postorder() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     for i in 1 .. 8 {
         let _ = insert_level_order(nodes, i, NIL);
     }
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     let _ = postorder(nodes, result, NIL);
-    let expected: Vec<i64> = Vec::new();
+    let expected: Vec<i64> = Vec.new();
     expected.push(4);
     expected.push(5);
     expected.push(2);
@@ -262,7 +262,7 @@ fn test_postorder() -> i64 {
 
 fn test_height() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     for i in 1 .. 8 {
         let _ = insert_level_order(nodes, i, NIL);
     }
@@ -279,9 +279,9 @@ fn test_height() -> i64 {
 
 fn test_single_node() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     let _ = insert_level_order(nodes, 42, NIL);
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     let _ = inorder(nodes, result, NIL);
     let h = height(nodes, NIL);
     if result.len() == 1 {

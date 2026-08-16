@@ -26,7 +26,7 @@ fn make_tag(label: string) -> dyn Labeled {
 }
 
 actor Registry {
-    var plugins: Vec<dyn Labeled> = Vec::new();
+    var plugins: Vec<dyn Labeled> = Vec.new();
     receive fn drain_total() -> i64 {
         var total: i64 = 0;
         for plugin in plugins.into_iter() {
@@ -51,18 +51,18 @@ fn main() {
     let registry = spawn Registry;
     let first = await registry.drain_total();
     match first {
-        Ok(total) => println(total),
-        Err(_) => println(-1),
+        .Ok(total) => println(total),
+        .Err(_) => println(-1),
     }
     let drained = await registry.drain_total();
     match drained {
-        Ok(total) => println(total),
-        Err(_) => println(-1),
+        .Ok(total) => println(total),
+        .Err(_) => println(-1),
     }
     registry.refill();
     let count = await registry.plugin_count();
     match count {
-        Ok(n) => println(n),
-        Err(_) => println(-1),
+        .Ok(n) => println(n),
+        .Err(_) => println(-1),
     }
 }

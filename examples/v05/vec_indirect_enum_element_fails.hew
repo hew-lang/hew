@@ -15,7 +15,7 @@ indirect enum Foo {
 }
 
 fn main() {
-    let nodes: Vec<Foo> = Vec::new();
-    nodes.push(Foo::B);
-    nodes.push(Foo::A(42));
+    let nodes: Vec<Foo> = Vec.new();
+    nodes.push(Foo.B);
+    nodes.push(Foo.A(42));
 }

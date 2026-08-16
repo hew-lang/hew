@@ -224,8 +224,8 @@ fn try_endpoint_port(context: string, addr: string, text: string) -> Result<i64,
         return Err(endpoint_reject(context, addr, "empty port"));
     }
     match string.to_int(text) {
-        Some(port) => try_port_arg(context, port),
-        None => Err(endpoint_reject(context, addr, f"port '{text}' is not a number")),
+        .Some(port) => try_port_arg(context, port),
+        .None => Err(endpoint_reject(context, addr, f"port '{text}' is not a number")),
     }
 }
 
@@ -260,7 +260,7 @@ pub fn try_parse_endpoint(context: string, addr: string) -> Result<Endpoint, Net
     }
     let colon = addr.find(":");
     match colon {
-        Some(i) => {
+        .Some(i) => {
             let host = addr.slice(0, i);
             let port_text = addr.slice(i + 1, addr.len());
             // A second colon outside brackets is an unbracketed IPv6 literal:
@@ -276,14 +276,14 @@ pub fn try_parse_endpoint(context: string, addr: string) -> Result<Endpoint, Net
                 Ok(Endpoint { host: host, port: port })
             }
         },
-        None => Err(endpoint_reject(context, addr, "missing ':port'")),
+        .None => Err(endpoint_reject(context, addr, "missing ':port'")),
     }
 }
 
 fn try_parse_bracketed_endpoint(context: string, addr: string) -> Result<Endpoint, NetError> {
     let close = addr.find("]");
     match close {
-        Some(end) => {
+        .Some(end) => {
             let host = addr.slice(1, end);
             if host == "" {
                 return Err(endpoint_reject(context, addr, "empty bracketed host"));
@@ -298,7 +298,7 @@ fn try_parse_bracketed_endpoint(context: string, addr: string) -> Result<Endpoin
             let port = try_endpoint_port(context, addr, rest.slice(1, rest.len()))?;
             Ok(Endpoint { host: host, port: port })
         },
-        None => Err(endpoint_reject(context, addr, "unterminated '[' in IPv6 literal")),
+        .None => Err(endpoint_reject(context, addr, "unterminated '[' in IPv6 literal")),
     }
 }
 
@@ -621,10 +621,10 @@ impl ConnectionMethods for Connection {
     /// Read a UTF-8 string, reporting a read failure separately from EOF.
     fn try_read_string(conn: Connection) -> Result<string, NetError> {
         match conn.try_read() {
-            Ok(data) => Ok(unsafe {
+            .Ok(data) => Ok(unsafe {
                 hew_bytes_to_string(data)
             }),
-            Err(err) => Err(err),
+            .Err(err) => Err(err),
         }
     }
     /// Write raw bytes to the connection.
@@ -800,15 +800,15 @@ pub fn try_connect(addr: string) -> Result<Connection, NetError> {
 /// `try_connect_timeout` to observe those rejections instead.
 pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Connection {
     let Endpoint { host, port } = match try_parse_endpoint("net.connect_timeout", addr) {
-        Ok(endpoint) => endpoint,
-        Err(err) => {
+        .Ok(endpoint) => endpoint,
+        .Err(err) => {
             panic(f"net.connect_timeout failed: {net_error_message(err)}");
             Endpoint { host: "", port: 0 }
         },
     };
     let timeout_ms = match try_connect_timeout_ms(timeout_sec, timeout_usec) {
-        Ok(ms) => ms,
-        Err(err) => {
+        .Ok(ms) => ms,
+        .Err(err) => {
             panic(f"net.connect_timeout failed: {net_error_message(err)}");
             0
         },

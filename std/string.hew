@@ -80,8 +80,8 @@ pub fn from_char(code: i64) -> string {
 /// ```
 pub fn to_int(s: string) -> Option<i64> {
     match try_to_int(s) {
-        Ok(value) => Some(value),
-        Err(_) => None,
+        .Ok(value) => Some(value),
+        .Err(_) => None,
     }
 }
 
@@ -153,8 +153,8 @@ pub fn try_to_int(s: string) -> Result<i64, string> {
 /// ```
 pub fn to_float(s: string) -> f64 {
     match try_to_float(s) {
-        Ok(value) => value,
-        Err(_) => 0.0,
+        .Ok(value) => value,
+        .Err(_) => 0.0,
     }
 }
 
@@ -536,8 +536,8 @@ pub fn count(haystack: string, needle: string) -> i64 {
     while pos <= hlen - nlen {
         let rest = haystack.slice(pos, hlen);
         let idx = match rest.find(needle) {
-            Some(i) => i,
-            None => return n,
+            .Some(i) => i,
+            .None => return n,
         };
         n = n + 1;
         pos = pos + idx + nlen;
@@ -595,8 +595,8 @@ pub fn is_ascii(s: string) -> bool {
         // In-bounds loop: char_at(i) is always Some; treat the unreachable
         // None defensively as non-ASCII rather than unwrapping.
         let ch = match s.char_at(i) {
-            Some(c) => c,
-            None => return false,
+            .Some(c) => c,
+            .None => return false,
         };
         if ch as i64 > 127 {
             return false;

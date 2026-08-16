@@ -5,8 +5,8 @@
 // each concrete instantiation gets its own adapter.
 //
 // Covers:
-//   - No-arg unit spawn: `fork { worker::<i64>(); }` (ForkBlock form)
-//   - No-arg value spawn: `fork t = compute::<i64>()` (named form)
+//   - No-arg unit spawn: `fork { worker.<i64>(); }` (ForkBlock form)
+//   - No-arg value spawn: `fork t = compute.<i64>()` (named form)
 fn worker<T>() {}
 
 fn compute<T>() -> i64 {

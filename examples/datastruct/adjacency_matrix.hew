@@ -48,7 +48,7 @@ fn main() {
     var failed = 0;
     let n = 6;
     // Initialize n*n matrix to 0
-    let matrix: Vec<i64> = Vec::new();
+    let matrix: Vec<i64> = Vec.new();
     for i in 0 .. n * n {
         matrix.push(0);
     }

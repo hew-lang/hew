@@ -5,8 +5,8 @@
 fn main() {
     let num_nodes = 6;
     // Build adjacency list (directed)
-    let adj_nodes: Vec<i32> = Vec::new();
-    let adj_offsets: Vec<i32> = Vec::new();
+    let adj_nodes: Vec<i32> = Vec.new();
+    let adj_offsets: Vec<i32> = Vec.new();
     // Node 0: -> 1, 2
     adj_offsets.push(0);
     adj_nodes.push(1);
@@ -28,12 +28,12 @@ fn main() {
     adj_offsets.push(6);
 
     // Iterative DFS using stack
-    let visited: Vec<i32> = Vec::new();
+    let visited: Vec<i32> = Vec.new();
     for i in 0 .. num_nodes {
         visited.push(0);
     }
-    let order: Vec<i32> = Vec::new();
-    let stack: Vec<i32> = Vec::new();
+    let order: Vec<i32> = Vec.new();
+    let stack: Vec<i32> = Vec.new();
     stack.push(0);
     while stack.len() > 0 {
         let u: i64 = stack.pop() as i64;

@@ -69,8 +69,8 @@ pub type Sink<T> {
 /// Returns a `(Sink<string>, Stream<string>)` pair for writing and reading.
 pub fn pipe(capacity: i64) -> (Sink<string>, Stream<string>) {
     match try_pipe(capacity) {
-        Ok(pair) => pair,
-        Err(err) => panic(err),
+        .Ok(pair) => pair,
+        .Err(err) => panic(err),
     }
 }
 
@@ -101,8 +101,8 @@ pub fn try_pipe(capacity: i64) -> Result<(Sink<string>, Stream<string>), string>
 /// Returns a `(Sink<bytes>, Stream<bytes>)` pair for writing and reading.
 pub fn bytes_pipe(capacity: i64) -> (Sink<bytes>, Stream<bytes>) {
     match try_bytes_pipe(capacity) {
-        Ok(pair) => pair,
-        Err(err) => panic(err),
+        .Ok(pair) => pair,
+        .Err(err) => panic(err),
     }
 }
 

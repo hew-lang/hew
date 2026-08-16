@@ -62,7 +62,7 @@ const MODULE_WITH_LIFECYCLE: &str = r"
 #[test]
 fn module_qualified_struct_variant_initialiser_resolves() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
             let _e = m.Lifecycle::Started { handle: 42 };
@@ -81,7 +81,7 @@ fn module_qualified_struct_variant_initialiser_resolves() {
 #[test]
 fn module_qualified_unit_variant_resolves() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
             let _e = m.Lifecycle::Stopped;
@@ -101,7 +101,7 @@ fn module_qualified_unit_variant_resolves() {
 #[test]
 fn module_qualified_tuple_variant_call_resolves() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
             let _e = m.Lifecycle::Failed(7);
@@ -124,7 +124,7 @@ fn module_qualified_tuple_variant_call_resolves() {
 #[test]
 fn module_qualified_unknown_module_alias_is_fail_closed() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
             let _e = nosuch.Lifecycle::Stopped;
@@ -149,7 +149,7 @@ fn module_qualified_unknown_module_alias_is_fail_closed() {
 #[test]
 fn module_qualified_unknown_type_is_fail_closed() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
             let _e = m.NoSuch::Started;
@@ -175,7 +175,7 @@ fn module_qualified_unknown_type_is_fail_closed() {
 #[test]
 fn module_qualified_struct_init_unknown_variant_is_fail_closed() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
             let _e = m.Lifecycle::NoSuch { handle: 1 };
@@ -202,7 +202,7 @@ fn module_qualified_struct_init_unknown_variant_is_fail_closed() {
 #[test]
 fn module_qualified_struct_init_unknown_field_is_fail_closed() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
             let _e = m.Lifecycle::Started { unknown_field: 1 };
@@ -236,7 +236,7 @@ fn module_qualified_struct_init_unknown_field_is_fail_closed() {
 #[test]
 fn module_qualified_struct_init_unknown_module_is_fail_closed() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
             let _e = nosuch.Lifecycle::Started { handle: 1 };

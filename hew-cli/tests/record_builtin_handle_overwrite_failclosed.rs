@@ -10,8 +10,8 @@ use std::process::Command;
 use support::{describe_output, hew_binary, repo_root, tempdir};
 
 const BUILTIN_HANDLE_OVERWRITES: &str = r"
-import std::channel;
-import std::link_monitor;
+import std.channel;
+import std.link_monitor;
 
 type SinkHolder { value: Sink<string> }
 type StreamHolder { value: Stream<string> }

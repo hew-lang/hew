@@ -208,7 +208,7 @@ fn close_count_is_scoped_to_its_owner_function() {
 /// racing send/recv edge below).
 #[test]
 fn awaited_string_sink_send_runs_in_order() {
-    let source = r#"import std::stream;
+    let source = r#"import std.stream;
 
 actor Producer {
     let n: i64;
@@ -248,7 +248,7 @@ fn main() {
 /// Element type rides the checker-resolved value type, not the symbol name.
 #[test]
 fn awaited_string_sink_send_routes_through_layout_entry() {
-    let source = r#"import std::stream;
+    let source = r#"import std.stream;
 
 actor Producer {
     let n: i64;
@@ -302,7 +302,7 @@ fn awaited_string_send_to_file_sink_writes_contents() {
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
     let source = format!(
-        r#"import std::stream;
+        r#"import std.stream;
 
 actor Writer {{
     let path: string;
@@ -345,7 +345,7 @@ fn main() {{
 /// `try_send` runtime entry is out of scope and stays refused fail-closed.
 #[test]
 fn try_send_on_string_sink_stays_refused() {
-    let source = r#"import std::stream;
+    let source = r#"import std.stream;
 
 fn main() {
     let (sink, input) = stream.pipe(4);
@@ -371,7 +371,7 @@ fn main() {
 /// contains EXACTLY ONE `hew_sink_close` for the moved half.
 #[test]
 fn sink_half_in_actor_state_closes_exactly_once() {
-    let source = r#"import std::stream;
+    let source = r#"import std.stream;
 
 actor Writer {
     let sink: stream.Sink<string>;
@@ -412,7 +412,7 @@ fn main() {
 /// both `== 1`, scribble-clean.
 #[test]
 fn stream_half_in_actor_state_closes_exactly_once() {
-    let source = r#"import std::stream;
+    let source = r#"import std.stream;
 
 actor Consumer {
     let input: stream.Stream<string>;
@@ -469,7 +469,7 @@ fn main() {
 /// followed by a single EOF. Scribble-clean.
 #[test]
 fn racing_send_recv_delivers_in_order() {
-    let source = r#"import std::stream;
+    let source = r#"import std.stream;
 
 actor Consumer {
     let input: stream.Stream<string>;
@@ -511,7 +511,7 @@ fn main() {
 /// + `hew_read_slot_free`) must run cleanly: exit 0, scribble-clean, no hang.
 #[test]
 fn producer_parked_on_full_ring_teardown_is_clean() {
-    let source = r#"import std::stream;
+    let source = r#"import std.stream;
 
 actor Producer {
     let sink: stream.Sink<string>;
@@ -549,7 +549,7 @@ fn main() {
 /// `None` exactly once and the program exits 0.
 #[test]
 fn close_during_suspended_recv_yields_none_once() {
-    let source = r#"import std::stream;
+    let source = r#"import std.stream;
 
 actor Consumer {
     let input: stream.Stream<string>;
@@ -586,7 +586,7 @@ fn main() {
 /// after `close()`. Asserts exact counts (`== 5`, `== 1`), never `> 0`.
 #[test]
 fn backpressure_capacity_one_delivers_each_item_once() {
-    let source = r#"import std::stream;
+    let source = r#"import std.stream;
 
 actor Consumer {
     let input: stream.Stream<string>;
@@ -640,7 +640,7 @@ fn main() {
 /// earlier one.
 #[test]
 fn explicit_close_of_state_field_handle_is_refused() {
-    let source = r#"import std::stream;
+    let source = r#"import std.stream;
 
 actor Producer {
     let sink: stream.Sink<string>;
@@ -679,7 +679,7 @@ fn main() {
 /// refusal would be shadowed by the checker's and could regress unobserved.
 #[test]
 fn explicit_close_of_state_field_handle_is_refused_by_mir_after_reinit() {
-    let source = r#"import std::stream;
+    let source = r#"import std.stream;
 
 actor Producer {
     var sink: stream.Sink<string>;
@@ -715,7 +715,7 @@ fn main() {
 /// the new one be double-owned by teardown.
 #[test]
 fn overwrite_of_state_field_handle_is_refused() {
-    let source = r#"import std::stream;
+    let source = r#"import std.stream;
 
 actor Writer {
     var sink: stream.Sink<string>;
@@ -747,7 +747,7 @@ fn main() {
 /// stays a hard move-checker error — the spawn consumed it.
 #[test]
 fn reuse_of_handle_after_spawn_is_refused() {
-    let source = r#"import std::stream;
+    let source = r#"import std.stream;
 
 actor Writer {
     let sink: stream.Sink<string>;

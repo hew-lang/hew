@@ -141,7 +141,7 @@ fn transient_field_read_source() -> String {
 /// possession with no retain) by two maps AND owned by the Vec record — a
 /// double/triple-free at teardown. The `MallocScribble` sentinel aborts on it.
 const FIELD_LOAD_INTO_CONSUME_SOURCE: &str = "\
-import std::string;\n\
+import std.string;\n\
 type Row { category: string; score: i64; }\n\
 fn parse_row(line: string, sc: i64) -> Row {\n\
 \x20   let parts: Vec<string> = line.split(\",\");\n\
@@ -170,7 +170,7 @@ fn main() {\n\
 /// caller keeps. Pre-fix the same field buffer was aliased into both, and both
 /// drops freed it. The `MallocScribble` sentinel aborts on the double-free.
 const DUP_FIELD_READ_INTO_RETURN_SOURCE: &str = "\
-import std::string;\n\
+import std.string;\n\
 fn first_field(line: string) -> (string, i64) {\n\
 \x20   let parts: Vec<string> = line.split(\",\");\n\
 \x20   (parts[0], 1)\n\

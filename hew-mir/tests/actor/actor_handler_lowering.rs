@@ -1984,7 +1984,7 @@ fn canonical_failure_lifecycle_payloads_expand_to_runtime_abi() {
 
     let mut parsed = hew_parser::parse(
         r#"
-        import std::failure as f;
+        import std.failure as f;
 
         actor Watcher {
             #[on(crash)]

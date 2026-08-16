@@ -15,8 +15,8 @@ use tempfile::tempdir;
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const SOURCE: &str = r#"
-import std::process;
-import std::time::cron;
+import std.process;
+import std.time.cron;
 
 fn main() {
     match process.try_run("printf ok") {

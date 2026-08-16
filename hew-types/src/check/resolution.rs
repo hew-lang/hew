@@ -1097,7 +1097,7 @@ impl Checker {
                     span,
                     format!("unknown type `{name}`"),
                     vec![format!(
-                        "import the lifecycle type explicitly, e.g. `import std::{}::{{ {name} }}`",
+                        "import the lifecycle type explicitly, e.g. `import std.{}::{{ {name} }}`",
                         if matches!(
                             crate::lookup_source_owned_lifecycle_type(name),
                             Some(

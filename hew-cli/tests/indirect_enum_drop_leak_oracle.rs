@@ -403,7 +403,7 @@ fn tuple_of_inline_enum_loop_source(iters: usize) -> String {
 /// so a missing message destructor produces a steep leak slope.
 fn actor_mailbox_teardown_source(frames: usize) -> String {
     format!(
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
          fn sum(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => sum(l) + sum(r), }} }}\n\
          actor ProbeSink {{\n\

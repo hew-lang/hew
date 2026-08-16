@@ -127,7 +127,7 @@ fn typecheck_with_transitive_std(owner: &str, root_source: &str) -> hew_types::T
         "link_monitor" => include_str!("../../../std/link_monitor.hew"),
         _ => panic!("unsupported lifecycle owner fixture: {owner}"),
     };
-    let mut helper = common::parse_program(&format!("import std::{owner}; pub fn loaded() {{}}"));
+    let mut helper = common::parse_program(&format!("import std.{owner}; pub fn loaded() {{}}"));
     for (item, _) in &mut helper.items {
         let Item::Import(decl) = item else {
             continue;
@@ -177,7 +177,7 @@ fn typecheck_link_monitor_import_edge(
     let consumer_id = ModuleId::new(vec!["std".to_string(), "link_monitor".to_string()]);
     let target_items = common::parse_program(target_source).items;
     let mut consumer = common::parse_program(&format!(
-        "import {}::{{CrashKind}};\n\
+        "import {}.{{CrashKind}};\n\
          pub enum ImportedReason {{ Crashed(CrashKind); }}",
         target_path.join("::")
     ));
@@ -239,7 +239,7 @@ fn typecheck_link_monitor_import_edge(
 fn named_imported_exit_payload_is_source_authoritative_and_consumes_import() {
     let output = typecheck_with_resolved_std(
         r"
-        import std::failure::{CrashNotification};
+        import std.failure.{CrashNotification};
 
         actor Watcher {
             #[on(exit)]
@@ -265,7 +265,7 @@ fn named_imported_exit_payload_is_source_authoritative_and_consumes_import() {
 fn aliased_imported_exit_payload_keeps_canonical_lifecycle_identity() {
     let output = typecheck_with_resolved_std(
         r"
-        import std::failure::{CrashNotification as ExitNote};
+        import std.failure.{CrashNotification as ExitNote};
 
         actor Watcher {
             #[on(exit)]
@@ -284,8 +284,8 @@ fn aliased_imported_exit_payload_keeps_canonical_lifecycle_identity() {
 fn whole_module_aliases_keep_canonical_exit_and_down_hook_identity() {
     let output = typecheck_with_resolved_std(
         r"
-        import std::failure as f;
-        import std::link_monitor as lm;
+        import std.failure as f;
+        import std.link_monitor as lm;
 
         actor Watcher {
             #[on(exit)]
@@ -380,7 +380,7 @@ fn spoofed_std_owner_imports_cannot_mint_lifecycle_identities() {
         ),
     ] {
         let qualified_import = format!(
-            "import std::{owner};\n\
+            "import std.{owner};\n\
              actor Watcher {{ #[on({hook})] fn callback(note: {qualified}) {{}} }}\n\
              fn main() {{}}"
         );
@@ -395,7 +395,7 @@ fn spoofed_std_owner_imports_cannot_mint_lifecycle_identities() {
         );
 
         let named_import = format!(
-            "import std::{owner}::{{{bare}}};\n\
+            "import std.{owner}.{{{bare}}};\n\
              actor Watcher {{ #[on({hook})] fn callback(note: {bare}) {{}} }}\n\
              fn main() {{}}"
         );
@@ -474,25 +474,25 @@ fn canonical_std_module_named_import_is_seeded_before_member_resolution() {
 fn named_imports_do_not_grant_unrequested_qualified_lifecycle_authority() {
     for source in [
         r"
-        import std::failure::{CrashAction};
+        import std.failure.{CrashAction};
         fn main() {
             let _kind = failure.CrashKind::Crashed;
         }
         ",
         r"
-        import std::failure::{CrashKind};
+        import std.failure.{CrashKind};
         fn main() {
             let _kind = failure.CrashKind::Crashed;
         }
         ",
         r"
-        import std::link_monitor::{MonitorId};
+        import std.link_monitor.{MonitorId};
         fn main() {
             let _reason = link_monitor.DownReason::Exited;
         }
         ",
         r"
-        import std::link_monitor::{DownReason};
+        import std.link_monitor.{DownReason};
         fn main() {
             let _reason = link_monitor.DownReason::Exited;
         }
@@ -515,7 +515,7 @@ fn named_imports_do_not_grant_unrequested_qualified_lifecycle_authority() {
 fn source_owned_exit_payload_rejects_plain_and_missing_imports() {
     for source in [
         r"
-            import std::failure;
+            import std.failure;
             actor Watcher { #[on(exit)] fn on_peer_exit(note: CrashNotification) {} }
             fn main() {}
         ",
@@ -537,7 +537,7 @@ fn source_owned_exit_payload_rejects_plain_and_missing_imports() {
 
     let output = typecheck_with_resolved_std(
         r"
-        import std::failure;
+        import std.failure;
         actor Watcher {
             #[on(exit)]
             fn on_peer_exit(note: failure.CrashNotification) { let _id = note.actor_id; }
@@ -563,7 +563,7 @@ fn source_owned_exit_payload_rejects_plain_and_missing_imports() {
 fn sibling_loading_failure_does_not_authorize_root_qualified_exit_payload() {
     let mut helper = common::parse_program(
         r"
-        import std::failure::{CrashNotification};
+        import std.failure.{CrashNotification};
         pub fn loaded() {}
         ",
     );
@@ -579,7 +579,7 @@ fn sibling_loading_failure_does_not_authorize_root_qualified_exit_payload() {
 
     let mut root = common::parse_program(
         r"
-        import app::helper;
+        import app.helper;
 
         actor Watcher {
             #[on(exit)]
@@ -613,7 +613,7 @@ fn sibling_loading_failure_does_not_authorize_root_qualified_exit_payload() {
 fn named_imported_down_payload_and_nested_types_consume_import() {
     let output = typecheck_with_resolved_std(
         r"
-        import std::link_monitor::{DownNotification, DownReason, DownTarget};
+        import std.link_monitor.{DownNotification, DownReason, DownTarget};
 
         actor Watcher {
             #[on(down)]
@@ -649,7 +649,7 @@ fn named_imported_down_payload_and_nested_types_consume_import() {
 fn source_owned_down_payload_requires_direct_import_authority() {
     for source in [
         r"
-            import std::link_monitor;
+            import std.link_monitor;
             actor Watcher { #[on(down)] fn on_down(note: DownNotification) {} }
             fn main() {}
         ",
@@ -671,7 +671,7 @@ fn source_owned_down_payload_requires_direct_import_authority() {
 
     let output = typecheck_with_resolved_std(
         r"
-        import std::link_monitor;
+        import std.link_monitor;
         actor Watcher {
             #[on(down)]
             fn on_down(note: link_monitor.DownNotification) { let _id = note.monitor.value; }
@@ -706,7 +706,7 @@ fn sibling_loading_link_monitor_does_not_authorize_root_qualified_down_payload()
         }
     }
 
-    let mut helper = common::parse_program("import std::link_monitor; pub fn loaded() {}");
+    let mut helper = common::parse_program("import std.link_monitor; pub fn loaded() {}");
     for (item, _) in &mut helper.items {
         let Item::Import(decl) = item else {
             continue;
@@ -718,7 +718,7 @@ fn sibling_loading_link_monitor_does_not_authorize_root_qualified_down_payload()
 
     let mut root = common::parse_program(
         r"
-        import app::helper;
+        import app.helper;
         actor Watcher {
             #[on(down)]
             fn on_down(note: link_monitor.DownNotification) {}
@@ -750,7 +750,7 @@ fn sibling_loading_link_monitor_does_not_authorize_root_qualified_down_payload()
 fn transitive_std_failure_defs_do_not_authorize_qualified_constructors_or_variants() {
     for source in [
         r"
-        import app::helper;
+        import app.helper;
         fn main() {
             let _note = failure.CrashNotification::Forged {
                 actor_id: 1,
@@ -758,7 +758,7 @@ fn transitive_std_failure_defs_do_not_authorize_qualified_constructors_or_varian
         }
         ",
         r"
-        import app::helper;
+        import app.helper;
         fn main() {
             let _kind = failure.CrashKind::HeapExceeded;
         }
@@ -780,7 +780,7 @@ fn transitive_std_failure_defs_do_not_authorize_qualified_constructors_or_varian
 fn transitive_std_link_monitor_defs_do_not_authorize_qualified_constructors_or_variants() {
     for source in [
         r"
-        import app::helper;
+        import app.helper;
         fn main() {
             let _note = link_monitor.DownNotification::Forged {
                 monitor: 1,
@@ -788,13 +788,13 @@ fn transitive_std_link_monitor_defs_do_not_authorize_qualified_constructors_or_v
         }
         ",
         r"
-        import app::helper;
+        import app.helper;
         fn main() {
             let _target = link_monitor.DownTarget::Remote;
         }
         ",
         r"
-        import app::helper;
+        import app.helper;
         fn main() {
             let _reason = link_monitor.DownReason::MonitorLost;
         }
@@ -816,7 +816,7 @@ fn transitive_std_link_monitor_defs_do_not_authorize_qualified_constructors_or_v
 fn local_lifecycle_shadow_does_not_forge_imported_payload() {
     let output = typecheck_with_resolved_std(
         r"
-        import std::failure::{CrashNotification};
+        import std.failure.{CrashNotification};
 
         type CrashNotification { value: i64; }
 

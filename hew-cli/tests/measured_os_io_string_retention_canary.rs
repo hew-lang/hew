@@ -14,13 +14,13 @@ use tempfile::tempdir;
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const SOURCE: &str = r#"
-import std::encoding::compress;
-import std::fs;
-import std::io;
-import std::net::dns;
-import std::os;
-import std::path;
-import std::process;
+import std.encoding.compress;
+import std.fs;
+import std.io;
+import std.net.dns;
+import std.os;
+import std.path;
+import std.process;
 
 fn all_measured_wrappers() -> i64 {
     let arg = os.args(0);

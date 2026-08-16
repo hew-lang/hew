@@ -1186,7 +1186,7 @@ mod tests {
         // Previously this was suspected to miss scopes; this test confirms it
         // already works correctly and guards against regressions.
         let source =
-            "import util::{ foo };\nfn a() -> i64 { foo() }\nfn b() -> i64 { foo() }\nfn c() -> i64 { foo() }";
+            "import util.{ foo };\nfn a() -> i64 { foo() }\nfn b() -> i64 { foo() }\nfn c() -> i64 { foo() }";
         let pr = parse(source);
 
         let spans = find_import_binding_references(&pr, "foo");
@@ -1206,7 +1206,7 @@ mod tests {
         // When the cursor sits on the import binding token (the `foo` in
         // `import util::{ foo }`), find_all_references must return every usage
         // of `foo` in the file — including usages across multiple functions.
-        let source = "import util::{ foo };\nfn a() -> i64 { foo() }\nfn b() -> i64 { foo() }";
+        let source = "import util.{ foo };\nfn a() -> i64 { foo() }\nfn b() -> i64 { foo() }";
         let pr = parse(source);
 
         // Place cursor on the import token.
@@ -1227,7 +1227,7 @@ mod tests {
         // that shadow the import. When cursor is on `foo` in `import util::{ foo }`,
         // and there's a `foo` parameter in main(), find_all_references must return
         // ONLY the import span, not the parameter use.
-        let source = "import util::{ foo }; fn main(foo: i64) -> i64 { foo }";
+        let source = "import util.{ foo }; fn main(foo: i64) -> i64 { foo }";
         let pr = parse(source);
 
         // Cursor on the import binding token `foo` (after `{`).
@@ -1268,7 +1268,7 @@ mod tests {
         // local-variable path (not the import-binding path), which means it
         // should either return None (no local `foo` in scope outside an import)
         // or diverge from the binding-cursor result.
-        let source = "import foo::{ foo };\nfn main() { foo() }";
+        let source = "import foo.{ foo };\nfn main() { foo() }";
         let pr = parse(source);
 
         // Cursor on the path segment `foo` (before `::`).

@@ -237,7 +237,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_allows_bounded_channel_subset() {
         let source = concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "fn main() {\n",
             "    let (tx, rx) = channel.new(1);\n",
             "    tx.send(\"hello\");\n",
@@ -265,7 +265,7 @@ mod wasm_rejects {
     #[test]
     fn native_channel_new_no_platform_error() {
         let source = concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "fn main() {\n",
             "    let pair = channel.new(0);\n",
             "}\n",
@@ -288,7 +288,7 @@ mod wasm_rejects {
     #[test]
     fn receive_fn_await_channel_recv_does_not_warn_blocking() {
         let source = concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "actor Worker {\n",
             "    receive fn run() {\n",
             "        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n",
@@ -329,7 +329,7 @@ mod wasm_rejects {
     #[test]
     fn receive_fn_bare_channel_recv_still_warns_blocking() {
         let source = concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "actor Worker {\n",
             "    receive fn run() {\n",
             "        let (_tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n",
@@ -363,7 +363,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_blocking_channel_recv() {
         let source = concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "fn main() {\n",
             "    let (_tx, rx) = channel.new(1);\n",
             "    let _ = rx.recv();\n",
@@ -393,7 +393,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_for_await_receiver() {
         let source = concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "fn main() {\n",
             "    let (tx, rx) = channel.new(1);\n",
             "    tx.send(\"hello\");\n",
@@ -427,7 +427,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_for_await_stream() {
         let source = concat!(
-            "import std::stream;\n",
+            "import std.stream;\n",
             "fn main() {\n",
             "    let (sink, input) = stream.bytes_pipe(1);\n",
             "    sink.close();\n",
@@ -460,7 +460,7 @@ mod wasm_rejects {
     #[test]
     fn native_for_await_receiver_no_platform_error() {
         let source = concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "fn main() {\n",
             "    let (tx, rx) = channel.new(1);\n",
             "    tx.send(\"hello\");\n",
@@ -488,7 +488,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_allows_non_blocking_semaphore_subset() {
         let source = concat!(
-            "import std::semaphore;\n",
+            "import std.semaphore;\n",
             "fn main() {\n",
             "    let sem = semaphore.new(1);\n",
             "    let _ = sem.count();\n",
@@ -516,7 +516,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_blocking_semaphore_methods() {
         let source = concat!(
-            "import std::semaphore;\n",
+            "import std.semaphore;\n",
             "fn main() {\n",
             "    let sem = semaphore.new(1);\n",
             "    sem.acquire();\n",
@@ -551,7 +551,7 @@ mod wasm_rejects {
     #[test]
     fn native_blocking_semaphore_methods_no_platform_error() {
         let source = concat!(
-            "import std::semaphore;\n",
+            "import std.semaphore;\n",
             "fn main() {\n",
             "    let sem = semaphore.new(1);\n",
             "    sem.acquire();\n",
@@ -582,7 +582,7 @@ mod wasm_rejects {
         // Use a function that accepts a Stream<string> and calls .next().
         // The stream module must be imported to register Stream types.
         let source = concat!(
-            "import std::stream;\n",
+            "import std.stream;\n",
             "fn consume(s: stream.Stream<string>) -> string {\n",
             "    s.next()\n",
             "}\n",
@@ -611,7 +611,7 @@ mod wasm_rejects {
     #[test]
     fn native_stream_method_no_platform_error() {
         let source = concat!(
-            "import std::stream;\n",
+            "import std.stream;\n",
             "fn consume(s: stream.Stream<string>) -> string {\n",
             "    s.next()\n",
             "}\n",
@@ -689,7 +689,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_file_stream_owner_through_alias_call_and_function_value() {
         let source = concat!(
-            "import std::fs as files;\n",
+            "import std.fs as files;\n",
             "fn main() {\n",
             "    let _result = files.try_read(\"/dev/null\");\n",
             "    let _producer = files.try_read;\n",
@@ -714,11 +714,8 @@ mod wasm_rejects {
     #[test]
     fn wasm_named_std_function_imports_preserve_exact_owner_for_calls_and_values() {
         for (binding, import) in [
-            ("try_read", "import std::fs::{ try_read };"),
-            (
-                "read_handle",
-                "import std::fs::{ try_read as read_handle };",
-            ),
+            ("try_read", "import std.fs.{ try_read };"),
+            ("read_handle", "import std.fs.{ try_read as read_handle };"),
         ] {
             let source = format!(
                 "{import}\nfn main() {{ let _result = {binding}(\"/dev/null\"); let _producer = {binding}; }}\n"
@@ -784,7 +781,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_tls_module_call() {
         let source = concat!(
-            "import std::net::tls;\n",
+            "import std.net.tls;\n",
             "fn main() { tls.connect(\"host\", 443); }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -803,7 +800,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_quic_module_call() {
         let source = concat!(
-            "import std::net::quic;\n",
+            "import std.net.quic;\n",
             "fn main() { quic.new_client(); }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -822,7 +819,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_websocket_module_calls_and_values() {
         let source = concat!(
-            "import std::net::websocket;\n",
+            "import std.net.websocket;\n",
             "fn main() {\n",
             "    websocket.connect(\"ws://127.0.0.1:9001/\");\n",
             "    websocket.listen(\"127.0.0.1:9002\");\n",
@@ -842,7 +839,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_aliased_websocket_module_calls_and_values() {
         let source = concat!(
-            "import std::net::websocket as ws;\n",
+            "import std.net.websocket as ws;\n",
             "fn main() {\n",
             "    ws.connect(\"ws://127.0.0.1:9001/\");\n",
             "    let _connect = ws.connect;\n",
@@ -888,7 +885,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_websocket_handle_methods() {
         let source = concat!(
-            "import std::net::websocket;\n",
+            "import std.net.websocket;\n",
             "fn use_conn(conn: websocket.Conn) { conn.send_text(\"payload\"); }\n",
             "fn use_server(server: websocket.Server) { server.port(); }\n",
             "fn use_message(message: websocket.Message) { message.msg_type(); }\n",
@@ -905,7 +902,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_dns_module_call() {
         let source = concat!(
-            "import std::net::dns;\n",
+            "import std.net.dns;\n",
             "fn main() { dns.resolve(\"example.com\"); }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -923,7 +920,7 @@ mod wasm_rejects {
 
     #[test]
     fn wasm_rejects_os_module_call() {
-        let source = concat!("import std::os;\n", "fn main() { os.env(\"HOME\"); }\n",);
+        let source = concat!("import std.os;\n", "fn main() { os.env(\"HOME\"); }\n",);
         let output = check_wasm_with_registry(source);
         assert!(
             has_platform_limitation_error(&output),
@@ -942,7 +939,7 @@ mod wasm_rejects {
         // The fallible twin draws from the same native-only entropy source, so
         // it must not become a way around the fail-closed wasm32 rejection.
         let source = concat!(
-            "import std::crypto::crypto;\n",
+            "import std.crypto.crypto;\n",
             "fn main() { crypto.try_random_bytes(16); }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -963,7 +960,7 @@ mod wasm_rejects {
         // crypto.random_bytes requires secure entropy. On wasm32, no secure
         // implementation is linked, so the checker must fail closed.
         let source = concat!(
-            "import std::crypto::crypto;\n",
+            "import std.crypto.crypto;\n",
             "fn main() { crypto.random_bytes(16); }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -1013,7 +1010,7 @@ mod wasm_rejects {
         // Taking crypto.random_bytes as a first-class function value on wasm32
         // must be rejected with PlatformLimitation, not silently allowed.
         let source = concat!(
-            "import std::crypto::crypto;\n",
+            "import std.crypto.crypto;\n",
             "fn main() { let _f = crypto.random_bytes; }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -1034,7 +1031,7 @@ mod wasm_rejects {
         // The same value-position reference must be accepted on native (non-wasm)
         // targets so the guard does not break native builds.
         let source = concat!(
-            "import std::crypto::crypto;\n",
+            "import std.crypto.crypto;\n",
             "fn main() { let _f = crypto.random_bytes; }\n",
         );
         let result = hew_parser::parse(source);
@@ -1060,10 +1057,7 @@ mod wasm_rejects {
 
     #[test]
     fn wasm_rejects_net_connect_value_position() {
-        let source = concat!(
-            "import std::net;\n",
-            "fn main() { let _f = net.connect; }\n",
-        );
+        let source = concat!("import std.net;\n", "fn main() { let _f = net.connect; }\n",);
         let output = check_wasm_with_registry(source);
         assert!(
             has_platform_limitation_error(&output),
@@ -1075,7 +1069,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_http_client_request_value_position() {
         let source = concat!(
-            "import std::net::http::http_client;\n",
+            "import std.net.http.http_client;\n",
             "fn main() { let _f = http_client.request; }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -1089,7 +1083,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_encrypt_seal_value_position() {
         let source = concat!(
-            "import std::crypto::encrypt;\n",
+            "import std.crypto.encrypt;\n",
             "fn main() { let _f = encrypt.seal; }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -1165,7 +1159,7 @@ fn main() {
     #[test]
     fn native_tls_no_platform_error() {
         let source = concat!(
-            "import std::net::tls;\n",
+            "import std.net.tls;\n",
             "fn main() { tls.connect(\"host\", 443); }\n",
         );
         let result = hew_parser::parse(source);
@@ -1191,7 +1185,7 @@ fn main() {
     #[test]
     fn native_quic_no_platform_error() {
         let source = concat!(
-            "import std::net::quic;\n",
+            "import std.net.quic;\n",
             "fn main() { quic.new_client(); }\n",
         );
         let result = hew_parser::parse(source);
@@ -1217,7 +1211,7 @@ fn main() {
     #[test]
     fn native_dns_no_platform_error() {
         let source = concat!(
-            "import std::net::dns;\n",
+            "import std.net.dns;\n",
             "fn main() { dns.resolve(\"example.com\"); }\n",
         );
         let result = hew_parser::parse(source);
@@ -1242,7 +1236,7 @@ fn main() {
 
     #[test]
     fn native_os_no_platform_error() {
-        let source = concat!("import std::os;\n", "fn main() { os.env(\"HOME\"); }\n",);
+        let source = concat!("import std.os;\n", "fn main() { os.env(\"HOME\"); }\n",);
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -1266,7 +1260,7 @@ fn main() {
     #[test]
     fn native_crypto_random_bytes_no_platform_error() {
         let source = concat!(
-            "import std::crypto::crypto;\n",
+            "import std.crypto.crypto;\n",
             "fn main() { crypto.random_bytes(16); }\n",
         );
         let result = hew_parser::parse(source);
@@ -1537,7 +1531,7 @@ fn main() {
     fn wasm_rejects_supervisor_with_crash_hook() {
         let output = check_wasm(
             r"
-            import std::failure;
+            import std.failure;
 
             actor Crasher {
                 #[on(crash)]
@@ -1574,7 +1568,7 @@ fn main() {
     fn wasm_rejects_link_that_would_fire_exit_hook() {
         let output = check_wasm(
             r"
-            import std::failure;
+            import std.failure;
 
             actor Watcher {
                 #[on(exit)]

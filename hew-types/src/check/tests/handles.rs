@@ -1630,7 +1630,7 @@ actor Sink {
         // be gated on `Copy`.
         let output = check_source(
             r"
-            import std::link_monitor::{MonitorError, MonitorRef};
+            import std.link_monitor.{MonitorError, MonitorRef};
 
             actor Child {
                 receive fn ping() {}

@@ -642,7 +642,7 @@ fn resource_payload_beside_an_interpolated_string_closes_exactly_once() {
 ///
 /// The pin is the whole program: it must run, print the message it sent
 /// through the channel, and exit cleanly.
-const RETURNED_CHANNEL_PAIR: &str = r#"import std::channel::channel;
+const RETURNED_CHANNEL_PAIR: &str = r#"import std.channel.channel;
 
 fn main() -> i64 {
     let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);

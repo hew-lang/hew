@@ -262,7 +262,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "regex compile + is_match",
-        probe: "import std::text::regex;\nfn main() {\n    let r = regex.new(\"a.c\");\n    println(r.is_match(\"abc\"));\n}\n",
+        probe: "import std.text.regex;\nfn main() {\n    let r = regex.new(\"a.c\");\n    println(r.is_match(\"abc\"));\n}\n",
         coverage: Coverage::Parity("wildcard_match"),
     },
     Construct {
@@ -659,7 +659,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "native-only stdlib import (`std::fs`)",
-        probe: "import std::fs;\nfn main() {\n    println(\"x\");\n}\n",
+        probe: "import std.fs;\nfn main() {\n    println(\"x\");\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "Unsupported::NATIVE_ONLY",
         },
@@ -673,7 +673,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "module-qualified non-allowlisted call",
-        probe: "import std::fs;\nfn main() {\n    fs.read(\"p.txt\");\n}\n",
+        probe: "import std.fs;\nfn main() {\n    fs.read(\"p.txt\");\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "sandbox_profile_rejected",
         },
@@ -753,7 +753,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "crypto.random_bytes rejected with PlatformLimitation",
-        probe: "import std::crypto::crypto;\nfn main() { let _ = crypto.random_bytes(32); }\n",
+        probe: "import std.crypto.crypto;\nfn main() { let _ = crypto.random_bytes(32); }\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "PlatformLimitation",
         },
@@ -848,7 +848,7 @@ const CONSTRUCTS: &[Construct] = &[
         // `std::text::regex` and its fixture (`regex_clone`) lives outside
         // the curated playground manifest scope (see tests/parity.rs).
         id: "regex method `clone()`",
-        probe: "import std::text::regex;\nfn main() {\n    let re = regex.new(\"a+\");\n    let re2 = re.clone();\n    println(re2.is_match(\"aaa\"));\n    re.close();\n    re2.close();\n}\n",
+        probe: "import std.text.regex;\nfn main() {\n    let re = regex.new(\"a+\");\n    let re2 = re.clone();\n    println(re2.is_match(\"aaa\"));\n    re.close();\n    re2.close();\n}\n",
         coverage: Coverage::Parity("regex_clone"),
     },
     Construct {

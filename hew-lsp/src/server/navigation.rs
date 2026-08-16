@@ -1721,7 +1721,7 @@ mod tests {
 
     #[test]
     fn importer_fanout_helper_includes_usage_spans_for_non_aliased_imports() {
-        let source = "import util::{ greet };\nfn main() -> i32 { greet() }";
+        let source = "import util.{ greet };\nfn main() -> i32 { greet() }";
         let source_uri = make_test_uri("/project/main.hew");
         let target_uri = make_test_uri("/project/util.hew");
         let importer = first_named_import_match(source, &source_uri, &target_uri);
@@ -1735,7 +1735,7 @@ mod tests {
 
     #[test]
     fn importer_fanout_helper_skips_usage_spans_for_aliased_imports() {
-        let source = "import util::{ greet as hello };\nfn main() -> i32 { hello() }";
+        let source = "import util.{ greet as hello };\nfn main() -> i32 { hello() }";
         let source_uri = make_test_uri("/project/main.hew");
         let target_uri = make_test_uri("/project/util.hew");
         let importer = first_named_import_match(source, &source_uri, &target_uri);
@@ -1747,7 +1747,7 @@ mod tests {
 
     #[test]
     fn import_originated_rename_conflicts_detect_definition_file_clash() {
-        let main_source = "import util::{ greet };\nfn main() -> i32 { greet() }";
+        let main_source = "import util.{ greet };\nfn main() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }\npub fn hello() -> i32 { 2 }";
         let main_uri = make_test_uri("/project/main.hew");
         let util_uri = make_test_uri("/project/util.hew");
@@ -1978,7 +1978,7 @@ mod tests {
     fn definition_originated_rename_conflicts_detect_importer_shadow() {
         let util_source = "pub fn foo() -> i32 { 1 }";
         let main_source =
-            "import util::{ foo };\nimport other::{ bar };\nfn main() -> i32 { foo() + bar() }";
+            "import util.{ foo };\nimport other.{ bar };\nfn main() -> i32 { foo() + bar() }";
         let other_source = "pub fn bar() -> i32 { 2 }";
         let util_uri = make_test_uri("/project/util.hew");
         let main_uri = make_test_uri("/project/main.hew");

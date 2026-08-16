@@ -1418,7 +1418,7 @@ fn bool_does_not_coerce_to_i32() {
 #[test]
 fn handle_type_does_not_coerce_to_string() {
     let (errors, _warnings) = parse_and_check_with_stdlib(
-        "import std::encoding::json;\nfn foo(value: json.Value) -> string { value }",
+        "import std.encoding.json;\nfn foo(value: json.Value) -> string { value }",
     );
     assert!(
         errors
@@ -1431,7 +1431,7 @@ fn handle_type_does_not_coerce_to_string() {
 #[test]
 fn string_does_not_coerce_to_handle_type() {
     let (errors, _warnings) = parse_and_check_with_stdlib(
-        "import std::encoding::json;\nfn foo(text: string) -> json.Value { text }",
+        "import std.encoding.json;\nfn foo(text: string) -> json.Value { text }",
     );
     assert!(
         errors
@@ -3413,7 +3413,7 @@ fn generic_decl_bound_rejects_return_type_site() {
 fn generic_decl_bound_rejects_imported_type_annotation_site() {
     let mut root = hew_parser::parse(
         r"
-        import hew::boxes::{ Box };
+        import hew.boxes.{ Box };
         type NoDisplay { n: i64 }
         fn take(boxed: Box<NoDisplay>) -> i64 {
             0

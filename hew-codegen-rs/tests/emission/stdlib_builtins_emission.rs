@@ -215,7 +215,7 @@ fn builtins_print_overloads_use_print_value_tags() {
 fn free_math_builtins_emit_llvm_intrinsics() {
     let ll = emit_ll_with_std(
         r#"
-        import std::math;
+        import std.math;
 
         fn main() -> i64 {
             let a: f64 = sqrt(9.0);

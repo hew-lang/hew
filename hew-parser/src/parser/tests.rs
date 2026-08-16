@@ -1826,7 +1826,7 @@ fn parse_comparison_chain() {
 
 #[test]
 fn parse_import_statement() {
-    let source = "import std::fs;";
+    let source = "import std.fs;";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     if let Item::Import(imp) = &result.program.items[0].0 {
@@ -1873,7 +1873,7 @@ fn dotted_import_glob_and_empty_selection_are_rejected() {
         .iter()
         .any(|error| error.message.contains("at least one binding")));
 
-    let legacy_empty = parse("import app::net::{};");
+    let legacy_empty = parse("import app.net.{};");
     assert!(
         legacy_empty.errors.is_empty(),
         "legacy empty selection remains accepted during the cutover: {:?}",
@@ -1900,7 +1900,7 @@ fn hyphenated_package_import_suggests_manifest_name() {
 
 #[test]
 fn parse_import_actor_path_segment() {
-    let source = "import std::actor::monitor;";
+    let source = "import std.actor.monitor;";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     if let Item::Import(imp) = &result.program.items[0].0 {
@@ -1912,7 +1912,7 @@ fn parse_import_actor_path_segment() {
 
 #[test]
 fn parse_import_machine_path_segment() {
-    let source = "import src::workflow::machine::{Machine};";
+    let source = "import src.workflow.machine.{Machine};";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     if let Item::Import(imp) = &result.program.items[0].0 {
@@ -1939,7 +1939,7 @@ fn parse_import_type_decl_keyword_path_segments() {
         "type",
         "trait",
     ] {
-        let source = format!("import src::{kw}::helpers;");
+        let source = format!("import src.{kw}::helpers;");
         let result = parse(&source);
         assert!(
             result.errors.is_empty(),
@@ -2207,7 +2207,7 @@ fn parse_timeout_combinator() {
 
 #[test]
 fn parse_import_alias() {
-    let source = r"import std::net::{http as h, websocket as ws};";
+    let source = r"import std.net.{http as h, websocket as ws};";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     if let Item::Import(imp) = &result.program.items[0].0 {
@@ -2228,7 +2228,7 @@ fn parse_import_alias() {
 
 #[test]
 fn parse_import_alias_single() {
-    let source = r"import mymod::{foo as bar};";
+    let source = r"import mymod.{foo as bar};";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     if let Item::Import(imp) = &result.program.items[0].0 {
@@ -2247,7 +2247,7 @@ fn parse_import_alias_single() {
 #[test]
 fn parse_import_whole_module_alias() {
     // `import path::to::mod as alias;` sets module_alias; spec stays None.
-    let source = r"import std::net as n;";
+    let source = r"import std.net as n;";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     if let Item::Import(imp) = &result.program.items[0].0 {
@@ -2262,7 +2262,7 @@ fn parse_import_whole_module_alias() {
 #[test]
 fn parse_import_no_module_alias_is_none() {
     // A plain whole-module import leaves module_alias unset.
-    let source = r"import std::net;";
+    let source = r"import std.net;";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     if let Item::Import(imp) = &result.program.items[0].0 {
@@ -2275,7 +2275,7 @@ fn parse_import_no_module_alias_is_none() {
 #[test]
 fn parse_import_alias_of_brace_rejected() {
     // Aliasing a `::{ }` spec has no meaning and is a parse error.
-    let source = r"import mymod::{ Foo } as f;";
+    let source = r"import mymod.{ Foo } as f;";
     let result = parse(source);
     assert!(
         !result.errors.is_empty(),
@@ -2286,7 +2286,7 @@ fn parse_import_alias_of_brace_rejected() {
 #[test]
 fn parse_import_alias_of_glob_rejected() {
     // Aliasing a glob has no meaning and is a parse error.
-    let source = r"import mymod::* as g;";
+    let source = r"import mymod.* as g;";
     let result = parse(source);
     assert!(
         !result.errors.is_empty(),
@@ -2297,7 +2297,7 @@ fn parse_import_alias_of_glob_rejected() {
 #[test]
 fn parse_import_no_alias_preserves_name() {
     // Names without `as` should have alias = None
-    let source = r"import mymod::{foo, bar};";
+    let source = r"import mymod.{foo, bar};";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     if let Item::Import(imp) = &result.program.items[0].0 {
@@ -2328,7 +2328,7 @@ fn parse_import_bare_colons_rejected() {
 
 #[test]
 fn parse_import_glob() {
-    let source = r"import utils::*;";
+    let source = r"import utils.*;";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     if let Item::Import(imp) = &result.program.items[0].0 {

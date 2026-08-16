@@ -731,7 +731,7 @@ fn clean_counter_does_not_fire_on_integer_counter_under_deny() {
 /// `w` is never called, so `dead_code` can fire here too; the assertions
 /// below match the `must_use` message specifically rather than asserting a
 /// single diagnostic.
-const MUST_USE_DISCARD: &str = "import std::net::{Connection};\n\
+const MUST_USE_DISCARD: &str = "import std.net.{Connection};\n\
      fn w(c: Connection) {\n\
      c.write(b\"hi\");\n\
      }\n\
@@ -739,7 +739,7 @@ const MUST_USE_DISCARD: &str = "import std::net::{Connection};\n\
      }\n";
 
 /// The same program with an in-source allow directive on the line above.
-const MUST_USE_SUPPRESSED: &str = "import std::net::{Connection};\n\
+const MUST_USE_SUPPRESSED: &str = "import std.net.{Connection};\n\
      fn w(c: Connection) {\n\
      // hew:allow(must_use)\n\
      c.write(b\"hi\");\n\

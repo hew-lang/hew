@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn symbols_import() {
-        let source = "import std::os;";
+        let source = "import std.os;";
         let pr = parse(source);
         let symbols = build_document_symbols(source, &pr);
         assert_eq!(symbols.len(), 1);

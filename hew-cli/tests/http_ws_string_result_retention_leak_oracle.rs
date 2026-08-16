@@ -16,8 +16,8 @@ use support::leak_slope::assert_frame_slope_below_tolerance_exact_lines;
 fn http_request_source(frames: usize) -> String {
     format!(
         r#"
-import std::net::http::http_client;
-import std::net::http;
+import std.net.http.http_client;
+import std.net.http;
 
 actor Client {{
     let url: string;
@@ -80,8 +80,8 @@ fn main() {{
 fn http_response_source(frames: usize) -> String {
     format!(
         r#"
-import std::net::http::http_client;
-import std::net::http;
+import std.net.http.http_client;
+import std.net.http;
 
 actor Client {{
     let url: string;
@@ -146,7 +146,7 @@ fn main() {{
 fn websocket_message_source(frames: usize) -> String {
     format!(
         r#"
-import std::net::websocket;
+import std.net.websocket;
 
 actor Client {{
     let url: string;
@@ -209,7 +209,7 @@ fn main() {{
 fn websocket_error_source(frames: usize) -> String {
     format!(
         r#"
-import std::net::websocket;
+import std.net.websocket;
 
 fn main() {{
     match websocket.listen("not an address") {{

@@ -962,7 +962,7 @@ mod every_attribute {
         assert!(handles_src.errors.is_empty());
         let mut root = hew_parser::parse(
             r"
-            import handles::{ Handle };
+            import handles.{ Handle };
             fn main() -> i64 {
                 let _h: Handle = Handle {};
                 0
@@ -1020,7 +1020,7 @@ mod every_attribute {
         assert!(handles_src.errors.is_empty());
         let mut root = hew_parser::parse(
             r"
-            import handles::{ Handle };
+            import handles.{ Handle };
             fn main() -> i64 {
                 let _h: Handle = Handle {};
                 0

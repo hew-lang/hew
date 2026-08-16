@@ -249,7 +249,7 @@ fn test_named_import_selective_resolution() {
 #[test]
 fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_impl() {
     let root_source = r#"
-        import myapp::widgets::*;
+        import myapp.widgets.*;
 
         fn main() -> string {
             describe(Label { text: "hello" })

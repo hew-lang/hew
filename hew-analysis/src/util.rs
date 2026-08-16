@@ -292,7 +292,7 @@ mod tests {
     fn span_to_line_col_range_survives_out_of_range_end() {
         // Reproduces the LSP crash shape: an out-of-bounds end offset attributed
         // to a short user document must clamp instead of panicking.
-        let source = "import std::net;\nfn main() {}\n";
+        let source = "import std.net;\nfn main() {}\n";
         let lo = compute_line_offsets(source);
         let (sl, sc, el, ec) = span_to_line_col_range(source, &lo, 0, 1306);
         assert_eq!((sl, sc), (0, 0));

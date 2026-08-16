@@ -95,7 +95,7 @@ fn bytes_index_sugar_reads_pushed_bytes() {
         &repo,
         "bytes_index_sugar",
         r#"
-        import std::io;
+        import std.io;
 
         fn main() {
             var b: bytes = bytes::new();

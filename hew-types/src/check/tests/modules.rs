@@ -1543,7 +1543,7 @@ mod module_body_diagnostic_envelope {
     fn deferred_channel_rewrite_refreshes_result_and_argument_ownership() {
         let parsed = hew_parser::parse(
             r#"
-                import std::channel::channel;
+                import std.channel.channel;
 
                 fn relay() {
                     let (tx, rx) = channel.new(1);
@@ -1615,7 +1615,7 @@ mod module_body_diagnostic_envelope {
     fn assign_target_shapes_populated_for_while_loop_with_import() {
         // Reproduces the eval_large_stderr CI failure:
         // synthesized source for `fn spam_err` eval step with `import std::io`
-        let source = "import std::io;\nfn spam_err() {\n    var i = 0;\n    while i < 20000 {\n        io.write_err(\"line\\n\");\n        i = i + 1;\n    }\n}\nfn main() {\n}\n";
+        let source = "import std.io;\nfn spam_err() {\n    var i = 0;\n    while i < 20000 {\n        io.write_err(\"line\\n\");\n        i = i + 1;\n    }\n}\nfn main() {\n}\n";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),

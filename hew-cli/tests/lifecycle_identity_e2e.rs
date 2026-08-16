@@ -24,9 +24,9 @@ fn root_and_imported_module_members_accept_canonical_lifecycle_payloads() {
     fs::write(
         &main,
         r"
-import std::failure::{CrashNotification, CrashKind};
-import std::link_monitor::{DownNotification, DownReason};
-import lifecyclepkg::events;
+import std.failure.{CrashNotification, CrashKind};
+import std.link_monitor.{DownNotification, DownReason};
+import lifecyclepkg.events;
 
 type RootEnvelope {
     exit: CrashNotification;
@@ -48,7 +48,7 @@ fn main() -> i64 {
     fs::write(
         workspace.path().join("src/events.hew"),
         r"
-import std::failure::{CrashNotification};
+import std.failure.{CrashNotification};
 
 pub enum PeerEvent {
     Exit(CrashNotification);
@@ -85,7 +85,7 @@ fn whole_module_alias_exit_hook_compiles_and_runs_with_scalar_abi() {
     fs::write(
         &source,
         r#"
-import std::failure as f;
+import std.failure as f;
 
 actor Watcher {
     #[on(exit)]
@@ -127,7 +127,7 @@ fn down_hook_payload_reads_have_total_mir_decisions() {
     fs::write(
         &source,
         r#"
-import std::link_monitor::{DownNotification, DownReason, DownTarget};
+import std.link_monitor.{DownNotification, DownReason, DownTarget};
 
 actor Watcher {
     #[on(down)]

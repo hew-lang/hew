@@ -1886,7 +1886,7 @@ impl Worker {
 
     #[test]
     fn folding_ranges_for_import_group() {
-        let source = "import std::io;\nimport std::net;\nfn main() { 0 }";
+        let source = "import std.io;\nimport std.net;\nfn main() { 0 }";
         let parse_result = hew_parser::parse(source);
         let ranges = hew_analysis::folding::build_folding_ranges(source, &parse_result);
         let import_folds: Vec<_> = ranges
@@ -2642,7 +2642,7 @@ machine Traffic {
 
     #[test]
     fn diagnostics_route_non_root_module_path_to_imported_uri() {
-        let main_source = "import shapes::circle;\nfn main() -> i64 { circle.mistyped() }\n";
+        let main_source = "import shapes.circle;\nfn main() -> i64 { circle.mistyped() }\n";
         let circle_source = "pub fn mistyped() -> i64 { true }\n";
 
         let main_url = make_test_uri("/fake/project/main.hew");
@@ -3148,7 +3148,7 @@ machine Traffic {
 
     #[test]
     fn code_actions_include_remove_unused_imports_source_action() {
-        let source = "import foo::bar;\nfn main() -> i32 { 0 }\n";
+        let source = "import foo.bar;\nfn main() -> i32 { 0 }\n";
         let doc = make_doc(source);
         let uri = Url::parse("file:///test.hew").unwrap();
         let import_end = source.find('\n').unwrap();
@@ -3191,7 +3191,7 @@ machine Traffic {
 
     #[test]
     fn code_actions_honor_kind_filters_for_remove_unused_imports() {
-        let source = "import foo::bar;\nfn main() -> i32 { 0 }\n";
+        let source = "import foo.bar;\nfn main() -> i32 { 0 }\n";
         let doc = make_doc(source);
         let uri = Url::parse("file:///test.hew").unwrap();
         let diag = Diagnostic {
@@ -3488,7 +3488,7 @@ machine Traffic {
 
     #[test]
     fn cross_file_prepare_rename_on_named_import_binding_returns_import_range() {
-        let main_source = "import util::{ greet };\nfn main() -> i32 { greet() }";
+        let main_source = "import util.{ greet };\nfn main() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -3528,7 +3528,7 @@ machine Traffic {
 
     #[test]
     fn cross_file_prepare_rename_on_named_import_usage_returns_usage_range() {
-        let main_source = "import util::{ greet };\nfn main() -> i32 { greet() }";
+        let main_source = "import util.{ greet };\nfn main() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -3558,7 +3558,8 @@ machine Traffic {
 
     #[test]
     fn cross_file_references_include_named_importer_and_imported_open_document() {
-        let main_source = "import util::{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
+        let main_source =
+            "import util.{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -3597,7 +3598,8 @@ machine Traffic {
 
     #[test]
     fn cross_file_references_from_named_import_usage_include_imported_open_document() {
-        let main_source = "import util::{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
+        let main_source =
+            "import util.{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -3636,8 +3638,8 @@ machine Traffic {
 
     #[test]
     fn cross_file_references_from_named_import_usage_include_other_open_importers() {
-        let main_source = "import util::{ greet };\nfn main() -> i32 { greet() }";
-        let helper_source = "import util::{ greet };\nfn helper() -> i32 { greet() }";
+        let main_source = "import util.{ greet };\nfn main() -> i32 { greet() }";
+        let helper_source = "import util.{ greet };\nfn helper() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -3686,7 +3688,8 @@ machine Traffic {
 
     #[test]
     fn cross_file_rename_updates_named_importer_and_imported_open_document() {
-        let main_source = "import util::{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
+        let main_source =
+            "import util.{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -3725,8 +3728,8 @@ machine Traffic {
 
     #[test]
     fn cross_file_rename_from_named_import_usage_updates_other_open_importers() {
-        let main_source = "import util::{ greet };\nfn main() -> i32 { greet() }";
-        let helper_source = "import util::{ greet };\nfn helper() -> i32 { greet() }";
+        let main_source = "import util.{ greet };\nfn main() -> i32 { greet() }";
+        let helper_source = "import util.{ greet };\nfn helper() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -3781,7 +3784,8 @@ machine Traffic {
 
     #[test]
     fn cross_file_rename_from_imported_definition_updates_open_importer() {
-        let main_source = "import util::{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
+        let main_source =
+            "import util.{ greet };\nfn first() -> i32 { greet() }\nfn second() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -3820,7 +3824,7 @@ machine Traffic {
 
     #[test]
     fn cross_file_references_shadowed_local_usage_stays_local() {
-        let main_source = "import util::{ greet };\nfn imported() -> i32 { greet() }\nfn shadowed() -> i32 { let greet = 0; greet }";
+        let main_source = "import util.{ greet };\nfn imported() -> i32 { greet() }\nfn shadowed() -> i32 { let greet = 0; greet }";
         let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -3846,7 +3850,7 @@ machine Traffic {
 
     #[test]
     fn cross_file_rename_shadowed_local_usage_stays_local() {
-        let main_source = "import util::{ greet };\nfn imported() -> i32 { greet() }\nfn shadowed() -> i32 { let greet = 0; greet }";
+        let main_source = "import util.{ greet };\nfn imported() -> i32 { greet() }\nfn shadowed() -> i32 { let greet = 0; greet }";
         let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -3883,7 +3887,7 @@ machine Traffic {
 
     #[test]
     fn cross_file_rename_from_imported_definition_skips_shadowed_local_usage() {
-        let main_source = "import util::{ greet };\nfn imported() -> i32 { greet() }\nfn shadowed() -> i32 { let greet = 0; greet }";
+        let main_source = "import util.{ greet };\nfn imported() -> i32 { greet() }\nfn shadowed() -> i32 { let greet = 0; greet }";
         let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -3928,7 +3932,7 @@ machine Traffic {
 
     #[test]
     fn plan_workspace_rename_cross_file_happy_path() {
-        let main_source = "import util::{ greet };\nfn main() -> i32 { greet() }";
+        let main_source = "import util.{ greet };\nfn main() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -4008,7 +4012,7 @@ machine Traffic {
         // Renaming greet → welcome should be refused because `welcome`
         // already exists at the top level of main.hew.
         let main_source =
-            "import util::{ greet };\nfn welcome() -> i32 { 0 }\nfn m() -> i32 { greet() }";
+            "import util.{ greet };\nfn welcome() -> i32 { 0 }\nfn m() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -4044,7 +4048,7 @@ machine Traffic {
         // imports `bar` → ShadowsImport must be reported.
         let util_source = "pub fn foo() -> i32 { 1 }";
         let other_source = "pub fn bar() -> i32 { 2 }";
-        let main_source = "import util::{ foo };\nimport other::{ bar };\nfn m() -> i32 { foo() }";
+        let main_source = "import util.{ foo };\nimport other.{ bar };\nfn m() -> i32 { foo() }";
 
         let util_uri = make_test_uri("/project/util.hew");
         let other_uri = make_test_uri("/project/other.hew");
@@ -4080,7 +4084,7 @@ machine Traffic {
         // → `welcome` must be refused because `welcome` is a local variable
         // in scope at the usage site in main.hew.
         let util_source = "pub fn greet() -> i32 { 1 }";
-        let main_source = "import util::{ greet };\nfn m() -> i32 { let welcome = 0; greet() }";
+        let main_source = "import util.{ greet };\nfn m() -> i32 { let welcome = 0; greet() }";
 
         let util_uri = make_test_uri("/project/util.hew");
         let main_uri = make_test_uri("/project/main.hew");
@@ -4113,7 +4117,7 @@ machine Traffic {
         // function whose parameter is named `hi`. Renaming `greet` → `hi` must
         // be refused because `hi` is a parameter in scope at the usage site.
         let util_source = "pub fn greet() -> i32 { 1 }";
-        let main_source = "import util::{ greet };\nfn m(hi: i32) -> i32 { greet() }";
+        let main_source = "import util.{ greet };\nfn m(hi: i32) -> i32 { greet() }";
 
         let util_uri = make_test_uri("/project/util.hew");
         let main_uri = make_test_uri("/project/main.hew");
@@ -4158,7 +4162,7 @@ machine Traffic {
         // entry for the same (existing_span, offending_span) — the dedup block must
         // collapse them to one.  Without dedup this assertion fails with len == 2.
         let util_source = "pub fn greet() -> i32 { 1 }\npub fn hello() -> i32 { 2 }";
-        let main_source = "import util::{ greet };\nfn m() -> i32 { greet() }";
+        let main_source = "import util.{ greet };\nfn m() -> i32 { greet() }";
 
         let util_uri = make_test_uri("/project/util.hew");
         let main_uri = make_test_uri("/project/main.hew");
@@ -4200,7 +4204,7 @@ machine Traffic {
         // guard, the cross-file walk could surface spurious ShadowsTopLevel clashes
         // (e.g. main.hew's `greet` seen as a clash for new_name == "greet").
         let util_source = "pub fn greet() -> i32 { 1 }";
-        let main_source = "import util::{ greet };\nfn m() -> i32 { greet() }";
+        let main_source = "import util.{ greet };\nfn m() -> i32 { greet() }";
 
         let util_uri = make_test_uri("/project/util.hew");
         let main_uri = make_test_uri("/project/main.hew");
@@ -4261,7 +4265,7 @@ machine Traffic {
     #[test]
     fn cross_file_references_top_level_collision_stays_local() {
         let main_source =
-            "import util::{ greet };\nfn greet() -> i32 { 0 }\nfn main() -> i32 { greet() }";
+            "import util.{ greet };\nfn greet() -> i32 { 0 }\nfn main() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }\nfn wrapper() -> i32 { greet() }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -4286,7 +4290,7 @@ machine Traffic {
     #[test]
     fn cross_file_goto_named_import_resolves_to_open_document() {
         // `main.hew` imports `Counter` from `counter.hew` (open in the editor).
-        let main_source = "import counter::{ Counter };\nfn main() {}";
+        let main_source = "import counter.{ Counter };\nfn main() {}";
         let counter_source = "type Counter { value: i32 }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -4320,7 +4324,7 @@ machine Traffic {
         // chases the import across files instead of stopping at the import
         // span.
         let main_source =
-            "import counter::{ Counter };\nfn main() -> Counter { Counter { value: 1 } }";
+            "import counter.{ Counter };\nfn main() -> Counter { Counter { value: 1 } }";
         let counter_source = "type Counter { value: i32 }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -4380,7 +4384,7 @@ machine Traffic {
     #[test]
     fn cross_file_goto_aliased_import_resolves_by_alias() {
         // `import counter::{ Counter as Cnt }` — cursor on `Cnt` in usage.
-        let main_source = "import counter::{ Counter as Cnt };\nfn main() {}";
+        let main_source = "import counter.{ Counter as Cnt };\nfn main() {}";
         let counter_source = "type Counter { value: i32 }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -4402,7 +4406,7 @@ machine Traffic {
     #[test]
     fn cross_file_goto_glob_import_resolves_to_open_document() {
         // `import counter::*` — any name can come from counter.hew.
-        let main_source = "import counter::*;\nfn main() {}";
+        let main_source = "import counter.*;\nfn main() {}";
         let counter_source = "type Counter { value: i32 }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -4423,7 +4427,7 @@ machine Traffic {
     #[test]
     fn cross_file_goto_absent_name_returns_none() {
         // `NotDefined` is not in counter.hew.
-        let main_source = "import counter::{ Counter };\nfn main() {}";
+        let main_source = "import counter.{ Counter };\nfn main() {}";
         let counter_source = "type Counter { value: i32 }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -4441,7 +4445,7 @@ machine Traffic {
     #[test]
     fn cross_file_goto_name_not_in_explicit_imports_returns_none() {
         // `Bar` is not in the explicit import list even though counter.hew defines it.
-        let main_source = "import counter::{ Counter };\nfn main() {}";
+        let main_source = "import counter.{ Counter };\nfn main() {}";
         let counter_source = "type Counter { value: i32 }\ntype Bar { x: i32 }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -4461,8 +4465,8 @@ machine Traffic {
 
     #[test]
     fn cross_file_goto_transitive_import_resolves_one_hop_deeper() {
-        let main_source = "import middle::{ Counter };\nfn main() {}";
-        let middle_source = "import leaf::{ Counter };\nfn helper() {}";
+        let main_source = "import middle.{ Counter };\nfn main() {}";
+        let middle_source = "import leaf.{ Counter };\nfn helper() {}";
         let leaf_source = "type Counter { value: i32 }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -4487,8 +4491,8 @@ machine Traffic {
 
     #[test]
     fn cross_file_goto_transitive_cycle_returns_none() {
-        let main_source = "import middle::{ Counter };\nfn main() {}";
-        let middle_source = "import main::{ Counter };\nfn helper() {}";
+        let main_source = "import middle.{ Counter };\nfn main() {}";
+        let middle_source = "import main.{ Counter };\nfn helper() {}";
 
         let main_uri = make_test_uri("/project/main.hew");
         let middle_uri = make_test_uri("/project/middle.hew");
@@ -4508,7 +4512,7 @@ machine Traffic {
 
     #[test]
     fn cross_file_goto_multiple_imports_from_same_file_do_not_leak_seen() {
-        let main_source = "import middle::{ Timer };\nimport middle::{ Counter };\nfn main() {}";
+        let main_source = "import middle.{ Timer };\nimport middle.{ Counter };\nfn main() {}";
         let middle_source = "type Counter { value: i32 }\ntype Timer { ticks: i32 }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -4537,7 +4541,7 @@ machine Traffic {
     fn populate_prefers_open_document_over_disk() {
         // Simulate: main.hew imports shapes::circle.
         // circle.hew is "open" in the editor with a pub function `area`.
-        let main_source = "import shapes::circle;\nfn main() { circle.area(1.0) }";
+        let main_source = "import shapes.circle;\nfn main() { circle.area(1.0) }";
         let circle_source = "pub fn area(r: f64) -> f64 { r }";
 
         let main_url = make_test_uri("/fake/project/main.hew");
@@ -4634,7 +4638,7 @@ machine Traffic {
     /// no `UnresolvedImport` error when the sibling is in the document store.
     #[test]
     fn typecheck_sees_open_sibling_module_no_unresolved_import() {
-        let main_source = "import shapes::circle;\nfn main() { circle.area(1.0) }";
+        let main_source = "import shapes.circle;\nfn main() { circle.area(1.0) }";
         let circle_source = "pub fn area(r: f64) -> f64 { r }";
 
         let main_url = make_test_uri("/fake/project/main.hew");
@@ -4808,7 +4812,7 @@ machine Traffic {
 
     #[test]
     fn typecheck_opening_package_directory_import_target_refreshes_open_importer_diagnostics() {
-        let main_source = "import shapes::circle;\nfn main() -> f64 { circle.area(1.0) }";
+        let main_source = "import shapes.circle;\nfn main() -> f64 { circle.area(1.0) }";
         let circle_source = "pub fn area(r: f64) -> f64 { r }";
 
         let main_url = make_test_uri("/fake/project/main.hew");
@@ -4841,7 +4845,7 @@ machine Traffic {
 
     #[test]
     fn typecheck_changing_package_directory_import_target_refreshes_open_importer_diagnostics() {
-        let main_source = "import shapes::circle;\nfn main() -> f64 { circle.area(1.0) }";
+        let main_source = "import shapes.circle;\nfn main() -> f64 { circle.area(1.0) }";
         let invalid_circle_source = "pub fn area(";
         let circle_source = "pub fn area(r: f64) -> f64 { r }";
 
@@ -4878,7 +4882,7 @@ machine Traffic {
     /// `UnresolvedImport` diagnostic (fail-closed behaviour preserved).
     #[test]
     fn typecheck_emits_unresolved_import_for_missing_sibling() {
-        let main_source = "import shapes::missing_module;\nfn main() { missing_module.foo() }";
+        let main_source = "import shapes.missing_module;\nfn main() { missing_module.foo() }";
         let main_url = make_test_uri("/fake/project/main.hew");
 
         // Empty documents map — nothing is open.
@@ -4908,7 +4912,7 @@ machine Traffic {
 
     #[test]
     fn refresh_document_surfaces_dangling_module_graph_import_diagnostic() {
-        let util_source = "import missing::thing;\npub fn greet() -> i32 { 1 }";
+        let util_source = "import missing.thing;\npub fn greet() -> i32 { 1 }";
         let util_url = make_test_uri("/project/util.hew");
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
@@ -4968,7 +4972,7 @@ machine Traffic {
     /// the type checker can emit a proper diagnostic.
     #[test]
     fn populate_leaves_resolved_items_none_for_missing_module() {
-        let main_source = "import shapes::nonexistent;\nfn main() { 0 }";
+        let main_source = "import shapes.nonexistent;\nfn main() { 0 }";
         let main_url = make_test_uri("/fake/project/main.hew");
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
@@ -5107,7 +5111,7 @@ machine Traffic {
         // In-memory version renames it to `fn circumference(r: f64) -> f64`.
         // main.hew calls `circle.circumference` — this should resolve without error
         // only if the in-memory version is used.
-        let main_source = "import shapes::circle;\nfn main() -> f64 { circle.circumference(1.0) }";
+        let main_source = "import shapes.circle;\nfn main() -> f64 { circle.circumference(1.0) }";
         let circle_inmem_source = "pub fn circumference(r: f64) -> f64 { r }";
 
         let main_url = make_test_uri("/fake/project/main.hew");
@@ -5153,7 +5157,7 @@ machine Traffic {
         // main.hew's `bar` is the alias — it will be rewritten as part of the
         // rename, not be left as a colliding name.
         let util_source = "pub fn foo() -> i32 { 1 }";
-        let main_source = "import util::{ foo as bar };\nfn m() -> i32 { bar() }";
+        let main_source = "import util.{ foo as bar };\nfn m() -> i32 { bar() }";
 
         let util_uri = make_test_uri("/project/util.hew");
         let main_uri = make_test_uri("/project/main.hew");
@@ -5190,7 +5194,7 @@ machine Traffic {
         // NOT refused, because `collect_cross_file_conflict` does not walk
         // local scopes of the definition file.
         let util_source = "pub fn foo() -> i32 { 1 }\nfn helper() -> i32 { let bar = 0; foo() }";
-        let main_source = "import util::{ foo };\nfn main() -> i32 { foo() }";
+        let main_source = "import util.{ foo };\nfn main() -> i32 { foo() }";
 
         let util_uri = make_test_uri("/project/util.hew");
         let main_uri = make_test_uri("/project/main.hew");
@@ -5270,7 +5274,7 @@ machine Traffic {
         let importer_path = project_root.join("importer.hew");
 
         let util_source = "pub fn foo() -> i64 { 0 }";
-        let importer_source = "import util::{ foo };\npub fn bar() -> i64 { foo() }";
+        let importer_source = "import util.{ foo };\npub fn bar() -> i64 { foo() }";
 
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&importer_path, importer_source).unwrap();
@@ -5330,7 +5334,7 @@ machine Traffic {
 
         // util.hew defines both foo and bar.
         let util_source = "pub fn foo() -> i64 { 0 }\npub fn bar() -> i64 { 1 }";
-        let importer_source = "import util::{ foo };\nfn main() { foo() }";
+        let importer_source = "import util.{ foo };\nfn main() { foo() }";
 
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&importer_path, importer_source).unwrap();
@@ -5392,7 +5396,7 @@ machine Traffic {
         // aliased.hew imports foo with an alias and has a top-level `bar`.
         // If the disk scan incorrectly treats this as a conflict, the rename
         // `foo -> bar` would be rejected; but it should succeed.
-        let aliased_source = "import util::{ foo as baz };\npub fn bar() -> i64 { baz() }";
+        let aliased_source = "import util.{ foo as baz };\npub fn bar() -> i64 { baz() }";
 
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&aliased_path, aliased_source).unwrap();
@@ -5440,9 +5444,9 @@ machine Traffic {
         let sibling_path = project_root.join("sibling.hew");
 
         let util_source = "pub fn foo() -> i64 { 0 }";
-        let importer_source = "import util::{ foo };\nfn use_foo() -> i64 { foo() }";
+        let importer_source = "import util.{ foo };\nfn use_foo() -> i64 { foo() }";
         // sibling.hew imports foo and defines bar — conflict when renaming foo->bar.
-        let sibling_source = "import util::{ foo };\npub fn bar() -> i64 { foo() }";
+        let sibling_source = "import util.{ foo };\npub fn bar() -> i64 { foo() }";
 
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&importer_path, importer_source).unwrap();
@@ -5502,7 +5506,7 @@ machine Traffic {
 
         let util_source = "pub fn foo() -> i64 { 0 }";
         // This importer is under worktrees/ — it must be skipped.
-        let wt_importer_source = "import util::{ foo };\npub fn bar() -> i64 { foo() }";
+        let wt_importer_source = "import util.{ foo };\npub fn bar() -> i64 { foo() }";
 
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&wt_importer_path, wt_importer_source).unwrap();
@@ -5599,7 +5603,7 @@ machine Traffic {
 
         let util_source = "pub fn foo() -> i64 { 0 }";
         // secret.hew imports foo — if readable it would trigger the scan.
-        let secret_source = "import util::{ foo };\npub fn uses_foo() -> i64 { foo() }";
+        let secret_source = "import util.{ foo };\npub fn uses_foo() -> i64 { foo() }";
 
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&secret_path, secret_source).unwrap();
@@ -5658,7 +5662,7 @@ machine Traffic {
 
         let util_source = "pub fn foo() -> i64 { 0 }";
         // importer.hew inside locked/ imports foo.
-        let inner_source = "import util::{ foo };\npub fn uses_foo() -> i64 { foo() }";
+        let inner_source = "import util.{ foo };\npub fn uses_foo() -> i64 { foo() }";
 
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&inner_path, inner_source).unwrap();
@@ -5724,7 +5728,7 @@ machine Traffic {
         let importer_path = project_root.join("importer.hew");
 
         let util_source = "pub fn foo() -> i64 { 0 }";
-        let importer_source = "import util::{ foo };\nfn main() { foo() }";
+        let importer_source = "import util.{ foo };\nfn main() { foo() }";
 
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&importer_path, importer_source).unwrap();
@@ -5830,8 +5834,8 @@ machine Traffic {
         let importer2_path = project_root.join("importer2.hew");
 
         let util_source = "pub fn foo() -> i64 { 0 }";
-        let importer1_source = "import util::{ foo };\nfn main() { foo() }";
-        let importer2_source = "import util::{ foo };\nfn helper() { foo() }";
+        let importer1_source = "import util.{ foo };\nfn main() { foo() }";
+        let importer2_source = "import util.{ foo };\nfn helper() { foo() }";
 
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&importer1_path, importer1_source).unwrap();
@@ -5943,7 +5947,7 @@ machine Traffic {
         let importer_path = project_root.join("importer.hew");
 
         let util_source = "pub fn foo() -> i64 { 0 }";
-        let importer_source = "import util::{ foo as baz };\nfn main() { baz() }";
+        let importer_source = "import util.{ foo as baz };\nfn main() { baz() }";
 
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&importer_path, importer_source).unwrap();
@@ -6054,7 +6058,7 @@ machine Traffic {
         let importer_path = project_root.join("importer.hew");
 
         let util_source = "pub fn foo() -> i64 { 0 }";
-        let importer_source = "import util::{ foo };\npub fn uses_foo() -> i64 { foo() }";
+        let importer_source = "import util.{ foo };\npub fn uses_foo() -> i64 { foo() }";
 
         std::fs::write(&util_path, util_source).unwrap();
         std::fs::write(&importer_path, importer_source).unwrap();

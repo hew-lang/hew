@@ -121,7 +121,7 @@ fn run_inline_scribbled(label: &str, source: &str, expected_stdout: &str) {
 fn select_record_element_cross_block_arm_runs_clean() {
     run_inline_scribbled(
         "select_record_element",
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          record Transition {\n\
          \x20   from_state: string,\n\
@@ -164,7 +164,7 @@ fn select_record_element_cross_block_arm_runs_clean() {
 fn select_enum_element_thunks_resolve_and_run_clean() {
     run_inline_scribbled(
         "select_enum_element",
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          enum Transition {\n\
          \x20   Moved { from_state: string, to_state: string };\n\
@@ -204,7 +204,7 @@ fn select_enum_element_thunks_resolve_and_run_clean() {
 /// A `channel.Receiver<string>` as a receive-fn parameter source. The
 /// cross-actor watch handoff needs this exact shape green.
 fn receiver_param_source() -> &'static str {
-    "import std::channel::channel;\n\
+    "import std.channel.channel;\n\
      \n\
      actor Observer {\n\
      \x20   receive fn watch(rx: channel.Receiver<string>) {\n\
@@ -248,7 +248,7 @@ fn channel_receiver_actor_message_arg_transfers_locally() {
 fn channel_sender_actor_message_arg_transfers_locally() {
     run_inline_scribbled(
         "sender_param_transfer",
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor Worker {\n\
          \x20   receive fn notify(tx: channel.Sender<string>) {\n\
@@ -282,7 +282,7 @@ fn channel_handle_use_after_transfer_refused() {
     let source = dir.path().join("use_after_transfer.hew");
     std::fs::write(
         &source,
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor Observer {\n\
          \x20   receive fn watch(rx: channel.Receiver<string>, label: string) {\n\
@@ -331,8 +331,8 @@ fn channel_handle_use_after_transfer_refused() {
 fn cross_actor_record_transition_watch_runs_clean() {
     run_inline_scribbled(
         "cross_actor_transition_watch",
-        "import std::concurrency::lifecycle;\n\
-         import std::channel::channel;\n\
+        "import std.concurrency.lifecycle;\n\
+         import std.channel.channel;\n\
          \n\
          record Transition {\n\
          \x20   from_state: string,\n\
@@ -414,7 +414,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
 fn select_after_genuine_expiry_takes_after_arm() {
     run_inline_scribbled(
         "select_after_genuine_expiry",
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor Observer {\n\
          \x20   receive fn watch(rx: channel.Receiver<i64>, done: channel.Sender<i64>) {\n\
@@ -467,7 +467,7 @@ fn suspending_select_wake_gate_ir_shape_holds() {
     let source = dir.path().join("gate_shape.hew");
     std::fs::write(
         &source,
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor Observer {\n\
          \x20   receive fn watch(rx: channel.Receiver<i64>) {\n\
@@ -682,7 +682,7 @@ fn machine_snapshot_select_watch_matches_state_variants() {
         "\
          // Snapshot watch: machine values as channel elements through the sealed\n\
          // select arm, state-variant pattern matching on the received snapshot.\n\
-         import std::channel::channel;\n\
+         import std.channel.channel;\n\
          \n\
          machine Conn {\n\
          \x20   events {\n\
@@ -832,7 +832,7 @@ fn nested_channel_handle_in_tuple_use_after_send_refused() {
     let source = dir.path().join("nested_handle_tuple.hew");
     std::fs::write(
         &source,
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor Worker {\n\
          \x20   receive fn accept(pair: (channel.Receiver<i64>, i64)) {\n\
@@ -873,7 +873,7 @@ fn nested_channel_handle_in_tuple_use_after_send_refused() {
 fn nested_channel_handle_in_tuple_transfers_correctly() {
     run_inline_scribbled(
         "nested_handle_tuple_transfer",
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor Worker {\n\
          \x20   receive fn deliver(pair: (channel.Receiver<i64>, i64)) {\n\
@@ -929,7 +929,7 @@ fn nested_channel_handle_in_tuple_transfers_correctly() {
 /// stdout — a single corrupted decode anywhere in the batch fails the test.
 #[test]
 fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
-    const SOURCE: &str = "import std::channel::channel;\n\
+    const SOURCE: &str = "import std.channel.channel;\n\
          \n\
          machine Conn {\n\
          \x20   events {\n\

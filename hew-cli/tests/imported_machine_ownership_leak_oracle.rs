@@ -40,8 +40,8 @@ pub fn bounce(value: PayloadLifecycle) -> PayloadLifecycle {
 fn importer_source(frames: usize) -> String {
     format!(
         r#"
-import runner::machine_defs;
-import std::string;
+import runner.machine_defs;
+import std.string;
 
 type Envelope {{ value: machine_defs.PayloadLifecycle; marker: i64; }}
 

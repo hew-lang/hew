@@ -134,7 +134,7 @@ fn dump_has_channel_recv_suspend(dump: &str) -> bool {
 #[test]
 fn actor_await_recv_flips_to_suspending_channel_recv() {
     let dump = mir_checked_dump(
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          actor Worker {\n\
          \x20   receive fn run(unused: i64) {\n\
          \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);\n\
@@ -157,7 +157,7 @@ fn actor_await_recv_flips_to_suspending_channel_recv() {
 #[test]
 fn main_await_recv_does_not_flip() {
     let dump = mir_checked_dump(
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          fn main() {\n\
          \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);\n\
          \x20   tx.send(7);\n\
@@ -179,7 +179,7 @@ fn main_await_recv_does_not_flip() {
 #[test]
 fn main_for_await_receiver_compiles_through_blocking_recv_abi() {
     let dump = mir_checked_dump(
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          fn main() {\n\
          \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n\
          \x20   tx.send(\"ready\");\n\
@@ -198,7 +198,7 @@ fn main_for_await_receiver_compiles_through_blocking_recv_abi() {
 /// sender — not the consumed source receiver — on coroutine destruction.
 #[test]
 fn parked_forawait_receiver_plan_closes_cursor_and_sender_once() {
-    let source = "import std::channel::channel;\n\
+    let source = "import std.channel.channel;\n\
          actor Drain {\n\
          \x20   receive fn run() {\n\
          \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n\

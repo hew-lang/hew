@@ -27809,9 +27809,24 @@ impl LowerCtx {
         name: &str,
     ) -> Option<ResolvedTy> {
         let checker_key = self.mk_key(span);
-        let checker_ty = self.expr_types.get(&checker_key).cloned()?;
+        let Some(checker_ty) = self.expr_types.get(&checker_key).cloned() else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: name.to_string(),
+                    reason: "missing expr_types entry".to_string(),
+                },
+                span.clone(),
+                "checker-authoritative expression type is required for `?` lowering",
+            ));
+            return None;
+        };
         match ResolvedTy::from_ty(&checker_ty) {
-            Ok(resolved) => Some(resolved),
+            // `Ty::Named` does not carry source-declaration opacity. Route
+            // checker-authored expression types through the same identity
+            // normalisation funnel as other checker→HIR boundaries so an
+            // opaque Result/Option payload remains pointer-shaped, including
+            // when nested inside another generic carrier.
+            Ok(resolved) => Some(self.qualify_current_module_record_ty(resolved)),
             Err(err) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
@@ -28388,9 +28403,17 @@ impl LowerCtx {
                 );
             }
             self.try_register_enum_instantiation_ty(&return_ty, span);
-            let result_ty = self
-                .checker_expr_resolved_ty(span, "`?` expression")
-                .unwrap_or_else(|| ok_ty.clone());
+            let Some(result_ty) = self.checker_expr_resolved_ty(span, "`?` expression") else {
+                return self.unsupported_postfix_try(span, "`?` checker payload type is missing");
+            };
+            if &result_ty != ok_ty {
+                return self.unsupported_postfix_try(
+                    span,
+                    format!(
+                        "`?` checker payload type `{result_ty}` disagrees with Result::Ok payload type `{ok_ty}`",
+                    ),
+                );
+            }
             self.lower_result_postfix_try(scrutinee, result_ty, err_ty.clone(), return_ty, span)
         } else if let Some(some_ty) = Self::resolved_option_inner(&scrutinee_ty) {
             if Self::resolved_option_inner(&return_ty).is_none() {
@@ -28400,9 +28423,17 @@ impl LowerCtx {
                 );
             }
             self.try_register_enum_instantiation_ty(&return_ty, span);
-            let result_ty = self
-                .checker_expr_resolved_ty(span, "`?` expression")
-                .unwrap_or_else(|| some_ty.clone());
+            let Some(result_ty) = self.checker_expr_resolved_ty(span, "`?` expression") else {
+                return self.unsupported_postfix_try(span, "`?` checker payload type is missing");
+            };
+            if &result_ty != some_ty {
+                return self.unsupported_postfix_try(
+                    span,
+                    format!(
+                        "`?` checker payload type `{result_ty}` disagrees with Option::Some payload type `{some_ty}`",
+                    ),
+                );
+            }
             self.lower_option_postfix_try(scrutinee, result_ty, return_ty, span)
         } else {
             self.unsupported_postfix_try(span, "`?` scrutinee that is not Result or Option")
@@ -38100,6 +38131,95 @@ fn main() {}
         );
         let pass = function_named(&lowered, "pass");
         assert_result_try_match(first_let_value(pass));
+    }
+
+    #[test]
+    fn postfix_try_missing_checker_expr_type_is_diagnosed_and_unsupported() {
+        let source = r"
+            fn pass(r: Result<i64, i64>) -> Result<i64, i64> {
+                let x: i64 = r?;
+                Ok(x)
+            }
+        ";
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let mut tco = checker.check_program(&parsed.program);
+        assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+
+        let try_start = source.find("r?").expect("source must contain `r?`");
+        let try_span = try_start..try_start + 2;
+        assert!(
+            tco.expr_types
+                .remove(&SpanKey::in_module(&try_span, 0))
+                .is_some(),
+            "checker must publish the `?` expression type"
+        );
+
+        let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
+                    if name == "`?` expression" && reason == "missing expr_types entry"
+            )),
+            "missing checker type must be diagnosed: {:#?}",
+            lowered.diagnostics
+        );
+        let pass = function_named(&lowered, "pass");
+        assert!(
+            matches!(first_let_value(pass).kind, HirExprKind::Unsupported(_)),
+            "missing checker type must lower `?` as unsupported"
+        );
+    }
+
+    #[test]
+    fn postfix_try_preserves_opaque_payload_representation() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            #[opaque]
+            type Handle {}
+
+            fn pass(r: Result<Handle, string>) -> Result<Handle, string> {
+                let handle = r?;
+                Ok(handle)
+            }
+            ",
+        );
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "unexpected HIR diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+
+        let pass = function_named(&lowered, "pass");
+        let try_expr = first_let_value(pass);
+        assert_result_try_match(try_expr);
+        let HirExprKind::Match { arms, .. } = &try_expr.kind else {
+            unreachable!("assert_result_try_match already checked the expression shape");
+        };
+        for (surface, ty) in [
+            ("try expression", &try_expr.ty),
+            ("Ok payload binding", &arms[0].bindings[0].ty),
+            ("Ok payload body", &arms[0].body.ty),
+        ] {
+            assert!(
+                matches!(
+                    ty,
+                    ResolvedTy::Named {
+                        name,
+                        is_opaque: true,
+                        ..
+                    } if name == "Handle"
+                ),
+                "{surface} must preserve the opaque Handle discriminator; got {ty:#?}"
+            );
+        }
     }
 
     #[test]

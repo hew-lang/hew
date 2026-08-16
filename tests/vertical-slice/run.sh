@@ -5412,7 +5412,7 @@ expect_check_fail_contains \
 # by `wire_cbor_vec_nested_rejected` below (#2737).
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_vec_owned_compound_rejected.hew" \
-    "has an element outside the supported wire-body floor" \
+    "has no clone/drop thunk path for the owned-element Vec runtime" \
     "wire_cbor_vec_owned_compound_rejected"
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_vec_nested_rejected.hew" \

@@ -4002,6 +4002,33 @@ impl Checker {
             }
 
             (
+                Expr::MethodCall {
+                    receiver,
+                    method,
+                    args,
+                },
+                _,
+            ) => {
+                let actual = self
+                    .check_dotted_type_member_call_against_expected(
+                        receiver, method, args, expected, span,
+                    )
+                    .unwrap_or_else(|| self.synthesize(expr, span));
+                if tail_ok_armed {
+                    if let Some(coerced) = self.try_tail_ok_coercion(expected, &actual, span) {
+                        return coerced;
+                    }
+                }
+                let n = self.errors.len();
+                self.expect_type(expected, &actual, span);
+                if self.errors.len() > n {
+                    Ty::Error
+                } else {
+                    actual
+                }
+            }
+
+            (
                 Expr::Call {
                     function,
                     type_args,

@@ -34,6 +34,34 @@ fn main() {
 }
 
 #[test]
+fn dotted_builtin_constructors_preserve_expected_types() {
+    let output = typecheck_isolated(
+        r#"
+fn main() {
+    let oa: Option<i64> = Option.Some(5);
+    let ob: Option<i64> = Option.Some(5);
+    let oc: Option<i64> = Option.Some(6);
+    let option_same = oa == ob;
+    let option_diff = oa == oc;
+
+    let ra: Result<i64, string> = Result.Ok(6);
+    let rb: Result<i64, string> = Result.Ok(6);
+    let rc: Result<i64, string> = Result.Ok(7);
+    let result_same = ra == rb;
+    let result_diff = ra == rc;
+    println(f"{option_same} {option_diff} {result_same} {result_diff}");
+}
+"#,
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "dotted builtin constructors should retain contextual payload types: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn bare_type_without_member_remains_an_error() {
     let output = typecheck_isolated(
         r"

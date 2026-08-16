@@ -7295,6 +7295,29 @@ impl Checker {
         result
     }
 
+    pub(super) fn check_dotted_type_member_call_against_expected(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[CallArg],
+        expected: &Ty,
+        span: &Span,
+    ) -> Option<Ty> {
+        let head = self.resolve_dotted_type_head(receiver, method)?;
+        let result = self.dispatch_dotted_type_member(
+            &head,
+            method,
+            &DottedTypeMemberUse::Call {
+                args,
+                expected: Some(expected),
+                span,
+            },
+        )?;
+        self.mark_resolved_nominal_owner_used(&head.canonical_type);
+        self.record_resolved_method_call_ownership(receiver, method, args, span, &result);
+        Some(result)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "method ownership joins every resolved dispatch family at one authority seam"
@@ -7609,7 +7632,11 @@ impl Checker {
             if let Some(result) = self.dispatch_dotted_type_member(
                 head,
                 method,
-                &DottedTypeMemberUse::Call { args, span },
+                &DottedTypeMemberUse::Call {
+                    args,
+                    expected: None,
+                    span,
+                },
             ) {
                 self.mark_resolved_nominal_owner_used(&head.canonical_type);
                 return result;

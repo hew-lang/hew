@@ -14,8 +14,14 @@ pub(super) struct ResolvedDottedTypeHead {
 }
 
 pub(super) enum DottedTypeMemberUse<'a> {
-    Reference { span: &'a Span },
-    Call { args: &'a [CallArg], span: &'a Span },
+    Reference {
+        span: &'a Span,
+    },
+    Call {
+        args: &'a [CallArg],
+        expected: Option<&'a Ty>,
+        span: &'a Span,
+    },
 }
 
 impl Checker {
@@ -104,7 +110,7 @@ impl Checker {
         if let Some(result) = self.dispatch_builtin_variant_member(head, member, usage) {
             return Some(result);
         }
-        let DottedTypeMemberUse::Call { args, span } = usage else {
+        let DottedTypeMemberUse::Call { args, span, .. } = usage else {
             return None;
         };
         self.dispatch_static_type_member(head, member, args, span)
@@ -131,7 +137,7 @@ impl Checker {
                 let constructor = format!("{}::{member}", head.canonical_type);
                 Some(self.synthesize_identifier(&constructor, span))
             }
-            DottedTypeMemberUse::Call { args, span }
+            DottedTypeMemberUse::Call { args, span, .. }
                 if matches!(variant, VariantDef::Unit | VariantDef::Tuple(_)) =>
             {
                 let constructor_name = format!("{}::{member}", head.canonical_type);
@@ -169,9 +175,20 @@ impl Checker {
             DottedTypeMemberUse::Reference { span } => {
                 self.synthesize_identifier(constructor, span)
             }
-            DottedTypeMemberUse::Call { args, span } => {
+            DottedTypeMemberUse::Call {
+                args,
+                expected,
+                span,
+            } => {
                 let function = (Expr::Identifier(constructor.to_string()), head.span.clone());
-                let result = self.check_call(&function, None, args, span);
+                let result = expected
+                    .filter(|_| head.type_args.is_none())
+                    .and_then(|expected| {
+                        self.check_call_against_expected_constructor(
+                            &function, None, args, expected, span,
+                        )
+                    })
+                    .unwrap_or_else(|| self.check_call(&function, None, args, span));
                 self.record_method_call_receiver_kind(
                     span,
                     MethodCallReceiverKind::EnumConstructorPath {

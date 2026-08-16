@@ -1534,6 +1534,12 @@ Periodic handlers preserve the actor's single-threaded state model: a tick never
 runs concurrently with another receive handler on the same actor. It is just a
 separate mailbox dispatch armed by the runtime timer.
 
+When the runtime shuts down, periodic-timer admission closes first. A periodic
+tick becomes live work only when the timer ticker claims it for callback
+delivery. Shutdown waits for callbacks already claimed, then cancels every
+pending periodic entry, including an entry that is already due but has not yet
+been claimed. Such an entry is not delivered during shutdown.
+
 ### Cancellable long-running work in actor handlers
 
 A receive handler runs to completion before the actor observes the next message.

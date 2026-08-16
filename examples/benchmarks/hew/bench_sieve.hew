@@ -1,5 +1,5 @@
 fn sieve(n: i64) -> i64 {
-    let flags = Vec::new();
+    let flags = Vec.new();
     var i = 0;
     while i <= n {
         flags.push(1);

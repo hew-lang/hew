@@ -52,7 +52,7 @@ fn main() {
     // never fires.
     let r = await c.race_two(7);
     match r {
-        Ok(v) => println(f"winner={v}"),
-        Err(_) => println("race failed"),
+        .Ok(v) => println(f"winner={v}"),
+        .Err(_) => println("race failed"),
     }
 }

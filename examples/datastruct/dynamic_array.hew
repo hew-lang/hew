@@ -2,7 +2,7 @@
 // Layout: Vec<i64> where index 0 = logical size, index 1 = capacity, rest is data
 // Data starts at index 2
 fn da_new(initial_cap: i64) -> Vec<i64> {
-    let arr: Vec<i64> = Vec::new();
+    let arr: Vec<i64> = Vec.new();
     arr.push(0); // index 0: logical size
     arr.push(initial_cap); // index 1: capacity
     // Pre-allocate slots

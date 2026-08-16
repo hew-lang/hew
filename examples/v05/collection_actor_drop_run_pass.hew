@@ -35,25 +35,25 @@ actor CollectionHolder {
 
 fn main() {
     // Populate the map so state-drop frees NON-EMPTY layout storage.
-    let counts = HashMap::new<string, i64>();
+    let counts = HashMap.new<string, i64>();
     counts.insert("alpha", 1);
     counts.insert("beta", 2);
     counts.insert("gamma", 3);
     counts.insert("delta", 4);
 
     // Populate the vec so state-drop frees NON-EMPTY backing storage.
-    let scores = Vec::new<i64>();
+    let scores = Vec.new<i64>();
     scores.push(10);
     scores.push(20);
     scores.push(30);
     let holder = spawn CollectionHolder(counts: counts, scores: scores);
     let r = await holder.ping();
     match r {
-        Ok(acked) => {
+        .Ok(acked) => {
             if acked == 1 {
                 println("ok");
             }
         },
-        Err(_) => {},
+        .Err(_) => {},
     }
 }

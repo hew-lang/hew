@@ -20,7 +20,7 @@ fn main() {
     let calculator = spawn Calculator;
     let r = await calculator.compute(10);
     match r {
-        Ok(result) => println(result),
-        Err(_) => println(-1),
+        .Ok(result) => println(result),
+        .Err(_) => println(-1),
     }
 }

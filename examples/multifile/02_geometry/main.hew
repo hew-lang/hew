@@ -7,7 +7,7 @@
 //
 // This file demonstrates three import styles against the same module:
 //
-//   import geo::{Point, origin, manhattan, chebyshev, bounding_area};
+//   import geo.{Point, origin, manhattan, chebyshev, bounding_area};
 //       → selective — only these names enter scope; no module prefix needed.
 //         No "unused import" warning as long as at least one imported name
 //         is called as a function.
@@ -15,7 +15,7 @@
 //   import geo;
 //       → bare — all pub names in scope, also available as geo.name(...).
 //
-//   import geo::*;
+//   import geo.*;
 //       → wildcard — all pub names in scope (same as bare), but the
 //         compiler currently emits a false-positive "unused import" warning
 //         when the import is consumed only through type/trait references.
@@ -23,7 +23,7 @@
 //
 // Run:   hew run   examples/multifile/02_geometry/main.hew
 // Check: hew check examples/multifile/02_geometry/main.hew
-import geo::{Point, origin, manhattan, chebyshev, bounding_area};
+import geo.{Point, origin, manhattan, chebyshev, bounding_area};
 
 fn main() {
     let o = origin();

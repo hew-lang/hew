@@ -1,4 +1,4 @@
-import std::text::regex;
+import std.text.regex;
 
 fn main() {
     let re = regex.new("a+");

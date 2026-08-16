@@ -13,8 +13,8 @@ fn get_max(v: Vec<i64>) -> i64 {
 
 fn count_sort_by_exp(v: Vec<i64>, exp: i64) {
     let n = v.len();
-    let output: Vec<i64> = Vec::new();
-    let count: Vec<i64> = Vec::new();
+    let output: Vec<i64> = Vec.new();
+    let count: Vec<i64> = Vec.new();
     var i = 0;
     while i < 10 {
         count.push(0);
@@ -66,7 +66,7 @@ fn radix_sort(v: Vec<i64>) -> Vec<i64> {
 }
 
 fn make_test_array() -> Vec<i64> {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     var i = 100;
     while i > 0 {
         v.push(i);

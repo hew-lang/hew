@@ -22,7 +22,7 @@ machine TrafficLight {
 }
 
 fn main() {
-    var light = TrafficLight::Red;
+    var light = TrafficLight.Red;
     println(light.state_name());
     light.step(Tick);
     println(light.state_name());

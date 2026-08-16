@@ -1,4 +1,4 @@
-// Reject fixture for `MirCheck::MustConsume` — partial-branch canary.
+// Reject fixture for `MirCheck.MustConsume` — partial-branch canary.
 //
 // `t` is consumed in the then-arm (`let _a = t`) but the else-arm
 // leaves it Live.  At the join point the state is MaybeConsumed; when

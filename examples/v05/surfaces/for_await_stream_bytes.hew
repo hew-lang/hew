@@ -1,7 +1,7 @@
 //! Status: runnable (v0.5 for-await over Stream<bytes>)
 //! Description: Drains a byte stream with `for await`.
 
-import std::stream;
+import std.stream;
 
 actor DrainBytes {
     let frames: i64;

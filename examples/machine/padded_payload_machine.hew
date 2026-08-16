@@ -6,7 +6,7 @@
 // is 16 bytes (7 bytes of padding after `tag_byte` to align `value` to
 // its 8-byte natural boundary). This fixture drives
 // `build_tagged_union_layout` to verify that the payload array is sized
-// to the ABI size reported by `TargetData::get_abi_size` — not the
+// to the ABI size reported by `TargetData.get_abi_size` — not the
 // field-width sum.
 machine PaddedPayload {
     events {

@@ -5,7 +5,7 @@
 // cannot silently change it:
 //   - the supervisor config param threaded onto the bootstrap signature and the
 //     `spawn App(config: cfg)` bootstrap call carrying the config argument,
-//   - the `ChildInitArg::ConfigField` lowering (scalar `config.size` →
+//   - the `ChildInitArg.ConfigField` lowering (scalar `config.size` →
 //     `owned: false`; owned `config.label` → `owned: true`),
 //   - the `hew_supervisor_set_child_init_fn` RuntimeCall family the codegen
 //     bootstrap emits per config-init child (the #2229 corpus-pin discipline:

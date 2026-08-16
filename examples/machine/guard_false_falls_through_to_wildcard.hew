@@ -10,7 +10,7 @@
 // whenever "any" same-event arm existed silently made it permanently
 // unreachable behind so much as one guarded sibling, so a false guard fell
 // all the way past the (missing) wildcard arm to
-// `TrapKind::ExhaustivenessFallthrough` instead.
+// `TrapKind.ExhaustivenessFallthrough` instead.
 //
 // `on Try: Closed => Open when self.code == 42` is the only explicit arm
 // for `(Closed, Try)`; `on Try: _ => Bailed` is the same-event wildcard.

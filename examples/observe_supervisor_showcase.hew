@@ -183,12 +183,12 @@ fn main() {
     // Final tallies — proves the restarted worker kept processing and the
     // siblings were undisturbed by the crash.
     let a_total = match await alpha2.stats() {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     };
     let b_total = match await beta.stats() {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     };
     println("");
     print("alpha (restarted) processed: ");

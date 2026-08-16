@@ -5,7 +5,7 @@
 //! describable element type and the recv path decodes the 8-byte Plain
 //! envelope through `hew_channel_recv_layout` — no per-type runtime symbol.
 
-import std::channel::channel;
+import std.channel.channel;
 
 actor DrainFloats {
     receive fn run(unused: i64) {

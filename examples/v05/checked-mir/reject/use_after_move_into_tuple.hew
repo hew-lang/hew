@@ -1,9 +1,9 @@
-// Reject fixture for `MirCheck::UseAfterConsume` — use-after-move INTO A TUPLE.
+// Reject fixture for `MirCheck.UseAfterConsume` — use-after-move INTO A TUPLE.
 //
 // `h` is an `@resource` (an owned, single-owner value class with an
 // implicit `close` drop). Building the tuple `(h, g)` MOVES `h` into the
 // aggregate; the subsequent read of `h.fd` is a use after the move, which
-// the Checked MIR move-checker rejects with `MirDiagnostic::UseAfterConsume`
+// the Checked MIR move-checker rejects with `MirDiagnostic.UseAfterConsume`
 // carrying both the consume site (the tuple constructor) and the offending
 // use site.
 //

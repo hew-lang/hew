@@ -5,7 +5,7 @@
 // `hew_hashset_len_layout`, `hew_hashset_is_empty_layout`, and the
 // scope-exit `hew_hashset_free_layout` drop.
 fn main() {
-    let s: HashSet<i64> = HashSet::new();
+    let s: HashSet<i64> = HashSet.new();
     s.insert(1);
     s.insert(2);
     s.insert(2);
@@ -15,7 +15,7 @@ fn main() {
     println(f"n={n} has1={has1} removed={removed}");
     let empty = s.is_empty();
     println(empty);
-    let words: HashSet<string> = HashSet::new();
+    let words: HashSet<string> = HashSet.new();
     words.insert("colour");
     words.insert("behaviour");
     let hasc = words.contains("colour");

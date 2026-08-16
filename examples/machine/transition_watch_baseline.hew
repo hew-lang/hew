@@ -8,16 +8,16 @@
 // This baseline keeps owner and observer in one actor; the cross-actor
 // split (channel handles travelling through actor messages) builds on
 // the same shape.
-import std::concurrency::lifecycle;
+import std.concurrency.lifecycle;
 
-import std::channel::channel;
+import std.channel.channel;
 
 actor Combined {
     receive fn run() {
         let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(8);
-        var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle::Created;
+        var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle.Created;
         let before = lc.state_name();
-        lc.step(Initialise);
+        lc.step(std.concurrency.lifecycle.LifecycleEvent.Initialise);
         let after_step = lc.state_name();
         if before != after_step {
             tx.send(f"{before} -> {after_step}");
@@ -26,8 +26,8 @@ actor Combined {
         select {
             t from rx.recv() => {
                 match t {
-                    Some(tr) => println(tr),
-                    None => println("watch closed"),
+                    .Some(tr) => println(tr),
+                    .None => println("watch closed"),
                 }
             },
             after 2s => println("timeout"),

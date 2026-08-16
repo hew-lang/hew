@@ -1,4 +1,4 @@
-import std::encoding::json;
+import std.encoding.json;
 
 actor Holder {
     let val: json.Value;

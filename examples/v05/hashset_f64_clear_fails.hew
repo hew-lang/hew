@@ -6,6 +6,6 @@
 //! bypass `record_resolved_hashset_call`.
 
 fn main() {
-    let s: HashSet<f64> = HashSet::new();
+    let s: HashSet<f64> = HashSet.new();
     s.clear();
 }

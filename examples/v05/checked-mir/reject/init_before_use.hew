@@ -1,4 +1,4 @@
-// Reject fixture for `MirCheck::InitialisedBeforeUse`.
+// Reject fixture for `MirCheck.InitialisedBeforeUse`.
 //
 // `let x;` declares the binding without initialising it. `let _y = x;`
 // reads `x` before any `Bind` for it appears in the function's MIR

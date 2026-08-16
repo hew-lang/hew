@@ -5,26 +5,26 @@
 // `hew_hashmap_remove_take_layout`, `hew_hashmap_len_layout`, and the
 // scope-exit `hew_hashmap_free_layout` drop.
 fn main() {
-    let m: HashMap<string, i64> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap.new();
     m.insert("alice", 10);
     m.insert("bob", 20);
     match m.get("alice") {
-        Some(v) => println(v),
-        None => println(-1),
+        .Some(v) => println(v),
+        .None => println(-1),
     }
     let has = m.contains_key("bob");
     let removed = m.remove("bob").is_some();
     println(f"has={has} removed={removed} len={m.len()}");
-    let flags: HashMap<string, bool> = HashMap::new();
+    let flags: HashMap<string, bool> = HashMap.new();
     flags.insert("debug", true);
     println(flags.len());
-    let ratios: HashMap<string, f64> = HashMap::new();
+    let ratios: HashMap<string, f64> = HashMap.new();
     ratios.insert("pi", 3.14);
     println(ratios.len());
-    let labels: HashMap<string, string> = HashMap::new();
+    let labels: HashMap<string, string> = HashMap.new();
     labels.insert("k", "v");
     match labels.get("k") {
-        Some(s) => println(s),
-        None => println("missing"),
+        .Some(s) => println(s),
+        .None => println("missing"),
     }
 }

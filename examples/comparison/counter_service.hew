@@ -48,13 +48,13 @@ fn main() {
     // Read back the counts.
     let v1 = await c1.get_count();
     match v1 {
-        Ok(n) => println(f"Counter 1: {n}"),
-        Err(_) => println("Counter 1: err"),
+        .Ok(n) => println(f"Counter 1: {n}"),
+        .Err(_) => println("Counter 1: err"),
     }
     let v2 = await c2.get_count();
     match v2 {
-        Ok(n) => println(f"Counter 2: {n}"),
-        Err(_) => println("Counter 2: err"),
+        .Ok(n) => println(f"Counter 2: {n}"),
+        .Err(_) => println("Counter 2: err"),
     }
     println("=== Done ===");
 }

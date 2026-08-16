@@ -1,4 +1,4 @@
-// Reject fixture for `MirCheck::UseAfterConsume` — value-move into a free
+// Reject fixture for `MirCheck.UseAfterConsume` — value-move into a free
 // function (#1941).
 //
 // `sink(c)` moves the `#[resource]` `c` BY VALUE into a free function. Hew
@@ -6,11 +6,11 @@
 // callee owns and closes `c`. The trailing `c.id_of()` reads `c` after the
 // move, which the Checked MIR move-checker rejects.
 //
-// Before the fix the by-value argument lowered with `IntentKind::Read`, so
+// Before the fix the by-value argument lowered with `IntentKind.Read`, so
 // the move was invisible to the checker: the read compiled clean (a
 // use-after-free) and the caller's implicit scope-exit drop double-closed
 // what `sink` had already closed. `hew compile` now emits a
-// `MirDiagnostic::UseAfterConsume` carrying both the consume site (the
+// `MirDiagnostic.UseAfterConsume` carrying both the consume site (the
 // `sink(c)` argument) and the offending use site, and exits non-zero without
 // producing a binary.
 #[resource]

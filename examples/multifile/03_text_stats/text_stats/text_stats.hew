@@ -1,9 +1,9 @@
 // text_stats.hew — entry file for the `text_stats` directory module.
 //
 // Provides top-level text analysis helpers.  The sub-directory
-// `words/` forms a child module (`text_stats::words`) with
+// `words/` forms a child module (`text_stats.words`) with
 // word-level utilities.  Importing `text_stats` does NOT
-// automatically import `text_stats::words`; callers must request
+// automatically import `text_stats.words`; callers must request
 // both explicitly when they want both.
 pub fn char_count(text: string) -> i64 {
     text.len()

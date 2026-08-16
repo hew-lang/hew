@@ -8,10 +8,10 @@
 //
 // Resolved by the HIR module-scope constructor-resolution pass: bare
 // `Red` and `Tick` identifiers and the qualified forms
-// `TrafficLight::Red` / `TrafficLightEvent::Tick` all lower through
-// `HirExprKind::MachineVariantCtor`, which MIR and codegen turn into
+// `TrafficLight.Red` / `TrafficLightEvent.Tick` all lower through
+// `HirExprKind.MachineVariantCtor`, which MIR and codegen turn into
 // the tagged-union construction primitives the runtime expects.
-// `tests/machine_exec.rs::run_traffic_light_fixture_executes` is the
+// `tests/machine_exec.rs.run_traffic_light_fixture_executes` is the
 // end-to-end signal for this fixture.
 machine TrafficLight {
     events {

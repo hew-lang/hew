@@ -12,9 +12,9 @@ fn main() {
     let num_nodes = 5;
     let INF: i32 = 999999;
     // Edge list: (from, to, weight)
-    let edge_from: Vec<i32> = Vec::new();
-    let edge_to: Vec<i32> = Vec::new();
-    let edge_weight: Vec<i32> = Vec::new();
+    let edge_from: Vec<i32> = Vec.new();
+    let edge_to: Vec<i32> = Vec.new();
+    let edge_weight: Vec<i32> = Vec.new();
     edge_from.push(0);
     edge_to.push(1);
     edge_weight.push(4);
@@ -34,7 +34,7 @@ fn main() {
     edge_to.push(4);
     edge_weight.push(3);
     let num_edges = edge_from.len();
-    let dist: Vec<i32> = Vec::new();
+    let dist: Vec<i32> = Vec.new();
     for i in 0 .. num_nodes {
         dist.push(INF);
     }
@@ -66,7 +66,7 @@ fn main() {
             }
         }
     }
-    let expected: Vec<i32> = Vec::new();
+    let expected: Vec<i32> = Vec.new();
     expected.push(0);
     expected.push(3);
     expected.push(1);

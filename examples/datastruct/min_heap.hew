@@ -58,7 +58,7 @@ fn heap_pop(heap: Vec<i32>) -> i32 {
 }
 
 fn test_basic_min_heap() -> i32 {
-    let heap: Vec<i32> = Vec::new();
+    let heap: Vec<i32> = Vec.new();
     let _ = heap_push(heap, 5);
     let _ = heap_push(heap, 3);
     let _ = heap_push(heap, 7);
@@ -76,7 +76,7 @@ fn test_basic_min_heap() -> i32 {
 }
 
 fn test_extract_min_order() -> i32 {
-    let heap: Vec<i32> = Vec::new();
+    let heap: Vec<i32> = Vec.new();
     let _ = heap_push(heap, 5);
     let _ = heap_push(heap, 3);
     let _ = heap_push(heap, 7);
@@ -137,7 +137,7 @@ fn test_extract_min_order() -> i32 {
 }
 
 fn test_heap_property() -> i32 {
-    let heap: Vec<i32> = Vec::new();
+    let heap: Vec<i32> = Vec.new();
     let _ = heap_push(heap, 10);
     let _ = heap_push(heap, 4);
     let _ = heap_push(heap, 15);
@@ -170,7 +170,7 @@ fn test_heap_property() -> i32 {
 }
 
 fn test_single_element() -> i32 {
-    let heap: Vec<i32> = Vec::new();
+    let heap: Vec<i32> = Vec.new();
     let _ = heap_push(heap, 42);
     let pk = heap_peek(heap);
     let popped = heap_pop(heap);
@@ -187,7 +187,7 @@ fn test_single_element() -> i32 {
 }
 
 fn test_duplicates() -> i32 {
-    let heap: Vec<i32> = Vec::new();
+    let heap: Vec<i32> = Vec.new();
     let _ = heap_push(heap, 3);
     let _ = heap_push(heap, 1);
     let _ = heap_push(heap, 3);

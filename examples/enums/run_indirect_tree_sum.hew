@@ -13,13 +13,13 @@ indirect enum Tree {
 
 fn sum(t: Tree) -> i64 {
     match t {
-        Leaf(n) => n,
-        Node(l, r) => sum(l) + sum(r),
+        .Leaf(n) => n,
+        .Node(l, r) => sum(l) + sum(r),
     }
 }
 
 fn main() {
-    let t = Node(Leaf(3), Leaf(4));
+    let t = Tree.Node(.Leaf(3), .Leaf(4));
     let s = sum(t);
     println(f"sum={s}");
 }

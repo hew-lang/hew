@@ -8,15 +8,15 @@
 //
 // Usage: hew build static_server.hew -o serve && ./serve [port] [root]
 // Defaults: port 8080, root "."
-import std::net::http::{Request, Server};
+import std.net.http.{Request, Server};
 
-import std::fs;
+import std.fs;
 
-import std::os;
+import std.os;
 
-import std::net::mime;
+import std.net.mime;
 
-import std::net;
+import std.net;
 
 fn resolve_path(root: string, url_path: string) -> string {
     let path = root + url_path;
@@ -71,10 +71,10 @@ fn main() {
     let addr = f"0.0.0.0:{port}";
     println(f"Serving {root} on http://{addr}");
     match http.listen(addr) {
-        Ok(server) => {
+        .Ok(server) => {
             serve_forever(root, server);
         },
-        Err(err) => {
+        .Err(err) => {
             let reason = net.net_error_message(err);
             let detail = http.listen_error();
             println(f"cannot listen on {addr}: {reason} - {detail}");

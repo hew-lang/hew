@@ -10,7 +10,7 @@
 // `b.take_emits(Ring)` would misattribute `Alarm`'s queued event to
 // `Beacon` and wrongly report `1`; with the filter it must report `0`.
 //
-// `tests/exec/machine_exec.rs::run_emit_two_machines_fixture_executes` is
+// `tests/exec/machine_exec.rs.run_emit_two_machines_fixture_executes` is
 // the end-to-end signal for this fixture.
 machine Alarm {
     events {

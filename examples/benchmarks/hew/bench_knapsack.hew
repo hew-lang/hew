@@ -1,7 +1,7 @@
 fn knapsack(weights: Vec<i64>, values: Vec<i64>, n: i64, cap: i64) -> i64 {
     let cols = cap + 1;
     let total = (n + 1) * cols;
-    let dp: Vec<i64> = Vec::new();
+    let dp: Vec<i64> = Vec.new();
     for idx in 0 .. total {
         dp.push(0);
     }
@@ -33,8 +33,8 @@ const ITERS: i64 = 50000;
 fn main() {
     let n = 20;
     let cap = 100;
-    let weights: Vec<i64> = Vec::new();
-    let values: Vec<i64> = Vec::new();
+    let weights: Vec<i64> = Vec.new();
+    let values: Vec<i64> = Vec.new();
     for k in 0 .. n {
         weights.push(k % 10 + 1);
         values.push(k % 15 + 3);

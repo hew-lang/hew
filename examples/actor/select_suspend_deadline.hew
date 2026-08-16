@@ -38,7 +38,7 @@ fn main() {
     // binds the deadline body's value (-7).
     let r = await c.race_deadline(5);
     match r {
-        Ok(v) => println(f"deadline={v}"),
-        Err(_) => println("race failed"),
+        .Ok(v) => println(f"deadline={v}"),
+        .Err(_) => println("race failed"),
     }
 }

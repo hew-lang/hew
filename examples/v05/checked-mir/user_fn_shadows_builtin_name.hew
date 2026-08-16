@@ -3,7 +3,7 @@
 // Pins the Item-resolution guard in `runtime_symbol_for_call_expr`: a
 // REAL user `fn link(..)` / `fn monitor(..)` (low ItemId, not a seeded
 // synthetic-builtin sentinel) routes to its own definition —
-// `Terminator::Call { callee: "link" }` — and must NEVER be re-routed
+// `Terminator.Call { callee: "link" }` — and must NEVER be re-routed
 // through the user-name → C-symbol bridge to `hew_actor_link` /
 // `hew_actor_monitor`.
 actor Probe {

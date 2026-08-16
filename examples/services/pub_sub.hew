@@ -7,7 +7,7 @@
 //
 // In Go you'd build this with channels, a map[string][]chan, and a
 // select loop (~120 lines plus race-condition debugging). In Rust
-// you'd use tokio::broadcast or a manual Arc<RwLock<HashMap>>.
+// you'd use tokio.broadcast or a manual Arc<RwLock<HashMap>>.
 //
 // In Hew the broker is an actor. Subscriptions are just state.
 // Fan-out is just a loop calling receive handlers. No locks, no
@@ -69,8 +69,8 @@ fn main() {
     println("");
 
     // Create broker
-    let empty_topics: Vec<string> = Vec::new();
-    let empty_actors: Vec<LocalPid<Subscriber>> = Vec::new();
+    let empty_topics: Vec<string> = Vec.new();
+    let empty_actors: Vec<LocalPid<Subscriber>> = Vec.new();
     let broker = spawn Broker(sub_topics: empty_topics, sub_actors: empty_actors, published: 0);
     // Create subscribers
     let alice = spawn Subscriber(name: "alice", received: 0);

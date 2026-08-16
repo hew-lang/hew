@@ -1,4 +1,4 @@
-// Reject fixture for `MirCheck::MustConsume` — unconsumed fall-through.
+// Reject fixture for `MirCheck.MustConsume` — unconsumed fall-through.
 //
 // `t` is a `#[linear]` binding.  The function returns without consuming
 // it on any path: the live binding reaches the implicit tail-return site.

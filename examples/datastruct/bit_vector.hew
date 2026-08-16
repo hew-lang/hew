@@ -1,7 +1,7 @@
 // Bit Vector using Vec<i64> where each i64 stores 32 bits
 // Operations: set_bit, clear_bit, get_bit, count_ones
 fn bv_create(num_bits: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     let num_words = (num_bits + 31) / 32;
     for i in 0 .. num_words {
         v.push(0);

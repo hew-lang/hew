@@ -10,15 +10,15 @@ enum Colour {
 
 fn colour_name(c: Colour) -> i32 {
     match c {
-        Red => {
+        .Red => {
             println("red");
             0
         },
-        Green => {
+        .Green => {
             println("green");
             1
         },
-        Blue => {
+        .Blue => {
             println("blue");
             2
         },
@@ -32,20 +32,20 @@ fn test_enum() {
 fn test_option_match() {
     let opt = Some(42);
     match opt {
-        Some(v) => {
+        .Some(v) => {
             println("PASS: Some pattern");
             println(v)
         },
-        None => {
+        .None => {
             println("FAIL: expected Some")
         },
     }
     let empty: Option<i64> = None;
     match empty {
-        Some(v) => {
+        .Some(v) => {
             println("FAIL: expected None")
         },
-        None => {
+        .None => {
             println("PASS: None pattern")
         },
     }
@@ -54,20 +54,20 @@ fn test_option_match() {
 fn test_result_match() {
     let ok_val: Result<i64, string> = Ok(99);
     match ok_val {
-        Ok(val) => {
+        .Ok(val) => {
             println("PASS: Ok pattern");
             println(val)
         },
-        Err(msg) => {
+        .Err(msg) => {
             println("FAIL: expected Ok")
         },
     }
     let err_val: Result<i64, string> = Err("something went wrong");
     match err_val {
-        Ok(val) => {
+        .Ok(val) => {
             println("FAIL: expected Err")
         },
-        Err(msg) => {
+        .Err(msg) => {
             println("PASS: Err pattern");
             println(msg)
         },

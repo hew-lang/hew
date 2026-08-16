@@ -384,9 +384,7 @@ fn import_directory_module_entry_for_peer(program: &mut Program, input: &Path) {
         (
             Item::Import(ImportDecl {
                 path: Vec::new(),
-                path_separators: Vec::new(),
                 spec: None,
-                spec_separator: None,
                 selection_trailing_comma: false,
                 module_alias: None,
                 file_path: Some(entry_name),
@@ -759,9 +757,7 @@ pub fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
             items.push((
                 Item::Import(ImportDecl {
                     path,
-                    path_separators: Vec::new(),
                     spec: None,
-                    spec_separator: None,
                     selection_trailing_comma: false,
                     module_alias: None,
                     file_path: None,

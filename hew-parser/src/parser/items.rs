@@ -1602,9 +1602,7 @@ impl Parser<'_> {
             let file_path = unquote_str(raw).to_owned();
             return Some(ImportDecl {
                 path: Vec::new(),
-                path_separators: Vec::new(),
                 spec: None,
-                spec_separator: None,
                 selection_trailing_comma: false,
                 module_alias: None,
                 file_path: Some(file_path),
@@ -1615,48 +1613,45 @@ impl Parser<'_> {
         }
 
         let mut path = Vec::new();
-        let mut path_separators = Vec::new();
-
         loop {
             path.push(self.expect_import_path_segment()?);
-            // Both separators remain accepted during the temporary cutover. Only consume one as a
-            // path separator when another path segment follows; `.{` / `.*`
-            // and their legacy `::` counterparts belong to the spec parser.
-            if matches!(self.peek(), Some(Token::Dot | Token::DoubleColon)) {
+            // Consume a dot as a path separator only when another path segment follows;
+            // `.{` belongs to the explicit-selection parser.
+            if self.peek() == Some(&Token::Dot) {
                 let saved = self.save_pos();
-                let separator = if self.peek() == Some(&Token::Dot) {
-                    PathSeparator::Dot
-                } else {
-                    PathSeparator::DoubleColon
-                };
                 self.advance();
                 if !self.peek().is_some_and(Self::is_import_path_segment_token) {
-                    // Separator followed by *, {, etc. — let spec parsing handle it.
                     self.restore_pos(saved);
                     break;
                 }
-                path_separators.push(separator);
             } else {
                 break;
             }
         }
 
-        let spec_separator = match self.peek() {
-            Some(Token::Dot) => Some(PathSeparator::Dot),
-            Some(Token::DoubleColon) => Some(PathSeparator::DoubleColon),
-            _ => None,
-        };
         let mut selection_trailing_comma = false;
-        let spec = if let Some(separator) = spec_separator {
-            self.advance();
+        let spec = if self.eat(&Token::Dot) {
             if self.eat(&Token::Star) {
-                if separator == PathSeparator::Dot {
-                    self.error("glob imports use the `::*` spelling".to_string());
-                    return None;
+                if !self
+                    .errors
+                    .iter()
+                    .any(|error| matches!(error.kind, ParseDiagnosticKind::ImportGlobRemoved))
+                {
+                    self.errors.push(ParseError {
+                        message: "E_IMPORT_GLOB_REMOVED: glob imports have been removed; import explicit names with `import path.{ Name };`".to_string(),
+                        span: self.peek_span(),
+                        hint: Some(
+                            "replace the glob with an explicit selection such as `import path.{ Name };`"
+                                .to_string(),
+                        ),
+                        severity: Severity::Error,
+                        kind: ParseDiagnosticKind::ImportGlobRemoved,
+                    });
                 }
-                Some(ImportSpec::Glob)
+                // Never materialise a removed glob AST node.
+                None
             } else if self.eat(&Token::LeftBrace) {
-                if separator == PathSeparator::Dot && self.peek() == Some(&Token::RightBrace) {
+                if self.peek() == Some(&Token::RightBrace) {
                     self.error(
                         "dotted import selections must contain at least one binding".to_string(),
                     );
@@ -1685,27 +1680,21 @@ impl Parser<'_> {
                 let found = self
                     .peek()
                     .map_or_else(|| "end of input".to_string(), |t| format!("{t}"));
-                let spelling = match separator {
-                    PathSeparator::Dot => ".",
-                    PathSeparator::DoubleColon => "::",
-                };
-                self.error(format!(
-                    "expected `{{` after `{spelling}` (or `*` after `::`), found {found}"
-                ));
+                self.error(format!("expected `{{` after `.`, found {found}"));
                 return None;
             }
         } else {
             None
         };
 
-        // Whole-module alias: `import path::to::mod as alias;`. Legal only for
-        // the whole-module form; `import m::{ A } as f` and `import m::* as f`
+        // Whole-module alias: `import path.to.mod as alias;`. Legal only for
+        // the whole-module form; `import m.{ A } as f`
         // have no meaning and are rejected, so `as` is only consumed when no
         // brace/glob spec was parsed.
         let module_alias = if self.eat(&Token::As) {
             if spec.is_some() {
                 self.error(
-                    "`as` cannot alias a `::{ }` or `::*` import; alias the whole module \
+                    "`as` cannot alias a `.{ }` import; alias the whole module \
                      instead (`import path as alias;`)"
                         .to_string(),
                 );
@@ -1724,9 +1713,7 @@ impl Parser<'_> {
 
         Some(ImportDecl {
             path,
-            path_separators,
             spec,
-            spec_separator,
             selection_trailing_comma,
             module_alias,
             file_path: None,

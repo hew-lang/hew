@@ -122,7 +122,7 @@ importDecl
     ;
 
 moduleImport
-    : modulePath ( moduleAlias | importSelection | legacyImportSelection | legacyGlobImport )?
+    : modulePath ( moduleAlias | importSelection )?
     ;
 
 moduleAlias
@@ -130,22 +130,11 @@ moduleAlias
     ;
 
 modulePath
-    : ident ( modulePathSeparator ident )*
-    ;
-
-modulePathSeparator
-    : '.'
-    | '::'                              // Deprecated until the hard cutover
+    : ident ( '.' ident )*
     ;
 
 importSelection
     : '.' '{' importBinding ( ',' importBinding )* ','? '}'
-    ;
-
-// The existing parser accepts empty legacy `::{}` for corpus continuity;
-// dotted `.{}` selections are the primary surface.
-legacyImportSelection
-    : '::' '{' ( importBinding ( ',' importBinding )* ','? )? '}'
     ;
 
 importBinding
@@ -159,10 +148,6 @@ importSelf
 
 importName
     : ident ( 'as' ident )?
-    ;
-
-legacyGlobImport
-    : '::' '*'
     ;
 
 // ----------------------------------------------------------------
@@ -750,10 +735,8 @@ postfixExpr
 
 postfixSuffix
     : genericApplySuffix
-    | legacyTurbofishSuffix
     | callSuffix
     | memberSuffix
-    | legacyMemberSuffix
     | tupleIndexSuffix
     | recordInitSuffix
     | indexSuffix
@@ -786,20 +769,12 @@ genericApplyFollow
     | '{'
     ;
 
-legacyTurbofishSuffix
-    : '::' typeArgs                       // Deprecated until the hard cutover
-    ;
-
 callSuffix
     : '(' args? ')'
     ;
 
 memberSuffix
     : '.' ident
-    ;
-
-legacyMemberSuffix
-    : '::' ident                          // Deprecated until the hard cutover
     ;
 
 tupleIndexSuffix
@@ -1034,7 +1009,6 @@ traitPath
 
 pathSeparator
     : '.'
-    | '::'                              // Deprecated until the hard cutover
     ;
 
 qualifiedAssocBase
@@ -1132,7 +1106,7 @@ wireType
 
 pattern
     : pattern '|' pattern                       // Or-pattern
-    | nominalPattern                            // Qualified: Mod.Color.Red or legacy Option::Some(x)
+    | nominalPattern                            // Qualified: Mod.Color.Red
     | ident '(' patternList? ')'                // Constructor: Some(x)
     | ident '{' patternFieldList? '}'           // Named record destructure: Point { x, y }
     | '{' patternFieldList? '}'                 // Shorthand record destructure: let {a, b} = rec (type inferred; let-position only)
@@ -1212,6 +1186,7 @@ PERCENT_ASSIGN: '%=' ;
 AND_ASSIGN    : '&=' ;
 OR_ASSIGN     : '|=' ;
 XOR_ASSIGN    : '^=' ;
+// Reserved so implementations can issue a focused legacy-path diagnostic.
 COLONCOLON    : '::' ;
 LOGICAL_AND   : '&&' ;
 LOGICAL_OR    : '||' ;

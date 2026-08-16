@@ -330,7 +330,6 @@ pub struct EnumVariantOrder {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreludeExportKind {
     Module,
-    Glob,
     Item,
 }
 
@@ -1004,7 +1003,7 @@ fn make_binding(
 fn qualified(source: AuthoritySource<'_>, declaration: &str) -> String {
     source.root.map_or_else(
         || declaration.to_string(),
-        |root| format!("{}::{declaration}", root.module_name()),
+        |root| format!("{}.{declaration}", root.module_name()),
     )
 }
 
@@ -1016,19 +1015,13 @@ fn type_name(ty: &TypeExpr) -> String {
 }
 
 fn collect_prelude_export(exports: &mut Vec<PreludeExport>, import: hew_parser::ast::ImportDecl) {
-    let module = import.path.join("::");
+    let module = import.path.join(".");
     match import.spec {
         None => exports.push(PreludeExport {
             module,
             name: None,
             alias: import.module_alias,
             kind: PreludeExportKind::Module,
-        }),
-        Some(ImportSpec::Glob) => exports.push(PreludeExport {
-            module,
-            name: None,
-            alias: None,
-            kind: PreludeExportKind::Glob,
         }),
         Some(ImportSpec::Names(names)) => {
             for name in names {

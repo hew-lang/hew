@@ -11,21 +11,11 @@ impl Parser<'_> {
     // ── Types ──
     pub(crate) fn parse_syntactic_path(&mut self) -> Option<Path> {
         let mut segments = vec![self.expect_ident()?];
-        let mut separators = Vec::new();
-        loop {
-            let separator = match self.peek() {
-                Some(Token::Dot) => PathSeparator::Dot,
-                Some(Token::DoubleColon) => PathSeparator::DoubleColon,
-                _ => break,
-            };
+        while self.peek() == Some(&Token::Dot) {
             self.advance();
             segments.push(self.expect_ident()?);
-            separators.push(separator);
         }
-        Some(Path {
-            segments,
-            separators,
-        })
+        Some(Path { segments })
     }
 
     pub(crate) fn parse_type(&mut self) -> Option<Spanned<TypeExpr>> {
@@ -261,18 +251,9 @@ impl Parser<'_> {
                 if name == "_" {
                     TypeExpr::Infer
                 } else {
-                    loop {
-                        if self.eat(&Token::Dot) {
-                            let type_name = self.expect_ident()?;
-                            name = format!("{name}.{type_name}");
-                            continue;
-                        }
-                        if self.eat(&Token::DoubleColon) {
-                            let type_name = self.expect_ident()?;
-                            name = format!("{name}::{type_name}");
-                            continue;
-                        }
-                        break;
+                    while self.eat(&Token::Dot) {
+                        let type_name = self.expect_ident()?;
+                        name = format!("{name}.{type_name}");
                     }
                     let type_args = if self.eat(&Token::Less) {
                         Some(self.parse_type_args_with_context(context)?)

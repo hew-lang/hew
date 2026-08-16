@@ -1334,14 +1334,14 @@ fn parse_error_missing_semicolon() {
 
 #[test]
 fn parse_nested_generic_types() {
-    let source = "fn main() { let v: Vec<Vec<i32>> = Vec::new(); }";
+    let source = "fn main() { let v: Vec<Vec<i32>> = Vec.new(); }";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
 
 #[test]
 fn parse_deeply_nested_generics() {
-    let source = "fn main() { let v: HashMap<string, Vec<Vec<i32>>> = HashMap::new(); }";
+    let source = "fn main() { let v: HashMap<string, Vec<Vec<i32>>> = HashMap.new(); }";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
@@ -1845,11 +1845,6 @@ fn parse_dotted_import_with_self_and_aliases() {
         panic!("expected import");
     };
     assert_eq!(import.path, ["app", "net", "http"]);
-    assert_eq!(
-        import.path_separators,
-        [PathSeparator::Dot, PathSeparator::Dot]
-    );
-    assert_eq!(import.spec_separator, Some(PathSeparator::Dot));
     let Some(ImportSpec::Names(names)) = &import.spec else {
         panic!("expected selected names");
     };
@@ -1865,25 +1860,18 @@ fn dotted_import_glob_and_empty_selection_are_rejected() {
     assert!(glob
         .errors
         .iter()
-        .any(|error| error.message.contains("::*")));
+        .any(|error| matches!(error.kind, ParseDiagnosticKind::ImportGlobRemoved)));
 
     let empty = parse("import app.net.{};");
     assert!(empty
         .errors
         .iter()
         .any(|error| error.message.contains("at least one binding")));
-
-    let legacy_empty = parse("import app.net.{};");
-    assert!(
-        legacy_empty.errors.is_empty(),
-        "legacy empty selection remains accepted during the cutover: {:?}",
-        legacy_empty.errors
-    );
 }
 
 #[test]
 fn hyphenated_package_import_suggests_manifest_name() {
-    let result = parse("import config-telemetry::types;");
+    let result = parse("import config-telemetry.types;");
     assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
 
     let error = &result.errors[0];
@@ -1939,7 +1927,7 @@ fn parse_import_type_decl_keyword_path_segments() {
         "type",
         "trait",
     ] {
-        let source = format!("import src.{kw}::helpers;");
+        let source = format!("import src.{kw}.helpers;");
         let result = parse(&source);
         assert!(
             result.errors.is_empty(),
@@ -2327,15 +2315,20 @@ fn parse_import_bare_colons_rejected() {
 }
 
 #[test]
-fn parse_import_glob() {
-    let source = r"import utils.*;";
+fn parse_legacy_import_glob_reports_exact_migration() {
+    let source = r"import utils::*;";
     let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    if let Item::Import(imp) = &result.program.items[0].0 {
-        assert_eq!(imp.spec, Some(ImportSpec::Glob));
-    } else {
-        panic!("expected import item");
-    }
+    let error = result
+        .errors
+        .iter()
+        .find(|error| matches!(error.kind, ParseDiagnosticKind::ImportGlobRemoved))
+        .expect("expected E_IMPORT_GLOB_REMOVED");
+    assert_eq!(error.kind.as_kind_str(), "E_IMPORT_GLOB_REMOVED");
+    assert!(error.message.contains("import utils.{ Name };"));
+    assert!(error
+        .hint
+        .as_deref()
+        .is_some_and(|hint| hint.contains("import utils.{ Name };")));
 }
 
 #[test]
@@ -4746,34 +4739,27 @@ fn leading_dot_or_pattern_parses() {
     assert!(matches!(&right.0, Pattern::ContextVariant(context) if context.name == "B"));
 }
 
-/// Adding the leading-dot arm does not disturb the existing qualified-name
-/// (`Type::Variant`) constructor-pattern path: both spellings still parse,
-/// and the qualified form keeps its fully-qualified name.
+/// Adding the leading-dot arm does not disturb a qualified constructor pattern.
 #[test]
 fn leading_dot_arm_leaves_qualified_pattern_path_intact() {
-    let source = "fn f(e: E) -> i64 { match e { E::Some(x) => x, .None => 0, _ => 1 } }";
+    let source = "fn f(e: E) -> i64 { match e { E.Some(x) => x, .None => 0, _ => 1 } }";
     let patterns = first_match_arm_patterns(source);
     let Pattern::NominalPath { path, payload } = &patterns[0] else {
         panic!("expected nominal path, got {:?}", patterns[0]);
     };
     assert_eq!(path.segments, ["E", "Some"]);
-    assert_eq!(path.separators, [PathSeparator::DoubleColon]);
     assert!(matches!(payload, Some(NominalPatternPayload::Tuple(_))));
     assert!(matches!(&patterns[1], Pattern::ContextVariant(context) if context.name == "None"));
 }
 
 #[test]
 fn module_qualified_variant_pattern_preserves_dotted_owner() {
-    let source = "fn f(e: m.E) -> i64 { match e { m.E::Some(x) => x, _ => 0 } }";
+    let source = "fn f(e: m.E) -> i64 { match e { m.E.Some(x) => x, _ => 0 } }";
     let patterns = first_match_arm_patterns(source);
     let Pattern::NominalPath { path, .. } = &patterns[0] else {
         panic!("expected nominal path, got {:?}", patterns[0]);
     };
     assert_eq!(path.segments, ["m", "E", "Some"]);
-    assert_eq!(
-        path.separators,
-        [PathSeparator::Dot, PathSeparator::DoubleColon]
-    );
 }
 
 #[test]
@@ -4784,7 +4770,6 @@ fn dotted_pattern_is_a_segmented_nominal_path() {
         panic!("expected nominal path, got {:?}", patterns[0]);
     };
     assert_eq!(path.segments, ["foo", "bar"]);
-    assert_eq!(path.separators, [PathSeparator::Dot]);
     assert!(payload.is_none());
 }
 
@@ -4799,16 +4784,12 @@ fn multi_segment_dotted_pattern_is_accepted() {
         panic!("expected nominal path, got {:?}", patterns[0]);
     };
     assert_eq!(path.segments, ["m", "T", "Variant"]);
-    assert_eq!(path.separators, [PathSeparator::Dot, PathSeparator::Dot]);
 }
 
-/// The lookahead that gates the dotted-pattern loop distinguishes a dotted
-/// path that continues into `::<Variant>` (consumed as module-qualified
-/// owner) from one that terminates at `=>` (left untouched, rejected by the
-/// caller) — pinning the exact boundary F1 was missing.
+/// The dotted-pattern loop accepts both a qualified constructor and a path leaf.
 #[test]
-fn dotted_pattern_accepts_legacy_and_dot_separators() {
-    let accepted = "fn f(e: m.E) -> i64 { match e { m.E::Some(x) => x, _ => 0 } }";
+fn dotted_pattern_accepts_qualified_and_leaf_paths() {
+    let accepted = "fn f(e: m.E) -> i64 { match e { m.E.Some(x) => x, _ => 0 } }";
     let accepted_result = parse(accepted);
     assert!(
         accepted_result.errors.is_empty(),
@@ -5037,7 +5018,7 @@ fn record_rest_patterns_parse_in_all_record_forms() {
             false,
         ),
         (
-            "fn f(e: E) -> i64 { match e { E::A { x, .. } => x } }",
+            "fn f(e: E) -> i64 { match e { E.A { x, .. } => x } }",
             false,
         ),
         ("fn f(p: Point) -> i64 { match p { { x, .. } => x } }", true),

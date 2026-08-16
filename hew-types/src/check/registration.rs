@@ -9450,9 +9450,7 @@ impl Checker {
     /// IMPORT-lexical nominal authority (rc1-F1 stage C): a bare name the
     /// declaring file does not itself declare resolves through the declaring
     /// module's DIRECT imports — through the names each import actually
-    /// BINDS. A whole-module or glob import makes the target's declarations
-    /// visible under their own bare spellings (`std.net` writing `Sink`
-    /// under `import std::stream`); a named item import binds exactly its
+    /// BINDS. A named item import binds exactly its
     /// bound name, so `import sm::{ Tok as ForeignTok }` binds `ForeignTok`
     /// and leaves bare `Tok` meaning NOTHING here. Exactly one bound source
     /// declaration across the import set mints its declaring file's
@@ -9470,7 +9468,7 @@ impl Checker {
                 // Which SOURCE name does the bound spelling `name` denote
                 // under this import? None = this import does not bind it.
                 let source_name = match spec {
-                    None | Some(ImportSpec::Glob) => name.to_string(),
+                    None => return None,
                     Some(ImportSpec::Names(names)) => names
                         .iter()
                         .find(|n| n.alias.as_deref().unwrap_or(&n.name) == name)?
@@ -10096,11 +10094,6 @@ impl Checker {
 
         let authority = crate::stdlib_authority::authority();
         let prelude_exports = authority.prelude_exports();
-        let glob_modules: HashSet<String> = prelude_exports
-            .iter()
-            .filter(|export| export.kind == crate::PreludeExportKind::Glob)
-            .map(|export| export.module.replace("::", "."))
-            .collect();
         let mut protected_names: HashSet<String> = authority
             .lang_items()
             .values()
@@ -10132,14 +10125,7 @@ impl Checker {
             let binding = export.alias.as_ref().unwrap_or(source_name);
             if protected_names.contains(source_name) {
                 self.protected_prelude_bindings
-                    .insert(binding.clone(), export.module.replace("::", "."));
-            }
-        }
-
-        if glob_modules.contains("std.builtins") {
-            for name in protected_names {
-                self.protected_prelude_bindings
-                    .insert(name, "std.builtins".to_string());
+                    .insert(binding.clone(), export.module.clone());
             }
         }
     }
@@ -10183,7 +10169,7 @@ impl Checker {
             return candidates;
         }
 
-        if !decl.path.is_empty() && !matches!(decl.spec, Some(ImportSpec::Glob)) {
+        if !decl.path.is_empty() {
             return candidates;
         }
 
@@ -10805,8 +10791,7 @@ impl Checker {
     #[expect(clippy::ref_option, reason = "avoids cloning the option contents")]
     pub(super) fn should_import_name(name: &str, spec: &Option<ImportSpec>) -> bool {
         match spec {
-            None => false,                  // bare import → qualified only
-            Some(ImportSpec::Glob) => true, // import foo::*; → everything
+            None => false, // bare import → qualified only
             Some(ImportSpec::Names(names)) => names.iter().any(|n| n.name == name),
         }
     }
@@ -10819,7 +10804,6 @@ impl Checker {
                 .iter()
                 .find(|n| n.name == name)
                 .map(|n| n.alias.as_deref().unwrap_or(&n.name).to_string()),
-            Some(ImportSpec::Glob) => Some(name.to_string()),
             None => None,
         }
     }
@@ -11851,11 +11835,6 @@ impl Checker {
                                 }
                             }
                         }
-                        // Glob imports publish trait names through the normal import
-                        // surface, but they do not carry resolved names in the AST.
-                        // The loaded-owner fallback below handles their unused-import
-                        // marking without manufacturing binding entries here.
-                        Some(ImportSpec::Glob) => {}
                     }
                 }
                 // Self-register the module's own pub traits so a re-export chain

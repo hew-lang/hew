@@ -375,9 +375,7 @@ pub fn find_matching_import(
                     }
                 }
             }
-            // Glob imports cannot be matched by visible name alone; leave
-            // cross-file resolution to the LSP layer.
-            Some(hew_parser::ast::ImportSpec::Glob) | None => {}
+            None => {}
         }
     }
     None

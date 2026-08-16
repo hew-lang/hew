@@ -10,11 +10,11 @@ use crate::ast::{
     CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
     ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl,
     MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
-    NominalPatternPayload, OverflowPolicy, Param, Path, PathSeparator, Pattern, PatternField,
-    Program, ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm, ShutdownDirective,
-    Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound,
-    TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
-    TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata,
+    NominalPatternPayload, OverflowPolicy, Param, Path, Pattern, PatternField, Program,
+    ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm, ShutdownDirective, Spanned,
+    Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
+    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
+    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -429,27 +429,14 @@ impl<'a> Formatter<'a> {
         } else {
             if let Some(first) = decl.path.first() {
                 self.write(first);
-                for (idx, segment) in decl.path.iter().enumerate().skip(1) {
-                    let separator = decl
-                        .path_separators
-                        .get(idx - 1)
-                        .copied()
-                        .unwrap_or(PathSeparator::DoubleColon);
-                    self.write(match separator {
-                        PathSeparator::Dot => ".",
-                        PathSeparator::DoubleColon => "::",
-                    });
+                for segment in decl.path.iter().skip(1) {
+                    self.write(".");
                     self.write(segment);
                 }
             }
             if let Some(spec) = &decl.spec {
-                let separator = decl.spec_separator.unwrap_or(PathSeparator::DoubleColon);
-                self.write(match separator {
-                    PathSeparator::Dot => ".",
-                    PathSeparator::DoubleColon => "::",
-                });
+                self.write(".");
                 match spec {
-                    ImportSpec::Glob => self.write("*"),
                     ImportSpec::Names(names) => {
                         self.write("{");
                         self.comma_sep(names, |f, n| {
@@ -4604,8 +4591,8 @@ type Config {
 fn classify(e: IoError) -> string {
     match e {
         // file not found
-        IoError::NotFound(_) => \"missing\",
-        IoError::PermissionDenied(_) => \"denied\", // access error
+        IoError.NotFound(_) => \"missing\",
+        IoError.PermissionDenied(_) => \"denied\", // access error
         _ => \"other\",
     }
 }
@@ -4618,8 +4605,8 @@ fn classify(e: IoError) -> string {
         let src = "\
 fn classify(e: IoError) -> string {
     match e {
-        IoError::NotFound(_) => \"missing\",
-        IoError::Other(_) => \"error\", // catch-all trailing
+        IoError.NotFound(_) => \"missing\",
+        IoError.Other(_) => \"error\", // catch-all trailing
     }
 }
 ";
@@ -4632,7 +4619,7 @@ fn classify(e: IoError) -> string {
 fn main() -> string {
     let msg = match get_error() {
         // success path
-        IoError::NotFound(_) => \"not found\",
+        IoError.NotFound(_) => \"not found\",
         _ => \"error\",
     };
     msg
@@ -4695,9 +4682,9 @@ type Cfg {
 fn handle(s: Status) -> int {
     match s {
         // success
-        Status::Ok => 0,
+        Status.Ok => 0,
         // failure
-        Status::Err(code) => code,
+        Status.Err(code) => code,
     }
 }
 ";

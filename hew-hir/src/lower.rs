@@ -2571,7 +2571,6 @@ fn root_imported_fn_rewrites(
                 continue;
             }
             let binding = match &decl.spec {
-                Some(ImportSpec::Glob) => Some(function.name.clone()),
                 Some(ImportSpec::Names(names)) => names
                     .iter()
                     .find(|imported| imported.name == function.name)
@@ -3289,7 +3288,6 @@ pub fn lower_program_with_mono_cap(
                 continue;
             }
             let binding = match spec {
-                ImportSpec::Glob => Some(const_decl.name.clone()),
                 ImportSpec::Names(names) => names
                     .iter()
                     .find(|imported| imported.name == const_decl.name)

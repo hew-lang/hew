@@ -60,9 +60,7 @@ fn make_user_import(
 ) -> ImportDecl {
     ImportDecl {
         path: path.iter().map(std::string::ToString::to_string).collect(),
-        path_separators: Vec::new(),
         spec,
-        spec_separator: None,
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
@@ -70,6 +68,18 @@ fn make_user_import(
         resolved_item_source_paths: Vec::new(),
         resolved_source_paths: Vec::new(),
     }
+}
+
+fn selected_import(names: &[&str]) -> ImportSpec {
+    ImportSpec::Names(
+        names
+            .iter()
+            .map(|name| ImportName {
+                name: (*name).to_string(),
+                alias: None,
+            })
+            .collect(),
+    )
 }
 
 fn module_node(id: &str, deps: &[&str]) -> Module {
@@ -171,7 +181,7 @@ fn test_glob_import_resolution() {
     let fn_other = make_pub_fn("other");
     let import = make_user_import(
         &["myapp", "utils"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["helper", "other"])),
         vec![
             (Item::Function(fn_helper), 0..0),
             (Item::Function(fn_other), 0..0),
@@ -378,7 +388,7 @@ fn test_private_items_not_visible() {
 
     let import = make_user_import(
         &["mod_a"],
-        Some(ImportSpec::Glob), // even glob should not expose private items
+        Some(selected_import(&["private_fn", "public_fn"])),
         vec![
             (Item::Function(private_fn), 0..0),
             (Item::Function(public_fn), 0..0),
@@ -1325,7 +1335,7 @@ fn test_actor_glob_import_registers_unqualified() {
 
     let import = make_user_import(
         &["app", "mymod"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["Greeter"])),
         vec![(Item::Actor(actor), 0..0)],
     );
 
@@ -1407,7 +1417,7 @@ fn test_actor_multiple_receive_fns() {
 
     let import = make_user_import(
         &["app", "cache"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["Cache"])),
         vec![(Item::Actor(actor), 0..0)],
     );
 
@@ -1439,7 +1449,7 @@ fn test_actor_and_function_coexist_in_module() {
 
     let import = make_user_import(
         &["app", "workers"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["Worker", "create_worker"])),
         vec![(Item::Actor(actor), 0..0), (Item::Function(func), 0..0)],
     );
 
@@ -1511,9 +1521,7 @@ fn test_unresolved_import_fail_closed() {
 
     let import = ImportDecl {
         path: vec!["no_such_pkg".to_string(), "missing".to_string()],
-        path_separators: Vec::new(),
         spec: None,
-        spec_separator: None,
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,

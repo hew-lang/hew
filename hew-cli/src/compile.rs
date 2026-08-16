@@ -274,9 +274,7 @@ mod tests {
     fn make_module_import(path: &[&str]) -> Spanned<Item> {
         let decl = hew_parser::ast::ImportDecl {
             path: path.iter().map(ToString::to_string).collect(),
-            path_separators: Vec::new(),
             spec: None,
-            spec_separator: None,
             selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
@@ -290,9 +288,7 @@ mod tests {
     fn make_file_import(file: &str) -> Spanned<Item> {
         let decl = hew_parser::ast::ImportDecl {
             path: vec![],
-            path_separators: Vec::new(),
             spec: None,
-            spec_separator: None,
             selection_trailing_comma: false,
             module_alias: None,
             file_path: Some(file.to_string()),

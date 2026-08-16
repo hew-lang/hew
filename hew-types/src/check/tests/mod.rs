@@ -235,9 +235,7 @@ pub(super) fn make_user_import(
 ) -> ImportDecl {
     ImportDecl {
         path: path.iter().map(ToString::to_string).collect(),
-        path_separators: Vec::new(),
         spec,
-        spec_separator: None,
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,

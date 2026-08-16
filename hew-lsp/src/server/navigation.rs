@@ -1399,9 +1399,8 @@ fn find_cross_file_definition_impl(
                 };
                 &entry.name // search target file by the *original* name
             }
-            Some(ImportSpec::Glob) => word, // glob: any name may come from here
             None => {
-                // Bare path import (`import foo::bar`).  The last path segment
+                // Bare path import (`import foo.bar`).  The last path segment
                 // is itself a navigable target (e.g. cursor on `bar`).
                 if import.path.last().map(String::as_str) == Some(word)
                     && (documents.contains_key(&target_uri) || path.exists())

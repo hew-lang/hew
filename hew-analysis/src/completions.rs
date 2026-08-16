@@ -1154,9 +1154,7 @@ mod tests {
                 (
                     Item::Import(ImportDecl {
                         path: path.iter().map(ToString::to_string).collect(),
-                        path_separators: Vec::new(),
                         spec: None,
-                        spec_separator: None,
                         selection_trailing_comma: false,
                         module_alias: module_alias.map(str::to_string),
                         file_path: None,

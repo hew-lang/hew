@@ -81,13 +81,13 @@ fn collection_overwrite_source(frames: usize) -> String {
          \x20   var seen: HashSet<i64>;\n\
          \n\
          \x20   receive fn refresh(round: i64) {{\n\
-         \x20       let next: Vec<string> = Vec::new();\n\
+         \x20       let next: Vec<string> = Vec.new();\n\
          \x20       next.push(\"entry\");\n\
          \x20       items = next;\n\
-         \x20       let m: HashMap<string, i64> = HashMap::new();\n\
+         \x20       let m: HashMap<string, i64> = HashMap.new();\n\
          \x20       m.insert(\"k\", round);\n\
          \x20       index = m;\n\
-         \x20       let s: HashSet<i64> = HashSet::new();\n\
+         \x20       let s: HashSet<i64> = HashSet.new();\n\
          \x20       s.insert(round);\n\
          \x20       seen = s;\n\
          \x20   }}\n\
@@ -98,7 +98,7 @@ fn collection_overwrite_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let c = spawn Cache(items: Vec::new(), index: HashMap::new(), seen: HashSet::new());\n\
+         \x20   let c = spawn Cache(items: Vec.new(), index: HashMap.new(), seen: HashSet.new());\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       c.refresh(i);\n\
@@ -155,7 +155,7 @@ fn record_functional_update_source(frames: usize) -> String {
          fn main() -> i64 {{\n\
          \x20   let k = spawn Keeper(cur: Outer {{\n\
          \x20       label: \"durable-label\".to_upper(),\n\
-         \x20       payload: bytes::new(),\n\
+\x20       payload: bytes.new(),\n\
          \x20       inner: Inner {{ note: \"first\" }},\n\
          \x20       count: 0,\n\
          \x20   }});\n\
@@ -247,15 +247,15 @@ fn enum_payload_alias_source(frames: usize) -> String {
          \n\
          \x20   receive fn size() -> i64 {{\n\
          \x20       match cur.payload {{\n\
-         \x20           Payload::Empty => 0,\n\
-         \x20           Payload::Hold(leaf) => leaf.text.len(),\n\
+         \x20           Payload.Empty => 0,\n\
+         \x20           Payload.Hold(leaf) => leaf.text.len(),\n\
          \x20       }}\n\
          \x20   }}\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   let keeper = spawn Keeper(cur: Wrap {{\n\
-         \x20       payload: Payload::Hold(Leaf {{ text: \"enum-alias\".to_upper() }}),\n\
+         \x20       payload: Payload.Hold(Leaf {{ text: \"enum-alias\".to_upper() }}),\n\
          \x20   }});\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
@@ -287,23 +287,23 @@ fn enum_overwrite_source(frames: usize) -> String {
          \n\
          \x20   receive fn advance(n: i64) {{\n\
          \x20       status = match n % 3 {{\n\
-         \x20           0 => Status::Idle,\n\
-         \x20           1 => Status::Working(\"busy\".to_upper()),\n\
-         \x20           _ => Status::Done(\"finished\".to_upper(), n),\n\
+         \x20           0 => Status.Idle,\n\
+         \x20           1 => Status.Working(\"busy\".to_upper()),\n\
+         \x20           _ => Status.Done(\"finished\".to_upper(), n),\n\
          \x20       }};\n\
          \x20   }}\n\
          \n\
          \x20   receive fn code() -> i64 {{\n\
          \x20       match status {{\n\
-         \x20           Status::Idle => 0,\n\
-         \x20           Status::Working(_) => 1,\n\
-         \x20           Status::Done(_, n) => n,\n\
+         \x20           Status.Idle => 0,\n\
+         \x20           Status.Working(_) => 1,\n\
+         \x20           Status.Done(_, n) => n,\n\
          \x20       }}\n\
          \x20   }}\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let t = spawn Tracker(status: Status::Idle);\n\
+         \x20   let t = spawn Tracker(status: Status.Idle);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       t.advance(i);\n\
@@ -386,7 +386,7 @@ fn collection_iterate_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let xs: Vec<i64> = Vec::new();\n\
+         \x20   let xs: Vec<i64> = Vec.new();\n\
          \x20   xs.push(1);\n\
          \x20   xs.push(2);\n\
          \x20   xs.push(3);\n\

@@ -96,7 +96,7 @@ fn coexist_drop_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let v: Vec<i64> = Vec::new();\n\
+         \x20       let v: Vec<i64> = Vec.new();\n\
          \x20       v.push(i);\n\
          \x20       v.push(i * 2);\n\
          \x20       let _c = v.iter();\n\
@@ -116,7 +116,7 @@ fn coexist_drop_loop_source(frames: usize) -> String {
 /// freed twice — `MallocGuardEdges` aborts. `v.len()` = 2.
 const COEXIST_DOUBLE_FREE_SOURCE: &str = "\
 fn main() {\n\
-\x20   let v: Vec<i64> = Vec::new();\n\
+\x20   let v: Vec<i64> = Vec.new();\n\
 \x20   v.push(40);\n\
 \x20   v.push(2);\n\
 \x20   let _c = v.iter();\n\
@@ -130,7 +130,7 @@ fn main() {\n\
 /// elements and counts 5. Prints the count: `2`.
 const MUTATION_INDEPENDENCE_SOURCE: &str = "\
 fn main() {\n\
-\x20   let v: Vec<i64> = Vec::new();\n\
+\x20   let v: Vec<i64> = Vec.new();\n\
 \x20   v.push(40);\n\
 \x20   v.push(2);\n\
 \x20   let c = v.iter();\n\
@@ -151,11 +151,11 @@ fn main() {\n\
 /// after the reassignment's free — a scribbled read or a segfault. 40 + 2 = 42.
 const SOURCE_FREED_UNDER_CURSOR_SOURCE: &str = "\
 fn main() {\n\
-\x20   var v: Vec<i64> = Vec::new();\n\
+\x20   var v: Vec<i64> = Vec.new();\n\
 \x20   v.push(40);\n\
 \x20   v.push(2);\n\
 \x20   let c = v.iter();\n\
-\x20   v = Vec::new();\n\
+\x20   v = Vec.new();\n\
 \x20   v.push(1);\n\
 \x20   var sum: i64 = 0;\n\
 \x20   for x in c {\n\
@@ -170,7 +170,7 @@ fn main() {\n\
 /// outlives the callee's scope-exit free. Reads live memory: 40 + 2 = 42.
 const ESCAPE_RETURN_SOURCE: &str = "\
 fn make_iter() -> VecIter<i64> {\n\
-\x20   let v: Vec<i64> = Vec::new();\n\
+\x20   let v: Vec<i64> = Vec.new();\n\
 \x20   v.push(40);\n\
 \x20   v.push(2);\n\
 \x20   v.iter()\n\
@@ -197,7 +197,7 @@ actor Echo {\n\
 fn main() {\n\
 \x20   let e = spawn Echo();\n\
 \x20   let c = {\n\
-\x20       let v: Vec<i64> = Vec::new();\n\
+\x20       let v: Vec<i64> = Vec.new();\n\
 \x20       v.push(40);\n\
 \x20       v.push(2);\n\
 \x20       v.iter()\n\

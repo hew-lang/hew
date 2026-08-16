@@ -1306,7 +1306,7 @@ fn generator_pump_releases_enum_yield_value_in_place() {
          }\n\
          actor Maker {\n\
          \x20   receive gen fn notes() -> Note {\n\
-         \x20       yield Note::Text(\"alpha\");\n\
+         \x20       yield Note.Text(\"alpha\");\n\
          \x20   }\n\
          }\n\
          fn main() {\n\

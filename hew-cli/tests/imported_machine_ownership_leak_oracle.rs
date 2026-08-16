@@ -29,7 +29,7 @@ pub machine PayloadLifecycle {
 }
 
 pub fn make(label: string) -> PayloadLifecycle {
-    PayloadLifecycle::Loaded { label: label }
+        PayloadLifecycle.Loaded { label: label }
 }
 
 pub fn bounce(value: PayloadLifecycle) -> PayloadLifecycle {
@@ -51,8 +51,8 @@ fn local_bounce(value: machine_defs.PayloadLifecycle) -> machine_defs.PayloadLif
 
 fn label_of(value: machine_defs.PayloadLifecycle) -> string {{
     match value {{
-        machine_defs.PayloadLifecycle::Loaded {{ label }} => label,
-        machine_defs.PayloadLifecycle::Empty => "empty",
+        machine_defs.PayloadLifecycle.Loaded {{ label }} => label,
+        machine_defs.PayloadLifecycle.Empty => "empty",
     }}
 }}
 

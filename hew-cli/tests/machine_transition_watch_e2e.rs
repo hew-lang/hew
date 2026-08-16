@@ -173,14 +173,14 @@ fn select_enum_element_thunks_resolve_and_run_clean() {
          actor Combined {\n\
          \x20   receive fn run() {\n\
          \x20       let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = channel.new(4);\n\
-         \x20       tx.send(Transition::Moved { from_state: \"Created\", to_state: \"Initialising\" });\n\
+         \x20       tx.send(Transition.Moved { from_state: \"Created\", to_state: \"Initialising\" });\n\
          \x20       tx.close();\n\
          \x20       select {\n\
          \x20           t from rx.recv() => {\n\
          \x20               match t {\n\
          \x20                   Some(t2) => {\n\
          \x20                       match t2 {\n\
-         \x20                           Transition::Moved { from_state, to_state } => println(f\"{from_state} -> {to_state}\"),\n\
+         \x20                           Transition.Moved { from_state, to_state } => println(f\"{from_state} -> {to_state}\"),\n\
          \x20                       }\n\
          \x20                   },\n\
          \x20                   None => println(\"closed\"),\n\
@@ -341,7 +341,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
          \n\
          actor Service {\n\
          \x20   receive fn drive(tx: channel.Sender<Transition>) {\n\
-         \x20       var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle::Created;\n\
+         \x20       var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle.Created;\n\
          \x20       let before1 = lc.state_name();\n\
          \x20       lc.step(Initialise);\n\
          \x20       let after1 = lc.state_name();\n\
@@ -349,7 +349,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
          \x20           tx.send(Transition { from_state: before1, to_state: after1 });\n\
          \x20       }\n\
          \x20       let before2 = lc.state_name();\n\
-         \x20       lc.step(lifecycle.LifecycleEvent::Crashed { error: Error::Code(7) });\n\
+         \x20       lc.step(lifecycle.LifecycleEvent.Crashed { error: Error.Code(7) });\n\
          \x20       let after2 = lc.state_name();\n\
          \x20       if before2 != after2 {\n\
          \x20           tx.send(Transition { from_state: before2, to_state: after2 });\n\
@@ -572,7 +572,7 @@ fn heap_payload_machine_actor_field_steps_clean() {
          \x20       Open\n\
          \x20   }\n\
          \x20   on Fail: Open => Failed {\n\
-         \x20       Conn::Failed { reason: event.reason }\n\
+         \x20       Conn.Failed { reason: event.reason }\n\
          \x20   }\n\
          \x20   on Reset: Failed => Idle {\n\
          \x20       Idle\n\
@@ -589,12 +589,12 @@ fn heap_payload_machine_actor_field_steps_clean() {
          }\n\
          \n\
          actor Holder {\n\
-         \x20   var c: Conn = Conn::Idle;\n\
+         \x20   var c: Conn = Conn.Idle;\n\
          \n\
          \x20   receive fn drive() {\n\
          \x20       c.step(Connect);\n\
          \x20       println(c.state_name());\n\
-         \x20       c.step(ConnEvent::Fail { reason: \"boom\" });\n\
+         \x20       c.step(ConnEvent.Fail { reason: \"boom\" });\n\
          \x20       println(c.state_name());\n\
          \x20       c.step(Reset);\n\
          \x20       println(c.state_name());\n\
@@ -634,7 +634,7 @@ fn supervisor_child_with_machine_state_fails_closed() {
          }\n\
          \n\
          actor Worker {\n\
-         \x20   var l: Light = Light::Off;\n\
+         \x20   var l: Light = Light.Off;\n\
          \x20   receive fn ping() {}\n\
          }\n\
          \n\
@@ -698,7 +698,7 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \x20       Open\n\
          \x20   }\n\
          \x20   on Fail: Open => Failed {\n\
-         \x20       Conn::Failed { reason: event.reason }\n\
+         \x20       Conn.Failed { reason: event.reason }\n\
          \x20   }\n\
          \x20   on Connect: _ => _ {\n\
          \x20       state\n\
@@ -711,10 +711,10 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          actor Owner {\n\
          \x20   receive fn run() -> i64 {\n\
          \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = channel.new(4);\n\
-         \x20       var c: Conn = Conn::Idle;\n\
+         \x20       var c: Conn = Conn.Idle;\n\
          \x20       c.step(Connect);\n\
          \x20       tx.send(c);\n\
-         \x20       c.step(ConnEvent::Fail { reason: \"peer reset\" });\n\
+         \x20       c.step(ConnEvent.Fail { reason: \"peer reset\" });\n\
          \x20       tx.send(c);\n\
          \x20       tx.close();\n\
          \x20       var waiting = true;\n\
@@ -724,9 +724,9 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \x20                   match snap {\n\
          \x20                       Some(s) => {\n\
          \x20                           match s {\n\
-         \x20                               Conn::Failed { reason } => println(f\"failed: {reason}\"),\n\
-         \x20                               Conn::Open => println(\"open\"),\n\
-         \x20                               Conn::Idle => println(\"idle\"),\n\
+         \x20                               Conn.Failed { reason } => println(f\"failed: {reason}\"),\n\
+         \x20                               Conn.Open => println(\"open\"),\n\
+         \x20                               Conn.Idle => println(\"idle\"),\n\
          \x20                           }\n\
          \x20                       },\n\
          \x20                       None => {\n\
@@ -782,7 +782,7 @@ fn vec_machine_element_refuses_at_compile_time() {
          \x20   state Open;\n\
          \x20   state Failed { reason: string; }\n\
          \x20   on Connect: Idle => Open { Open }\n\
-         \x20   on Fail: Open => Failed { Conn::Failed { reason: event.reason } }\n\
+         \x20   on Fail: Open => Failed { Conn.Failed { reason: event.reason } }\n\
          \x20   on Connect: _ => _ { state }\n\
          \x20   on Fail: _ => _ { state }\n\
          }\n\
@@ -790,7 +790,7 @@ fn vec_machine_element_refuses_at_compile_time() {
          actor Owner {\n\
          \x20   receive fn run() {\n\
          \x20       var conns: Vec<Conn> = [];\n\
-         \x20       var c: Conn = Conn::Idle;\n\
+         \x20       var c: Conn = Conn.Idle;\n\
          \x20       conns.push(c);\n\
          \x20   }\n\
          }\n\
@@ -945,7 +945,7 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \x20       Open\n\
          \x20   }\n\
          \x20   on Fail: Open => Failed {\n\
-         \x20       Conn::Failed { reason: event.reason }\n\
+         \x20       Conn.Failed { reason: event.reason }\n\
          \x20   }\n\
          \x20   on Connect: _ => _ {\n\
          \x20       state\n\
@@ -958,9 +958,9 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          actor Owner {\n\
          \x20   receive fn run() -> i64 {\n\
          \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = channel.new(4);\n\
-         \x20       var c: Conn = Conn::Idle;\n\
+         \x20       var c: Conn = Conn.Idle;\n\
          \x20       c.step(Connect);\n\
-         \x20       c.step(ConnEvent::Fail { reason: \"peer reset\" });\n\
+         \x20       c.step(ConnEvent.Fail { reason: \"peer reset\" });\n\
          \x20       tx.send(c);\n\
          \x20       tx.close();\n\
          \x20       select {\n\
@@ -968,9 +968,9 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \x20               match snap {\n\
          \x20                   Some(s) => {\n\
          \x20                       match s {\n\
-         \x20                           Conn::Failed { reason } => println(f\"failed: {reason}\"),\n\
-         \x20                           Conn::Open => println(\"open\"),\n\
-         \x20                           Conn::Idle => println(\"idle\"),\n\
+         \x20                           Conn.Failed { reason } => println(f\"failed: {reason}\"),\n\
+         \x20                           Conn.Open => println(\"open\"),\n\
+         \x20                           Conn.Idle => println(\"idle\"),\n\
          \x20                       }\n\
          \x20                   },\n\
          \x20                   None => println(\"watch closed\"),\n\

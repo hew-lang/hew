@@ -2535,9 +2535,10 @@ pub struct Checker {
     /// import copies use this table to re-enter their declaration's file-local
     /// import scope instead of resolving signatures in the importing file.
     pub(super) source_file_span_indices: HashMap<std::path::PathBuf, u32>,
-    /// Defining source file of the item currently being registered, when the
-    /// enclosing module recorded per-item attribution. `None` for the root
-    /// unit and for hand-built module graphs.
+    /// Defining source file of the item currently being registered or checked.
+    /// Per-item attribution wins for directory modules; their primary source
+    /// is the fail-closed fallback when no item table was recorded. `None` for
+    /// root items and source-less hand-built graphs.
     pub(super) current_item_source: Option<std::path::PathBuf>,
     /// Type names declared per source FILE (populated during type
     /// collection from per-item attribution). This is the lexical authority

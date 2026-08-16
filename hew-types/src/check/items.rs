@@ -2438,13 +2438,16 @@ impl Checker {
 
     /// Compiler-intrinsic types have no source declaration to seed
     /// `local_type_defs`. Their canonical declarative surface owns their impls
-    /// for coherence purposes.
+    /// for coherence purposes, but only when the active item's canonical path
+    /// is below the stdlib root selected for this checker invocation.
     fn intrinsic_type_is_local_to_builtin_surface(&self, type_name: &str) -> bool {
-        self.checking_canonical_stdlib_source("std.builtins")
-            && (Ty::from_name(type_name).is_some()
-                || self
-                    .resolved_builtin_type(type_name)
-                    .is_some_and(|builtin| !builtin.requires_source_import()))
+        self.current_item_source.as_ref().is_some_and(|source| {
+            self.module_registry
+                .source_has_stdlib_authority(source, "std.builtins")
+        }) && (Ty::from_name(type_name).is_some()
+            || self
+                .resolved_builtin_type(type_name)
+                .is_some_and(|builtin| !builtin.requires_source_import()))
     }
 }
 

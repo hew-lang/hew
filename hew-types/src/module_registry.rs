@@ -262,6 +262,18 @@ pub fn is_canonical_stdlib_module_source(
     source_file: &std::path::Path,
     dotted_module: &str,
 ) -> bool {
+    canonical_stdlib_module_source_in_roots(
+        source_file,
+        dotted_module,
+        &build_module_search_paths_for(Some(source_file)),
+    )
+}
+
+fn canonical_stdlib_module_source_in_roots(
+    source_file: &std::path::Path,
+    dotted_module: &str,
+    roots: &[PathBuf],
+) -> bool {
     let Ok(input_canonical) = std::fs::canonicalize(source_file) else {
         return false;
     };
@@ -272,26 +284,24 @@ pub fn is_canonical_stdlib_module_source(
     let rel = segments.iter().collect::<PathBuf>();
     let candidates = [rel.join(format!("{last}.hew")), rel.with_extension("hew")];
 
-    build_module_search_paths_for(Some(source_file))
-        .iter()
-        .any(|root| {
-            candidates.iter().any(|candidate| {
-                std::fs::canonicalize(root.join(candidate))
-                    .is_ok_and(|canonical| canonical == input_canonical)
-            }) || {
-                // Directory modules are assembled from their primary source
-                // plus peer `.hew` files.  A direct check of one such peer
-                // must retain the same canonical module authority as an
-                // import of the directory; comparing its canonical parent to
-                // the trusted stdlib module directory keeps this provenance
-                // path-based rather than granting it from a filename.
-                input_canonical.extension().is_some_and(|ext| ext == "hew")
-                    && input_canonical.parent().is_some_and(|parent| {
-                        std::fs::canonicalize(root.join(&rel))
-                            .is_ok_and(|module_dir| module_dir == parent)
-                    })
-            }
-        })
+    roots.iter().any(|root| {
+        candidates.iter().any(|candidate| {
+            std::fs::canonicalize(root.join(candidate))
+                .is_ok_and(|canonical| canonical == input_canonical)
+        }) || {
+            // Directory modules are assembled from their primary source
+            // plus peer `.hew` files.  A direct check of one such peer
+            // must retain the same canonical module authority as an
+            // import of the directory; comparing its canonical parent to
+            // the trusted stdlib module directory keeps this provenance
+            // path-based rather than granting it from a filename.
+            input_canonical.extension().is_some_and(|ext| ext == "hew")
+                && input_canonical.parent().is_some_and(|parent| {
+                    std::fs::canonicalize(root.join(&rel))
+                        .is_ok_and(|module_dir| module_dir == parent)
+                })
+        }
+    })
 }
 
 /// Return the declaration owner selected by an import's resolved source.
@@ -504,6 +514,21 @@ impl ModuleRegistry {
 
     pub(crate) fn has_search_paths(&self) -> bool {
         !self.search_paths.is_empty()
+    }
+
+    /// Whether `source_file` is the exact source for `dotted_module` below one
+    /// of this registry's configured stdlib roots.
+    ///
+    /// Unlike [`is_canonical_stdlib_module_source`], this does not rediscover a
+    /// root from the source path. The compiler selects these search roots before
+    /// constructing the registry, so a project-local `std/builtins.hew` cannot
+    /// make its own ancestor authoritative merely by existing.
+    pub(crate) fn source_has_stdlib_authority(
+        &self,
+        source_file: &std::path::Path,
+        dotted_module: &str,
+    ) -> bool {
+        canonical_stdlib_module_source_in_roots(source_file, dotted_module, &self.search_paths)
     }
 
     /// Load a module by its full path (e.g. `std::encoding::json`).

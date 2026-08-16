@@ -681,11 +681,18 @@ impl Checker {
                     }
 
                     for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                        self.current_item_source = self
+                            .module_item_sources
+                            .get(&module_name)
+                            .and_then(|sources| sources.get(item_idx))
+                            .or_else(|| module.source_paths.first())
+                            .cloned();
                         self.current_module_idx = span_indices
                             .item_index(mod_id, item_idx)
                             .unwrap_or(self.current_module_idx);
                         self.check_item(item, span);
                     }
+                    self.current_item_source = None;
 
                     self.is_stdlib_source = saved_is_stdlib_source;
 

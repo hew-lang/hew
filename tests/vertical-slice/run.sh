@@ -4882,7 +4882,7 @@ if "${HEW}" check \
   exit 1
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic text.
-grep -q 'a `Vec` whose element is the indirect enum `Wrapped` has no per-element release protocol, so every yielded or received frame would leak its heap nodes is not implemented yet' "${reject_output}"
+grep -q '`Wrapped` cannot be a `Vec` element: it is an indirect enum whose per-element release protocol is not yet wired, so its heap nodes would leak at scope exit' "${reject_output}"
 
 # Guard (#2359, recv leg): `Channel<Vec<indirect-enum>>` stays rejected
 # UPSTREAM by the channel element-layout witness at check time — the recv

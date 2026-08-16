@@ -49,7 +49,10 @@ impl Checker {
                 })
                 .unwrap_or(type_prefix);
             let direct = self.type_defs.get(direct_key).and_then(|td| {
-                if td.kind != TypeDefKind::Enum && td.kind != TypeDefKind::Struct {
+                if !matches!(
+                    td.kind,
+                    TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
+                ) {
                     return None;
                 }
                 td.variants.get(variant_name).and_then(|variant| {
@@ -73,7 +76,10 @@ impl Checker {
                 type_prefix.to_string(),
             ))?;
             self.type_defs.get(canonical.as_str()).and_then(|td| {
-                if td.kind != TypeDefKind::Enum && td.kind != TypeDefKind::Struct {
+                if !matches!(
+                    td.kind,
+                    TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
+                ) {
                     return None;
                 }
                 td.variants.get(variant_name).and_then(|variant| {

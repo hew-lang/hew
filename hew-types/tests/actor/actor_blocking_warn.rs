@@ -1,8 +1,8 @@
 //! Tests for the `BlockingCallInReceiveFn` warning.
 //!
 //! Actor receive functions run synchronously on scheduler worker threads.
-//! Blocking operations inside them (`Receiver::recv`, `net.Connection::read`,
-//! `net.Listener::accept`, `http.Server::accept`) can stall the thread and
+//! Blocking operations inside them (`Receiver.recv`, `net.Connection.read`,
+//! `net.Listener.accept`, `http.Server.accept`) can stall the thread and
 //! prevent other actors from being scheduled, potentially deadlocking the
 //! program.  The type-checker emits a `BlockingCallInReceiveFn` warning for
 //! each such call site.
@@ -31,7 +31,7 @@ fn assert_single_blocking_warning(output: &hew_types::TypeCheckOutput, operation
     );
 }
 
-/// `Receiver::recv` inside a receive function triggers a warning.
+/// `Receiver.recv` inside a receive function triggers a warning.
 #[test]
 fn warn_receiver_recv_inside_receive_fn() {
     let output = typecheck(
@@ -47,10 +47,10 @@ fn warn_receiver_recv_inside_receive_fn() {
         fn main() {}
         ",
     );
-    assert_single_blocking_warning(&output, "Receiver::recv");
+    assert_single_blocking_warning(&output, "Receiver.recv");
 }
 
-/// `net.Connection::read` inside a receive function triggers a warning.
+/// `net.Connection.read` inside a receive function triggers a warning.
 #[test]
 fn warn_net_connection_read_inside_receive_fn() {
     let output = typecheck(
@@ -66,10 +66,10 @@ fn warn_net_connection_read_inside_receive_fn() {
         fn main() {}
         ",
     );
-    assert_single_blocking_warning(&output, "net.Connection::read");
+    assert_single_blocking_warning(&output, "std.net.Connection.read");
 }
 
-/// `net.Listener::accept` inside a receive function triggers a warning.
+/// `net.Listener.accept` inside a receive function triggers a warning.
 #[test]
 fn warn_net_listener_accept_inside_receive_fn() {
     let output = typecheck(
@@ -85,14 +85,14 @@ fn warn_net_listener_accept_inside_receive_fn() {
         fn main() {}
         ",
     );
-    assert_single_blocking_warning(&output, "net.Listener::accept");
+    assert_single_blocking_warning(&output, "std.net.Listener.accept");
 }
 
 // ---------------------------------------------------------------------------
 // Negative cases: no spurious warnings outside receive fns
 // ---------------------------------------------------------------------------
 
-/// `Receiver::recv` in a plain function must NOT trigger the warning.
+/// `Receiver.recv` in a plain function must NOT trigger the warning.
 #[test]
 fn no_warn_receiver_recv_outside_actor() {
     let output = typecheck(
@@ -113,7 +113,7 @@ fn no_warn_receiver_recv_outside_actor() {
         .collect();
     assert!(
         blocking_warnings.is_empty(),
-        "Receiver::recv outside receive fn must not produce BlockingCallInReceiveFn, got: {blocking_warnings:#?}",
+        "Receiver.recv outside receive fn must not produce BlockingCallInReceiveFn, got: {blocking_warnings:#?}",
     );
 }
 
@@ -207,7 +207,7 @@ fn warning_message_mentions_scheduler_with_suggestion() {
     );
 }
 
-/// `http.Server::accept` inside a receive function triggers a warning.
+/// `http.Server.accept` inside a receive function triggers a warning.
 #[test]
 fn warn_http_server_accept_inside_receive_fn() {
     let output = typecheck(
@@ -223,14 +223,14 @@ fn warn_http_server_accept_inside_receive_fn() {
         fn main() {}
         ",
     );
-    assert_single_blocking_warning(&output, "http.Server::accept");
+    assert_single_blocking_warning(&output, "http.Server.accept");
 }
 
 // ---------------------------------------------------------------------------
 // Suggestion text: accept/read point at `await`, other blocking ops don't
 // ---------------------------------------------------------------------------
 
-/// `net.Listener::accept`'s suggestion names the `await` form — it has a
+/// `net.Listener.accept`'s suggestion names the `await` form — it has a
 /// direct, drop-in suspending replacement, unlike a generic blocking call.
 #[test]
 fn accept_suggestion_names_await() {
@@ -259,7 +259,7 @@ fn accept_suggestion_names_await() {
     );
 }
 
-/// `net.Connection::read`'s suggestion names the `await` form.
+/// `net.Connection.read`'s suggestion names the `await` form.
 #[test]
 fn read_suggestion_names_await() {
     let output = typecheck(
@@ -287,7 +287,7 @@ fn read_suggestion_names_await() {
     );
 }
 
-/// `Receiver::recv` has no direct suspending replacement in a receive fn, so
+/// `Receiver.recv` has no direct suspending replacement in a receive fn, so
 /// its suggestion stays the generic "send it as a message" text, not `await`.
 #[test]
 fn recv_suggestion_stays_generic() {

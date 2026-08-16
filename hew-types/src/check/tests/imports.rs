@@ -3307,7 +3307,7 @@ fn test_file_import_private_items_not_visible() {
 /// reaches `Mode` only through the call's expected parameter type.
 fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     let module = hew_parser::parse(
-        "pub enum Mode {\n    A;\n    B;\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode::A => 1,\n        Mode::B => 2,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode::A == Mode::A);\n}\n",
+        "pub enum Mode {\n    A;\n    B;\n    Present(i64);\n    Named { value: i64 }\n}\n\npub type Box<T> {\n    value: T;\n}\n\nimpl<T> Box<T> {\n    pub fn make(value: T) -> Box<T> {\n        Box<T> { value: value }\n    }\n}\n\npub type Factory {\n    marker: i64;\n}\n\nimpl Factory {\n    pub fn make(value: i64) -> i64 {\n        value\n    }\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode::A => 1,\n        Mode::B => 2,\n        Mode::Present(value) => value,\n        Mode::Named { value } => value,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode::A == Mode::A);\n}\n",
     );
     assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
     let mut root = hew_parser::parse(root_source);
@@ -3347,6 +3347,128 @@ fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
         module_graph: Some(module_graph),
         module_doc: None,
     })
+}
+
+/// A selected import publishes a bare type spelling while its declaration is
+/// retained only under the module-owned key. Dotted construction must follow
+/// that exact binding to the canonical enum rather than probing a retired leaf
+/// entry or scanning for a matching final segment.
+#[test]
+fn imported_bare_enum_dotted_constructor_uses_canonical_owner() {
+    let output = check_qualified_variant_root(
+        "import m.{ Mode };\n\nfn main() {\n    let value: Mode = Mode.Present(42);\n    let x = m.pick(value);\n    print(\"{x}\");\n}\n",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "selected imported enum constructor must resolve canonically: {:?}",
+        output.errors
+    );
+}
+
+/// A plain module import keeps both the module and nominal segments in the
+/// expression path. The checker must continue through the export-proven type
+/// identity instead of treating `m.Mode` as a value receiver.
+#[test]
+fn module_qualified_enum_dotted_constructor_uses_canonical_owner() {
+    let output = check_qualified_variant_root(
+        "import m;\n\nfn main() {\n    let value: m.Mode = m.Mode.Present(42);\n    let x = m.pick(value);\n    print(\"{x}\");\n}\n",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "module-qualified enum constructor must resolve canonically: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn imported_dotted_struct_variants_use_canonical_owner() {
+    let selected = check_qualified_variant_root(
+        "import m.{ Mode };\n\nfn main() {\n    let value: Mode = Mode.Named { value: 7 };\n    assert(m.pick(value) == 7);\n}\n",
+    );
+    assert!(
+        selected.errors.is_empty(),
+        "selected imported struct variant must resolve canonically: {:?}",
+        selected.errors
+    );
+
+    let qualified = check_qualified_variant_root(
+        "import m;\n\nfn main() {\n    let value: m.Mode = m.Mode.Named { value: 7 };\n    assert(m.pick(value) == 7);\n}\n",
+    );
+    assert!(
+        qualified.errors.is_empty(),
+        "module-qualified struct variant must resolve canonically: {:?}",
+        qualified.errors
+    );
+}
+
+#[test]
+fn dotted_struct_variant_roots_obey_lexical_value_precedence() {
+    let module_shadow = check_qualified_variant_root(
+        "import m;\n\nfn build(m: i64) -> i64 {\n    let selected: m.Mode = m.Mode.Named { value: 7 };\n    0\n}\n",
+    );
+    assert!(
+        module_shadow.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType && error.message.contains("m.Mode.Named")
+        }),
+        "a parameter named `m` must block module-path struct construction: {:?}",
+        module_shadow.errors
+    );
+
+    let type_shadow = check_qualified_variant_root(
+        "import m.{ Mode };\n\nfn build() -> i64 {\n    let Mode: i64 = 0;\n    let selected: m.Mode = Mode.Named { value: 7 };\n    0\n}\n",
+    );
+    assert!(
+        type_shadow.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType && error.message.contains("Mode.Named")
+        }),
+        "a binding named `Mode` must block selected-type struct construction: {:?}",
+        type_shadow.errors
+    );
+}
+
+#[test]
+fn imported_associated_calls_use_canonical_owner() {
+    let selected = check_qualified_variant_root(
+        "import m.{ Box, Factory };\n\nfn main() {\n    let inferred: Box<i64> = Box.make(42);\n    let explicit: Box<i64> = Box<i64>.make(42);\n    let plain = Factory.make(42);\n    assert(inferred.value == explicit.value);\n    assert(plain == 42);\n}\n",
+    );
+    assert!(
+        selected.errors.is_empty(),
+        "selected imported associated calls must resolve canonically: {:?}",
+        selected.errors
+    );
+    assert!(
+        !selected
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == TypeErrorKind::UnusedImport),
+        "selected generic and non-generic associated calls must credit their imports: {:?}",
+        selected.warnings
+    );
+
+    let qualified = check_qualified_variant_root(
+        "import m;\n\nfn main() {\n    let inferred: m.Box<i64> = m.Box.make(42);\n    let explicit: m.Box<i64> = m.Box<i64>.make(42);\n    assert(inferred.value == explicit.value);\n}\n",
+    );
+    assert!(
+        qualified.errors.is_empty(),
+        "module-qualified associated calls must resolve canonically: {:?}",
+        qualified.errors
+    );
+}
+
+#[test]
+fn explicit_generic_module_path_obeys_lexical_value_precedence() {
+    let output = check_qualified_variant_root(
+        "import m;\n\nfn build(m: i64) -> i64 {\n    let boxed: m.Box<i64> = m.Box<i64>.make(42);\n    boxed.value\n}\n",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "a parameter named `m` must block explicit generic module dispatch"
+    );
+    assert!(
+        output.method_call_rewrites.is_empty(),
+        "a shadowed explicit generic path must publish no executable rewrite: {:?}",
+        output.method_call_rewrites
+    );
 }
 
 /// A qualified unit-variant expression (`Mode::A`) in a position whose

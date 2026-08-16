@@ -861,6 +861,9 @@ impl Checker {
             .retain(|_, kind| match kind {
                 MethodCallReceiverKind::LexicalBinding { binding_name } => !binding_name.is_empty(),
                 MethodCallReceiverKind::ModuleBinding { module_name } => !module_name.is_empty(),
+                MethodCallReceiverKind::EnumConstructorPath { type_name } => type_defs
+                    .get(type_name)
+                    .is_some_and(|type_def| type_def.kind == TypeDefKind::Enum),
                 MethodCallReceiverKind::NamedTypeInstance { type_name } => {
                     type_defs.contains_key(type_name)
                         || type_name.contains('.')

@@ -7593,6 +7593,115 @@ impl Checker {
         );
     }
 
+    fn dispatch_dotted_type_member(
+        &mut self,
+        canonical_type: &str,
+        explicit_type_args: Option<&[Spanned<TypeExpr>]>,
+        receiver_span: &Span,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Option<Ty> {
+        let dotted_member = format!("{canonical_type}::{method}");
+        if let Some((type_name, _, _)) = self.lookup_variant_constructor(&dotted_member) {
+            let constructor = (Expr::Identifier(dotted_member), receiver_span.clone());
+            let result = self.check_call(&constructor, explicit_type_args, args, span);
+            self.record_method_call_receiver_kind(
+                span,
+                MethodCallReceiverKind::EnumConstructorPath { type_name },
+            );
+            return Some(result);
+        }
+
+        if self.fn_sigs.contains_key(&dotted_member) {
+            let function = (
+                Expr::Identifier(dotted_member.clone()),
+                receiver_span.clone(),
+            );
+            let result = self.check_call(&function, explicit_type_args, args, span);
+            let call_key = SpanKey::in_module(span, self.current_module_idx);
+            if let Some(target) = self.direct_call_targets.get(&call_key).cloned() {
+                self.record_method_call_rewrite(
+                    span,
+                    MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                        target,
+                        c_symbol: dotted_member,
+                        elem_ty: None,
+                    },
+                );
+            }
+            return Some(result);
+        }
+
+        // Imported inherent impls retain their executable declaration under
+        // the exact owner (`pkg.Box::make`) even when the compatibility
+        // `fn_sigs` entry is bare (`Box::make`). Resolve the signature from the
+        // canonical TypeDef and the target from the canonical declaration map;
+        // never manufacture a leaf-key retry from `canonical_type`.
+        let type_def = self.type_defs.get(canonical_type).cloned()?;
+        let raw_sig = type_def.methods.get(method).cloned()?;
+        let (sig, explicit_owner_args) = if let Some(type_args) = explicit_type_args {
+            if type_args.len() != type_def.type_params.len() {
+                self.report_error(
+                    TypeErrorKind::ArityMismatch,
+                    span,
+                    format!(
+                        "type `{canonical_type}` has {} type parameter(s) but {} type argument(s) were supplied",
+                        type_def.type_params.len(),
+                        type_args.len()
+                    ),
+                );
+            }
+            let owner_args = type_args
+                .iter()
+                .map(|type_arg| self.resolve_type_expr(type_arg))
+                .collect::<Vec<_>>();
+            (
+                instantiate_stdlib_method_sig(&raw_sig, &type_def.type_params, &owner_args),
+                owner_args,
+            )
+        } else {
+            (raw_sig, Vec::new())
+        };
+        let applied = self.apply_instantiated_call_signature(
+            &sig,
+            None,
+            args,
+            span,
+            SignatureArgApplication::PositionalOnly {
+                arity_context: format!("associated function `{method}`"),
+            },
+            true,
+        );
+        if !explicit_owner_args.is_empty() {
+            self.record_concrete_call_type_args(span, &explicit_owner_args);
+        }
+        let declaration = self
+            .impl_method_declaration_ids
+            .get(&dotted_member)
+            .cloned()
+            .map_or_else(
+                || CallTarget::Unsupported {
+                    reason: format!(
+                        "associated function `{dotted_member}` has no registered declaration identity"
+                    ),
+                },
+                CallTarget::impl_method,
+            );
+        self.record_method_call_rewrite(
+            span,
+            MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                target: declaration,
+                c_symbol: dotted_member,
+                elem_ty: None,
+            },
+        );
+        Some(self.qualify_method_return_to_receiver_owner(
+            canonical_type,
+            &self.subst.resolve(&applied.return_type),
+        ))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "pattern matching type checker with many variants"
@@ -7605,32 +7714,125 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         if let Expr::GenericApplySuffix { target, type_args } = &receiver.0 {
-            if let Expr::Identifier(type_name) = &target.0 {
-                if self.env.lookup_ref(type_name).is_none()
-                    && (self.type_defs.contains_key(type_name)
-                        || crate::lookup_builtin_type(type_name).is_some())
-                {
-                    let function = (
-                        Expr::Identifier(format!("{type_name}::{method}")),
-                        target.1.clone(),
-                    );
-                    return self.check_call(&function, Some(type_args), args, span);
+            let canonical_type = match &target.0 {
+                Expr::Identifier(type_name) if self.env.lookup_ref(type_name).is_none() => self
+                    .resolve_nominal_declaration(NominalOrigin::Lexical, type_name)
+                    .filter(|canonical| {
+                        self.lookup_type_def(canonical).is_some()
+                            || self.resolved_builtin_type(canonical).is_some()
+                    }),
+                Expr::FieldAccess { object, field } => {
+                    if let Expr::Identifier(module_short) = &object.0 {
+                        if self.env.lookup_ref(module_short).is_none() {
+                            self.resolve_module_type(module_short, field)
+                                .map(|type_def| {
+                                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                                        self.current_module.clone(),
+                                        self.current_module_idx,
+                                        module_short.clone(),
+                                    ));
+                                    type_def.name
+                                })
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if let Some(canonical_type) = canonical_type {
+                if let Some(result) = self.dispatch_dotted_type_member(
+                    &canonical_type,
+                    Some(type_args),
+                    &target.1,
+                    method,
+                    args,
+                    span,
+                ) {
+                    self.mark_resolved_nominal_owner_used(&canonical_type);
+                    return result;
+                }
+            }
+        }
+        // A module-qualified nominal head (`module.Type.member(...)`) reaches
+        // the parser as a method call whose receiver is a field access. Resolve
+        // that field through the exact module export table before the ordinary
+        // value-receiver path can synthesize `module.Type` as a value. This is
+        // the multi-segment counterpart of the lexical nominal ladder below;
+        // both publish the same canonical checker facts to lowering.
+        if let Expr::FieldAccess { object, field } = &receiver.0 {
+            if let Expr::Identifier(module_short) = &object.0 {
+                if self.env.lookup_ref(module_short).is_none() {
+                    if let Some(type_def) = self.resolve_module_type(module_short, field) {
+                        self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            module_short.clone(),
+                        ));
+                        let canonical_type = type_def.name;
+                        if let Some(result) = self.dispatch_dotted_type_member(
+                            &canonical_type,
+                            None,
+                            &receiver.1,
+                            method,
+                            args,
+                            span,
+                        ) {
+                            return result;
+                        }
+                    }
                 }
             }
         }
         // Module-qualified calls: e.g. http.listen(addr) → lookup "http.listen" in fn_sigs
         if let Expr::Identifier(name) = &receiver.0 {
             let receiver_is_binding = self.env.lookup_ref(name).is_some();
-            let receiver_is_known_type = self.type_defs.contains_key(name);
-            let dotted_constructor = format!("{name}::{method}");
+            let source_module_member =
+                format!("{}.{}", self.canonical_module_import_owner(name), method);
+            let receiver_is_module_binding = self.module_binding_in_current_file(name)
+                || self.modules.contains(name)
+                || self.module_fn_exports.contains(&source_module_member)
+                || self.fn_sigs.contains_key(&source_module_member);
+            // A dotted expression head is resolved through the checker's one
+            // nominal-declaration ladder before member lookup. Imported bare
+            // bindings no longer have a leaf entry in `type_defs`, so probing
+            // `type_defs[name]` here misclassified `Parcel.Filled(...)` and
+            // every imported associated call as a value receiver. The ladder
+            // returns only declaration-proven identities and refuses ambiguous
+            // spellings; there is deliberately no final-segment fallback.
+            let canonical_type = self
+                .resolve_nominal_declaration(NominalOrigin::Lexical, name)
+                .unwrap_or_else(|| name.clone());
+            // Primitive/source aliases such as lowercase `string` may also be
+            // module namespaces. They are not nominal type heads unless the
+            // source spelling itself is the canonical builtin declaration.
+            let source_is_noncanonical_builtin_alias =
+                canonical_type != name.as_str() && self.resolved_builtin_type(name).is_some();
+            let receiver_is_known_type = self.lookup_type_def(&canonical_type).is_some()
+                || self.resolved_builtin_type(&canonical_type).is_some();
             if !receiver_is_binding
-                && receiver_is_known_type
-                && self
-                    .lookup_variant_constructor(&dotted_constructor)
-                    .is_some()
+                && !receiver_is_module_binding
+                && !source_is_noncanonical_builtin_alias
             {
-                let constructor = (Expr::Identifier(dotted_constructor), receiver.1.clone());
-                return self.check_call(&constructor, None, args, span);
+                // Static/associated functions retain `::` in the declaration
+                // registry even though their source call surface is dotted.
+                // Route the call through ordinary call checking, then publish
+                // the same no-receiver rewrite used by module-qualified calls.
+                // The direct target written by `check_call` is the semantic
+                // authority; the string remains only the linker presentation.
+                if let Some(result) = self.dispatch_dotted_type_member(
+                    &canonical_type,
+                    None,
+                    &receiver.1,
+                    method,
+                    args,
+                    span,
+                ) {
+                    self.mark_resolved_nominal_owner_used(&canonical_type);
+                    return result;
+                }
             }
             let receiver_shadows_module = receiver_is_binding
                 && self.module_import_bindings.contains_key(&(

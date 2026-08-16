@@ -479,6 +479,11 @@ run_accept_expect_status "machine_generic_record_field" 0
 # record-free nested concat temp in `first + " " + last`.
 run_accept_expect_stdout "generic_record_string_field"
 run_accept_expect_stdout "nested_string_concat_temp"
+run_accept_expect_stdout "dotted_expression_paths"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/dotted_bare_type_value.hew" \
+  "type \`Choice\` cannot be used as a value" \
+  "dotted_bare_type_value"
 
 # #2648: an admitted fresh-producer call scrutinee (fresh through immutable
 # bindings + a helper chain) must keep compiling and produce deterministic

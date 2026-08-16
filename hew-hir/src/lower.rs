@@ -11673,7 +11673,10 @@ impl LowerCtx {
     ) -> (HirExprKind, ResolvedTy) {
         if !matches!(
             target,
-            CallTarget::User(_) | CallTarget::ImplMethod(_) | CallTarget::Runtime(_)
+            CallTarget::User(_)
+                | CallTarget::ImplMethod(_)
+                | CallTarget::Runtime(_)
+                | CallTarget::Builtin { .. }
         ) {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
@@ -11690,12 +11693,31 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         }
-        let symbol = crate::mangle_dotted_name(c_symbol);
+        let symbol = if let CallTarget::ImplMethod(declaration) = &target {
+            let Some(symbol) = self.registered_impl_method_symbol(declaration) else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CallableUnsupportedInMir {
+                        name: declaration.full_path().to_string(),
+                    },
+                    span.clone(),
+                    "checker selected an associated implementation declaration whose HIR body was not registered",
+                ));
+                return (
+                    HirExprKind::Unsupported(
+                        "associated implementation call has no registered HIR body".to_string(),
+                    ),
+                    ResolvedTy::Unit,
+                );
+            };
+            symbol
+        } else {
+            crate::mangle_dotted_name(c_symbol)
+        };
         let selected_declaration = match &target {
             CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
                 Some(declaration)
             }
-            CallTarget::Runtime(_) => None,
+            CallTarget::Runtime(_) | CallTarget::Builtin { .. } => None,
             _ => unreachable!("direct-call target shape was validated above"),
         };
         self.register_free_fn_monomorphisation(&symbol, selected_declaration, span, site);
@@ -11709,11 +11731,11 @@ impl LowerCtx {
                 self.qualify_current_module_record_ty(ty)
             });
         self.assert_resolved_ty_totality(span);
-        let resolved_ref = match target {
+        let resolved_ref = match &target {
             // The checker has already selected this closed executable family.
             // Do not require a synthetic fn-registry spelling (or recover one
             // from `symbol`) merely to mark the binding as directly callable.
-            CallTarget::Runtime(family) => ResolvedRef::Builtin(family),
+            CallTarget::Runtime(family) => ResolvedRef::Builtin(*family),
             _ => self
                 .fn_registry
                 .get(&symbol)
@@ -17567,17 +17589,19 @@ impl LowerCtx {
         } = &expr.0
         {
             if let Expr::GenericApplySuffix { target, type_args } = &receiver.0 {
-                if let Expr::Identifier(owner) = &target.0 {
-                    let compatibility = Expr::Call {
-                        function: Box::new((
-                            Expr::Identifier(format!("{owner}::{method}")),
-                            target.1.clone(),
-                        )),
-                        type_args: Some(type_args.clone()),
-                        args: args.clone(),
-                        is_tail_call: false,
-                    };
-                    return self.lower_expr_inner(&(compatibility, span), intent);
+                if !self.method_call_rewrites.contains_key(&self.mk_key(&span)) {
+                    if let Expr::Identifier(owner) = &target.0 {
+                        let compatibility = Expr::Call {
+                            function: Box::new((
+                                Expr::Identifier(format!("{owner}::{method}")),
+                                target.1.clone(),
+                            )),
+                            type_args: Some(type_args.clone()),
+                            args: args.clone(),
+                            is_tail_call: false,
+                        };
+                        return self.lower_expr_inner(&(compatibility, span), intent);
+                    }
                 }
             }
             if let Expr::Identifier(owner) = &receiver.0 {
@@ -26464,6 +26488,34 @@ impl LowerCtx {
         // diagnostic so the user is never left guessing why their code "works"
         // but produces aliased references instead of independent copies.
         let key = self.mk_key(&span);
+        if let Some(MethodCallReceiverKind::EnumConstructorPath { type_name }) =
+            self.method_call_receiver_kinds.get(&key).cloned()
+        {
+            let constructor = format!("{type_name}::{method}");
+            let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
+            let variant_kind = self
+                .lookup_variant_ctor(&constructor, checker_ctor_ty.as_ref())
+                .map(|(_, _, kind)| kind.clone());
+            if let Some(HirVariantKind::Tuple(_)) = variant_kind {
+                let lowered_args = self.lower_call_args(args);
+                return self.lower_variant_ctor_tuple_call(&constructor, lowered_args, &span);
+            }
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: constructor.clone(),
+                    reason: "checker-selected enum constructor is absent from HIR registry"
+                        .to_string(),
+                },
+                span.clone(),
+                "dotted enum construction must carry the exact checker-selected declaration",
+            ));
+            return (
+                HirExprKind::Unsupported(format!(
+                    "dotted enum constructor `{constructor}` has no HIR declaration"
+                )),
+                ResolvedTy::Unit,
+            );
+        }
         if method == "clone"
             && args.is_empty()
             && !self.resolved_calls.contains_key(&key)
@@ -27957,7 +28009,10 @@ impl LowerCtx {
         name: &str,
         owner_ty: Option<&ResolvedTy>,
     ) -> Option<(String, usize, &HirVariantKind)> {
-        let variant_name = name.rsplit_once("::").map_or(name, |(_, variant)| variant);
+        let variant_name = name
+            .rsplit_once("::")
+            .or_else(|| name.rsplit_once('.'))
+            .map_or(name, |(_, variant)| variant);
         let mut candidates = Vec::with_capacity(5);
         if let Some(ResolvedTy::Named { name: owner, .. }) = owner_ty {
             candidates.push(format!("{owner}::{variant_name}"));

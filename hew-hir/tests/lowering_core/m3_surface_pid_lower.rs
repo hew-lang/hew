@@ -281,3 +281,27 @@ fn remote_pid_lookup_annotation_keeps_builtin_discriminator() {
         lower.diagnostics
     );
 }
+
+#[test]
+fn dotted_generic_node_lookup_carries_checker_executable_target() {
+    let source = r#"
+        actor Echo { receive fn handle(request: i64) -> i64 { request } }
+        impl ActorMsg for Echo { type Msg = i64; type Reply = i64; }
+        actor Client {
+            receive fn go(unused: i64) {
+                let found: Result<RemotePid<Echo>, LookupError> =
+                    Node.lookup<Echo>("echo");
+                match found {
+                    Ok(peer) => { let reply = peer.ask(7, 1000); },
+                    Err(_) => {},
+                }
+            }
+        }
+    "#;
+    let (_tc, lower) = lower_with_types(source);
+    assert!(
+        lower.diagnostics.is_empty(),
+        "dotted generic Node lookup must lower through checker target facts: {:#?}",
+        lower.diagnostics
+    );
+}

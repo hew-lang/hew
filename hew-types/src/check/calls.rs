@@ -2120,7 +2120,28 @@ impl Checker {
                 &applied_sig.return_type,
                 span,
             );
-            self.record_direct_call_target(span, self.call_target_for_signature(&resolved_fn_name));
+            let target = self.call_target_for_signature(&resolved_fn_name);
+            // A dotted static call with method-level type arguments (for
+            // example `Node.lookup<Worker>(name)`) parses as an ordinary call
+            // whose callee is a `FieldAccess`, rather than as `MethodCall`.
+            // Publish the same exact checker-selected executable target that
+            // the method-call path carries so HIR never has to reconstruct it
+            // from the dotted spelling.
+            if matches!(
+                &func.0,
+                Expr::FieldAccess { object, .. }
+                    if matches!(object.0, Expr::Identifier(_))
+            ) {
+                self.record_method_call_rewrite(
+                    span,
+                    MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                        target: target.clone(),
+                        c_symbol: resolved_fn_name.clone(),
+                        elem_ty: None,
+                    },
+                );
+            }
+            self.record_direct_call_target(span, target);
             return applied_sig.return_type;
         }
 

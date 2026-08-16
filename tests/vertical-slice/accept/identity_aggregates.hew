@@ -14,7 +14,7 @@ impl ActorMsg for Worker {
 fn main() -> i64 {
     Node::set_transport("tcp");
     Node::load_keys("/tmp/hew-cap13-identity-aggregates.key");
-    Node::start("127.0.0.1:0");
+    Node.start("127.0.0.1:0");
 
     let node_id = match Node::id() {
         Some(id) => id,
@@ -22,7 +22,7 @@ fn main() -> i64 {
     };
     let worker = spawn Worker();
     Node::register("identity-worker", worker);
-    let pid = match Node::lookup<Worker>("identity-worker") {
+    let pid = match Node.lookup<Worker>("identity-worker") {
         Ok(found) => found,
         Err(_) => return 2,
     };
@@ -34,15 +34,15 @@ fn main() -> i64 {
     if pid.incarnation() != location.incarnation() { return 6; }
     if pid != pid || location != location || node_id != node_id { return 7; }
 
-    let nodes: HashMap<NodeId, i64> = HashMap::new();
+    let nodes: HashMap<NodeId, i64> = HashMap.new();
     nodes.insert(node_id, 11);
     if nodes.get(node_id).unwrap_or(0) != 11 { return 8; }
 
-    let locations: HashMap<Location, i64> = HashMap::new();
+    let locations: HashMap<Location, i64> = HashMap.new();
     locations.insert(location, 12);
     if locations.get(location).unwrap_or(0) != 12 { return 9; }
 
-    let pids: HashMap<RemotePid<Worker>, i64> = HashMap::new();
+    let pids: HashMap<RemotePid<Worker>, i64> = HashMap.new();
     pids.insert(pid, 13);
     if pids.get(pid).unwrap_or(0) != 13 { return 10; }
 

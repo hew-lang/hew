@@ -39,6 +39,133 @@ fn typecheck_and_lower(source: &str) -> (hew_hir::LowerOutput, TypeCheckOutput) 
     (lower_output, tc_output)
 }
 
+#[test]
+fn dotted_static_paths_lower_without_a_runtime_receiver() {
+    let (lower_output, tc_output) = typecheck_and_lower(
+        r#"
+            fn main() {
+                let values: Vec<i64> = Vec.new();
+                Node.start("127.0.0.1:0");
+            }
+        "#,
+    );
+    assert!(
+        tc_output.errors.is_empty(),
+        "type errors: {:#?}",
+        tc_output.errors
+    );
+    assert!(
+        lower_output.diagnostics.is_empty(),
+        "lowering diagnostics: {:#?}",
+        lower_output.diagnostics
+    );
+
+    let main = lower_output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main function must lower");
+    let calls = main
+        .body
+        .statements
+        .iter()
+        .filter_map(|stmt| match &stmt.kind {
+            HirStmtKind::Let(_, Some(expr)) | HirStmtKind::Expr(expr) => match &expr.kind {
+                HirExprKind::Call { callee, args, .. } => match &callee.kind {
+                    HirExprKind::BindingRef { name, .. } => Some((name.as_str(), args.len())),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(calls.contains(&("Vec::new", 0)), "Vec.new call: {calls:#?}");
+    assert!(
+        calls.contains(&("Node::start", 1)),
+        "Node.start call: {calls:#?}"
+    );
+}
+
+#[test]
+fn dotted_tuple_variant_lowers_from_checker_selected_owner() {
+    let (lower_output, tc_output) = typecheck_and_lower(
+        r"
+            enum Choice { Present(i64); Absent }
+            fn main() -> Choice { Choice.Present(42) }
+        ",
+    );
+    assert!(
+        tc_output.errors.is_empty(),
+        "type errors: {:#?}",
+        tc_output.errors
+    );
+    assert!(
+        lower_output.diagnostics.is_empty(),
+        "lowering diagnostics: {:#?}",
+        lower_output.diagnostics
+    );
+    let main = lower_output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main function must lower");
+    assert!(matches!(
+        main.body.tail.as_deref().map(|expr| &expr.kind),
+        Some(HirExprKind::MachineVariantCtor {
+            machine_name,
+            payload: Some(payload),
+            ..
+        }) if machine_name == "Choice" && payload.len() == 1
+    ));
+}
+
+#[test]
+fn dotted_struct_variant_lowers_from_checker_selected_owner() {
+    let (lower_output, tc_output) = typecheck_and_lower(
+        r"
+            enum Choice { Named { value: i64 } }
+            fn main() -> Choice { Choice.Named { value: 7 } }
+        ",
+    );
+    assert!(
+        tc_output.errors.is_empty(),
+        "type errors: {:#?}",
+        tc_output.errors
+    );
+    assert!(
+        lower_output.diagnostics.is_empty(),
+        "lowering diagnostics: {:#?}",
+        lower_output.diagnostics
+    );
+    let main = lower_output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main function must lower");
+    assert!(matches!(
+        main.body.tail.as_deref().map(|expr| &expr.kind),
+        Some(HirExprKind::MachineVariantCtor {
+            machine_name,
+            payload: Some(payload),
+            ..
+        }) if machine_name == "Choice"
+            && payload.iter().map(|(name, _)| name.as_str()).eq(["value"])
+    ));
+}
+
 /// `a.send(42)` on a `Duplex<i64, i64>` binding is rewritten to
 /// `HirExprKind::Call` with callee `hew_duplex_send` and the receiver
 /// prepended as the first argument.  No diagnostics are emitted and the

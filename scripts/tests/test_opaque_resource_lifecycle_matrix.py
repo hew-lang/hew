@@ -336,8 +336,8 @@ def wasm_public_programs(
             (
                 (
                     "internal-wrapper",
-                    "import std::channel;\n"
-                    f'fn main() {{ let (sender, receiver) = channel::new(1); println("{witness}"); }}\n',
+                    "import std.channel;\n"
+                    f'fn main() {{ let (sender, receiver) = channel.new(1); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -346,13 +346,13 @@ def wasm_public_programs(
             (
                 (
                     "public-implicit",
-                    "import std::encoding::json;\n"
-                    f'fn main() {{ let value = json::null(); println("{witness}"); }}\n',
+                    "import std.encoding.json;\n"
+                    f'fn main() {{ let value = json.null(); println("{witness}"); }}\n',
                 ),
                 (
                     "public-explicit",
-                    "import std::encoding::json;\n"
-                    f'fn main() {{ let value = json::null(); value.close(); println("{witness}"); }}\n',
+                    "import std.encoding.json;\n"
+                    f'fn main() {{ let value = json.null(); value.close(); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -361,13 +361,13 @@ def wasm_public_programs(
             (
                 (
                     "public-implicit",
-                    "import std::encoding::toml;\n"
-                    f'fn main() {{ let value = toml::table(); println("{witness}"); }}\n',
+                    "import std.encoding.toml;\n"
+                    f'fn main() {{ let value = toml.table(); println("{witness}"); }}\n',
                 ),
                 (
                     "public-explicit",
-                    "import std::encoding::toml;\n"
-                    f'fn main() {{ let value = toml::table(); value.close(); println("{witness}"); }}\n',
+                    "import std.encoding.toml;\n"
+                    f'fn main() {{ let value = toml.table(); value.close(); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -376,13 +376,13 @@ def wasm_public_programs(
             (
                 (
                     "public-implicit",
-                    "import std::encoding::yaml;\n"
-                    f'fn main() {{ let value = yaml::object(); println("{witness}"); }}\n',
+                    "import std.encoding.yaml;\n"
+                    f'fn main() {{ let value = yaml.object(); println("{witness}"); }}\n',
                 ),
                 (
                     "public-explicit",
-                    "import std::encoding::yaml;\n"
-                    f'fn main() {{ let value = yaml::object(); value.close(); println("{witness}"); }}\n',
+                    "import std.encoding.yaml;\n"
+                    f'fn main() {{ let value = yaml.object(); value.close(); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -391,8 +391,8 @@ def wasm_public_programs(
             (
                 (
                     "boundary",
-                    "import std::fs;\n"
-                    f'fn main() {{ let result = fs::try_read("/dev/null"); println("{witness}"); }}\n',
+                    "import std.fs;\n"
+                    f'fn main() {{ let result = fs.try_read("/dev/null"); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -401,8 +401,8 @@ def wasm_public_programs(
             (
                 (
                     "boundary",
-                    "import std::net;\n"
-                    f'fn main() {{ let connection = net::connect("127.0.0.1:1"); println("{witness}"); }}\n',
+                    "import std.net;\n"
+                    f'fn main() {{ let connection = net.connect("127.0.0.1:1"); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -411,8 +411,8 @@ def wasm_public_programs(
             (
                 (
                     "boundary",
-                    "import std::net;\n"
-                    f'fn main() {{ let listener = net::listen("127.0.0.1:0"); println("{witness}"); }}\n',
+                    "import std.net;\n"
+                    f'fn main() {{ let listener = net.listen("127.0.0.1:0"); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -421,8 +421,8 @@ def wasm_public_programs(
             (
                 (
                     "boundary",
-                    "import std::net::http;\n"
-                    f'fn main() {{ let server = http::listen("127.0.0.1:0"); println("{witness}"); }}\n',
+                    "import std.net.http;\n"
+                    f'fn main() {{ let server = http.listen("127.0.0.1:0"); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -431,8 +431,8 @@ def wasm_public_programs(
             (
                 (
                     "boundary",
-                    "import std::net::quic;\n"
-                    f'fn main() {{ let endpoint = quic::new_client(); println("{witness}"); }}\n',
+                    "import std.net.quic;\n"
+                    f'fn main() {{ let endpoint = quic.new_client(); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -441,8 +441,8 @@ def wasm_public_programs(
             (
                 (
                     "boundary",
-                    "import std::net::quic;\n"
-                    f'fn main() {{ let endpoint = quic::new_client(); println("{witness}"); }}\n',
+                    "import std.net.quic;\n"
+                    f'fn main() {{ let endpoint = quic.new_client(); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -451,8 +451,8 @@ def wasm_public_programs(
             (
                 (
                     "boundary",
-                    "import std::net::quic;\n"
-                    f'fn main() {{ let endpoint = quic::new_client(); println("{witness}"); }}\n',
+                    "import std.net.quic;\n"
+                    f'fn main() {{ let endpoint = quic.new_client(); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -461,8 +461,8 @@ def wasm_public_programs(
             (
                 (
                     "boundary",
-                    "import std::net::smtp;\n"
-                    f'fn main() {{ let conn = smtp::connect("127.0.0.1", 1, "", ""); println("{witness}"); }}\n',
+                    "import std.net.smtp;\n"
+                    f'fn main() {{ let conn = smtp.connect("127.0.0.1", 1, "", ""); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -471,8 +471,8 @@ def wasm_public_programs(
             (
                 (
                     "boundary",
-                    "import std::net::tls;\n"
-                    f'fn main() {{ let stream = tls::connect("127.0.0.1", 1); println("{witness}"); }}\n',
+                    "import std.net.tls;\n"
+                    f'fn main() {{ let stream = tls.connect("127.0.0.1", 1); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -481,8 +481,8 @@ def wasm_public_programs(
             (
                 (
                     "boundary",
-                    "import std::net::websocket;\n"
-                    f'fn main() {{ let conn = websocket::connect("ws://127.0.0.1:1/"); println("{witness}"); }}\n',
+                    "import std.net.websocket;\n"
+                    f'fn main() {{ let conn = websocket.connect("ws://127.0.0.1:1/"); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -491,8 +491,8 @@ def wasm_public_programs(
             (
                 (
                     "boundary",
-                    "import std::net::websocket;\n"
-                    f'fn main() {{ let server = websocket::listen("127.0.0.1:0"); println("{witness}"); }}\n',
+                    "import std.net.websocket;\n"
+                    f'fn main() {{ let server = websocket.listen("127.0.0.1:0"); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -501,8 +501,8 @@ def wasm_public_programs(
             (
                 (
                     "boundary",
-                    "import std::process;\n"
-                    f'fn main() {{ let result = process::try_run("true"); println("{witness}"); }}\n',
+                    "import std.process;\n"
+                    f'fn main() {{ let result = process.try_run("true"); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -511,8 +511,8 @@ def wasm_public_programs(
             (
                 (
                     "boundary",
-                    "import std::stream;\n"
-                    f'fn main() {{ let (sink, source) = stream::pipe(1); println("{witness}"); }}\n',
+                    "import std.stream;\n"
+                    f'fn main() {{ let (sink, source) = stream.pipe(1); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -539,7 +539,7 @@ def generic_lifecycle_sources(case: dict) -> tuple[tuple[str, str], tuple[str, s
 
     These are compiler-owned generic consuming-parameter cases, not public
     producer programs. In particular, ChannelPair is an internal wrapper
-    resource: channel::new frees it before exposing Sender/Receiver.
+    resource: channel.new frees it before exposing Sender/Receiver.
     """
     scope = str(case.get("scope_exit_source", ""))
     explicit = str(case.get("explicit_close_source", ""))

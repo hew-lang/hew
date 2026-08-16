@@ -4,7 +4,8 @@ type Bag {
 
 trait Indexable {
     type Item;
-    fn get(self, key: i32) -> Self::Item;
+
+    fn get(self, key: i32) -> Self.Item;
 }
 
 fn index_probe() -> i32 {

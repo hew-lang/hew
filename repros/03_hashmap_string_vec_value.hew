@@ -1,6 +1,6 @@
 fn main() {
-    let m: HashMap<string, Vec<i64>> = HashMap::new();
-    let xs: Vec<i64> = Vec::new();
+    let m: HashMap<string, Vec<i64>> = HashMap.new();
+    let xs: Vec<i64> = Vec.new();
     xs.push(1);
     xs.push(2);
     m.insert("a", clone xs);

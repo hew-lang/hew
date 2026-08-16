@@ -383,7 +383,7 @@ fn test_vec_iter_map_method_delegates_to_iter() {
 
 #[test]
 fn test_vec_from_array_uses_the_canonical_vec_construction() {
-    let values: Vec<i64> = Vec::from([4, 5, 6]);
+    let values: Vec<i64> = Vec.from([4, 5, 6]);
     testing.assert_eq(values.len(), 3);
     testing.assert_eq(values[1], 5);
 }

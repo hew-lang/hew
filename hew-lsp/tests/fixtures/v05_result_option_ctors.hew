@@ -13,9 +13,9 @@ fn result_option_probe() -> i64 {
 }
 
 fn result_option_ctors() -> i64 {
-    let _ok: Outcome<i64, bool> = Outcome::Ok(result_option_probe());
-    let _err: Outcome<i64, bool> = Outcome::Err(true);
-    let _some: Maybe<i64> = Maybe::Some(result_option_probe());
-    let _none: Maybe<i64> = Maybe::None;
+    let _ok: Outcome<i64, bool> = Outcome.Ok(result_option_probe());
+    let _err: Outcome<i64, bool> = Outcome.Err(true);
+    let _some: Maybe<i64> = Maybe.Some(result_option_probe());
+    let _none: Maybe<i64> = Maybe.None;
     result_option_probe()
 }

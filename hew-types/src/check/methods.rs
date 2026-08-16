@@ -7604,7 +7604,7 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        let dotted_type_head = self.resolve_dotted_type_head(receiver);
+        let dotted_type_head = self.resolve_dotted_type_head(receiver, method);
         if let Some(head) = dotted_type_head.as_ref() {
             if let Some(result) = self.dispatch_dotted_type_member(
                 head,

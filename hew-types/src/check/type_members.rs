@@ -25,6 +25,7 @@ impl Checker {
     pub(super) fn resolve_dotted_type_head(
         &mut self,
         head: &Spanned<Expr>,
+        member: &str,
     ) -> Option<ResolvedDottedTypeHead> {
         let (target, type_args) = match &head.0 {
             Expr::GenericApplySuffix { target, type_args } => {
@@ -46,7 +47,12 @@ impl Checker {
                         self.lookup_type_def(identity).is_some()
                             || self.resolved_builtin_type(identity).is_some()
                     })
-                    .or_else(|| self.resolved_builtin_type(surface).map(|_| surface.clone()))?;
+                    .or_else(|| self.resolved_builtin_type(surface).map(|_| surface.clone()))
+                    .or_else(|| {
+                        self.fn_sigs
+                            .contains_key(&format!("{surface}::{member}"))
+                            .then(|| surface.clone())
+                    })?;
                 let builtin = self.resolved_builtin_type(&canonical);
                 (canonical, builtin)
             }

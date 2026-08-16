@@ -6210,7 +6210,7 @@ impl Checker {
             return Ty::Error;
         }
 
-        if let Some(head) = self.resolve_dotted_type_head(object) {
+        if let Some(head) = self.resolve_dotted_type_head(object, field) {
             if let Some(result) = self.dispatch_dotted_type_member(
                 &head,
                 field,

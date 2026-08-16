@@ -205,6 +205,12 @@ actor HealthChecker {
 - The timer starts when the actor is spawned and repeats until the actor stops
 - Periodic handlers run within the actor's message loop, preserving single-threaded semantics
 
+At runtime shutdown, periodic-timer admission closes. A periodic tick becomes
+live work only when it is claimed for callback delivery. Shutdown waits for
+callbacks already claimed and cancels all pending entries, including entries
+that are due but not yet claimed; those entries are not delivered during
+shutdown.
+
 **Implementation:** The runtime uses a global timer wheel to schedule periodic self-sends. Each tick fires a zero-payload message to the actor's dispatch function at the handler's message index.
 
 ### 2.1.3 Lambda Actors

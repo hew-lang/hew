@@ -2426,7 +2426,7 @@ fn vec_contains_layout_managed_record_element_has_eq_eligibility_diagnostic() {
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`Vec::contains`")
+                && e.message.contains("`Vec.contains`")
                 && e.message.contains("layout-managed/non-Copy")
                 && e.message.contains("bytes")),
         "Expected layout-managed equality eligibility diagnostic, got: {:?}",
@@ -2497,7 +2497,7 @@ fn vec_clear_record_element_is_layout_fail_closed() {
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`Vec::clear`")
+                && e.message.contains("`Vec.clear`")
                 && e.message.contains("not runtime-backed yet")
                 && e.message.contains("hew_vec_clear_layout")),
         "Expected layout fail-closed diagnostic for Vec<Point>::clear, got: {:?}",
@@ -2520,7 +2520,7 @@ fn vec_clear_tuple_element_is_layout_fail_closed() {
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`Vec::clear`")
+                && e.message.contains("`Vec.clear`")
                 && e.message.contains("not runtime-backed yet")
                 && e.message.contains("hew_vec_clear_layout")),
         "Expected layout fail-closed diagnostic for Vec<(i32,f64)>::clear, got: {:?}",
@@ -2638,7 +2638,7 @@ fn vec_append_record_element_is_layout_fail_closed() {
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`Vec::append`")
+                && e.message.contains("`Vec.append`")
                 && e.message.contains("not runtime-backed yet")
                 && e.message.contains("hew_vec_append_layout")),
         "Expected layout fail-closed diagnostic for Vec<Point>::append, got: {:?}",
@@ -2758,9 +2758,9 @@ fn explicit_ne_zero_coercion_to_bool_is_accepted() {
 
 #[test]
 fn double_colon_in_type_position_emits_module_separator_hint() {
-    // `geometry::Point` in a type position should produce an UndefinedType error
-    // with a suggestion to use `geometry.Point` instead of `geometry::Point`.
-    let output = typecheck(
+    // Retired `geometry::Point` syntax should produce the cutover diagnostic
+    // with a suggestion to use `geometry.Point`.
+    let parsed = hew_parser::parse(
         r"
         fn main() {
             let _p: geometry::Point = 0;
@@ -2768,15 +2768,17 @@ fn double_colon_in_type_position_emits_module_separator_hint() {
     ",
     );
     assert!(
-        output
+        parsed
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::UndefinedType
-                && e.message.contains("geometry::Point")
-                && (e.message.contains("module separator")
-                    || e.suggestions.iter().any(|s| s.contains("geometry.Point")))),
-        "Expected UndefinedType with module.Type hint for geometry::Point, got errors: {:?}",
-        output.errors
+            .any(|e| e.message.contains("E_PATH_LEGACY_SEPARATOR")
+                && e.message.contains("use dotted paths")
+                && e.message.contains("geometry.Point")
+                && e.hint
+                    .as_deref()
+                    .is_some_and(|hint| hint.contains("geometry.Point"))),
+        "Expected a dotted-path migration diagnostic for geometry::Point, got errors: {:?}",
+        parsed.errors
     );
 }
 

@@ -337,7 +337,7 @@ def wasm_public_programs(
                 (
                     "internal-wrapper",
                     "import std.channel;\n"
-                    f'fn main() {{ let (sender, receiver) = channel.new(1); println("{witness}"); }}\n',
+                    f'fn main() {{ let (sender, receiver): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -528,7 +528,7 @@ def wasm_public_programs(
 def assert_wasm_program_has_producer(carrier: str, program: str) -> None:
     main = test_body(program, "main")
     if not re.search(
-        r"\blet\s+(?:[A-Za-z_][A-Za-z0-9_]*|\([^)]*\))\s*=\s*[^;{}]+\(",
+        r"\blet\s+(?:[A-Za-z_][A-Za-z0-9_]*|\([^)]*\))(?:\s*:\s*[^=;{}]+)?\s*=\s*[^;{}]+\(",
         main,
     ):
         fail(f"{carrier}: Wasm main has no executed producer call")

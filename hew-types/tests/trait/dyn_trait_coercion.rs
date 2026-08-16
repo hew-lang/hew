@@ -353,7 +353,7 @@ fn dyn_iterator_failed_projection_is_diagnostic() {
                 trait_name,
                 assoc_name,
             } if type_name == "Counter" && trait_name == "Iterator" && assoc_name == "Item"
-        ) && e.message.contains("<Counter as Iterator>::Item")),
+        ) && e.message.contains("<Counter as Iterator>.Item")),
         "expected failed projection diagnostic for Counter/Iterator/Item, got: {:#?}",
         output.errors
     );

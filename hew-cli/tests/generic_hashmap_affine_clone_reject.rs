@@ -75,7 +75,7 @@ fn main() {
         !output.status.success(),
         "generic affine clone-out must fail before codegen: {combined}"
     );
-    for operation in ["HashMap::clone()", "HashMap::get()", "HashMap indexing"] {
+    for operation in ["HashMap.clone()", "HashMap.get()", "HashMap indexing"] {
         assert!(
             combined.contains(operation) && combined.contains("affine close contract"),
             "diagnostic must name the rejected {operation} resource clone: {combined}"

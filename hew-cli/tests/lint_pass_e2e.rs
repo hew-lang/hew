@@ -313,7 +313,7 @@ fn actor_handle_builtin_shadow_warns_by_default() {
     assert!(
         stderr.contains("warning:")
             && stderr.contains(ACTOR_HANDLE_BUILTIN_SHADOW_MESSAGE)
-            && stderr.contains("generic `P: Pid` contexts use builtin `Pid::send` semantics"),
+            && stderr.contains("generic `P: Pid` contexts use builtin `Pid.send` semantics"),
         "expected the actor_handle_builtin_shadow warning to render:\n{stderr}"
     );
 }

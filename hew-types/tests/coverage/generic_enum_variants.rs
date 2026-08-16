@@ -145,7 +145,7 @@ fn struct_variant_init_nested_generic_field_with_expected_type() {
         }
 
         fn main() {
-            let w: Wrap<i64> = Wrap.Boxed { inner: Box { value: 1 } };
+            let w: Wrap<i64> = .Boxed { inner: Box { value: 1 } };
             let _ = w;
         }
         ",

@@ -2918,7 +2918,7 @@ fn http_client_module_helpers_rejected_on_wasm() {
         output.errors.iter().any(|e| {
             e.kind == TypeErrorKind::PlatformLimitation
                 && e.message
-                    .contains("std::net::http::http_client operations are not supported on WASM32")
+                    .contains("std.net.http.http_client operations are not supported on WASM32")
         }),
         "expected http_client wasm rejection, got: {:#?}",
         output.errors
@@ -2946,7 +2946,7 @@ fn http_client_response_methods_rejected_on_wasm() {
         output.errors.iter().any(|e| {
             e.kind == TypeErrorKind::PlatformLimitation
                 && e.message
-                    .contains("std::net::http::http_client operations are not supported on WASM32")
+                    .contains("std.net.http.http_client operations are not supported on WASM32")
         }),
         "expected http_client.Response wasm rejection, got: {:#?}",
         output.errors
@@ -2977,7 +2977,7 @@ fn smtp_module_helpers_rejected_on_wasm() {
         output.errors.iter().any(|e| {
             e.kind == TypeErrorKind::PlatformLimitation
                 && e.message
-                    .contains("std::net::smtp operations are not supported on WASM32")
+                    .contains("std.net.smtp operations are not supported on WASM32")
         }),
         "expected smtp wasm rejection, got: {:#?}",
         output.errors
@@ -3010,7 +3010,7 @@ fn smtp_conn_methods_rejected_on_wasm() {
         output.errors.iter().any(|e| {
             e.kind == TypeErrorKind::PlatformLimitation
                 && e.message
-                    .contains("std::net::smtp operations are not supported on WASM32")
+                    .contains("std.net.smtp operations are not supported on WASM32")
         }),
         "expected smtp.Conn wasm rejection, got: {:#?}",
         output.errors
@@ -3029,39 +3029,39 @@ fn wasm_rejects_all_native_only_handle_methods() {
     // succeeds before `reject_if_wasm_native_only_handle` inspects the receiver.
     let cases: &[(&str, &str, &str, &str, &str)] = &[
         (
-            "std::net::tls",
+            "std.net.tls",
             "tls.TlsStream",
             "fn fake_tls() -> tls.TlsStream",
             "let stream = unsafe { fake_tls() };\n            stream.close();",
-            "std::net::tls",
+            "std.net.tls",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICEndpoint",
             "fn fake_endpoint() -> quic.QUICEndpoint",
             "let ep = unsafe { fake_endpoint() };\n            ep.close();",
-            "std::net::quic",
+            "std.net.quic",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICConnection",
             "fn fake_conn() -> quic.QUICConnection",
             "let conn = unsafe { fake_conn() };\n            let _ = conn.observe();",
-            "std::net::quic",
+            "std.net.quic",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICStream",
             "fn fake_stream() -> quic.QUICStream",
             "let strm = unsafe { fake_stream() };\n            strm.close();",
-            "std::net::quic",
+            "std.net.quic",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICEvent",
             "fn fake_event() -> quic.QUICEvent",
             "let ev = unsafe { fake_event() };\n            ev.close();",
-            "std::net::quic",
+            "std.net.quic",
         ),
     ];
 
@@ -3100,39 +3100,39 @@ fn native_allows_all_native_only_handle_methods_no_platform_error() {
     // (no `enable_wasm_target()` call).
     let cases: &[(&str, &str, &str, &str, &str)] = &[
         (
-            "std::net::tls",
+            "std.net.tls",
             "tls.TlsStream",
             "fn fake_tls() -> tls.TlsStream",
             "let stream = unsafe { fake_tls() };\n            stream.close();",
-            "std::net::tls",
+            "std.net.tls",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICEndpoint",
             "fn fake_endpoint() -> quic.QUICEndpoint",
             "let ep = unsafe { fake_endpoint() };\n            ep.close();",
-            "std::net::quic",
+            "std.net.quic",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICConnection",
             "fn fake_conn() -> quic.QUICConnection",
             "let conn = unsafe { fake_conn() };\n            let _ = conn.observe();",
-            "std::net::quic",
+            "std.net.quic",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICStream",
             "fn fake_stream() -> quic.QUICStream",
             "let strm = unsafe { fake_stream() };\n            strm.close();",
-            "std::net::quic",
+            "std.net.quic",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICEvent",
             "fn fake_event() -> quic.QUICEvent",
             "let ev = unsafe { fake_event() };\n            ev.close();",
-            "std::net::quic",
+            "std.net.quic",
         ),
     ];
 
@@ -5829,7 +5829,7 @@ fn wasm_rejects_crypto_encrypt_module_calls() {
     assert!(
         output.errors.iter().any(|e| {
             e.kind == hew_types::error::TypeErrorKind::PlatformLimitation
-                && e.message.contains("std::crypto::encrypt")
+                && e.message.contains("std.crypto.encrypt")
         }),
         "expected PlatformLimitation for encrypt module call on wasm32, got: {:#?}",
         output.errors
@@ -5854,7 +5854,7 @@ fn wasm_rejects_crypto_sign_module_calls() {
     assert!(
         output.errors.iter().any(|e| {
             e.kind == hew_types::error::TypeErrorKind::PlatformLimitation
-                && e.message.contains("std::crypto::sign")
+                && e.message.contains("std.crypto.sign")
         }),
         "expected PlatformLimitation for sign module call on wasm32, got: {:#?}",
         output.errors

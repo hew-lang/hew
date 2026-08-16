@@ -124,7 +124,7 @@ string-method-identity	qualified-format-macro	hew-codegen-rs/src/runtime_abi.rs	
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/suspend.rs	11	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/thunks.rs	3	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-hir/src/dump.rs	2	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	30	stage-1	one reviewed compatibility-key factory for unique imported tagged-union constructors; exact source owner remains the authority
+string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	29	stage-1	one reviewed compatibility-key factory for unique imported tagged-union constructors; exact source owner remains the authority
 string-method-identity	qualified-format-macro	hew-hir/src/node.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/dump.rs	6	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/consts.rs	2	stage-5	reviewed qualified string identity construction

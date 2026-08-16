@@ -84,8 +84,8 @@ fn pid_trait_generic_send_fails_closed_without_serializable_projection_bound() {
             .errors
             .iter()
             .any(|error| error.message.contains("fail-closed")
-                && error.message.contains("P::Msg: Serializable")),
-        "generic Pid::send must fail closed without a P::Msg Serializable proof: {:#?}",
+                && error.message.contains("P.Msg: Serializable")),
+        "generic Pid.send must fail closed without a P.Msg Serializable proof: {:#?}",
         output.errors
     );
 }
@@ -124,8 +124,8 @@ fn local_pid_generic_pid_send_still_fails_closed_without_projection_bound() {
             .errors
             .iter()
             .any(|error| error.message.contains("fail-closed")
-                && error.message.contains("P::Msg: Serializable")),
-        "generic Pid::send must fail closed even when a call site later supplies LocalPid: {:#?}",
+                && error.message.contains("P.Msg: Serializable")),
+        "generic Pid.send must fail closed even when a call site later supplies LocalPid: {:#?}",
         output.errors
     );
 }

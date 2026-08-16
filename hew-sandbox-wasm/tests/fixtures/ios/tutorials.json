@@ -49,6 +49,6 @@
   },
   {
     "id": "state-machines",
-    "starterCode": "// Lesson 13: State Machines\n// TODO: Toggle the light twice and print each state.\n\nmachine Light {\n    events { Toggle; }\n    state Off;\n    state On;\n    on Toggle: Off => On;\n    on Toggle: On => Off;\n}\n\nfn main() -> i64 {\n    var light = Light::Off;\n    println(light.state_name());\n    light.step(Toggle);\n    println(light.state_name());\n    light.step(Toggle);\n    println(light.state_name());\n    0\n}\n"
+    "starterCode": "// Lesson 13: State Machines\n// TODO: Toggle the light twice and print each state.\n\nmachine Light {\n    events { Toggle; }\n    state Off;\n    state On;\n    on Toggle: Off => On;\n    on Toggle: On => Off;\n}\n\nfn main() -> i64 {\n    var light = Light.Off;\n    println(light.state_name());\n    light.step(Toggle);\n    println(light.state_name());\n    light.step(Toggle);\n    println(light.state_name());\n    0\n}\n"
   }
 ]

@@ -1,5 +1,5 @@
-// HashMap::<K, V>::new() should accept turbofish type arguments even though
-// the stdlib catalog row declares no callable type parameters.
+// HashMap<K, V>.new() accepts explicit type arguments even though the stdlib
+// catalog row declares no callable type parameters.
 record Key {
     id: i64,
 }

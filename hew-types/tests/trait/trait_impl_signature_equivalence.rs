@@ -258,7 +258,7 @@ impl Iterator for Counter {{
         output.errors
     );
     let cited = output.errors.iter().any(|e| {
-        e.message.contains("Counter::next")
+        e.message.contains("Counter.next")
             && e.message.contains("Iterator")
             && e.message.contains("i64")
     });

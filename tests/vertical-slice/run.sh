@@ -3703,10 +3703,10 @@ fi
 grep -qF 'immutable binding' "${reject_output}"
 
 # ---------------------------------------------------------------------------
-# W3.004 — Vec.new turbofish + W3.013 — Vec range-slice sugar
+# W3.004 — Vec.new generic application + W3.013 — Vec range-slice sugar
 # ---------------------------------------------------------------------------
 
-# Accept (S0): Vec<i32> with type ascription (no turbofish) — confirms range-slice
+# Accept (S0): Vec<i32> with type ascription — confirms range-slice
 # infrastructure baseline.  Exit 0 = empty vec created, no panic.
 run_accept_expect_status "vec_new_ascription" 0
 
@@ -3902,33 +3902,42 @@ fi
 grep -q 'E_NOT_YET_IMPLEMENTED' "${accept_output}"
 grep -q 'VecIter' "${accept_output}"
 
-# Reject (S1): Vec<i64, i32>.new() type-argument arity mismatch — Vec takes exactly
-# 1 type argument; supplying 2 must produce a clear diagnostic.
+# Reject: the retired Vec::<i64, i32>::new() spelling must identify both legacy
+# separators and provide its exact dotted Hew replacement.
 if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/vec_new_turbofish_arity_mismatch.hew" \
     >"${reject_output}" 2>&1; then
   echo "W3.004: expected vec_new_turbofish_arity_mismatch to fail" >&2
   exit 1
 fi
-grep -q 'takes 1 type argument but 2 were supplied' "${reject_output}"
+# shellcheck disable=SC2016
+grep -qF 'E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `let _v = Vec<i64, i32>.new();`' "${reject_output}"
+# shellcheck disable=SC2016
+grep -qF 'E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `let _v = Vec<i64, i32>.new();`' "${reject_output}"
 
-# Reject: HashMap takes key and value type arguments.
+# Reject: the retired HashMap turbofish spelling suggests dotted Hew syntax.
 if "${TIMEOUT}" 30 "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/hashmap_new_turbofish_arity_mismatch.hew" \
     >"${reject_output}" 2>&1; then
   echo "expected hashmap_new_turbofish_arity_mismatch to fail" >&2
   exit 1
 fi
-grep -q 'takes 2 type arguments but 1 was supplied' "${reject_output}"
+# shellcheck disable=SC2016
+grep -qF 'E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `let _m = HashMap<i64>.new();`' "${reject_output}"
+# shellcheck disable=SC2016
+grep -qF 'E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `let _m = HashMap<i64>.new();`' "${reject_output}"
 
-# Reject: HashSet takes one element type argument.
+# Reject: the retired HashSet turbofish spelling suggests dotted Hew syntax.
 if "${TIMEOUT}" 30 "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/hashset_new_turbofish_arity_mismatch.hew" \
     >"${reject_output}" 2>&1; then
   echo "expected hashset_new_turbofish_arity_mismatch to fail" >&2
   exit 1
 fi
-grep -q 'takes 1 type argument but 2 were supplied' "${reject_output}"
+# shellcheck disable=SC2016
+grep -qF 'E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `let _s = HashSet<i64, i64>.new();`' "${reject_output}"
+# shellcheck disable=SC2016
+grep -qF 'E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `let _s = HashSet<i64, i64>.new();`' "${reject_output}"
 
 # Accept: concrete generic user aggregate with a heap-owning string field.
 run_accept_expect_status "user_record_non_bitcopy" 0

@@ -1997,7 +1997,9 @@ fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn check_builtin_receiver_impl_program(program: &Program) -> TypeCheckOutput {
+fn check_builtin_receiver_impl_program(
+    program: &Program,
+) -> Result<TypeCheckOutput, Box<HirDiagnostic>> {
     // The parsed embedded source uses private leaf spellings for its synthetic
     // cursor declarations. Type-check a projection whose impl targets carry
     // their exact compiler owner so declaration IDs and call facts cannot
@@ -2024,12 +2026,24 @@ fn check_builtin_receiver_impl_program(program: &Program) -> TypeCheckOutput {
     let mut checker =
         hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
     let output = checker.check_embedded_builtins(&checker_program);
-    debug_assert!(
-        output.errors.is_empty(),
-        "std/builtins.hew receiver impls failed to type-check: {:?}",
-        output.errors
-    );
-    output
+    if output.errors.is_empty() {
+        return Ok(output);
+    }
+
+    let reason = output
+        .errors
+        .iter()
+        .map(|error| error.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(Box::new(HirDiagnostic::new(
+        HirDiagnosticKind::CheckerBoundaryViolation {
+            name: "std/builtins.hew receiver impls".to_string(),
+            reason,
+        },
+        0..0,
+        "compiler-injected receiver impls were not lowered",
+    )))
 }
 
 fn canonicalize_injected_cursor_type_expr(ty: &mut TypeExpr) {
@@ -2571,10 +2585,17 @@ pub fn lower_program_with_mono_cap(
         .map(hew_parser::module::ModuleGraph::file_span_indices)
         .unwrap_or_default();
     ctx.seed_stdlib_fn_registry();
-    let builtin_receiver_impl_program = builtin_receiver_impl_program();
-    let builtin_receiver_impl_output = builtin_receiver_impl_program
-        .as_ref()
-        .map(check_builtin_receiver_impl_program);
+    let (builtin_receiver_impl_program, builtin_receiver_impl_output) =
+        match builtin_receiver_impl_program() {
+            Some(program) => match check_builtin_receiver_impl_program(&program) {
+                Ok(output) => (Some(program), Some(output)),
+                Err(diagnostic) => {
+                    ctx.diagnostics.push(*diagnostic);
+                    (None, None)
+                }
+            },
+            None => (None, None),
+        };
 
     // Pre-pre-pass: harvest inherent-impl `close` method signatures from
     // the root program and imported modules so the type-decl pre-pass below
@@ -35631,6 +35652,39 @@ mod tests {
     use super::*;
     use hew_types::module_registry::ModuleRegistry;
     use hew_types::Checker;
+
+    #[test]
+    fn builtin_receiver_signature_mismatch_is_a_diagnostic_not_a_panic() {
+        let parsed = hew_parser::parse(
+            r"
+trait Sample {
+    fn value(self) -> i64;
+}
+
+type Broken {}
+
+impl Sample for Broken {
+    fn value(self) -> bool { true }
+}
+",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+
+        let diagnostic = *check_builtin_receiver_impl_program(&parsed.program)
+            .expect_err("the invalid injected impl must fail closed");
+        let HirDiagnosticKind::CheckerBoundaryViolation { name, reason } = diagnostic.kind else {
+            panic!("expected checker-boundary diagnostic, got {diagnostic:?}");
+        };
+        assert_eq!(name, "std/builtins.hew receiver impls");
+        assert!(
+            reason.contains("returns `bool`") && reason.contains("requires `i64`"),
+            "diagnostic must preserve the checker mismatch: {reason}"
+        );
+        assert_eq!(
+            diagnostic.note,
+            "compiler-injected receiver impls were not lowered"
+        );
+    }
 
     #[test]
     fn trait_method_identity_prefers_local_and_imported_same_leaf_traits_over_prelude_items() {

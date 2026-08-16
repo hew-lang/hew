@@ -11857,7 +11857,11 @@ impl LowerCtx {
             );
         }
         let source_name = Self::ordinary_call_presentation_name(function);
-        if source_name == "LambdaActorHandle::new" {
+        if hew_types::has_builtin_associated_item_identity(
+            &source_name,
+            BuiltinType::LambdaActorHandle,
+            "new",
+        ) {
             self.discard_rejected_call_child_facts(span);
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CallableUnsupportedInMir {
@@ -27173,8 +27177,9 @@ impl LowerCtx {
                     .get(&key)
                     .cloned()
                     .unwrap_or(ResolvedTy::Unit);
-                let receiver = Some(Box::new(self.lower_expr(receiver, IntentKind::Read)));
-                let value = if op == RcIntrinsicOp::Set {
+                let receiver = (op != RcIntrinsicOp::New)
+                    .then(|| Box::new(self.lower_expr(receiver, IntentKind::Read)));
+                let value = if matches!(op, RcIntrinsicOp::New | RcIntrinsicOp::Set) {
                     args.first()
                         .map(|arg| Box::new(self.lower_expr(arg.expr(), IntentKind::Consume)))
                 } else {
@@ -34333,7 +34338,11 @@ fn scan_expr_for_call_shape(
                 match resolved {
                     ResolvedRef::Item(_) => {
                         if !callable.contains(name) {
-                            let message = if name == "LambdaActorHandle::new" {
+                            let message = if hew_types::has_builtin_associated_item_identity(
+                                name,
+                                BuiltinType::LambdaActorHandle,
+                                "new",
+                            ) {
                                 "`LambdaActorHandle::new` is not a public constructor; use \
                                  `actor |params| { body }` to create a lambda actor"
                                     .to_string()

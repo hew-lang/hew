@@ -92,6 +92,62 @@ fn dotted_static_paths_lower_without_a_runtime_receiver() {
 }
 
 #[test]
+fn rc_constructor_spellings_share_the_intrinsic_identity() {
+    for constructor in ["Rc.new", "Rc::new"] {
+        let source = format!(
+            r"
+                fn main() {{
+                    let value = {constructor}(7);
+                    let _ = value;
+                }}
+            ",
+        );
+        let (lower_output, tc_output) = typecheck_and_lower(&source);
+        assert!(
+            tc_output.errors.is_empty(),
+            "{constructor} type errors: {:#?}",
+            tc_output.errors
+        );
+        assert!(
+            lower_output.diagnostics.is_empty(),
+            "{constructor} lowering diagnostics: {:#?}",
+            lower_output.diagnostics
+        );
+
+        let main = lower_output
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function must lower");
+        let init = main
+            .body
+            .statements
+            .iter()
+            .find_map(|stmt| match &stmt.kind {
+                HirStmtKind::Let(_, Some(init)) => Some(init),
+                _ => None,
+            })
+            .expect("Rc constructor result must initialize a binding");
+        assert!(
+            matches!(
+                &init.kind,
+                HirExprKind::RcIntrinsic {
+                    op: hew_types::RcIntrinsicOp::New,
+                    receiver: None,
+                    value: Some(_),
+                    ..
+                }
+            ),
+            "{constructor} must lower through RcIntrinsic::New: {init:#?}"
+        );
+    }
+}
+
+#[test]
 fn dotted_tuple_variant_lowers_from_checker_selected_owner() {
     let (lower_output, tc_output) = typecheck_and_lower(
         r"

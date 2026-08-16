@@ -248,6 +248,12 @@ impl Checker {
             let function = (Expr::Identifier(dotted_member.clone()), head.span.clone());
             let result = self.check_call(&function, head.type_args.as_deref(), args, span);
             let call_key = SpanKey::in_module(span, self.current_module_idx);
+            if matches!(
+                self.method_call_rewrites.get(&call_key),
+                Some(MethodCallRewrite::RcIntrinsic { .. })
+            ) {
+                return Some(result);
+            }
             if let Some(target) = self.direct_call_targets.get(&call_key).cloned() {
                 self.record_method_call_rewrite(
                     span,

@@ -477,12 +477,18 @@ impl Checker {
             _ => return None,
         };
 
+        let constructor_family =
+            crate::runtime_call::RuntimeCallFamily::from_checker_signature(&func_name);
         // Constructors with explicit type args that are not covered here fall
         // through to the generic call resolver.
         if type_args.is_some()
             && !matches!(
-                func_name.as_str(),
-                "Vec::new" | "HashMap::new" | "HashSet::new"
+                constructor_family,
+                Some(
+                    crate::runtime_call::RuntimeCallFamily::VecNew
+                        | crate::runtime_call::RuntimeCallFamily::HashMapNew
+                        | crate::runtime_call::RuntimeCallFamily::HashSetNew
+                )
             )
         {
             return None;
@@ -529,8 +535,8 @@ impl Checker {
         }
 
         if let Some(targs) = type_args {
-            match func_name.as_str() {
-                "HashMap::new" => {
+            match constructor_family {
+                Some(crate::runtime_call::RuntimeCallFamily::HashMapNew) => {
                     self.check_arity(args, 0, "`HashMap::new`", span);
                     let Some(result_ty) = self.lower_turbofish_collection_constructor(
                         "HashMap",
@@ -544,7 +550,7 @@ impl Checker {
                     };
                     return Some(result_ty);
                 }
-                "HashSet::new" => {
+                Some(crate::runtime_call::RuntimeCallFamily::HashSetNew) => {
                     self.check_arity(args, 0, "`HashSet::new`", span);
                     let Some(result_ty) = self.lower_turbofish_collection_constructor(
                         "HashSet",
@@ -562,7 +568,7 @@ impl Checker {
             }
         }
 
-        if func_name == "Vec::new" {
+        if constructor_family == Some(crate::runtime_call::RuntimeCallFamily::VecNew) {
             self.check_arity(args, 0, "`Vec::new`", span);
 
             // Determine element type. Turbofish (`Vec::<T>::new()` or
@@ -1686,7 +1692,10 @@ impl Checker {
             // Guard: only intercept when type_args are supplied; the no-turbofish
             // path falls through to the `fn_sigs` lookup which returns Vec<TypeVar>
             // and lets the call site unify the element type normally.
-            "Vec::new" if type_args.is_some() => {
+            name if type_args.is_some()
+                && crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
+                    == Some(crate::runtime_call::RuntimeCallFamily::VecNew) =>
+            {
                 self.check_arity(args, 0, "`Vec::new`", span);
                 let targs = type_args.expect("guarded by `is_some()` above");
                 let Some(mut lowered) = self.lower_turbofish_elem("Vec", 1, targs, span) else {
@@ -1744,7 +1753,10 @@ impl Checker {
                 );
                 return result_ty;
             }
-            "HashMap::new" if type_args.is_some() => {
+            name if type_args.is_some()
+                && crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
+                    == Some(crate::runtime_call::RuntimeCallFamily::HashMapNew) =>
+            {
                 self.check_arity(args, 0, "`HashMap::new`", span);
                 let targs = type_args.expect("guarded by `is_some()` above");
                 let Some(result_ty) = self.lower_turbofish_collection_constructor(
@@ -1758,7 +1770,10 @@ impl Checker {
                 };
                 return result_ty;
             }
-            "HashSet::new" if type_args.is_some() => {
+            name if type_args.is_some()
+                && crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
+                    == Some(crate::runtime_call::RuntimeCallFamily::HashSetNew) =>
+            {
                 self.check_arity(args, 0, "`HashSet::new`", span);
                 let targs = type_args.expect("guarded by `is_some()` above");
                 let Some(result_ty) = self.lower_turbofish_collection_constructor(
@@ -1832,7 +1847,12 @@ impl Checker {
                 }
                 return Ty::Bytes;
             }
-            "Vec::from" => {
+            name if crate::has_builtin_associated_item_identity(
+                name,
+                crate::BuiltinType::Vec,
+                "from",
+            ) =>
+            {
                 self.check_arity(args, 1, "`Vec::from`", span);
                 let elem = Ty::Var(TypeVar::fresh());
                 if let Some(arg) = args.first() {
@@ -2083,7 +2103,11 @@ impl Checker {
                 true,
             );
 
-            if resolved_fn_name == "Rc::new" {
+            let target = self.call_target_for_signature(&resolved_fn_name);
+            if matches!(
+                &target,
+                CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::RcNew)
+            ) {
                 if let (Some(payload_ty), Some(arg)) = (applied_sig.params.first(), args.first()) {
                     let (arg_expr, arg_span) = arg.expr();
                     let resolved_payload = self
@@ -2126,7 +2150,6 @@ impl Checker {
                 &applied_sig.return_type,
                 span,
             );
-            let target = self.call_target_for_signature(&resolved_fn_name);
             // A dotted static call with method-level type arguments (for
             // example `Node.lookup<Worker>(name)`) parses as an ordinary call
             // whose callee is a `FieldAccess`, rather than as `MethodCall`.

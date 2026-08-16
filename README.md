@@ -91,8 +91,8 @@ fn main() {
 To use modules beyond the builtins, add an `import` statement at the top of your file:
 
 ```hew
-import std::fs;
-import std::encoding::json;
+import std.fs;
+import std.encoding.json;
 
 fn main() {
     let data = fs.read("config.json");
@@ -173,16 +173,16 @@ Actors communicate across nodes with the same syntax used locally. The runtime h
 
 ```hew
 // server node
-Node::set_transport("quic");
-Node::start("127.0.0.1:9000");
+Node.set_transport("quic");
+Node.start("127.0.0.1:9000");
 let counter = spawn Counter;
-Node::register("counter", counter);
+Node.register("counter", counter);
 
 // client node (separate process)
-Node::set_transport("quic");
-Node::start("127.0.0.1:9001");
-Node::connect("127.0.0.1:9000");
-let counter: Counter = Node::lookup("counter");
+Node.set_transport("quic");
+Node.start("127.0.0.1:9001");
+Node.connect("127.0.0.1:9000");
+let counter: Counter = Node.lookup("counter");
 counter.increment(42);   // remote message — same syntax as local
 ```
 

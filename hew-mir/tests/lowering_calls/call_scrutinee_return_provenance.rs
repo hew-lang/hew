@@ -613,6 +613,44 @@ fn imported_result_direct_call_scrutinee_publishes_fresh_fact() {
     assert_clean(&p);
 }
 
+#[test]
+fn imported_result_forwarder_scrutinee_preserves_borrowed_fact() {
+    let root = r"
+        import result_source;
+
+        fn use_it(r: Result<string, string>) -> i64 {
+            match result_source.forward(r) { Ok(_) => 1, Err(_) => 0 }
+        }
+    ";
+    let module = r"
+        import payload_source;
+
+        pub fn forward(r: Result<string, string>) -> Result<string, string> { r }
+    ";
+    let payload = r"
+        pub fn unused() -> i64 { 0 }
+    ";
+    let p = imported_result_pipeline(root, module, payload);
+    assert_authority(&p, "result_source.forward(r)", Ownership::Borrowed);
+    assert_clean(&p);
+}
+
+#[test]
+fn unknown_extern_result_discard_stays_fail_closed() {
+    let src = r#"
+        extern "C" {
+            fn ext_make() -> string;
+        }
+        fn use_it() {
+            ext_make();
+        }
+    "#;
+    let p = pipeline(src);
+    assert_authority(&p, "ext_make()", Ownership::Unknown);
+    assert_eq!(unresolved_ownership_count(&p), 1, "{:#?}", p.diagnostics);
+    assert_eq!(p.diagnostics.len(), 1, "{:#?}", p.diagnostics);
+}
+
 // An extern-produced nominal without an audited transfer lifecycle completes
 // as `NoOwner`: the value is foreign-owned and this program must not invent a
 // release obligation for it. The former contract refused these programs

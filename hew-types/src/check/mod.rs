@@ -683,11 +683,18 @@ impl Checker {
                     }
 
                     for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                        self.current_item_source = self
+                            .module_item_sources
+                            .get(&module_name)
+                            .and_then(|sources| sources.get(item_idx))
+                            .or_else(|| module.source_paths.first())
+                            .cloned();
                         self.current_module_idx = span_indices
                             .item_index(mod_id, item_idx)
                             .unwrap_or(self.current_module_idx);
                         self.check_item(item, span);
                     }
+                    self.current_item_source = None;
 
                     self.is_stdlib_source = saved_is_stdlib_source;
 
@@ -747,6 +754,9 @@ impl Checker {
         // reference on later inputs, so suppress this lint for eval fragments.
         if !self.repl_fragment {
             for (key, (import_span, stored_module)) in &self.import_spans {
+                if self.is_canonical_prelude_manifest_import(stored_module.as_deref()) {
+                    continue;
+                }
                 if !self.used_modules.borrow().contains(key) {
                     self.warnings.push(TypeError {
                         severity: crate::error::Severity::Warning,
@@ -1451,6 +1461,13 @@ impl Checker {
         output.cycle_capable_actors = cycle_capable;
 
         output
+    }
+
+    /// The canonical prelude is an import-only authority manifest: its imports
+    /// are intentionally consumed by later user programs, not by its own body.
+    fn is_canonical_prelude_manifest_import(&self, stored_module: Option<&str>) -> bool {
+        stored_module == Some("std.prelude")
+            || (stored_module.is_none() && self.canonical_std_root_sources.contains("std.prelude"))
     }
 
     /// Validate the raw checker-authored ownership graph before following any

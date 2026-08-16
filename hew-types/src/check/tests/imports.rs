@@ -3090,6 +3090,272 @@ fn orphan_impl_emits_warning() {
 }
 
 #[test]
+fn canonical_builtin_source_owns_intrinsic_impls_for_coherence() {
+    let compiler_root = crate::module_registry::compiler_stdlib_root()
+        .expect("test executable must resolve its compiler-owned development stdlib");
+    let output = check_intrinsic_coherence_source(
+        &compiler_root.join("std/builtins.hew"),
+        ModuleRegistry::new(vec![]),
+    );
+
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == crate::error::TypeErrorKind::OrphanImpl),
+        "the canonical builtin source owns intrinsic type impls: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn noncanonical_builtin_spelling_does_not_own_intrinsic_impls() {
+    use hew_parser::ast::TraitBound;
+
+    let impl_decl = ImplDecl {
+        type_params: None,
+        trait_bound: Some(TraitBound {
+            name: "ExternalTrait".to_string(),
+            type_args: None,
+            assoc_type_bindings: vec![],
+        }),
+        target_type: (
+            TypeExpr::Named {
+                name: "Vec".to_string(),
+                type_args: None,
+            },
+            0..0,
+        ),
+        where_clause: None,
+        type_aliases: vec![],
+        methods: vec![],
+    };
+    let mut checker = Checker {
+        current_module: Some("std.builtins".to_string()),
+        ..Default::default()
+    };
+    checker.check_impl(&impl_decl, &(0..0));
+
+    assert!(
+        checker
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == crate::error::TypeErrorKind::OrphanImpl),
+        "a lookalike module must not gain intrinsic coherence authority"
+    );
+}
+
+struct IntrinsicCoherenceFixture {
+    root: std::path::PathBuf,
+}
+
+impl IntrinsicCoherenceFixture {
+    fn new(name: &str) -> Self {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after the Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("{name}-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create coherence fixture root");
+        Self { root }
+    }
+
+    fn write(&self, relative: &str, source: &str) -> std::path::PathBuf {
+        let path = self.root.join(relative);
+        std::fs::create_dir_all(path.parent().expect("fixture path has a parent"))
+            .expect("create coherence fixture directory");
+        std::fs::write(&path, source).expect("write coherence fixture source");
+        path
+    }
+}
+
+impl Drop for IntrinsicCoherenceFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn check_intrinsic_coherence_source(
+    source_path: &std::path::Path,
+    registry: ModuleRegistry,
+) -> TypeCheckOutput {
+    let source = r"
+        impl ForeignTrait for Vec<i64> {}
+        impl ForeignTrait for i8 {}
+    ";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture parse: {:?}",
+        parsed.errors
+    );
+
+    let root_id = ModuleId::root();
+    let builtins_id = ModuleId::new(vec!["std".to_string(), "builtins".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: builtins_id.clone(),
+            items: parsed.program.items,
+            imports: vec![],
+            source_paths: vec![source_path.to_path_buf()],
+            doc: None,
+        })
+        .expect("add std.builtins module");
+    graph.topo_order = vec![builtins_id, root_id];
+
+    Checker::new(registry).check_program(&Program {
+        module_graph: Some(graph),
+        items: vec![],
+        module_doc: None,
+    })
+}
+
+#[test]
+fn project_local_std_builtins_source_cannot_claim_intrinsic_coherence() {
+    const CHILD_MARKER: &str = "HEW_INTRINSIC_COHERENCE_ATTACK_CHILD";
+
+    if std::env::var_os(CHILD_MARKER).is_some() {
+        let attacker_root = std::env::current_dir().expect("attacker cwd is available");
+        let search_paths = crate::module_registry::build_module_search_paths_for(None);
+        assert_eq!(
+            search_paths
+                .first()
+                .and_then(|path| path.canonicalize().ok()),
+            attacker_root.canonicalize().ok(),
+            "production module discovery must select the attacker's std root"
+        );
+        let compiler_root = crate::module_registry::compiler_stdlib_root()
+            .expect("test executable must resolve its compiler-owned development stdlib");
+        assert_ne!(
+            attacker_root.canonicalize().ok(),
+            Some(compiler_root.clone()),
+            "attacker cwd must be distinct from compiler authority"
+        );
+
+        let attacker_builtins = attacker_root.join("std/builtins.hew");
+        let output =
+            check_intrinsic_coherence_source(&attacker_builtins, ModuleRegistry::new(search_paths));
+        let orphan_warnings = output
+            .warnings
+            .iter()
+            .filter(|warning| warning.kind == TypeErrorKind::OrphanImpl)
+            .count();
+        println!("attack module root: {}", attacker_root.display());
+        println!("compiler authority root: {}", compiler_root.display());
+        println!("attack orphan warnings: {orphan_warnings}");
+        assert_eq!(
+            orphan_warnings, 2,
+            "project-local std/builtins.hew must not own Vec or primitive impls: {:?}",
+            output.warnings
+        );
+        return;
+    }
+
+    let fixture = IntrinsicCoherenceFixture::new("user-std-builtins-coherence");
+    fixture.write(
+        "std/builtins.hew",
+        "// attacker-controlled builtins marker\n",
+    );
+    let child = std::process::Command::new(
+        std::env::current_exe().expect("resolve current hew-types test executable"),
+    )
+    .args([
+        "--exact",
+        "check::tests::imports::project_local_std_builtins_source_cannot_claim_intrinsic_coherence",
+        "--nocapture",
+    ])
+    .current_dir(&fixture.root)
+    .env(CHILD_MARKER, "1")
+    .env_remove("HEWPATH")
+    .env_remove("HEW_STD")
+    .output()
+    .expect("run production-shaped attacker-cwd check_program child");
+    let stdout = String::from_utf8_lossy(&child.stdout);
+    let stderr = String::from_utf8_lossy(&child.stderr);
+    print!("{stdout}");
+    eprint!("{stderr}");
+    assert!(
+        child.status.success(),
+        "attacker-cwd child failed with {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        child.status
+    );
+}
+
+#[test]
+fn imported_foreign_trait_impl_for_intrinsic_type_warns() {
+    let foreign_source = "pub trait ForeignTrait {}";
+    let consumer_source = "import vendor::{ ForeignTrait }; impl ForeignTrait for Vec<i64> {}";
+    let foreign = hew_parser::parse(foreign_source);
+    let mut consumer = hew_parser::parse(consumer_source);
+    assert!(
+        foreign.errors.is_empty(),
+        "foreign parse: {:?}",
+        foreign.errors
+    );
+    assert!(
+        consumer.errors.is_empty(),
+        "consumer parse: {:?}",
+        consumer.errors
+    );
+
+    let fixture = IntrinsicCoherenceFixture::new("foreign-intrinsic-coherence");
+    let foreign_path = fixture.write("vendor.hew", foreign_source);
+    let consumer_path = fixture.write("consumer.hew", consumer_source);
+    let import_span = consumer.program.items[0].1.clone();
+    let Item::Import(import) = &mut consumer.program.items[0].0 else {
+        panic!("consumer starts with an import");
+    };
+    import.resolved_items = Some(foreign.program.items.clone());
+    import.resolved_source_paths = vec![foreign_path.clone()];
+
+    let root_id = ModuleId::root();
+    let foreign_id = ModuleId::new(vec!["vendor".to_string()]);
+    let consumer_id = ModuleId::new(vec!["consumer".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: foreign_id.clone(),
+            items: foreign.program.items,
+            imports: vec![],
+            source_paths: vec![foreign_path],
+            doc: None,
+        })
+        .expect("add foreign trait module");
+    graph
+        .add_module(Module {
+            id: consumer_id.clone(),
+            items: consumer.program.items,
+            imports: vec![hew_parser::module::ModuleImport {
+                target: foreign_id.clone(),
+                spec: Some(ImportSpec::Names(vec![ImportName {
+                    name: "ForeignTrait".to_string(),
+                    alias: None,
+                }])),
+                span: import_span,
+            }],
+            source_paths: vec![consumer_path],
+            doc: None,
+        })
+        .expect("add consumer module");
+    graph.topo_order = vec![foreign_id, consumer_id, root_id];
+
+    let output = Checker::new(test_registry()).check_program(&Program {
+        module_graph: Some(graph),
+        items: vec![],
+        module_doc: None,
+    });
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == TypeErrorKind::OrphanImpl),
+        "a user module implementing a foreign trait for Vec must warn: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
 fn local_type_impl_no_orphan_warning() {
     use hew_parser::ast::TraitBound;
     // Locally defined type: impl SomeExternalTrait for LocalType → no orphan warning

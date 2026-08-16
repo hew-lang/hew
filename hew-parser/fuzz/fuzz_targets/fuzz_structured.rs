@@ -217,9 +217,9 @@ impl HewItem {
 impl ImportChoice {
     fn as_source(self) -> &'static str {
         match self {
-            Self::String => "import std::string;",
-            Self::Time => "import std::time;",
-            Self::Json => "import std::encoding::json;",
+            Self::String => "import std.string;",
+            Self::Time => "import std.time;",
+            Self::Json => "import std.encoding.json;",
         }
     }
 }

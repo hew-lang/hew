@@ -461,7 +461,7 @@ fn borrow_capture_record_read_after_loop_source(frames: usize) -> String {
 fn borrow_capture_record_iter_any_loop_source(frames: usize) -> String {
     let expected_total = frames * 2 + frames * frames.saturating_sub(1) / 2;
     format!(
-        "import std::iter;\n\
+        "import std.iter;\n\
          pub type Claim {{\n\
          \x20   item: string;\n\
          \x20   run_id: string;\n\

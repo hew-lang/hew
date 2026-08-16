@@ -21,7 +21,7 @@
 // IMPL/actual side.
 //
 // Harness verb: hew check (negative — see run.sh).
-import hew::closableerr::{LocalShadowClosable as ForeignClosable};
+import hew.closableerr.{LocalShadowClosable as ForeignClosable};
 
 pub type ClosableHandle {
     id: i64;

@@ -7,23 +7,23 @@ enum Outcome<T, E> {
 }
 
 fn success() -> Outcome<i64, i64> {
-    Outcome::Ok(7)
+    Outcome.Ok(7)
 }
 
 fn failure() -> Outcome<i64, i64> {
-    Outcome::Err(99)
+    Outcome.Err(99)
 }
 
 fn main() -> i64 {
     let a = success();
     let b = failure();
     let x = match a {
-        Outcome::Ok(v) => v,
-        Outcome::Err(e) => e,
+        Outcome.Ok(v) => v,
+        Outcome.Err(e) => e,
     };
     let y = match b {
-        Outcome::Ok(v) => v,
-        Outcome::Err(e) => e,
+        Outcome.Ok(v) => v,
+        Outcome.Err(e) => e,
     };
     x + y
 }

@@ -204,9 +204,9 @@ fn build(n: i64) -> i64 {{
     let inner: Vec<i64> = Vec::new();
     inner.push(n);
     inner.push(n + 1);
-    let w: Wrap = Wrap::A(Boxed {{ payload: inner }});
+    let w: Wrap = Wrap.A(Boxed {{ payload: inner }});
     match w {{
-        Wrap::A(_) => n,
+        Wrap.A(_) => n,
     }}
 }}
 

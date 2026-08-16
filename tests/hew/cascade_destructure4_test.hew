@@ -6,7 +6,7 @@
 //! a four-field destructure computes exact values, proving the suppression
 //! preserves correct behaviour on well-formed destructures.
 
-import std::testing;
+import std.testing;
 
 type Rect {
     x: i64;

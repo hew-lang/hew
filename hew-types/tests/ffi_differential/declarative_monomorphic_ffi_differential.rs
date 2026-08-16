@@ -86,7 +86,7 @@ fn instant_methods_resolve_through_extern_symbol_annotations() {
 #[test]
 fn lambda_actor_handle_methods_resolve_through_extern_symbol_annotations() {
     let source = r"
-        import std::concurrency::lambda_actor;
+        import std.concurrency.lambda_actor;
 
         fn exercise(
             handle: lambda_actor.LambdaActorHandle,

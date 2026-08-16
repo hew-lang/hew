@@ -1149,7 +1149,7 @@ extern "C" {
             AuthoritySource::embedded(
                 StdlibRoot::Prelude,
                 "std/prelude.hew",
-                "import std::builtins::{ Maybe as Option };\n",
+                "import std.builtins.{ Maybe as Option };\n",
             ),
         ];
 

@@ -5,10 +5,10 @@ enum Colour {
 
 fn main() {
     let x: Colour = Red;
-    let v: Vec<Colour> = Vec::new();
+    let v: Vec<Colour> = Vec.new();
     v.push(x);
     match v.get(0) {
-        Some(e) => {
+        Option.Some(e) => {
             match e { Red => println("Red"), Green => println("Green"), }
         },
         None => println("missing"),

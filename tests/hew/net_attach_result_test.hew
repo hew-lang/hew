@@ -3,11 +3,11 @@
 //! Success transfers the server connection to the reactor. Refusal also
 //! consumes and closes it, so neither match arm retains a connection to close.
 
-import std::net;
+import std.net;
 
-import std::net::{ AttachError };
+import std.net.{AttachError};
 
-import std::testing;
+import std.testing;
 
 actor AttachedHandler {
     receive fn on_data(data: bytes) {}
@@ -29,12 +29,10 @@ fn test_tcp_attach_returns_ok_and_transfers_close_authority() {
     let client = net.connect(f"127.0.0.1:{listener.local_port()}");
     let server = listener.accept();
     let handler: LocalPid<AttachedHandler> = spawn AttachedHandler;
-
     match server.attach(handler) {
-        Ok(()) => testing.assert_true(true),
-        Err(AttachError::Refused) => panic("unbounded handler attach was refused"),
+        .Ok(()) => testing.assert_true(true),
+        .Err(AttachError.Refused) => panic("unbounded handler attach was refused"),
     }
-
     client.close();
     listener.close();
     sleep(100ms);
@@ -46,12 +44,10 @@ fn test_tcp_attach_returns_err_after_closing_refused_connection() {
     let client = net.connect(f"127.0.0.1:{listener.local_port()}");
     let server = listener.accept();
     let handler: LocalPid<RefusedHandler> = spawn RefusedHandler;
-
     match server.attach(handler) {
-        Ok(()) => panic("drop-old handler attach unexpectedly succeeded"),
-        Err(AttachError::Refused) => testing.assert_true(true),
+        .Ok(()) => panic("drop-old handler attach unexpectedly succeeded"),
+        .Err(AttachError.Refused) => testing.assert_true(true),
     }
-
     client.close();
     listener.close();
 }

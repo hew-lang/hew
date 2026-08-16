@@ -24,8 +24,8 @@ fn run_teardown_close_oracle(name: &str, actor_decl: &str, spawn_expr: &str) {
     let source_path = dir.path().join(format!("{name}.hew"));
     let marker_literal = hew_string_literal(&marker);
     let source = format!(
-        r#"import std::fs;
-import std::testing;
+        r#"import std.fs;
+import std.testing;
 
 #[resource]
 #[opaque]
@@ -101,8 +101,8 @@ fn run_builtin_name_collision_teardown_oracle(type_name: &str) {
     let source_path = dir.path().join(format!("{type_name}.hew"));
     let marker_literal = hew_string_literal(&marker);
     let source = format!(
-        r#"import std::fs;
-import std::testing;
+        r#"import std.fs;
+import std.testing;
 
 #[resource]
 #[opaque]
@@ -177,7 +177,7 @@ fn run_imported_receiver_collision_teardown_oracle(package_import: bool) {
     let marker = dir.path().join("closed.txt");
     let marker_literal = hew_string_literal(&marker);
     let module_source = format!(
-        r#"import std::fs;
+        r#"import std.fs;
 
 #[resource]
 #[opaque]
@@ -213,7 +213,7 @@ extern "C" {{
         )
         .expect("write package manifest");
         std::fs::write(pkg.join("foo.hew"), module_source).expect("write package source");
-        ("import hew::foo;", "foo.Keeper")
+        ("import hew.foo;", "foo.Keeper")
     } else {
         std::fs::write(dir.path().join("foo.hew"), module_source).expect("write file import");
         ("import \"foo.hew\";", "Keeper")

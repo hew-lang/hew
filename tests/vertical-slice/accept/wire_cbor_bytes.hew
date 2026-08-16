@@ -7,7 +7,7 @@ type Blob {
 }
 
 fn main() -> i64 {
-    let b = bytes::new();
+    let b = bytes.new();
     b.push(1);
     b.push(2);
     b.push(255);

@@ -10,8 +10,8 @@ impl Tok {
 }
 
 fn run() -> i64 {
-    let h: Result<Tok, string> = Ok(Tok { id: 1 });
-    let v: Vec<i64> = Vec::new();
+    let h: Result<Tok, string> = Result.Ok(Tok { id: 1 });
+    let v: Vec<i64> = Vec.new();
     println("before trap");
     v[3]
 }

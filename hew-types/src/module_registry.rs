@@ -1332,7 +1332,7 @@ mod tests {
         let fixture = TestDir::new("registry-signature-channel-physical-alias");
         fs::write(
             fixture.root.join("signature_importer.hew"),
-            "import std::channel::channel as ch;\n",
+            "import std.channel.channel as ch;\n",
         )
         .expect("write signature importer");
 
@@ -1370,7 +1370,7 @@ mod tests {
         .expect("write user channel lookalike");
         fs::write(
             fixture.root.join("signature_importer.hew"),
-            "import std::channel::channel as ch;\n",
+            "import std.channel.channel as ch;\n",
         )
         .expect("write user signature importer");
 

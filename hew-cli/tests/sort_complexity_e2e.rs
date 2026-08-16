@@ -10,7 +10,7 @@ use std::process::Output;
 
 use support::{describe_output, repo_root};
 
-const SOURCE: &str = r#"import std::sort;
+const SOURCE: &str = r#"import std.sort;
 
 fn check_ints() -> i64 {
     let reverse: Vec<i64> = Vec::new();

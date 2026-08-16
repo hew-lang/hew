@@ -4157,7 +4157,7 @@ mod tests {
     #[test]
     fn migrates_legacy_paths_turbofish_and_checker_selected_variants() {
         let source = concat!(
-            "import a::b::{C};\n",
+            "import a.b.{C};\n",
             "fn main() {\n",
             "    let value = Some(42);\n",
             "    f::<T>();\n",

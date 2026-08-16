@@ -52,7 +52,7 @@ fn allocate_loopback_port() -> u16 {
 /// unaffected by dropping the redundant field.
 fn server_source(port: u16, deliveries: usize) -> String {
     format!(
-        "import std::net::{{Connection, ConnectionHandler}};\n\
+        "import std.net.{{Connection, ConnectionHandler}};\n\
          \n\
          actor ProbeSink {{\n\
          \x20   receive fn on_data(data: bytes) {{\n\

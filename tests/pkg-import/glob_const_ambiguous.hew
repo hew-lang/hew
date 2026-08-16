@@ -1,0 +1,6 @@
+import ambiguity.const_left.{ CLASH_CONST as LEFT_CONST };
+import ambiguity.const_right.{ CLASH_CONST as RIGHT_CONST };
+
+fn main() {
+    println(LEFT_CONST + RIGHT_CONST);
+}

@@ -7,7 +7,7 @@
 //! re-enqueues until a bound), not a no-op lowering: a no-op would never
 //! advance the counter past its first tick.
 
-import std::testing;
+import std.testing;
 
 actor Counter {
     var n: i64 = 0;
@@ -20,7 +20,6 @@ actor Counter {
             this.go();
         }
     }
-
     receive fn total() -> i64 {
         n
     }
@@ -28,14 +27,12 @@ actor Counter {
 
 actor Pump {
     var n: i64 = 0;
-
     receive fn go() {
         if n < 7 {
             n = n + 1;
             this.go();
         }
     }
-
     receive fn total() -> i64 {
         n
     }
@@ -43,24 +40,24 @@ actor Pump {
 
 #[test]
 fn self_send_drives_bounded_recursion_to_exact_terminal() {
-    let c = spawn Counter();
+    let c = spawn Counter;
     c.go();
     // The self-sends drain through the mailbox; the ask serialises behind them.
     // sleep gives the bounded self-send chain time to complete before observing.
     sleep(100ms);
     match await c.total() {
-        Ok(n) => testing.assert_eq(n, 3),
-        Err(_) => testing.assert_true(false),
+        .Ok(n) => testing.assert_eq(n, 3),
+        .Err(_) => testing.assert_true(false),
     }
 }
 
 #[test]
 fn self_send_with_higher_bound_reaches_that_bound() {
-    let p = spawn Pump();
+    let p = spawn Pump;
     p.go();
     sleep(100ms);
     match await p.total() {
-        Ok(n) => testing.assert_eq(n, 7),
-        Err(_) => testing.assert_true(false),
+        .Ok(n) => testing.assert_eq(n, 7),
+        .Err(_) => testing.assert_true(false),
     }
 }

@@ -15,9 +15,9 @@
 // Harness verb: hew check (negative — see run.sh). Asserts the mismatch fires
 // at type-check time and names both spellings, and that the positive
 // `qualified_trait_sig` oracle (same-module spelling) still passes.
-import hew::closableerr::{Closable as ForeignClosable};
+import hew.closableerr.{Closable as ForeignClosable};
 
-import hew::closableerr2;
+import hew.closableerr2;
 
 pub type ClosableHandle {
     id: i64;

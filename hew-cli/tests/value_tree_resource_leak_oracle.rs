@@ -40,7 +40,7 @@ fn source(family: &str, frames: usize) -> String {
         _ => panic!("unknown value-tree family {family}"),
     };
     format!(
-        "import std::encoding::{family};\n\
+        "import std.encoding.{family};\n\
          fn main() {{\n\
          \x20   for _ in 0..{frames} {{\n\
          \x20       let value = {new_container};\n\

@@ -3,7 +3,7 @@
 // Verifies the delegation path (free function → method → hew_string_split FFI)
 // produces correct results for non-empty separators. Assertions use exact element
 // values, not length-only checks, so a wrong split position would be caught.
-import std::string;
+import std.string;
 
 fn main() {
     // Basic comma-separated split — three elements.

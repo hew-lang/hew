@@ -17,7 +17,7 @@
 // Harness verb: hew run
 // Expected: both factory paths read the joined label length (4) and the owned
 // Box / its inner string drop cleanly at scope exit.
-import hew::lmonobox;
+import hew.lmonobox;
 
 type Holder<T> {
     item: T;
@@ -33,7 +33,7 @@ fn hold<T>(x: T) -> Holder<T> {
 }
 
 fn fill<T>(x: T) -> Slot<T> {
-    Slot::Filled(x)
+    Slot.Filled(x)
 }
 
 fn run_holder(a: string, b: string) -> i64 {

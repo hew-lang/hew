@@ -50,7 +50,7 @@ fn host_can_inspect_process() -> bool {
 
 fn owned_record_filter_collect_source(frames: usize) -> String {
     format!(
-        "import std::iter;\n\
+        "import std.iter;\n\
          \n\
          record Claim {{\n\
          \x20   run_id: string,\n\

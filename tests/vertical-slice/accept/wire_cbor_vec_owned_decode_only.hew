@@ -12,7 +12,7 @@ type Item { name: string @1; }
 type Batch { items: Vec<Item> @1; seq: i64 @2; }
 
 fn source_bytes() -> bytes {
-    let xs: Vec<Item> = Vec::new();
+    let xs: Vec<Item> = Vec.new();
     xs.push(Item { name: "seeded-element" });
     let b = Batch { items: xs, seq: 11 };
     b.encode()

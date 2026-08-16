@@ -5,11 +5,11 @@
 // EXACTLY once — the call result (an rvalue temp) is consumed directly into the
 // cursor. The producer prints "MK" once: stdout MUST be a single line. Four
 // elements → count 4. Exit 4.
-import std::iter;
+import std.iter;
 
 fn make_vec() -> Vec<i64> {
     println("MK");
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(2);
     v.push(3);
@@ -18,5 +18,5 @@ fn make_vec() -> Vec<i64> {
 }
 
 pub fn main() -> i64 {
-    iter::count(make_vec().iter())
+    iter.count(make_vec().iter())
 }

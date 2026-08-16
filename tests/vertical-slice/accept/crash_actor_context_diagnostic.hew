@@ -17,7 +17,7 @@
 //   3. stderr does NOT contain "msg_type=-" (the old opaque format is gone).
 actor Crasher {
     receive fn on_trigger(x: i64) {
-        let xs: Vec<i64> = Vec::new();
+        let xs: Vec<i64> = Vec.new();
         xs.push(x);
         // Index 1 is out of bounds — hardware trap via hew_trap_with_code.
         let _ = xs[1];

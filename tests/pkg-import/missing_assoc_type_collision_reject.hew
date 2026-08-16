@@ -4,9 +4,9 @@
 // `Source` name in `trait_defs`. The required-associated-type enforcement must
 // key off the impl's OWNER-qualified trait identity, so the missing `Item` is
 // flagged regardless of which same-named `Source` last wrote the bare entry.
-import hew::assocreqimplbad;
+import hew.assocreqimplbad;
 
-import hew::assocemptyuse;
+import hew.assocemptyuse;
 
 fn main() -> i64 {
     0

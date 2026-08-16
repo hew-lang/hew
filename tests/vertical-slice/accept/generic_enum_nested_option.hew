@@ -7,13 +7,13 @@ enum Maybe<T> {
 }
 
 fn main() -> i64 {
-    let inner: Maybe<i64> = Maybe::Some(5);
-    let outer: Maybe<Maybe<i64>> = Maybe::Some(inner);
+    let inner: Maybe<i64> = Maybe.Some(5);
+    let outer: Maybe<Maybe<i64>> = Maybe.Some(inner);
     match outer {
-        Maybe::Some(v) => match v {
-            Maybe::Some(n) => n,
-            Maybe::None => 0,
+        Maybe.Some(v) => match v {
+            Maybe.Some(n) => n,
+            Maybe.None => 0,
         },
-        Maybe::None => 0,
+        Maybe.None => 0,
     }
 }

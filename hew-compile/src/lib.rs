@@ -1166,7 +1166,7 @@ fn resolve_file_imports_internal(
     // When the source has NO root, cwd candidates are kept (unchanged behaviour).
     //
     // WHY: cross-worktree dogfood regression — `cd <main-checkout> && hew check
-    //   <worktree>/examples/…` hit "import std::fs is ambiguous" in 4/6 sessions;
+    //   <worktree>/examples/…` hit "import std.fs is ambiguous" in 4/6 sessions;
     //   gap: `cd /tmp && hew check <worktree>/examples/…` also hit the same error
     //   because cwd has no root, so the old `(Some, Some) if ≠` guard didn't fire.
     // WHEN obsolete: when stdlib is co-installed with the binary (sysroot model);
@@ -2091,8 +2091,8 @@ mod tests {
 
         let source = fs::read_to_string(&input).expect("read mixed-import fixture");
         let reversed_source = source.replacen(
-            "import hew::testffi;\nimport \"mixed_import_impl_collision_lib.hew\";",
-            "import \"mixed_import_impl_collision_lib.hew\";\nimport hew::testffi;",
+            "import hew.testffi;\nimport \"mixed_import_impl_collision_lib.hew\";",
+            "import \"mixed_import_impl_collision_lib.hew\";\nimport hew.testffi;",
             1,
         );
         assert_ne!(
@@ -2370,9 +2370,9 @@ mod tests {
             "main.hew",
             r#"
 import "file_helpers.hew";
-import hew::genhelpers;
+import hew.genhelpers;
 import alpha as flat_alpha;
-import beta::alpha as nested_alpha;
+import beta.alpha as nested_alpha;
 
 fn root_first<T>(xs: [T]) -> T { xs[0] }
 
@@ -2584,8 +2584,8 @@ fn main() {
         let input = fixture_dir.join("samename_reply_reject.hew");
         let source = fs::read_to_string(&input).expect("read same-name reply fixture");
         let reversed = source.replacen(
-            "import hew::replysend;\n\nimport hew::replynonsend;",
-            "import hew::replynonsend;\n\nimport hew::replysend;",
+            "import hew.replysend;\n\nimport hew.replynonsend;",
+            "import hew.replynonsend;\n\nimport hew.replysend;",
             1,
         );
         assert_ne!(reversed, source, "fixture must contain both imports");
@@ -3405,13 +3405,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "helper.hew",
-            "import std::net;\n\npub fn marker() -> i64 { 1 }\n",
+            "import std.net;\n\npub fn marker() -> i64 { 1 }\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
             "import helper;\n\
-             import std::net::{Connection};\n\n\
+             import std.net.{Connection};\n\n\
              fn close_connection(conn: Connection) { conn.close(); }\n\
              fn main() { let _ = helper.marker(); }\n",
         );
@@ -3436,7 +3436,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import alpha;\nimport beta::alpha;\n\nfn main() -> i64 { 0 }\n",
+            "import alpha;\nimport beta.alpha;\n\nfn main() -> i64 { 0 }\n",
         );
 
         let failure = check_file(&input, &FrontendOptions::default())
@@ -3465,7 +3465,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             dir.path(),
             "main.hew",
             "import alpha as flat_alpha;\n\
-             import beta::alpha as nested_alpha;\n\n\
+             import beta.alpha as nested_alpha;\n\n\
              fn main() -> i64 { flat_alpha.val() + nested_alpha.val() }\n",
         );
 
@@ -3488,7 +3488,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import hew::db::sqlite;\n\nfn main() -> i64 { sqlite.marker() }\n",
+            "import hew.db.sqlite;\n\nfn main() -> i64 { sqlite.marker() }\n",
         );
 
         check_file(
@@ -3529,7 +3529,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std::bogus;\n\nfn main() {}\n",
+            "import std.bogus;\n\nfn main() {}\n",
         );
 
         let failure = check_file(
@@ -3565,7 +3565,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std::bogus;\n\nfn main() {}\n",
+            "import std.bogus;\n\nfn main() {}\n",
         );
 
         let failure = check_file(
@@ -3600,7 +3600,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std::bogus;\n\nfn main() {}\n",
+            "import std.bogus;\n\nfn main() {}\n",
         );
 
         let failure = check_file(
@@ -3636,7 +3636,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let pkg_root = dir.path().join("packages");
         fs::create_dir_all(&pkg_root).expect("create package root");
         write_source(&pkg_root, "fs.hew", "pub fn marker() -> i64 { 1 }\n");
-        let input = write_source(dir.path(), "main.hew", "import std::fs;\n\nfn main() {}\n");
+        let input = write_source(dir.path(), "main.hew", "import std.fs;\n\nfn main() {}\n");
 
         let (_output, state) = check_file_with_state(
             &input,
@@ -3692,11 +3692,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         .expect("canonical explicit stdlib module");
         let project_dir = dir.path().join("external-project");
         fs::create_dir(&project_dir).expect("create external project");
-        let input = write_source(
-            &project_dir,
-            "main.hew",
-            "import std::fs;\n\nfn main() {}\n",
-        );
+        let input = write_source(&project_dir, "main.hew", "import std.fs;\n\nfn main() {}\n");
 
         let (_output, state) = check_file_with_state(
             &input,
@@ -3735,11 +3731,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         ))
         .canonicalize()
         .expect("canonical package file");
-        let input = write_source(
-            dir.path(),
-            "main.hew",
-            "import mypkg::fs;\n\nfn main() {}\n",
-        );
+        let input = write_source(dir.path(), "main.hew", "import mypkg.fs;\n\nfn main() {}\n");
 
         let (_output, state) = check_file_with_state(
             &input,
@@ -3783,7 +3775,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import hew::db::sqlite;\n\nfn main() {}\n",
+            "import hew.db.sqlite;\n\nfn main() {}\n",
         );
 
         let (_output, state) = check_file_with_state(
@@ -3828,7 +3820,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import ecosystem::db::postgres;\n\nfn main() {}\n",
+            "import ecosystem.db.postgres;\n\nfn main() {}\n",
         );
 
         let (_output, state) = check_file_with_state(
@@ -3868,7 +3860,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import actor::monitor;\n\nfn main() -> i64 { 0 }\n",
+            "import actor.monitor;\n\nfn main() -> i64 { 0 }\n",
         );
 
         let (_output, state) = check_file_with_state(
@@ -4136,7 +4128,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
 
         // Use a user-space module (no std::/hew::/ecosystem:: prefix) so
         // validate_imports_against_manifest actually checks it.
-        let source = "import mylib::utils;\nfn main() {}\n";
+        let source = "import mylib.utils;\nfn main() {}\n";
         let program = parse_source(source, "main.hew").expect("source should parse");
         let options = FrontendOptions {
             project_dir: Some(dir.path().to_path_buf()),
@@ -4515,7 +4507,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
 
         let dir = tempfile::tempdir().expect("create temp dir");
         let source = concat!(
-            "import std::misc::log;\n",
+            "import std.misc.log;\n",
             "fn main() {\n",
             "    log.set_format(log.JSON);\n",
             "    log.set_format(log.TEXT);\n",
@@ -4595,7 +4587,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         // Source file lives inside the fake root.
         let src_dir = fake_root.path().join("examples");
         fs::create_dir_all(&src_dir).expect("create examples dir");
-        let source = "import std::fs;\n\nfn main() -> i64 { 0 }\n";
+        let source = "import std.fs;\n\nfn main() -> i64 { 0 }\n";
         let input = write_source(&src_dir, "prog.hew", source);
 
         let options = FrontendOptions {
@@ -4647,7 +4639,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         // Source file lives inside the fake root.
         let src_dir = fake_root.path().join("examples");
         fs::create_dir_all(&src_dir).expect("create examples dir");
-        let source = "import std::fs;\n\nfn main() -> i64 { 0 }\n";
+        let source = "import std.fs;\n\nfn main() -> i64 { 0 }\n";
         let input = write_source(&src_dir, "prog.hew", source);
 
         // A separate tempdir that also contains std/fs.hew but is NOT a Hew
@@ -4723,8 +4715,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         // A plain function call exercises path resolution without needing
         // full stdlib ABI support for the imported functions.
         let source = concat!(
-            "import std::path;\n",
-            "import std::fs;\n",
+            "import std.path;\n",
+            "import std.fs;\n",
             "\n",
             "fn main() -> i64 { 0 }\n",
         );
@@ -4807,7 +4799,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let imported_input = write_source(
             dir.path(),
             "main.hew",
-            "import std::concurrency::{ScopeError};\n\
+            "import std.concurrency.{ScopeError};\n\
              fn main() {\n\
                  let error: ScopeError<i64> = ScopeError {\n\
                      primary: 1, also_failed: [], cancelled_count: 0\n\
@@ -4846,7 +4838,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let foreign_input = write_source(
             dir.path(),
             "foreign_main.hew",
-            "import spoofed::{LambdaActorHandle};\n\
+            "import spoofed.{LambdaActorHandle};\n\
              fn main() { let _ = LambdaActorHandle {}; }\n",
         );
         let foreign = lower_to_mir(&foreign_input);

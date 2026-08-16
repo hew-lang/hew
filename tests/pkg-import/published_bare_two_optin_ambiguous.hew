@@ -6,8 +6,8 @@
 // publish none of its candidates rather than silently first-winning a layout.
 //
 // Harness verb: hew check (negative — see run.sh).
-import hew::widgetpub8::{ Gadget };
-import hew::widgetpub64::{ Gadget };
+import hew.widgetpub8.{ Gadget };
+import hew.widgetpub64.{ Gadget };
 
 fn main() {
     let a = Gadget { v: 7 };

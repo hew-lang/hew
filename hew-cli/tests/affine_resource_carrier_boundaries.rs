@@ -58,7 +58,7 @@ fn main() -> i64 {
 ";
 
 const ARENA_BODY: &str = r#"
-import std::arena;
+import std.arena;
 
 fn main() -> i64 {
     let store: arena.Arena<Token> = arena.new();
@@ -122,7 +122,7 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_SENDER_CLONE_BODY: &str = r"
-import std::channel::channel;
+import std.channel.channel;
 
 fn main() -> i64 {
     let (tx, _rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
@@ -134,7 +134,7 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_RECEIVER_CLONE_BODY: &str = r"
-import std::channel::channel;
+import std.channel.channel;
 
 fn main() -> i64 {
     let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
@@ -148,7 +148,7 @@ fn main() -> i64 {
 /// shape, which moves `rx` into the descriptor-backed Vec then lets the Vec
 /// close it at scope exit.
 const CHANNEL_RECEIVER_MOVE_BODY: &str = r"
-import std::channel::channel;
+import std.channel.channel;
 
 fn main() -> i64 {
     let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
@@ -159,7 +159,7 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_RECEIVER_GET_BODY: &str = r"
-import std::channel::channel;
+import std.channel.channel;
 
 fn main() -> i64 {
     let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
@@ -170,7 +170,7 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_RECEIVER_INDEX_BODY: &str = r"
-import std::channel::channel;
+import std.channel.channel;
 
 fn main() -> i64 {
     let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
@@ -181,7 +181,7 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_RECEIVER_SLICE_BODY: &str = r"
-import std::channel::channel;
+import std.channel.channel;
 
 fn main() -> i64 {
     let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
@@ -192,7 +192,7 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_RECEIVER_ITER_BODY: &str = r"
-import std::channel::channel;
+import std.channel.channel;
 
 fn main() -> i64 {
     let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
@@ -203,7 +203,7 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_RECEIVER_COPY_PUSH_BODY: &str = r"
-import std::channel::channel;
+import std.channel.channel;
 
 fn main() -> i64 {
     let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
@@ -214,7 +214,7 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_RECEIVER_COPY_SET_BODY: &str = r"
-import std::channel::channel;
+import std.channel.channel;
 
 fn main() -> i64 {
     let (_tx1, rx1): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);

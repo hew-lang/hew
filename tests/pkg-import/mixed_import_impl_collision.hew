@@ -8,7 +8,7 @@
 // then had no MIR body and failed closed (CallableUnsupportedInMir / wrong
 // dispatch). The provenance-based skip (by module origin, not name) leaves the
 // package impl untouched, so both `local.rows()` and `r.rows()` resolve.
-import hew::testffi;
+import hew.testffi;
 import "mixed_import_impl_collision_lib.hew";
 
 fn main() {

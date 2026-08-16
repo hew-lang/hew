@@ -127,7 +127,7 @@ fn timeout_await_operation_preserves_ordered_subsumption_spine() {
 fn channel_recv_deadline_preserves_await_and_method_occurrences() {
     let output = support::checker_pipeline::lower_through_checker_with_modules(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         actor Worker {
             receive fn run() {

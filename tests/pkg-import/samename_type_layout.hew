@@ -18,9 +18,9 @@
 // Expected: a=7 then b=1000 — each `Widget` keeps its own field width under
 // qualified layout registration. The underlying registry key qualification fix
 // (same-name type layout via module-qualified identity) is green.
-import hew::widgeti8;
+import hew.widgeti8;
 
-import hew::widgeti64;
+import hew.widgeti64;
 
 // Reading through a module-qualified parameter type pins each field load to its
 // own layout: an i8 load from the narrow `Widget`, an i64 load from the wide

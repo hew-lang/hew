@@ -245,7 +245,7 @@ fn tcp_loopback_read_string_roundtrip_returns_written_bytes() {
         &path,
         format!(
             r#"
-import std::net;
+import std.net;
 
 actor EchoServer {{
     receive fn connect_send_and_read(unused: i64) {{
@@ -2703,7 +2703,7 @@ fn run_imports_std_io_and_round_trips_stdin_to_stdout() {
     let hew_src = dir.path().join("echo_stdin.hew");
     std::fs::write(
         &hew_src,
-        "import std::io;\n\
+        "import std.io;\n\
          \n\
          fn main() {\n\
          \x20   let line = io.read_line();\n\
@@ -2746,7 +2746,7 @@ fn run_fstring_interpolates_primitives_via_display() {
     let hew_src = dir.path().join("fstring_primitives.hew");
     std::fs::write(
         &hew_src,
-        "import std::io;\n\
+        "import std.io;\n\
          \n\
          fn main() {\n\
          \x20   let x: i64 = 42;\n\
@@ -2784,7 +2784,7 @@ fn run_fstring_interpolates_bool_and_int() {
     let hew_src = dir.path().join("fstring_bool_int.hew");
     std::fs::write(
         &hew_src,
-        "import std::io;\n\
+        "import std.io;\n\
          \n\
          fn main() {\n\
          \x20   let b: bool = true;\n\
@@ -2868,7 +2868,7 @@ fn run_fstring_dispatches_user_defined_display() {
     let hew_src = dir.path().join("fstring_user_display.hew");
     std::fs::write(
         &hew_src,
-        "import std::io;\n\
+        "import std.io;\n\
          \n\
          type Point { x: i64; }\n\
          \n\
@@ -4209,7 +4209,7 @@ fn run_imports_json_opaque_handle_round_trips() {
     let hew_src = dir.path().join("json_opaque.hew");
     std::fs::write(
         &hew_src,
-        "import std::encoding::json;\n\
+        "import std.encoding.json;\n\
          \n\
          fn main() -> i32 {\n\
          \x20   let v = json.from_int(42);\n\
@@ -4250,7 +4250,7 @@ fn run_imports_json_fluent_builders_round_trip() {
     let hew_src = dir.path().join("json_builders.hew");
     std::fs::write(
         &hew_src,
-        "import std::encoding::json;\n\
+        "import std.encoding.json;\n\
          \n\
          fn main() -> i32 {\n\
          \x20   let obj = json.object()\n\
@@ -4311,7 +4311,7 @@ fn run_tuple_of_owned_handles_returns_and_drops_exactly_once() {
     let hew_src = dir.path().join("tuple_handle_drop.hew");
     std::fs::write(
         &hew_src,
-        "import std::stream;\n\
+        "import std.stream;\n\
          \n\
          fn make_pair() -> (ProbeSink<string>, Stream<string>) {\n\
          \x20   stream.pipe(8)\n\
@@ -4351,7 +4351,7 @@ fn run_whole_tuple_of_handles_drops_each_member_once() {
     let hew_src = dir.path().join("whole_tuple_handle_drop.hew");
     std::fs::write(
         &hew_src,
-        "import std::stream;\n\
+        "import std.stream;\n\
          \n\
          fn main() {\n\
          \x20   let pair = stream.pipe(8);\n\
@@ -4503,7 +4503,7 @@ fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
 fn returned_let_bound_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
-        "import std::stream;\n\
+        "import std.stream;\n\
          fn make_pair() -> (ProbeSink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let pair = (s, r);\n\
@@ -4529,7 +4529,7 @@ fn returned_let_bound_tuple_callee_does_not_drop_members() {
 fn returned_if_tail_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
-        "import std::stream;\n\
+        "import std.stream;\n\
          fn make_pair(c: bool) -> (ProbeSink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   if c { (s, r) } else { (s, r) }\n\
@@ -4553,7 +4553,7 @@ fn returned_if_tail_tuple_callee_does_not_drop_members() {
 fn returned_match_tail_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
-        "import std::stream;\n\
+        "import std.stream;\n\
          fn make_pair(c: bool) -> (ProbeSink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   match c {\n\
@@ -4614,7 +4614,7 @@ fn suspending_stream_recv_send_flip_in_execution_context() {
         // `stream.StreamPair`, not a private opaque, and the free consumes it.
         // A private handle type or a borrowing free is a real contract
         // disagreement and the checker rejects it.
-        "import std::stream;\n\
+        "import std.stream;\n\
          extern \"C\" {\n\
          \x20   fn hew_stream_channel(capacity: i64) -> stream.StreamPair;\n\
          \x20   fn hew_stream_pair_sink_bytes(pair: stream.StreamPair) -> ProbeSink<bytes>;\n\
@@ -4656,7 +4656,7 @@ fn suspending_stream_recv_send_flip_in_execution_context() {
 #[test]
 fn suspending_listener_accept_flip_in_execution_context() {
     let dump = mir_checked_dump(
-        "import std::net;\n\
+        "import std.net;\n\
          actor Acceptor {\n\
          \x20   let addr: string;\n\
          \x20   receive fn go(unused: i64) {\n\
@@ -4687,7 +4687,7 @@ fn suspending_listener_accept_flip_in_execution_context() {
 #[test]
 fn blocking_listener_accept_in_main_keeps_blocking_call() {
     let dump = mir_checked_dump(
-        "import std::net;\n\
+        "import std.net;\n\
          fn main() {\n\
          \x20   let listener = net.listen(\"127.0.0.1:0\");\n\
          \x20   let conn = await listener.accept();\n\
@@ -4778,7 +4778,7 @@ fn blocking_remote_ask_in_main_keeps_blocking_terminator() {
 fn returned_nested_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
-        "import std::stream;\n\
+        "import std.stream;\n\
          fn make_nested() -> ((ProbeSink<string>,), Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let inner = (s,);\n\
@@ -4806,7 +4806,7 @@ fn returned_nested_tuple_callee_does_not_drop_members() {
 fn returned_record_of_handles_callee_does_not_drop_fields() {
     require_codegen();
     let closes = callee_handle_close_drops(
-        "import std::stream;\n\
+        "import std.stream;\n\
          type Pipe { sink: ProbeSink<string>, input: Stream<string> }\n\
          fn make_pipe() -> Pipe {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
@@ -4929,7 +4929,7 @@ fn run_let_bound_tuple_return_no_double_free() {
     let hew_src = dir.path().join("let_bound_return.hew");
     std::fs::write(
         &hew_src,
-        "import std::stream;\n\
+        "import std.stream;\n\
          fn make_pair() -> (ProbeSink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let pair = (s, r);\n\
@@ -4963,7 +4963,7 @@ fn run_if_tail_tuple_return_no_double_free() {
     let hew_src = dir.path().join("if_tail_return.hew");
     std::fs::write(
         &hew_src,
-        "import std::stream;\n\
+        "import std.stream;\n\
          fn make_pair(c: bool) -> (ProbeSink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   if c { (s, r) } else { (s, r) }\n\
@@ -4999,7 +4999,7 @@ fn run_record_of_handles_return_drops_each_field_once() {
     let hew_src = dir.path().join("record_handle_return.hew");
     std::fs::write(
         &hew_src,
-        "import std::stream;\n\
+        "import std.stream;\n\
          type Pipe { sink: ProbeSink<string>, input: Stream<string> }\n\
          fn make_pipe() -> Pipe {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
@@ -5310,7 +5310,7 @@ fn run_selectively_imported_const_binds_bare_like_fn() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import src::reasons::reasons::{MAX_RETRIES, retries_label};\n\
+        "import src.reasons.reasons.{MAX_RETRIES, retries_label};\n\
          fn main() {\n\
          \x20   println(retries_label());\n\
          \x20   println(f\"max: {MAX_RETRIES}\");\n\
@@ -5507,7 +5507,7 @@ fn run_package_module_actor_spawns_and_calls() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::bank;\n\
+        "import hew.bank;\n\
          \n\
          fn report(label: string, r: Result<i64, AskError>) {\n\
          \x20   match r {\n\
@@ -5577,7 +5577,7 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::conn::{Inner, Outer};\n\
+        "import hew.conn.{Inner, Outer};\n\
          fn main() {\n\
          \x20   let i = spawn Inner();\n\
          \x20   let o = spawn Outer(inner: i);\n\
@@ -5628,7 +5628,7 @@ fn run_local_record_shadows_imported_actor_short_name() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::m;\n\
+        "import hew.m;\n\
          \n\
          type Inner { x: i64 }\n\
          \n\
@@ -5685,7 +5685,7 @@ fn run_non_pub_imported_actor_fails_closed() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::secret;\n\
+        "import hew.secret;\n\
          fn main() {\n\
          \x20   let c = spawn secret.Hidden();\n\
          \x20   match await c.bump() {\n\
@@ -5743,8 +5743,8 @@ fn run_two_packages_same_actor_name_both_spawn_and_ask() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::bank;\n\
-         import hew::store;\n\
+        "import hew.bank;\n\
+         import hew.store;\n\
          fn main() {\n\
          \x20   let a = spawn bank.Account();\n\
          \x20   let s = spawn store.Account();\n\
@@ -5797,7 +5797,7 @@ fn run_root_and_package_same_actor_name_route_independently() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::bank;\n\
+        "import hew.bank;\n\
          actor Account {\n\
          \x20   var n: i64 = 0;\n\
          \x20   receive fn who() -> i64 { 111 }\n\
@@ -5861,8 +5861,8 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::bank;\n\
-         import hew::store;\n\
+        "import hew.bank;\n\
+         import hew.store;\n\
          supervisor Pair {\n\
          \x20   strategy: one_for_one;\n\
          \x20   intensity: 5 within 60s;\n\
@@ -6087,7 +6087,7 @@ fn run_private_imported_actor_does_not_route_to_root_actor() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::secret;\n\
+        "import hew.secret;\n\
          actor Account {\n\
          \x20   var n: i64 = 0;\n\
          \x20   receive fn id() -> i64 { 111 }\n\
@@ -6152,7 +6152,7 @@ fn run_non_actor_export_does_not_route_to_root_actor() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::secret;\n\
+        "import hew.secret;\n\
          actor Account {\n\
          \x20   var n: i64 = 0;\n\
          \x20   receive fn id() -> i64 { 111 }\n\

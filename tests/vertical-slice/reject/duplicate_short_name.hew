@@ -1,4 +1,4 @@
 import alpha;
-import beta::alpha;
+import beta.alpha;
 
 fn main() -> i64 { 0 }

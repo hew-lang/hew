@@ -5,7 +5,7 @@ use hew_types::{
 use std::collections::BTreeSet;
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
-    let source = format!("import std::math;\n{source}");
+    let source = format!("import std.math;\n{source}");
     let parsed = hew_parser::parse(&source);
     assert!(
         parsed.errors.is_empty(),
@@ -226,7 +226,7 @@ fn math_intrinsic_source_catalog_and_runtime_inventory_are_total() {
 #[test]
 fn math_intrinsic_module_alias_retains_canonical_typed_target() {
     assert_main_tail_call_resolves(
-        "import std::math as trig; fn main() -> f64 { trig.sqrt(9.0) }",
+        "import std.math as trig; fn main() -> f64 { trig.sqrt(9.0) }",
         "sqrt",
         MathIntrinsic::Sqrt,
     );

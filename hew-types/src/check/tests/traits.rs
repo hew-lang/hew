@@ -8,7 +8,7 @@ pub(super) use super::*;
 fn closable_consume_authority_matches_exact_impl_trait_identity() {
     let parsed = hew_parser::parse(
         r"
-        import std::io::closable;
+        import std.io.closable;
         type Probe { value: i64; }
         impl Closable for Probe {
             fn close(value: Probe) -> Result<(), closable.CloseError> { Ok(()) }

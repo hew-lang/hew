@@ -1,10 +1,10 @@
 // Positive control for the owner-preserving surfaces currently supported end to
 // end by `hew check`: module-qualified functions and qualified type values
 // returned by module factories. Trait-alias acceptance has dedicated fixtures.
-import ambiguity::function_left as left_fn;
-import ambiguity::function_right as right_fn;
-import ambiguity::type_left as left_type;
-import ambiguity::type_right as right_type;
+import ambiguity.function_left as left_fn;
+import ambiguity.function_right as right_fn;
+import ambiguity.type_left as left_type;
+import ambiguity.type_right as right_type;
 fn main() {
     println(left_fn.clash_fn());
     println(right_fn.clash_fn());

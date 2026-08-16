@@ -5,7 +5,7 @@
 //! A downstream package (`hew::reexchaina`) re-imports `Mid` and declares its own
 //! sub-trait, so the full apex-to-origin chain crosses two re-export hops.
 
-import hew::reexbase::{Base};
+import hew.reexbase.{Base};
 
 /// One level above `Base`, itself re-exported downstream.
 pub trait Mid: Base {

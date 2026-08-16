@@ -3,7 +3,7 @@ extern "C" {
 }
 
 fn main() {
-    let xs: Vec<((bytes, i64), bool)> = Vec::new();
+    let xs: Vec<((bytes, i64), bool)> = Vec.new();
     let a: bytes = unsafe {
         hew_bytes_from_str("ab")
     };

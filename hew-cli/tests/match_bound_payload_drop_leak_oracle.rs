@@ -79,7 +79,7 @@ fn main() {\n\
 }\n";
 
 const NESTED_ENUM_CANCEL_SCRIBBLE_SOURCE: &str = r#"
-import std::net;
+import std.net;
 
 extern "C" {
     fn usleep(usec: i32) -> i32;

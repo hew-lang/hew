@@ -20,7 +20,7 @@ impl ActorMsg for Logger {
 }
 
 fn main() {
-    let found: Result<RemotePid<Logger>, LookupError> = Node::lookup("logger");
+    let found: Result<RemotePid<Logger>, LookupError> = Node.lookup("logger");
     match found {
         Ok(peer) => {
             let sent: Result<(), SendError> = peer.send(7);

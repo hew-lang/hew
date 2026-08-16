@@ -5,14 +5,14 @@
 // `Vec::into_iter`. Three entries → count 3. The map is shared (Capture), not
 // consumed, so it stays usable after the pipeline; a wrong count or a dead map
 // returns 90+ to flag the miss. Exit 3.
-import std::iter;
+import std.iter;
 
 pub fn main() -> i64 {
-    let m: HashMap<i64, i64> = HashMap::new();
+    let m: HashMap<i64, i64> = HashMap.new();
     m.insert(1, 10);
     m.insert(2, 20);
     m.insert(3, 30);
-    let n = iter::count(m.into_iter());
+    let n = iter.count(m.into_iter());
     if m.len() != 3 {
         return 99;
     }

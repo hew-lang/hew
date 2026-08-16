@@ -5,6 +5,6 @@ record Key {
 }
 
 fn main() -> i64 {
-    let _m = HashMap::<Key, i64>::new();
+    let _m = HashMap<Key, i64>.new();
     0
 }

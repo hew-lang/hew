@@ -1,4 +1,4 @@
-import std::testing;
+import std.testing;
 
 extern "C" {
     fn hew_bytes_from_str(s: string) -> bytes;
@@ -24,13 +24,19 @@ fn test_nested_tuple_return_drops_cleanly() {
 
 #[test]
 fn test_vec_clone_deep_copies_nested_tuple_fields() {
-    let xs: Vec<((string, i64), bool)> = Vec::new();
+    let xs: Vec<((string, i64), bool)> = Vec.new();
     xs.push((("a", 1), true));
     xs.push((("b", 2), false));
     let ys = xs.clone();
     xs.set(0, (("zzz", 9), true));
-    let first = match ys.get(0) { Some(x) => x, None => panic("ys.get(0) None") };
-    let second = match ys.get(1) { Some(x) => x, None => panic("ys.get(1) None") };
+    let first = match ys.get(0) {
+        .Some(x) => x,
+        .None => panic("ys.get(0) None"),
+    };
+    let second = match ys.get(1) {
+        .Some(x) => x,
+        .None => panic("ys.get(1) None"),
+    };
     let (f_inner, f_flag) = first;
     let (f_s, f_n) = f_inner;
     let (s_inner, s_flag) = second;
@@ -46,7 +52,7 @@ fn test_vec_clone_deep_copies_nested_tuple_fields() {
 
 #[test]
 fn test_vec_clone_drops_nested_bytes_leaf_cleanly() {
-    let xs: Vec<((bytes, i64), bool)> = Vec::new();
+    let xs: Vec<((bytes, i64), bool)> = Vec.new();
     let a: bytes = unsafe {
         hew_bytes_from_str("ab")
     };
@@ -56,8 +62,14 @@ fn test_vec_clone_drops_nested_bytes_leaf_cleanly() {
     xs.push(((a, 11), true));
     xs.push(((b, 12), false));
     let ys = xs.clone();
-    let first = match ys.get(0) { Some(x) => x, None => panic("ys.get(0) None") };
-    let second = match ys.get(1) { Some(x) => x, None => panic("ys.get(1) None") };
+    let first = match ys.get(0) {
+        .Some(x) => x,
+        .None => panic("ys.get(0) None"),
+    };
+    let second = match ys.get(1) {
+        .Some(x) => x,
+        .None => panic("ys.get(1) None"),
+    };
     let (f_inner, f_flag) = first;
     let (f_b, f_n) = f_inner;
     let (s_inner, s_flag) = second;
@@ -73,13 +85,19 @@ fn test_vec_clone_drops_nested_bytes_leaf_cleanly() {
 
 #[test]
 fn test_vec_clone_drops_nested_record_leaf_cleanly() {
-    let xs: Vec<((Rec, i64), bool)> = Vec::new();
+    let xs: Vec<((Rec, i64), bool)> = Vec.new();
     xs.push(((Rec { s: "hi" }, 21), true));
     xs.push(((Rec { s: "bye" }, 22), false));
     let ys = xs.clone();
     xs.set(0, ((Rec { s: "changed" }, 99), true));
-    let first = match ys.get(0) { Some(x) => x, None => panic("ys.get(0) None") };
-    let second = match ys.get(1) { Some(x) => x, None => panic("ys.get(1) None") };
+    let first = match ys.get(0) {
+        .Some(x) => x,
+        .None => panic("ys.get(0) None"),
+    };
+    let second = match ys.get(1) {
+        .Some(x) => x,
+        .None => panic("ys.get(1) None"),
+    };
     let (f_inner, f_flag) = first;
     let (f_rec, f_n) = f_inner;
     let (s_inner, s_flag) = second;

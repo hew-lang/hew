@@ -59,7 +59,7 @@ const SLOPE_TOLERANCE: usize = 16;
 /// the fork environment's Rc callback is the sole release site.
 fn generic_fork_source(iters: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          \n\
          fn generic_str_sink<T>(s: string) {{}}\n\
          \n\

@@ -29,10 +29,10 @@ fn show_named(v: dyn Named) {
 
 fn main() {
     let x: dyn Named = P { n: "p0" };
-    let v: Vec<dyn Named> = Vec::new();
+    let v: Vec<dyn Named> = Vec.new();
     v.push(x);
     match v.get(0) {
-        Some(e) => {
+        Option.Some(e) => {
             show_named(e);
         },
         None => println("missing"),

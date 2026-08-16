@@ -17,7 +17,7 @@
 //
 // Harness verb: hew run
 // Expected: the aliased construction builds `Payload` and reads `code` as 11.
-import hew::aliassrc::{ Payload as Other };
+import hew.aliassrc.{Payload as Other};
 
 fn main() {
     let v = Other { code: 11 };

@@ -11,7 +11,7 @@
 //
 // Harness verb: hew run
 // Expected: the stored payload of the second insertion ("world").
-import hew::privarena;
+import hew.privarena;
 
 fn main() {
     let arena: privarena.Arena<string> = privarena.new();

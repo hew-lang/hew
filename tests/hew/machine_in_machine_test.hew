@@ -18,7 +18,7 @@
 //! fix. Each test asserts the EXACT embedded payload string, so a zero-sized or
 //! misaligned payload fails rather than reading back an accidental value.
 
-import std::testing;
+import std.testing;
 
 // ── Order A: embedded machine declared FIRST (this always worked) ─────────
 
@@ -64,8 +64,8 @@ fn payload_of_a(o: OuterA) -> string {
 
 #[test]
 fn machine_in_machine_embedded_declared_first() {
-    let o = OuterA::Holding {
-        inner: InnerA::Ready {
+    let o = OuterA.Holding {
+        inner: InnerA.Ready {
             payload: "embedded-first-payload",
         },
     };
@@ -116,8 +116,8 @@ fn payload_of_b(o: OuterB) -> string {
 
 #[test]
 fn machine_in_machine_container_declared_first() {
-    let o = OuterB::HoldingB {
-        inner: InnerB::ReadyB {
+    let o = OuterB.HoldingB {
+        inner: InnerB.ReadyB {
             payload: "container-first-payload",
         },
     };

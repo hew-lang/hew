@@ -1,4 +1,4 @@
-import std::link_monitor::{MonitorRef};
+import std.link_monitor.{MonitorRef};
 
 #[resource]
 type Handle {

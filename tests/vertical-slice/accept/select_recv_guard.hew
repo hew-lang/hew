@@ -3,7 +3,7 @@
 // checking OK. The join-branch validator that rejects `join { rx.recv() }`
 // (see reject/join_branch_not_actor.hew) is join-specific and must NOT regress
 // select's legitimate recv/stream arms.
-import std::channel::channel;
+import std.channel.channel;
 
 actor Worker {
     #[on(start)]

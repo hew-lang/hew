@@ -180,7 +180,7 @@ fn early_lifecycle_seed_uses_the_importing_peer_file_index() {
     let failure = hew_parser::parse("pub enum CrashKind { Crashed; }");
     let first = hew_parser::parse("pub fn untouched() {}");
     let mut second = hew_parser::parse(
-        "import std::failure::{ CrashKind as Kind }; pub type Holder { kind: Kind; }",
+        "import std.failure.{ CrashKind as Kind }; pub type Holder { kind: Kind; }",
     );
     for parsed in [&failure, &first, &second] {
         assert!(
@@ -295,7 +295,7 @@ fn resolved_module_copy_reenters_declaring_file_import_scope() {
     let mut color = hew_parser::parse("pub enum Color { Blue(i64); }");
     let mut consumer = hew_parser::parse(
         r"
-        import hew::aliassrc::{ Color as Hue };
+        import hew.aliassrc.{ Color as Hue };
         pub type AliasBox { item: Hue; }
         pub enum AliasWrap { Has(Hue); }
         pub fn make() -> Hue { Hue::Blue(7) }
@@ -311,7 +311,7 @@ fn resolved_module_copy_reenters_declaring_file_import_scope() {
         }
         ",
     );
-    let mut root = hew_parser::parse("import hew::deepalias;");
+    let mut root = hew_parser::parse("import hew.deepalias;");
     for parsed in [&color, &consumer, &root] {
         assert!(
             parsed.errors.is_empty(),
@@ -807,8 +807,8 @@ fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
     assert!(right.errors.is_empty());
     let mut root = hew_parser::parse(
         r"
-        import left::render as left_render;
-        import right::render as right_render;
+        import left.render as left_render;
+        import right.render as right_render;
         fn main() {}
         ",
     );
@@ -864,7 +864,7 @@ fn user_channel_lookalike_retains_nested_sender_and_receiver_identity() {
 
     let mut root = hew_parser::parse(
         r"
-        import std::channel::channel as ch;
+        import std.channel.channel as ch;
         fn probe(tx: ch.Sender, rx: ch.Receiver) {}
         ",
     );
@@ -1045,7 +1045,7 @@ fn bare_import_type_registers_qualified_only() {
     );
 }
 
-/// P3 — an explicit `import m::{ Reply };` restores the bare binding.
+/// P3 — an explicit `import m.{ Reply };` restores the bare binding.
 #[test]
 fn named_import_type_publishes_bare_binding() {
     let reply = make_pub_struct("Reply", "code");
@@ -1113,7 +1113,7 @@ fn named_import_type_alias_publishes_alias_binding() {
     );
 }
 
-/// P3-alias-identity — an aliased opt-in (`import m::{ Reply as R }`) makes the
+/// P3-alias-identity — an aliased opt-in (`import m.{ Reply as R }`) makes the
 /// bare binding `R` resolve to the SOURCE identity `myapp.mod_a.Reply`, not a
 /// phantom `myapp.mod_a.R`. This is the resolver half of the aliased-import fix: the published-bare
 /// map carries the owner-qualified source name, so `published_bare_type_qualified`
@@ -1149,7 +1149,7 @@ fn alias_import_resolves_bare_binding_to_source_identity() {
     );
 }
 
-/// P3-alias-no-conflation — `import m::{ Reply as Other }` where `m` ALSO exports
+/// P3-alias-no-conflation — `import m.{ Reply as Other }` where `m` ALSO exports
 /// a DISTINCT `Other` must bind the alias to the SOURCE `m.Reply`, never the
 /// same-named export `m.Other`. Source-name matching opts in only `Reply`; the
 /// real `Other` is not opted in by the alias, and the published-bare map records
@@ -2001,7 +2001,7 @@ fn module_qualified_const_field_access_resolves() {
     // Parse a function that references the const via qualified access.
     let mut root = hew_parser::parse(
         r"
-import myapp::config;
+import myapp.config;
 
 fn caller() -> i64 {
     config.LIMIT
@@ -2056,7 +2056,7 @@ fn module_qualified_const_undefined_emits_targeted_diagnostic() {
     };
     let mut root = hew_parser::parse(
         r"
-import myapp::config;
+import myapp.config;
 
 fn caller() -> i64 {
     config.NONEXISTENT

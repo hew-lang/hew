@@ -1,6 +1,6 @@
 actor VecRemoveCrasher {
     receive fn boom() {
-        let xs: Vec<i64> = Vec::new();
+        let xs: Vec<i64> = Vec.new();
         xs.push(1);
         xs.remove(99);
     }

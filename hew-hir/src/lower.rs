@@ -38214,7 +38214,7 @@ impl Widget {
                 HirDiagnosticKind::ImportMissing { module, name }
                     if module == "std::fs"
                         && name == "fs.read"
-                        && diagnostic.note == "add 'import std::fs;' at the top of the file"
+                        && diagnostic.note == "add 'import std.fs;' at the top of the file"
             )),
             "expected missing import diagnostic for fs.read, got {:#?}",
             lowered.diagnostics
@@ -38252,7 +38252,7 @@ impl Widget {
                 HirDiagnosticKind::ImportMissing { module, name }
                     if module == "std::fs"
                         && name == "fs.read"
-                        && diagnostic.note == "add 'import std::fs;' at the top of the file"
+                        && diagnostic.note == "add 'import std.fs;' at the top of the file"
             )),
             "expected missing import diagnostic for fs.read call, got {:#?}",
             lowered.diagnostics
@@ -39438,7 +39438,7 @@ impl Widget {
         );
         let mut root = hew_parser::parse(
             r"
-            import hew::aliassrc::{ Color as Hue };
+            import hew.aliassrc.{ Color as Hue };
 
             fn color_value(h: Hue) -> i64 {
                 match h {
@@ -39554,8 +39554,8 @@ impl Widget {
             }
         ";
         let root_with_alpha_first = r"
-            import hew::alpha::{ Color as Hue, Switch };
-            import hew::beta::{ Color as Shade };
+            import hew.alpha.{ Color as Hue, Switch };
+            import hew.beta.{ Color as Shade };
 
             fn alpha_value(value: Hue) -> i64 {
                 match value { Hue::AlphaOnly => 2, Hue::Red(v) => v }
@@ -39570,8 +39570,8 @@ impl Widget {
             }
         ";
         let root_with_beta_first = r"
-            import hew::beta::{ Color as Shade, Switch };
-            import hew::alpha::{ Color as Hue };
+            import hew.beta.{ Color as Shade, Switch };
+            import hew.alpha.{ Color as Hue };
 
             fn alpha_value(value: Hue) -> i64 {
                 match value { Hue::AlphaOnly => 2, Hue::Red(v) => v }

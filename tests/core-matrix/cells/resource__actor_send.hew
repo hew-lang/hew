@@ -9,7 +9,7 @@ impl Tok {
     }
 }
 
-actor TestSink {
+actor Sink {
     var hits: i64;
 
     receive fn take(v: Tok) -> i64 {
@@ -22,9 +22,9 @@ actor TestSink {
 
 fn main() {
     let x = Tok { id: 1 };
-    let s = spawn TestSink(hits: 0);
+    let s = spawn Sink(hits: 0);
     match await s.take(x) {
-        Ok(n) => println(f"hits {n}"),
+        Result.Ok(n) => println(f"hits {n}"),
         Err(_) => println("err"),
     }
 }

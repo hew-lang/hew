@@ -139,7 +139,7 @@ fn manifest_undeclared_import_rejected_identically() {
     let main_hew = workspace.path().join("main.hew");
     fs::write(
         &main_hew,
-        "import some::external::lib;\n\nfn main() -> i64 { return 0; }\n",
+        "import some.external.lib;\n\nfn main() -> i64 { return 0; }\n",
     )
     .expect("write main.hew");
 
@@ -291,7 +291,7 @@ fn type_error_in_imported_module_reported_identically() {
     let main_hew = workspace.path().join("main.hew");
     fs::write(
         &main_hew,
-        "import siblingpkg::helper;\n\nfn main() -> i64 {\n    return helper.value();\n}\n",
+        "import siblingpkg.helper;\n\nfn main() -> i64 {\n    return helper.value();\n}\n",
     )
     .expect("write main.hew");
 

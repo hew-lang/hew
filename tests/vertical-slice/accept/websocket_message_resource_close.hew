@@ -1,4 +1,4 @@
-import std::net::websocket;
+import std.net.websocket;
 
 fn close_message(value: websocket.Message) {
     value.close();

@@ -53,7 +53,7 @@ fn main() {{\n\
 }
 
 const XML_STRING_TEMP_SOURCE: &str = "\
-import std::encoding::xml;\n\
+import std.encoding.xml;\n\
 fn parse_result(s: string) -> Result<xml.Node, string> {\n\
     if xml.is_wellformed(s) { Ok(xml.parse(s)) } else { Err(\"not well-formed\") }\n\
 }\n\
@@ -65,7 +65,7 @@ fn main() {\n\
 }\n";
 
 const XML_PROJECTED_HELPER_CRASH_SOURCE: &str = r#"
-import std::encoding::xml;
+import std.encoding.xml;
 
 enum Pair {
     Both(xml.Node, string);

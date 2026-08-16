@@ -12,16 +12,16 @@ impl ActorMsg for Worker {
 }
 
 fn main() -> i64 {
-    Node::set_transport("tcp");
-    Node::load_keys("/tmp/hew-cap13-identity-aggregates.key");
+    Node.set_transport("tcp");
+    Node.load_keys("/tmp/hew-cap13-identity-aggregates.key");
     Node.start("127.0.0.1:0");
 
-    let node_id = match Node::id() {
+    let node_id = match Node.id() {
         Some(id) => id,
         None => return 1,
     };
     let worker = spawn Worker();
-    Node::register("identity-worker", worker);
+    Node.register("identity-worker", worker);
     let pid = match Node.lookup<Worker>("identity-worker") {
         Ok(found) => found,
         Err(_) => return 2,
@@ -52,6 +52,6 @@ fn main() -> i64 {
     if node_text.len() != 32 { return 11; }
     if location_text != pid_text { return 12; }
 
-    Node::shutdown();
+    Node.shutdown();
     0
 }

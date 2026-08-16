@@ -850,7 +850,7 @@ fi
 echo "PASS ${ambig_fixture}"
 
 # Same-bare-name publication must fail at the checker/frontend boundary in
-# every namespace, for both named and glob imports. Each fixture imports a pair
+# every namespace. Each fixture imports a pair
 # of single-symbol modules so an unrelated trait or generated machine method
 # cannot mask the namespace under test. A downstream HIR/MIR/codegen rejection
 # is not sufficient: the source binding itself is ambiguous and must be rejected
@@ -864,9 +864,15 @@ assert_sameleaf_binding_ambiguous() {
     echo "${out}" >&2
     exit 1
   }
-  if ! grep -qE "ambiguous.*${symbol}|${symbol}.*defined multiple times" <<<"${out}"; then
+  if ! grep -qE "ambiguous.*${symbol}|${symbol}.*already defined in this file" <<<"${out}"; then
     echo "FAIL ${fixture}: rejected outside the source-binding ambiguity boundary" >&2
     echo "${out}" >&2
+    exit 1
+  fi
+  json_out="$(${HEW} check --format json --pkg-path "${PKGS}" "${DIR}/${fixture}.hew" 2>&1 || true)"
+  if ! grep -q '"code": "E_IMPORT_BINDING_COLLISION"' <<<"${json_out}"; then
+    echo "FAIL ${fixture}: missing E_IMPORT_BINDING_COLLISION diagnostic" >&2
+    echo "${json_out}" >&2
     exit 1
   fi
   if grep -qE "E_HIR|E_MIR|E_CODEGEN_FRONT|E_NOT_YET_IMPLEMENTED" <<<"${out}"; then
@@ -877,14 +883,33 @@ assert_sameleaf_binding_ambiguous() {
   echo "PASS ${fixture}"
 }
 
-for import_form in named glob; do
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_function_ambiguous" "clash_fn"
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_const_ambiguous" "CLASH_CONST"
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_trait_ambiguous" "ClashTrait"
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_type_ambiguous" "ClashType"
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_actor_ambiguous" "ClashActor"
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_machine_ambiguous" "ClashMachine"
+for namespace in function const trait type actor machine; do
+  case "$namespace" in
+    function) symbol="clash_fn" ;;
+    const) symbol="CLASH_CONST" ;;
+    trait) symbol="ClashTrait" ;;
+    type) symbol="ClashType" ;;
+    actor) symbol="ClashActor" ;;
+    machine) symbol="ClashMachine" ;;
+  esac
+  assert_sameleaf_binding_ambiguous "sameleaf_named_${namespace}_ambiguous" "$symbol"
 done
+
+# Positive controls: these fixtures formerly carried `_ambiguous` names, but
+# now test aliased selective imports and must remain executable by this runner.
+assert_aliased_selective_import() {
+  local fixture="$1"
+  local out
+  out="$(${HEW} check --pkg-path "${PKGS}" "${DIR}/${fixture}.hew" 2>&1)" || {
+    echo "FAIL ${fixture}: aliased selective import was rejected" >&2
+    echo "${out}" >&2
+    exit 1
+  }
+  echo "PASS ${fixture}"
+}
+
+assert_aliased_selective_import aliased_selective_type_import
+assert_aliased_selective_import aliased_selective_function_import
 
 # Positive complement: distinct qualifiers/aliases for the working function,
 # nominal-type, and trait surfaces must remain accepted while the bare controls

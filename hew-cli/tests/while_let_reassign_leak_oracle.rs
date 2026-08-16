@@ -27,16 +27,16 @@ fn source(frames: usize, move_payload: bool) -> String {
          }}\n\
          fn next(i: i64, cap: i64) -> Packet {{\n\
          \x20   if i < cap {{\n\
-         \x20       Packet::Payload(\"{payload}\".to_upper())\n\
+         \x20       Packet.Payload(\"{payload}\".to_upper())\n\
          \x20   }} else {{\n\
-         \x20       Packet::Done\n\
+         \x20       Packet.Done\n\
          \x20   }}\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   var i = 0;\n\
          \x20   var q = next(i, {frames});\n\
          \x20   var total = 0;\n\
-         \x20   while let Packet::Payload(s) = q {{\n\
+         \x20   while let Packet.Payload(s) = q {{\n\
          \x20       {payload_use}\n\
          \x20       i = i + 1;\n\
          \x20       q = next(i, {frames});\n\

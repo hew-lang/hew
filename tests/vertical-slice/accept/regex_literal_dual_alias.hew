@@ -8,7 +8,7 @@
 // Before the clone-on-load fix both bindings aliased the SAME shared handle:
 // closing `pat1` would free it out from under `pat2`, turning `pat2.find`
 // into a use-after-free and `pat2.close()` into a double-free.
-import std::text::regex;
+import std.text.regex;
 
 fn main() {
     let pat1 = re"[0-9]+";

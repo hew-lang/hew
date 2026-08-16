@@ -366,7 +366,7 @@ fn check_threads_pkg_path_and_project_dir_options() {
     let project_main = external.path().join("project_main.hew");
     fs::write(
         &project_main,
-        "import app::helper;\nfn main() -> i64 { helper.answer() }\n",
+        "import app.helper;\nfn main() -> i64 { helper.answer() }\n",
     )
     .expect("write project main");
 

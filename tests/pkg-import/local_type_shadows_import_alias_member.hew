@@ -15,7 +15,7 @@
 //
 // Harness verb: hew run
 // Expected: 9 -- the local `Tag` (field `local`) wins over the import alias.
-import hew::aliassrc::{ Payload as Tag };
+import hew.aliassrc.{ Payload as Tag };
 
 type Tag {
     local: i64;

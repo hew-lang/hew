@@ -154,8 +154,8 @@ fn walk_block_calls(block: &hew_hir::HirBlock, calls: &mut Vec<CallTarget>) {
 fn e2e_multi_module_same_leaf_generic_and_specialized_dispatch_stays_canonical() {
     let program = multi_module_program(
         r"
-import left::render::{Render as LeftRender, Box as LeftBox, identity as left_identity};
-import right::paint::{Render as RightRender, Box as RightBox, identity as right_identity};
+import left.render.{Render as LeftRender, Box as LeftBox, identity as left_identity};
+import right.paint.{Render as RightRender, Box as RightBox, identity as right_identity};
 
 fn use_left<T: LeftRender>(value: T) -> string { value.render() }
 fn use_right<T: RightRender>(value: T) -> string { value.render() }

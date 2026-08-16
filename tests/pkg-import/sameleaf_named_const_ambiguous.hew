@@ -1,5 +1,5 @@
-import ambiguity::const_left::{CLASH_CONST};
-import ambiguity::const_right::{CLASH_CONST};
+import ambiguity.const_left.{CLASH_CONST};
+import ambiguity.const_right.{CLASH_CONST};
 
 fn main() {
     println(CLASH_CONST);

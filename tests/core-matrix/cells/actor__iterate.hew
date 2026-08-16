@@ -10,10 +10,10 @@ actor Echo {
 fn main() {
     let a = spawn Echo(seen: 0);
     let b = spawn Echo(seen: 1);
-    let v: Vec<LocalPid<Echo>> = Vec::new();
+    let v: Vec<LocalPid<Echo>> = Vec.new();
     v.push(a);
     v.push(b);
     for e in v {
-        match await e.take(1) { Ok(e_v) => println(f"echo {e_v}"), Err(_) => println("err"), }
+        match await e.take(1) { Result.Ok(e_v) => println(f"echo {e_v}"), Err(_) => println("err"), }
     }
 }

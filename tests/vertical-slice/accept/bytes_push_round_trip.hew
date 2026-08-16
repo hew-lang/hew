@@ -10,7 +10,7 @@
 //! (LLVM `{ptr, i32, i32}`).
 
 fn main() -> i64 {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     b.push(72); // 'H'
     b.push(105); // 'i'
     let s: string = b.to_string();

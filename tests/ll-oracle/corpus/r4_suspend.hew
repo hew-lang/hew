@@ -20,7 +20,7 @@ fn main() {
     a.set_base(100);
     let r = await a.add(42);
     match r {
-        Ok(v) => println(v),
-        Err(_) => println(-1),
+        .Ok(v) => println(v),
+        .Err(_) => println(-1),
     }
 }

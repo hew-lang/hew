@@ -9,7 +9,7 @@
 //
 // Harness verb: hew run
 // Expected: 50 -- the qualified-member control is unaffected by the fix.
-import hew::aliassrc;
+import hew.aliassrc;
 
 type Boxed {
     item: aliassrc.Payload;

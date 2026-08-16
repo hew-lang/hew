@@ -32,11 +32,11 @@ fn main() {
     var value_total = 0;
     var reassign_total = 0;
     for i in 0..40 {
-        let store: HashMap<string, bytes> = HashMap::new();
+        let store: HashMap<string, bytes> = HashMap.new();
         let payload = b"0123456789abcdef0123456789abcdef";
         value_total = value_total + ingest_value(store, payload);
 
-        let counts: HashMap<string, i64> = HashMap::new();
+        let counts: HashMap<string, i64> = HashMap.new();
         reassign_total = reassign_total + put_reassigned(counts, "caller" + "-key");
     }
     println(f"value={value_total} reassign={reassign_total}");

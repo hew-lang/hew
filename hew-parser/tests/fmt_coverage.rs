@@ -714,36 +714,36 @@ fn fmt_string_interpolation_multiple() {
 
 #[test]
 fn fmt_import_path() {
-    let src = "import std::io;";
+    let src = "import std.io;";
     let out = roundtrip(src);
-    assert!(out.contains("import std::io;"), "output: {out}");
+    assert!(out.contains("import std.io;"), "output: {out}");
 }
 
 #[test]
 fn fmt_import_glob() {
-    let src = "import std::collections::*;";
+    let src = "import std.collections.*;";
     let out = roundtrip(src);
-    assert!(out.contains("import std::collections::*;"), "output: {out}");
+    assert!(out.contains("import std.collections.*;"), "output: {out}");
 }
 
 #[test]
 fn fmt_import_named() {
-    let src = "import std::{println, print};";
+    let src = "import std.{println, print};";
     let out = roundtrip(src);
     assert!(
-        out.contains("import std::{println, print};"),
+        out.contains("import std.{println, print};"),
         "output: {out}"
     );
 }
 
 #[test]
 fn fmt_import_alias_roundtrip() {
-    exact_roundtrip("import std::net::{http as h, websocket as ws};\n");
+    exact_roundtrip("import std.net.{http as h, websocket as ws};\n");
 }
 
 #[test]
 fn fmt_import_whole_module_alias_roundtrip() {
-    exact_roundtrip("import std::net as n;\n");
+    exact_roundtrip("import std.net as n;\n");
 }
 
 #[test]

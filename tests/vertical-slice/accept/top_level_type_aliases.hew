@@ -24,7 +24,7 @@ fn main() {
     let _pair: Pair<i64> = roundtrip_pair((20, 22));
     println(42);
 
-    let values: MyMap = HashMap::new();
+    let values: MyMap = HashMap.new();
     values.insert("answer", 42);
     let _returned: MyMap = roundtrip(values);
     println(1);

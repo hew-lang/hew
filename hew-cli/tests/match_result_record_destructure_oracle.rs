@@ -47,7 +47,7 @@ use support::leak_slope::{
 /// the `net.connect_timeout` shape. `host` is read AFTER the join, so a
 /// release scheduled on the arm's scope-close edge is a use-after-free.
 const DESTRUCTURE_SOURCE: &str = "\
-import std::net;\n\
+import std.net;\n\
 \n\
 fn main() {\n\
 \x20   let addr = \"10.11.12.13:8080\".to_upper();\n\
@@ -65,7 +65,7 @@ const DESTRUCTURE_EXPECTED: &str = "10.11.12.13\n8080\n";
 /// `host` field is read through a retained field load. Same defect surface,
 /// without the destructure desugar.
 const PLAIN_LET_SOURCE: &str = "\
-import std::net;\n\
+import std.net;\n\
 \n\
 fn main() {\n\
 \x20   let addr = \"10.11.12.13:8080\".to_upper();\n\
@@ -84,7 +84,7 @@ const PLAIN_LET_EXPECTED: &str = "10.11.12.13\n";
 /// extraction cannot be elided.
 fn parse_destructure_loop_source(frames: usize) -> String {
     format!(
-        "import std::net;\n\
+        "import std.net;\n\
          \n\
          fn cycle() -> i64 {{\n\
          \x20   let addr = \"10.0.0.1:8080\".to_upper();\n\

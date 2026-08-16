@@ -6,8 +6,12 @@ extern "C" {
 }
 
 fn read_foreign() -> i64 {
-    let view = unsafe { ffi_borrow_get() };
-    unsafe { ffi_borrow_read(view) }
+    let view = unsafe {
+        ffi_borrow_get()
+    };
+    unsafe {
+        ffi_borrow_read(view)
+    }
 }
 
 fn main() {

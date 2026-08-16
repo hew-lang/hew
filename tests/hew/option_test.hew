@@ -1,10 +1,10 @@
 //! Tests for the std::option helper functions.
 
-import std::option;
-import std::testing;
+import std.option;
+
+import std.testing;
 
 // ── Predicates ─────────────────────────────────────────────────────────
-
 #[test]
 fn test_is_some_int_with_value() {
     let x = Some(42);
@@ -30,7 +30,6 @@ fn test_is_none_int_with_value() {
 }
 
 // ── Unwrap ─────────────────────────────────────────────────────────────
-
 #[test]
 fn test_unwrap_int_some() {
     let x = Some(42);
@@ -57,7 +56,6 @@ fn test_unwrap_or_int_none() {
 }
 
 // ── Map ────────────────────────────────────────────────────────────────
-
 #[test]
 fn test_map_int_some() {
     let x = Some(21);
@@ -73,7 +71,6 @@ fn test_map_int_none() {
 }
 
 // ── Contains ───────────────────────────────────────────────────────────
-
 #[test]
 fn test_contains_int_match() {
     let x = Some(42);
@@ -93,7 +90,6 @@ fn test_contains_int_none() {
 }
 
 // ── string variants ────────────────────────────────────────────────────
-
 #[test]
 fn test_is_some_str_with_value() {
     let x = Some("hello");
@@ -145,7 +141,6 @@ fn test_contains_str_no_match() {
 }
 
 // ── unwrap_str ─────────────────────────────────────────────────────────
-
 #[test]
 fn test_unwrap_str_some() {
     let x = Some("hello");
@@ -160,7 +155,6 @@ fn test_unwrap_str_none_panics() {
 }
 
 // ── Float variants ─────────────────────────────────────────────────────
-
 #[test]
 fn test_is_some_f64_with_value() {
     let x = Some(3.5);

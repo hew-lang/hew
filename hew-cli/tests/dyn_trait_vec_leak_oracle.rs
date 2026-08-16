@@ -17,7 +17,7 @@ use support::{describe_output, require_codegen};
 fn dyn_vec_source(frames: usize) -> String {
     format!(
         r#"
-import std::string;
+import std.string;
 
 trait Labeled {{
     fn label_size(val: Self) -> i64;

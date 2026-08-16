@@ -184,7 +184,7 @@ fn duplicate_extern_symbol_accepts_cross_module_alias_qualified_contracts() {
     assert!(stream.errors.is_empty(), "parse: {:#?}", stream.errors);
     let mut net = hew_parser::parse(
         r#"
-        import std::stream;
+        import std.stream;
         extern "C" {
             #[extern_symbol("hew_cross_module_same")]
             fn second() -> stream.Stream<bytes>;
@@ -1061,7 +1061,7 @@ fn unaliased_item_import_binds_the_bare_extern_nominal() {
     let output = check_import_lexical_extern(&ImportLexicalShape::BareNamedImport);
     assert!(
         output.errors.is_empty(),
-        "`import sm::{{ Tok }}` binds `Tok` bare; errors: {:#?}",
+        "`import sm.{{ Tok }}` binds `Tok` bare; errors: {:#?}",
         output.errors
     );
 }

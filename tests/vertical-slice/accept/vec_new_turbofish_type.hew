@@ -8,7 +8,7 @@
 //
 // Expected exit 0.
 fn main() -> i64 {
-    let v = Vec::<i64>::new();
+    let v = Vec<i64>.new();
     v.push(5);
     let x = v[0];
     x - 5

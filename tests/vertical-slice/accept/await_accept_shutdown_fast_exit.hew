@@ -15,7 +15,7 @@
 // Exit-code contract: main's natural completion -> 0 (the healthy floor);
 // Ok(_conn) -> 2 or Err(_) -> 3 would mean the accept unexpectedly resolved
 // (should not happen — no client ever connects).
-import std::net;
+import std.net;
 
 actor Server {
     receive fn go() {

@@ -265,7 +265,7 @@ fn main() {
 #[test]
 fn reject_projection_of_live_binding_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: i64 }
 fn main() {
@@ -298,7 +298,7 @@ fn main() {
 #[test]
 fn reject_projection_of_live_binding_base_carry_only() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: i64 }
 fn main() {
@@ -339,7 +339,7 @@ fn main() {
 #[test]
 fn reject_tuple_index_of_live_binding_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 fn main() {
     let t = (Inner { label: string.repeat("a", 32), n: 1 }, 7);
@@ -367,7 +367,7 @@ fn main() {
 #[test]
 fn reject_tuple_index_of_live_binding_base_carry_only() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 fn main() {
     let t = (Inner { label: string.repeat("a", 32), n: 1 }, 7);
@@ -393,7 +393,7 @@ fn main() {
 #[test]
 fn reject_tuple_index_through_field_of_live_binding_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { pair: (Inner, i64), tag: i64 }
 fn main() {
@@ -420,7 +420,7 @@ fn main() {
 #[test]
 fn reject_field_through_tuple_index_of_live_binding_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Mid { inner: Inner, k: i64 }
 fn main() {
@@ -453,7 +453,7 @@ fn main() {
 #[test]
 fn reject_machine_state_field_projection_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 machine Holder {
     events { Bump; }
@@ -504,7 +504,7 @@ fn main() {
 #[test]
 fn reject_wrapper_if_live_projection_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: i64 }
 fn makeInner() -> Inner { Inner { label: string.repeat("a", 32), n: 1 } }
@@ -533,7 +533,7 @@ fn main() {
 #[test]
 fn reject_block_wrapper_live_projection_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: i64 }
 fn main() {
@@ -560,7 +560,7 @@ fn main() {
 #[test]
 fn reject_match_wrapper_live_projection_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: i64 }
 fn makeInner() -> Inner { Inner { label: string.repeat("a", 32), n: 1 } }
@@ -594,7 +594,7 @@ fn main() {
 #[test]
 fn reject_block_wrapped_binding_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 fn main() {
     let base = Inner { label: string.repeat("a", 32), n: 1 };
@@ -653,7 +653,7 @@ fn main() {
 fn accept_owned_rvalue_base_runs_clean() {
     require_codegen();
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 fn makeInner() -> Inner { Inner { label: string.repeat("a", 32), n: 1 } }
 fn main() {
@@ -677,7 +677,7 @@ fn main() {
 fn accept_projection_of_temporary_base_runs_clean() {
     require_codegen();
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: i64 }
 fn makeOuter() -> Outer { Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 } }
@@ -709,7 +709,7 @@ fn main() {
 fn accept_index_of_live_binding_base_runs_clean() {
     require_codegen();
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 fn main() {
     let v: Vec<Inner> = Vec::new();
@@ -744,7 +744,7 @@ fn main() {
 fn accept_field_through_index_base_runs_clean() {
     require_codegen();
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Mid { inner: Inner, k: i64 }
 record Outer { items: Vec<Mid>, tag: i64 }
@@ -774,7 +774,7 @@ fn main() {
 fn accept_clone_of_projection_base_runs_clean() {
     require_codegen();
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: i64 }
 fn main() {
@@ -803,7 +803,7 @@ fn main() {
 fn accept_all_rvalue_if_wrapper_base_runs_clean() {
     require_codegen();
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 fn makeInner() -> Inner { Inner { label: string.repeat("a", 32), n: 1 } }
 fn makeOther() -> Inner { Inner { label: string.repeat("c", 32), n: 2 } }
@@ -832,7 +832,7 @@ fn main() {
 fn accept_all_rvalue_match_wrapper_base_runs_clean() {
     require_codegen();
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 fn makeInner() -> Inner { Inner { label: string.repeat("a", 32), n: 1 } }
 fn makeOther() -> Inner { Inner { label: string.repeat("c", 32), n: 2 } }
@@ -862,7 +862,7 @@ fn main() {
 fn accept_block_statements_rvalue_tail_base_runs_clean() {
     require_codegen();
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 fn makeInner() -> Inner { Inner { label: string.repeat("a", 32), n: 1 } }
 fn main() {
@@ -960,7 +960,7 @@ fn main() {
 #[test]
 fn reject_rebind_field_projection_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: i64 }
 fn main() {
@@ -990,7 +990,7 @@ fn main() {
 #[test]
 fn reject_rebind_tuple_index_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 fn main() {
     let t: (Inner, i64) = (Inner { label: string.repeat("a", 32), n: 1 }, 9);
@@ -1021,7 +1021,7 @@ fn main() {
 #[test]
 fn reject_rebind_wrapper_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: i64 }
 fn makeInner() -> Inner { Inner { label: string.repeat("c", 32), n: 2 } }
@@ -1052,7 +1052,7 @@ fn main() {
 #[test]
 fn reject_move_chain_of_alias_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: i64 }
 fn main() {
@@ -1083,7 +1083,7 @@ fn main() {
 #[test]
 fn reject_closure_rebind_projection_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: i64 }
 fn main() {
@@ -1119,7 +1119,7 @@ fn main() {
 fn accept_move_chain_materialized_base_runs_clean() {
     require_codegen();
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 fn makeInner() -> Inner { Inner { label: string.repeat("a", 32), n: 7 } }
 fn main() {
@@ -1158,7 +1158,7 @@ fn main() {
 #[test]
 fn reject_by_value_param_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Cfg { name: string, k: i64 }
 record Wrap { cfg: Cfg, tag: i64 }
 fn upd(p: Cfg) -> Cfg { Cfg { name: string.repeat("z", 16), ..p } }
@@ -1191,7 +1191,7 @@ fn main() {
 fn accept_closure_materialized_base_runs_clean() {
     require_codegen();
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 fn makeInner(s: string) -> Inner { Inner { label: string.repeat(s, 16), n: 1 } }
 fn main() {
@@ -1232,7 +1232,7 @@ fn main() {
 #[test]
 fn reject_call_returns_borrowed_param_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: i64 }
 fn id_inner(p: Inner) -> Inner { p }
@@ -1261,7 +1261,7 @@ fn main() {
 #[test]
 fn reject_call_returns_borrowed_param_base_bound() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: i64 }
 fn id_inner(p: Inner) -> Inner { p }
@@ -1292,7 +1292,7 @@ fn main() {
 #[test]
 fn reject_struct_init_embeds_param_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Wrap { s: string, n: i64 }
 fn leak(p: string) -> Wrap {
     Wrap { s: string.repeat("new", 8), ..Wrap { s: p, n: 0 } }
@@ -1322,7 +1322,7 @@ fn main() {
 #[test]
 fn reject_bound_struct_init_embeds_param_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Wrap { s: string, n: i64 }
 fn leak(p: string) -> Wrap {
     let b = Wrap { s: p, n: 0 };
@@ -1355,7 +1355,7 @@ fn main() {
 #[test]
 fn reject_call_embeds_param_in_return_base() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: i64 }
 fn wrap(p: Inner) -> Outer { Outer { inner: p, tag: 0 } }
@@ -1390,7 +1390,7 @@ fn main() {
 fn accept_call_forwards_param_through_fresh_builtin_base() {
     require_codegen();
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 fn makeInner(s: string) -> Inner { Inner { label: string.repeat(s, 16), n: 1 } }
 fn main() {
@@ -1424,7 +1424,7 @@ fn main() {
 #[test]
 fn reject_funcupdate_base_closure_capture_return() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: i64 }
 fn capture_return(p: Inner) -> Inner { let f = || -> Inner { p }; f() }
@@ -1460,7 +1460,7 @@ fn main() {
 fn accept_carry_nested_record_field_runs_clean() {
     require_codegen();
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record Outer { inner: Inner, tag: string }
 fn mk() -> Outer {
@@ -1493,7 +1493,7 @@ fn main() {
 #[test]
 fn reject_carry_closure_field() {
     let source = r#"
-import std::string;
+import std.string;
 record Boxx { tag: string, cb: fn() -> string }
 fn upd(p: string) -> Boxx {
     let b = Boxx { tag: string.repeat("x", 32), cb: || -> string { p } };
@@ -1522,7 +1522,7 @@ fn main() {
 #[test]
 fn reject_carry_tuple_of_owned_field() {
     let source = r#"
-import std::string;
+import std.string;
 record T { pair: (string, i64), tag: string }
 fn mk() -> T {
     let b = T { pair: (string.repeat("k", 32), 7), tag: string.repeat("x", 32) };
@@ -1550,7 +1550,7 @@ fn main() {
 #[test]
 fn reject_carry_option_of_owned_field() {
     let source = r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record O { maybe: Option<Inner>, tag: string }
 fn mk() -> O {
@@ -1590,7 +1590,7 @@ fn main() {
 #[test]
 fn reject_carry_vec_closure_field_clean_no_panic() {
     let source = r#"
-import std::string;
+import std.string;
 record P { keep: Vec<fn() -> string>, churn: string }
 fn main() {
     let v: Vec<fn() -> string> = Vec::new();

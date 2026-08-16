@@ -1,7 +1,9 @@
-import std::testing;
+import std.testing;
 
 type Meters = i64;
+
 type Pair<T> = (T, T);
+
 type MyMap = HashMap<string, i64>;
 
 impl Meters {
@@ -33,7 +35,7 @@ fn test_parameterized_alias() {
 
 #[test]
 fn test_generic_rhs_alias_in_signatures() {
-    let values: MyMap = HashMap::new();
+    let values: MyMap = HashMap.new();
     values.insert("answer", 42);
     let _returned: MyMap = roundtrip(values);
     testing.assert_true(true);

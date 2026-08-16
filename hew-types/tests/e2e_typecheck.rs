@@ -531,7 +531,7 @@ fn use_greeter(g: dyn Greeter) -> string {
 fn method_call_receiver_kinds_record_handle_dispatch() {
     let output = typecheck_inline(
         r"
-import std::net;
+import std.net;
 
 fn close_conn(conn: net.Connection) {
     conn.close()
@@ -719,7 +719,7 @@ fn consume(s: Stream<bytes>) {
 fn method_call_dispatches_resource_wrapper_through_impl() {
     let output = typecheck_inline(
         r#"
-import std::net::http;
+import std.net.http;
 
 fn respond(req: http.Request) -> i64 {
     req.respond_text(200, "ok")
@@ -742,7 +742,7 @@ fn respond(req: http.Request) -> i64 {
 fn module_qualified_call_rewrites_record_registry_c_symbol_metadata() {
     let output = typecheck_inline(
         r#"
-import std::fs;
+import std.fs;
 
 fn main() {
     let _ = fs.exists("test.txt");
@@ -1031,7 +1031,7 @@ fn stream_dot_sink_annotation_typechecks() {
     // type and its send/close methods are available.
     let output = typecheck_inline(
         r"
-        import std::stream;
+        import std.stream;
 
         fn flush_and_close(s: stream.Sink<string>, msg: string) {
             s.send(msg);
@@ -1052,7 +1052,7 @@ fn stream_dot_stream_int_element_now_admitted() {
     // i64 elements ride the Plain envelope and must typecheck cleanly.
     let output = typecheck_inline(
         r"
-        import std::stream;
+        import std.stream;
 
         fn close_numbers(s: stream.Stream<i64>) {
             s.close();
@@ -1072,7 +1072,7 @@ fn stream_dot_stream_container_element_reports_user_facing_type() {
     // diagnostic must name the user-facing element type.
     let output = typecheck_inline(
         r"
-        import std::stream;
+        import std.stream;
 
         fn close_rows(s: stream.Stream<Vec<i64>>) {
             s.close();
@@ -1093,7 +1093,7 @@ fn stream_dot_stream_container_element_reports_user_facing_type() {
 fn stream_decode_fails_closed_before_codegen() {
     let output = typecheck_inline(
         r"
-        import std::stream;
+        import std.stream;
 
         #[wire]
         type Message {
@@ -1120,7 +1120,7 @@ fn stream_decode_fails_closed_before_codegen() {
 fn sink_encode_fails_closed_before_codegen() {
     let output = typecheck_inline(
         r"
-        import std::stream;
+        import std.stream;
 
         #[wire]
         type Message {
@@ -1150,7 +1150,7 @@ fn channel_dot_receiver_annotation_typechecks() {
     // type and its recv/close methods are available.
     let output = typecheck_inline(
         r"
-        import std::channel;
+        import std.channel;
 
         fn take_one(rx: channel.Receiver<string>) -> Option<string> {
             let v = rx.recv();
@@ -1176,7 +1176,7 @@ fn channel_dot_receiver_annotation_typechecks() {
 fn for_await_receiver_string_ok() {
     let output = typecheck_inline(
         r#"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn main() {
             let (tx, rx) = channel.new(4);
@@ -1200,7 +1200,7 @@ fn for_await_receiver_string_ok() {
 fn for_await_receiver_int_ok() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn main() {
             let (tx, rx) = channel.new(4);
@@ -1225,7 +1225,7 @@ fn for_await_receiver_int_ok() {
 fn for_await_receiver_missing_element_type_errors() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn main() {
             let (tx, rx): (channel.Sender, channel.Receiver) = channel.new(4);
@@ -1252,7 +1252,7 @@ fn for_await_receiver_missing_element_type_errors() {
 fn for_await_receiver_record_element_admitted() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         type Foo { x: i64 }
 
@@ -1279,7 +1279,7 @@ fn for_await_receiver_record_element_admitted() {
 fn for_await_receiver_container_element_errors() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn main() {
             let (tx, rx): (channel.Sender<Vec<i64>>, channel.Receiver<Vec<i64>>) =
@@ -1306,7 +1306,7 @@ fn for_await_receiver_container_element_errors() {
 fn for_await_stream_record_element_admitted() {
     let output = typecheck_inline(
         r#"
-        import std::stream;
+        import std.stream;
 
         type Row { value: i64 }
 
@@ -1335,7 +1335,7 @@ fn for_await_stream_record_element_admitted() {
 fn for_await_stream_container_element_errors() {
     let output = typecheck_inline(
         r#"
-        import std::stream;
+        import std.stream;
 
         extern "C" {
             fn fake_stream() -> Stream<Vec<i64>>;
@@ -1529,7 +1529,7 @@ fn for_await_over_range_errors() {
 fn for_no_await_over_receiver_no_for_await_error() {
     let output = typecheck_inline(
         r"
-        import std::channel;
+        import std.channel;
 
         fn consume(rx: channel.Receiver<string>) {
             for msg in rx {
@@ -1829,7 +1829,7 @@ fn ordinary_actor_send_keeps_sender_binding_readable() {
 fn actor_spawn_still_moves_affine_handle_arguments() {
     let output = typecheck_inline(
         r#"
-        import std::stream;
+        import std.stream;
 
         actor Writer {
             let sink: stream.Sink<string>;
@@ -2461,7 +2461,7 @@ fn rc_get_non_copy_rejected() {
 fn http_respond_three_arg_typechecks() {
     let output = typecheck_inline(
         r#"
-        import std::net::http;
+        import std.net.http;
 
         fn main() {
             match http.listen(":8080") {
@@ -2490,7 +2490,7 @@ fn http_respond_three_arg_typechecks() {
 fn http_respond_four_arg_rejected() {
     let output = typecheck_inline(
         r#"
-        import std::net::http;
+        import std.net.http;
 
         fn main() {
             match http.listen(":8080") {
@@ -2515,7 +2515,7 @@ fn http_respond_four_arg_rejected() {
 fn wasm_http_server_surface_rejected_before_codegen() {
     let output = typecheck_inline_wasm(
         r#"
-        import std::net::http;
+        import std.net.http;
 
         fn inspect(server: http.Server, req: http.Request) -> string {
             let _next = server.accept();
@@ -2592,7 +2592,7 @@ fn wasm_scope_with_fork_child_rejected_before_codegen() {
 fn wasm_tcp_networking_surface_rejected_before_codegen() {
     let output = typecheck_inline_wasm(
         r#"
-        import std::net;
+        import std.net;
 
         fn tune(listener: net.Listener, conn: net.Connection) -> i64 {
             let _accepted = listener.accept();
@@ -2618,7 +2618,7 @@ fn wasm_tcp_networking_surface_rejected_before_codegen() {
 fn http_request_body_encoding_arg_checked_via_fallback() {
     let output = typecheck_inline(
         r"
-        import std::net::http;
+        import std.net.http;
 
         fn inspect(req: http.Request) {
             req.body(42);
@@ -2639,7 +2639,7 @@ fn http_request_body_encoding_arg_checked_via_fallback() {
 fn net_resource_close_uses_source_impl_not_raw_fallback() {
     let output = typecheck_inline(
         r"
-        import std::net;
+        import std.net;
 
         fn close_listener(listener: net.Listener) {
             listener.close()
@@ -2670,7 +2670,7 @@ fn net_resource_close_uses_source_impl_not_raw_fallback() {
 fn http_request_close_dispatches_through_resource_impl() {
     let output = typecheck_inline(
         r"
-        import std::net::http;
+        import std.net.http;
 
         fn release(req: http.Request) {
             req.close();
@@ -2693,7 +2693,7 @@ fn http_request_close_dispatches_through_resource_impl() {
 fn registry_loaded_resource_close_moves_receiver() {
     let output = typecheck_inline(
         r"
-        import std::net::http;
+        import std.net.http;
 
         fn release(req: http.Request) {
             req.close();
@@ -2715,7 +2715,7 @@ fn registry_loaded_resource_close_moves_receiver() {
 fn http_request_unknown_method_is_undefined() {
     let output = typecheck_inline(
         r"
-        import std::net::http;
+        import std.net.http;
 
         fn inspect(req: http.Request) {
             req.nonexistent();
@@ -2746,7 +2746,7 @@ fn net_connection_write_arg_type_checked() {
     // slice and the refactored examples validate the real call-site behaviour.
     let output = typecheck_inline(
         r#"
-        import std::net;
+        import std.net;
 
         fn send(conn: net.Connection) {
             conn.write("wrong_type");
@@ -2768,7 +2768,7 @@ fn net_connection_write_arg_type_checked() {
 fn wasm_process_execution_surface_rejected_before_codegen() {
     let output = typecheck_inline_wasm(
         r#"
-        import std::process;
+        import std.process;
 
         fn await_child(child: process.Child) -> i64 {
             child.wait()
@@ -2792,7 +2792,7 @@ fn wasm_process_execution_surface_rejected_before_codegen() {
 fn builtin_string_to_int_typechecks_as_int() {
     let output = typecheck_inline(
         r#"
-        import std::string;
+        import std.string;
 
         fn parse() -> i64 {
             let value: Option<i64> = string.to_int("9223372036854775807");
@@ -2814,7 +2814,7 @@ fn builtin_string_to_int_typechecks_as_int() {
 fn process_child_methods_resolve_as_fielded_resource_trait_methods() {
     let output = typecheck_inline(
         r"
-        import std::process;
+        import std.process;
 
         fn manage(child: process.Child) -> i64 {
             let waited: i64 = child.wait();
@@ -2848,7 +2848,7 @@ fn process_child_methods_resolve_as_fielded_resource_trait_methods() {
 fn smtp_one_shot_helpers_typecheck() {
     let output = typecheck_inline(
         r#"
-        import std::net::smtp;
+        import std.net.smtp;
 
         fn main() {
             smtp.send(
@@ -2885,7 +2885,7 @@ fn smtp_one_shot_helpers_typecheck() {
 fn http_client_module_helpers_typecheck_natively() {
     let output = typecheck_inline(
         r#"
-        import std::net::http::http_client;
+        import std.net.http.http_client;
 
         fn main() {
             let headers: Vec<(string, string)> = Vec::new();
@@ -2905,7 +2905,7 @@ fn http_client_module_helpers_typecheck_natively() {
 fn http_client_module_helpers_rejected_on_wasm() {
     let output = typecheck_inline_wasm(
         r#"
-        import std::net::http::http_client;
+        import std.net.http.http_client;
 
         fn main() {
             let headers: Vec<(string, string)> = Vec::new();
@@ -2929,7 +2929,7 @@ fn http_client_module_helpers_rejected_on_wasm() {
 fn http_client_response_methods_rejected_on_wasm() {
     let output = typecheck_inline_wasm(
         r#"
-        import std::net::http::http_client;
+        import std.net.http.http_client;
 
         extern "C" {
             fn fake_response() -> http_client.Response;
@@ -2957,7 +2957,7 @@ fn http_client_response_methods_rejected_on_wasm() {
 fn smtp_module_helpers_rejected_on_wasm() {
     let output = typecheck_inline_wasm(
         r#"
-        import std::net::smtp;
+        import std.net.smtp;
 
         fn main() {
             smtp.send(
@@ -2988,7 +2988,7 @@ fn smtp_module_helpers_rejected_on_wasm() {
 fn smtp_conn_methods_rejected_on_wasm() {
     let output = typecheck_inline_wasm(
         r#"
-        import std::net::smtp;
+        import std.net.smtp;
 
         extern "C" {
             fn fake_conn() -> smtp.Conn;
@@ -3168,7 +3168,7 @@ fn native_allows_all_native_only_handle_methods_no_platform_error() {
 #[test]
 fn regex_literal_no_false_positive_unused_import_warning() {
     let output = typecheck_inline(
-        r#"import std::text::regex;
+        r#"import std.text.regex;
 fn main() {
     let pat = re"[0-9]+";
     if pat.is_match("hello123") {
@@ -4447,7 +4447,7 @@ fn loader_registered_module_slice_signature_accepted_as_vec_alias() {
     )
     .expect("write module file");
 
-    let parse_result = hew_parser::parse("import std::issue856mod;\n\nfn main() {}\n");
+    let parse_result = hew_parser::parse("import std.issue856mod;\n\nfn main() {}\n");
     assert!(
         parse_result.errors.is_empty(),
         "parse errors: {:#?}",
@@ -5531,7 +5531,7 @@ fn call_type_args_failed_generic_call_pruned_at_boundary() {
 fn deferred_channel_recv_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn take_one() -> Option<i64> {
             let (tx, rx) = channel.new(4);
@@ -5573,7 +5573,7 @@ fn deferred_channel_recv_int_constrained_after_call() {
 fn deferred_channel_recv_string_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn take_one() -> Option<string> {
             let (tx, rx) = channel.new(4);
@@ -5605,7 +5605,7 @@ fn deferred_channel_recv_string_constrained_after_call() {
 fn deferred_channel_try_recv_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn try_take() -> Option<i64> {
             let (tx, rx) = channel.new(4);
@@ -5638,7 +5638,7 @@ fn deferred_channel_try_recv_int_constrained_after_call() {
 fn deferred_channel_send_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn relay() {
             let (tx, rx) = channel.new(4);
@@ -5672,7 +5672,7 @@ fn deferred_channel_send_int_constrained_after_call() {
 fn deferred_channel_unresolved_inner_fails_closed() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn untyped() {
             let (tx, rx) = channel.new(4);
@@ -5755,7 +5755,7 @@ fn let_propagate_sugar_typed_annotation_accepted() {
 #[test]
 fn await_stream_recv_bytes_typechecks() {
     let output = typecheck_inline(
-        "import std::stream;\n\
+        "import std.stream;\n\
          #[opaque]\n\
          type Pair {}\n\
          extern \"C\" {\n\
@@ -5787,7 +5787,7 @@ fn await_stream_recv_bytes_typechecks() {
 #[test]
 fn await_stream_recv_int_element_admitted() {
     let output = typecheck_inline(
-        "import std::stream;\n\
+        "import std.stream;\n\
          #[opaque]\n\
          type Pair {}\n\
          extern \"C\" {\n\
@@ -5823,7 +5823,7 @@ fn await_stream_recv_int_element_admitted() {
 fn wasm_rejects_crypto_encrypt_module_calls() {
     // The gate fires at the method call level; argument types need not be valid.
     let output = typecheck_inline_wasm(
-        "import std::crypto::encrypt;\n\
+        "import std.crypto.encrypt;\n\
          fn main() { let _ = encrypt.seal(bytes [0x61], bytes [0x62]); }",
     );
     assert!(
@@ -5842,7 +5842,7 @@ fn wasm_rejects_crypto_encrypt_module_calls() {
 fn wasm_rejects_crypto_sign_module_calls() {
     let output = typecheck_inline_wasm(
         r"
-        import std::crypto::sign;
+        import std.crypto.sign;
 
         fn main() {
             let kp = sign.keypair();
@@ -5867,7 +5867,7 @@ fn wasm_rejects_crypto_sign_module_calls() {
 #[test]
 fn wasm_rejects_crypto_random_bytes_module_call() {
     let output = typecheck_inline_wasm(
-        "import std::crypto::crypto;\n\
+        "import std.crypto.crypto;\n\
          fn main() { let _ = crypto.random_bytes(32); }",
     );
     assert!(
@@ -5885,7 +5885,7 @@ fn wasm_rejects_crypto_random_bytes_module_call() {
 #[test]
 fn native_allows_crypto_encrypt_and_sign_module_calls() {
     let encrypt_output = typecheck_inline(
-        "import std::crypto::encrypt;\n\
+        "import std.crypto.encrypt;\n\
          fn main() { let _ = encrypt.seal(bytes [0x61], bytes [0x62]); }",
     );
     assert!(
@@ -5899,7 +5899,7 @@ fn native_allows_crypto_encrypt_and_sign_module_calls() {
 
     let sign_output = typecheck_inline(
         r"
-        import std::crypto::sign;
+        import std.crypto.sign;
 
         fn main() {
             let kp = sign.keypair();
@@ -5931,7 +5931,7 @@ fn native_allows_crypto_encrypt_and_sign_module_calls() {
 fn monomorphic_machine_channel_element_admitted() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         machine Light {
             events {
@@ -5970,8 +5970,8 @@ fn monomorphic_machine_channel_element_admitted() {
 fn generic_machine_instantiation_channel_element_refused() {
     let output = typecheck_inline(
         r"
-        import std::concurrency::lifecycle;
-        import std::channel::channel;
+        import std.concurrency.lifecycle;
+        import std.channel.channel;
 
         fn main() {
             let (tx, rx): (channel.Sender<lifecycle.Lifecycle<i64>>, channel.Receiver<lifecycle.Lifecycle<i64>>) = channel.new(2);
@@ -5998,7 +5998,7 @@ fn generic_machine_instantiation_channel_element_refused() {
 fn container_bearing_machine_channel_element_refused() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         machine Buffered {
             events {
@@ -6039,7 +6039,7 @@ fn container_bearing_machine_channel_element_refused() {
 fn remote_receive_fn_dispatch_with_channel_handle_refused() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         actor Observer {
             receive fn watch(rx: channel.Receiver<string>) {

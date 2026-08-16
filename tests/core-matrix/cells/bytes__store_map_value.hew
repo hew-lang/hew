@@ -2,10 +2,10 @@ fn main() {
     let x: bytes = bytes::new();
     x.push(65);
     x.push(66);
-    let m: HashMap<string, bytes> = HashMap::new();
+    let m: HashMap<string, bytes> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
+        Option.Some(e) => {
             let e_l = e.len();
             let e_0 = e[0];
             println(f"len={e_l} b0={e_0}");

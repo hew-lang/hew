@@ -268,7 +268,7 @@ fn _variant_coverage_guard_type_expr(ty: &TypeExpr) {
 /// `Item::Import` — plain path import.
 #[test]
 fn fmt_totality_item_import() {
-    assert_roundtrip("import std::io;\n");
+    assert_roundtrip("import std.io;\n");
 }
 
 /// `Item::Const`

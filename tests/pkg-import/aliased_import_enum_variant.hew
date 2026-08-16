@@ -14,19 +14,19 @@
 //
 // Harness verb: hew run
 // Expected: values from variant construction and match dispatch.
-import hew::aliassrc::{ Color as Hue };
+import hew.aliassrc.{ Color as Hue };
 
 fn color_value(h: Hue) -> i64 {
     match h {
-        Hue::Red => 1,
-        Hue::Green => 2,
-        Hue::Blue(n) => n,
+        Hue.Red => 1,
+        Hue.Green => 2,
+        Hue.Blue(n) => n,
     }
 }
 
 fn main() {
-    let a: Hue = Hue::Red;
-    let b: Hue = Hue::Blue(42);
+    let a: Hue = Hue.Red;
+    let b: Hue = Hue.Blue(42);
     println(color_value(a));
     println(color_value(b));
 }

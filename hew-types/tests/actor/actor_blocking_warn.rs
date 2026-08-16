@@ -36,7 +36,7 @@ fn assert_single_blocking_warning(output: &hew_types::TypeCheckOutput, operation
 fn warn_receiver_recv_inside_receive_fn() {
     let output = typecheck(
         r"
-        import std::channel;
+        import std.channel;
 
         actor Worker {
             receive fn process(rx: channel.Receiver<string>) {
@@ -55,7 +55,7 @@ fn warn_receiver_recv_inside_receive_fn() {
 fn warn_net_connection_read_inside_receive_fn() {
     let output = typecheck(
         r"
-        import std::net;
+        import std.net;
 
         actor Networker {
             receive fn handle(conn: net.Connection) {
@@ -74,7 +74,7 @@ fn warn_net_connection_read_inside_receive_fn() {
 fn warn_net_listener_accept_inside_receive_fn() {
     let output = typecheck(
         r"
-        import std::net;
+        import std.net;
 
         actor Server {
             receive fn serve(listener: net.Listener) {
@@ -97,7 +97,7 @@ fn warn_net_listener_accept_inside_receive_fn() {
 fn no_warn_receiver_recv_outside_actor() {
     let output = typecheck(
         r"
-        import std::channel;
+        import std.channel;
 
         fn process(rx: channel.Receiver<string>) -> Option<string> {
             rx.recv()
@@ -122,7 +122,7 @@ fn no_warn_receiver_recv_outside_actor() {
 fn no_warn_try_recv_inside_receive_fn() {
     let output = typecheck(
         r"
-        import std::channel;
+        import std.channel;
 
         actor Worker {
             receive fn poll(rx: channel.Receiver<string>) {
@@ -149,8 +149,8 @@ fn no_warn_try_recv_inside_receive_fn() {
 fn multiple_blocking_calls_each_warned() {
     let output = typecheck(
         r"
-        import std::channel;
-        import std::net;
+        import std.channel;
+        import std.net;
 
         actor Combo {
             receive fn handle(rx: channel.Receiver<string>, conn: net.Connection) {
@@ -180,7 +180,7 @@ fn multiple_blocking_calls_each_warned() {
 fn warning_message_mentions_scheduler_with_suggestion() {
     let output = typecheck(
         r"
-        import std::channel;
+        import std.channel;
 
         actor Worker {
             receive fn process(rx: channel.Receiver<string>) {
@@ -212,7 +212,7 @@ fn warning_message_mentions_scheduler_with_suggestion() {
 fn warn_http_server_accept_inside_receive_fn() {
     let output = typecheck(
         r"
-        import std::http;
+        import std.http;
 
         actor HttpHandler {
             receive fn serve(server: http.Server) {
@@ -236,7 +236,7 @@ fn warn_http_server_accept_inside_receive_fn() {
 fn accept_suggestion_names_await() {
     let output = typecheck(
         r"
-        import std::net;
+        import std.net;
 
         actor Server {
             receive fn serve(listener: net.Listener) {
@@ -264,7 +264,7 @@ fn accept_suggestion_names_await() {
 fn read_suggestion_names_await() {
     let output = typecheck(
         r"
-        import std::net;
+        import std.net;
 
         actor Networker {
             receive fn handle(conn: net.Connection) {
@@ -293,7 +293,7 @@ fn read_suggestion_names_await() {
 fn recv_suggestion_stays_generic() {
     let output = typecheck(
         r"
-        import std::channel;
+        import std.channel;
 
         actor Worker {
             receive fn process(rx: channel.Receiver<string>) {

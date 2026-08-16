@@ -123,7 +123,7 @@ fn canonical_prelude_manifest_imports_are_exempt_from_unused_imports() {
 #[test]
 fn repl_fragment_suppresses_completeness_lints_default_keeps_them() {
     const SOURCE: &str = r"
-import std::math;
+import std.math;
 
 fn dead_helper() -> i64 { 5 }
 
@@ -356,7 +356,7 @@ fn call_site_rejects_assoc_binding_mismatch() {
 #[test]
 fn scope_error_type_constructs_and_field_accesses() {
     let source = concat!(
-        "import std::concurrency;\n",
+        "import std.concurrency;\n",
         "fn read_primary(err: concurrency.ScopeError<i64>) -> i64 {\n",
         "    let primary: i64 = err.primary;\n",
         "    primary\n",
@@ -2571,7 +2571,7 @@ w.compute(10);
 
 #[test]
 fn warn_unused_import() {
-    let source = "import std::encoding::json;\nfn main() { println(1); }";
+    let source = "import std.encoding.json;\nfn main() { println(1); }";
     let result = hew_parser::parse(source);
     let mut checker = Checker::new(test_registry());
     let output = checker.check_program(&result.program);
@@ -2587,8 +2587,7 @@ fn warn_unused_import() {
 
 #[test]
 fn no_warn_used_import() {
-    let source =
-        "import std::encoding::json;\nfn main() { let v = json.parse(\"[]\"); println(v); }";
+    let source = "import std.encoding.json;\nfn main() { let v = json.parse(\"[]\"); println(v); }";
     let result = hew_parser::parse(source);
     let mut checker = Checker::new(test_registry());
     let output = checker.check_program(&result.program);
@@ -2604,8 +2603,7 @@ fn no_warn_used_import() {
 
 #[test]
 fn stdlib_json_supertrait_import_does_not_warn_value_trait_unused() {
-    let source =
-        "import std::encoding::json;\nfn main() { let v = json.parse(\"[]\"); println(v); }";
+    let source = "import std.encoding.json;\nfn main() { let v = json.parse(\"[]\"); println(v); }";
     let result = hew_parser::parse(source);
     let mut checker = Checker::new(test_registry());
     let output = checker.check_program(&result.program);
@@ -2624,7 +2622,7 @@ fn no_warn_named_import_type_used_bare() {
     // must mark the module used — qualified-by-default routes bare references
     // through the published binding, which must still consume the import so the
     // unused-import lint does not false-positive.
-    let source = "import std::io::closable::{ CloseError };\n\
+    let source = "import std.io.closable.{ CloseError };\n\
                   fn handle(e: CloseError) -> i64 { 0 }\n\
                   fn main() { let _ = handle; println(1); }";
     let result = hew_parser::parse(source);
@@ -2643,7 +2641,7 @@ fn no_warn_named_import_type_used_bare() {
 #[test]
 fn warn_named_import_type_unused() {
     // The complement: a named import whose type is never referenced still warns.
-    let source = "import std::io::closable::{ CloseError };\nfn main() { println(1); }";
+    let source = "import std.io.closable.{ CloseError };\nfn main() { println(1); }";
     let result = hew_parser::parse(source);
     let mut checker = Checker::new(test_registry());
     let output = checker.check_program(&result.program);
@@ -2660,7 +2658,7 @@ fn warn_named_import_type_unused() {
 #[test]
 fn stdlib_import_registers_trait_impls_for_generic_bounds() {
     let root_source = r"
-        import std::string;
+        import std.string;
 
         fn main() -> string {
             string.describe(string.make_label())
@@ -3636,8 +3634,8 @@ fn primitive_trait_dispatch_builtins_blanket_populates_side_table_at_register_bu
 fn duplicate_stdlib_import_with_same_resolved_source_does_not_reregister_items() {
     let mut root = hew_parser::parse(
         r"
-            import std::bench;
-            import std::bench;
+            import std.bench;
+            import std.bench;
         ",
     );
     assert!(
@@ -3822,7 +3820,7 @@ fn must_use_flags_discarded_send_result() {
 
 #[test]
 fn must_use_flags_bare_error_value() {
-    let src = "import std::net;\nfn caller(error: net.WriteError) { error; }";
+    let src = "import std.net;\nfn caller(error: net.WriteError) { error; }";
     let (errors, warnings) = parse_and_check_with_stdlib(src);
     assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
     assert_eq!(

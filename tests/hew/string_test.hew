@@ -1,7 +1,8 @@
 //! Tests for std::string helpers.
-import std::string;
 
-import std::testing;
+import std.string;
+
+import std.testing;
 
 fn assert_string_vec_eq(actual: Vec<string>, expected: Vec<string>) {
     testing.assert_eq(actual.len(), expected.len());
@@ -12,8 +13,8 @@ fn assert_string_vec_eq(actual: Vec<string>, expected: Vec<string>) {
 
 fn assert_int_result_eq(actual: Result<i64, string>, expected: i64) {
     match actual {
-        Ok(value) => testing.assert_eq(value, expected),
-        Err(message) => {
+        .Ok(value) => testing.assert_eq(value, expected),
+        .Err(message) => {
             panic(message);
             testing.assert_eq(0, expected);
         },
@@ -22,8 +23,8 @@ fn assert_int_result_eq(actual: Result<i64, string>, expected: i64) {
 
 fn assert_int_result_string_eq(actual: Result<i64, string>, expected: string) {
     match actual {
-        Ok(value) => testing.assert_eq_str(string.from_int(value), expected),
-        Err(message) => {
+        .Ok(value) => testing.assert_eq_str(string.from_int(value), expected),
+        .Err(message) => {
             panic(message);
             testing.assert_eq_str("", expected);
         },
@@ -32,18 +33,18 @@ fn assert_int_result_string_eq(actual: Result<i64, string>, expected: string) {
 
 fn assert_int_result_err(actual: Result<i64, string>, expected: string) {
     match actual {
-        Ok(value) => {
+        .Ok(value) => {
             panic(f"expected Err(\"{expected}\"), got Ok({value})");
             testing.assert_eq(value, 0);
         },
-        Err(message) => testing.assert_eq_str(message, expected),
+        .Err(message) => testing.assert_eq_str(message, expected),
     }
 }
 
 fn assert_float_result_eq(actual: Result<f64, string>, expected: f64) {
     match actual {
-        Ok(value) => testing.assert_true(value == expected),
-        Err(message) => {
+        .Ok(value) => testing.assert_true(value == expected),
+        .Err(message) => {
             panic(message);
             testing.assert_true(expected == 0.0);
         },
@@ -52,11 +53,11 @@ fn assert_float_result_eq(actual: Result<f64, string>, expected: f64) {
 
 fn assert_float_result_err(actual: Result<f64, string>, expected: string) {
     match actual {
-        Ok(value) => {
+        .Ok(value) => {
             panic(f"expected Err(\"{expected}\"), got Ok({value})");
             testing.assert_true(value == 0.0);
         },
-        Err(message) => testing.assert_eq_str(message, expected),
+        .Err(message) => testing.assert_eq_str(message, expected),
     }
 }
 
@@ -213,7 +214,7 @@ fn test_count_counts_non_overlapping_occurrences() {
 
 #[test]
 fn test_split_splits_and_keeps_trailing_empty_segment() {
-    let expected: Vec<string> = Vec::new();
+    let expected: Vec<string> = Vec.new();
     expected.push("a");
     expected.push("b");
     expected.push("");
@@ -224,7 +225,7 @@ fn test_split_splits_and_keeps_trailing_empty_segment() {
 fn test_split_empty_separator_returns_codepoints() {
     // split(s, "") splits into one element per Unicode codepoint.
     // "abc" is 3 ASCII codepoints → ["a", "b", "c"].
-    let expected: Vec<string> = Vec::new();
+    let expected: Vec<string> = Vec.new();
     expected.push("a");
     expected.push("b");
     expected.push("c");
@@ -233,7 +234,7 @@ fn test_split_empty_separator_returns_codepoints() {
 
 #[test]
 fn test_lines_splits_lf_and_preserves_trailing_empty_line() {
-    let expected: Vec<string> = Vec::new();
+    let expected: Vec<string> = Vec.new();
     expected.push("alpha");
     expected.push("beta");
     expected.push("");
@@ -242,7 +243,7 @@ fn test_lines_splits_lf_and_preserves_trailing_empty_line() {
 
 #[test]
 fn test_lines_normalizes_crlf_sequences() {
-    let expected: Vec<string> = Vec::new();
+    let expected: Vec<string> = Vec.new();
     expected.push("alpha");
     expected.push("beta");
     assert_string_vec_eq(string.lines("alpha\r\nbeta"), expected);
@@ -250,23 +251,23 @@ fn test_lines_normalizes_crlf_sequences() {
 
 #[test]
 fn test_lines_returns_single_empty_line_for_empty_input() {
-    let expected: Vec<string> = Vec::new();
+    let expected: Vec<string> = Vec.new();
     expected.push("");
     assert_string_vec_eq(string.lines(""), expected);
 }
 
 #[test]
 fn test_join_handles_empty_and_single_element_inputs() {
-    let empty: Vec<string> = Vec::new();
+    let empty: Vec<string> = Vec.new();
     testing.assert_eq_str(string.join(empty, ","), "");
-    let single: Vec<string> = Vec::new();
+    let single: Vec<string> = Vec.new();
     single.push("solo");
     testing.assert_eq_str(string.join(single, ","), "solo");
 }
 
 #[test]
 fn test_join_inserts_separator_between_elements() {
-    let parts: Vec<string> = Vec::new();
+    let parts: Vec<string> = Vec.new();
     parts.push("red");
     parts.push("green");
     parts.push("blue");
@@ -274,7 +275,6 @@ fn test_join_inserts_separator_between_elements() {
 }
 
 // ── is_ascii boundary tests (regression lock for #2082 / PR #2081 fix) ──────
-
 #[test]
 fn test_is_ascii_accepts_del_127_and_below() {
     // Empty string and pure-ASCII strings are accepted.
@@ -299,7 +299,6 @@ fn test_is_ascii_rejects_128_and_above() {
 }
 
 // ── from_char multi-byte round-trip (regression lock for A195 fix) ───────────
-
 #[test]
 fn test_from_char_emits_full_utf8_for_two_byte_codepoint() {
     // U+00E9 (é) is a two-byte UTF-8 sequence: 0xC3 0xA9.
@@ -315,13 +314,12 @@ fn test_from_char_emits_full_utf8_for_four_byte_codepoint() {
 }
 
 // ── split empty-separator multi-byte exact values ─────────────────────────────
-
 #[test]
 fn test_split_empty_separator_returns_multibyte_codepoints_as_individual_elements() {
     // "café" is 5 bytes but 4 Unicode codepoints. The empty-separator split
     // must yield 4 elements with "é" as a single two-byte string, never split
     // at the byte boundary.
-    let expected: Vec<string> = Vec::new();
+    let expected: Vec<string> = Vec.new();
     expected.push("c");
     expected.push("a");
     expected.push("f");
@@ -330,12 +328,11 @@ fn test_split_empty_separator_returns_multibyte_codepoints_as_individual_element
 }
 
 // ── split non-empty separator exact element values ────────────────────────────
-
 #[test]
 fn test_split_returns_exact_element_values_for_nonempty_separator() {
     // Checks each element, not just the count, to catch off-by-one errors in
     // the split position that a len()-only assertion would miss.
-    let expected: Vec<string> = Vec::new();
+    let expected: Vec<string> = Vec.new();
     expected.push("red");
     expected.push("green");
     expected.push("blue");

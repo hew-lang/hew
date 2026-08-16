@@ -27,7 +27,7 @@ enum Resource {
 }
 
 fn main() -> i64 {
-    let r = Resource::Live(unsafe { hew_handle_create() });
+    let r = Resource.Live(unsafe { hew_handle_create() });
     let _ = clone r;
     unsafe { hew_handle_free(hew_handle_create()) };
     0

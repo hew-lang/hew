@@ -13,8 +13,8 @@ fn worker<T>() {}
 actor Driver {
     receive fn drive() -> i64 {
         scope {
-            fork { worker::<i64>(); }
-            fork { worker::<string>(); }
+            fork { worker<i64>(); }
+            fork { worker<string>(); }
         };
         0
     }

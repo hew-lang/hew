@@ -6,7 +6,7 @@ fn main() {
     y.push(65);
     y.push(66);
     y.push(67);
-    let v: Vec<bytes> = Vec::new();
+    let v: Vec<bytes> = Vec.new();
     v.push(x);
     v.push(y);
     let n = v.len();

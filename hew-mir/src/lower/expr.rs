@@ -87,19 +87,21 @@ fn catalog_display_call_authority(callee: &str) -> crate::CallAuthority {
 fn compiler_builtin_call_authority(endpoint: &str) -> Option<crate::CallAuthority> {
     use crate::IdentityAggregateKind as Kind;
 
-    let kind = match endpoint {
-        "Node::id" => Kind::NodeId,
-        "hew_node_id_display" => Kind::NodeIdDisplay,
-        "hew_location_node_id" => Kind::LocationNodeId,
-        "hew_location_slot" => Kind::LocationSlot,
-        "hew_location_incarnation" => Kind::LocationIncarnation,
-        "hew_location_display" => Kind::LocationDisplay,
-        "hew_remote_pid_location" => Kind::RemotePidLocation,
-        "hew_remote_pid_node_id" => Kind::RemotePidNodeId,
-        "hew_remote_pid_slot" => Kind::RemotePidSlot,
-        "hew_remote_pid_incarnation" => Kind::RemotePidIncarnation,
-        "hew_remote_pid_display" => Kind::RemotePidDisplay,
-        _ => return None,
+    let kind = match hew_types::runtime_call::RuntimeCallFamily::from_checker_signature(endpoint) {
+        Some(hew_types::runtime_call::RuntimeCallFamily::NodeId) => Kind::NodeId,
+        _ => match endpoint {
+            "hew_node_id_display" => Kind::NodeIdDisplay,
+            "hew_location_node_id" => Kind::LocationNodeId,
+            "hew_location_slot" => Kind::LocationSlot,
+            "hew_location_incarnation" => Kind::LocationIncarnation,
+            "hew_location_display" => Kind::LocationDisplay,
+            "hew_remote_pid_location" => Kind::RemotePidLocation,
+            "hew_remote_pid_node_id" => Kind::RemotePidNodeId,
+            "hew_remote_pid_slot" => Kind::RemotePidSlot,
+            "hew_remote_pid_incarnation" => Kind::RemotePidIncarnation,
+            "hew_remote_pid_display" => Kind::RemotePidDisplay,
+            _ => return None,
+        },
     };
     Some(crate::CallAuthority::Compiler(
         crate::CompilerCallKind::IdentityAggregate(kind),

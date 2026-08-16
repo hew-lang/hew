@@ -1280,7 +1280,13 @@ impl Checker {
         // inferred from the argument type.
         {
             let t = TypeVar::fresh();
-            self.register_builtin_fn("Rc::new", vec![Ty::Var(t)], Ty::rc(Ty::Var(t)));
+            let family = crate::runtime_call::RuntimeCallFamily::RcNew;
+            let signature_key = family
+                .checker_signature_key()
+                .expect("RcNew has a checker signature identity");
+            self.register_builtin_fn(signature_key, vec![Ty::Var(t)], Ty::rc(Ty::Var(t)));
+            self.runtime_builtin_targets
+                .insert(signature_key.to_string(), family);
         }
 
         // More print variants

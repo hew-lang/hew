@@ -135,15 +135,15 @@ modulePath
 
 modulePathSeparator
     : '.'
-    | '::'                              // Temporary dual-accept scaffold
+    | '::'                              // Deprecated until the hard cutover
     ;
 
 importSelection
     : '.' '{' importBinding ( ',' importBinding )* ','? '}'
     ;
 
-// The existing parser temporarily accepts empty legacy `::{}` for corpus
-// continuity, while new `.{}` is rejected.
+// The existing parser accepts empty legacy `::{}` for corpus continuity;
+// dotted `.{}` selections are the primary surface.
 legacyImportSelection
     : '::' '{' ( importBinding ( ',' importBinding )* ','? )? '}'
     ;
@@ -787,7 +787,7 @@ genericApplyFollow
     ;
 
 legacyTurbofishSuffix
-    : '::' typeArgs                       // Temporary dual-accept scaffold
+    : '::' typeArgs                       // Deprecated until the hard cutover
     ;
 
 callSuffix
@@ -799,7 +799,7 @@ memberSuffix
     ;
 
 legacyMemberSuffix
-    : '::' ident                          // Temporary dual-accept scaffold
+    : '::' ident                          // Deprecated until the hard cutover
     ;
 
 tupleIndexSuffix
@@ -1034,7 +1034,7 @@ traitPath
 
 pathSeparator
     : '.'
-    | '::'                              // Temporary dual-accept scaffold
+    | '::'                              // Deprecated until the hard cutover
     ;
 
 qualifiedAssocBase

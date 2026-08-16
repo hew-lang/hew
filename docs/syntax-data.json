@@ -272,7 +272,11 @@
       ".",
       "::",
       "#["
-    ]
+    ],
+    "path_separators": {
+      "primary": ".",
+      "deprecated": ["::"]
+    }
   },
   "types": {
     "integer": [

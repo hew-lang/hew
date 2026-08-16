@@ -897,6 +897,12 @@ struct Builder {
     /// though its value moves; this exact-site stack distinguishes that result
     /// transfer from unrelated cursor reads nested in a composite expression.
     pub(crate) vec_iter_direct_move_sites: Vec<hew_hir::SiteId>,
+    /// Direct projected user-resource binding sites currently crossing an
+    /// ownership boundary. Match-arm tails retain HIR `Read` intent even when
+    /// the selected value becomes the owning result of the match. This stack
+    /// lets binding lowering record that exact handoff as `Consume`, which
+    /// disarms the arm binder and neutralizes its source payload slot.
+    pub(crate) projected_resource_direct_move_sites: Vec<hew_hir::SiteId>,
     /// Ownership sidecar produced for each lowered `VecIter<T>` expression.
     /// Let/var and assignment destinations copy this bit after moving the value
     /// bytes, preserving both owning and borrowing topologies through composite

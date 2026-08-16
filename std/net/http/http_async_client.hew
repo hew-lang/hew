@@ -53,7 +53,7 @@
 //! }
 //! ```
 
-import std::string;
+import std.string;
 
 // ── Hardening limits (fail-closed DoS bounds) ─────────────────────────
 /// Maximum bytes accepted in the response head (status line + headers). A head

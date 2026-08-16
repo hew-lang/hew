@@ -34,7 +34,7 @@
 //
 // WASM-TODO(http-client): outbound std::net::http client wrappers remain native-only until
 // a browser/WASM networking bridge exists.
-import std::net;
+import std.net;
 
 /// An opaque HTTP response handle.
 ///
@@ -121,12 +121,12 @@ impl Response {
 
 // ── Module-level helpers ──────────────────────────────────────────────
 fn empty_headers() -> Vec<(string, string)> {
-    let headers: Vec<(string, string)> = Vec::new();
+    let headers: Vec<(string, string)> = Vec.new();
     headers
 }
 
 fn content_type_headers(content_type: string) -> Vec<(string, string)> {
-    let headers: Vec<(string, string)> = Vec::new();
+    let headers: Vec<(string, string)> = Vec.new();
     headers.push(("Content-Type", content_type));
     headers
 }

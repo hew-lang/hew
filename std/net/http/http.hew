@@ -25,7 +25,7 @@
 //! }
 //! ```
 
-import std::net;
+import std.net;
 
 /// An HTTP server bound to a TCP address.
 ///
@@ -377,7 +377,7 @@ pub fn listen(addr: string) -> Result<Server, net.NetError> {
         let detail = unsafe {
             hew_http_last_error()
         };
-        return Err(net.NetError::InvalidArgument(detail));
+        return Err(net.NetError.InvalidArgument(detail));
     }
     Err(net.net_error_from_errno(errno))
 }

@@ -27,7 +27,7 @@
 //! }
 //! ```
 
-import std::string;
+import std.string;
 
 /// A handle to a completed command invocation inside the runtime.
 #[resource]
@@ -119,8 +119,8 @@ fn empty_output() -> CommandOutput {
 
 fn process_error_message(err: ProcessError) -> string {
     match err {
-        ProcessError::InvalidArguments(message) => message,
-        ProcessError::LaunchFailed(message) => message,
+        ProcessError.InvalidArguments(message) => message,
+        ProcessError.LaunchFailed(message) => message,
     }
 }
 
@@ -129,12 +129,12 @@ fn last_process_error(default_message: string) -> ProcessError {
         let message = hew_process_last_error();
         hew_clear_error();
         if message == "" {
-            ProcessError::LaunchFailed(default_message)
+            ProcessError.LaunchFailed(default_message)
         } else {
             // Public argument-shape validation happens before FFI. A runtime
             // execution failure is therefore always a launch failure; never
             // classify it by searching attacker-controlled command text.
-            ProcessError::LaunchFailed(message)
+            ProcessError.LaunchFailed(message)
         }
     }
 }
@@ -153,7 +153,7 @@ fn legacy_packed_args_note() -> string {
 
 fn split_legacy_packed_args(args: string) -> Vec<string> {
     let raw_parts = string.split(args, " ");
-    let filtered: Vec<string> = Vec::new();
+    let filtered: Vec<string> = Vec.new();
     for i in 0 .. raw_parts.len() {
         let part = raw_parts[i];
         if part != "" {
@@ -229,11 +229,11 @@ pub fn run_argv(command: string, args: Vec<string>) -> CommandOutput {
 /// `try_run_argv(command, Vec<string>)`.
 pub fn try_run_args(command: string, args: string, arg_count: i64) -> Result<CommandOutput, ProcessError> {
     if arg_count < 0 {
-        return Err(ProcessError::InvalidArguments(f"process.try_run_args: arg_count must be non-negative ({legacy_packed_args_note()})"));
+        return Err(ProcessError.InvalidArguments(f"process.try_run_args: arg_count must be non-negative ({legacy_packed_args_note()})"));
     }
     let argv = split_legacy_packed_args(args);
     if argv.len() != arg_count {
-        return Err(ProcessError::InvalidArguments(f"process.try_run_args: arg_count {arg_count} does not match parsed argument length {argv.len()} ({legacy_packed_args_note()})"));
+        return Err(ProcessError.InvalidArguments(f"process.try_run_args: arg_count {arg_count} does not match parsed argument length {argv.len()} ({legacy_packed_args_note()})"));
     }
     try_run_argv(command, argv)
 }

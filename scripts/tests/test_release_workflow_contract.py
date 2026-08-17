@@ -1052,15 +1052,25 @@ def test_release_record_is_durable_and_tag_ready() -> None:
     notes_words = " ".join(notes.split())
     runbook_words = " ".join(runbook.split())
 
-    current_changelog = changelog.split("### Changed", maxsplit=1)[0]
-    assert "## [0.6.0-rc1] - 2026-07-29" in current_changelog
+    unreleased_start = changelog.index("## [Unreleased]")
+    rc1_start = changelog.index("## [0.6.0-rc1] - 2026-07-29")
+    unreleased = changelog[unreleased_start:rc1_start]
+    assert "### Changed" in unreleased
+    assert "- " in unreleased
+
+    next_release = changelog.find("\n## [", rc1_start + 1)
+    rc1_record = (
+        changelog[rc1_start:]
+        if next_release == -1
+        else changelog[rc1_start:next_release]
+    )
     for provisional in (
         "unreleased",
         "tag is not cut",
         "will be finalized when",
         "in preparation",
     ):
-        assert provisional not in current_changelog.lower()
+        assert provisional not in rc1_record.lower()
 
     assert "v0.6.0-rc1" in notes_words
     assert "first release candidate for v0.6.0" in notes_words

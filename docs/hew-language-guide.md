@@ -686,7 +686,11 @@ fn main() {
 }
 ```
 
-Keys are `string`. Value types include `i64`, `string`, `bool`, `f64`, user-defined records, and `Vec<T>`.
+Keys can be `string`, any integer type, `f64`, `bool`, or `char`. Value types
+include `i64`, `string`, `bool`, `f64`, user-defined records, and `Vec<T>`.
+Note what indexing returns: `m[k]` yields the bare value `V` and traps with
+`IndexOutOfBounds` when the key is absent, so use `.get(k)` — which returns
+`Option<V>` — whenever the key may be missing.
 
 ### Mutating a HashMap value (copy-rebuild-reinsert)
 
@@ -751,7 +755,7 @@ fn main() {
 }
 ```
 
-Set membership is `.contains(x)` (note: `.contains_key` is the HashMap spelling). Inserts dedup automatically. Supported element types are `i64` and `string`.
+Set membership is `.contains(x)` (note: `.contains_key` is the HashMap spelling). Inserts dedup automatically. Supported element types are `string` plus the scalar value types — any integer width, `f64`, `bool`, and `char`.
 
 `.to_vec()` returns a `Vec<T>` snapshot of every element (order unspecified) — the same eager-clone pattern `HashMap.keys()`/`.values()` use. `.clear()` removes every element and resets `.len()` to 0, same as `HashMap.clear()`.
 
@@ -1530,6 +1534,12 @@ Periodic handlers preserve the actor's single-threaded state model: a tick never
 runs concurrently with another receive handler on the same actor. It is just a
 separate mailbox dispatch armed by the runtime timer.
 
+When the runtime shuts down, periodic-timer admission closes first. A periodic
+tick becomes live work only when the timer ticker claims it for callback
+delivery. Shutdown waits for callbacks already claimed, then cancels every
+pending periodic entry, including an entry that is already due but has not yet
+been claimed. Such an entry is not delivered during shutdown.
+
 ### Cancellable long-running work in actor handlers
 
 A receive handler runs to completion before the actor observes the next message.
@@ -1759,7 +1769,7 @@ fn drive(d: Door) -> string {
 fn main() { println(drive(.Shut)); }   // Ajar
 ```
 
-Pass machines by value into and out of free functions and mutate a local `var`. (Drive machines via local `var`, free-fn params, or the whole actor-message payload — not as an embedded named field of an actor or struct.)
+Pass machines by value into and out of free functions and mutate a local `var`. A machine also works as an actor state field — `var d: Door = Shut;` in an actor body, with `d.step(Open)` inside a `receive fn`, compiles and runs (the field rides the enum clone/drop substrate). What does not work is a machine inside a plain record: `.step()` requires a `var`-bound receiver, and a record field is not one, so `r.d.step(Open)` is rejected with `` `.step()` requires a mutable binding receiver; this expression is not declared with `var` ``. Copy the field into a local `var`, step it, and write it back.
 
 ## Generics
 
@@ -1928,9 +1938,8 @@ type Stack<T> { items: Vec<T> }
 
 impl<T> Stack<T> {
     fn push_item(s: Stack<T>, v: T) -> Stack<T> {
-        let items = s.items;
-        items.push(v);
-        Stack { items: items }
+        s.items.push(v);
+        s
     }
     fn len(s: Stack<T>) -> i64 {
         s.items.len()
@@ -1949,14 +1958,12 @@ fn main() {
 }
 ```
 
-Construct the empty generic record through the constructor function `new_stack`, either with turbofish (`new_stack::<i64>()`) or a `let` type annotation and no turbofish at all (`let s: Stack<i64> = new_stack();`) — both resolve `T` from the call site and lower identically, the same return-type-driven inference covered in the Turbofish section above. `hew fmt` normalizes an explicit `::<T>` call to `<T>` (`new_stack::<i64>()` becomes `new_stack<i64>()`); every one of these spellings type-checks and runs identically — write whichever you like and let the formatter settle it. A bare `Stack { items: Vec::new() }` construction with no surrounding annotation is still ambiguous and needs one.
+Construct the empty generic record through the constructor function `new_stack`, either with turbofish (`new_stack::<i64>()`) or a `let` type annotation and no turbofish at all (`let s: Stack<i64> = new_stack();`) — both resolve `T` from the call site and lower identically, the same return-type-driven inference covered in the Turbofish section above. `hew fmt` normalizes an explicit `::<T>` call to `<T>` (`new_stack::<i64>()` becomes `new_stack<i64>()`); every one of these spellings type-checks and runs identically — write whichever you like and let the formatter settle it. A bare `Stack { items: Vec::new() }` construction with no surrounding annotation is still ambiguous and needs one. `push_item` mutates the `items` field in place and returns the receiver — this is the pattern to use for a generic record with an owned heap field; extracting the field into a local, pushing, and reconstructing a new `Stack { items: ... }` value is a known crash today (the generic-record drop plan double-releases the extracted field).
 
-### Generic functions as values (cross-module)
+### Monomorphic functions as values (cross-module)
 
-A generic function exported from another module can be passed as a first-class
-value. The concrete type arguments are inferred from the receiving variable's
-declared type or the parameter type at the call site — the context fully
-determines the monomorphisation.
+A monomorphic function exported from another module can be passed as a
+first-class value; its type is recovered from the declared signature.
 
 <!-- doctest: skip -->
 ```hew
@@ -1970,10 +1977,6 @@ fn main() {
     // Monomorphic cross-module function as a value
     let sq: fn(i64) -> i64 = math_utils.square;
     println(apply(sq, 7));                       // 49
-
-    // Generic cross-module function; type inferred from the annotation
-    let id: fn(i64) -> i64 = math_utils.identity;
-    println(apply(id, 5));                        // 5
 
     // Inline: pass a cross-module fn directly to a higher-order function
     println(apply(math_utils.add_one, 10));       // 11
@@ -1989,17 +1992,16 @@ pub fn square(x: i64) -> i64 { x * x }
 pub fn identity<T>(x: T) -> T { x }
 ```
 
-The type annotation on the `let` binding (e.g. `fn(i64) -> i64`) is what
-drives inference for `identity<T>` — without it the checker cannot determine
-`T` and rejects the assignment with a diagnostic asking for an explicit
-annotation. Monomorphic cross-module functions (`square`, `add_one`) do not
-need an annotation; the type is recovered from the function's declared
-signature directly.
-
-> **Scope:** this path fires only for cross-module functions
-> (`module.fn_name`). Capturing a generic function from the *current* module
-> as a value is not supported — split the generic helper into a separate
-> module if you need it as a value.
+> **Generic functions are not usable as values.** Capturing a *generic*
+> function as a value fails in both directions. From another module
+> (`let id: fn(i64) -> i64 = math_utils.identity;`) it is rejected with
+> ``E_NOT_YET_IMPLEMENTED: MIR lowering for named function
+> `math_utils$identity` used as a value (only non-generic named functions are
+> currently supported)``. From the current module it is rejected earlier, as a
+> type mismatch (``expected `fn(i64) -> i64`, found `fn(T) -> T` ``). Calling
+> an imported generic directly (`math_utils.identity(5)`) works normally —
+> only the value position is closed. Write a monomorphic wrapper when you need
+> one as a value.
 
 ### Generic Display and println
 
@@ -2538,14 +2540,14 @@ fn main() {
     let diff = datetime.diff_secs(tomorrow, now);
     println(diff);                  // 86400
 
-    match datetime.try_parse("2026-01-01", "%Y-%m-%d") {
+    match datetime.try_parse("2026-01-01T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ") {
         Ok(ts) => println(datetime.year(ts)),   // 2026
         Err(e) => println(f"parse error: {e}"),
     }
 }
 ```
 
-Timestamps are `i64` epoch milliseconds throughout. `to_iso8601` formats as RFC 3339 UTC; `format(ts, fmt)` uses strftime-style patterns. `year`/`month`/`day`/`hour`/`minute`/`second`/`weekday` extract components. `add_days` / `add_hours` perform arithmetic; `diff_secs` returns the signed difference. Use `try_parse` when the input may be malformed.
+Timestamps are `i64` epoch milliseconds throughout. `to_iso8601` formats as RFC 3339 UTC; `format(ts, fmt)` uses strftime-style patterns. `year`/`month`/`day`/`hour`/`minute`/`second`/`weekday` extract components. `add_days` / `add_hours` perform arithmetic; `diff_secs` returns the signed difference. Use `try_parse` when the input may be malformed; the format string must describe a complete date and time (a date-only pattern such as `"%Y-%m-%d"` fails with "input is not enough for unique date and time").
 
 ### std::deque — double-ended queue
 
@@ -2575,7 +2577,7 @@ import std.iter;
 fn main() {
     println(string.from_int(math.max(2, 9)));   // 9
     let v: Vec<i64> = [1, 2, 3];
-    println(iter.sum(v.into_iter()));            // 6
+    println(iter.sum(v.iter()));                 // 6
 }
 ```
 
@@ -2745,14 +2747,15 @@ names into scope unqualified instead of binding the module name. Both forms
 resolve `pub` items only — a non-`pub` fn, type, `machine`, or `const` is
 invisible outside its defining file.
 
-**Reserved-word module path segments.** A path segment written in `src::`
-dotted form cannot currently be a keyword — `import src::workflow::machine::{Thing};`
-is a parse error (`` expected `*` or `{` after `::`, found `machine` `` at the
-`machine` segment) even though `machine` is a perfectly good file name on disk. `actor` is the one
-keyword carved out as a valid segment today; other type-declaration keywords
-(`machine`, `type`, `trait`, ...) are not. If a module's file name collides
-with a keyword, either rename the file or reach it via the quoted string-path
-import form above, which has no such restriction.
+**Reserved-word module path segments.** A path segment in `::`-dotted form may
+be a keyword: `import src::workflow::machine::{Thing};` (and the bare and
+`::*` forms) parse and resolve normally, as do `type` and `trait` segments.
+The remaining restriction is on the *binding*, not the path — a bare
+`import src::workflow::machine;` binds the module under the name `machine`,
+and writing `machine.Thing` is then a parse error
+(`` unexpected `.` in block ``). The same is true of `actor`. Use the
+selective (`::{Name}`) or wildcard (`::*`) form for a keyword-named module,
+or reach it via the quoted string-path import form above.
 
 ### `pub const` — module-level constants
 
@@ -3055,7 +3058,10 @@ user-defined `impl Drop`.
 
 The `close` method (for `#[resource]`) and any `consuming self` method (for
 `#[linear]`) must be declared in a sibling `impl` block, never inline in the
-type body — an inline declaration is rejected at parse time.
+type body — an inline declaration is rejected at parse time. A factory
+function that constructs and returns a `#[resource]` or `#[linear]` value
+works the same whether it lives in the current module or an imported one —
+close/consume discipline is enforced on the value, not on where it was built.
 
 Full example (`#[linear]`): [`examples/v05/linear/accept/linear_consumed_via_rollback_on_err.hew`](../examples/v05/linear/accept/linear_consumed_via_rollback_on_err.hew). For `#[resource]`, see HEW-SPEC-2026.md §3.7.8.
 
@@ -3220,7 +3226,7 @@ Go-style template — `{{.key}}` substitutes, `{{if .key}}…{{end}}` is conditi
 `{{range .list}}…{{.}}…{{end}}` iterates with `.` bound to each item. Render with
 the free function `template.render_template(t, ctx)` (panics on error) or
 `template.render_try(t, ctx)` (returns `Result`); the method form `t.render(ctx)`
-is deferred in v0.5. `TemplateError` has no `Display`, so handle the `Err` arm
+is not yet implemented. `TemplateError` has no `Display`, so handle the `Err` arm
 with a literal message rather than interpolating it. Full example:
 [`examples/v05/surfaces/template_render.hew`](../examples/v05/surfaces/template_render.hew).
 
@@ -3283,7 +3289,7 @@ scanner plus `Option<string>`. Full example:
 
 ### HTTP over `await` — async client + server
 
-The flagship v0.5 networking surface is an `await`-suspended HTTP/1.1 client and
+The flagship networking surface is an `await`-suspended HTTP/1.1 client and
 server built on `net.connect` / `net.listen` plus the pure-Hew codecs in
 `std::net::http::http_async_client` / `http_async_server`. A server handler
 `await`s a connection, drives an `await conn.read_string()` loop until the
@@ -3489,7 +3495,7 @@ The complete protocol and identity rules are normative in
 messaging, and link/monitor propagation are native-only; wasm32 rejects these
 surfaces.
 
-### TLS client — free-function surface (with a v0.5 data-plane caveat)
+### TLS client — free-function surface
 
 ```hew
 import std.net.tls;
@@ -3508,13 +3514,17 @@ fn main() {
 Use the FREE-FUNCTION surface — `tls.connect(host, port)` (system-root verified),
 `tls.write` / `tls.try_write`, `tls.read`, `tls.close`. Request/response bodies
 are `bytes`: build a payload with the public `string.to_bytes()` surface and decode
-with `bytes.to_string()`. The method form (`stream.read(n)`) is NOT supported yet.
+with `bytes.to_string()`. There is also a method form (`stream.read(n)` /
+`stream.write(payload)`, from `trait TlsStreamMethods`) — it type-checks and
+compiles, and carries the same runtime caveat as the free functions below.
 
 > **Known gap:** `tls.connect` does not record a failed handshake in
 > `last_error()` — a failed connect returns a zero-value `TlsStream` with no
-> way to retrieve why. The encrypted round-trip itself (`tls.write` /
-> `tls.read`) works correctly; the data-plane FFI bridge takes `bytes` by
-> pointer to a `BytesTriple`, matching the runtime's representation.
+> way to retrieve why. `tls.write` sends correctly against a real endpoint,
+> but `tls.read` currently crashes the process with a memory-safety panic
+> (`ptr::copy_nonoverlapping` alignment violation) on a real connection —
+> do not call it yet; the commented-out line above shows the intended shape
+> once the data-plane FFI bridge is fixed.
 
 Full example: [`examples/net/tls_client.hew`](../examples/net/tls_client.hew).
 

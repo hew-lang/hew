@@ -27,7 +27,12 @@ REPL commands:
 
 /// The Hew programming language compiler.
 #[derive(Debug, Parser)]
-#[command(name = "hew", version, about, propagate_version = true)]
+#[command(
+    name = "hew",
+    version = env!("HEW_VERSION"),
+    about,
+    propagate_version = true
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -392,7 +397,7 @@ pub struct CheckArgs {
     ///
     /// Shows whether each `actor.method(arg)` call crossed the mailbox
     /// boundary via a refcount-bumped alias (no copy) or a deep-copy
-    /// (the legacy path). Default off; opt-in for Phase α.
+    /// (the compatibility path). Default off; enable it explicitly.
     #[arg(long)]
     pub explain_cow: bool,
     /// Target triple.

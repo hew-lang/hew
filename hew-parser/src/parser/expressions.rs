@@ -826,8 +826,8 @@ impl Parser<'_> {
             }
             Token::Less => {
                 // Speculative parse to detect old generic lambda: <T>(x: T) => expr.
-                // This form was removed in v0.5; type-parameterized closures are not
-                // supported. Detect the form and emit a typed migration diagnostic.
+                // Type-parameterized closures are not supported. Detect the form
+                // and emit a typed diagnostic.
                 let saved_pos = self.save_pos();
                 self.advance(); // consume '<'
 
@@ -890,8 +890,8 @@ impl Parser<'_> {
                 let _allow_struct = self.set_no_struct_literal(false);
 
                 // Detect and reject old `(params) => body` parenthesized lambda syntax.
-                // This form was removed in v0.5; the current form is `|params| body`.
-                // Keep the detection here so we can surface a typed migration diagnostic
+                // The current closure form is `|params| body`. Keep the detection here
+                // so we can surface a typed diagnostic
                 // rather than a cryptic parse error when `=>` is encountered later.
                 let saved_pos = self.save_pos();
                 let is_old_paren_lambda = if self.try_parse_lambda_params().is_some() {
@@ -1108,7 +1108,7 @@ impl Parser<'_> {
                 self.advance();
 
                 // Check whether the user wrote the legacy `spawn (params) => body` form.
-                // This form was removed in favour of `actor |params| { body }`.
+                // The supported form is `actor |params| { body }`.
                 // Consume an optional `move` keyword only to detect legacy syntax; it is not
                 // used in the regular `spawn ActorName(...)` form.
                 let _is_move_legacy = self.eat(&Token::Move);

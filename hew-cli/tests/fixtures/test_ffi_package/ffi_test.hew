@@ -1,0 +1,8 @@
+extern "C" {
+    fn hew_test_ffi_answer() -> i64;
+}
+
+#[test]
+fn native_ffi_is_linked() {
+    assert_eq(unsafe { hew_test_ffi_answer() }, 42);
+}

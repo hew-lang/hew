@@ -1268,9 +1268,8 @@ impl Parser<'_> {
                         self.expect(&Token::RightParen)?;
                     }
 
-                    // Legacy bare restart keyword (e.g. `child n: T permanent`)
-                    // was removed in the flat-reliability-fields cutover. The
-                    // only restart spelling is the `restart: <policy>` clause.
+                    // A supervisor child accepts restart policy only through the
+                    // `restart: <policy>` clause.
                     if matches!(
                         self.peek(),
                         Some(Token::Permanent | Token::Transient | Token::Temporary)
@@ -1283,7 +1282,8 @@ impl Parser<'_> {
                         );
                         self.advance();
                     }
-                    // Legacy `with restart:` form was removed; only `restart:`.
+                    // `with restart:` is not a valid supervisor-child clause;
+                    // use `restart:` directly.
                     if matches!(self.peek(), Some(Token::Identifier(s)) if *s == "with") {
                         self.error_with_hint(
                             "the `with restart:` form was removed; \
@@ -1332,8 +1332,8 @@ impl Parser<'_> {
                                 };
                             }
                             // `shutdown: <duration> | brutal_kill | infinity` clause.
-                            // `infinity` is accepted-only in v0.5 (no per-child
-                            // deadline wheel yet) and is a contextual keyword.
+                            // `infinity` is accepted without a per-child deadline
+                            // wheel and is a contextual keyword.
                             Some(Token::Identifier(s)) if *s == "shutdown" => {
                                 self.advance();
                                 self.expect(&Token::Colon)?;

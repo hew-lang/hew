@@ -22,7 +22,7 @@ checker-hir-fact-relation	checker-relation-use	hew-hir/src/lower.rs	7	stage-2	re
 checker-hir-fact-relation	checker-relation-use	hew-types/src/check/expressions.rs	11	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	checker-relation-use	hew-types/src/check/mod.rs	15	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	checker-relation-variant	hew-types/src/check/types.rs	6	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	364	stage-2	rc1-F1 stage F reads plus four impl_method_declaration_ids reads that register lang-item Display bodies ahead of the third pass (direct primitive .fmt() dispatch, mirrors plan_imported_impl_bodies)
+checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	365	stage-2	rc1-F1 stage F reads plus canonical flat-file trait default owner harvest and four impl_method_declaration_ids reads that register lang-item Display bodies ahead of the third pass (direct primitive .fmt() dispatch, mirrors plan_imported_impl_bodies)
 checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/node.rs	5	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-consumer	hew-hir/src/verify.rs	8	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-consumer	hew-mir/src/lower/ownership.rs	4	stage-2	real checker/HIR produced-value carrier inventory
@@ -79,7 +79,7 @@ semantic-leaf-name	leaf-rsplit-field	hew-types/src/stdlib_loader.rs	1	stage-1	re
 semantic-leaf-name	leaf-rsplit-identifier	hew-types/src/check/registration.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-analysis/src/completions.rs	1	stage-1	reviewed module-qualified actor completion compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-analysis/src/signature_help.rs	1	stage-1	reviewed editor-buffer binding split; the buffer holds a spelling and the binding resolves through module_import_bindings
-semantic-leaf-name	leaf-rsplit-once-field	hew-hir/src/lower.rs	10	stage-1	reviewed unique imported constructor surface compatibility seam
+semantic-leaf-name	leaf-rsplit-once-field	hew-hir/src/lower.rs	12	stage-1	reviewed unique imported constructor and canonical impl-body owner compatibility seams
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/builtin_type.rs	1	stage-1	reviewed dotted builtin-type leaf extraction
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/calls.rs	4	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/expressions.rs	4	stage-1	reviewed qualified-variant surface split resolved through expected-nominal identity
@@ -124,7 +124,7 @@ string-method-identity	qualified-format-macro	hew-codegen-rs/src/runtime_abi.rs	
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/suspend.rs	11	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/thunks.rs	3	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-hir/src/dump.rs	2	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	29	stage-1	one reviewed compatibility-key factory for unique imported tagged-union constructors; exact source owner remains the authority
+string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	32	stage-1	reviewed compatibility-key factory for unique imported tagged-union constructors and `?` checker payload mismatch diagnostics; exact source owner remains the authority
 string-method-identity	qualified-format-macro	hew-hir/src/node.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/dump.rs	6	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/consts.rs	2	stage-5	reviewed qualified string identity construction
@@ -140,9 +140,9 @@ string-method-identity	qualified-format-macro	hew-types/src/check/calls.rs	3	sta
 string-method-identity	qualified-format-macro	hew-types/src/check/coerce.rs	2	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/expressions.rs	7	stage-1	reviewed qualified string identity construction; adds dotted module-qualified unit-constructor resolution (module.Type.Variant)
 string-method-identity	qualified-format-macro	hew-types/src/check/items.rs	9	stage-1	A315 S7 retired source-facing scoped diagnostic spellings
-string-method-identity	qualified-format-macro	hew-types/src/check/methods.rs	27	stage-1	A315 S7 retired source-facing scoped diagnostic spellings
+string-method-identity	qualified-format-macro	hew-types/src/check/methods.rs	25	stage-1	retired source-facing scoped diagnostic spellings
 string-method-identity	qualified-format-macro	hew-types/src/check/mod.rs	1	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	20	stage-1	A315 S7 retired source-facing scoped diagnostic spellings
+string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	21	stage-1	retired source-facing scoped diagnostic spellings plus file-indexed imported trait binding publication
 string-method-identity	qualified-format-macro	hew-types/src/check/resolution.rs	6	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/statements.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/type_members.rs	4	stage-1	reviewed dotted qualified identity construction

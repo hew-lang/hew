@@ -13,7 +13,13 @@ use super::{
 
 impl Builder {
     pub(super) fn binding_ref_use_intent(&self, expr: &HirExpr) -> IntentKind {
-        if self.param_ownership.borrow_arg_sites.contains(&expr.site)
+        if self
+            .projected_resource_direct_move_sites
+            .last()
+            .is_some_and(|site| *site == expr.site)
+        {
+            IntentKind::Consume
+        } else if self.param_ownership.borrow_arg_sites.contains(&expr.site)
             || self.bytes_local_share_sites.contains(&expr.site)
             || self.string_local_share_sites.contains_key(&expr.site)
         {

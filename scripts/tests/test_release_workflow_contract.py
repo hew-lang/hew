@@ -271,6 +271,26 @@ def test_rc_tag_normalization_and_exact_release_body() -> None:
     assert RELEASE_NOTES.exists()
 
 
+def test_release_tag_must_match_cargo_version_before_build() -> None:
+    text = workflow()
+    start = text.index("  validate-release-version:\n")
+    end = text.index(
+        "  # ─────────────────────────────────────────────────────────────────────────\n",
+        start,
+    )
+    job = text[start:end]
+    assert "ref: ${{ env.RELEASE_TAG }}" in job
+    assert "cargo_version=" in job
+    assert 'expected_tag="v${cargo_version}"' in job
+    assert 'if [[ "${RELEASE_TAG}" != "${expected_tag}" ]]' in job
+    assert "refusing to build" in job
+    assert (
+        "needs: validate-release-version"
+        in text[text.index("  build-cross-release-libs:") :]
+    )
+    assert "needs: validate-release-version" in text[text.index("  build-linux:") :]
+
+
 def test_npm_publication_is_pinned_to_a_version_matching_release_tag() -> None:
     text = npm_publish_workflow()
     assert "      release_tag:\n" in text
@@ -1804,6 +1824,7 @@ def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:
 
 _TESTS = [
     test_rc_tag_normalization_and_exact_release_body,
+    test_release_tag_must_match_cargo_version_before_build,
     test_npm_publication_is_pinned_to_a_version_matching_release_tag,
     test_playground_dispatch_is_purpose_scoped_and_fail_closed,
     test_dispatch_uses_exact_playground_workflow_input_and_ref,

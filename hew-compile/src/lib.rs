@@ -2074,13 +2074,13 @@ mod tests {
         reason = "the import-order regression keeps both declaration-owner permutations in one proof"
     )]
     fn mixed_file_and_package_impls_keep_declaration_owned_dispatch_in_both_import_orders() {
-        // A file import is flattened into the root program, whereas a package
-        // import retains its package-qualified declaration owner.  The two
+        // A file import shares the root checker declaration namespace, while
+        // its emitted HIR body retains the source-file symbol owner. A package
+        // import retains a package-qualified owner at both boundaries. The two
         // sources intentionally declare same-leaf `Result` / `ResultMethods`
-        // impls.  The checker must select the root-owned file declaration for
-        // `local.tag()` and the package-owned declaration for `r.rows()`;
-        // choosing an owner by the shared leaf name makes HIR's body lookup
-        // ambiguous or attaches the call to the wrong implementation.
+        // impls. The checker must select the root declaration for `local.tag()`
+        // and the package declaration for `r.rows()`; HIR's direct-call index
+        // must then project each declaration to its distinct emitted body.
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("hew-compile has a workspace parent");
@@ -2181,7 +2181,10 @@ mod tests {
                 hir.diagnostics
             );
             let symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
-            assert_eq!(symbols.get(&root_tag), Some(&"Result::tag".to_string()));
+            assert_eq!(
+                symbols.get(&root_tag),
+                Some(&"mixed_import_impl_collision_lib.Result::tag".to_string())
+            );
             assert_eq!(
                 symbols.get(&package_rows),
                 Some(&"hew.testffi.Result::rows".to_string())
@@ -2191,7 +2194,7 @@ mod tests {
 
     #[test]
     fn imported_generic_impl_bodies_publish_each_checker_owned_declaration() {
-        // `privslot` deliberately combines all three conditions that used to
+        // `privslot` deliberately combines all three conditions that
         // make a body lookup tempting to recover from a leaf spelling: its
         // module-private generic `Slot<T>` is nested in a public `Store<T>`,
         // and the consumer dispatches two inherent methods after the root body
@@ -4487,9 +4490,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
 
     /// `std::misc::log` ships `pub const JSON: i64 = 1` and `pub const TEXT: i64 = 0`
     /// in its Hew source layer.  The stdlib registration path routes these through
-    /// `register_stdlib_hew_items`, which previously had no `Item::Const` arm and
-    /// silently dropped them so `log.JSON` / `log.TEXT` were unknown to the type
-    /// checker.
+    /// `register_stdlib_hew_items` registers these constants so `log.JSON` /
+    /// `log.TEXT` are available to the type checker.
     ///
     /// This test verifies the real stdlib const resolution works end-to-end: the
     /// source goes through import resolution (which populates `resolved_items` on
@@ -4528,8 +4530,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         );
     }
 
-    /// Importing `std::fs` and `std::path` together previously produced two
-    /// defects caused by `SpanKey` lacking a per-module discriminator:
+    /// Importing `std::fs` and `std::path` together uses a per-module
+    /// discriminator in `SpanKey`:
     ///
     /// * Defect A — `hew check`: `unsupported unary - for operand i64 -> string`
     ///   at `std/path.hew:227` (ordinary `return -1;`).  The negation was
@@ -4861,5 +4863,67 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "the foreign same-leaf handle must remain fail-closed instead of inheriting the bundled resource class: {:#?}",
             foreign.diagnostics
         );
+    }
+
+    #[test]
+    fn imported_stdlib_function_can_spawn_and_wire_public_module_actors() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below repository root");
+        let dir = tempfile::tempdir().expect("create temp project");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import std::pipeline;\n\
+             fn main() {\n\
+                 let chain = pipeline.run(pipeline.from(1));\n\
+                 let item: pipeline.PipelineItemI64 = PipelineItemI64 {\n\
+                     value: 21, label: \"probe\", crash_stage: false\n\
+                 };\n\
+                 match await chain.push(item) { Ok(_) => {}, Err(_) => {} }\n\
+             }\n",
+        );
+        let state = run_file_frontend_to_typecheck(
+            &input,
+            &FrontendOptions {
+                project_dir: Some(repo_root.to_path_buf()),
+                ..FrontendOptions::default()
+            },
+        )
+        .unwrap_or_else(|failure| panic!("frontend failed: {failure:#?}"));
+        let typecheck = state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("fixture must typecheck");
+        let hir = hew_hir::lower_program(
+            &state.program,
+            typecheck,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            hir.diagnostics.is_empty(),
+            "imported pipeline bodies must lower: {:#?}",
+            hir.diagnostics
+        );
+        let mir = hew_mir::lower_hir_module(&hir.module);
+        assert!(
+            mir.diagnostics.is_empty(),
+            "imported pipeline actor layouts and calls must lower: {:#?}",
+            mir.diagnostics
+        );
+        for actor in [
+            "std.pipeline.AdmissionControlI64",
+            "std.pipeline.SinkI64",
+            "std.pipeline.StageI64",
+            "std.pipeline.SourceI64",
+        ] {
+            assert!(
+                mir.actor_layouts.iter().any(|layout| layout.name == actor),
+                "missing imported actor layout `{actor}`: {:#?}",
+                mir.actor_layouts
+            );
+        }
     }
 }

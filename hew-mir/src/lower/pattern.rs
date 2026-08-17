@@ -523,6 +523,24 @@ impl Builder {
             ResolvedTy::Tuple(_) | ResolvedTy::Array(_, _) => ReleaseSymbolVerdict::WiredInPlace(
                 crate::ownership::InPlaceReleaseKind::AggregateRecursive,
             ),
+            // A field-bearing resource record has a drop-only in-place thunk:
+            // it runs user close and then tears down its fields. It is affine
+            // and therefore intentionally lacks the clone-total admission used
+            // by ordinary composites, but a fresh arm-local owner needs only
+            // the drop half.
+            ResolvedTy::Named {
+                name,
+                args,
+                is_opaque: false,
+                ..
+            } if args.is_empty()
+                && self
+                    .lifecycle_registry
+                    .resource_record(&hew_types::DefId::new(name))
+                    .is_some() =>
+            {
+                ReleaseSymbolVerdict::WiredInPlace(crate::ownership::InPlaceReleaseKind::Record)
+            }
             // A registered heap-owning record/enum composite: release through
             // the synthesised in-place drop thunk. `owned_composite_release_kind`
             // (→ `elem_is_owned_abi_releasable`) is the SAME admission the
@@ -3347,8 +3365,8 @@ impl Builder {
             //
             // Capture places: typed as I64 (opaque pointer). The runtime returns
             // a NUL-terminated C string as *mut u8 cast to i64 (zero = null).
-            // Slice 5 will introduce proper CString/StrPtr semantics; for now the
-            // i64 opaque representation is substrate-correct for null-check dispatch.
+            // The i64 opaque representation is substrate-correct for null-check
+            // dispatch until nullable pointer types are available.
             //
             // WHY I64 for a pointer: MIR has no nullable-pointer type today. I64
             // is the convention used by other handle places (lambda-actor handles
@@ -4484,6 +4502,33 @@ impl Builder {
             // `for await item in rx` / `match channel.recv(...) { ... }` /
             // `match stream.recv() { ... }`.
             let arm_is_recv_some = recv_next_scrutinee && arm_is_some;
+            let call_carrier_needs_skipped_payload_owner = call_scrutinee_owner.is_some()
+                && match &self.subst_ty(&scrutinee.ty) {
+                    ResolvedTy::Named { name, args, .. } => {
+                        crate::model::find_enum_layout(name, args, &self.enum_layouts).is_some_and(
+                            |layout| {
+                                layout.variants.iter().any(|variant| {
+                                    variant.field_tys.iter().any(|field_ty| {
+                                        matches!(
+                                            field_ty,
+                                            ResolvedTy::Named {
+                                                name,
+                                                args,
+                                                is_opaque: false,
+                                                ..
+                                            } if args.is_empty()
+                                                && self
+                                                    .lifecycle_registry
+                                                    .resource_record(&hew_types::DefId::new(name))
+                                                    .is_some()
+                                        )
+                                    })
+                                })
+                            },
+                        )
+                    }
+                    _ => false,
+                };
             let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
             let mut call_carrier_match_result_candidates = Vec::new();
             // Fresh `Some(x)` bindings whose payload owns heap. VecIter clone
@@ -4560,7 +4605,8 @@ impl Builder {
                 // and shell releases for one owner.
                 if call_scrutinee_owner.is_some()
                     && keep_for_drop_elab
-                    && self.is_owned_aggregate_record_ty(&binding_ty)
+                    && (self.is_owned_aggregate_record_ty(&binding_ty)
+                        || call_carrier_needs_skipped_payload_owner)
                 {
                     if let Some(local) = base_local(dest) {
                         call_carrier_match_result_candidates.push((binding.binding, local));
@@ -4729,7 +4775,7 @@ impl Builder {
             // the selected field once and gets one exit drop, while an opaque
             // sibling or an unproven field remains untouched (leak, never a
             // guessed release).
-            if call_scrutinee_owner.is_none() {
+            if call_scrutinee_owner.is_none() || call_carrier_needs_skipped_payload_owner {
                 use crate::model::HeapOwnershipLayouts as _;
                 let bound_fields: HashSet<u32> = arm.bindings.iter().map(|b| b.field_idx).collect();
                 let predicate_fields: HashSet<u32> = arm
@@ -4781,19 +4827,32 @@ impl Builder {
                         "__hew_active_variant_payload",
                         arm.body.site,
                         local,
-                        field_ty,
+                        field_ty.clone(),
                         warrant,
                     );
+                    self.record_match_arm_binding_scope(binding, arm);
+                    self.set_owned_local_disposition(binding, Disposition::BodyEndReleased);
                     self.fresh_variant_payload_bindings.insert(binding);
                     self.fresh_variant_payload_binder_locals.insert(local);
-                    self.push_instr(Instr::Move {
-                        dest,
-                        src: Place::MachineVariant {
-                            local: scrutinee_local,
-                            variant_idx,
-                            field_idx,
-                        },
-                    });
+                    generator_yield_drop_bindings.push((binding, dest, field_ty, arm.body.site));
+                    let source = Place::MachineVariant {
+                        local: scrutinee_local,
+                        variant_idx,
+                        field_idx,
+                    };
+                    self.push_instr(Instr::Move { dest, src: source });
+                    // A whole call carrier normally drops its active payload.
+                    // The synthetic wildcard owner takes that payload instead,
+                    // so clear the carrier slot on this arm. This is essential
+                    // when a consuming field-bearing resource arm makes the
+                    // carrier's recursive drop unsafe: the sibling wildcard
+                    // still owns and releases its payload exactly once.
+                    if call_carrier_needs_skipped_payload_owner {
+                        self.push_move_out_neutralize(
+                            source,
+                            crate::model::NeutralizeAuthority::EphemeralTempConsume,
+                        );
+                    }
                 }
             }
 

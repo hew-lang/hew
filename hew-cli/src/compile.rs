@@ -35,6 +35,8 @@ pub struct CompileOptions {
     /// Anchor an in-memory compile to a specific project directory so that
     /// manifest-aware import resolution matches `compile_file` behaviour.
     pub project_dir: Option<PathBuf>,
+    /// Exact standard-library and global-module roots for synthetic sources.
+    pub module_search_paths: Option<Vec<PathBuf>>,
     /// Compile a synthetic `hew eval` REPL fragment rather than a finished
     /// program, suppressing the whole-program completeness lints. See
     /// [`hew_compile::FrontendOptions::repl_fragment`]. Only the eval paths
@@ -54,7 +56,7 @@ pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) ->
         enable_wasm_target: target.is_wasm(),
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
-        module_search_paths: None,
+        module_search_paths: options.module_search_paths.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
     }
@@ -73,7 +75,7 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
         enable_wasm_target: false,
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
-        module_search_paths: None,
+        module_search_paths: options.module_search_paths.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
     }

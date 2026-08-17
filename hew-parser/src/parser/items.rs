@@ -1031,8 +1031,8 @@ impl Parser<'_> {
     ///
     /// The attribute is not consumed from the slice; callers that render
     /// attributes should filter `resource` / `linear` out themselves if they
-    /// want to suppress them in output.  For now the checker is the only
-    /// consumer, so we leave the slice untouched.
+    /// want to suppress them in output. The checker is the only consumer, so
+    /// we leave the slice untouched.
     ///
     /// Valid type-decl attributes: `resource`, `linear`, `wire`, `json`,
     /// `yaml`, `deprecated`, `opaque`.  Anything else triggers `E_UNKNOWN_TYPE_MARKER`.

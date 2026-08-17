@@ -97,10 +97,9 @@ spec-0062   3690728588   # SNIPPET: bare `let f: fn(i64) -> i64 = ...` — fn-ty
 spec-0063   286908305   # SNIPPET: bare code — trait implementation illustration
 spec-0064   3032467602   # SNIPPET: bare `let` — generic function call illustration
 spec-0066   4058908296   # SNIPPET: bare `let` — generic function illustration
-spec-0069   1058274598   # SPEC-BUG: struct `impl` using incorrect syntax (stray `;` before `fn`)
 spec-0073   820125999   # SPEC-BUG: enum variants separated by `,` not `;` — illustrates wrong syntax
 spec-0075   4120679691   # SPEC-BUG: malformed struct `impl` syntax — aspirational (re-verified after Vec<T> method-table correction, still fails identically: signature-only `;`-terminated impl bodies, no `{ }`)
-spec-0076   2906582617   # SNIPPET: bare `var` — machine state body illustration
+spec-0076   3414934173   # SNIPPET: bare `var`/`let` — HashMap bracket-indexing illustration (re-verified after the dotted-path migration and the corrected index-read result type: `m[k]` yields bare `V`, not `Option<V>`)
 spec-0077   3711765580   # SNIPPET: bare `let`/`var` — machine state illustration
 spec-0078   1861586926   # SNIPPET: bare `let` after machine transitions — illustration
 spec-0079   3943447574   # SNIPPET: bare `let m = ...` — machine instantiation illustration

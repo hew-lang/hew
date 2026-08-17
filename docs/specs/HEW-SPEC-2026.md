@@ -205,6 +205,12 @@ actor HealthChecker {
 - The timer starts when the actor is spawned and repeats until the actor stops
 - Periodic handlers run within the actor's message loop, preserving single-threaded semantics
 
+At runtime shutdown, periodic-timer admission closes. A periodic tick becomes
+live work only when it is claimed for callback delivery. Shutdown waits for
+callbacks already claimed and cancels all pending entries, including entries
+that are due but not yet claimed; those entries are not delivered during
+shutdown.
+
 **Implementation:** The runtime uses a global timer wheel to schedule periodic self-sends. Each tick fires a zero-payload message to the actor's dispatch function at the handler's message index.
 
 ### 2.1.3 Lambda Actors
@@ -434,7 +440,12 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | `(T1, T2, ...)`                    | All elements are `Send`                    |
 | `[T; N]`                           | `T` is `Send`                              |
 
-> **Note on array annotations:** Only fixed-size array annotations `[T; N]` are supported. Slice annotations `[T]` (unsized) are rejected by the type checker; unsized-slice lowering is not implemented. Use `Vec<T>` for dynamically-sized sequences.
+> **Note on array annotations:** `[T; N]` is a fixed-size array. The bare
+> `[T]` spelling is accepted and is a synonym for `Vec<T>` — `let xs: [T] = ...`
+> and `fn f(xs: [T])` both type-check and lower as `Vec<T>`, so an `[T; N]`
+> value does not satisfy an `[T]` annotation (``expected `Vec<i64>`, found
+> `[i64; 3]` ``). Prefer the explicit `Vec<T>` spelling for dynamically-sized
+> sequences.
 
 **Frozen derivation:**
 
@@ -1790,12 +1801,14 @@ The current subset does not yet fully enforce object-safety rules or support
 associated-type bounds and higher-ranked trait bounds in `dyn` position. See
 [HEW-FUTURE.md §2.2](HEW-FUTURE.md) for those remaining object-type details.
 
-`dyn Trait` is supported as a function PARAMETER only. `Vec<dyn Trait>` is
-rejected at the checker boundary (`` `dyn Trait` cannot be a `Vec` element ``)
-— an opaque vtable pointer has no clone/drop, scalar-index, or push path, so
-collecting trait objects is not yet implemented. Store an enum of the concrete
-variants instead (`enum Shape { Circle(Circle); Square(Square); }`,
-`Vec<Shape>`) and dispatch on it with `match`.
+`dyn Trait` works as a function parameter and as a `Vec` element. A
+`Vec<dyn Trait>` type-checks, accepts `push` of any concrete implementor
+(including a heterogeneous mix), and dispatches through the runtime vtable
+when the elements are drained with `into_iter()`. Because a trait object has
+no clone path, `into_iter()` is the only iteration form — there is no
+non-consuming `iter()` snapshot. An enum of the concrete variants
+(`enum Shape { Circle(Circle); Square(Square); }`, `Vec<Shape>`) remains the
+alternative when you need to iterate without draining.
 
 #### 3.8.3 Trait Bounds
 
@@ -2056,7 +2069,7 @@ help: or annotate the lambda parameters directly
 
 ### 3.9 Foreign Function Interface (FFI)
 
-> **Partially implemented in v0.6.** `extern "C"` blocks, unsafe foreign calls,
+> **Partially implemented.** `extern "C"` blocks, unsafe foreign calls,
 > and native static-library linking with `hew build --link-lib` are shipped.
 > Layout/export attributes and the higher-level C-string wrapper surface remain
 > planned; their subsections are marked accordingly.
@@ -2097,9 +2110,10 @@ two modules) are accepted and resolve to the one established contract.
 
 #### 3.9.2 C-Compatible Struct Layout
 
-> **v0.6+.** `#[repr(C)]` is not recognised by the v0.5 HIR lowering pass.
-> Annotating a type with `#[repr(C)]` produces a cutover diagnostic; layout
-> is controlled by the compiler for all v0.5 types.
+> **Not yet implemented.** `#[repr(C)]` is not recognised. Annotating a type
+> with `#[repr(C)]` is rejected at parse time with
+> `unrecognised type attribute '#[repr]' [E_UNKNOWN_TYPE_MARKER]`; layout is
+> controlled by the compiler for all types today.
 
 Use `#[repr(C)]` to ensure C-compatible memory layout:
 
@@ -2153,20 +2167,24 @@ Ordinary Hew declarations use `T`, and mutable foreign access uses `*mut T`.
 
 #### 3.9.4 Exporting Functions to C
 
-> **v0.6+.** `#[export]` is not recognised by the v0.5 compiler. Annotating
-> a function with `#[export]` produces a cutover diagnostic. Hew functions
-> are not linkable from C in v0.5.
+> **Accepted, not yet wired to codegen.** `#[export]` parses on a Hew function
+> without error, but has no effect on the emitted binary today: the function
+> keeps its original name and internal (non-exported) linkage, so it is not
+> yet callable from C. `extern "C"` prefixing a Hew function body (as opposed
+> to a foreign declaration in an `extern "C" { ... }` block, §3.9.1) is not
+> valid syntax — `#[export]` applies directly to an ordinary `fn`.
 
-Use `#[export]` to make Hew functions callable from C:
+Use `#[export]` to make Hew functions callable from C once codegen support lands:
 
 ```hew
 #[export("hew_process_data")]
 fn process_data(data: *const u8, len: usize) -> i32 {
-    // Implementation accessible from C as hew_process_data()
+    // Intended to be accessible from C as hew_process_data() once wired.
+    0
 }
 
 #[export]  // Uses the function name as-is
-extern "C" fn my_callback(value: i32) -> i32 {
+fn my_callback(value: i32) -> i32 {
     value * 2
 }
 ```
@@ -2359,25 +2377,28 @@ Commonly used string operations include `+`, `==`, `!=`, `.len()`,
 
 **Bracket indexing** — a `HashMap<K, V>` supports `m[k]` subscript syntax keyed
 by the same `K: Hash + Eq` bound every HashMap method enforces. A read `m[k]`
-returns `Option<V>` (it is sugar for `m.get(k)`, so a missing key yields `None`
-rather than aborting), and an assignment `m[k] = v` inserts or overwrites the
-entry (sugar for `m.insert(k, v)`). Indexing with a key of the wrong type is a
-type error. This differs from `Vec<T>` indexing, where `v[i]` takes an `i64`
-index and returns the bare element `T`.
+returns the bare value `V`, and traps at runtime
+(`hew: trap in main context: IndexOutOfBounds`, exit 1) when the key is
+absent — it is NOT sugar for `m.get(k)`. Use `m.get(k)`, which returns
+`Option<V>`, whenever the key may be missing. An assignment `m[k] = v` inserts
+or overwrites the entry (sugar for `m.insert(k, v)`). Indexing with a key of
+the wrong type is a type error. This matches `Vec<T>` indexing, where `v[i]`
+takes an `i64` index and returns the bare element `T`.
 
 ```hew
 var m: HashMap<string, i64> = HashMap.new();
 m["answer"] = 42;        // insert/overwrite via index-assignment
-let hit = m["answer"];   // Option<i64> — Some(42)
-let miss = m["absent"];  // Option<i64> — None
+let hit = m["answer"];   // i64 — 42
+let miss = m.get("absent");  // Option<i64> — None (m["absent"] would trap)
 ```
 
-**Current implementation boundary** — although the surface spelling is generic,
-the shipped runtime/codegen ABI currently supports only `HashMap<string, V>`
-where `V` is `string`, `bool`, `char`, any integer type, any float type, or
-`duration`. Other `HashMap<K, V>` pairs are rejected during type checking.
-Key and value positions remain subject to their independent fixed-layout,
-semantic clone/drop, `Hash`, and `Eq` requirements.
+**Current implementation boundary** — the shipped runtime/codegen ABI supports
+`K` of `string`, any integer type, any float type, `bool`, or `char`, and `V`
+of `string`, `bool`, `char`, any integer type, any float type, `duration`, a
+user-defined record, or `Vec<T>`. A key whose type is not one of those (for
+example a user record) is rejected during type checking. Key and value
+positions remain subject to their independent fixed-layout, semantic
+clone/drop, `Hash`, and `Eq` requirements.
 
 **Map literal syntax** — a `HashMap<K, V>` can be constructed inline with
 brace-colon syntax.  The parser disambiguates `{` as a map literal when the
@@ -2841,12 +2862,15 @@ Because `machine` is a value type, assigning a machine variable copies it.
 The `step()` method mutates the variable in place — it does not return a new
 value.
 
-**Implementation status (v0.5.1):** machine-typed actor state fields are
+**Implementation status:** machine-typed actor state fields are
 supported, including heap-payload states (the field rides the enum
 clone/drop substrate; `step()` on a field stores back through the
-state-field overwrite-release path). Generic machine instantiations other
-than all-`i64` type arguments are refused at compile time (the machine
-substrate keeps one bare-named layout per declaration). Machine-state
+state-field overwrite-release path). Generic machine instantiations work for
+bit-copy type arguments (scalars such as `i64`/`f64`/`bool`, and records made
+only of bit-copy fields); a heap-owning type argument (`string`, `Vec<T>`, or
+a record with an owned field) is refused at codegen with a fail-closed
+diagnostic (`requires tag-aware drop`) because the generic machine substrate
+does not yet carry a tag-aware drop plan for an owned payload. Machine-state
 actors are not yet admitted as supervisor children (state constructors are
 not literal child-init values), so supervisor restart-clone of machine
 state is unreachable until that slice widens.
@@ -2867,7 +2891,8 @@ state variants at the receiver. See
 - Machines satisfy `Send` if all their state fields satisfy `Send`
   (same rule as structs).
 - Machines can be used as type parameters wherever the bound permits.
-- Generics over machines are not currently supported (non-goal for now).
+- A machine declaration may itself be generic (`machine Lifecycle<T> { ... }`);
+  see §3.11.7 for the type arguments the substrate admits.
 
 ---
 
@@ -2924,7 +2949,7 @@ Task<T>
 
 ### 4.2 Scope: Structured Concurrency Boundary
 
-> **Partially implemented in edition 2026 / v0.5.0.** The shipped surface is
+> **Partially implemented.** The shipped surface is
 > `scope { fork { call(); } }` in suspendable contexts (actor handlers,
 > closures, task entries), where the forked call takes no arguments and the
 > scope joins all children at its closing brace. The name-bound form
@@ -2971,7 +2996,7 @@ scope {
 
 `fork name = expr` (or bare `fork expr`) is only legal dynamically inside a
 `scope` block. `scope { ... }` opens the structured-concurrency block;
-`fork` is exclusively the child-start verb. In v0.5.0 the accepted child
+`fork` is exclusively the child-start verb. Today the accepted child
 form is the block form `fork { call(); }` with a zero-argument callee; the
 name-bound form parses but is rejected pending its type-checking slice.
 Outside a scope-block, a child-form `fork` is a `ForkOutsideScopeBlock`
@@ -3474,11 +3499,11 @@ HIR lowering:
 - `after <duration-expr>` — the timer arm; carries no binding.
 
 > A stream-next arm (`<id> from <stream>.recv()` over a `Stream<T>`) and a
-> task-await arm (`<id> from await <task>`) were specified in earlier drafts
-> but are **not** part of edition 2026's sealed set: neither has a usable
-> first-class substrate today (no `Stream<T>` handle is obtainable without
-> aggregate-extraction that fails closed; `Task<T>` is unnameable and `fork`
-> is parser-only). They return with their substrate — see HEW-FUTURE.
+> task-await arm (`<id> from await <task>`) are **not** part of edition 2026's
+> sealed set: neither has a usable first-class substrate today (no `Stream<T>`
+> handle is obtainable without aggregate-extraction that fails closed;
+> `Task<T>` is unnameable and `fork` is parser-only). They return with their
+> substrate — see HEW-FUTURE.
 
 **The three forms (closed set).** Each form is fully specified by four
 columns: what the winning arm binds, how the winning arm propagates a
@@ -4060,7 +4085,7 @@ The MessagePack format is the primary shipped binary wire encoding for Hew wire 
 
 Design goals: compact representation, fast encode/decode, language interoperability, forward/backward compatibility.
 
-**Implementation reference:** The canonical type descriptor is defined in `hew-types/src/type_descriptor.rs` (`TypeDescriptor = ResolvedTy`). The `hew-wirecodec` crate was retired; wire codec consumers should use `TypeDescriptor::canonical_string()` and the wire-kind surface in `hew-types`.
+**Implementation reference:** The canonical type descriptor is defined in `hew-types/src/type_descriptor.rs` (`TypeDescriptor = ResolvedTy`). Wire codec consumers use `TypeDescriptor::canonical_string()` and the wire-kind surface in `hew-types`.
 
 ##### 7.3.1.1 Wire Type–to–MessagePack Mapping
 
@@ -4757,7 +4782,7 @@ mailbox 100 overflow coalesce(request_id);
 
 ## 11. Distributed computing
 
-The cross-node actor surface shipped across v0.5.x and is the default
+The cross-node actor surface is shipped and is the default
 runtime mode when a Hew program runs as a cluster node. The normative
 specification is [`HEW-DIST-SPEC.md`](./HEW-DIST-SPEC.md); this section
 summarises what is shipped and stable.
@@ -4817,7 +4842,7 @@ When the grammar files and this specification disagree, the parser implementatio
 
 **Type aliases** (compile-time synonyms only — the aliased type is what the checker sees):
 
-> **No active aliases.** The `byte` alias was retired in v0.5 and is now a compile-time error. Use `u8` directly.
+> **No active aliases.** There is no `byte` alias — using `byte` as a type name is a compile-time error. Use `u8` directly.
 
 Integer literals default to `i64`. Float literals default to `f64`.
 
@@ -4948,8 +4973,8 @@ let precise = 500us;     // i64: 500_000 nanoseconds
 
 `duration` is a distinct type — it does not implicitly convert to or from integers.
 
-Duration arithmetic operators and accessor methods are fully implemented
-(shipped in v0.5.4). Duration literals compile to `i64` nanosecond values;
+Duration arithmetic operators and accessor methods are fully implemented.
+Duration literals compile to `i64` nanosecond values;
 arithmetic results are also `duration`.
 
 ```
@@ -4962,10 +4987,16 @@ duration + i64      → COMPILE ERROR (type mismatch — enforced)
 ```
 
 **Accessor methods** (return `i64`): `.nanos()`, `.micros()`, `.millis()`,
-`.secs()`, `.mins()`, `.hours()`. **Instant arithmetic** is also
-available via the builtin `instant` primitive (`instant::now()` — no
-import required) — subtraction of two instants yields a `duration`. Both
-`duration` and `instant` implement `Display`.
+`.secs()`, `.mins()`, `.hours()`. `duration` implements `Display` (`5s`
+prints as `5000000000ns`).
+
+> **Instant arithmetic is not usable yet.** `instant::now()` parses,
+> type-checks, and links (no import required), but it evaluates to a constant
+> `0` rather than a real clock reading, and subtracting two instants fails
+> during lowering with ``E_MIR: unsupported HIR node reached MIR lowering:
+> integer binary result `duration` disagrees with common operand type `i64` ``.
+> Measure elapsed time through `std::time` until the `instant` substrate
+> lands.
 
 **Timeouts:**
 

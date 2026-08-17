@@ -673,11 +673,11 @@ pub enum UnaryOp {
     BitNot,
     /// Raw pointer dereference (`*expr`).
     ///
-    /// v0.5 endpoint: the parser recognizes this only far enough to
-    /// reject it deterministically in the type checker.  Outside
+    /// The parser recognizes this only far enough to reject it
+    /// deterministically in the type checker. Outside
     /// `unsafe { ... }` the diagnostic is `UnsafeOperationRequiresBlock`;
-    /// inside `unsafe { ... }` the operation is rejected as "not lowered
-    /// in v0.5" before HIR.  No HIR/MIR/codegen path is reached.
+    /// inside `unsafe { ... }` the operation is rejected as "not lowered"
+    /// before HIR. No HIR/MIR/codegen path is reached.
     RawDeref,
 }
 
@@ -952,8 +952,8 @@ pub struct FnDecl {
     /// dispatch authority used by HIR/MIR/codegen. The checker validates the key
     /// against the known intrinsic catalog at registration time.
     ///
-    /// WHY: the catalog previously conjured `CompilerIntrinsic` entries with no
-    /// Hew-side declaration. This field enables typed declarations that the checker
+    /// WHY: the intrinsic catalog has no Hew-side declaration for these entries.
+    /// This field enables typed declarations that the checker
     /// can validate, making the intrinsic surface opt-in and fail-closed.
     /// WHEN-OBSOLETE: when all catalog `CompilerIntrinsic` rows have been migrated
     /// to `#[intrinsic]` declarations (slices 4–7).

@@ -669,8 +669,8 @@ const SYNTHETIC_INSTANT_NOW_ITEM: ItemId = ItemId(u32::MAX / 2 - 19);
 /// the same `u32::MAX / 2` band, just below `monitor`.
 ///
 /// The sibling checker builtin `duplex` (detached) is deliberately NOT seeded
-/// here: `duplex` has no runtime constructor (`hew_duplex_new` was removed in
-/// the M2 runtime refactor). Registering it would pass `verify_hir` but fail
+/// here: `duplex` has no runtime constructor (`hew_duplex_new`). Registering it
+/// would pass `verify_hir` but fail
 /// closed at the MIR boundary — pretend-support rather than a real lowering
 /// path. The runnable Stream/Sink constructor surface is `std::stream`'s
 /// `pipe`/`bytes_pipe` (real `fn` items).
@@ -1161,6 +1161,7 @@ struct ImplBodyPlan {
     /// Declarations whose executable bodies are supplied by the compiler,
     /// rather than selected from source/import traversal.
     compiler_selected: HashSet<hew_types::DefId>,
+    symbol_self_names: HashMap<*const hew_parser::ast::ImplDecl, String>,
 }
 
 /// Whether two linker spellings are compatibility projections of one
@@ -1231,6 +1232,125 @@ fn declaration_owned_impl_body_symbol<'a>(
     }
 }
 
+fn imported_impl_symbol_self_name(source_module: &str, source_name: &str) -> String {
+    if source_name.contains('.') {
+        source_name.to_string()
+    } else {
+        format!("{source_module}.{source_name}")
+    }
+}
+
+fn validate_impl_body_owner_alias(
+    ctx: &mut LowerCtx,
+    declaration_key: *const hew_parser::ast::ImplDecl,
+    base_symbol_self_name: &str,
+    planned: &[(hew_types::DefId, String)],
+) -> bool {
+    let Some(existing_owner) = ctx
+        .impl_body_plan
+        .symbol_self_names
+        .get(&declaration_key)
+        .cloned()
+    else {
+        return true;
+    };
+    if existing_owner == base_symbol_self_name {
+        return true;
+    }
+    let aliases_existing_plan = !planned.is_empty()
+        && planned.iter().all(|(declaration, symbol)| {
+            ctx.impl_body_plan
+                .symbols
+                .get(declaration)
+                .is_some_and(|existing| {
+                    existing == symbol
+                        || impl_body_symbols_alias_one_declaration(declaration, existing, symbol)
+                })
+        });
+    if aliases_existing_plan {
+        return true;
+    }
+    ctx.impl_body_plan
+        .symbol_self_names
+        .remove(&declaration_key);
+    ctx.diagnostics.push(HirDiagnostic::new(
+        HirDiagnosticKind::CheckerBoundaryViolation {
+            name: "impl body owner".to_string(),
+            reason: format!(
+                "conflicting pre-lowering owners `{existing_owner}` and `{base_symbol_self_name}`"
+            ),
+        },
+        0..0,
+        "one implementation declaration selected two distinct canonical owners",
+    ));
+    false
+}
+
+fn merge_planned_impl_body_symbols(
+    ctx: &mut LowerCtx,
+    planned: &[(hew_types::DefId, String)],
+) -> bool {
+    let mut conflict = false;
+    for (declaration, symbol) in planned {
+        if let Some(existing) = ctx
+            .impl_body_plan
+            .symbols
+            .insert(declaration.clone(), symbol.clone())
+        {
+            if existing == *symbol {
+                continue;
+            }
+            if impl_body_symbols_alias_one_declaration(declaration, &existing, symbol) {
+                let selected = if ctx.impl_body_plan.compiler_selected.contains(declaration) {
+                    existing
+                } else {
+                    declaration_owned_impl_body_symbol(declaration, &existing, symbol).to_string()
+                };
+                ctx.impl_body_plan
+                    .symbols
+                    .insert(declaration.clone(), selected);
+                continue;
+            }
+            ctx.impl_body_plan.symbols.remove(declaration);
+            conflict = true;
+            ctx.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: format!("impl body `{}`", declaration.full_path()),
+                    reason: format!(
+                        "conflicting pre-lowering symbols `{existing}` and `{symbol}`"
+                    ),
+                },
+                0..0,
+                format!(
+                    "implementation declaration `{}` selected two distinct emitted-body symbols: `{existing}` and `{symbol}`",
+                    declaration.full_path()
+                ),
+            ));
+        }
+    }
+    !conflict
+}
+
+fn record_impl_body_owner(
+    ctx: &mut LowerCtx,
+    declaration_key: *const hew_parser::ast::ImplDecl,
+    base_symbol_self_name: &str,
+    planned: &[(hew_types::DefId, String)],
+) {
+    let selected_owner = planned
+        .iter()
+        .find_map(|(declaration, _)| {
+            ctx.impl_body_plan
+                .symbols
+                .get(declaration)
+                .and_then(|symbol| symbol.rsplit_once("::").map(|(owner, _)| owner.to_string()))
+        })
+        .unwrap_or_else(|| base_symbol_self_name.to_string());
+    ctx.impl_body_plan
+        .symbol_self_names
+        .insert(declaration_key, selected_owner);
+}
+
 fn plan_impl_block_symbols(
     ctx: &mut LowerCtx,
     impl_decl: &hew_parser::ast::ImplDecl,
@@ -1294,40 +1414,17 @@ fn plan_impl_block_symbols(
         impl_decl,
         &symbol_self_name,
     ));
-    for (declaration, symbol) in planned {
-        if let Some(existing) = ctx
-            .impl_body_plan
-            .symbols
-            .insert(declaration.clone(), symbol.clone())
-        {
-            if existing != symbol {
-                if impl_body_symbols_alias_one_declaration(&declaration, &existing, &symbol) {
-                    let selected = if ctx.impl_body_plan.compiler_selected.contains(&declaration) {
-                        existing
-                    } else {
-                        declaration_owned_impl_body_symbol(&declaration, &existing, &symbol)
-                            .to_string()
-                    };
-                    ctx.impl_body_plan.symbols.insert(declaration, selected);
-                    continue;
-                }
-                ctx.impl_body_plan.symbols.remove(&declaration);
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: format!("impl body `{}`", declaration.full_path()),
-                        reason: format!(
-                            "conflicting pre-lowering symbols `{existing}` and `{symbol}`"
-                        ),
-                    },
-                    0..0,
-                    format!(
-                        "implementation declaration `{}` selected two distinct emitted-body symbols: `{existing}` and `{symbol}`",
-                        declaration.full_path()
-                    ),
-                ));
-            }
-        }
+    let declaration_key = impl_decl as *const _;
+    if !validate_impl_body_owner_alias(ctx, declaration_key, base_symbol_self_name, &planned) {
+        return;
     }
+    if !merge_planned_impl_body_symbols(ctx, &planned) {
+        ctx.impl_body_plan
+            .symbol_self_names
+            .remove(&declaration_key);
+        return;
+    }
+    record_impl_body_owner(ctx, declaration_key, base_symbol_self_name, &planned);
 }
 
 /// The `(declaration, emitted symbol)` pairs for every trait default an impl
@@ -1404,7 +1501,14 @@ fn plan_imported_impl_bodies(
             .map(str::to_string);
         if let Item::Impl(impl_decl) = item {
             if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
-                plan_impl_block_symbols(ctx, impl_decl, name, &empty_skips);
+                let symbol_self_name = file_import_module_idx
+                    .get(&item_idx)
+                    .and_then(|module_idx| span_indices.module_name(*module_idx))
+                    .map_or_else(
+                        || name.clone(),
+                        |module| imported_impl_symbol_self_name(module, name),
+                    );
+                plan_impl_block_symbols(ctx, impl_decl, &symbol_self_name, &empty_skips);
             }
         }
     }
@@ -1473,7 +1577,7 @@ fn plan_imported_impl_bodies(
                 continue;
             };
             let skip_methods = ctx.imported_impl_skip_methods(impl_decl, &source_module, &rewrites);
-            let base_symbol_self_name = format!("{source_module}.{name}");
+            let base_symbol_self_name = imported_impl_symbol_self_name(&source_module, name);
             plan_impl_block_symbols(ctx, impl_decl, &base_symbol_self_name, &skip_methods);
         }
         ctx.current_module_idx = previous_module_idx;
@@ -1625,41 +1729,93 @@ fn collect_inherent_impl_consuming_methods_from_items(
 fn collect_trait_default_methods(
     program: &Program,
     file_import_module_idx: &HashMap<usize, u32>,
+    trait_method_ids_by_binding: &HashMap<
+        TraitMethodBindingKey,
+        (hew_types::DefId, hew_types::DefId),
+    >,
 ) -> (HashMap<String, Vec<TraitMethod>>, HashMap<String, u32>) {
+    fn checker_binding_owner(
+        scope: Option<&str>,
+        module_idx: u32,
+        trait_name: &str,
+        defaults: &[TraitMethod],
+        trait_method_ids_by_binding: &HashMap<
+            TraitMethodBindingKey,
+            (hew_types::DefId, hew_types::DefId),
+        >,
+    ) -> Option<String> {
+        let scope = scope.map(str::to_string);
+        let mut owners = defaults
+            .iter()
+            .map(|method| {
+                trait_method_ids_by_binding
+                    .get(&(
+                        scope.clone(),
+                        module_idx,
+                        trait_name.to_string(),
+                        method.name.clone(),
+                    ))
+                    .map(|(trait_id, _)| trait_id.full_path().to_string())
+            })
+            .collect::<Option<Vec<_>>>()?;
+        owners.sort_unstable();
+        owners.dedup();
+        (owners.len() == 1).then(|| owners.pop().expect("checked length"))
+    }
+
     let mut owner_module_idx: HashMap<String, u32> = HashMap::new();
     let mut out: HashMap<String, Vec<TraitMethod>> = HashMap::new();
-    let mut collect =
-        |items: &[(Item, Span)], owner: Option<&str>, idx_for: &dyn Fn(usize) -> u32| {
-            for (item_idx, (item, _)) in items.iter().enumerate() {
-                let Item::Trait(trait_decl) = item else {
-                    continue;
-                };
-                let defaults: Vec<TraitMethod> = trait_decl
-                    .items
-                    .iter()
-                    .filter_map(|ti| match ti {
-                        TraitItem::Method(method) if method.body.is_some() => Some(method.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                if !defaults.is_empty() {
-                    let key = owner.map_or_else(
+    let mut collect = |items: &[(Item, Span)],
+                       owner: Option<&str>,
+                       flat_file_items: Option<&HashMap<usize, u32>>,
+                       idx_for: &dyn Fn(usize) -> u32| {
+        for (item_idx, (item, _)) in items.iter().enumerate() {
+            let Item::Trait(trait_decl) = item else {
+                continue;
+            };
+            let defaults: Vec<TraitMethod> = trait_decl
+                .items
+                .iter()
+                .filter_map(|ti| match ti {
+                    TraitItem::Method(method) if method.body.is_some() => Some(method.clone()),
+                    _ => None,
+                })
+                .collect();
+            if !defaults.is_empty() {
+                let key = if flat_file_items.is_some_and(|items| items.contains_key(&item_idx)) {
+                    let Some(owner) = checker_binding_owner(
+                        None,
+                        idx_for(item_idx),
+                        &trait_decl.name,
+                        &defaults,
+                        trait_method_ids_by_binding,
+                    ) else {
+                        continue;
+                    };
+                    owner
+                } else {
+                    owner.map_or_else(
                         || trait_decl.name.clone(),
                         |owner| format!("{owner}.{}", trait_decl.name),
-                    );
-                    // A trait spliced into the ROOT items by a file import keeps
-                    // its bare root spelling, but the checker validated it during
-                    // the module walk under that file's own index. A trait in a
-                    // directory module's peer file likewise owns that PEER's index,
-                    // not the assembled module's base — recover both per item.
-                    owner_module_idx.insert(key.clone(), idx_for(item_idx));
-                    out.insert(key, defaults);
-                }
+                    )
+                };
+                // A trait spliced into the ROOT items by a file import keeps
+                // its root binding spelling, but its declaration identity is
+                // the exact canonical owner published by the checker. A trait
+                // in a directory module's peer file likewise owns that PEER's
+                // index, not the assembled module's base — recover both per
+                // item.
+                owner_module_idx.insert(key.clone(), idx_for(item_idx));
+                out.insert(key, defaults);
             }
-        };
-    collect(&program.items, None, &|item_idx| {
-        file_import_module_idx.get(&item_idx).copied().unwrap_or(0)
-    });
+        }
+    };
+    collect(
+        &program.items,
+        None,
+        Some(file_import_module_idx),
+        &|item_idx| file_import_module_idx.get(&item_idx).copied().unwrap_or(0),
+    );
     if let Some(graph) = &program.module_graph {
         let span_indices = graph.file_span_indices();
         for module_id in &graph.topo_order {
@@ -1670,7 +1826,7 @@ fn collect_trait_default_methods(
                 continue;
             };
             let owner = module_id.path.join(".");
-            collect(&module.items, Some(&owner), &|item_idx| {
+            collect(&module.items, Some(&owner), None, &|item_idx| {
                 span_indices.item_index(module_id, item_idx).unwrap_or(0)
             });
         }
@@ -2709,8 +2865,11 @@ pub fn lower_program_with_mono_cap(
 
     // Pre-pre-pass: harvest trait default method bodies so that impl-block
     // lowering can emit them for impls that do not override them.
-    let (trait_defaults, trait_default_module_idx) =
-        collect_trait_default_methods(program, &file_import_module_idx);
+    let (trait_defaults, trait_default_module_idx) = collect_trait_default_methods(
+        program,
+        &file_import_module_idx,
+        &ctx.trait_method_ids_by_binding,
+    );
     ctx.trait_default_methods = trait_defaults;
     ctx.trait_default_module_idx = trait_default_module_idx;
     let (trait_super, trait_declared_methods) = collect_trait_declaring_surfaces(program);
@@ -3181,8 +3340,8 @@ pub fn lower_program_with_mono_cap(
                                     || classify_unsupported_where_clause(impl_decl).is_none()
                                 {
                                     let impl_type_params = impl_type_param_names(impl_decl);
-                                    let qualified_identity = format!("{module_full_path}.{name}");
-                                    let symbol_self_name = qualified_identity;
+                                    let symbol_self_name =
+                                        imported_impl_symbol_self_name(&module_full_path, name);
                                     for method in &impl_decl.methods {
                                         ctx.register_impl_method_fn_entry(
                                             &symbol_self_name,
@@ -4565,7 +4724,28 @@ pub fn lower_program_with_mono_cap(
                 }
             }
             Item::Impl(impl_decl) => {
-                ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);
+                let imported_symbol_self_name = ctx.current_module_name.as_ref().and_then(|_| {
+                    ctx.impl_body_plan
+                        .symbol_self_names
+                        .get(&(impl_decl as *const _))
+                        .cloned()
+                });
+                let rewrites = HashMap::new();
+                let skip_methods = HashSet::new();
+                let imported = imported_symbol_self_name
+                    .as_deref()
+                    .map(|symbol_self_name| ImportedImplLowering {
+                        rewrites: &rewrites,
+                        skip_methods: &skip_methods,
+                        symbol_self_name: Some(symbol_self_name),
+                    });
+                ctx.lower_impl_block(
+                    impl_decl,
+                    span.clone(),
+                    &mut items,
+                    false,
+                    imported.as_ref(),
+                );
             }
             Item::Machine(machine) => {
                 if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
@@ -4848,6 +5028,23 @@ pub fn lower_program_with_mono_cap(
                         )
                     })
                     .collect();
+                let same_module_actor_rewrites: HashMap<String, String> = module
+                    .items
+                    .iter()
+                    .filter_map(|(it, _)| {
+                        if let Item::Actor(actor) = it {
+                            Some((
+                                actor.name.clone(),
+                                format!("{source_module}.{}", actor.name),
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let prev_actor_rewrites = ctx
+                    .imported_actor_rewrites
+                    .replace(same_module_actor_rewrites);
                 // Populate bare-name const scope for this module's own consts.
                 // Functions inside the module reference module-level consts by
                 // bare name (e.g. `STATUS_OK`), but the global `const_registry`
@@ -4974,6 +5171,12 @@ pub fn lower_program_with_mono_cap(
                         // function signature, so visibility cannot discard its
                         // runtime layout and value-class identity here.
                         Item::Machine(machine) => {
+                            // File imports are flattened into the source-order
+                            // pass above. Lowering them again here would mint
+                            // duplicate machine mono/layout entries.
+                            if file_import_modules.contains(mod_id) {
+                                continue;
+                            }
                             if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
                                 items.push(HirItem::Machine(hir_machine));
                             }
@@ -5146,14 +5349,30 @@ pub fn lower_program_with_mono_cap(
                                     &source_module,
                                     &same_module_fn_rewrites,
                                 );
-                                let qualified_identity =
-                                    format!("{source_module}.{self_type_name}");
                                 // Impl method symbols are declaration-owned,
-                                // not collision-owned.  Always use the full
-                                // source module path so two modules ending in
-                                // `render` cannot emit the same `Box::render`
-                                // linker label.
-                                let qualified_symbol_self_name = Some(qualified_identity);
+                                // not collision-owned. Consume the canonical
+                                // owner established by the declaration-keyed
+                                // pre-lowering plan rather than reconstructing
+                                // it from the source spelling.
+                                let planned_symbol_self_name = ctx
+                                    .impl_body_plan
+                                    .symbol_self_names
+                                    .get(&(impl_decl as *const _))
+                                    .cloned();
+                                if planned_symbol_self_name.is_none() {
+                                    ctx.diagnostics.push(HirDiagnostic::new(
+                                        HirDiagnosticKind::CheckerBoundaryViolation {
+                                            name: format!(
+                                                "impl body `{source_module}.{self_type_name}`"
+                                            ),
+                                            reason:
+                                                "no pre-lowering canonical owner".to_string(),
+                                        },
+                                        span.clone(),
+                                        "imported implementation body has no declaration-keyed owner plan",
+                                    ));
+                                    continue;
+                                }
                                 ctx.lower_impl_block(
                                     impl_decl,
                                     span.clone(),
@@ -5162,7 +5381,7 @@ pub fn lower_program_with_mono_cap(
                                     Some(&ImportedImplLowering {
                                         rewrites: &same_module_fn_rewrites,
                                         skip_methods: &skip_methods,
-                                        symbol_self_name: qualified_symbol_self_name.as_deref(),
+                                        symbol_self_name: planned_symbol_self_name.as_deref(),
                                     }),
                                 );
                             }
@@ -5291,6 +5510,7 @@ pub fn lower_program_with_mono_cap(
                 }
                 // Restore the const scope after lowering this module's bodies.
                 ctx.imported_module_consts = prev_module_consts;
+                ctx.imported_actor_rewrites = prev_actor_rewrites;
                 ctx.folded_integer_consts = previous_folded_integer_consts;
                 ctx.tag_diagnostics_since(diag_start, &source_module);
                 record_source_modules_for_items(
@@ -7039,6 +7259,10 @@ struct LowerCtx {
     /// the qualified, native-symbol-safe `fn_registry` keys emitted for that
     /// imported module.
     imported_fn_rewrites: Option<HashMap<String, String>>,
+    /// Same-module actor identity rewrites active while lowering imported
+    /// module bodies. Keys are source-visible bare actor names; values are the
+    /// fully-qualified actor-layout identities used by MIR.
+    imported_actor_rewrites: Option<HashMap<String, String>>,
     /// Bare-name → `ConstEntry` map active while lowering an imported module's
     /// function bodies.  A module may reference its own module-level consts
     /// by bare name (e.g. `STATUS_OK` inside `tls.hew`), but only the
@@ -8182,6 +8406,7 @@ impl LowerCtx {
             fn_registry: HashMap::new(),
             extern_fn_names: HashSet::new(),
             imported_fn_rewrites: None,
+            imported_actor_rewrites: None,
             imported_module_consts: None,
             type_classes,
             opaque_resource_candidates: tc_output.opaque_resource_candidates.clone(),
@@ -12647,12 +12872,11 @@ impl LowerCtx {
         // previous value (almost always `None`) on exit so nested
         // impl-lowering reentry — should it ever arise — does not leak state.
         // `HirImplBlock::self_type_name` is receiver identity metadata, not a
-        // callable-symbol prefix. Imported non-colliding impls deliberately
-        // retain a bare prefix (`Value::push_int`) for the checker-aligned
-        // function registry, while their resolved receiver type carries the
-        // source identity (`toml.Value`). Preserve both facts: MIR compares
-        // this metadata with parameter zero to distinguish a true receiver
-        // from an associated function's ordinary first argument.
+        // callable-symbol prefix. Imported impl symbols carry the canonical
+        // declaration owner from `impl_body_plan`, while their resolved receiver
+        // type independently carries the source identity. Preserve both facts:
+        // MIR compares this metadata with parameter zero to distinguish a true
+        // receiver from an associated function's ordinary first argument.
         let hir_impl_self_type_name = match &resolved_impl_self_ty {
             ResolvedTy::Named {
                 builtin: Some(BuiltinType::VecIter),
@@ -12997,6 +13221,7 @@ impl LowerCtx {
         // bare identity — its layout stays bare too, so qualifying here would
         // instead CREATE a mismatch.
         for handler in &mut lowered.receive_handlers {
+            handler.return_ty = self.qualify_current_module_record_ty(handler.return_ty.clone());
             handler.return_ty =
                 self.qualify_colliding_module_record_ty(&handler.return_ty, module_full_path);
         }
@@ -13013,6 +13238,21 @@ impl LowerCtx {
         actor_identity
             .rsplit_once('.')
             .map(|(module, _actor)| module)
+    }
+
+    fn qualify_imported_actor_method_id(&self, method_id: String) -> String {
+        let Some((actor, method)) = method_id.rsplit_once("::") else {
+            return method_id;
+        };
+        if actor.contains('.') {
+            return method_id;
+        }
+        self.imported_actor_rewrites
+            .as_ref()
+            .and_then(|rewrites| rewrites.get(actor))
+            .map_or(method_id.clone(), |qualified| {
+                format!("{qualified}::{method}")
+            })
     }
 
     /// Qualify a bare user-record type reference to `{module_short}.{name}` when
@@ -14581,6 +14821,36 @@ impl LowerCtx {
     ) -> ResolvedTy {
         if let ResolvedTy::Named {
             name,
+            mut args,
+            builtin: Some(BuiltinType::LocalPid),
+            is_opaque,
+        } = ty
+        {
+            if let [ResolvedTy::Named {
+                name: actor_name,
+                args: actor_args,
+                builtin: None,
+                ..
+            }] = args.as_mut_slice()
+            {
+                if actor_args.is_empty() && !actor_name.contains('.') {
+                    if let Some(module) = decl_module {
+                        let qualified = format!("{module}.{actor_name}");
+                        if self.actor_type_names.contains(&qualified) {
+                            actor_name.clone_from(&qualified);
+                        }
+                    }
+                }
+            }
+            return ResolvedTy::Named {
+                name,
+                args,
+                builtin: Some(BuiltinType::LocalPid),
+                is_opaque,
+            };
+        }
+        if let ResolvedTy::Named {
+            name,
             args,
             builtin,
             ..
@@ -14740,7 +15010,7 @@ impl LowerCtx {
                 field.span.clone(),
             );
         }
-        let params = params.iter().map(|p| self.bind_param(p)).collect();
+        let params = params.iter().map(|p| self.bind_actor_param(p)).collect();
         let body = self.with_current_return_type(expected_ty.clone(), |ctx| {
             ctx.lower_block(body, expected_ty)
         });
@@ -14780,7 +15050,7 @@ impl LowerCtx {
             );
             state_field_bindings.insert(binding.id);
         }
-        let params = params.iter().map(|p| self.bind_param(p)).collect();
+        let params = params.iter().map(|p| self.bind_actor_param(p)).collect();
 
         // Snapshot the enclosing scope (state fields + params, just bound
         // above) BEFORE lowering the body, mirroring `lower_generator_fn_body`
@@ -21025,6 +21295,13 @@ impl LowerCtx {
         if let Some(inner) = Self::local_pid_actor_identity(&ty) {
             inner.clone_into(&mut actor_name);
         }
+        if let Some(qualified) = self
+            .imported_actor_rewrites
+            .as_ref()
+            .and_then(|rewrites| rewrites.get(&actor_name))
+        {
+            actor_name.clone_from(qualified);
+        }
         (
             HirExprKind::Spawn {
                 actor_name,
@@ -23421,10 +23698,24 @@ impl LowerCtx {
         else {
             return ty;
         };
-        let args = args
+        let mut args: Vec<ResolvedTy> = args
             .into_iter()
             .map(|arg| self.qualify_current_module_record_ty(arg))
             .collect();
+        if builtin == Some(BuiltinType::LocalPid) {
+            if let [ResolvedTy::Named {
+                name: actor_name, ..
+            }] = args.as_mut_slice()
+            {
+                if let Some(qualified) = self
+                    .imported_actor_rewrites
+                    .as_ref()
+                    .and_then(|rewrites| rewrites.get(actor_name))
+                {
+                    actor_name.clone_from(qualified);
+                }
+            }
+        }
         let current_module_is_file_import = self
             .current_module_name
             .as_deref()
@@ -26916,46 +27207,54 @@ impl LowerCtx {
                 })
                 .collect();
             return match dispatch {
-                ActorMethodKind::Fire(method_id) => (
-                    HirExprKind::ActorSend {
-                        receiver: Box::new(lowered_receiver),
-                        method_id,
-                        args: lowered_args,
-                    },
-                    ResolvedTy::Unit,
-                ),
-                ActorMethodKind::Ask(method_id, reply_ty) => match ResolvedTy::from_ty(&reply_ty) {
-                    Ok(reply_ty) => {
-                        // Owner-qualify the ask-reply record identity to the
-                        // ASKED actor's declaring module when it collides, so
-                        // this reply type and the actor-handler layout return
-                        // type (qualified in `lower_imported_actor` under the
-                        // same collision gate) both resolve to the SAME
-                        // qualified identity the MIR record layout is keyed by.
-                        // `method_id` is `{module}.{Actor}::{method}` for an
-                        // imported actor; a bare/root actor has no leading module
-                        // segment and is left unqualified (#2208).
-                        let reply_ty = Self::actor_module_short_of_method_id(&method_id)
-                            .map_or_else(
-                                || reply_ty.clone(),
-                                |module_short| {
-                                    self.qualify_colliding_module_record_ty(&reply_ty, module_short)
+                ActorMethodKind::Fire(method_id) => {
+                    let method_id = self.qualify_imported_actor_method_id(method_id);
+                    (
+                        HirExprKind::ActorSend {
+                            receiver: Box::new(lowered_receiver),
+                            method_id,
+                            args: lowered_args,
+                        },
+                        ResolvedTy::Unit,
+                    )
+                }
+                ActorMethodKind::Ask(method_id, reply_ty) => {
+                    let method_id = self.qualify_imported_actor_method_id(method_id);
+                    match ResolvedTy::from_ty(&reply_ty) {
+                        Ok(reply_ty) => {
+                            // Owner-qualify the ask-reply record identity to the
+                            // ASKED actor's declaring module when it collides, so
+                            // this reply type and the actor-handler layout return
+                            // type (qualified in `lower_imported_actor` under the
+                            // same collision gate) both resolve to the SAME
+                            // qualified identity the MIR record layout is keyed by.
+                            // `method_id` is `{module}.{Actor}::{method}` for an
+                            // imported actor; a bare/root actor has no leading module
+                            // segment and is left unqualified (#2208).
+                            let reply_ty = Self::actor_module_short_of_method_id(&method_id)
+                                .map_or_else(
+                                    || reply_ty.clone(),
+                                    |module_short| {
+                                        self.qualify_colliding_module_record_ty(
+                                            &reply_ty,
+                                            module_short,
+                                        )
+                                    },
+                                );
+                            (
+                                HirExprKind::ActorAsk {
+                                    receiver: Box::new(lowered_receiver),
+                                    method_id,
+                                    args: lowered_args,
+                                    reply_ty: reply_ty.clone(),
+                                    source_anchor: None,
+                                    deadline_ns: None,
                                 },
-                            );
-                        (
-                            HirExprKind::ActorAsk {
-                                receiver: Box::new(lowered_receiver),
-                                method_id,
-                                args: lowered_args,
-                                reply_ty: reply_ty.clone(),
-                                source_anchor: None,
-                                deadline_ns: None,
-                            },
-                            reply_ty,
-                        )
-                    }
-                    Err(err) => {
-                        self.diagnostics.push(HirDiagnostic::new(
+                                reply_ty,
+                            )
+                        }
+                        Err(err) => {
+                            self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::CheckerBoundaryViolation {
                                 name: format!("actor method `.{method}`"),
                                 reason: err.to_string(),
@@ -26963,15 +27262,17 @@ impl LowerCtx {
                             span.clone(),
                             "checker-authoritative actor_method_dispatch reply type failed boundary conversion",
                         ));
-                        (
-                            HirExprKind::Unsupported(format!(
-                                "actor method `.{method}` has poisoned dispatch reply type"
-                            )),
-                            ResolvedTy::Unit,
-                        )
+                            (
+                                HirExprKind::Unsupported(format!(
+                                    "actor method `.{method}` has poisoned dispatch reply type"
+                                )),
+                                ResolvedTy::Unit,
+                            )
+                        }
                     }
-                },
+                }
                 ActorMethodKind::StreamProducer(method_id, elem_ty) => {
+                    let method_id = self.qualify_imported_actor_method_id(method_id);
                     match ResolvedTy::from_ty(&elem_ty) {
                         Ok(elem_ty) => {
                             let stream_ty = ResolvedTy::named_builtin(
@@ -28142,6 +28443,14 @@ impl LowerCtx {
         binding
     }
 
+    fn bind_actor_param(&mut self, param: &Param) -> HirBinding {
+        let ty = self.lower_type(&param.ty);
+        let ty = self.qualify_current_module_record_ty(ty);
+        let mut binding = self.bind(param.name.clone(), ty, param.is_mutable, param.ty.1.clone());
+        binding.is_consume = param.is_consume;
+        binding
+    }
+
     /// Register a pre-allocated `BindingId` in the current scope under `name`.
     ///
     /// Used when the caller needs the `BindingId` before the scope is pushed
@@ -28251,9 +28560,24 @@ impl LowerCtx {
         name: &str,
     ) -> Option<ResolvedTy> {
         let checker_key = self.mk_key(span);
-        let checker_ty = self.expr_types.get(&checker_key).cloned()?;
+        let Some(checker_ty) = self.expr_types.get(&checker_key).cloned() else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: name.to_string(),
+                    reason: "missing expr_types entry".to_string(),
+                },
+                span.clone(),
+                "checker-authoritative expression type is required for `?` lowering",
+            ));
+            return None;
+        };
         match ResolvedTy::from_ty(&checker_ty) {
-            Ok(resolved) => Some(resolved),
+            // `Ty::Named` does not carry source-declaration opacity. Route
+            // checker-authored expression types through the same identity
+            // normalisation funnel as other checker→HIR boundaries so an
+            // opaque Result/Option payload remains pointer-shaped, including
+            // when nested inside another generic carrier.
+            Ok(resolved) => Some(self.qualify_current_module_record_ty(resolved)),
             Err(err) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
@@ -28830,9 +29154,17 @@ impl LowerCtx {
                 );
             }
             self.try_register_enum_instantiation_ty(&return_ty, span);
-            let result_ty = self
-                .checker_expr_resolved_ty(span, "`?` expression")
-                .unwrap_or_else(|| ok_ty.clone());
+            let Some(result_ty) = self.checker_expr_resolved_ty(span, "`?` expression") else {
+                return self.unsupported_postfix_try(span, "`?` checker payload type is missing");
+            };
+            if &result_ty != ok_ty {
+                return self.unsupported_postfix_try(
+                    span,
+                    format!(
+                        "`?` checker payload type `{result_ty}` disagrees with Result::Ok payload type `{ok_ty}`",
+                    ),
+                );
+            }
             self.lower_result_postfix_try(scrutinee, result_ty, err_ty.clone(), return_ty, span)
         } else if let Some(some_ty) = Self::resolved_option_inner(&scrutinee_ty) {
             if Self::resolved_option_inner(&return_ty).is_none() {
@@ -28842,9 +29174,17 @@ impl LowerCtx {
                 );
             }
             self.try_register_enum_instantiation_ty(&return_ty, span);
-            let result_ty = self
-                .checker_expr_resolved_ty(span, "`?` expression")
-                .unwrap_or_else(|| some_ty.clone());
+            let Some(result_ty) = self.checker_expr_resolved_ty(span, "`?` expression") else {
+                return self.unsupported_postfix_try(span, "`?` checker payload type is missing");
+            };
+            if &result_ty != some_ty {
+                return self.unsupported_postfix_try(
+                    span,
+                    format!(
+                        "`?` checker payload type `{result_ty}` disagrees with Option::Some payload type `{some_ty}`",
+                    ),
+                );
+            }
             self.lower_option_postfix_try(scrutinee, result_ty, return_ty, span)
         } else {
             self.unsupported_postfix_try(span, "`?` scrutinee that is not Result or Option")
@@ -35843,6 +36183,44 @@ impl Sample for Broken {
     }
 
     #[test]
+    fn flat_file_trait_defaults_use_checker_published_owner() {
+        let parsed = hew_parser::parse(
+            r#"
+    trait Greet {
+        fn simple(self) -> i64 { 42 }
+        fn greeting(self) -> string { "hello" }
+    }
+    "#,
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+        let owner = hew_types::DefId::new("support.greeting.Greet");
+        let bindings = ["simple", "greeting"]
+            .into_iter()
+            .map(|method| {
+                (
+                    (None, 7, "Greet".to_string(), method.to_string()),
+                    (
+                        owner.clone(),
+                        hew_types::DefId::new(format!("{}::{method}", owner.full_path())),
+                    ),
+                )
+            })
+            .collect();
+        let file_import_module_idx = HashMap::from([(0, 7)]);
+
+        let (defaults, module_indices) =
+            collect_trait_default_methods(&parsed.program, &file_import_module_idx, &bindings);
+
+        assert!(defaults.contains_key("support.greeting.Greet"));
+        assert!(!defaults.contains_key("Greet"));
+        assert_eq!(module_indices.get("support.greeting.Greet"), Some(&7));
+    }
+
+    #[test]
     fn trait_method_identity_prefers_local_and_imported_same_leaf_traits_over_prelude_items() {
         let mut ctx = LowerCtx::new(
             &TypeCheckOutput::default(),
@@ -38635,6 +39013,95 @@ impl Widget {
         );
         let pass = function_named(&lowered, "pass");
         assert_result_try_match(first_let_value(pass));
+    }
+
+    #[test]
+    fn postfix_try_missing_checker_expr_type_is_diagnosed_and_unsupported() {
+        let source = r"
+            fn pass(r: Result<i64, i64>) -> Result<i64, i64> {
+                let x: i64 = r?;
+                Ok(x)
+            }
+        ";
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let mut tco = checker.check_program(&parsed.program);
+        assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+
+        let try_start = source.find("r?").expect("source must contain `r?`");
+        let try_span = try_start..try_start + 2;
+        assert!(
+            tco.expr_types
+                .remove(&SpanKey::in_module(&try_span, 0))
+                .is_some(),
+            "checker must publish the `?` expression type"
+        );
+
+        let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
+                    if name == "`?` expression" && reason == "missing expr_types entry"
+            )),
+            "missing checker type must be diagnosed: {:#?}",
+            lowered.diagnostics
+        );
+        let pass = function_named(&lowered, "pass");
+        assert!(
+            matches!(first_let_value(pass).kind, HirExprKind::Unsupported(_)),
+            "missing checker type must lower `?` as unsupported"
+        );
+    }
+
+    #[test]
+    fn postfix_try_preserves_opaque_payload_representation() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            #[opaque]
+            type Handle {}
+
+            fn pass(r: Result<Handle, string>) -> Result<Handle, string> {
+                let handle = r?;
+                Ok(handle)
+            }
+            ",
+        );
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "unexpected HIR diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+
+        let pass = function_named(&lowered, "pass");
+        let try_expr = first_let_value(pass);
+        assert_result_try_match(try_expr);
+        let HirExprKind::Match { arms, .. } = &try_expr.kind else {
+            unreachable!("assert_result_try_match already checked the expression shape");
+        };
+        for (surface, ty) in [
+            ("try expression", &try_expr.ty),
+            ("Ok payload binding", &arms[0].bindings[0].ty),
+            ("Ok payload body", &arms[0].body.ty),
+        ] {
+            assert!(
+                matches!(
+                    ty,
+                    ResolvedTy::Named {
+                        name,
+                        is_opaque: true,
+                        ..
+                    } if name == "Handle"
+                ),
+                "{surface} must preserve the opaque Handle discriminator; got {ty:#?}"
+            );
+        }
     }
 
     #[test]

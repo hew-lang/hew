@@ -636,9 +636,12 @@ impl Checker {
             return None;
         }
 
+        let canonical_type_name = self
+            .canonical_nominal_name(concrete_type_name)
+            .unwrap_or_else(|| concrete_type_name.to_string());
         let mut table: Vec<DynVtableEntry> = Vec::with_capacity(trait_info.methods.len());
         for method in &trait_info.methods {
-            let impl_fn_key = format!("{concrete_type_name}::{}", method.name);
+            let impl_fn_key = format!("{canonical_type_name}::{}", method.name);
             let Some(mut signature) = self.lookup_trait_method(&trait_lookup_key, &method.name)
             else {
                 // JUSTIFIED: `trait_info` is cloned from `trait_defs[trait_name]`,

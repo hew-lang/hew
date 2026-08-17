@@ -1497,10 +1497,9 @@ fn load_navigation_target(path: &std::path::Path) -> Option<(String, Vec<usize>,
 /// no workspace root exists or when the symbol is a Rust-registered type-method
 /// builtin with no `.hew` source.
 ///
-/// SHIM: `O(#workspace_files)` per goto-def miss. Acceptable for now — goto-def
-/// misses are rare in practice and `collect_hew_files` already exists for
-/// rename. A proper solution would add a workspace-level symbol index populated
-/// at startup.
+/// SHIM: `O(#workspace_files)` per goto-def miss. Replace the file scan with a
+/// workspace-level symbol index populated at startup when navigation latency
+/// requires indexed lookup.
 pub(super) fn find_stdlib_definition(
     current_uri: &Url,
     imports: &[hew_parser::ast::ImportDecl],
@@ -1559,9 +1558,8 @@ pub(super) fn find_stdlib_definition(
 /// confirmed to have a definition somewhere in the workspace (checked by the
 /// caller).
 ///
-/// SHIM: `O(#files × #tokens)` per call. Acceptable for now — references is
-/// user-initiated and infrequent. A proper solution would maintain an inverted
-/// index at startup.
+/// SHIM: `O(#files × #tokens)` per call. Replace the scan with an inverted index
+/// populated at startup when reference-search latency requires indexed lookup.
 fn collect_workspace_references(
     current_uri: &Url,
     name: &str,

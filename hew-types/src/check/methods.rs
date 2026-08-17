@@ -59,21 +59,9 @@ impl Checker {
             ))
             .cloned()
             .or_else(|| {
-                self.current_module.as_ref().and_then(|module| {
-                    self.trait_method_ids
-                        .get(&format!("{module}.{trait_name}::{method_name}"))
-                        .cloned()
-                })
-            })
-            .or_else(|| {
                 let declaring_trait = self.trait_ref_lookup_key(trait_name);
                 self.trait_method_ids
                     .get(&format!("{declaring_trait}::{method_name}"))
-                    .cloned()
-            })
-            .or_else(|| {
-                self.trait_method_ids
-                    .get(&format!("{trait_name}::{method_name}"))
                     .cloned()
             })
     }
@@ -10938,6 +10926,54 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
 mod tests {
     use super::*;
     use crate::module_registry::ModuleRegistry;
+
+    #[test]
+    fn trait_method_target_ids_fail_closed_after_canonical_miss() {
+        let mut checker = Checker {
+            current_module: Some("app".to_string()),
+            ..Checker::default()
+        };
+        checker.trait_defs.insert(
+            "left.Render".to_string(),
+            TraitInfo {
+                methods: Vec::new(),
+                associated_types: Vec::new(),
+                type_params: Vec::new(),
+            },
+        );
+        checker
+            .published_bare_trait_owners
+            .entry((
+                checker.current_module.clone(),
+                checker.current_module_idx,
+                "Render".to_string(),
+            ))
+            .or_default()
+            .insert("left.Render".to_string());
+
+        let wrong_trait = crate::DefId::new("right.Render");
+        let wrong_method = crate::DefId::new("right.Render::render");
+        checker
+            .trait_method_ids
+            .insert("Render::render".to_string(), (wrong_trait, wrong_method));
+
+        assert_eq!(
+            checker.trait_method_call_target_ids("Render", "render"),
+            None,
+            "a canonical lookup miss must not retry the first-write-wins bare key",
+        );
+
+        let canonical_trait = crate::DefId::new("left.Render");
+        let canonical_method = crate::DefId::new("left.Render::render");
+        checker.trait_method_ids.insert(
+            "left.Render::render".to_string(),
+            (canonical_trait.clone(), canonical_method.clone()),
+        );
+        assert_eq!(
+            checker.trait_method_call_target_ids("Render", "render"),
+            Some((canonical_trait, canonical_method)),
+        );
+    }
 
     #[test]
     fn suspending_io_method_results_publish_delivery_ownership() {

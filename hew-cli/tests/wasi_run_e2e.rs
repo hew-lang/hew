@@ -715,6 +715,32 @@ fn main() {
 }
 "#;
 
+// The native probe must synchronize with the first delivery instead of using a
+// wall-clock sleep: under scheduler pressure, main can wake and begin shutdown
+// before the periodic ticker thread runs, cancelling the still-pending first tick.
+const NATIVE_PERIODIC_HANDSHAKE_SOURCE: &str = r#"import std::channel::channel;
+
+actor Pulse {
+    let ready: channel.Sender<i64>;
+    var count: i64 = 0;
+
+    #[every(20ms)]
+    receive fn tick() {
+        count += 1;
+        println(f"tick {count}");
+        ready.send(count);
+    }
+}
+
+fn main() {
+    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    let _p = spawn Pulse(ready: ready_tx, count: 0);
+    println("spawned");
+    let _ = ready_rx.recv();
+    println("done");
+}
+"#;
+
 #[test]
 fn wasm_actor_periodic_timer_fires_but_never_reaches_quiescence() {
     require_wasi_runner();
@@ -763,17 +789,17 @@ fn wasm_actor_periodic_timer_fires_but_never_reaches_quiescence() {
     );
 }
 
-// The native half: the same periodic-timer program terminates on its own.
-// Pinning this is what makes the wasm probe above a *parity* statement rather
-// than an isolated observation — it is the side that behaves, and the contrast
-// is the thing under test.
+// The native half uses the same periodic handler and interval, plus a channel
+// handshake that makes first delivery a precondition for main returning. Native
+// blocking receive is unavailable on WASM, so the WASM half keeps its cooperative
+// sleep probe while this half avoids racing wall-clock sleep against shutdown.
 #[test]
 fn native_actor_periodic_timer_reaches_quiescence() {
     support::require_codegen();
 
     let dir = support::tempdir();
     let source = dir.path().join("cooperative_periodic_native.hew");
-    fs::write(&source, COOPERATIVE_PERIODIC_SOURCE)
+    fs::write(&source, NATIVE_PERIODIC_HANDSHAKE_SOURCE)
         .expect("write cooperative periodic native source");
 
     let output = support::run_bounded_hew_run(&source, dir.path());

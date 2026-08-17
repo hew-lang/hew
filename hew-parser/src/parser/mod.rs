@@ -12,7 +12,7 @@ pub(crate) use crate::ast::{
     ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec,
     IntRadix, Intensity, Item, LambdaParam, Literal, MachineDecl, MachineEvent, MachineState,
     MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase, NominalPatternPayload,
-    OverflowFallback, OverflowPolicy, Param, Path, PathSeparator, Pattern, PatternField, Program,
+    OverflowFallback, OverflowPolicy, Param, Path, Pattern, PatternField, Program,
     QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordField, RecordKind,
     ResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span, Spanned, Stmt, StringPart,
     SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem,
@@ -702,6 +702,12 @@ pub enum Severity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind")]
 pub enum ParseDiagnosticKind {
+    /// A legacy `::` separator was used where dotted path syntax is required.
+    LegacyPathSeparator,
+    /// Rust-style `::<...>` generic application was used instead of Hew syntax.
+    LegacyTurbofish,
+    /// A removed glob import was used instead of an explicit selection.
+    ImportGlobRemoved,
     /// A token was present but a different token was required.
     UnexpectedToken {
         /// What the parser required (e.g. `";"`, `"identifier"`).
@@ -734,6 +740,9 @@ impl ParseDiagnosticKind {
     #[must_use]
     pub fn as_kind_str(&self) -> &'static str {
         match self {
+            Self::LegacyPathSeparator => "E_PATH_LEGACY_SEPARATOR",
+            Self::LegacyTurbofish => "E_LEGACY_TURBOFISH",
+            Self::ImportGlobRemoved => "E_IMPORT_GLOB_REMOVED",
             Self::UnexpectedToken { .. } => "UnexpectedToken",
             Self::UnexpectedEof => "UnexpectedEof",
             Self::InvalidLiteral => "InvalidLiteral",

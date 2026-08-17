@@ -62,8 +62,8 @@ fn instant_methods_resolve_through_extern_symbol_annotations() {
     // methods rewrite to their `hew_instant_*` runtime symbols.
     let source = r"
         fn main() {
-            let start: instant = instant::now();
-            let end: instant = instant::now();
+            let start: instant = instant.now();
+            let end: instant = instant.now();
             let _: duration = start.elapsed();
             let _: duration = end.duration_since(start);
         }
@@ -92,14 +92,14 @@ fn lambda_actor_handle_methods_resolve_through_extern_symbol_annotations() {
             handle: lambda_actor.LambdaActorHandle,
             weak: lambda_actor.LambdaActorWeakHandle,
         ) {
-            let payload = bytes::new();
+            let payload = bytes.new();
 
             let _: i32 = handle.send(payload);
-            let _: i32 = handle.ask(bytes::new());
+            let _: i32 = handle.ask(bytes.new());
             let _: lambda_actor.LambdaActorHandle = handle.clone();
             let _: lambda_actor.LambdaActorWeakHandle = handle.downgrade();
             let _: i32 = handle.release();
-            let _: i32 = weak.send(bytes::new());
+            let _: i32 = weak.send(bytes.new());
             let _: lambda_actor.LambdaActorWeakHandle = weak.clone();
             let _: i32 = weak.release();
         }

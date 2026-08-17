@@ -1,5 +1,5 @@
 fn main() {
-    let k: HashSet<i64> = HashSet::new();
+    let k: HashSet<i64> = HashSet.new();
     k.insert(1);
     k.insert(2);
     let m: HashMap<HashSet<i64>, i64> = HashMap.new();

@@ -710,8 +710,8 @@ fn machine_step_dispatch() {
         }
 
         fn main() {
-            var light: Light = Light::Off;
-            light.step(LightEvent::Toggle);
+            var light: Light = Light.Off;
+            light.step(LightEvent.Toggle);
             let name: string = light.state_name();
             let _ = name;
         }
@@ -776,8 +776,8 @@ fn machine_step_suppresses_unused_mut_warning() {
         }
 
         fn main() {
-            var light: Light = Light::Off;
-            light.step(LightEvent::Toggle);
+            var light: Light = Light.Off;
+            light.step(LightEvent.Toggle);
         }
         ",
     );
@@ -813,8 +813,8 @@ fn machine_step_on_let_receiver_is_rejected() {
         }
 
         fn main() {
-            let light: Light = Light::Off;
-            light.step(LightEvent::Toggle);
+            let light: Light = Light.Off;
+            light.step(LightEvent.Toggle);
         }
         ",
     );
@@ -849,8 +849,8 @@ fn machine_state_pattern_match_uses_variant_infrastructure() {
 
         fn seq_or_zero(state: TcpState) -> i64 {
             match state {
-                TcpState::Closed => 0,
-                TcpState::Established { seq } => seq,
+                TcpState.Closed => 0,
+                TcpState.Established { seq } => seq,
             }
         }
         ",
@@ -894,11 +894,11 @@ fn generic_machine_threads_type_params_into_state_event_and_step() {
         }
 
         fn main() {
-            var lifecycle: Lifecycle<i64> = Lifecycle::Loaded { value: 1 };
-            lifecycle.step(LifecycleEvent::Load { value: 2 });
+            var lifecycle: Lifecycle<i64> = Lifecycle.Loaded { value: 1 };
+            lifecycle.step(LifecycleEvent.Load { value: 2 });
             let value: i64 = match lifecycle {
-                Lifecycle::Empty => 0,
-                Lifecycle::Loaded { value } => value,
+                Lifecycle.Empty => 0,
+                Lifecycle.Loaded { value } => value,
             };
             let _ = value;
         }
@@ -1000,9 +1000,9 @@ fn machine_event_match_outside_transition_rejected() {
         }
 
         fn main() {
-            let event: LightEvent = LightEvent::Toggle;
+            let event: LightEvent = LightEvent.Toggle;
             let _: i64 = match event {
-                LightEvent::Toggle => 1,
+                LightEvent.Toggle => 1,
             };
         }
         ",

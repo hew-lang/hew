@@ -495,7 +495,7 @@ pub(super) fn lint_receive_fn_definition(
         format!(
             "`receive fn {}` shadows builtin actor-handle method {shadowed_builtin}; \
              concrete actor handles dispatch to this handler, while generic `P: Pid` \
-             contexts use builtin `Pid::send` semantics",
+             contexts use builtin `Pid.send` semantics",
             rec.name
         ),
         format!(
@@ -509,8 +509,8 @@ pub(super) fn lint_receive_fn_definition(
 
 fn shadowed_actor_handle_builtin(name: &str) -> Option<&'static str> {
     match name {
-        "send" => Some("`LocalPid<T>::send` / `RemotePid<T>::send`"),
-        "ask" => Some("`RemotePid<T>::ask`"),
+        "send" => Some("`LocalPid<T>.send` / `RemotePid<T>.send`"),
+        "ask" => Some("`RemotePid<T>.ask`"),
         _ => None,
     }
 }

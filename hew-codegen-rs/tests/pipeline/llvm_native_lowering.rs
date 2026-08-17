@@ -91,7 +91,7 @@ fn emit_ll_from_tc(source: &str, module_name: &str, tc_output: &TypeCheckOutput)
 fn hashmap_get_layout_call_uses_clone_runtime_abi() {
     let ll = emit_ll_checked(
         r#"fn main() -> i64 {
-            let m: HashMap<string, string> = HashMap::new();
+            let m: HashMap<string, string> = HashMap.new();
             m.insert("k", "owned-value");
             let got: Option<string> = m.get("k");
             match got {

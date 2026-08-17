@@ -822,7 +822,7 @@ fn main() {
     fn vector_index_expression_emits_bounds_trapping_index_opcode() {
         let source = r"
 fn main() {
-    let values: Vec<i64> = Vec::new();
+    let values = Vec<i64>.new();
     values.push(7);
     println(values[0]);
 }
@@ -1407,10 +1407,10 @@ fn main() {
         // End-to-end: sample three modules with well-known import paths.
         set_test_hewpath();
         let sample: &[(&str, &str, &str)] = &[
-            ("net", "std::net::net", "connect"),
-            ("tls", "std::net::tls", "connect"),
-            ("dns", "std::net::dns", "resolve"),
-            ("websocket", "std::net::websocket", "connect"),
+            ("net", "std.net.net", "connect"),
+            ("tls", "std.net.tls", "connect"),
+            ("dns", "std.net.dns", "resolve"),
+            ("websocket", "std.net.websocket", "connect"),
         ];
         for (module, import_path, func) in sample {
             let source = format!("import {import_path};\nfn main() {{ let f = {module}.{func}; }}");
@@ -1630,7 +1630,7 @@ fn main() {
         assert_profile_rejection(
             r"
 fn main() {
-    let v: Vec<i64> = Vec::new();
+    let v = Vec<i64>.new();
     let all = v[..];
     let tail = v[1..];
     let prefix = v[..2];

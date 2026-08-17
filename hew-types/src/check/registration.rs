@@ -1728,7 +1728,7 @@ impl Checker {
     }
 
     fn register_builtin_closable_surface(&mut self) {
-        let identity = "module:std::io::closable";
+        let identity = "module:std.io.closable";
         if self.registered_stdlib_hew_sources.contains(identity) {
             return;
         }
@@ -1755,7 +1755,7 @@ impl Checker {
     /// Hew value type with `#[resource]` / `close()` behaviour in inline tests that
     /// do not have a stdlib search path.
     fn register_builtin_monitor_ref_surface(&mut self) {
-        let identity = "module:std::link_monitor";
+        let identity = "module:std.link_monitor";
         if self.registered_stdlib_hew_sources.contains(identity) {
             return;
         }
@@ -1802,9 +1802,9 @@ impl Checker {
         }
     }
 
-    /// Register the built-in `std::failure` surface so lifecycle hooks can
+    /// Register the built-in `std.failure` surface so lifecycle hooks can
     /// name its payload types in their signatures without
-    /// `import std::failure;`.  Inline tests (no stdlib search path) rely on
+    /// `import std.failure;`.  Inline tests (no stdlib search path) rely on
     /// this; on-disk programs reach the same types via the module graph.
     ///
     /// The whole shipped source registers, not a two-name subset (rc1-F1
@@ -1816,7 +1816,7 @@ impl Checker {
     /// whole-module alias fail its exported-type lookup. `std::link_monitor`
     /// registers its full projection for the same reason.
     fn register_builtin_failure_surface(&mut self) {
-        let identity = "module:std::failure";
+        let identity = "module:std.failure";
         if self.registered_stdlib_hew_sources.contains(identity) {
             return;
         }
@@ -5856,7 +5856,7 @@ impl Checker {
                     TypeErrorKind::BoundsNotSatisfied,
                     &entry_span,
                     format!(
-                        "associated type `{}::{}` in impl for `{}` is bound by trait \
+                        "associated type `{}.{}` in impl for `{}` is bound by trait \
                          `{}` but `{}` does not implement `{}`",
                         trait_name,
                         assoc.name,
@@ -5886,9 +5886,7 @@ impl Checker {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
                             &err_span,
-                            format!(
-                                "associated type `Self::{alias}` recursively references itself"
-                            ),
+                            format!("associated type `Self.{alias}` recursively references itself"),
                         );
                     }
                     return Some(Ty::Error);
@@ -5903,7 +5901,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::UndefinedType,
                         &err_span,
-                        format!("type alias `Self::{alias}` is not defined in this impl"),
+                        format!("type alias `Self.{alias}` is not defined in this impl"),
                     );
                 }
                 return Some(Ty::Error);
@@ -6736,7 +6734,7 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 &method.span,
                 format!(
-                    "`#[returns_receiver]` on trait method `{trait_name}::{}` requires \
+                    "`#[returns_receiver]` on trait method `{trait_name}.{}` requires \
                      one zero-argument attribute, a `consuming self` receiver, the exact \
                      `Self` return type, and any default body to have one direct trailing \
                      `self` with no alternate `return` path",
@@ -7348,7 +7346,7 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 &method.decl_span,
                 format!(
-                    "`#[returns_receiver]` on `{type_name}::{}` requires a zero-argument \
+                    "`#[returns_receiver]` on `{type_name}.{}` requires a zero-argument \
                      attribute appearing exactly once, a `consuming self` receiver, the same \
                      receiver return type, one direct trailing `self`, and no alternate \
                      `return` path",
@@ -8848,12 +8846,12 @@ impl Checker {
                 },
                 &report_span,
                 format!(
-                    "impl method `{type_name}::{}` has a different receiver ownership \
+                    "impl method `{type_name}.{}` has a different receiver ownership \
                      contract than trait `{trait_name}`; `consuming self` must match exactly",
                     method.name
                 ),
                 &trait_method.span,
-                format!("trait method `{trait_name}::{}` declared here", method.name),
+                format!("trait method `{trait_name}.{}` declared here", method.name),
             );
             return;
         }
@@ -8867,13 +8865,13 @@ impl Checker {
                 },
                 &report_span,
                 format!(
-                    "impl method `{type_name}::{}` has a different `#[returns_receiver]` \
+                    "impl method `{type_name}.{}` has a different `#[returns_receiver]` \
                      contract than trait `{trait_name}`; exact receiver/result ownership \
                      identity must match",
                     method.name
                 ),
                 &trait_method.span,
-                format!("trait method `{trait_name}::{}` declared here", method.name),
+                format!("trait method `{trait_name}.{}` declared here", method.name),
             );
             return;
         }
@@ -8891,7 +8889,7 @@ impl Checker {
                 },
                 &report_span,
                 format!(
-                    "impl method `{type_name}::{}` has {} parameter(s) but trait `{trait_name}` declares {} \
+                    "impl method `{type_name}.{}` has {} parameter(s) but trait `{trait_name}` declares {} \
                      (after substituting `Self` and projecting associated types)",
                     method.name,
                     impl_sig.params.len(),
@@ -8899,7 +8897,7 @@ impl Checker {
                 ),
                 &trait_method.span,
                 format!(
-                    "trait method `{trait_name}::{}` declared here",
+                    "trait method `{trait_name}.{}` declared here",
                     method.name
                 ),
             );
@@ -8946,12 +8944,12 @@ impl Checker {
                 },
                 &report_span,
                 format!(
-                    "impl method `{type_name}::{}` declares {impl_shape} but trait `{trait_name}` requires {trait_shape}",
+                    "impl method `{type_name}.{}` declares {impl_shape} but trait `{trait_name}` requires {trait_shape}",
                     method.name,
                 ),
                 &trait_method.span,
                 format!(
-                    "trait method `{trait_name}::{}` declared here",
+                    "trait method `{trait_name}.{}` declared here",
                     method.name
                 ),
             );
@@ -9027,7 +9025,7 @@ impl Checker {
                     },
                     &report_span,
                     format!(
-                        "impl method `{type_name}::{}` {param_label} has type `{}` but trait `{trait_name}` \
+                        "impl method `{type_name}.{}` {param_label} has type `{}` but trait `{trait_name}` \
                          requires `{}`",
                         method.name,
                         actual.user_facing(),
@@ -9035,7 +9033,7 @@ impl Checker {
                     ),
                     &trait_method.span,
                     format!(
-                        "trait method `{trait_name}::{}` declared here",
+                        "trait method `{trait_name}.{}` declared here",
                         method.name
                     ),
                 );
@@ -9052,14 +9050,14 @@ impl Checker {
                 },
                 &report_span,
                 format!(
-                    "impl method `{type_name}::{}` returns `{}` but trait `{trait_name}` requires `{}`",
+                    "impl method `{type_name}.{}` returns `{}` but trait `{trait_name}` requires `{}`",
                     method.name,
                     impl_sig.return_type.user_facing(),
                     expected_return.user_facing(),
                 ),
                 &trait_method.span,
                 format!(
-                    "trait method `{trait_name}::{}` declared here",
+                    "trait method `{trait_name}.{}` declared here",
                     method.name
                 ),
             );
@@ -9450,9 +9448,7 @@ impl Checker {
     /// IMPORT-lexical nominal authority (rc1-F1 stage C): a bare name the
     /// declaring file does not itself declare resolves through the declaring
     /// module's DIRECT imports — through the names each import actually
-    /// BINDS. A whole-module or glob import makes the target's declarations
-    /// visible under their own bare spellings (`std.net` writing `Sink`
-    /// under `import std::stream`); a named item import binds exactly its
+    /// BINDS. A named item import binds exactly its
     /// bound name, so `import sm::{ Tok as ForeignTok }` binds `ForeignTok`
     /// and leaves bare `Tok` meaning NOTHING here. Exactly one bound source
     /// declaration across the import set mints its declaring file's
@@ -9470,7 +9466,7 @@ impl Checker {
                 // Which SOURCE name does the bound spelling `name` denote
                 // under this import? None = this import does not bind it.
                 let source_name = match spec {
-                    None | Some(ImportSpec::Glob) => name.to_string(),
+                    None => return None,
                     Some(ImportSpec::Names(names)) => names
                         .iter()
                         .find(|n| n.alias.as_deref().unwrap_or(&n.name) == name)?
@@ -10096,11 +10092,6 @@ impl Checker {
 
         let authority = crate::stdlib_authority::authority();
         let prelude_exports = authority.prelude_exports();
-        let glob_modules: HashSet<String> = prelude_exports
-            .iter()
-            .filter(|export| export.kind == crate::PreludeExportKind::Glob)
-            .map(|export| export.module.replace("::", "."))
-            .collect();
         let mut protected_names: HashSet<String> = authority
             .lang_items()
             .values()
@@ -10132,14 +10123,7 @@ impl Checker {
             let binding = export.alias.as_ref().unwrap_or(source_name);
             if protected_names.contains(source_name) {
                 self.protected_prelude_bindings
-                    .insert(binding.clone(), export.module.replace("::", "."));
-            }
-        }
-
-        if glob_modules.contains("std.builtins") {
-            for name in protected_names {
-                self.protected_prelude_bindings
-                    .insert(name, "std.builtins".to_string());
+                    .insert(binding.clone(), export.module.clone());
             }
         }
     }
@@ -10183,7 +10167,7 @@ impl Checker {
             return candidates;
         }
 
-        if !decl.path.is_empty() && !matches!(decl.spec, Some(ImportSpec::Glob)) {
+        if !decl.path.is_empty() {
             return candidates;
         }
 
@@ -10306,7 +10290,7 @@ impl Checker {
         if import_span.is_some_and(|span| !self.preflight_import_publication(decl, span)) {
             return;
         }
-        let module_path = decl.path.join("::");
+        let module_path = decl.path.join(".");
 
         // Try to load from the registry first, keeping any error detail owned so the
         // `self.module_registry` borrow ends before we mutate `self.errors`.
@@ -10324,7 +10308,7 @@ impl Checker {
                     let resolved_source_path = info.source_path.clone();
                     let registry_source_items = info.source_items.clone();
 
-                    let requested_owner = module_path.replace("::", ".");
+                    let requested_owner = module_path.clone();
                     let canonical_owner = resolved_source_path.as_ref().map_or_else(
                         || requested_owner.clone(),
                         |source_path| {
@@ -10360,7 +10344,7 @@ impl Checker {
 
                     // Register extern C function signatures
                     for func in functions {
-                        let accepts_kwargs = module_path == "std::misc::log"
+                        let accepts_kwargs = module_path == "std.misc.log"
                             && Self::LOG_KWARGS_FUNCTIONS.contains(&func.name.as_str());
                         let sig = FnSig {
                             params: func
@@ -10384,7 +10368,7 @@ impl Checker {
 
                     // Register wrapper pub fn signatures
                     for wfn in wrapper_fns {
-                        let accepts_kwargs = module_path == "std::misc::log"
+                        let accepts_kwargs = module_path == "std.misc.log"
                             && Self::LOG_KWARGS_FUNCTIONS.contains(&wfn.name.as_str());
                         let sig = FnSig {
                             type_params: wfn.type_params,
@@ -10538,7 +10522,7 @@ impl Checker {
                         );
                     }
 
-                    // `std::io::closable` is a pure-Hew trait module with no C
+                    // `std.io.closable` is a pure-Hew trait module with no C
                     // bindings.  The normal `resolved_items` path only fires for
                     // modules whose items were pre-parsed in a module graph; for
                     // inline programs we use the embedded source instead.  Parsing
@@ -10547,7 +10531,7 @@ impl Checker {
                     // fires the `tr.name == "Closable"` arm which wires its
                     // exact source-owned trait method into
                     // `consume_receiver_methods`.
-                    if module_path == "std::io::closable" && decl.resolved_items.is_none() {
+                    if module_path == "std.io.closable" && decl.resolved_items.is_none() {
                         // This embedded source is the shipped module selected by
                         // the import resolver, not a user module that happens
                         // to share its spelling.  Preserve that provenance so
@@ -10578,7 +10562,7 @@ impl Checker {
                         }
                     }
 
-                    if module_path == "std::concurrency::lambda_actor"
+                    if module_path == "std.concurrency.lambda_actor"
                         && decl.resolved_items.is_none()
                     {
                         let identity = format!("module:{module_path}");
@@ -10805,8 +10789,7 @@ impl Checker {
     #[expect(clippy::ref_option, reason = "avoids cloning the option contents")]
     pub(super) fn should_import_name(name: &str, spec: &Option<ImportSpec>) -> bool {
         match spec {
-            None => false,                  // bare import → qualified only
-            Some(ImportSpec::Glob) => true, // import foo::*; → everything
+            None => false, // bare import → qualified only
             Some(ImportSpec::Names(names)) => names.iter().any(|n| n.name == name),
         }
     }
@@ -10819,7 +10802,6 @@ impl Checker {
                 .iter()
                 .find(|n| n.name == name)
                 .map(|n| n.alias.as_deref().unwrap_or(&n.name).to_string()),
-            Some(ImportSpec::Glob) => Some(name.to_string()),
             None => None,
         }
     }
@@ -11851,11 +11833,6 @@ impl Checker {
                                 }
                             }
                         }
-                        // Glob imports publish trait names through the normal import
-                        // surface, but they do not carry resolved names in the AST.
-                        // The loaded-owner fallback below handles their unused-import
-                        // marking without manufacturing binding entries here.
-                        Some(ImportSpec::Glob) => {}
                     }
                 }
                 // Self-register the module's own pub traits so a re-export chain

@@ -111,10 +111,15 @@ impl Checker {
         if let Some(result) = self.dispatch_builtin_variant_member(head, member, usage) {
             return Some(result);
         }
-        let DottedTypeMemberUse::Call { args, span, .. } = usage else {
+        let DottedTypeMemberUse::Call {
+            args,
+            expected,
+            span,
+        } = usage
+        else {
             return None;
         };
-        self.dispatch_static_type_member(head, member, args, span)
+        self.dispatch_static_type_member(head, member, args, *expected, span)
     }
 
     fn dispatch_declared_variant_member(
@@ -237,34 +242,61 @@ impl Checker {
         Some(self.subst.resolve(&expected))
     }
 
+    fn promote_dotted_static_call_rewrite(&mut self, span: &Span, c_symbol: &str) {
+        let call_key = SpanKey::in_module(span, self.current_module_idx);
+        if matches!(
+            self.method_call_rewrites.get(&call_key),
+            Some(MethodCallRewrite::RcIntrinsic { .. })
+        ) {
+            return;
+        }
+        if let Some(target) = self.direct_call_targets.get(&call_key).cloned() {
+            self.record_method_call_rewrite(
+                span,
+                MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                    target,
+                    c_symbol: c_symbol.to_string(),
+                    elem_ty: None,
+                },
+            );
+        }
+    }
+
     fn dispatch_static_type_member(
         &mut self,
         head: &ResolvedDottedTypeHead,
         method: &str,
         args: &[CallArg],
+        expected: Option<&Ty>,
         span: &Span,
     ) -> Option<Ty> {
-        let dotted_member = format!("{}::{method}", head.canonical_type);
-        if self.fn_sigs.contains_key(&dotted_member) {
-            let function = (Expr::Identifier(dotted_member.clone()), head.span.clone());
-            let result = self.check_call(&function, head.type_args.as_deref(), args, span);
-            let call_key = SpanKey::in_module(span, self.current_module_idx);
-            if matches!(
-                self.method_call_rewrites.get(&call_key),
-                Some(MethodCallRewrite::RcIntrinsic { .. })
-            ) {
+        let internal_member = format!("{}::{method}", head.canonical_type);
+        let is_vec_from = crate::has_builtin_associated_item_identity(
+            &internal_member,
+            crate::BuiltinType::Vec,
+            "from",
+        );
+        let checker_member = if self.fn_sigs.contains_key(&internal_member) || is_vec_from {
+            Some(internal_member.clone())
+        } else {
+            None
+        };
+        if let Some(checker_member) = checker_member {
+            let function = (Expr::Identifier(checker_member.clone()), head.span.clone());
+            if let Some(result) = expected.and_then(|expected| {
+                self.check_call_against_expected_constructor(
+                    &function,
+                    head.type_args.as_deref(),
+                    args,
+                    expected,
+                    span,
+                )
+            }) {
+                self.promote_dotted_static_call_rewrite(span, &checker_member);
                 return Some(result);
             }
-            if let Some(target) = self.direct_call_targets.get(&call_key).cloned() {
-                self.record_method_call_rewrite(
-                    span,
-                    MethodCallRewrite::RewriteModuleQualifiedToFunction {
-                        target,
-                        c_symbol: dotted_member,
-                        elem_ty: None,
-                    },
-                );
-            }
+            let result = self.check_call(&function, head.type_args.as_deref(), args, span);
+            self.promote_dotted_static_call_rewrite(span, &checker_member);
             return Some(result);
         }
 
@@ -309,12 +341,13 @@ impl Checker {
         }
         let declaration = self
             .impl_method_declaration_ids
-            .get(&dotted_member)
+            .get(&internal_member)
             .cloned()
             .map_or_else(
                 || CallTarget::Unsupported {
                     reason: format!(
-                        "associated function `{dotted_member}` has no registered declaration identity"
+                        "associated function `{}.{method}` has no registered declaration identity",
+                        head.canonical_type
                     ),
                 },
                 CallTarget::impl_method,
@@ -323,7 +356,7 @@ impl Checker {
             span,
             MethodCallRewrite::RewriteModuleQualifiedToFunction {
                 target: declaration,
-                c_symbol: dotted_member,
+                c_symbol: internal_member,
                 elem_ty: None,
             },
         );

@@ -316,7 +316,7 @@ actor Cache {
 }
 
 fn main() {
-    let c = spawn Cache(store: HashMap::new());
+    let c = spawn Cache(store: HashMap.new());
 }
 ";
     let (_prog, output) = common::parse_and_typecheck_inline(source);
@@ -343,7 +343,7 @@ actor Log {
 }
 
 fn main() {
-    let _log = spawn Log(entries: Vec::new());
+    let _log = spawn Log(entries: Vec.new());
 }
 ";
     let (_prog, output) = common::parse_and_typecheck_inline(source);

@@ -108,7 +108,7 @@ fn self_recursive_enum_through_vec_synthesises_recursive_drop_thunk() {
 enum Reply { Nil; Num(i64); Arr([Reply]); }
 
 fn main() -> i64 {
-    let xs = [Reply::Num(7), Reply::Arr([Reply::Nil, Reply::Num(9)])];
+    let xs = [Reply.Num(7), Reply.Arr([Reply.Nil, Reply.Num(9)])];
     let n = xs.len();
     n
 }

@@ -1,5 +1,5 @@
-// HashSet::<T>::new() should accept turbofish type arguments even though the
-// stdlib catalog row declares no callable type parameters.
+// HashSet<T>.new() accepts explicit type arguments even though the stdlib
+// catalog row declares no callable type parameters.
 fn main() -> i64 {
     let _s = HashSet<i64>.new();
     0

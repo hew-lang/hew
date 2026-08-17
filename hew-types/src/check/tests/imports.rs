@@ -4,6 +4,18 @@
 )]
 pub(super) use super::*;
 
+fn selected_import(names: &[&str]) -> ImportSpec {
+    ImportSpec::Names(
+        names
+            .iter()
+            .map(|name| ImportName {
+                name: (*name).to_string(),
+                alias: None,
+            })
+            .collect(),
+    )
+}
+
 #[test]
 fn colliding_import_publishes_none_of_its_other_bindings() {
     let first = make_user_import(
@@ -298,13 +310,13 @@ fn resolved_module_copy_reenters_declaring_file_import_scope() {
         import hew.aliassrc.{ Color as Hue };
         pub type AliasBox { item: Hue; }
         pub enum AliasWrap { Has(Hue); }
-        pub fn make() -> Hue { Hue::Blue(7) }
+        pub fn make() -> Hue { Hue.Blue(7) }
         pub fn score() -> i64 {
             let boxed: AliasBox = AliasBox { item: make() };
-            let wrapped: AliasWrap = AliasWrap::Has(boxed.item);
+            let wrapped: AliasWrap = AliasWrap.Has(boxed.item);
             match wrapped {
-                AliasWrap::Has(color) => match color {
-                    Hue::Blue(value) => value,
+                AliasWrap.Has(color) => match color {
+                    Hue.Blue(value) => value,
                     _ => 0,
                 },
             }
@@ -910,18 +922,6 @@ fn user_channel_lookalike_retains_nested_sender_and_receiver_identity() {
 }
 
 #[test]
-fn should_import_name_glob_returns_true() {
-    assert!(Checker::should_import_name(
-        "helper",
-        &Some(ImportSpec::Glob)
-    ));
-    assert!(Checker::should_import_name(
-        "anything",
-        &Some(ImportSpec::Glob)
-    ));
-}
-
-#[test]
 fn should_import_name_named_match() {
     let spec = Some(ImportSpec::Names(vec![
         ImportName {
@@ -1205,7 +1205,7 @@ fn glob_import_type_publishes_bare_binding() {
     let reply = make_pub_struct("Reply", "code");
     let import = make_user_import(
         &["myapp", "mod_a"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["Reply"])),
         vec![(Item::TypeDecl(reply), 0..0)],
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -1332,9 +1332,7 @@ fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup(
     let resolved_items = vec![(Item::TypeDecl(connection), 0..0)];
     let plain_decl = ImportDecl {
         path: vec!["std".to_string(), "net".to_string()],
-        path_separators: Vec::new(),
         spec: None,
-        spec_separator: None,
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
@@ -1392,7 +1390,7 @@ fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup(
 fn canonical_stdlib_source_signature_replaces_registry_surface_signature() {
     let parsed = hew_parser::parse(
         "pub enum NetError { Failed(i64); }\n\
-         pub fn net_error() -> NetError { NetError::Failed(1) }\n",
+         pub fn net_error() -> NetError { NetError.Failed(1) }\n",
     );
     assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
 
@@ -1760,7 +1758,7 @@ fn glob_import_registers_unqualified_names() {
     );
     let import = make_user_import(
         &["myapp", "utils"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["helper", "other"])),
         vec![
             (Item::Function(helper), 0..0),
             (Item::Function(other), 0..0),
@@ -1847,7 +1845,7 @@ fn non_pub_functions_registered_for_enforcement_but_not_bare() {
     );
     let import = make_user_import(
         &["myapp", "utils"],
-        Some(ImportSpec::Glob), // even glob should not expose private fns unqualified
+        Some(selected_import(&["secret", "visible"])),
         vec![
             (Item::Function(priv_fn), 0..0),
             (Item::Function(pub_fn), 0..0),
@@ -1901,7 +1899,7 @@ fn user_module_registers_pub_consts() {
     };
     let import = make_user_import(
         &["myapp", "config"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["MAX_SIZE", "INTERNAL"])),
         vec![
             (Item::Const(pub_const), 0..0),
             (Item::Const(priv_const), 0..0),
@@ -2178,9 +2176,7 @@ fn stdlib_not_in_user_modules() {
     // A stdlib import should NOT appear in user_modules
     let import = ImportDecl {
         path: vec!["std".to_string(), "fs".to_string()],
-        path_separators: Vec::new(),
         spec: None,
-        spec_separator: None,
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
@@ -2301,9 +2297,7 @@ fn import_without_resolved_items_emits_unresolved_error() {
     // must now emit an UnresolvedImport error rather than silently dropping.
     let import = ImportDecl {
         path: vec!["unknown".to_string(), "pkg".to_string()],
-        path_separators: Vec::new(),
         spec: None,
-        spec_separator: None,
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
@@ -2343,9 +2337,7 @@ fn import_with_resolved_items_no_error() {
 fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
     let stream_import = ImportDecl {
         path: vec!["std".to_string(), "stream".to_string()],
-        path_separators: Vec::new(),
         spec: None,
-        spec_separator: None,
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
@@ -2355,9 +2347,7 @@ fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
     };
     let fs_import = ImportDecl {
         path: vec!["std".to_string(), "fs".to_string()],
-        path_separators: Vec::new(),
         spec: None,
-        spec_separator: None,
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
@@ -2396,9 +2386,7 @@ fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
 fn file_import_without_resolved_items_emits_unresolved_error() {
     let import = ImportDecl {
         path: vec![],
-        path_separators: Vec::new(),
         spec: None,
-        spec_separator: None,
         selection_trailing_comma: false,
         module_alias: None,
         file_path: Some("missing.hew".to_string()),
@@ -2438,9 +2426,7 @@ fn merged_file_import_duplicate_pub_name_rejects_the_whole_import() {
     );
     let import = ImportDecl {
         path: vec![],
-        path_separators: Vec::new(),
         spec: None,
-        spec_separator: None,
         selection_trailing_comma: false,
         module_alias: None,
         file_path: Some("pkg.hew".to_string()),
@@ -2479,9 +2465,7 @@ fn repeated_flat_file_import_with_same_resolved_source_does_not_reregister_items
     let shared_source = std::path::PathBuf::from("pkg/pkg.hew");
     let import = ImportDecl {
         path: vec![],
-        path_separators: Vec::new(),
         spec: None,
-        spec_separator: None,
         selection_trailing_comma: false,
         module_alias: None,
         file_path: Some("pkg.hew".to_string()),
@@ -2612,9 +2596,7 @@ fn repeated_stdlib_import_does_not_duplicate_hew_items() {
 
     let import = ImportDecl {
         path: vec!["std".to_string(), "fs".to_string()],
-        path_separators: Vec::new(),
         spec: None,
-        spec_separator: None,
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
@@ -2974,7 +2956,7 @@ fn aliased_member_matches_qualified_member_type() {
 // -- Trait import from module --
 
 #[test]
-fn import_trait_from_module_glob() {
+fn import_selected_trait_from_module() {
     use hew_parser::ast::{TraitDecl, TraitItem, TraitMethod};
 
     let trait_decl = TraitDecl {
@@ -3000,7 +2982,7 @@ fn import_trait_from_module_glob() {
     };
     let import = make_user_import(
         &["mylib", "fmt"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["Renderable"])),
         vec![(Item::Trait(trait_decl), 0..0)],
     );
     let output = check_items(vec![(Item::Import(import), 0..0)]);
@@ -3044,7 +3026,7 @@ fn import_private_trait_not_registered() {
     };
     let import = make_user_import(
         &["mylib", "internals"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["Internal"])),
         vec![(Item::Trait(private_trait), 0..0)],
     );
     // Should complete without errors; private trait is simply ignored
@@ -3285,7 +3267,7 @@ fn project_local_std_builtins_source_cannot_claim_intrinsic_coherence() {
 #[test]
 fn imported_foreign_trait_impl_for_intrinsic_type_warns() {
     let foreign_source = "pub trait ForeignTrait {}";
-    let consumer_source = "import vendor::{ ForeignTrait }; impl ForeignTrait for Vec<i64> {}";
+    let consumer_source = "import vendor.{ ForeignTrait }; impl ForeignTrait for Vec<i64> {}";
     let foreign = hew_parser::parse(foreign_source);
     let mut consumer = hew_parser::parse(consumer_source);
     assert!(
@@ -3534,9 +3516,7 @@ fn test_file_import_private_items_not_visible() {
 
     let import_decl = ImportDecl {
         path: vec![],
-        path_separators: Vec::new(),
         spec: None,
-        spec_separator: None,
         selection_trailing_comma: false,
         module_alias: None,
         file_path: Some("private_lib.hew".to_string()),
@@ -3573,7 +3553,7 @@ fn test_file_import_private_items_not_visible() {
 /// reaches `Mode` only through the call's expected parameter type.
 fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     let module = hew_parser::parse(
-        "pub enum Mode {\n    A;\n    B;\n    Present(i64);\n    Named { value: i64 }\n}\n\npub type Box<T> {\n    value: T;\n}\n\nimpl<T> Box<T> {\n    pub fn make(value: T) -> Box<T> {\n        Box<T> { value: value }\n    }\n}\n\npub type Factory {\n    marker: i64;\n}\n\nimpl Factory {\n    pub fn make(value: i64) -> i64 {\n        value\n    }\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode::A => 1,\n        Mode::B => 2,\n        Mode::Present(value) => value,\n        Mode::Named { value } => value,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode::A == Mode::A);\n}\n",
+        "pub enum Mode {\n    A;\n    B;\n    Present(i64);\n    Named { value: i64 }\n}\n\npub type Box<T> {\n    value: T;\n}\n\nimpl<T> Box<T> {\n    pub fn make(value: T) -> Box<T> {\n        Box<T> { value: value }\n    }\n}\n\npub type Factory {\n    marker: i64;\n}\n\nimpl Factory {\n    pub fn make(value: i64) -> i64 {\n        value\n    }\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode.A => 1,\n        Mode.B => 2,\n        Mode.Present(value) => value,\n        Mode.Named { value } => value,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode.A == Mode.A);\n}\n",
     );
     assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
     let mut root = hew_parser::parse(root_source);
@@ -3744,7 +3724,7 @@ fn explicit_generic_module_path_obeys_lexical_value_precedence() {
 #[test]
 fn qualified_variant_expression_resolves_through_expected_nominal_identity() {
     let output = check_qualified_variant_root(
-        "import m;\n\nfn main() {\n    let x = m.pick(Mode::A);\n    print(\"{x}\");\n}\n",
+        "import m;\n\nfn main() {\n    let x = m.pick(Mode.A);\n    print(\"{x}\");\n}\n",
     );
     assert!(
         output.errors.is_empty(),
@@ -3759,7 +3739,7 @@ fn qualified_variant_expression_resolves_through_expected_nominal_identity() {
 #[test]
 fn local_same_leaf_enum_does_not_merge_with_expected_module_nominal() {
     let output = check_qualified_variant_root(
-        "import m;\n\nenum Mode {\n    A;\n    Z;\n}\n\nfn main() {\n    let x = m.pick(Mode::A);\n    print(\"{x}\");\n}\n",
+        "import m;\n\nenum Mode {\n    A;\n    Z;\n}\n\nfn main() {\n    let x = m.pick(Mode.A);\n    print(\"{x}\");\n}\n",
     );
     assert!(
         output
@@ -3776,7 +3756,7 @@ fn local_same_leaf_enum_does_not_merge_with_expected_module_nominal() {
 #[test]
 fn wrong_owner_variant_prefix_is_rejected_against_expected_nominal() {
     let output = check_qualified_variant_root(
-        "import m;\n\nenum Other {\n    A;\n}\n\nfn main() {\n    let x = m.pick(Other::A);\n    print(\"{x}\");\n}\n",
+        "import m;\n\nenum Other {\n    A;\n}\n\nfn main() {\n    let x = m.pick(Other.A);\n    print(\"{x}\");\n}\n",
     );
     assert!(
         output

@@ -179,7 +179,7 @@ fn typecheck_link_monitor_import_edge(
     let mut consumer = common::parse_program(&format!(
         "import {}.{{CrashKind}};\n\
          pub enum ImportedReason {{ Crashed(CrashKind); }}",
-        target_path.join("::")
+        target_path.join(".")
     ));
     for (item, _) in &mut consumer.items {
         if let Item::Import(decl) = item {
@@ -300,9 +300,9 @@ fn whole_module_aliases_keep_canonical_exit_and_down_hook_identity() {
         }
 
         fn main() {
-            let _kind = f.CrashKind::Crashed;
-            let _target = lm.DownTarget::Local(7);
-            let _reason = lm.DownReason::Exited;
+            let _kind = f.CrashKind.Crashed;
+            let _target = lm.DownTarget.Local(7);
+            let _reason = lm.DownReason.Exited;
         }
         ",
     );
@@ -471,43 +471,62 @@ fn canonical_std_module_named_import_is_seeded_before_member_resolution() {
 }
 
 #[test]
-fn named_imports_do_not_grant_unrequested_qualified_lifecycle_authority() {
-    for source in [
-        r"
+fn named_imports_keep_requested_qualified_lifecycle_authority() {
+    for (source, requested_type) in [
+        (
+            r"
         import std.failure.{CrashAction};
         fn main() {
-            let _kind = failure.CrashKind::Crashed;
+            let _kind = failure.CrashKind.Crashed;
         }
         ",
-        r"
+            None,
+        ),
+        (
+            r"
         import std.failure.{CrashKind};
         fn main() {
-            let _kind = failure.CrashKind::Crashed;
+            let _kind = failure.CrashKind.Crashed;
         }
         ",
-        r"
+            Some("std.failure.CrashKind"),
+        ),
+        (
+            r"
         import std.link_monitor.{MonitorId};
         fn main() {
-            let _reason = link_monitor.DownReason::Exited;
+            let _reason = link_monitor.DownReason.Exited;
         }
         ",
-        r"
+            None,
+        ),
+        (
+            r"
         import std.link_monitor.{DownReason};
         fn main() {
-            let _reason = link_monitor.DownReason::Exited;
+            let _reason = link_monitor.DownReason.Exited;
         }
         ",
+            Some("std.link_monitor.DownReason"),
+        ),
     ] {
         let output = typecheck_with_resolved_std(source);
-        assert!(
-            output
-                .errors
-                .iter()
-                .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
-            "a named import must authorize only its lexical bindings, not arbitrary \
-             qualified lifecycle types: {:?}",
-            output.errors
-        );
+        if let Some(requested_type) = requested_type {
+            assert!(
+                output.errors.is_empty(),
+                "a requested named import must remain available as `{requested_type}`: {:?}",
+                output.errors
+            );
+        } else {
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
+                "a named import must not authorize an unrequested qualified type: {:?}",
+                output.errors
+            );
+        }
     }
 }
 
@@ -620,14 +639,14 @@ fn named_imported_down_payload_and_nested_types_consume_import() {
             fn on_down(note: DownNotification) {
                 let _id = note.monitor.value;
                 match note.target {
-                    DownTarget::Local(slot) => { let _slot = slot; }
-                    DownTarget::Remote(location) => { let _location = location; }
+                    DownTarget.Local(slot) => { let _slot = slot; }
+                    DownTarget.Remote(location) => { let _location = location; }
                 }
                 match note.reason {
-                    DownReason::Exited => {}
-                    DownReason::Crashed(kind) => { let _kind = kind; }
-                    DownReason::MonitorLost => {}
-                    DownReason::LocalShutdown => {}
+                    DownReason.Exited => {}
+                    DownReason.Crashed(kind) => { let _kind = kind; }
+                    DownReason.MonitorLost => {}
+                    DownReason.LocalShutdown => {}
                 }
             }
         }
@@ -748,29 +767,35 @@ fn sibling_loading_link_monitor_does_not_authorize_root_qualified_down_payload()
 
 #[test]
 fn transitive_std_failure_defs_do_not_authorize_qualified_constructors_or_variants() {
-    for source in [
-        r"
+    for (source, expected_message) in [
+        (
+            r"
         import app.helper;
         fn main() {
-            let _note = failure.CrashNotification::Forged {
+            let _note = failure.CrashNotification.Forged {
                 actor_id: 1,
             };
         }
         ",
-        r"
+            "undefined type `failure.CrashNotification.Forged`",
+        ),
+        (
+            r"
         import app.helper;
         fn main() {
-            let _kind = failure.CrashKind::HeapExceeded;
+            let _kind = failure.CrashKind.HeapExceeded;
         }
         ",
+            "undefined variable `failure`",
+        ),
     ] {
         let output = typecheck_with_transitive_std("failure", source);
         assert!(
             output
                 .errors
                 .iter()
-                .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
-            "a transitive std::failure definition must not authorize a value path: {:?}",
+                .any(|error| error.message == expected_message),
+            "a transitive std.failure definition must not authorize a value path: {:?}",
             output.errors
         );
     }
@@ -778,35 +803,44 @@ fn transitive_std_failure_defs_do_not_authorize_qualified_constructors_or_varian
 
 #[test]
 fn transitive_std_link_monitor_defs_do_not_authorize_qualified_constructors_or_variants() {
-    for source in [
-        r"
+    for (source, expected_message) in [
+        (
+            r"
         import app.helper;
         fn main() {
-            let _note = link_monitor.DownNotification::Forged {
+            let _note = link_monitor.DownNotification.Forged {
                 monitor: 1,
             };
         }
         ",
-        r"
+            "undefined type `link_monitor.DownNotification.Forged`",
+        ),
+        (
+            r"
         import app.helper;
         fn main() {
-            let _target = link_monitor.DownTarget::Remote;
+            let _target = link_monitor.DownTarget.Remote;
         }
         ",
-        r"
+            "undefined variable `link_monitor`",
+        ),
+        (
+            r"
         import app.helper;
         fn main() {
-            let _reason = link_monitor.DownReason::MonitorLost;
+            let _reason = link_monitor.DownReason.MonitorLost;
         }
         ",
+            "undefined variable `link_monitor`",
+        ),
     ] {
         let output = typecheck_with_transitive_std("link_monitor", source);
         assert!(
             output
                 .errors
                 .iter()
-                .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
-            "a transitive std::link_monitor definition must not authorize a value path: {:?}",
+                .any(|error| error.message == expected_message),
+            "a transitive std.link_monitor definition must not authorize a value path: {:?}",
             output.errors
         );
     }
@@ -832,7 +866,7 @@ fn local_lifecycle_shadow_does_not_forge_imported_payload() {
         output.errors.iter().any(|error| {
             error
                 .message
-                .contains("must have type `CrashNotification` (from `std::failure`)")
+                .contains("must have type `CrashNotification` (from `std.failure`)")
         }),
         "a local shadow must not forge the lifecycle payload: {:?}",
         output.errors
@@ -962,7 +996,7 @@ fn reject_user_down_notification_collision_in_typed_hook() {
         output.errors.iter().any(|error| {
             error
                 .message
-                .contains("must have type `DownNotification` (from `std::link_monitor`)")
+                .contains("must have type `DownNotification` (from `std.link_monitor`)")
         }),
         "a user nominal that only shares the lifecycle payload's short name must be rejected: {:?}",
         output.errors
@@ -1295,7 +1329,7 @@ fn accept_crash_action_tail_return() {
         actor Worker {
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
-                CrashAction::Restart
+                CrashAction.Restart
             }
         }
 
@@ -1316,7 +1350,7 @@ fn accept_crash_action_explicit_return_stmt() {
         actor Worker {
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
-                return CrashAction::Restart;
+                return CrashAction.Restart;
             }
         }
 
@@ -1338,7 +1372,7 @@ fn accept_crash_action_nonfinal_return_before_more_stmts() {
         actor Worker {
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
-                return CrashAction::Restart;
+                return CrashAction.Restart;
                 panic("dead code after the early return")
             }
         }
@@ -1365,9 +1399,9 @@ fn accept_crash_action_return_inside_if_then_more_code() {
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
                 if flag == 1 {
-                    return CrashAction::Escalate;
+                    return CrashAction.Escalate;
                 }
-                CrashAction::Kill
+                CrashAction.Kill
             }
         }
 
@@ -1430,7 +1464,7 @@ fn accept_closure_inside_crash_hook_returning_crash_action() {
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
                 let handler = || -> CrashAction {
-                    return CrashAction::Restart;
+                    return CrashAction.Restart;
                 };
                 panic("diverging hook body")
             }
@@ -1563,7 +1597,7 @@ fn reject_on_crash_missing_param() {
         actor Worker {
             #[on(crash)]
             fn on_crash() -> CrashAction {
-                CrashAction::Restart
+                CrashAction.Restart
             }
         }
 
@@ -1585,7 +1619,7 @@ fn reject_on_crash_wrong_param_type() {
         actor Worker {
             #[on(crash)]
             fn on_crash(info: i32) -> CrashAction {
-                CrashAction::Restart
+                CrashAction.Restart
             }
         }
 
@@ -1664,7 +1698,7 @@ fn crash_action_variants_recognised_by_type_checker() {
             actor Worker {{
                 #[on(crash)]
                 fn on_crash(info: CrashInfo) -> CrashAction {{
-                    CrashAction::{variant}
+                    CrashAction.{variant}
                 }}
             }}
 

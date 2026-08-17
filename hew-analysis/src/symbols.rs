@@ -251,7 +251,7 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
             sym
         }
         Item::Import(i) => {
-            let name = i.path.join("::");
+            let name = i.path.join(".");
             symbol_with_spans(&name, SymbolKind::Module, item_span, item_span)
         }
         Item::Record(r) => named_symbol(source, &r.name, SymbolKind::Type, item_span),
@@ -353,7 +353,7 @@ mod tests {
         let symbols = build_document_symbols(source, &pr);
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].kind, SymbolKind::Module);
-        assert!(symbols[0].name.contains("std"));
+        assert_eq!(symbols[0].name, "std.os");
     }
 
     #[test]

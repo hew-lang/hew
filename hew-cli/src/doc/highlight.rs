@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn pascal_case_types() {
-        let html = highlight("let v: Vec<i32> = Vec::new();");
+        let html = highlight("let v: Vec<i32> = Vec.new();");
         assert!(html.contains(&format!("color:{TY}\">Vec</span>")));
     }
 

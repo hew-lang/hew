@@ -2115,7 +2115,7 @@ fn empty_type_args_on_generic_enum_variant_init_is_arity_mismatch() {
         }
 
         fn main() {
-            let _e = Event::Move<> { x: 10 };
+            let _e = Event.Move<> { x: 10 };
         }
         ",
     );
@@ -2200,7 +2200,7 @@ fn vec_push_copy_record_element_is_accepted() {
             y: i32;
         }
         fn main() {
-            let v: Vec<Point> = Vec::new();
+            let v: Vec<Point> = Vec.new();
             v.push(Point { x: 1, y: 2 });
         }
         ",
@@ -2217,7 +2217,7 @@ fn vec_push_copy_tuple_element_is_accepted() {
     let output = typecheck(
         r"
         fn main() {
-            let v: Vec<(i32, f64)> = Vec::new();
+            let v: Vec<(i32, f64)> = Vec.new();
             v.push((1, 2.0));
         }
         ",
@@ -2234,7 +2234,7 @@ fn vec_push_nested_owned_tuple_element_is_accepted() {
     let output = typecheck(
         r#"
         fn main() {
-            let v: Vec<((string, i64), bool)> = Vec::new();
+            let v: Vec<((string, i64), bool)> = Vec.new();
             v.push((("a", 1), true));
         }
         "#,
@@ -2251,7 +2251,7 @@ fn vec_clone_nested_owned_tuple_element_is_accepted() {
     let output = typecheck(
         r#"
         fn main() {
-            let v: Vec<((string, i64), bool)> = Vec::new();
+            let v: Vec<((string, i64), bool)> = Vec.new();
             v.push((("a", 1), true));
             let _copy = v.clone();
         }
@@ -2269,8 +2269,8 @@ fn vec_push_nested_tuple_with_inner_vec_stays_rejected() {
     let output = typecheck(
         r"
         fn main() {
-            let inner: Vec<i64> = Vec::new();
-            let v: Vec<((Vec<i64>, i64), bool)> = Vec::new();
+            let inner: Vec<i64> = Vec.new();
+            let v: Vec<((Vec<i64>, i64), bool)> = Vec.new();
             v.push(((inner, 1), true));
         }
         ",
@@ -2291,7 +2291,7 @@ fn vec_push_nested_tuple_with_function_stays_rejected() {
         r"
         fn f() -> i64 { return 1; }
         fn main() {
-            let v: Vec<((fn() -> i64, i64), bool)> = Vec::new();
+            let v: Vec<((fn() -> i64, i64), bool)> = Vec.new();
             v.push(((f, 1), true));
         }
         ",
@@ -2315,7 +2315,7 @@ fn vec_get_copy_record_element_is_accepted() {
             y: i32;
         }
         fn main() {
-            let v: Vec<Point> = Vec::new();
+            let v: Vec<Point> = Vec.new();
             let _p = v.get(0);
         }
         ",
@@ -2353,7 +2353,7 @@ fn vec_contains_eligible_copy_record_compiles_after_w3_032_slice_3() {
             y: i32;
         }
         fn main() {
-            let v: Vec<Point> = Vec::new();
+            let v: Vec<Point> = Vec.new();
             let p = Point { x: 1, y: 2 };
             let _ = v.contains(p);
         }
@@ -2374,7 +2374,7 @@ fn vec_contains_float_tuple_element_now_typechecks() {
     let output = typecheck(
         r"
         fn main() {
-            let v: Vec<(i32, f64)> = Vec::new();
+            let v: Vec<(i32, f64)> = Vec.new();
             let _ = v.contains((1, 2.0));
         }
         ",
@@ -2396,7 +2396,7 @@ fn vec_contains_float_record_element_now_typechecks() {
             value: f32;
         }
         fn main() {
-            let v: Vec<Measurement> = Vec::new();
+            let v: Vec<Measurement> = Vec.new();
             let needle = Measurement { value: 1.0 };
             let _ = v.contains(needle);
         }
@@ -2426,7 +2426,7 @@ fn vec_contains_layout_managed_record_element_has_eq_eligibility_diagnostic() {
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`Vec::contains`")
+                && e.message.contains("`Vec.contains`")
                 && e.message.contains("layout-managed/non-Copy")
                 && e.message.contains("bytes")),
         "Expected layout-managed equality eligibility diagnostic, got: {:?}",
@@ -2447,7 +2447,7 @@ fn vec_remove_copy_record_element_now_succeeds() {
             y: i32;
         }
         fn main() {
-            let v: Vec<Point> = Vec::new();
+            let v: Vec<Point> = Vec.new();
             v.remove(0);
         }
         ",
@@ -2466,7 +2466,7 @@ fn vec_remove_copy_tuple_element_now_succeeds() {
     let output = typecheck(
         r"
         fn main() {
-            let v: Vec<(i32, i64)> = Vec::new();
+            let v: Vec<(i32, i64)> = Vec.new();
             v.remove(0);
         }
         ",
@@ -2487,7 +2487,7 @@ fn vec_clear_record_element_is_layout_fail_closed() {
             y: i32;
         }
         fn main() {
-            let v: Vec<Point> = Vec::new();
+            let v: Vec<Point> = Vec.new();
             v.clear();
         }
         ",
@@ -2497,7 +2497,7 @@ fn vec_clear_record_element_is_layout_fail_closed() {
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`Vec::clear`")
+                && e.message.contains("`Vec.clear`")
                 && e.message.contains("not runtime-backed yet")
                 && e.message.contains("hew_vec_clear_layout")),
         "Expected layout fail-closed diagnostic for Vec<Point>::clear, got: {:?}",
@@ -2510,7 +2510,7 @@ fn vec_clear_tuple_element_is_layout_fail_closed() {
     let output = typecheck(
         r"
         fn main() {
-            let v: Vec<(i32, f64)> = Vec::new();
+            let v: Vec<(i32, f64)> = Vec.new();
             v.clear();
         }
         ",
@@ -2520,7 +2520,7 @@ fn vec_clear_tuple_element_is_layout_fail_closed() {
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`Vec::clear`")
+                && e.message.contains("`Vec.clear`")
                 && e.message.contains("not runtime-backed yet")
                 && e.message.contains("hew_vec_clear_layout")),
         "Expected layout fail-closed diagnostic for Vec<(i32,f64)>::clear, got: {:?}",
@@ -2538,7 +2538,7 @@ fn vec_clone_bitcopy_record_element_is_permitted() {
             y: i32;
         }
         fn main() {
-            let v: Vec<Point> = Vec::new();
+            let v: Vec<Point> = Vec.new();
             let _ = v.clone();
         }
         ",
@@ -2562,7 +2562,7 @@ fn vec_clone_bitcopy_tuple_element_is_permitted() {
     let output = typecheck(
         r"
         fn main() {
-            let v: Vec<(i32, f64)> = Vec::new();
+            let v: Vec<(i32, f64)> = Vec.new();
             let _ = v.clone();
         }
         ",
@@ -2589,7 +2589,7 @@ fn vec_clone_owning_record_element_is_permitted() {
             age: i64;
         }
         fn main() {
-            let v: Vec<Person> = Vec::new();
+            let v: Vec<Person> = Vec.new();
             let _ = v.clone();
         }
         ",
@@ -2606,7 +2606,7 @@ fn vec_clone_owning_tuple_element_is_permitted() {
     let output = typecheck(
         r"
         fn main() {
-            let v: Vec<(string, i64)> = Vec::new();
+            let v: Vec<(string, i64)> = Vec.new();
             let _ = v.clone();
         }
         ",
@@ -2627,8 +2627,8 @@ fn vec_append_record_element_is_layout_fail_closed() {
             y: i32;
         }
         fn main() {
-            let v: Vec<Point> = Vec::new();
-            let other: Vec<Point> = Vec::new();
+            let v: Vec<Point> = Vec.new();
+            let other: Vec<Point> = Vec.new();
             v.append(other);
         }
         ",
@@ -2638,7 +2638,7 @@ fn vec_append_record_element_is_layout_fail_closed() {
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`Vec::append`")
+                && e.message.contains("`Vec.append`")
                 && e.message.contains("not runtime-backed yet")
                 && e.message.contains("hew_vec_append_layout")),
         "Expected layout fail-closed diagnostic for Vec<Point>::append, got: {:?}",
@@ -2658,8 +2658,8 @@ fn vec_extend_retired_is_undefined_method() {
             y: i32;
         }
         fn main() {
-            let v: Vec<Point> = Vec::new();
-            let other: Vec<Point> = Vec::new();
+            let v: Vec<Point> = Vec.new();
+            let other: Vec<Point> = Vec.new();
             v.extend(other);
         }
         ",
@@ -2689,7 +2689,7 @@ fn vec_len_and_is_empty_on_layout_element_do_not_fire_fence() {
             y: i32;
         }
         fn main() {
-            let v: Vec<Point> = Vec::new();
+            let v: Vec<Point> = Vec.new();
             let _n = v.len();
             let _e = v.is_empty();
         }
@@ -2758,9 +2758,9 @@ fn explicit_ne_zero_coercion_to_bool_is_accepted() {
 
 #[test]
 fn double_colon_in_type_position_emits_module_separator_hint() {
-    // `geometry::Point` in a type position should produce an UndefinedType error
-    // with a suggestion to use `geometry.Point` instead of `geometry::Point`.
-    let output = typecheck(
+    // Retired `geometry::Point` syntax should produce the cutover diagnostic
+    // with a suggestion to use `geometry.Point`.
+    let parsed = hew_parser::parse(
         r"
         fn main() {
             let _p: geometry::Point = 0;
@@ -2768,15 +2768,17 @@ fn double_colon_in_type_position_emits_module_separator_hint() {
     ",
     );
     assert!(
-        output
+        parsed
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::UndefinedType
-                && e.message.contains("geometry::Point")
-                && (e.message.contains("module separator")
-                    || e.suggestions.iter().any(|s| s.contains("geometry.Point")))),
-        "Expected UndefinedType with module.Type hint for geometry::Point, got errors: {:?}",
-        output.errors
+            .any(|e| e.message.contains("E_PATH_LEGACY_SEPARATOR")
+                && e.message.contains("use dotted paths")
+                && e.message.contains("geometry.Point")
+                && e.hint
+                    .as_deref()
+                    .is_some_and(|hint| hint.contains("geometry.Point"))),
+        "Expected a dotted-path migration diagnostic for geometry::Point, got errors: {:?}",
+        parsed.errors
     );
 }
 

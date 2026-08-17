@@ -107,7 +107,7 @@ fn vec_payload_free_enum_constructs_and_pushes_bitcopy() {
         enum Color { Red; Green; Blue }
 
         fn main() {
-            let v: Vec<Color> = Vec::new();
+            let v: Vec<Color> = Vec.new();
             v.push(Red);
             v.push(Green);
             v.push(Blue);
@@ -131,7 +131,7 @@ fn vec_scalar_payload_enum_constructs_and_pushes_bitcopy() {
         enum Tag { A(i64); B(i64) }
 
         fn main() {
-            let v: Vec<Tag> = Vec::new();
+            let v: Vec<Tag> = Vec.new();
             v.push(A(1));
             v.push(B(2));
             println(v.len());

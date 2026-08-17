@@ -246,7 +246,7 @@ fn std_io_bytes_calls_preserve_checker_runtime_targets_in_hir() {
         import std.io;
 
         fn main() -> i64 {
-            let b: bytes = bytes::new();
+            let b: bytes = bytes.new();
             let got = b.get(0);
             return b.len();
         }

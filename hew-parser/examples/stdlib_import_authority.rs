@@ -132,12 +132,10 @@ mod tests {
     fn accepts_every_parser_valid_import_tail() {
         for source in [
             "import std.net.dns;",
-            "import /* a */ std /* b */ :: net::dns /* c */ ;",
+            "import /* a */ std /* b */ . net.dns /* c */ ;",
             "import std.net.dns as resolver;",
-            "import std.net.dns.*;",
             "import std.net.dns.{Resolver};",
             "import std.net.dns.{Resolver as R, Query,};",
-            "import std.net.dns.{};",
             "import std.net.dns; fn main() {}",
         ] {
             assert_evidence(source, "std::net::dns");
@@ -178,11 +176,11 @@ mod tests {
             "/// import std.net.dns;\nfn main() {}",
             "//! import std.net.dns;\nfn main() {}",
             "/* outer /* import std.net.dns; */ decoy */\nfn main() {}",
-            r#"fn main() { let value = "import std::net::dns;"; }"#,
-            r#"fn main() { let value = r"import std::net::dns;"; }"#,
-            r#"fn main() { let value = b"import std::net::dns;"; }"#,
-            r#"fn main() { let value = re"import std::net::dns;"; }"#,
-            r#"fn main() { let value = f"import std::net::dns;"; }"#,
+            r#"fn main() { let value = "import std.net.dns;"; }"#,
+            r#"fn main() { let value = r"import std.net.dns;"; }"#,
+            r#"fn main() { let value = b"import std.net.dns;"; }"#,
+            r#"fn main() { let value = re"import std.net.dns;"; }"#,
+            r#"fn main() { let value = f"import std.net.dns;"; }"#,
             "fn main() { import std.net.dns; }",
         ] {
             assert_not_evidence(source, "std::net::dns");

@@ -1242,7 +1242,7 @@ fn scan_disk_importers_for_conflicts(
         let parse_result = hew_parser::parse(&source);
 
         // Only proceed if this file imports `renamed_name` (non-aliased) from
-        // `definition_uri`.  Aliased importers (`import foo::{ x as y }`) only
+        // `definition_uri`. Aliased importers (`import foo.{ x as y }`) only
         // rewrite the imported token — the visible binding remains the alias, so
         // they cannot introduce a `renamed_name`-visible conflict (#1285 quality).
         let imports_target_nonaliased =
@@ -1399,9 +1399,8 @@ fn find_cross_file_definition_impl(
                 };
                 &entry.name // search target file by the *original* name
             }
-            Some(ImportSpec::Glob) => word, // glob: any name may come from here
             None => {
-                // Bare path import (`import foo::bar`).  The last path segment
+                // Bare path import (`import foo.bar`).  The last path segment
                 // is itself a navigable target (e.g. cursor on `bar`).
                 if import.path.last().map(String::as_str) == Some(word)
                     && (documents.contains_key(&target_uri) || path.exists())

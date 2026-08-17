@@ -882,7 +882,7 @@ extern "C" {
 fn wrapHolder() -> Holder { unsafe { spy_make_holder() } }
 
 fn pushFrames(n: i64) -> i64 {
-    var v: Vec<Holder> = Vec::new();
+    var v: Vec<Holder> = Vec.new();
     var i: i64 = 0;
     while i < n {
         v.push(wrapHolder());
@@ -1515,7 +1515,7 @@ extern "C" {
 fn wrapHolder() -> Holder { unsafe { spy_make_holder() } }
 
 fn main() -> i64 {
-    var m: HashMap<i64, Holder> = HashMap::new();
+    var m: HashMap<i64, Holder> = HashMap.new();
     m.insert(1, wrapHolder());
     m.len()
 }
@@ -1549,8 +1549,8 @@ const HASHMAP_INSERT_OF_A_DOMESTIC_RECORD: &str = r#"record Holder { label: stri
 fn mkHolder(i: i64) -> Holder { Holder { label: f"tok{i}" } }
 
 fn main() -> i64 {
-    var m: HashMap<i64, Holder> = HashMap::new();
-    var s: HashSet<string> = HashSet::new();
+    var m: HashMap<i64, Holder> = HashMap.new();
+    var s: HashSet<string> = HashSet.new();
     var i: i64 = 0;
     while i < 8 {
         m.insert(i, mkHolder(i));

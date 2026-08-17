@@ -163,7 +163,7 @@ extern "C" {
 
 // ── Poisoned-code parity test ──────────────────────────────────────────
 // Mirrors JWT's poisoned-slot fail-closed regression test: an out-of-range
-// code from the FFI layer must never decode as `CryptoError::None` (which
+// code from the FFI layer must never decode as `CryptoError.None` (which
 // would read a swallowed crypto error as success). `crypto_error_from_i32`
 // is module-private, so this test — which calls it directly with poisoned
 // codes — can only live here as an inline test.

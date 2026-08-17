@@ -561,7 +561,7 @@ fn record_inequality_typechecks_and_ordering_is_rejected() {
 /// structural-equality gate.
 #[test]
 fn enum_equality_not_gated_by_record_comparison_refusal() {
-    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() -> bool {\n    let a = Colour::Red;\n    let b = Colour::Green;\n    a == b\n}";
+    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() -> bool {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    a == b\n}";
     let output = check_source(source);
     assert!(
         output.errors.is_empty(),
@@ -572,7 +572,7 @@ fn enum_equality_not_gated_by_record_comparison_refusal() {
 
 #[test]
 fn enum_ordering_reports_checker_diagnostic() {
-    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() {\n    let a = Colour::Red;\n    let b = Colour::Green;\n    let _ = a < b;\n}";
+    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    let _ = a < b;\n}";
     let output = check_source(source);
     assert!(
         output
@@ -967,7 +967,7 @@ fn for_range_start_literal_and_unannotated_end_bound_narrow_together() {
     let source = r"
         fn main() {
             let n = 6;
-            let xs: Vec<i32> = Vec::new();
+            let xs: Vec<i32> = Vec.new();
             for i in 0 .. n {
                 xs.push(i);
             }
@@ -991,11 +991,11 @@ fn for_range_narrowing_does_not_leak_to_sibling_range_over_concrete_i64_bound() 
     let source = r"
         fn main() {
             let n = 6;
-            let xs: Vec<i32> = Vec::new();
+            let xs: Vec<i32> = Vec.new();
             for i in 0 .. n {
                 xs.push(i);
             }
-            let ys: Vec<i32> = Vec::new();
+            let ys: Vec<i32> = Vec.new();
             ys.push(1);
             let len = ys.len();
             for e in 0 .. len {
@@ -1511,7 +1511,7 @@ fn typecheck_if_branch_type_consistency() {
 
 #[test]
 fn typecheck_vec_type_annotation() {
-    let source = "fn main() { let v: Vec<i32> = Vec::new(); }";
+    let source = "fn main() { let v: Vec<i32> = Vec.new(); }";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.is_empty(),
@@ -1526,7 +1526,7 @@ fn typecheck_vec_type_annotation() {
 
 #[test]
 fn unresolved_vec_new_method_chain_fails_closed() {
-    let source = "fn main() { Vec::new().clear(); }";
+    let source = "fn main() { Vec.new().clear(); }";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.is_empty(),

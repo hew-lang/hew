@@ -235,6 +235,7 @@ fn synth_fn_with_tail(name: &str, item_id: u32, tail: HirExpr) -> HirItem {
     HirItem::Function(HirFn {
         id: ItemId(item_id),
         node: HirNodeId(0),
+        declaration: hew_types::DefId::new(name),
         name: name.to_string(),
         type_params: Vec::new(),
         params: vec![unit_binding("_unused")],
@@ -267,6 +268,32 @@ fn item_callee_not_in_callable_set_emits_callable_unsupported_in_mir() {
 }
 
 #[test]
+fn callable_unsupported_message_renders_internal_identity_as_dotted_source() {
+    let internal_name = "std::widget::missing";
+    let main = synth_fn_with_tail("main", 0, synth_call_with_item_callee(internal_name, 42));
+
+    let diagnostics = run_call_shape_gates_for_test(&[main], &[]);
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::CallableUnsupportedInMir { name } if name == internal_name
+            )
+        })
+        .expect("the internal callable identity should remain available to the gate");
+
+    assert!(
+        diagnostic.note.contains("`std.widget.missing`"),
+        "the user-facing note should render final dotted source syntax: {diagnostic:?}"
+    );
+    assert!(
+        !diagnostic.note.contains("::"),
+        "the user-facing note must not leak an internal separator: {diagnostic:?}"
+    );
+}
+
+#[test]
 fn item_callee_referencing_module_fn_does_not_emit_diagnostic() {
     // Same synthetic shape but the callee name resolves to a real
     // `HirItem::Function` in the module — the gate's callable set includes
@@ -274,6 +301,7 @@ fn item_callee_referencing_module_fn_does_not_emit_diagnostic() {
     let target = HirItem::Function(HirFn {
         id: ItemId(99),
         node: HirNodeId(0),
+        declaration: hew_types::DefId::new("real_callee"),
         name: "real_callee".to_string(),
         type_params: Vec::new(),
         params: Vec::new(),
@@ -361,6 +389,7 @@ fn binding_callee_does_not_emit_indirect_call_unsupported() {
     let main = HirItem::Function(HirFn {
         id: ItemId(0),
         node: HirNodeId(0),
+        declaration: hew_types::DefId::new("main"),
         name: "main".to_string(),
         type_params: Vec::new(),
         params: Vec::new(),
@@ -427,6 +456,7 @@ fn walker_recurses_into_let_stmt_initializer() {
     let main = HirItem::Function(HirFn {
         id: ItemId(0),
         node: HirNodeId(0),
+        declaration: hew_types::DefId::new("main"),
         name: "main".to_string(),
         type_params: Vec::new(),
         params: Vec::new(),

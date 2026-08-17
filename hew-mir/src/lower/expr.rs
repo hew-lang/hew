@@ -226,7 +226,7 @@ impl Builder {
                     site,
                 },
                 note: format!(
-                    "`VecIter::next()` must clone each element into an independent owner, \
+                    "`VecIter.next()` must clone each element into an independent owner, \
                      but {reason}; MIR refuses to lower the generic Iterator dispatch"
                 ),
             });
@@ -240,7 +240,7 @@ impl Builder {
         else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::UnsupportedNode {
-                    reason: "builtin VecIter Iterator::next receiver is not a binding".to_string(),
+                    reason: "builtin VecIter Iterator.next receiver is not a binding".to_string(),
                 },
                 note: "the builtin cursor state machine mutates the receiver's existing local slot"
                     .to_string(),
@@ -254,7 +254,7 @@ impl Builder {
                     name: name.clone(),
                     site: receiver.site,
                 },
-                note: "builtin VecIter Iterator::next receiver has no MIR place".to_string(),
+                note: "builtin VecIter Iterator.next receiver has no MIR place".to_string(),
             });
             return None;
         };
@@ -5141,7 +5141,7 @@ impl Builder {
                             reason: reason.clone(),
                         },
                         note: format!(
-                            "dyn-trait method call `{trait_name}::{method_name}` reached MIR with \
+                            "dyn-trait method call `{trait_name}.{method_name}` reached MIR with \
                              an unresolved caller-side FnSig: {reason}. The checker's \
                              trait-object bound substitution at the receiver's coercion site \
                              must produce a fully resolved signature; codegen (W3.031 Stage 7) \
@@ -5303,7 +5303,7 @@ impl Builder {
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
                                 construct: format!(
-                                    "`Vec::{method_name}` on the type-parameter \
+                                    "`Vec.{method_name}` on the type-parameter \
                                      element `{elem}`"
                                 ),
                                 site: expr.site,
@@ -5454,7 +5454,7 @@ impl Builder {
                                 site: expr.site,
                             },
                             note: format!(
-                                "`VecIter::next()` must clone each element into an independent \
+                                "`VecIter.next()` must clone each element into an independent \
                                  owner, but {reason}; the concrete generic instantiation is \
                                  rejected before the runtime clone choke"
                             ),
@@ -5505,7 +5505,7 @@ impl Builder {
                                 site: expr.site,
                             },
                             note: format!(
-                                "`Vec::clone()` / `Vec::iter()` must duplicate every element \
+                                "`Vec.clone()` / `Vec.iter()` must duplicate every element \
                                  into an independent owner, but {reason}; the clone is rejected \
                                  before it reaches the runtime"
                             ),
@@ -5568,19 +5568,19 @@ impl Builder {
                         if let Err(reason) = self.validate_collection_clone_value(part_ty) {
                             let operation = match callee.as_str() {
                                 "hew_hashmap_clone_layout" => {
-                                    "HashMap::clone() must duplicate every key and value"
+                                    "HashMap.clone() must duplicate every key and value"
                                 }
                                 "hew_hashmap_keys_layout" => {
-                                    "HashMap::keys() must clone every key into an independent snapshot"
+                                    "HashMap.keys() must clone every key into an independent snapshot"
                                 }
                                 "hew_hashmap_values_layout" => {
-                                    "HashMap::values() must clone every value into an independent snapshot"
+                                    "HashMap.values() must clone every value into an independent snapshot"
                                 }
                                 "hew_hashmap_entries_layout" => {
-                                    "HashMap::entries() must clone every key and value into an independent snapshot"
+                                    "HashMap.entries() must clone every key and value into an independent snapshot"
                                 }
                                 _ => {
-                                    "HashMap::get() must clone the matched value into an independent owner"
+                                    "HashMap.get() must clone the matched value into an independent owner"
                                 }
                             };
                             self.diagnostics.push(MirDiagnostic {
@@ -5633,9 +5633,9 @@ impl Builder {
                     };
                     if let Err(reason) = self.validate_collection_clone_value(elem_ty) {
                         let operation = if callee == "hew_hashset_clone_layout" {
-                            "HashSet::clone() must duplicate every element"
+                            "HashSet.clone() must duplicate every element"
                         } else {
-                            "HashSet::to_vec() must clone every element into an independent snapshot"
+                            "HashSet.to_vec() must clone every element into an independent snapshot"
                         };
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
@@ -5872,7 +5872,7 @@ impl Builder {
                             site: expr.site,
                         },
                         note: format!(
-                            "static trait dispatch `{declaring_trait}::{method_name}` reached \
+                            "static trait dispatch `{declaring_trait}.{method_name}` reached \
                              MIR in a concrete function body without a substitution for \
                              receiver type parameter `{receiver_type_param}`; this indicates \
                              a missing monomorphization binding (the generic origin should \
@@ -5889,7 +5889,7 @@ impl Builder {
                         kind: MirDiagnosticKind::NotYetImplemented {
                             construct: format!(
                                 "static trait dispatch on receiver shape `{concrete_ty:?}` \
-                                 for `{declaring_trait}::{method_name}`"
+                                 for `{declaring_trait}.{method_name}`"
                             ),
                             site: expr.site,
                         },
@@ -8648,7 +8648,7 @@ impl Builder {
                     site,
                 },
                 note: format!(
-                    "static trait dispatch `{declaring_trait}::{method_name}` reached \
+                    "static trait dispatch `{declaring_trait}.{method_name}` reached \
                      MIR in a concrete function body without a substitution for \
                      receiver type parameter `{receiver_type_param}`; this indicates \
                      a missing monomorphization binding (the generic origin should \
@@ -8664,7 +8664,7 @@ impl Builder {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!(
                         "static trait dispatch on receiver shape `{concrete_ty:?}` \
-                         for `{declaring_trait}::{method_name}`"
+                         for `{declaring_trait}.{method_name}`"
                     ),
                     site,
                 },
@@ -8792,9 +8792,8 @@ impl Builder {
                     ),
                     site,
                 },
-                note:
-                    "MIR will not reconstruct a var-self method endpoint from `Type::method` text"
-                        .to_string(),
+                note: "MIR will not reconstruct a var-self method endpoint from `Type.method` text"
+                    .to_string(),
             });
             return None;
         };

@@ -225,7 +225,7 @@ fn dyn_iterator_with_item_binding_object_safe() {
         r"
         trait Iterator {
             type Item;
-            fn next(iter: Self) -> Option<Self::Item>;
+            fn next(iter: Self) -> Option<Self.Item>;
         }
 
         type Counter { value: i32; }
@@ -277,7 +277,7 @@ fn dyn_iterator_without_binding_rejected() {
         r"
         trait Iterator {
             type Item;
-            fn next(iter: Self) -> Option<Self::Item>;
+            fn next(iter: Self) -> Option<Self.Item>;
         }
 
         type Counter { value: i32; }
@@ -327,7 +327,7 @@ fn dyn_iterator_failed_projection_is_diagnostic() {
         r"
         trait Iterator {
             type Item;
-            fn next(iter: Self) -> Option<Self::Item>;
+            fn next(iter: Self) -> Option<Self.Item>;
         }
 
         type Counter { value: i32; }
@@ -353,7 +353,7 @@ fn dyn_iterator_failed_projection_is_diagnostic() {
                 trait_name,
                 assoc_name,
             } if type_name == "Counter" && trait_name == "Iterator" && assoc_name == "Item"
-        ) && e.message.contains("<Counter as Iterator>::Item")),
+        ) && e.message.contains("<Counter as Iterator>.Item")),
         "expected failed projection diagnostic for Counter/Iterator/Item, got: {:#?}",
         output.errors
     );
@@ -366,7 +366,7 @@ fn dyn_distinct_bindings_get_distinct_vtables() {
         r#"
         trait Iterator {
             type Item;
-            fn next(iter: Self) -> Option<Self::Item>;
+            fn next(iter: Self) -> Option<Self.Item>;
         }
 
         type IntCounter { value: i32; }
@@ -419,7 +419,7 @@ fn dyn_trait_method_signature_substituted() {
         r"
         trait Iterator {
             type Item;
-            fn next(iter: Self) -> Option<Self::Item>;
+            fn next(iter: Self) -> Option<Self.Item>;
         }
 
         type Counter { value: i32; }

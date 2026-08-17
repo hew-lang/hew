@@ -986,7 +986,7 @@ fn conditional_heap_resource_move_keeps_flag_guarded_record_drop() {
             }
         }
         fn make() -> Buf {
-            Buf { data: Vec::new() }
+            Buf { data: Vec.new() }
         }
         fn sink(b: Buf) {
             b.close();
@@ -1335,7 +1335,7 @@ fn cowvalue_string_shared_into_tuple_allows_post_share_use() {
 fn managed_string_moved_into_hashset_insert_rejects_post_move_use() {
     let p = lower_source(
         r#"fn main() -> string {
-            let words: HashSet<string> = HashSet::new();
+            let words: HashSet<string> = HashSet.new();
             let word = "colour";
             words.insert(word);
             word
@@ -1355,7 +1355,7 @@ fn managed_string_moved_into_hashset_insert_rejects_post_move_use() {
 fn managed_string_moved_into_hashmap_insert_rejects_post_move_use() {
     let p = lower_source(
         r#"fn main() -> string {
-            let labels: HashMap<string, string> = HashMap::new();
+            let labels: HashMap<string, string> = HashMap.new();
             let key = "k";
             let value = "v";
             labels.insert(key, value);
@@ -1376,7 +1376,7 @@ fn managed_string_moved_into_hashmap_insert_rejects_post_move_use() {
 fn managed_string_insert_without_reuse_stays_clean() {
     let p = lower_source(
         r#"fn main() -> i64 {
-            let words: HashSet<string> = HashSet::new();
+            let words: HashSet<string> = HashSet.new();
             let word = "behaviour";
             words.insert(word);
             words.len()
@@ -3297,7 +3297,7 @@ fn conditional_record_handoff_with_vec_field_is_not_flagged() {
         actor Fan {
             var held: Bag;
             receive fn route(label: string, store: bool) -> i64 {
-                let values: Vec<i64> = Vec::new();
+                let values: Vec<i64> = Vec.new();
                 let next = Bag { name: label, values: values };
                 if store { held = next; }
                 7
@@ -4317,15 +4317,15 @@ fn generic_loop_accumulator_keeps_its_pre_loop_initialisation() {
     let pipeline = lower_source(
         r"
         enum Step { More(i64); Done; }
-        fn next() -> Step { Step::Done }
+        fn next() -> Step { Step.Done }
         fn fold<B>(init: B, f: fn(B, i64) -> B) -> B {
             var acc = init;
             loop {
                 match next() {
-                    Step::More(item) => {
+                    Step.More(item) => {
                         acc = f(acc, item);
                     },
-                    Step::Done => {
+                    Step.Done => {
                         break;
                     },
                 }

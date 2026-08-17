@@ -38,9 +38,7 @@ fn build_program(root_src: &str) -> Program {
     let import_item: Spanned<Item> = (
         Item::Import(ImportDecl {
             path: vec!["hew".to_string(), "bank".to_string()],
-            path_separators: Vec::new(),
             spec: None,
-            spec_separator: None,
             selection_trailing_comma: false,
             module_alias: None,
             file_path: None,

@@ -587,7 +587,7 @@ impl Checker {
     }
 
     /// Resolve the exact source owner written before a variant surface's final
-    /// `::`. Imported type aliases and a declaration's own lexical module leaf
+    /// dot. Imported type aliases and a declaration's own lexical module leaf
     /// are projected to the checker-owned nominal identity here; no leaf-only
     /// scan is permitted.
     fn canonical_variant_surface_owner(&self, surface_owner: &str, expected_ty: &Ty) -> String {
@@ -599,7 +599,7 @@ impl Checker {
             return canonical.clone();
         }
 
-        let dotted = surface_owner.replace("::", ".");
+        let dotted = surface_owner.to_string();
         if !dotted.contains('.') {
             if let Some(expected) = expected_ty.type_name() {
                 if let Some(owner) = self.current_module_identity() {
@@ -1111,7 +1111,7 @@ impl Checker {
                     span,
                     format!("unknown type `{name}`"),
                     vec![format!(
-                        "import the lifecycle type explicitly, e.g. `import std.{}::{{ {name} }}`",
+                        "import the lifecycle type explicitly, e.g. `import std.{}.{{ {name} }}`",
                         if matches!(
                             crate::lookup_source_owned_lifecycle_type(name),
                             Some(
@@ -1151,7 +1151,7 @@ impl Checker {
             for owner in &owner_modules {
                 suggestions.push(format!("qualify the reference, e.g. `{owner}.{name}`"));
                 suggestions.push(format!(
-                    "or opt in to the bare name: `import {owner}::{{ {name} }}`"
+                    "or opt in to the bare name: `import {owner}.{{ {name} }}`"
                 ));
             }
             let detail = if owner_modules.len() == 1 {
@@ -1275,7 +1275,7 @@ impl Checker {
                     TypeErrorKind::InferenceFailed,
                     &binding.ty.1,
                     format!(
-                        "associated type binding `{}::{}` in a dyn trait object must be fully projected",
+                        "associated type binding `{}.{}` in a dyn trait object must be fully projected",
                         bound.name, binding.name
                     ),
                 );
@@ -2034,7 +2034,7 @@ impl Checker {
                 TypeErrorKind::UndefinedType,
                 span,
                 format!(
-                    "associated-type projection `{base_name}::{assoc_name}` requires \
+                    "associated-type projection `{base_name}.{assoc_name}` requires \
                      a trait bound on `{base_name}` that declares `{assoc_name}`; \
                      no bounds are declared on `{base_name}`"
                 ),
@@ -2086,9 +2086,9 @@ impl Checker {
                     TypeErrorKind::InvalidOperation,
                     span,
                     format!(
-                        "ambiguous associated-type projection `{base_name}::{assoc_name}`: \
+                        "ambiguous associated-type projection `{base_name}.{assoc_name}`: \
                          declared by multiple bounds on `{base_name}`: [{cites}]. \
-                         Same-name binding syntax `<Trait::Item>` is not yet supported"
+                         Same-name binding syntax `<Trait.Item>` is not yet supported"
                     ),
                 );
                 Some(Ty::Error)
@@ -2946,7 +2946,7 @@ impl Checker {
                                         TypeErrorKind::ArityMismatch,
                                         &sp,
                                         format!(
-                                            "associated type `Self::{alias_name}` does not take type arguments"
+                                            "associated type `Self.{alias_name}` does not take type arguments"
                                         ),
                                     );
                                 }

@@ -79,12 +79,12 @@ fn add_member(members: HashSet<string>, name: string) {\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let counts: HashMap<string, i64> = HashMap::new();\n\
+\x20   let counts: HashMap<string, i64> = HashMap.new();\n\
 \x20   for raw in \" coffee , rent , coffee \".split(\",\") {\n\
 \x20   \x20   bump(counts, raw.trim());\n\
 \x20   }\n\
-\x20   let labels: HashMap<i64, string> = HashMap::new();\n\
-\x20   let members: HashSet<string> = HashSet::new();\n\
+\x20   let labels: HashMap<i64, string> = HashMap.new();\n\
+\x20   let members: HashSet<string> = HashSet.new();\n\
 \x20   store_value(labels, 1, \"label\".to_upper());\n\
 \x20   store_value(labels, 1, \"relabel\".to_upper());\n\
 \x20   add_member(members, \"member\".to_upper());\n\
@@ -120,8 +120,8 @@ fn borrowed_ingress_loop_source(frames: usize) -> String {
          }}\n\
          \n\
          fn run_cycle() -> i64 {{\n\
-         \x20   let counts: HashMap<string, i64> = HashMap::new();\n\
-         \x20   let members: HashSet<string> = HashSet::new();\n\
+         \x20   let counts: HashMap<string, i64> = HashMap.new();\n\
+         \x20   let members: HashSet<string> = HashSet.new();\n\
          \x20   store_key(counts, \"key\".to_upper(), 1);\n\
          \x20   store_key(counts, \"key\".to_upper(), 2);\n\
          \x20   store_member(members, \"member\".to_upper());\n\

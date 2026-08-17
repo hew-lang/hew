@@ -1,5 +1,5 @@
-// HashMap takes exactly two type arguments: key and value.
+// The retired Rust-style turbofish spelling must suggest dotted Hew syntax.
 fn main() -> i64 {
-    let _m = HashMap<i64>.new();
+    let _m = HashMap::<i64>::new();
     0
 }

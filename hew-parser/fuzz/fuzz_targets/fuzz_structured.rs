@@ -173,9 +173,9 @@ fn core_pipeline(seed: i64) -> Result<i64, i64> {{
         None => 0,
     }};
     let r = core_div(picked + seed, 1)?;
-    let mut_sum = match CoreChoice::Num(r) {{
-        CoreChoice::Zero => 0,
-        CoreChoice::Num(v) => v,
+    let mut_sum = match CoreChoice.Num(r) {{
+        CoreChoice.Zero => 0,
+        CoreChoice.Num(v) => v,
     }};
 
     var acc = 0;

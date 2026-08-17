@@ -23,7 +23,7 @@ fn main() {
         Ok(output) => println(output.stdout),
         Err(_) => (),
     }
-    let run_args: Vec<string> = Vec::new();
+    let run_args: Vec<string> = Vec.new();
     match process.try_run_argv("printf", run_args) {
         Ok(output) => println(output.stdout),
         Err(_) => (),
@@ -32,7 +32,7 @@ fn main() {
         Ok(child) => println(child.wait()),
         Err(_) => (),
     }
-    let spawn_args: Vec<string> = Vec::new();
+    let spawn_args: Vec<string> = Vec.new();
     match process.try_start_argv("true", spawn_args) {
         Ok(child) => println(child.wait()),
         Err(_) => (),

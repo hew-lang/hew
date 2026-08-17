@@ -94,7 +94,7 @@ fn check_fails_on_mir_gate_before_ok() {
     let (_dir, path) = write_fixture(
         "record VHolder { items: Vec<i64>, tag: string }\n\
          fn main() {\n\
-         \x20\x20\x20\x20let init: Vec<i64> = Vec::new();\n\
+         \x20\x20\x20\x20let init: Vec<i64> = Vec.new();\n\
          \x20\x20\x20\x20init.push(7);\n\
          \x20\x20\x20\x20let s = VHolder { items: init, tag: \"base\" };\n\
          \x20\x20\x20\x20let s2 = VHolder { items: s.items, ..s };\n\
@@ -252,7 +252,7 @@ fn check_no_typecheck_skips_hir_mir_gates() {
     let (_dir, path) = write_fixture(
         "record VHolder { items: Vec<i64>, tag: string }\n\
          fn main() {\n\
-         \x20\x20\x20\x20let init: Vec<i64> = Vec::new();\n\
+         \x20\x20\x20\x20let init: Vec<i64> = Vec.new();\n\
          \x20\x20\x20\x20init.push(7);\n\
          \x20\x20\x20\x20let s = VHolder { items: init, tag: \"base\" };\n\
          \x20\x20\x20\x20let s2 = VHolder { items: s.items, ..s };\n\

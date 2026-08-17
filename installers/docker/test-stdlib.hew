@@ -1,10 +1,11 @@
 // Stdlib installation smoke test.
 // Exercises the stdlib modules added in the stdlib-gap-fill work to
 // confirm the runtime, staticlibs, and .hew sources are all in place.
+import std.string;
 
-import std::string;
-import std::fs;
-import std::net::url;
+import std.fs;
+
+import std.net.url;
 
 fn main() {
     // ── string.split / string.join ───────────────────────────────────────
@@ -38,6 +39,5 @@ fn main() {
     let q = url.encode_query("key=hello world\nother=a+b");
     assert(string.contains(q, "hello%20world"));
     println("url.encode_query: ok");
-
     println("\nAll stdlib checks passed.");
 }

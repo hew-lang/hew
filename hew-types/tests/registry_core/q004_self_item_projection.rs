@@ -44,7 +44,7 @@ const ITER_PRELUDE: &str = r"
 pub trait Iterator {
     type Item;
 
-    fn next(var self) -> Option<Self::Item>;
+    fn next(var self) -> Option<Self.Item>;
 }
 ";
 

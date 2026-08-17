@@ -40,13 +40,10 @@ pub struct ModuleRegistry {
     drop_funcs: HashMap<String, String>,
 }
 
-/// Parse a module identity at the registry boundary. Source declarations use
-/// canonical dotted owners (`std.math`) while import syntax and the loader use
-/// `::` (`std::math`); both denote the same exact `ModuleId`.
+/// Parse a canonical dotted module identity at the registry boundary.
 fn module_id_from_identity(module_path: &str) -> ModuleId {
     ModuleId::new(
         module_path
-            .replace("::", ".")
             .split('.')
             .filter(|segment| !segment.is_empty())
             .map(String::from)
@@ -991,10 +988,10 @@ mod tests {
     #[test]
     fn channel_legacy_request_resolves_source_before_consulting_canonical_cache() {
         let mut reg = registry();
-        reg.load("std::channel")
+        reg.load("std.channel")
             .expect("prime the canonical shipped channel owner");
         let shipped = reg
-            .get("std::channel")
+            .get("std.channel")
             .and_then(|info| info.source_path.clone())
             .expect("canonical cache entry has a source path");
 
@@ -1013,17 +1010,17 @@ mod tests {
         // its repeated basename denotes the canonical shipped owner.
         reg.search_paths = vec![user_dir.root.clone()];
         let loaded = reg
-            .load("std::channel::channel")
+            .load("std.channel.channel")
             .expect("load the user lookalike through the legacy spelling");
         assert_eq!(loaded.source_path.as_deref(), Some(user_source.as_path()));
         assert_eq!(
-            reg.get("std::channel::channel")
+            reg.get("std.channel.channel")
                 .and_then(|info| info.source_path.as_deref()),
             Some(user_source.as_path()),
             "the user source keeps the nested nominal owner"
         );
         assert_eq!(
-            reg.get("std::channel")
+            reg.get("std.channel")
                 .and_then(|info| info.source_path.as_deref()),
             Some(shipped.as_path()),
             "resolving a lookalike must not replace the proven shipped owner"
@@ -1107,7 +1104,7 @@ mod tests {
     #[test]
     fn load_json_module() {
         let mut reg = registry();
-        let info = reg.load("std::encoding::json").unwrap();
+        let info = reg.load("std.encoding.json").unwrap();
         assert!(!info.functions.is_empty(), "json should have functions");
         assert!(
             info.handle_types.contains(&"json.Value".to_string()),
@@ -1118,22 +1115,22 @@ mod tests {
     #[test]
     fn load_caches_result() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
         // Second call should return cached.
-        let info = reg.get("std::encoding::json");
+        let info = reg.get("std.encoding.json");
         assert!(info.is_some(), "should be cached after load");
     }
 
     #[test]
     fn load_nonexistent_returns_not_found() {
         let mut reg = registry();
-        let err = reg.load("std::does::not::exist").unwrap_err();
+        let err = reg.load("std.does.not.exist").unwrap_err();
         match err {
             ModuleError::NotFound {
                 module_path,
                 searched,
             } => {
-                assert_eq!(module_path, "std::does::not::exist");
+                assert_eq!(module_path, "std.does.not.exist");
                 assert_eq!(searched.len(), 1);
                 assert_eq!(searched[0], test_root());
             }
@@ -1159,7 +1156,7 @@ mod tests {
         .unwrap();
 
         let mut reg = ModuleRegistry::new(vec![broken_dir.root.clone(), fallback_dir.root.clone()]);
-        let err = reg.load("std::broken").unwrap_err();
+        let err = reg.load("std.broken").unwrap_err();
         match err {
             ModuleError::ParseError {
                 module_path,
@@ -1179,7 +1176,7 @@ mod tests {
             ModuleError::NotFound { .. } => panic!("expected ParseError, got NotFound"),
         }
         assert!(
-            reg.get("std::broken").is_none(),
+            reg.get("std.broken").is_none(),
             "malformed modules must not be cached or loaded from later search paths"
         );
     }
@@ -1187,7 +1184,7 @@ mod tests {
     #[test]
     fn handle_types_accumulated() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
         assert!(
             reg.is_handle_type("json.Value"),
             "json.Value should be a handle type"
@@ -1198,7 +1195,7 @@ mod tests {
         );
 
         // Load another module — types accumulate.
-        reg.load("std::net::http").unwrap();
+        reg.load("std.net.http").unwrap();
         assert!(reg.is_handle_type("json.Value"), "json.Value still present");
         assert!(
             !reg.is_handle_type("http.Request"),
@@ -1209,17 +1206,17 @@ mod tests {
     #[test]
     fn drop_types_accumulated() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
         assert!(
             reg.is_drop_type("json.Value"),
             "json.Value is a `#[resource]` handle, so it is a drop type"
         );
-        reg.load("std::net::http").unwrap();
+        reg.load("std.net.http").unwrap();
         assert!(
             reg.is_drop_type("http.Request"),
             "http.Request is a `#[resource]` handle, so it is a drop type"
         );
-        reg.load("std::process").unwrap();
+        reg.load("std.process").unwrap();
         assert!(
             reg.is_drop_type("process.Child"),
             "process.Child should be a drop type"
@@ -1228,7 +1225,7 @@ mod tests {
             reg.is_drop_type("http.Server"),
             "http.Server is now a closeable opaque resource"
         );
-        reg.load("std::text::regex").unwrap();
+        reg.load("std.text.regex").unwrap();
         assert!(
             reg.is_drop_type("regex.Pattern"),
             "regex.Pattern is a `#[resource]` handle, so it is a drop type"
@@ -1238,19 +1235,19 @@ mod tests {
     #[test]
     fn drop_funcs_accumulated() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
         assert_eq!(
             reg.drop_func_for("json.Value"),
             Some("hew_json_free"),
             "json.Value.close directly forwards to its sole raw disposer"
         );
-        reg.load("std::net::http").unwrap();
+        reg.load("std.net.http").unwrap();
         assert_eq!(
             reg.drop_func_for("http.Request"),
             None,
             "http.Request should not have a drop func"
         );
-        reg.load("std::process").unwrap();
+        reg.load("std.process").unwrap();
         assert_eq!(
             reg.drop_func_for("process.Child"),
             None,
@@ -1280,7 +1277,7 @@ mod tests {
             Some("hew_http_server_close"),
             "http.Server must use its sole raw disposer"
         );
-        reg.load("std::text::regex").unwrap();
+        reg.load("std.text.regex").unwrap();
         assert_eq!(
             reg.drop_func_for("regex.Pattern"),
             None,
@@ -1308,7 +1305,7 @@ mod tests {
     #[test]
     fn registry_signature_owner_projection_requires_exact_source_declaration() {
         let mut reg = registry();
-        reg.load("std::text::regex").unwrap();
+        reg.load("std.text.regex").unwrap();
 
         assert_eq!(
             reg.canonical_registry_signature_type_identity("regex.Pattern", "std.text.regex"),
@@ -1357,7 +1354,7 @@ mod tests {
     #[test]
     fn imported_registry_signature_user_lookalike_is_order_independent() {
         let mut reg = registry();
-        reg.load("std::channel")
+        reg.load("std.channel")
             .expect("prime canonical shipped channel cache");
 
         let fixture = TestDir::new("registry-signature-channel-user-lookalike");
@@ -1442,8 +1439,8 @@ mod tests {
     #[test]
     fn resolve_module_call_json_parse() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
-        let c_sym = reg.resolve_module_call("std::encoding::json", "parse");
+        reg.load("std.encoding.json").unwrap();
+        let c_sym = reg.resolve_module_call("std.encoding.json", "parse");
         assert!(
             c_sym.is_some(),
             "should resolve the exact json module owner"
@@ -1488,11 +1485,11 @@ mod tests {
         );
 
         assert_eq!(
-            reg.resolve_module_call("vendor_a::nested::shared", "run"),
+            reg.resolve_module_call("vendor_a.nested.shared", "run"),
             Some("vendor_a_shared_run".to_string())
         );
         assert_eq!(
-            reg.resolve_module_call("vendor_b::nested::shared", "run"),
+            reg.resolve_module_call("vendor_b.nested.shared", "run"),
             Some("vendor_b_shared_run".to_string())
         );
         assert_eq!(
@@ -1511,7 +1508,7 @@ mod tests {
             "even an unambiguous leaf has no module-selection authority"
         );
         assert_eq!(
-            reg.resolve_module_call("missing::nested::unique", "run"),
+            reg.resolve_module_call("missing.nested.unique", "run"),
             None,
             "a qualified miss must not fall back to its unique leaf"
         );
@@ -1521,9 +1518,9 @@ mod tests {
     #[test]
     fn resolve_handle_method_json_value() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
         // json.Value should have handle methods from its impl block.
-        let info = reg.get("std::encoding::json").unwrap();
+        let info = reg.get("std.encoding.json").unwrap();
         if !info.handle_methods.is_empty() {
             let hm = &info.handle_methods[0];
             let c_sym = reg.resolve_handle_method(&hm.type_name, &hm.method_name);
@@ -1534,8 +1531,8 @@ mod tests {
     #[test]
     fn resolve_handle_method_rejects_short_handle_name() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
-        let info = reg.get("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
+        let info = reg.get("std.encoding.json").unwrap();
         if let Some(hm) = info.handle_methods.first() {
             let short = crate::short_name(&hm.type_name);
             let c_sym = reg.resolve_handle_method(short, &hm.method_name);
@@ -1639,7 +1636,7 @@ mod tests {
     #[test]
     fn fielded_process_child_does_not_publish_a_short_handle_alias() {
         let mut reg = registry();
-        reg.load("std::process").unwrap();
+        reg.load("std.process").unwrap();
 
         // The loader retains qualified imported-signature metadata for normal
         // named-type/trait method resolution.
@@ -1661,8 +1658,8 @@ mod tests {
     #[test]
     fn resolve_handle_method_sig_returns_listener_and_request_close() {
         let mut reg = registry();
-        reg.load("std::net").unwrap();
-        reg.load("std::net::http").unwrap();
+        reg.load("std.net").unwrap();
+        reg.load("std.net.http").unwrap();
 
         let listener_close = reg
             .resolve_handle_method_sig("net.Listener", "close")
@@ -1688,7 +1685,7 @@ mod tests {
     #[test]
     fn qualify_handle_type_requires_canonical_name() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
         assert_eq!(
             reg.qualify_handle_type("Value"),
             None,
@@ -1709,7 +1706,7 @@ mod tests {
     #[test]
     fn all_handle_types_returns_loaded() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
         let all = reg.all_handle_types();
         assert!(
             all.contains(&"json.Value".to_string()),

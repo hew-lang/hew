@@ -3,11 +3,10 @@
 // Exercises the listener accept deadline form (NEW-6d).
 // The import is left unresolved in the unit-test registry; the parser
 // must accept the form and the LSP must not surface false parse errors.
-import std::net;
+import std.net;
 
 actor AcceptDeadline {
     let port: i32;
-
     receive fn go() {
         let ln = net.listen(f"127.0.0.1:{port}");
         let _result = match await ln.accept() | after 60ms {

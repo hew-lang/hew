@@ -100,7 +100,7 @@ fn store_or_drop(items: Vec<Token>, value: Token, store: bool) -> Vec<Token> {
 }
 
 fn main() -> i64 {
-    let items: Vec<Token> = Vec::new();
+    let items: Vec<Token> = Vec.new();
     let stored = store_or_drop(items, Token { id: 13 }, true);
     println(stored.len());
     0
@@ -207,7 +207,7 @@ import std.channel.channel;
 
 fn main() -> i64 {
     let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
-    var receivers: Vec<channel.Receiver<Token>> = Vec::new();
+    var receivers: Vec<channel.Receiver<Token>> = Vec.new();
     receivers.push(rx);
     0
 }

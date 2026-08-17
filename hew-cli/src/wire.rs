@@ -401,13 +401,13 @@ fn compare_wire_enum(
         for variant in &current.schema.variants[baseline.schema.variants.len()..] {
             report
                 .errors
-                .push(format!("added variant `{wire_name}::{}`", variant.name));
+                .push(format!("added variant `{wire_name}.{}`", variant.name));
         }
     } else if baseline.schema.variants.len() > current.schema.variants.len() {
         for variant in &baseline.schema.variants[current.schema.variants.len()..] {
             report
                 .errors
-                .push(format!("removed variant `{wire_name}::{}`", variant.name));
+                .push(format!("removed variant `{wire_name}.{}`", variant.name));
         }
     }
 }
@@ -436,7 +436,7 @@ fn compare_wire_enum_variant_payload(
         (VariantKind::Struct(current_fields), VariantKind::Struct(baseline_fields)) => {
             if current_fields.len() != baseline_fields.len() {
                 report.errors.push(format!(
-                    "changed payload arity for `{wire_name}::{}`: {} -> {}",
+                    "changed payload arity for `{wire_name}.{}`: {} -> {}",
                     current_variant.name,
                     baseline_fields.len(),
                     current_fields.len()
@@ -450,7 +450,7 @@ fn compare_wire_enum_variant_payload(
                 let payload_position = index + 1;
                 if current_name != baseline_name {
                     report.errors.push(format!(
-                        "changed payload field name for `{wire_name}::{}` item {payload_position}: `{}` -> `{}`",
+                        "changed payload field name for `{wire_name}.{}` item {payload_position}: `{}` -> `{}`",
                         current_variant.name, baseline_name, current_name
                     ));
                 }
@@ -459,7 +459,7 @@ fn compare_wire_enum_variant_payload(
                 let baseline_ty = type_expr_to_string(&baseline_ty.0);
                 if current_ty != baseline_ty {
                     report.errors.push(format!(
-                        "changed payload type for `{wire_name}::{}` item {payload_position}: `{}` -> `{}`",
+                        "changed payload type for `{wire_name}.{}` item {payload_position}: `{}` -> `{}`",
                         current_variant.name, baseline_ty, current_ty
                     ));
                 }
@@ -467,7 +467,7 @@ fn compare_wire_enum_variant_payload(
         }
         _ => {
             report.errors.push(format!(
-                "changed payload shape for `{wire_name}::{}`",
+                "changed payload shape for `{wire_name}.{}`",
                 current_variant.name
             ));
         }
@@ -518,7 +518,7 @@ fn compare_wire_enum_payload_types(
 
     if current_payload.len() != baseline_payload.len() {
         report.errors.push(format!(
-            "changed payload arity for `{wire_name}::{variant_name}`: {} -> {}",
+            "changed payload arity for `{wire_name}.{variant_name}`: {} -> {}",
             baseline_payload.len(),
             current_payload.len()
         ));
@@ -531,7 +531,7 @@ fn compare_wire_enum_payload_types(
         if current_ty != baseline_ty {
             let payload_position = index + 1;
             report.errors.push(format!(
-                "changed payload type for `{wire_name}::{variant_name}` item {payload_position}: `{baseline_ty}` -> `{current_ty}`"
+                "changed payload type for `{wire_name}.{variant_name}` item {payload_position}: `{baseline_ty}` -> `{current_ty}`"
             ));
         }
     }

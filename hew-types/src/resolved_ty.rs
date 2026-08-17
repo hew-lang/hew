@@ -296,7 +296,7 @@ impl fmt::Display for BoundaryError {
             } => {
                 write!(
                     f,
-                    "unresolved associated-type projection `{trait_name}::{assoc_name}` leaked to boundary"
+                    "unresolved associated-type projection `{trait_name}.{assoc_name}` leaked to boundary"
                 )
             }
         }

@@ -1110,7 +1110,7 @@ mod tests {
     #[test]
     fn analyze_reports_needless_range_loop_lint() {
         let source = "fn main() {\n\
-             let xs: Vec<i64> = Vec::new();\n\
+             let xs: Vec<i64> = Vec.new();\n\
              for i in 0..xs.len() {\n\
              let _ = xs[i];\n\
              }\n\
@@ -1128,7 +1128,7 @@ mod tests {
     #[test]
     fn analyze_honours_in_source_allow_directive() {
         let source = "fn main() {\n\
-             let xs: Vec<i64> = Vec::new();\n\
+             let xs: Vec<i64> = Vec.new();\n\
              // hew:allow(needless_range_loop)\n\
              for i in 0..xs.len() {\n\
              let _ = xs[i];\n\
@@ -2015,24 +2015,22 @@ mod tests {
     }
 
     /// Browser-bridge: `code_actions()` for a qualified-path typo
-    /// (`Vec::neww()` → `Vec::new()`).
+    /// (`Vec.neww()` → `Vec.new()`).
     ///
-    /// The old byte-walk stopped at `::` and extracted only `Vec`, so replacing
-    /// `Vec` with `Vec::new` produced `Vec::new::neww()`.  With path-separator
-    /// awareness the edit must span the full callee path `Vec::neww` and leave
+    /// The edit must span the full dotted callee path `Vec.neww` and leave
     /// the argument list untouched.
     #[test]
     fn code_actions_qualified_path_replaces_full_callee_path() {
-        let source = "fn main() { let _ = Vec::neww(); }";
+        let source = "fn main() { let _ = Vec.neww(); }";
         //                                   ^       ^
         //                                  20      29 = start of '('
 
         // DiagnosticInfo as the browser bridge would construct it.
         let diag_info_json = serde_json::json!([{
             "kind":    "UndefinedFunction",
-            "message": "undefined function `Vec::neww`",
-            "span":    { "start": 20, "end": 31 },   // full Vec::neww() span
-            "suggestions": ["Vec::new"],
+            "message": "undefined function `Vec.neww`",
+            "span":    { "start": 20, "end": 31 },   // full Vec.neww() span
+            "suggestions": ["Vec.new"],
         }])
         .to_string();
 
@@ -2049,7 +2047,7 @@ mod tests {
         let action = &actions_arr[0];
         assert_eq!(
             action["title"].as_str().unwrap(),
-            "Replace with `Vec::new`",
+            "Replace with `Vec.new`",
             "action title must include the full suggested path"
         );
 
@@ -2059,13 +2057,13 @@ mod tests {
         let new_text = edit["new_text"].as_str().unwrap();
 
         assert_eq!(
-            new_text, "Vec::new",
+            new_text, "Vec.new",
             "replacement must be the full suggested path"
         );
-        // The edit must cover `Vec::neww` (the full callee path), not just `Vec`.
+        // The edit must cover `Vec.neww` (the full callee path), not just `Vec`.
         assert_eq!(
             &source[edit_start..edit_end],
-            "Vec::neww",
+            "Vec.neww",
             "edit span must cover the entire callee path, not just the first segment"
         );
 
@@ -2077,8 +2075,8 @@ mod tests {
             &source[edit_end..]
         );
         assert_eq!(
-            corrected, "fn main() { let _ = Vec::new(); }",
-            "applying the edit must yield Vec::new() with parentheses intact"
+            corrected, "fn main() { let _ = Vec.new(); }",
+            "applying the edit must yield Vec.new() with parentheses intact"
         );
     }
 

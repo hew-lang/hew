@@ -482,7 +482,10 @@ impl<'a> ProfileChecker<'a> {
                     );
                 }
                 self.check_pattern(pattern);
-                if !matches!(pattern.0, Pattern::Constructor { .. }) {
+                if !matches!(
+                    pattern.0,
+                    Pattern::Constructor { .. } | Pattern::ContextVariant(_)
+                ) {
                     self.reject(
                         pattern.1.clone(),
                         "reserved_runtime_feature",
@@ -529,7 +532,10 @@ impl<'a> ProfileChecker<'a> {
                 else_body,
             } => {
                 self.check_pattern(pattern);
-                if !matches!(pattern.0, Pattern::Constructor { .. }) {
+                if !matches!(
+                    pattern.0,
+                    Pattern::Constructor { .. } | Pattern::ContextVariant(_)
+                ) {
                     self.reject(
                         pattern.1.clone(),
                         "reserved_runtime_feature",
@@ -725,7 +731,10 @@ impl<'a> ProfileChecker<'a> {
                 else_body,
             } => {
                 self.check_pattern(pattern);
-                if !matches!(pattern.0, Pattern::Constructor { .. }) {
+                if !matches!(
+                    pattern.0,
+                    Pattern::Constructor { .. } | Pattern::ContextVariant(_)
+                ) {
                     self.reject(
                         pattern.1.clone(),
                         "reserved_runtime_feature",
@@ -970,6 +979,7 @@ impl<'a> ProfileChecker<'a> {
         span: &std::ops::Range<usize>,
     ) {
         match &function.0 {
+            Expr::ContextVariant(context) if self.enum_variants.contains(&context.name) => {}
             Expr::Identifier(name) => {
                 if self.user_functions.contains(name)
                     || self.enum_variants.contains(name)
@@ -1086,9 +1096,22 @@ impl<'a> ProfileChecker<'a> {
     }
 
     fn method_is_admitted(&self, receiver: &Spanned<Expr>, method: &str) -> bool {
-        if matches!((&receiver.0, method), (Expr::Identifier(module), "new") if module == "regex" || module == "Vec")
-        {
-            return true;
+        if let Expr::Identifier(type_name) = &receiver.0 {
+            if self.user_types.contains(type_name) && self.enum_variants.contains(method) {
+                return true;
+            }
+        }
+        if method == "new" {
+            match &receiver.0 {
+                Expr::Identifier(module) if module == "regex" || module == "Vec" => {
+                    return true;
+                }
+                Expr::GenericApplySuffix { target, .. } if matches!(&target.0, Expr::Identifier(module) if module == "Vec") =>
+                {
+                    return true;
+                }
+                _ => {}
+            }
         }
 
         // Actor asks: `await ref.handler(...)` where `handler` is a declared

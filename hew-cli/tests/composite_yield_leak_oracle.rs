@@ -127,7 +127,7 @@ fn enum_yield_drain_loop_source(frames: usize) -> String {
          actor Maker {{\n\
          \x20   receive gen fn notes() -> Note {{\n\
          \x20       for i in 0..{frames} {{\n\
-         \x20           yield Note::Text(f\"note-{{i}}\");\n\
+         \x20           yield Note.Text(f\"note-{{i}}\");\n\
          \x20       }}\n\
          \x20   }}\n\
          }}\n\
@@ -159,7 +159,7 @@ fn enum_yield_destructure_loop_source(frames: usize) -> String {
          actor Maker {{\n\
          \x20   receive gen fn notes() -> Note {{\n\
          \x20       for i in 0..{frames} {{\n\
-         \x20           yield Note::Text(f\"note-{{i}}\");\n\
+         \x20           yield Note.Text(f\"note-{{i}}\");\n\
          \x20       }}\n\
          \x20   }}\n\
          }}\n\
@@ -168,8 +168,8 @@ fn enum_yield_destructure_loop_source(frames: usize) -> String {
          \x20   let m = spawn Maker;\n\
          \x20   for await n in m.notes() {{\n\
          \x20       match n {{\n\
-         \x20           Note::Text(s) => {{ total = total + s.len(); }},\n\
-         \x20           Note::Number(v) => {{ total = total + v; }},\n\
+         \x20           Note.Text(s) => {{ total = total + s.len(); }},\n\
+         \x20           Note.Number(v) => {{ total = total + v; }},\n\
          \x20       }}\n\
          \x20   }}\n\
          \x20   if total != {expected_total} {{ return 94; }}\n\

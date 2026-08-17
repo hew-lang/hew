@@ -269,25 +269,25 @@ fn discarded_owned_hashmap_results_get_one_synthetic_owner() {
     let p = pipeline_with_tc(
         r#"
 fn bare_remove() {
-    let m: HashMap<i64, string> = HashMap::new();
+    let m: HashMap<i64, string> = HashMap.new();
     m.insert(1, "payload".to_upper());
     m.remove(1);
 }
 
 fn wildcard_remove() {
-    let m: HashMap<i64, string> = HashMap::new();
+    let m: HashMap<i64, string> = HashMap.new();
     m.insert(1, "payload".to_upper());
     let _ = m.remove(1);
 }
 
 fn bare_get() {
-    let m: HashMap<i64, string> = HashMap::new();
+    let m: HashMap<i64, string> = HashMap.new();
     m.insert(1, "payload".to_upper());
     m.get(1);
 }
 
 fn scalar_control() {
-    let m: HashMap<i64, i64> = HashMap::new();
+    let m: HashMap<i64, i64> = HashMap.new();
     m.insert(1, 7);
     m.remove(1);
 }
@@ -457,7 +457,7 @@ fn drive(d: Door) -> string {
     local.step(Open);
     local.state_name()
 }
-fn main() { println(drive(Door::Shut)); }
+fn main() { println(drive(Door.Shut)); }
 ",
     );
     assert!(
@@ -511,7 +511,7 @@ fn step(items: Vec<string>, i: i64) -> (Vec<string>, Slot) {
 }
 
 fn main() -> i64 {
-    let items: Vec<string> = Vec::new();
+    let items: Vec<string> = Vec.new();
     step(items, 1).0.len()
 }
 ",
@@ -575,7 +575,7 @@ fn choose(items: Vec<string>, early: bool) -> Vec<string> {
 }
 
 fn main() -> i64 {
-    let items: Vec<string> = Vec::new();
+    let items: Vec<string> = Vec.new();
     choose(items, false).len()
 }
 ",
@@ -623,7 +623,7 @@ fn choose(items: Vec<string>, tag: i64) -> Vec<string> {
 }
 
 fn main() -> i64 {
-    let items: Vec<string> = Vec::new();
+    let items: Vec<string> = Vec.new();
     choose(items, 1).len()
 }
 ",

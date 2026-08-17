@@ -69,7 +69,7 @@ fn generic_fork_source(iters: usize) -> String {
          \x20       while i < n {{\n\
          \x20           let s = string.repeat(\"owned-heap-string-payload\", 20);\n\
          \x20           scope {{\n\
-         \x20               fork {{ generic_str_sink::<i64>(s); }}\n\
+         \x20               fork {{ generic_str_sink<i64>(s); }}\n\
          \x20           }};\n\
          \x20           i = i + 1;\n\
          \x20       }}\n\

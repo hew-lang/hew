@@ -274,9 +274,7 @@ mod tests {
     fn make_module_import(path: &[&str]) -> Spanned<Item> {
         let decl = hew_parser::ast::ImportDecl {
             path: path.iter().map(ToString::to_string).collect(),
-            path_separators: Vec::new(),
             spec: None,
-            spec_separator: None,
             selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
@@ -290,9 +288,7 @@ mod tests {
     fn make_file_import(file: &str) -> Spanned<Item> {
         let decl = hew_parser::ast::ImportDecl {
             path: vec![],
-            path_separators: Vec::new(),
             spec: None,
-            spec_separator: None,
             selection_trailing_comma: false,
             module_alias: None,
             file_path: Some(file.to_string()),
@@ -384,13 +380,13 @@ mod tests {
         let deps: Vec<String> = vec!["mylib::other".to_string()];
         let errs = validate_imports_against_manifest(&items, &deps, None);
         assert_eq!(errs.len(), 1);
-        assert!(errs[0].contains("mylib::utils"));
+        assert!(errs[0].contains("mylib.utils"));
         assert!(errs[0].contains("hew add"));
     }
 
     #[test]
     fn validate_stdlib_import_is_always_ok() {
-        // std::fs is a known stdlib module
+        // std.fs is a known stdlib module
         let items = vec![make_module_import(&["std", "fs"])];
         let deps: Vec<String> = vec![];
         let errs = validate_imports_against_manifest(&items, &deps, None);

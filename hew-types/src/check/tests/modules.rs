@@ -1614,7 +1614,7 @@ mod module_body_diagnostic_envelope {
     #[test]
     fn assign_target_shapes_populated_for_while_loop_with_import() {
         // Reproduces the eval_large_stderr CI failure:
-        // synthesized source for `fn spam_err` eval step with `import std::io`
+        // synthesized source for `fn spam_err` eval step with `import std.io`
         let source = "import std.io;\nfn spam_err() {\n    var i = 0;\n    while i < 20000 {\n        io.write_err(\"line\\n\");\n        i = i + 1;\n    }\n}\nfn main() {\n}\n";
         let parse_result = hew_parser::parse(source);
         assert!(
@@ -1627,10 +1627,10 @@ mod module_body_diagnostic_envelope {
         ));
         let tco = checker.check_program(&parse_result.program);
         // `i` in `i = i + 1` must appear in assign_target_shapes
-        let has_shape = tco.assign_target_shapes.iter().any(|(k, _)| k.start == 109);
+        let has_shape = tco.assign_target_shapes.iter().any(|(k, _)| k.start == 108);
         assert!(
             has_shape,
-            "assign_target_shapes missing entry for i at ~109; got: {:?}",
+            "assign_target_shapes missing entry for i at ~108; got: {:?}",
             tco.assign_target_shapes.keys().collect::<Vec<_>>()
         );
     }
@@ -1655,9 +1655,7 @@ mod warning_source_attribution {
         // import_spans.
         ImportDecl {
             path: vec!["fakemod".to_string()],
-            path_separators: Vec::new(),
             spec: None,
-            spec_separator: None,
             selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
@@ -1940,9 +1938,7 @@ mod warning_source_attribution {
     fn make_named_import_decl(short_name: &str) -> ImportDecl {
         ImportDecl {
             path: vec![short_name.to_string()],
-            path_separators: Vec::new(),
             spec: None,
-            spec_separator: None,
             selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
@@ -2117,9 +2113,7 @@ mod warning_source_attribution {
         // module_fn_exports gets "fakemod.helper".
         let import_a_with_items = ImportDecl {
             path: vec!["fakemod".to_string()],
-            path_separators: Vec::new(),
             spec: None,
-            spec_separator: None,
             selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
@@ -2236,9 +2230,7 @@ mod warning_source_attribution {
         };
         let import_b = ImportDecl {
             path: vec!["fakemod".to_string()],
-            path_separators: Vec::new(),
             spec: None,
-            spec_separator: None,
             selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
@@ -2543,7 +2535,7 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
         // PR #923 bypasses the `?` context diagnostic for genuinely unknown named
         // return annotations. Builtin named types like Vec must still report the
         // context error even though they are not registered in type_defs/type_aliases.
-        let source = r"fn foo() -> Vec<i32> { let r: Result<i64, string> = Ok(1); let x: i64 = r?; Vec::new() }";
+        let source = r"fn foo() -> Vec<i32> { let r: Result<i64, string> = Ok(1); let x: i64 = r?; Vec.new() }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),

@@ -1,7 +1,7 @@
 trait Sink {
     type Item;
 
-    fn push(sink: Self, item: Self::Item) -> i32;
+    fn push(sink: Self, item: Self.Item) -> i32;
 }
 
 type IntSink {

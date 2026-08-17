@@ -767,71 +767,8 @@ impl Parser<'_> {
                 Expr::ByteArrayLiteral(values)
             }
             Token::Identifier(name) => {
-                let mut name = name.to_string();
+                let name = name.to_string();
                 self.advance();
-
-                // Handle path expressions like Vec::new, HashMap::new
-                // Optionally accept Rust-style turbofish on a path segment:
-                // `Type::<T, U>::method` — the `<...>` are stashed and surface
-                // as the call's `type_args` when the path is invoked with `(`.
-                let mut turbofish: Option<Vec<Spanned<TypeExpr>>> = None;
-                while self.eat(&Token::DoubleColon) {
-                    if self.peek() == Some(&Token::Less) {
-                        let saved = self.save_pos();
-                        self.advance(); // consume '<'
-                        if let Some(args) = self.parse_type_args() {
-                            if turbofish.is_some() {
-                                self.error(
-                                    "turbofish `::<...>` may appear at most once in a path"
-                                        .to_string(),
-                                );
-                            }
-                            turbofish = Some(args);
-                            // A turbofish must be followed by another `::ident`
-                            // segment or the call site `(`. If we don't see
-                            // `::` next we fall out of the loop and let the
-                            // surrounding logic (`(args)`) consume the call.
-                            continue;
-                        }
-                        self.restore_pos(saved);
-                        break;
-                    }
-                    if let Some(segment) = self.expect_ident() {
-                        name = format!("{name}::{segment}");
-                    } else {
-                        break;
-                    }
-                }
-
-                // If turbofish was present, the path must be invoked as a call.
-                // Build the `Expr::Call` here so the explicit type args reach the
-                // checker via `Call.type_args` exactly as for the bare-call form
-                // `Type::method<T>(args)`. The struct-init / generic-call paths
-                // below are skipped because turbofish is unambiguously a call.
-                if let Some(type_args) = turbofish {
-                    if self.peek() != Some(&Token::LeftParen) {
-                        self.error(
-                            "turbofish `::<...>` must be followed by a function call `(...)`"
-                                .to_string(),
-                        );
-                        return None;
-                    }
-                    self.advance(); // consume '('
-                    let args = self.parse_call_args()?;
-                    self.expect(&Token::RightParen)?;
-                    let end = self.peek_span().start;
-                    let func_span = start..end;
-                    let func = (Expr::Identifier(name), func_span.clone());
-                    return Some((
-                        Expr::Call {
-                            function: Box::new(func),
-                            type_args: Some(type_args),
-                            args,
-                            is_tail_call: false,
-                        },
-                        start..end,
-                    ));
-                }
 
                 // Check for struct initialization — including the explicit-type-arg form
                 // `Name<T, ...> { field: expr, ... }`.  We need a speculative parse
@@ -1759,55 +1696,7 @@ impl Parser<'_> {
             ));
         }
 
-        let field = self.expect_ident()?;
-
-        // Accumulate optional `::Segment` pairs after the first identifier.
-        // This handles cross-module enum variant construction: `fs.IoError::TimedOut(0)`.
-        // Mirrors the DoubleColon accumulation loop in parse_primary's Identifier branch.
-        let mut method = field;
-        while self.eat(&Token::DoubleColon) {
-            if let Some(segment) = self.expect_ident() {
-                method = format!("{method}::{segment}");
-            } else {
-                break;
-            }
-        }
-
-        if method.contains("::") {
-            if let Some(mut name) = Self::dotted_expr_name(&lhs.0) {
-                name.push('.');
-                name.push_str(&method);
-                // A `{` here begins a struct literal only when struct literals
-                // are allowed in this position and the brace actually opens a
-                // field list. In `if`/`while` condition or `match` scrutinee
-                // position the `no_struct_literal` restriction is active, so
-                // `if m.E::V { } else { }` opens the then-block — the `{` must
-                // NOT be consumed as an empty struct literal here (which would
-                // orphan the `else`). The probe also guards `{ stmt; }` blocks.
-                if self.peek() == Some(&Token::LeftBrace)
-                    && !self.no_struct_literal()
-                    && self.probe_struct_init_brace()
-                {
-                    self.advance(); // consume {
-                                    // Inside the struct body the `{` is consumed, so any nested
-                                    // bare-ident struct literal is unambiguous again.
-                    let (fields, base) =
-                        self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
-                    let end = self.peek_span().start;
-                    return Some((
-                        Expr::StructInit {
-                            name,
-                            fields,
-                            type_args: None,
-                            base,
-                        },
-                        start..end,
-                    ));
-                }
-                let end = self.peek_span().start;
-                return Some((Expr::Identifier(name), start..end));
-            }
-        }
+        let method = self.expect_ident()?;
 
         // Pure-dot nominal record/record-variant path: `wire.Message.Data { ... }`.
         if self.peek() == Some(&Token::LeftBrace)
@@ -1849,74 +1738,7 @@ impl Parser<'_> {
                 },
                 start..end,
             ))
-        } else if self.peek() == Some(&Token::LeftBrace) && method.contains("::") {
-            // Module-qualified struct literal: `module.Type::Variant { fields }`.
-            //
-            // Gate: `::` must have been consumed above — `method` carries the
-            // full `Type::Variant` path segment.  A plain field access like
-            // `obj.field { ... }` does NOT enter this arm (no `::` in field),
-            // preserving the existing parse error / block interpretation for that
-            // shape.
-            //
-            // The receiver (`lhs`) must be a bare `Ident` (single-level module
-            // alias).  Nested-module paths (`a.b.Type::Variant`) fall through to
-            // FieldAccess; that limit is deferred to v0.5.1.
-            //
-            // Disambiguate via the shared probe: `{ field: val }` → struct init;
-            // `{ stmt; }` or `{ expr }` → not a struct literal, fall through.
-            //
-            // In `if`/`while` condition or `match` scrutinee position the
-            // `no_struct_literal` restriction is active, so `if m.E::V { }` opens
-            // the block rather than starting a struct literal — consistent with
-            // the bare-identifier form above.
-            if !self.no_struct_literal() && self.probe_struct_init_brace() {
-                // Build the qualified type name: `module.Type::Variant`.
-                // `lhs` is the module identifier; `method` is `Type::Variant`.
-                // Non-identifier receivers (e.g. chained `a.b.C::D { }`) fall
-                // through to FieldAccess — nested-module paths are out of scope
-                // for v0.5; the checker surfaces an error via the field-access
-                // path rather than a misleading struct-literal attempt.
-                let module_name = if let Expr::Identifier(n) = &lhs.0 {
-                    n.clone()
-                } else {
-                    let end = self.peek_span().start;
-                    return Some((
-                        Expr::FieldAccess {
-                            object: Box::new(lhs),
-                            field: method,
-                        },
-                        start..end,
-                    ));
-                };
-                let qualified_name = format!("{module_name}.{method}");
-                self.advance(); // consume {
-                let (fields, base) =
-                    self.with_struct_literals_allowed(Self::parse_struct_init_body)?;
-                let end = self.peek_span().start;
-                Some((
-                    Expr::StructInit {
-                        name: qualified_name,
-                        fields,
-                        type_args: None,
-                        base,
-                    },
-                    start..end,
-                ))
-            } else {
-                // Brace begins a block, not a struct literal — fall through to
-                // FieldAccess.  The brace will be parsed as the next statement.
-                let end = self.peek_span().start;
-                Some((
-                    Expr::FieldAccess {
-                        object: Box::new(lhs),
-                        field: method,
-                    },
-                    start..end,
-                ))
-            }
         } else {
-            // Field access (method == field when no :: was consumed; otherwise a
-            // unit-variant or bare type-path reference — preserved as FieldAccess).
             let end = self.peek_span().start;
             Some((
                 Expr::FieldAccess {

@@ -58,28 +58,15 @@ AttrArgs       = AttrArg { "," AttrArg } ;
 AttrArg        = Ident ( "=" (StringLit | Ident) )?
                | StringLit ;
 
-(* Module system.
-   Dotted module paths and `.{...}` selections are the primary surface.
-   Deprecated `::` separators, `::{...}` selections, and `::*` globs remain
-   accepted until the hard cutover. *)
+(* Module system. Paths and explicit selections use dotted spelling. *)
 Import          = "import" ( StringLit | ModuleImport ) ";" ;
-ModuleImport    = ModulePath ( ModuleAlias
-                             | ImportSelection
-                             | LegacyImportSelection
-                             | LegacyGlobImport )? ;
+ModuleImport    = ModulePath ( ModuleAlias | ImportSelection )? ;
 ModuleAlias     = "as" Ident ;
-ModulePath      = Ident { ModulePathSeparator Ident } ;
-ModulePathSeparator = "." | "::" ;  (* `::` is deprecated until S7. *)
+ModulePath      = Ident { "." Ident } ;
 ImportSelection = "." "{" ImportBinding { "," ImportBinding } [ "," ] "}" ;
-(* The existing parser temporarily accepts an empty legacy `::{}` for corpus
-   continuity, but the new dotted selection requires at least one binding. *)
-LegacyImportSelection = "::" "{"
-                          [ ImportBinding { "," ImportBinding } [ "," ] ]
-                        "}" ;
 ImportBinding   = ImportSelf | ImportName ;
 ImportSelf      = "self" [ "as" Ident ] ;
 ImportName      = Ident [ "as" Ident ] ;
-LegacyGlobImport = "::" "*" ;
 
 (* Constants and types *)
 ConstDecl      = "const" Ident ":" Type "=" Expr ";" ;
@@ -261,10 +248,8 @@ UnaryExpr      = ("!" | "-" | "~" | "await" | "await_restart" | "clone") UnaryEx
    `(clone a) + b`. See also §3.4.4 for ownership and cloning semantics. *)
 PostfixExpr    = Primary { PostfixSuffix } ;
 PostfixSuffix  = GenericApplySuffix
-               | LegacyTurbofishSuffix
                | CallSuffix
                | MemberSuffix
-               | LegacyMemberSuffix
                | TupleIndexSuffix
                | RecordInitSuffix
                | IndexSuffix
@@ -285,10 +270,8 @@ GenericApplyScanType = Ident { "." Ident }
                        [ "<" GenericApplyScanType
                          { "," GenericApplyScanType } ">" ] ;
 GenericApplyFollow = "(" | "." | "{" ;
-LegacyTurbofishSuffix = "::" TypeArgs ;  (* Deprecated until S7. *)
 CallSuffix     = "(" [ Args ] ")" ;
 MemberSuffix   = "." Ident ;
-LegacyMemberSuffix = "::" Ident ;        (* Deprecated until S7. *)
 TupleIndexSuffix = "." IntLit ;           (* Existing depth-one tuple indexing *)
 RecordInitSuffix = "{" [ FieldInitList ] "}" ;
 (* RecordInitSuffix is legal only after a chain resolving to a record type or
@@ -382,10 +365,9 @@ YieldExpr      = "yield" Expr? ;
 (* Note: "int" and "uint" aliases were removed in v0.5 — use i64 / u64 explicitly. *)
 (* Integer literals default to int (i64), float literals default to float (f64) *)
 PathRoot       = Ident | "Self" ;
-Path           = PathRoot { PathSeparator Ident } ;
+Path           = PathRoot { "." Ident } ;
 TypePath       = Path ;
 TraitPath      = Path ;
-PathSeparator  = "." | "::" ;  (* `::` is deprecated until S7. *)
 QualifiedAssocBase = "<" Type "as" TraitPath ">" ;
 QualifiedAssocPath = QualifiedAssocBase "." Ident { "." Ident } ;
 NamedType      = TypePath TypeArgs?

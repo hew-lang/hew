@@ -25,7 +25,7 @@ fn layout_element_hashset_methods_dual_emit_resolved_calls() {
         record Point { x: i64, y: i64 }
 
         fn main() {
-            let s: HashSet<Point> = HashSet::new();
+            let s: HashSet<Point> = HashSet.new();
             s.insert(Point { x: 1, y: 2 });
             let _has = s.contains(Point { x: 1, y: 2 });
             let _removed = s.remove(Point { x: 1, y: 2 });
@@ -102,7 +102,7 @@ fn float_hashset_is_admitted_via_layout_element_path() {
     let output = typecheck(
         r"
         fn main() {
-            let s: HashSet<f64> = HashSet::new();
+            let s: HashSet<f64> = HashSet.new();
             s.insert(1.0);
         }
         ",

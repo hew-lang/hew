@@ -223,7 +223,7 @@ fn where_clause_assoc_binding_projects_iterator_item_in_generic_body() {
         }
 
         fn main() -> i64 {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             v.push(42);
             first_or_zero(v.into_iter())
         }
@@ -264,7 +264,7 @@ fn where_clause_assoc_binding_projects_non_iterator_assoc_type() {
         r"
         trait Projector {
             type Output;
-            fn get(self) -> Self::Output;
+            fn get(self) -> Self.Output;
         }
 
         type Meter {
@@ -336,7 +336,7 @@ fn call_site_rejects_assoc_binding_mismatch() {
         }
 
         fn main() -> i64 {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             v.push("not an integer");
             first_or_zero(v.into_iter())
         }
@@ -3041,7 +3041,7 @@ fn primitive_impl_dispatch_resolves_vec_receiver() {
                 fn fmt(v: Vec<i32>) -> string { "" }
             }
             fn main() {
-                let v: Vec<i32> = Vec::new();
+                let v: Vec<i32> = Vec.new();
                 let _ = v.fmt();
             }
         "#,
@@ -3098,7 +3098,7 @@ fn primitive_impl_dispatch_resolves_ufcs_form_for_int_receiver() {
             }
             fn main() {
                 let x: i64 = 42;
-                let _ = Display::fmt(x);
+                let _ = Display.fmt(x);
             }
         "#,
         "i64",
@@ -3120,7 +3120,7 @@ fn primitive_impl_dispatch_resolves_ufcs_form_with_extra_args() {
             }
             fn main() {
                 let x: i64 = 42;
-                let _: string = Show::show(x, "!");
+                let _: string = Show.show(x, "!");
             }
         "#,
         "i64",
@@ -3267,7 +3267,7 @@ fn ufcs_over_applied_call_emits_exactly_one_arity_diagnostic() {
         }
         fn main() {
             let x: i64 = 42;
-            let _ = Display::fmt(x, "extra");
+            let _ = Display.fmt(x, "extra");
         }
     "#;
     let parsed = hew_parser::parse(source);
@@ -3386,7 +3386,7 @@ fn primitive_trait_dispatch_ufcs_int_literal() {
                 fn fmt(n: i64) -> string { "" }
             }
             fn main() {
-                let _ = Display::fmt(42);
+                let _ = Display.fmt(42);
             }
         "#,
         "i64",
@@ -3902,9 +3902,9 @@ fn must_use_rejects_user_same_leaf_error_names() {
     let src = "enum SendError { Closed; }\n\
         enum AskError { Timeout; }\n\
         enum WriteError { Disconnected; }\n\
-        fn send() -> SendError { SendError::Closed }\n\
-        fn ask() -> AskError { AskError::Timeout }\n\
-        fn write() -> WriteError { WriteError::Disconnected }\n\
+        fn send() -> SendError { SendError.Closed }\n\
+        fn ask() -> AskError { AskError.Timeout }\n\
+        fn write() -> WriteError { WriteError.Disconnected }\n\
         fn caller() { send(); ask(); write(); }";
     let output = check_source_allowing_prelude_redeclaration(src);
     assert!(
@@ -4071,7 +4071,7 @@ fn sleep_loop_blocks_mailbox_flags_sibling_stopped_loop() {
 #[test]
 fn sleep_loop_blocks_mailbox_flags_unconditional_loop() {
     let (errors, warnings) = parse_and_check(
-        "actor Worker { receive fn run() { let t = instant::now(); loop { sleep_until(t); } } }\n",
+        "actor Worker { receive fn run() { let t = instant.now(); loop { sleep_until(t); } } }\n",
     );
     assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
     assert_eq!(

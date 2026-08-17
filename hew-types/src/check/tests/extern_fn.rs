@@ -877,9 +877,9 @@ fn third_render_collision_keeps_peer_nominals_distinct() {
 /// Which import graph the re-declaring module sees in
 /// [`check_import_lexical_extern`].
 enum ImportLexicalShape {
-    /// `nt` imports `sm` alone: a bare nominal in its extern re-declaration
-    /// resolves through that import to `sm.Tok` and matches the contract.
-    SingleImport,
+    /// `nt` imports module `sm` without selecting `Tok`: the bare spelling is
+    /// unbound, so the contract comparison must fail closed.
+    PlainModuleImport,
     /// `nt` imports `sm` AND `om`, both declaring `Tok`: the bare spelling is
     /// ambiguous, resolution must refuse, and the contract compare conflicts.
     AmbiguousImports,
@@ -887,11 +887,11 @@ enum ImportLexicalShape {
     /// `sm.Tok` that established the contract: resolution succeeds to
     /// `om.Tok` and the compare must still conflict (no false merge).
     ForeignDivergentImport,
-    /// `nt` imports `sm::{ Tok as ForeignTok }`: the import binds ONLY the
+    /// `nt` imports `sm.{ Tok as ForeignTok }`: the import binds ONLY the
     /// alias, so bare `Tok` is unbound in `nt` — resolution must refuse and
     /// the contract compare must conflict, never adopt through the alias.
     AliasedNamedImport,
-    /// `nt` imports `sm::{ Tok }`: the named import binds `Tok` bare, so the
+    /// `nt` imports `sm.{ Tok }`: the named import binds `Tok` bare, so the
     /// bare spelling resolves to `sm.Tok` and adopts the contract.
     BareNamedImport,
 }
@@ -932,7 +932,7 @@ fn check_import_lexical_extern(shape: &ImportLexicalShape) -> TypeCheckOutput {
         }]))
     };
     let nt_imports: Vec<(ModuleId, Option<ImportSpec>)> = match shape {
-        ImportLexicalShape::SingleImport => vec![(sm_id.clone(), None)],
+        ImportLexicalShape::PlainModuleImport => vec![(sm_id.clone(), None)],
         ImportLexicalShape::AmbiguousImports => {
             vec![(sm_id.clone(), None), (om_id.clone(), None)]
         }
@@ -988,17 +988,17 @@ fn check_import_lexical_extern(shape: &ImportLexicalShape) -> TypeCheckOutput {
     })
 }
 
-/// Import-lexical resolution (rc1-F1 stage C): a bare nominal in an extern
-/// re-declaration that the declaring file does not declare itself resolves
-/// through the declaring module's OWN import set — `nt` imports `sm`, so its
-/// bare `Tok` IS `sm.Tok` and the re-declaration adopts the established
-/// contract instead of conflicting on a spelling difference.
+/// A plain module import does not publish its declarations as bare bindings.
+/// The re-declaration must therefore fail closed instead of borrowing `sm.Tok`.
 #[test]
-fn bare_extern_nominal_resolves_through_the_declaring_files_import() {
-    let output = check_import_lexical_extern(&ImportLexicalShape::SingleImport);
+fn bare_extern_nominal_does_not_resolve_through_plain_module_import() {
+    let output = check_import_lexical_extern(&ImportLexicalShape::PlainModuleImport);
     assert!(
-        output.errors.is_empty(),
-        "one declaration behind one import must resolve one identity; errors: {:#?}",
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("conflicting declarations")),
+        "a plain module import must not publish a bare nominal; errors: {:#?}",
         output.errors
     );
 }

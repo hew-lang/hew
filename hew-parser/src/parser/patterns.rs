@@ -180,27 +180,18 @@ impl Parser<'_> {
                     Pattern::Wildcard
                 } else {
                     let mut segments = vec![first.clone()];
-                    let mut separators = Vec::new();
                     loop {
-                        let separator = match self.peek() {
+                        match self.peek() {
                             Some(Token::Dot)
-                                if self.peek_at(self.pos + 1).is_some_and(Self::is_ident_token) =>
-                            {
-                                PathSeparator::Dot
-                            }
-                            Some(Token::DoubleColon)
-                                if self.peek_at(self.pos + 1).is_some_and(Self::is_ident_token) =>
-                            {
-                                PathSeparator::DoubleColon
+                                if self.peek_at(self.pos + 1).is_some_and(Self::is_ident_token) => {
                             }
                             _ => break,
-                        };
+                        }
                         self.advance();
                         segments.push(self.expect_ident()?);
-                        separators.push(separator);
                     }
 
-                    if separators.is_empty() {
+                    if segments.len() == 1 {
                         if self.eat(&Token::LeftParen) {
                             let mut patterns = Vec::new();
                             while !self.at_end() && self.peek() != Some(&Token::RightParen) {
@@ -231,10 +222,7 @@ impl Parser<'_> {
                     } else {
                         let payload = self.parse_nominal_pattern_payload()?;
                         Pattern::NominalPath {
-                            path: Path {
-                                segments,
-                                separators,
-                            },
+                            path: Path { segments },
                             payload,
                         }
                     }

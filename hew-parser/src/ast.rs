@@ -8,21 +8,10 @@ pub type Span = std::ops::Range<usize>;
 /// A value with an associated source span.
 pub type Spanned<T> = (T, Span);
 
-/// A syntactic path whose segments have not yet been resolved.
-///
-/// Separators are retained during the temporary dual-accept window so formatting an
-/// existing `::` corpus is lossless.  Resolution must use `segments`, never a
-/// separator-composed string.
+/// A dotted syntactic path whose segments have not yet been resolved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Path {
     pub segments: Vec<String>,
-    pub separators: Vec<PathSeparator>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PathSeparator {
-    Dot,
-    DoubleColon,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -48,15 +37,7 @@ pub struct QualifiedAssocExpr {
 impl Path {
     #[must_use]
     pub fn source_spelling(&self) -> String {
-        let mut result = self.segments.first().cloned().unwrap_or_default();
-        for (separator, segment) in self.separators.iter().zip(self.segments.iter().skip(1)) {
-            result.push_str(match separator {
-                PathSeparator::Dot => ".",
-                PathSeparator::DoubleColon => "::",
-            });
-            result.push_str(segment);
-        }
-        result
+        self.segments.join(".")
     }
 }
 
@@ -995,19 +976,13 @@ pub struct FnDecl {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportDecl {
     pub path: Vec<String>,
-    /// Source separators between adjacent module-path segments.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub path_separators: Vec<PathSeparator>,
     pub spec: Option<ImportSpec>,
-    /// Separator that introduced a selection/glob spec.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spec_separator: Option<PathSeparator>,
     /// Whether a brace selection ended with a comma.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub selection_trailing_comma: bool,
-    /// Whole-module alias from `import path::to::mod as alias;`. Legal only for
-    /// the whole-module form (`spec` is `None`); aliasing a brace/glob spec
-    /// (`import m::{ A } as f`, `import m::* as f`) is a parse error. When
+    /// Whole-module alias from `import path.to.mod as alias;`. Legal only for
+    /// the whole-module form (`spec` is `None`); aliasing a brace selection
+    /// (`import m.{ A } as f`) is a parse error. When
     /// present, `alias` is the qualifier a bare reference reaches the module's
     /// names through (`alias.Thing`), replacing the last path segment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1034,7 +1009,6 @@ pub struct ImportName {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ImportSpec {
-    Glob,
     Names(Vec<ImportName>),
 }
 

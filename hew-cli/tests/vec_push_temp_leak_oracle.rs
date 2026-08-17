@@ -84,7 +84,7 @@ const SLOPE_TOLERANCE: usize = 5;
 const PRELUDE: &str = "\
 record Holder { items: Vec<string> }\n\
 fn mkItems(i: i64) -> Vec<string> {\n\
-\x20   var xs: Vec<string> = Vec::new();\n\
+\x20   var xs: Vec<string> = Vec.new();\n\
 \x20   xs.push(\"deep-elem-a\");\n\
 \x20   xs.push(\"deep-elem-b\");\n\
 \x20   return xs;\n\
@@ -100,7 +100,7 @@ fn push_temp_source(frames: usize) -> String {
     format!(
         "{PRELUDE}\
          fn main() -> i64 {{\n\
-         \x20   var v: Vec<Holder> = Vec::new();\n\
+         \x20   var v: Vec<Holder> = Vec.new();\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       v.push(Holder {{ items: mkItems(i) }});\n\
@@ -120,7 +120,7 @@ fn set_temp_source(frames: usize) -> String {
     format!(
         "{PRELUDE}\
          fn main() -> i64 {{\n\
-         \x20   var v: Vec<Holder> = Vec::new();\n\
+         \x20   var v: Vec<Holder> = Vec.new();\n\
          \x20   v.push(Holder {{ items: mkItems(0) }});\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
@@ -144,13 +144,13 @@ fn set_temp_source(frames: usize) -> String {
 const NO_DOUBLE_FREE_SOURCE: &str = "\
 record Holder { items: Vec<string> }\n\
 fn mkItems(i: i64) -> Vec<string> {\n\
-\x20   var xs: Vec<string> = Vec::new();\n\
+\x20   var xs: Vec<string> = Vec.new();\n\
 \x20   xs.push(\"deep-elem-a\");\n\
 \x20   xs.push(\"deep-elem-b\");\n\
 \x20   return xs;\n\
 }\n\
 fn sharedTwice() -> i64 {\n\
-\x20   var v: Vec<Holder> = Vec::new();\n\
+\x20   var v: Vec<Holder> = Vec.new();\n\
 \x20   var i: i64 = 0;\n\
 \x20   while i < 3 {\n\
 \x20       let h = Holder { items: mkItems(i) };\n\
@@ -161,7 +161,7 @@ fn sharedTwice() -> i64 {\n\
 \x20   v.len()\n\
 }\n\
 fn readAfter() -> i64 {\n\
-\x20   var v: Vec<Holder> = Vec::new();\n\
+\x20   var v: Vec<Holder> = Vec.new();\n\
 \x20   var total: i64 = 0;\n\
 \x20   var i: i64 = 0;\n\
 \x20   while i < 3 {\n\
@@ -202,20 +202,20 @@ const SET_NO_DOUBLE_FREE_SOURCE: &str = "\
 record Holder { items: Vec<string> }\n\
 record Wrap { inner: Holder }\n\
 fn mkItems(i: i64) -> Vec<string> {\n\
-\x20   var xs: Vec<string> = Vec::new();\n\
+\x20   var xs: Vec<string> = Vec.new();\n\
 \x20   xs.push(\"deep-elem-a\");\n\
 \x20   xs.push(\"deep-elem-b\");\n\
 \x20   return xs;\n\
 }\n\
 fn setBoundLive() -> i64 {\n\
-\x20   var v: Vec<Holder> = Vec::new();\n\
+\x20   var v: Vec<Holder> = Vec.new();\n\
 \x20   v.push(Holder { items: mkItems(0) });\n\
 \x20   let h = Holder { items: mkItems(1) };\n\
 \x20   v.set(0, h);\n\
 \x20   return h.items.len();\n\
 }\n\
 fn setBoundTwice() -> i64 {\n\
-\x20   var v: Vec<Holder> = Vec::new();\n\
+\x20   var v: Vec<Holder> = Vec.new();\n\
 \x20   v.push(Holder { items: mkItems(0) });\n\
 \x20   let h = Holder { items: mkItems(1) };\n\
 \x20   v.set(0, h);\n\
@@ -223,7 +223,7 @@ fn setBoundTwice() -> i64 {\n\
 \x20   return h.items.len();\n\
 }\n\
 fn setClosureCapture() -> i64 {\n\
-\x20   var v: Vec<Holder> = Vec::new();\n\
+\x20   var v: Vec<Holder> = Vec.new();\n\
 \x20   v.push(Holder { items: mkItems(0) });\n\
 \x20   let h = Holder { items: mkItems(1) };\n\
 \x20   let read_h = || h.items.len();\n\
@@ -231,7 +231,7 @@ fn setClosureCapture() -> i64 {\n\
 \x20   return read_h();\n\
 }\n\
 fn setParamEmbed(p: Holder) -> i64 {\n\
-\x20   var v: Vec<Wrap> = Vec::new();\n\
+\x20   var v: Vec<Wrap> = Vec.new();\n\
 \x20   v.push(Wrap { inner: Holder { items: mkItems(0) } });\n\
 \x20   let before = p.items.len();\n\
 \x20   v.set(0, Wrap { inner: p });\n\

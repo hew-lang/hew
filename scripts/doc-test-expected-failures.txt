@@ -86,7 +86,7 @@ spec-0031   158863422   # SNIPPET: bare `let` + trait call — trait dispatch il
 spec-0035   1203364263   # SNIPPET: bare `let` — type inference illustration
 spec-0044   60603610   # SNIPPET: bare `let f = |...| ...` — lambda illustration
 spec-0045   166608112   # SPEC-BUG: references variant `Lit` not defined in the fence
-spec-0046   2554391900   # SNIPPET: bare `let` — fn-type variable illustration
+spec-0046   1607851950   # SNIPPET: bare `let` — fn-type variable illustration
 spec-0051   4288056281   # SPEC-BUG: struct `impl` using wrong syntax form (stray `;` before `fn`)
 spec-0054   4266594633   # SNIPPET: bare identifier `max` after trait definition — illustration
 spec-0056   1757877651   # SPEC-BUG: type mismatch in aspirational HashMap construction

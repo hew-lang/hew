@@ -373,7 +373,7 @@ fn helper_normal() -> i64 {
     };
     let witness = Witness { fd: 7 };
     let nested = make_nested("helper-nested".to_upper());
-    let table = HashMap::new<string, i64>();
+    let table = HashMap.new<string, i64>();
     text.len() + data.len() + bundle.text.len() + bundle.data.len()
         + witness.fd + nested() + table.len()
 }
@@ -413,7 +413,7 @@ fn helper_trap() -> i64 {
     };
     let witness = Witness { fd: 7 };
     let nested = make_nested("helper-nested".to_upper());
-    let table = HashMap::new<string, i64>();
+    let table = HashMap.new<string, i64>();
     text.len() + data.len() + bundle.text.len() + bundle.data.len()
         + witness.fd + nested() + table["missing"]
 }

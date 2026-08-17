@@ -54,7 +54,7 @@ pub machine Lifecycle<T> {
 
 #[test]
 fn lifecycle_i64_happy_path_state_names() {
-    var lifecycle: Lifecycle<i64> = Lifecycle::Created;
+    var lifecycle: Lifecycle<i64> = Lifecycle.Created;
     assert(lifecycle.state_name() == "Created");
     lifecycle.step(.Initialise);
     assert(lifecycle.state_name() == "Initialising");
@@ -68,7 +68,7 @@ fn lifecycle_i64_happy_path_state_names() {
 
 #[test]
 fn lifecycle_string_faulted_path_state_names() {
-    var lifecycle: Lifecycle<string> = Lifecycle::Created;
+    var lifecycle: Lifecycle<string> = Lifecycle.Created;
     assert(lifecycle.state_name() == "Created");
     lifecycle.step(.Initialise);
     assert(lifecycle.state_name() == "Initialising");

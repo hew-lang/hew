@@ -111,7 +111,7 @@ fn instant_now_publishes_typed_runtime_target() {
     let output = check_source(
         r"
         fn main() {
-            let start = instant::now();
+            let start = instant.now();
             sleep_until(start);
         }
         ",
@@ -981,7 +981,7 @@ mod for_loop_iterable_fail_closed {
         let output = check_source(
             r"
             fn main() {
-                var xs: Vec<i32> = Vec::new();
+                var xs: Vec<i32> = Vec.new();
                 let f = || xs.push(1);
                 let _ = f;
             }
@@ -1008,7 +1008,7 @@ mod for_loop_iterable_fail_closed {
         let output = check_source(
             r"
             fn main() {
-                var xs: Vec<i32> = Vec::new();
+                var xs: Vec<i32> = Vec.new();
                 let f = || { xs[0] = 1; };
                 let _ = f;
             }
@@ -1260,7 +1260,7 @@ mod for_loop_iterable_fail_closed {
             extern "C" { fn make_ptr() -> *const i64; }
             type Wrap { p: *const i64, xs: Vec<i64> }
             fn host() {
-                var w: Wrap = Wrap { p: unsafe { make_ptr() }, xs: Vec::new() };
+                var w: Wrap = Wrap { p: unsafe { make_ptr() }, xs: Vec.new() };
                 let f = || { w = w; let _g = gen { yield 0; }; };
                 let _ = f;
             }
@@ -1392,7 +1392,7 @@ mod for_loop_iterable_fail_closed {
         let output = check_source(
             r"
             fn main() {
-                let (tx, _rx) = channel::<fn() -> i32>();
+                let (tx, _rx) = channel<fn() -> i32>();
                 let f = || 1;
                 tx.send(f);
             }
@@ -1448,7 +1448,7 @@ mod for_loop_iterable_fail_closed {
         let output = check_source(
             r"
             fn main() {
-                let (tx, _rx) = channel::<fn() -> i32>();
+                let (tx, _rx) = channel<fn() -> i32>();
                 let outer = || {
                     let inner = || 1;
                     tx.send(inner);

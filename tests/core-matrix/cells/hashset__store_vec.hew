@@ -1,8 +1,8 @@
 fn main() {
-    let x: HashSet<i64> = HashSet::new();
+    let x: HashSet<i64> = HashSet.new();
     x.insert(1);
     x.insert(2);
-    let y: HashSet<i64> = HashSet::new();
+    let y: HashSet<i64> = HashSet.new();
     y.insert(2);
     y.insert(3);
     let v: Vec<HashSet<i64>> = Vec.new();

@@ -2547,7 +2547,7 @@ fn imported_type_name_collides(
 /// Build the root scope's bare imported-function bindings.
 ///
 /// The checker publishes selected names from `import module::{name}` and
-/// `import module::*`, but HIR emits the function body under its module-qualified
+/// `import module.{name}`, but HIR emits the function body under its module-qualified
 /// symbol. Preserve that source-to-symbol mapping while root bodies lower, except
 /// where the checker's root value namespace already owns the same binding.
 fn root_imported_fn_rewrites(
@@ -2571,7 +2571,6 @@ fn root_imported_fn_rewrites(
                 continue;
             }
             let binding = match &decl.spec {
-                Some(ImportSpec::Glob) => Some(function.name.clone()),
                 Some(ImportSpec::Names(names)) => names
                     .iter()
                     .find(|imported| imported.name == function.name)
@@ -3289,7 +3288,6 @@ pub fn lower_program_with_mono_cap(
                 continue;
             }
             let binding = match spec {
-                ImportSpec::Glob => Some(const_decl.name.clone()),
                 ImportSpec::Names(names) => names
                     .iter()
                     .find(|imported| imported.name == const_decl.name)
@@ -11919,7 +11917,7 @@ impl LowerCtx {
         span: &Span,
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
-        // Namespaced module-qualified call `module::fn(args)`: the callee is a
+        // Module-qualified call `module.fn(args)`: the callee is a
         // `FieldAccess` on a module identifier, not a value. The checker
         // recorded a `RewriteModuleQualifiedToFunction` on this call span (the
         // same rewrite the dot form `module.fn(args)` records via the
@@ -11984,7 +11982,7 @@ impl LowerCtx {
                     name: source_name.clone(),
                 },
                 span.clone(),
-                "`LambdaActorHandle::new` is not a public constructor; use \
+                "`LambdaActorHandle.new` is not a public constructor; use \
                  `actor |params| { body }` to create a lambda actor",
             ));
             return (
@@ -12252,7 +12250,7 @@ impl LowerCtx {
         match &function.0 {
             Expr::Identifier(name) => name.clone(),
             Expr::FieldAccess { object, field } => match &object.0 {
-                Expr::Identifier(owner) => format!("{owner}::{field}"),
+                Expr::Identifier(owner) => format!("{owner}.{field}"),
                 _ => "<call expression>".to_string(),
             },
             _ => "<call expression>".to_string(),
@@ -17742,6 +17740,22 @@ impl LowerCtx {
             args,
         } = &expr.0
         {
+            if matches!(
+                self.method_call_rewrites.get(&self.mk_key(&span)),
+                Some(MethodCallRewrite::VecFrom)
+            ) {
+                if let [arg] = args.as_slice() {
+                    let site = self.ids.site();
+                    let lowered = self.lower_expr(arg.expr(), IntentKind::Consume);
+                    return self.subsumed_value(
+                        site,
+                        &span,
+                        intent,
+                        lowered,
+                        HirProducedValueProducer::Call,
+                    );
+                }
+            }
             if let Expr::GenericApplySuffix { target, type_args } = &receiver.0 {
                 if !self.method_call_rewrites.contains_key(&self.mk_key(&span)) {
                     if let Expr::Identifier(owner) = &target.0 {
@@ -18026,16 +18040,16 @@ impl LowerCtx {
                     }
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "Vec::from".to_string(),
+                            name: "Vec.from".to_string(),
                             reason: format!(
-                                "checker selected Vec::from rewrite with {} argument(s)",
+                                "checker selected Vec.from rewrite with {} argument(s)",
                                 args.len()
                             ),
                         },
                         span.clone(),
-                        "Vec::from lowering requires exactly one checked source value",
+                        "Vec.from lowering requires exactly one checked source value",
                     ));
-                    return self.unsupported_expr(span, "Vec::from has invalid arity");
+                    return self.unsupported_expr(span, "Vec.from has invalid arity");
                 }
                 // Hew array literals already lower to the owned `Vec<T>`
                 // construction sequence. `Vec::from([..])` is therefore an
@@ -19616,13 +19630,14 @@ impl LowerCtx {
                 };
                 if let Some((module_name, module)) = missing_import {
                     let name = format!("{module_name}.{field}");
+                    let source_module = module.replace("::", ".");
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::ImportMissing {
-                            module: module.to_string(),
+                            module: source_module,
                             name,
                         },
                         span.clone(),
-                        stdlib_catalog::missing_import_hint(module),
+                        stdlib_catalog::missing_import_hint(module).replace("::", "."),
                     ));
                     (
                         HirExprKind::FieldAccess {
@@ -19995,7 +20010,7 @@ impl LowerCtx {
                             HirDiagnosticKind::CheckerBoundaryViolation {
                                 name: "dyn-trait assoc binding".to_string(),
                                 reason: format!(
-                                    "`{}::{}` failed boundary conversion",
+                                    "`{}.{}` failed boundary conversion",
                                     binding.trait_name, binding.assoc_name
                                 ),
                             },
@@ -21903,7 +21918,7 @@ impl LowerCtx {
                     reason: format!("no Vec push runtime symbol for element type `{elem_ty}`"),
                 },
                 span,
-                "array literal desugar reuses Vec::push infrastructure and cannot fabricate an element ABI",
+                "array literal desugar reuses Vec.push infrastructure and cannot fabricate an element ABI",
             ));
             return None;
         };
@@ -22311,9 +22326,9 @@ impl LowerCtx {
     ) -> (HirExprKind, ResolvedTy) {
         use hew_types::VecHigherOrderOp as HofOp;
         let (label, expected_args) = match op {
-            HofOp::Map => ("Vec::map", 1),
-            HofOp::Filter => ("Vec::filter", 1),
-            HofOp::Reduce => ("Vec::reduce", 2),
+            HofOp::Map => ("Vec.map", 1),
+            HofOp::Filter => ("Vec.filter", 1),
+            HofOp::Reduce => ("Vec.reduce", 2),
         };
         if args.len() != expected_args {
             self.diagnostics.push(HirDiagnostic::new(
@@ -22463,7 +22478,7 @@ impl LowerCtx {
                     self.pop_scope();
                     return (
                         HirExprKind::Unsupported(
-                            "Vec::map result element type has no Vec push ABI".into(),
+                            "Vec.map result element type has no Vec push ABI".into(),
                         ),
                         result_ty,
                     );
@@ -22507,7 +22522,7 @@ impl LowerCtx {
                     self.pop_scope();
                     return (
                         HirExprKind::Unsupported(
-                            "Vec::filter element type has no Vec push ABI".into(),
+                            "Vec.filter element type has no Vec push ABI".into(),
                         ),
                         result_ty,
                     );
@@ -22957,13 +22972,14 @@ impl LowerCtx {
             )
         } else {
             if let Some(module) = self.missing_stdlib_module_import(name) {
+                let source_module = module.replace("::", ".");
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::ImportMissing {
-                        module: module.to_string(),
+                        module: source_module,
                         name: name.to_string(),
                     },
                     span,
-                    stdlib_catalog::missing_import_hint(module),
+                    stdlib_catalog::missing_import_hint(module).replace("::", "."),
                 ));
             } else {
                 self.diagnostics.push(HirDiagnostic::new(
@@ -25372,7 +25388,7 @@ impl LowerCtx {
         else {
             self.unsupported(
                 span.clone(),
-                "VecIter::next requires a mutable binding receiver in the Rust MIR pipeline",
+                "VecIter.next requires a mutable binding receiver in the Rust MIR pipeline",
                 "iterator-runtime-dispatch",
             );
             return (
@@ -27340,7 +27356,7 @@ impl LowerCtx {
                 out_ty,
             }) => self.lower_builtin_vec_higher_order(receiver, args, op, &elem_ty, &out_ty, span),
             Some(MethodCallRewrite::VecFrom) => (
-                HirExprKind::Unsupported("Vec::from is a static-call rewrite".to_string()),
+                HirExprKind::Unsupported("Vec.from is a static-call rewrite".to_string()),
                 ResolvedTy::Unit,
             ),
             Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) => {
@@ -27995,13 +28011,14 @@ impl LowerCtx {
                 if let Expr::Identifier(module_name) = &receiver.0 {
                     if let Some(module) = self.missing_stdlib_module_import(module_name) {
                         let name = format!("{module_name}.{method}");
+                        let source_module = module.replace("::", ".");
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::ImportMissing {
-                                module: module.to_string(),
+                                module: source_module,
                                 name: name.clone(),
                             },
                             span.clone(),
-                            stdlib_catalog::missing_import_hint(module),
+                            stdlib_catalog::missing_import_hint(module).replace("::", "."),
                         ));
                         return (
                             // This source call was rejected by the checker/import
@@ -28420,10 +28437,10 @@ impl LowerCtx {
         let arms = match method {
             OptionResultMethod::OptionIsSome => {
                 let Some(some) = variant(self, BuiltinType::Option, "Some") else {
-                    return self.unsupported_postfix_try(&span, "Option::Some predicate");
+                    return self.unsupported_postfix_try(&span, "Option.Some predicate");
                 };
                 let Some(none) = variant(self, BuiltinType::Option, "None") else {
-                    return self.unsupported_postfix_try(&span, "Option::None predicate");
+                    return self.unsupported_postfix_try(&span, "Option.None predicate");
                 };
                 vec![
                     HirMatchArm {
@@ -28450,10 +28467,10 @@ impl LowerCtx {
             }
             OptionResultMethod::OptionIsNone => {
                 let Some(some) = variant(self, BuiltinType::Option, "Some") else {
-                    return self.unsupported_postfix_try(&span, "Option::Some predicate");
+                    return self.unsupported_postfix_try(&span, "Option.Some predicate");
                 };
                 let Some(none) = variant(self, BuiltinType::Option, "None") else {
-                    return self.unsupported_postfix_try(&span, "Option::None predicate");
+                    return self.unsupported_postfix_try(&span, "Option.None predicate");
                 };
                 vec![
                     HirMatchArm {
@@ -28480,10 +28497,10 @@ impl LowerCtx {
             }
             OptionResultMethod::ResultIsOk => {
                 let Some(ok) = variant(self, BuiltinType::Result, "Ok") else {
-                    return self.unsupported_postfix_try(&span, "Result::Ok predicate");
+                    return self.unsupported_postfix_try(&span, "Result.Ok predicate");
                 };
                 let Some(err) = variant(self, BuiltinType::Result, "Err") else {
-                    return self.unsupported_postfix_try(&span, "Result::Err predicate");
+                    return self.unsupported_postfix_try(&span, "Result.Err predicate");
                 };
                 vec![
                     HirMatchArm {
@@ -28510,10 +28527,10 @@ impl LowerCtx {
             }
             OptionResultMethod::ResultIsErr => {
                 let Some(ok) = variant(self, BuiltinType::Result, "Ok") else {
-                    return self.unsupported_postfix_try(&span, "Result::Ok predicate");
+                    return self.unsupported_postfix_try(&span, "Result.Ok predicate");
                 };
                 let Some(err) = variant(self, BuiltinType::Result, "Err") else {
-                    return self.unsupported_postfix_try(&span, "Result::Err predicate");
+                    return self.unsupported_postfix_try(&span, "Result.Err predicate");
                 };
                 vec![
                     HirMatchArm {
@@ -28560,13 +28577,13 @@ impl LowerCtx {
                 let Some(payload_predicate) = variant(self, builtin, variant_name) else {
                     return self.unsupported_postfix_try(
                         &span,
-                        format!("{type_name}::{variant_name} predicate"),
+                        format!("{type_name}.{variant_name} predicate"),
                     );
                 };
                 let Some(empty_predicate) = variant(self, builtin, empty_variant) else {
                     return self.unsupported_postfix_try(
                         &span,
-                        format!("{type_name}::{empty_variant} predicate"),
+                        format!("{type_name}.{empty_variant} predicate"),
                     );
                 };
                 let payload_binding = self.ids.binding();
@@ -28631,13 +28648,13 @@ impl LowerCtx {
                 let Some(payload_predicate) = variant(self, builtin, payload_variant) else {
                     return self.unsupported_postfix_try(
                         &span,
-                        format!("{type_name}::{payload_variant} predicate"),
+                        format!("{type_name}.{payload_variant} predicate"),
                     );
                 };
                 let Some(empty_predicate) = variant(self, builtin, empty_variant) else {
                     return self.unsupported_postfix_try(
                         &span,
-                        format!("{type_name}::{empty_variant} predicate"),
+                        format!("{type_name}.{empty_variant} predicate"),
                     );
                 };
                 let payload_binding = self.ids.binding();
@@ -28845,12 +28862,12 @@ impl LowerCtx {
         let Some((ok_predicate, _)) =
             self.builtin_variant_predicate(BuiltinType::Result, "Ok", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Result::Ok predicate");
+            return self.unsupported_postfix_try(span, "`?` Result.Ok predicate");
         };
         let Some((err_predicate, err_idx)) =
             self.builtin_variant_predicate(BuiltinType::Result, "Err", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Result::Err predicate");
+            return self.unsupported_postfix_try(span, "`?` Result.Err predicate");
         };
 
         let ok_binding = self.ids.binding();
@@ -28921,12 +28938,12 @@ impl LowerCtx {
         let Some((some_predicate, _)) =
             self.builtin_variant_predicate(BuiltinType::Option, "Some", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Option::Some predicate");
+            return self.unsupported_postfix_try(span, "`?` Option.Some predicate");
         };
         let Some((none_predicate, none_idx)) =
             self.builtin_variant_predicate(BuiltinType::Option, "None", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Option::None predicate");
+            return self.unsupported_postfix_try(span, "`?` Option.None predicate");
         };
 
         let some_binding = self.ids.binding();
@@ -29204,7 +29221,7 @@ impl LowerCtx {
                         variant: name.to_string(),
                     },
                     span.clone(),
-                    "struct-variant constructors require named-field syntax (e.g. `Shape::Box { w: ..., h: ... }`)",
+                    "struct-variant constructors require named-field syntax (e.g. `Shape.Box { w: ..., h: ... }`)",
                 ));
             }
             HirVariantKind::Tuple(_) => {
@@ -34472,12 +34489,13 @@ fn scan_expr_for_call_shape(
                                 BuiltinType::LambdaActorHandle,
                                 "new",
                             ) {
-                                "`LambdaActorHandle::new` is not a public constructor; use \
+                                "`LambdaActorHandle.new` is not a public constructor; use \
                                  `actor |params| { body }` to create a lambda actor"
                                     .to_string()
                             } else {
+                                let source_name = name.replace("::", ".");
                                 format!(
-                                    "call to `{name}` has no MIR body or runtime-ABI lowering; \
+                                    "call to `{source_name}` has no MIR body or runtime-ABI lowering; \
                                      only module functions, extern fns, monomorphisation \
                                      instantiations, and recognised runtime symbols are \
                                      callable here"
@@ -38212,7 +38230,7 @@ impl Widget {
             lowered.diagnostics.iter().any(|diagnostic| matches!(
                 &diagnostic.kind,
                 HirDiagnosticKind::ImportMissing { module, name }
-                    if module == "std::fs"
+                    if module == "std.fs"
                         && name == "fs.read"
                         && diagnostic.note == "add 'import std.fs;' at the top of the file"
             )),
@@ -38250,7 +38268,7 @@ impl Widget {
             lowered.diagnostics.iter().any(|diagnostic| matches!(
                 &diagnostic.kind,
                 HirDiagnosticKind::ImportMissing { module, name }
-                    if module == "std::fs"
+                    if module == "std.fs"
                         && name == "fs.read"
                         && diagnostic.note == "add 'import std.fs;' at the top of the file"
             )),
@@ -38687,10 +38705,10 @@ impl Widget {
             r"
             enum Maybe<T> { Some(T); None }
             fn main() -> i64 {
-                let x: Maybe<i64> = Maybe::Some(42);
+                let x: Maybe<i64> = Maybe.Some(42);
                 match x {
-                    Maybe::Some(v) => v,
-                    Maybe::None => 0,
+                    Maybe.Some(v) => v,
+                    Maybe.None => 0,
                 }
             }
             ",
@@ -38846,11 +38864,11 @@ impl Widget {
             r"
             enum Colour { Red; Green; Blue }
             fn main() -> i64 {
-                let c: Colour = Colour::Red;
+                let c: Colour = Colour.Red;
                 match c {
-                    Colour::Red => 1,
-                    Colour::Green => 2,
-                    Colour::Blue => 3,
+                    Colour.Red => 1,
+                    Colour.Green => 2,
+                    Colour.Blue => 3,
                 }
             }
             ",
@@ -38876,14 +38894,14 @@ impl Widget {
             r"
             enum Maybe<T> { Some(T); None }
             fn main() -> i64 {
-                let inner: Maybe<i64> = Maybe::Some(5);
-                let outer: Maybe<Maybe<i64>> = Maybe::Some(inner);
+                let inner: Maybe<i64> = Maybe.Some(5);
+                let outer: Maybe<Maybe<i64>> = Maybe.Some(inner);
                 match outer {
-                    Maybe::Some(v) => match v {
-                        Maybe::Some(n) => n,
-                        Maybe::None => 0,
+                    Maybe.Some(v) => match v {
+                        Maybe.Some(n) => n,
+                        Maybe.None => 0,
                     },
-                    Maybe::None => -1,
+                    Maybe.None => -1,
                 }
             }
             ",
@@ -39342,11 +39360,11 @@ impl Widget {
             enum UserCrashAction { UserAction; }
             enum UserCrashKind { UserKind; }
 
-            fn user_link() -> UserLinkError { UserLinkError::UserLink }
-            fn user_lookup() -> UserLookupError { UserLookupError::UserLookup }
-            fn user_monitor() -> UserMonitorError { UserMonitorError::UserMonitor }
-            fn user_action() -> UserCrashAction { UserCrashAction::UserAction }
-            fn user_kind() -> UserCrashKind { UserCrashKind::UserKind }
+            fn user_link() -> UserLinkError { UserLinkError.UserLink }
+            fn user_lookup() -> UserLookupError { UserLookupError.UserLookup }
+            fn user_monitor() -> UserMonitorError { UserMonitorError.UserMonitor }
+            fn user_action() -> UserCrashAction { UserCrashAction.UserAction }
+            fn user_kind() -> UserCrashKind { UserCrashKind.UserKind }
             ",
         );
         assert!(
@@ -39442,15 +39460,15 @@ impl Widget {
 
             fn color_value(h: Hue) -> i64 {
                 match h {
-                    Hue::Red => 1,
-                    Hue::Green => 2,
-                    Hue::Blue(n) => n,
+                    Hue.Red => 1,
+                    Hue.Green => 2,
+                    Hue.Blue(n) => n,
                 }
             }
 
             fn main() {
-                let a: Hue = Hue::Red;
-                let b: Hue = Hue::Blue(42);
+                let a: Hue = Hue.Red;
+                let b: Hue = Hue.Blue(42);
                 println(color_value(a));
                 println(color_value(b));
             }
@@ -39516,7 +39534,7 @@ impl Widget {
         let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
         assert!(
             lowered.diagnostics.is_empty(),
-            "the `Hue` binding must resolve `Hue::Red` and `Hue::Blue` through \
+            "the `Hue` binding must resolve `Hue.Red` and `Hue.Blue` through \
              `hew.aliassrc.Color`: {:#?}",
             lowered.diagnostics
         );
@@ -39558,15 +39576,15 @@ impl Widget {
             import hew.beta.{ Color as Shade };
 
             fn alpha_value(value: Hue) -> i64 {
-                match value { Hue::AlphaOnly => 2, Hue::Red(v) => v }
+                match value { Hue.AlphaOnly => 2, Hue.Red(v) => v }
             }
             fn beta_value(value: Shade) -> i64 {
-                match value { Shade::Red { value } => value, Shade::BetaOnly => 4 }
+                match value { Shade.Red { value } => value, Shade.BetaOnly => 4 }
             }
             fn main() {
-                println(alpha_value(Hue::Red(11)));
-                println(beta_value(Shade::Red { value: 22 }));
-                let _switch = Switch::Shared;
+                println(alpha_value(Hue.Red(11)));
+                println(beta_value(Shade.Red { value: 22 }));
+                let _switch = Switch.Shared;
             }
         ";
         let root_with_beta_first = r"
@@ -39574,15 +39592,15 @@ impl Widget {
             import hew.alpha.{ Color as Hue };
 
             fn alpha_value(value: Hue) -> i64 {
-                match value { Hue::AlphaOnly => 2, Hue::Red(v) => v }
+                match value { Hue.AlphaOnly => 2, Hue.Red(v) => v }
             }
             fn beta_value(value: Shade) -> i64 {
-                match value { Shade::Red { value } => value, Shade::BetaOnly => 4 }
+                match value { Shade.Red { value } => value, Shade.BetaOnly => 4 }
             }
             fn main() {
-                println(alpha_value(Hue::Red(11)));
-                println(beta_value(Shade::Red { value: 22 }));
-                let _switch = Switch::Shared;
+                println(alpha_value(Hue.Red(11)));
+                println(beta_value(Shade.Red { value: 22 }));
+                let _switch = Switch.Shared;
             }
         ";
 

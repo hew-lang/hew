@@ -907,7 +907,7 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             reason,
             ..
         } => format!(
-            "dyn-trait method dispatch `{trait_name}::{method_name}` reached MIR with an \
+            "dyn-trait method dispatch `{trait_name}.{method_name}` reached MIR with an \
              unresolved caller-side signature ({reason})"
         ),
         hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported {

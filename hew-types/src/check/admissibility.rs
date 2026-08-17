@@ -1599,7 +1599,7 @@ impl Checker {
             TypeErrorKind::InvalidOperation,
             span,
             format!(
-                "`VecIter<{}>` is not supported: `VecIter::next()` clones each element \
+                "`VecIter<{}>` is not supported: `VecIter.next()` clones each element \
                  into an independent owner, but {blocker} has no semantic clone/retain \
                  operation",
                 resolved.user_facing()
@@ -1616,7 +1616,7 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`HashMap<_, {}>` is not supported: `HashMap::get()` returns an owned \
+                    "`HashMap<_, {}>` is not supported: `HashMap.get()` returns an owned \
                      `Option<V>`, but value type `{}` contains `{blocker}` which has no \
                      map value clone_fn; use a cloneable value type",
                     resolved.user_facing(),
@@ -4130,7 +4130,7 @@ mod tests {
         let source = r"
             record Point { x: i64, y: i64 }
             fn main() {
-                let m: HashMap<Point, i64> = HashMap::new();
+                let m: HashMap<Point, i64> = HashMap.new();
                 m.insert(Point { x: 1, y: 2 }, 10);
             }
         ";

@@ -1251,8 +1251,8 @@ mod tests {
     }
 
     #[test]
-    fn completions_enum_variant_after_double_colon() {
-        let source = "enum Color { Blue; Point { x: i32, y: i32 }; Rgb(u8, u8, u8); }\nfn main() { let color = Color::Blue; }";
+    fn completions_enum_variant_after_dot() {
+        let source = "enum Color { Blue; Point { x: i32, y: i32 }; Rgb(u8, u8, u8); }\nfn main() { let color = Color.Blue; }";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1274,7 +1274,7 @@ mod tests {
             type_output: Some(type_output),
             diagnostics_by_uri: HashMap::new(),
         };
-        let offset = source.find("Color::Blue").unwrap() + "Color::".len();
+        let offset = source.find("Color.Blue").unwrap() + "Color.".len();
         let items = hew_analysis::completions::complete(
             &doc.source,
             &doc.parse_result,
@@ -1460,12 +1460,12 @@ type Worker {
             else_if_local
         } else {
             match result {
-                Result::Ok(ok_value) => {
+                Result.Ok(ok_value) => {
                     let Point { x, y: y_value } = point;
                     let match_local = ok_value + x + y_value;
                     match_local
                 },
-                Result::Err(err_a) | Result::Err(err_b) => {
+                Result.Err(err_a) | Result.Err(err_b) => {
                     err_a + err_b
                 },
             }
@@ -1475,7 +1475,7 @@ type Worker {
 
 impl Worker {
     fn apply(code: i32, result: Result) -> i32 {
-        let Result::Ok(inner) = result;
+        let Result.Ok(inner) = result;
         inner + code
     }
 }
@@ -1557,23 +1557,6 @@ impl Worker {
         let method = hew_types::short_name(&word);
         let found = find_definition_in_ast(source, &lo, &parse_result, method);
         assert!(found.is_some(), "should find receive method definition");
-    }
-
-    #[test]
-    fn goto_def_double_colon_method_fallback() {
-        let source = "actor Counter {\n    receive fn increment(n: i32) {\n        n\n    }\n}\nfn main() { Counter::increment(1); }";
-        let parse_result = hew_parser::parse(source);
-        let lo = compute_line_offsets(source);
-        let call_offset = source.rfind("increment").unwrap();
-        let word = word_at_offset(source, call_offset).unwrap();
-        assert_eq!(word, "Counter::increment");
-        assert!(find_definition_in_ast(source, &lo, &parse_result, &word).is_none());
-        let method = word.rsplit("::").next().unwrap();
-        let found = find_definition_in_ast(source, &lo, &parse_result, method);
-        assert!(
-            found.is_some(),
-            "should find receive method definition via :: fallback"
-        );
     }
 
     #[test]
@@ -1723,13 +1706,6 @@ impl Worker {
         );
         assert!(find_definition_in_ast(source, &lo, &parse_result, "c_abs").is_some());
         assert!(find_definition_in_ast(source, &lo, &parse_result, "Item").is_some());
-    }
-
-    #[test]
-    fn word_at_offset_double_colon() {
-        let source = "Counter::increment";
-        let word = word_at_offset(source, 10);
-        assert_eq!(word, Some("Counter::increment".to_string()));
     }
 
     #[test]
@@ -3156,7 +3132,7 @@ machine Traffic {
             range: offset_range_to_lsp(source, &doc.line_offsets, 0, import_end),
             severity: Some(DiagnosticSeverity::WARNING),
             source: Some("hew-types".to_string()),
-            message: "Unused import `foo::bar`".to_string(),
+            message: "Unused import `foo.bar`".to_string(),
             data: Some(diagnostic_data(&TypeErrorKind::UnusedImport, &[])),
             ..Default::default()
         };
@@ -3198,7 +3174,7 @@ machine Traffic {
             range: offset_range_to_lsp(source, &doc.line_offsets, 0, source.find('\n').unwrap()),
             severity: Some(DiagnosticSeverity::WARNING),
             source: Some("hew-types".to_string()),
-            message: "Unused import `foo::bar`".to_string(),
+            message: "Unused import `foo.bar`".to_string(),
             data: Some(diagnostic_data(&TypeErrorKind::UnusedImport, &[])),
             ..Default::default()
         };
@@ -4404,9 +4380,8 @@ machine Traffic {
     }
 
     #[test]
-    fn cross_file_goto_glob_import_resolves_to_open_document() {
-        // `import counter::*` — any name can come from counter.hew.
-        let main_source = "import counter.*;\nfn main() {}";
+    fn cross_file_goto_selected_import_resolves_to_open_document() {
+        let main_source = "import counter.{ Counter };\nfn main() {}";
         let counter_source = "type Counter { value: i32 }";
 
         let main_uri = make_test_uri("/project/main.hew");
@@ -4419,7 +4394,7 @@ machine Traffic {
         let imports = collect_imports(main_source);
         let result = find_cross_file_definition(&main_uri, &imports, "Counter", &documents);
 
-        assert!(result.is_some(), "glob import should resolve Counter");
+        assert!(result.is_some(), "selected import should resolve Counter");
         let (uri, _range) = result.unwrap();
         assert_eq!(uri, counter_uri);
     }
@@ -7044,12 +7019,14 @@ machine Traffic {
             .as_ref()
             .expect("cross-module machine fixture should be type checked");
         assert!(
-            type_output.type_defs.contains_key("Toggle"),
-            "imported machine type should be visible in type defs"
+            type_output.type_defs.contains_key("machines.toggle.Toggle"),
+            "imported machine type should retain its canonical owner in type defs"
         );
         assert!(
-            type_output.type_defs.contains_key("ToggleEvent"),
-            "imported machine event type should be visible in type defs"
+            type_output
+                .type_defs
+                .contains_key("machines.toggle.ToggleEvent"),
+            "imported machine event type should retain its canonical owner in type defs"
         );
 
         let state_name_offset = main_source
@@ -7506,7 +7483,7 @@ machine Traffic {
 
     // ── Group D: Match enum — pattern-binding hover ───────────────────────────
 
-    /// `r` in `Shape::Circle(r)` is a constructor-pattern binding.
+    /// `r` in `Shape.Circle(r)` is a constructor-pattern binding.
     /// `hover_pattern_binding` must resolve its type from the `Circle(i64)`
     /// variant definition and surface `r: i64`.
     #[test]
@@ -7514,9 +7491,9 @@ machine Traffic {
         let source = include_str!("../../tests/fixtures/v05_match_enum_variant.hew");
         // Position inside the constructor pattern, not the arm body.
         let offset = source
-            .find("Shape::Circle(r)")
+            .find("Shape.Circle(r)")
             .expect("Circle pattern in match arm")
-            + "Shape::Circle(".len();
+            + "Shape.Circle(".len();
         assert_v05_hover_contains("v05_match_enum_variant", source, offset, "r: i64");
     }
 

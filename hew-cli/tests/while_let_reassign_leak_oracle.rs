@@ -62,16 +62,16 @@ enum Packet {
 
 fn next(i: i64, cap: i64) -> Packet {
     if i < cap {
-        Packet::Payload("while-let-backedge-edge-payload-abcdefghijklmnopqrstuvwxyz".to_upper())
+        Packet.Payload("while-let-backedge-edge-payload-abcdefghijklmnopqrstuvwxyz".to_upper())
     } else {
-        Packet::Done
+        Packet.Done
     }
 }
 
 fn run_break() {
     var i = 0;
     var q = next(i, 4);
-    while let Packet::Payload(s) = q {
+    while let Packet.Payload(s) = q {
         if s.len() > 0 {
             break;
         }
@@ -83,7 +83,7 @@ fn run_break() {
 fn run_tag_false() {
     var i = 0;
     var q = next(i, 4);
-    while let Packet::Payload(s) = q {
+    while let Packet.Payload(s) = q {
         i = i + 1;
         q = next(i, 4);
     }

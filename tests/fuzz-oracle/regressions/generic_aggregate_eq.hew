@@ -30,14 +30,14 @@ fn bag_same<T>(a: Bag<T>, b: Bag<T>) -> bool {
 }
 
 fn vec_one_two() -> Vec<i64> {
-    let values: Vec<i64> = Vec::new();
+    let values: Vec<i64> = Vec.new();
     values.push(1);
     values.push(2);
     values
 }
 
 fn vec_one_three() -> Vec<i64> {
-    let values: Vec<i64> = Vec::new();
+    let values: Vec<i64> = Vec.new();
     values.push(1);
     values.push(3);
     values

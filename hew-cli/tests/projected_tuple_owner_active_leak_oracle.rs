@@ -30,7 +30,7 @@ fn projected_tuple_source(frames: usize) -> String {
     format!(
         "\
 fn build(n: i64) -> i64 {{
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(n);
     v.push(n + 1);
     let p = (v, 1);
@@ -54,7 +54,7 @@ fn aliased_tuple_source(frames: usize) -> String {
     format!(
         "\
 fn build(n: i64) -> i64 {{
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(n);
     v.push(n + 1);
     let p = (v, 1);
@@ -79,7 +79,7 @@ fn cancellation_source(frames: usize) -> String {
     format!(
         "\
 fn build(n: i64) -> i64 {{
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(n);
     let p = (v, 7);
     let items = p.0;
@@ -105,7 +105,7 @@ fn main() -> i64 {{
 fn escaping_partial_tuple_source() -> &'static str {
     "\
 fn build(n: i64) -> (Vec<i64>, i64) {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(n);
     let p = (v, 1);
     let items = p.0;
@@ -123,7 +123,7 @@ fn main() -> i64 {
 fn loop_reread_after_transfer_source() -> &'static str {
     "\
 fn main() -> i64 {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(1);
     let p = (v, 7);
     var i: i64 = 0;

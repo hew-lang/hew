@@ -95,7 +95,7 @@ fn checker_pipeline_i64_capture_fact_is_present_for_second_source_shape() {
 fn checker_pipeline_rc_capture_emits_non_send_diagnostic() {
     let source = r"
         fn main() {
-            let r = Rc::new(1);
+            let r = Rc.new(1);
             scope { (move || { let _ = r; })(); };
         }
         ";

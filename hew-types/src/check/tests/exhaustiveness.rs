@@ -162,7 +162,7 @@ enum Color { Red; Blue }
 enum Packet { Data { value: Color }; Empty }
 fn f(p: Packet) -> i64 {
     match p {
-        Packet::Data { value: Red } => 1,
+        Packet.Data { value: Red } => 1,
     }
 }",
     );
@@ -748,17 +748,17 @@ fn borrowed_param_escape_builtin_variant_constructor_flagged() {
 
 #[test]
 fn borrowed_param_escape_qualified_path_constructor_flagged() {
-    // A `Type::Variant` qualified path constructor must remain classified as an
-    // aggregate constructor (fail-closed for all `::` paths, including `Rc::new`).
+    // A `Type.Variant` qualified path constructor must remain classified as an
+    // aggregate constructor, including static calls such as `Rc.new`.
     let (errors, _) = parse_and_check(concat!(
         "enum Holder { V(Rc<i64>); E }\n",
-        "fn f(r: Rc<i64>) -> Holder { Holder::V(r) }\n",
+        "fn f(r: Rc<i64>) -> Holder { Holder.V(r) }\n",
     ));
     assert!(
         errors
             .iter()
             .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
-        "embedding a borrow param in the qualified variant `Holder::V` must raise \
+        "embedding a borrow param in the qualified variant `Holder.V` must raise \
          BorrowedParamReturn; got: {errors:?}"
     );
 }
@@ -1041,7 +1041,7 @@ fn typecheck_error_scrutinee_struct_variant_pattern_no_cascade() {
         "enum Shape { Move { x: i64 } }\n",
         "fn main() {\n",
         "    let _value = match missing {\n",
-        "        Shape::Move { x } => x,\n",
+        "        Shape.Move { x } => x,\n",
         "    };\n",
         "}\n",
     ));

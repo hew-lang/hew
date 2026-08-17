@@ -172,7 +172,7 @@ fn wire_decode_malformed_bytes_fails_closed_not_segfault() {
         "#[wire]\n\
          type Point { x: i64 @1, y: i64 @2 }\n\
          fn main() -> i64 {\n\
-         \x20   let b: bytes = bytes::new();\n\
+         \x20   let b: bytes = bytes.new();\n\
          \x20   let p = Point.decode(b);\n\
          \x20   return p.x + p.y;\n\
          }\n",

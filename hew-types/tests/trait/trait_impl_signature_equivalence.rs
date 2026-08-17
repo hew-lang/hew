@@ -258,7 +258,7 @@ impl Iterator for Counter {{
         output.errors
     );
     let cited = output.errors.iter().any(|e| {
-        e.message.contains("Counter::next")
+        e.message.contains("Counter.next")
             && e.message.contains("Iterator")
             && e.message.contains("i64")
     });
@@ -334,7 +334,7 @@ fn impl_with_wrong_parameter_type_rejected_at_impl_site() {
     let src = r"
 pub trait Lookup {
     type Output;
-    fn at(self, key: i32) -> Self::Output;
+    fn at(self, key: i32) -> Self.Output;
 }
 
 pub type Bag {

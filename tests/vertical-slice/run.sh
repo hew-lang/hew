@@ -437,8 +437,8 @@ if "${HEW}" compile --target wasm32-unknown-unknown \
 fi
 grep -q 'Blocking channel receive operations are not supported on WASM32' "${reject_output}"
 
-# Reject (totality at the wasm boundary): the `Node::` distributed cluster API
-# (`Node::start` / `connect` / `load_keys`) must fail closed AT CHECK on BOTH
+# Reject (totality at the wasm boundary): the `Node` distributed cluster API
+# (`Node.start` / `connect` / `load_keys`) must fail closed AT CHECK on BOTH
 # wasm triples. These calls lower to the native mesh transport
 # (`hew_node_api_*`), which is not compiled for wasm32; before this gate the
 # checker admitted them and codegen emitted a module importing an undefined
@@ -454,7 +454,7 @@ for triple in wasm32-unknown-unknown wasm32-wasip1; do
   fi
   grep -q 'Distributed node and remote-actor operations are not supported on WASM32' "${reject_output}"
 done
-# Native parity: the identical Node:: program type-checks cleanly off-wasm.
+# Native parity: the identical Node program type-checks cleanly off-wasm.
 if ! "${HEW}" check "${node_wasm_fixture}" >"${reject_output}" 2>&1; then
   echo "expected node_wasm_distributed_failclosed to pass hew check on native" >&2
   cat "${reject_output}" >&2
@@ -516,7 +516,7 @@ expect_check_fail_contains \
   "cannot be reassigned" \
   "collection_borrow_rebind"
 
-# Imported std::bench impl methods must carry MIR bodies across the module
+# Imported std.bench impl methods must carry MIR bodies across the module
 # boundary. The output timings vary, so assert the stable report fragments.
 run_accept_expect_stdout_contains \
     "std_bench_import_run" \
@@ -539,43 +539,43 @@ run_accept_expect_stdout "std_net_websocket_execution"
 # the positive assigned port, then close it without external transport.
 run_accept_expect_stdout "std_net_quic_execution"
 
-# std::concurrency's generic failure record must construct across the module
+# std.concurrency's generic failure record must construct across the module
 # boundary and preserve every exact field value at runtime.
 run_accept_expect_stdout_contains \
     "std_concurrency_import_run" \
     "scope:7:8:9:2"
 
-# std::concurrency::lifecycle's imported generic machine must execute the full
+# std.concurrency.lifecycle's imported generic machine must execute the full
 # happy-path transition sequence with exact state names.
 run_accept_expect_stdout_contains \
     "std_concurrency_lifecycle_import_run" \
     "lifecycle:Created:Initialising:Running:Stopping:Stopped"
 
-# std::encoding::markdown must call the native renderer through its imported
+# std.encoding.markdown must call the native renderer through its imported
 # wrapper and return the exact CommonMark HTML for a stable input.
 run_accept_expect_stdout_contains \
     "std_encoding_markdown_import_run" \
     "markdown:<p><strong>bold</strong></p>"
 
-# std::io::closable's imported trait and error enum must support a concrete
+# std.io.closable's imported trait and error enum must support a concrete
 # implementation, receiver dispatch, and exact variant matching.
 run_accept_expect_stdout_contains \
     "std_io_closable_import_run" \
     "closable:AlreadyClosed"
 
-# std::machines::toggle must construct its imported state and execute both
+# std.machines.toggle must construct its imported state and execute both
 # cross-module event transitions with exact state names.
 run_accept_expect_stdout_contains \
     "std_machines_toggle_import_run" \
     "toggle:Off:On:Off"
 
-# std::encoding::wire::value_trait must dispatch an imported canonical method
+# std.encoding.wire.value_trait must dispatch an imported canonical method
 # through a generic bound to JSON's concrete implementation.
 run_accept_expect_stdout_contains \
     "std_encoding_wire_value_trait_import_run" \
     "canonical-value:42"
 
-# std::io's imported write wrapper must reach the runtime and emit the exact
+# std.io's imported write wrapper must reach the runtime and emit the exact
 # requested bytes.
 run_accept_expect_stdout_contains \
     "std_io_import_run" \
@@ -598,24 +598,24 @@ run_accept_expect_status "record_generic_enum_field" 7
 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/iter_lazy_wrappers.hew" \
     >"${accept_output}" 2>&1
 
-# Q004 follow-through: a *runnable* lazy chain. `Map::next` (lifting the inner
+# Q004 follow-through: a *runnable* lazy chain. `Map.next` (lifting the inner
 # item through `f`) plus a terminal `fold`, fully monomorphised over a
 # concrete `Countdown` source, compiles and executes. Exit code 12 is the
 # map-then-fold result ([3,2,1] * 2 = [6,4,2], sum 12); 101/102 flag an
-# internal value mismatch. Locks the Q004 `Self::Item` projection fix at
+# internal value mismatch. Locks the Q004 `Self.Item` projection fix at
 # runtime, not just at type-check time.
 run_accept_expect_status "iter_lazy_map_fold_run" 12
 
 # Q004 follow-through, terminal helpers: `count` and `collect` driven over the
 # same lazy `Map` chain. `count`/`collect` carry a fixed `Item = i64` bound
-# (the generic `std::iter` signature type-checks but cannot yet monomorphise —
+# (the generic `std.iter` signature type-checks but cannot yet monomorphise —
 # a free `A` appearing only in the where-clause projection is not pinnable by
 # the collector). Exit code 15 is item count (3) plus the collected sum
 # ([6,4,2] = 12); 101–105 flag a count/length/element mismatch.
 run_accept_expect_status "iter_lazy_count_collect_run" 15
 
-# lane-c: Filter/Take/Skip::next un-stubbed via Route-B var-self write-back.
-# Each fixture is self-contained (no `import std::iter`) to work around the
+# lane-c: Filter/Take/Skip.next un-stubbed via Route-B var-self write-back.
+# Each fixture is self-contained (no `import std.iter`) to work around the
 # mir-gap-cross-module-std-iter-lowering gap; all types are inlined.
 #
 # filter (x > 2) from Countdown{n:4} → [4, 3], sum = 7; exit 7.
@@ -640,17 +640,17 @@ run_accept_expect_status "iter_filter_string_run" 2
 # check-fail to an accept fixture (see the cross-references below).
 
 # cross-module generic-impl-method monomorphisation (CLOSED): a namespaced
-# `iter::map`/`iter::count` chain from an importing module composes through the
+# `iter.map`/`iter.count` chain from an importing module composes through the
 # import boundary. The generic terminal pins its projection-only type param
 # from the imported iterator's associated type, the imported generic adapter's
-# impl-method (`Map::next`) lowers as a per-instantiation origin, and the
+# impl-method (`Map.next`) lowers as a per-instantiation origin, and the
 # static-dispatch chain resolves against the module-qualified receiver. The
 # former mir_gap_cross_module_iter ratchet flipped to these accept fixtures.
 # Countdown{3} doubled then counted → 3.
 run_accept_expect_status "iter_xmod_map_count" 3
-# Cross-module `iter::collect` terminal: map i64 → i64, collect into a fresh
+# Cross-module `iter.collect` terminal: map i64 → i64, collect into a fresh
 # Vec<i64>, sum. Drives the collect terminal through the same cross-module chain
-# as the count fixture (qualified→bare `Map::next`, projection-pinned terminal
+# as the count fixture (qualified→bare `Map.next`, projection-pinned terminal
 # type param, per-instantiation adapter origin) over a non-owned element. The
 # collect terminal's owned heap-element drop is a separate pre-existing CoW-prover
 # concern, not certified here. Countdown{3} doubled → [6,4,2], collect, sum → 12.
@@ -692,8 +692,8 @@ run_accept_expect_status "hashmap_for_in_string_key" 12
 # Owned key AND owned value: key lens 6 + value lens 29 → exit 35.
 run_accept_expect_status "hashmap_for_in_owned" 35
 
-# HashMap::into_iter() pipeline form: `m.into_iter()` resolves to a HashMapIter
-# cursor (keys()/values() snapshots), so `iter::map/filter/count` over a map
+# HashMap.into_iter() pipeline form: `m.into_iter()` resolves to a HashMapIter
+# cursor (keys()/values() snapshots), so `iter.map/filter/count` over a map
 # match Vec. The map is shared (Capture), staying live after the pipeline.
 # count 3 entries → 3.
 run_accept_expect_status "hashmap_into_iter_count" 3
@@ -707,7 +707,7 @@ run_accept_expect_status "hashmap_into_iter_filter" 2
 # (bound to a temp before keys()/values()), so stdout is one "MK" not two. → 3.
 run_accept_expect_status_and_stdout "hashmap_into_iter_call_single_eval" 3
 
-# Vec::iter() pipeline form: `v.iter()` resolves to a VecIter cursor without
+# Vec.iter() pipeline form: `v.iter()` resolves to a VecIter cursor without
 # consuming the receiver, so the vec stays live after the pipeline. A VecIter is
 # a first-class value with no lifetime (Hew has none), so the cursor takes an
 # INDEPENDENT clone of the buffer it solely owns rather than borrowing the
@@ -728,7 +728,7 @@ run_accept_expect_status "vec_iter_owned_drop" 18
 # not two. count 4 → 4.
 run_accept_expect_status_and_stdout "vec_iter_call_single_eval" 4
 
-# Vec::iter() cursor drop-safety: a VecIter is a first-class value with no
+# Vec.iter() cursor drop-safety: a VecIter is a first-class value with no
 # lifetime, so `iter()` clones the source into a cursor the caller solely owns
 # (it cannot borrow the source's single-owner handle). These pin the drop-safety
 # that demands.
@@ -780,7 +780,7 @@ run_accept_expect_status "hashmap_for_in_field" 66
 # HashMap via a call result (single-eval: keys()+values() borrow one temp, so
 # make_map() runs once): keys 6 + values 60 → exit 66.
 run_accept_expect_status "hashmap_for_in_call" 66
-# HashMap::into_iter via a record field: both synthetic Vec projections retain
+# HashMap.into_iter via a record field: both synthetic Vec projections retain
 # the HashMap-typed field receiver, and the source remains live. Three entries.
 run_accept_expect_status "hashmap_into_iter_field" 3
 # Owned-element drop ratchet on the non-identifier route (field access): string
@@ -1054,7 +1054,7 @@ run_accept_expect_status "usize_shift" 0
 run_accept_expect_status "isize_add_sub_mul" 0
 run_accept_expect_status "platform_int_compare" 0
 run_accept_expect_status "isize_literal_coerce" 0
-# Boundary: shift by width-1 is in range (exits 0, asserts i64::MIN).
+# Boundary: shift by width-1 is in range (exits 0, asserts i64.MIN).
 run_accept_expect_status "isize_shift_boundary" 0
 # Trap negatives: div-by-zero and shift-by-width trap at runtime, proving the
 # fail-closed guards fire -- they do not produce garbage. The trap signal is
@@ -1062,9 +1062,9 @@ run_accept_expect_status "isize_shift_boundary" 0
 # run_accept_expect_trap accepts either.
 run_accept_expect_trap "isize_div_by_zero_traps"
 run_accept_expect_trap "isize_shift_oob_traps"
-# #2372: a negated integer literal at exactly TYPE::MIN must not trap (the
+# #2372: a negated integer literal at exactly TYPE.MIN must not trap (the
 # fold to a signed literal removes the runtime negate); negating a runtime
-# value that happens to equal i32::MIN must still trap.
+# value that happens to equal i32.MIN must still trap.
 run_accept_expect_status "int_negate_min_literal_no_trap" 0
 run_accept_expect_trap "int_negate_runtime_min_traps"
 
@@ -1185,7 +1185,7 @@ test -s "${ROOT}/.tmp/compile-out/continue_for.wasm"
 #
 # `#[resource]` types declare `close` in a sibling inherent-impl block
 # (Q-α-B ratified surface). The implicit drop contract dispatches
-# `<T>::close` on every scope-exit path through the unified W3.021
+# `T.close` on every scope-exit path through the unified W3.021
 # `ScopeExitPlan` stream. Stage 1 added HIR diagnostics for the surface;
 # Stage 2 wired the codegen typed `DropDispatch::{RuntimeSymbol, UserFn}`
 # dispatcher plus the no-third-arm verifier. Stage 4 ships e2e proof.
@@ -1199,7 +1199,7 @@ run_accept_expect_stdout "user_resource_close_normal_return"
 run_accept_expect_stdout "user_resource_close_early_return"
 
 # V8 — multiple distinct `#[resource]` types close in LIFO declaration
-# order (`l` declared after `c`; `Lock::close` then `Conn::close`).
+# order (`l` declared after `c`; `Lock.close` then `Conn.close`).
 run_accept_expect_stdout "user_resource_close_multiple_types"
 
 # RAII-2 (#1295) — a `#[resource]` passed as a NON-RECEIVER argument to an
@@ -1571,7 +1571,7 @@ run_accept_expect_status "actor_multi_on_stop" 0
 run_accept_expect_status "actor_ask_race" 42
 
 # F-01 regression (P0 UAF): an owned-element `Vec<WorkItem>` moved into a spawned
-# actor's initial state (`let t = Vec::new(); spawn TaskQueue(tasks: t)`) lowers
+# actor's initial state (`let t = Vec.new(); spawn TaskQueue(tasks: t)`) lowers
 # the source `t` to `AliasedIntoAggregate` (NOT `Consumed`). Pre-fix the owned-Vec
 # drop allow-set was dataflow-only, so the `Consumed`/`MaybeConsumed` filter left
 # `t` admitted and emitted a scope-exit `hew_vec_free_owned` against the handle the
@@ -1889,7 +1889,7 @@ run_accept_expect_status "on_crash_action_restart" 42
 
 # Accept: a REAL crash fires the emitted Worker__on_crash, which clones the
 # borrowed crash_message into the owned CrashInfo.message (hew_string_clone),
-# reads it, and returns CrashAction::Restart. The child traps, the supervisor
+# reads it, and returns CrashAction.Restart. The child traps, the supervisor
 # mutates its restart-template state, restarts it, await_restart re-fetches the
 # fresh child, and main exits 43.
 # Teeth: a wrong crash-message string ABI / a move-of-borrow aborts the runtime
@@ -1902,7 +1902,7 @@ run_accept_expect_status "on_crash_action_restart" 42
 run_accept_expect_status "on_crash_action_restart_real_crash" 43
 
 # Accept (G-S-A): a REAL crash fires an #[on(crash)] hook that returns
-# CrashAction::Escalate on a ROOT supervisor (no parent). Before the fix,
+# CrashAction.Escalate on a ROOT supervisor (no parent). Before the fix,
 # the Escalate arm in apply_restart dereferenced the root's null parent
 # pointer and aborted the process (exit 134, SIGABRT). The fixed arm guards
 # the call like the sibling stop_and_maybe_escalate, so the escalation is a
@@ -2072,7 +2072,7 @@ run_accept_expect_stdout "continue_in_match_arm"
 # binds the Ok payload into the enclosing scope (used after the statement) or
 # diverges through the else block.
 run_accept_expect_stdout "let_else_bind_or_bail"
-# let-else over a UNIT variant: `let E::A = e else { return … };` and the
+# let-else over a UNIT variant: `let E.A = e else { return … };` and the
 # built-in `let None = opt else { … };` idiom check the variant tag and bind
 # nothing (empty success prelude), matching or diverging through the else.
 run_accept_expect_stdout "let_else_unit_variant"
@@ -2414,7 +2414,7 @@ expect_check_fail_error_count \
   1 \
   "lambda actor constructor"
 grep -qF \
-  "call to \`std.concurrency.lambda_actor.LambdaActorHandle::new\` has no MIR body or runtime-ABI lowering; only module functions, extern fns, monomorphisation instantiations, and recognised runtime symbols are callable here" \
+  "call to \`std.concurrency.lambda_actor.LambdaActorHandle.new\` has no MIR body or runtime-ABI lowering; only module functions, extern fns, monomorphisation instantiations, and recognised runtime symbols are callable here" \
   "${reject_output}"
 
 # Accept: send-shaped lambda actor call dispatch — exercises spawn,
@@ -2524,9 +2524,9 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/actor_field_ask_without_a
   exit 1
 fi
 # shellcheck disable=SC2016  # backticks in the pattern are literal — they match
-# the CLI diagnostic's pretty-printed `Actor::method` / `await` names, not
+# the CLI diagnostic's pretty-printed `Actor.method` / `await` names, not
 # command substitution.
-grep -qF 'actor ask `W::get` requires `await`' "${reject_output}"
+grep -qF 'actor ask `W.get` requires `await`' "${reject_output}"
 
 # Reject: non-Send message type (E_DUPLEX_NON_SEND).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/duplex_non_send.hew" >"${reject_output}" 2>&1; then
@@ -2625,22 +2625,22 @@ run_accept_expect_status_and_stdout "lambda_send_result_ok" 7
 # the message was delivered before the release.
 run_accept_expect_stdout "lambda_close"
 
-# Reject: LambdaPid::send accepts exactly one message argument. MIR lowers only
+# Reject: LambdaPid.send accepts exactly one message argument. MIR lowers only
 # the receiver plus the first message arg, so surplus args must not be silently
 # accepted and dropped.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_method_send_extra_arg.hew" >"${reject_output}" 2>&1; then
   echo "expected lambda-method-send-extra-arg fixture to fail" >&2
   exit 1
 fi
-grep -q 'LambdaPid::send expects one argument' "${reject_output}"
+grep -q 'LambdaPid.send expects one argument' "${reject_output}"
 
-# Reject: LambdaPid::close accepts no arguments. MIR lowers only the receiver,
+# Reject: LambdaPid.close accepts no arguments. MIR lowers only the receiver,
 # so surplus args must not be silently accepted and dropped.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_close_extra_arg.hew" >"${reject_output}" 2>&1; then
   echo "expected lambda-close-extra-arg fixture to fail" >&2
   exit 1
 fi
-grep -q 'LambdaPid::close expects no arguments' "${reject_output}"
+grep -q 'LambdaPid.close expects no arguments' "${reject_output}"
 
 # Reject: ask-shaped actor body return type mismatch (E_LAMBDA_RETURN_TYPE_MISMATCH).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_return_mismatch.hew" >"${reject_output}" 2>&1; then
@@ -2721,19 +2721,19 @@ reject_check_use_after_consume "closure_param_use_after_store"
 
 # Accept + run: `(rec.f)(x)` where `f` is a fn-typed record field — the
 # parenthesized field-access-callee form. Previously rejected as "undefined
-# function `rec::f`" because the checker built an obj::field name; now
+# function `rec.f`" because the checker built an obj.field name; now
 # synthesises the field type and routes to the indirect-call path.
 # Exit 50 = |x| x*10 applied to 5.
 run_accept_expect_status "fn_typed_field_call" 50
 
 # Accept + run: `(self.f)(x)` inside a record method, motivating the Map
-# adapter body pattern (`(self.f)(elem)` in Iterator::next). Exit 21 = 7*3.
+# adapter body pattern (`(self.f)(elem)` in Iterator.next). Exit 21 = 7*3.
 run_accept_expect_status "fn_field_self_call" 21
 
 # Reject: calling a non-fn-typed field with `(rec.count)(x)` is still
 # rejected. The guard fires correctly: `check_call_with_type` sees `i64`
 # and emits "cannot call value of type `i64`", not the old confusing
-# "undefined function `rec::count`".
+# "undefined function `rec.count`".
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/fn_field_call_non_fn.hew" \
   "cannot call value of type" \
@@ -2784,7 +2784,7 @@ expect_check_fail_contains \
 # Reject: a process-local `LocalPid` payload must never cross a RemotePid
 # (cross-node) boundary. `LocalPid<T>` is process-local — a bare `*mut HewActor`
 # pointer with no on-wire representation — and carries neither Encode nor
-# Decode, so it is NOT Serializable. Sending it through `RemotePid::send` must
+# Decode, so it is NOT Serializable. Sending it through `RemotePid.send` must
 # fail closed at the checker's Serializable boundary, never ship a local pointer
 # to another node. This is the guard for the broadened codec-seeder skip: the
 # companion accept fixture (actor_single_arg_pid_payload) proves the SAME pid
@@ -3344,8 +3344,8 @@ fi
 grep -qF 'Encode + Decode' "${reject_output}"
 
 # Accept: literal payload subpattern in a constructor match arm compares the
-# payload value. Shape::Line(1) must not silently lower as a wildcard that also
-# matches Shape::Line(2); exit 2 proves the fallback binding arm handled it.
+# payload value. Shape.Line(1) must not silently lower as a wildcard that also
+# matches Shape.Line(2); exit 2 proves the fallback binding arm handled it.
 run_accept_expect_status "enum_payload_literal_subpattern" 2
 
 # Reject: literal-only integer matches cover only selected values, never the
@@ -3644,10 +3644,10 @@ run_accept_expect_status "user_record_bitcopy" 42
 run_accept_expect_status "generic_user_record_bitcopy" 42
 
 # ---------------------------------------------------------------------------
-# W3.032 Slice 3 — `Vec<Record>::contains` via codegen equality thunks
+# W3.032 Slice 3 — `Vec<Record>.contains` via codegen equality thunks
 # ---------------------------------------------------------------------------
 
-# Accept: layout-backed Vec<Point>::contains routes through the
+# Accept: layout-backed Vec<Point>.contains routes through the
 # checker-authorized `hew_vec_contains_thunk` substrate.  The fixture
 # asserts both true and false outcomes; exit 0 proves the thunk-driven
 # equality kernel reports the correct membership.
@@ -3703,10 +3703,10 @@ fi
 grep -qF 'immutable binding' "${reject_output}"
 
 # ---------------------------------------------------------------------------
-# W3.004 — Vec::new turbofish + W3.013 — Vec range-slice sugar
+# W3.004 — Vec.new generic application + W3.013 — Vec range-slice sugar
 # ---------------------------------------------------------------------------
 
-# Accept (S0): Vec<i32> with type ascription (no turbofish) — confirms range-slice
+# Accept (S0): Vec<i32> with type ascription — confirms range-slice
 # infrastructure baseline.  Exit 0 = empty vec created, no panic.
 run_accept_expect_status "vec_new_ascription" 0
 
@@ -3768,7 +3768,7 @@ expect_check_fail_error_count \
 # shellcheck disable=SC2016  # backtick-containing diagnostic string; not shell expansion.
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/hashmap_generic_key_missing_bounds.hew" \
-  'does not satisfy the required bounds for `Map::contains_key`' \
+  'does not satisfy the required bounds for `Map.contains_key`' \
   "hashmap_generic_key_missing_bounds"
 
 # ---------------------------------------------------------------------------
@@ -3827,17 +3827,17 @@ expect_check_fail_error_count \
   3 \
   "vec_array_element"
 
-# Accept (S1): Vec::<i64>::new() turbofish syntax with type annotation. Exit 0.
+# Accept (S1): Vec<i64>.new() type-argument syntax with type annotation. Exit 0.
 run_accept_expect_status "vec_new_turbofish_type" 0
 
-# Accept (S1): Vec::<i64>::new() turbofish with push/pop chain. Exit 7.
+# Accept (S1): Vec<i64>.new() with a push/pop chain. Exit 7.
 run_accept_expect_status "vec_new_turbofish_method" 7
 
-# Accept: HashMap::<K, V>::new() turbofish syntax.  `hew check` is enough here:
+# Accept: HashMap<K, V>.new() type-argument syntax. `hew check` is enough here:
 # the regression is the checker rejecting type args before constructor lowering.
 "${TIMEOUT}" 30 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/hashmap_new_turbofish_type.hew"
 
-# Accept: HashSet::<T>::new() turbofish syntax.
+# Accept: HashSet<T>.new() type-argument syntax.
 "${TIMEOUT}" 30 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/hashset_new_turbofish_type.hew"
 
 # ---------------------------------------------------------------------------
@@ -3890,7 +3890,7 @@ if "${TIMEOUT}" 30 "${HEW}" check \
   exit 1
 fi
 if grep -q "no method \`into_iter\`" "${accept_output}"; then
-  echo "W3 Stage 3: Vec<T>::into_iter must resolve through IntoIterator impl" >&2
+  echo "W3 Stage 3: Vec<T>.into_iter must resolve through IntoIterator impl" >&2
   cat "${accept_output}" >&2
   exit 1
 fi
@@ -3902,33 +3902,42 @@ fi
 grep -q 'E_NOT_YET_IMPLEMENTED' "${accept_output}"
 grep -q 'VecIter' "${accept_output}"
 
-# Reject (S1): Vec::<i64, i32>::new() turbofish arity mismatch — Vec takes exactly
-# 1 type argument; supplying 2 must produce a clear diagnostic.
+# Reject: the retired Vec::<i64, i32>::new() spelling must identify both legacy
+# separators and provide its exact dotted Hew replacement.
 if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/vec_new_turbofish_arity_mismatch.hew" \
     >"${reject_output}" 2>&1; then
   echo "W3.004: expected vec_new_turbofish_arity_mismatch to fail" >&2
   exit 1
 fi
-grep -q 'takes 1 type argument but 2 were supplied' "${reject_output}"
+# shellcheck disable=SC2016
+grep -qF 'E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `let _v = Vec<i64, i32>.new();`' "${reject_output}"
+# shellcheck disable=SC2016
+grep -qF 'E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `let _v = Vec<i64, i32>.new();`' "${reject_output}"
 
-# Reject: HashMap takes key and value type arguments.
+# Reject: the retired HashMap turbofish spelling suggests dotted Hew syntax.
 if "${TIMEOUT}" 30 "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/hashmap_new_turbofish_arity_mismatch.hew" \
     >"${reject_output}" 2>&1; then
   echo "expected hashmap_new_turbofish_arity_mismatch to fail" >&2
   exit 1
 fi
-grep -q 'takes 2 type arguments but 1 was supplied' "${reject_output}"
+# shellcheck disable=SC2016
+grep -qF 'E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `let _m = HashMap<i64>.new();`' "${reject_output}"
+# shellcheck disable=SC2016
+grep -qF 'E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `let _m = HashMap<i64>.new();`' "${reject_output}"
 
-# Reject: HashSet takes one element type argument.
+# Reject: the retired HashSet turbofish spelling suggests dotted Hew syntax.
 if "${TIMEOUT}" 30 "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/hashset_new_turbofish_arity_mismatch.hew" \
     >"${reject_output}" 2>&1; then
   echo "expected hashset_new_turbofish_arity_mismatch to fail" >&2
   exit 1
 fi
-grep -q 'takes 1 type argument but 2 were supplied' "${reject_output}"
+# shellcheck disable=SC2016
+grep -qF 'E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `let _s = HashSet<i64, i64>.new();`' "${reject_output}"
+# shellcheck disable=SC2016
+grep -qF 'E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `let _s = HashSet<i64, i64>.new();`' "${reject_output}"
 
 # Accept: concrete generic user aggregate with a heap-owning string field.
 run_accept_expect_status "user_record_non_bitcopy" 0
@@ -3937,12 +3946,12 @@ run_accept_expect_status "user_record_non_bitcopy" 0
 # Generic enum monomorphisation — end-to-end acceptance fixtures
 # ---------------------------------------------------------------------------
 
-# Accept: Option<i64>::Some(42) — tuple-variant generic enum lowers end-to-end.
+# Accept: Option<i64>.Some(42) — tuple-variant generic enum lowers end-to-end.
 # Exercises HIR EnumLayoutRegistry → MIR layout-gather → codegen mangled-name
 # lookup → link. Exit 42 proves the Some arm was matched and the payload read.
 run_accept_expect_status "generic_enum_option_some" 42
 
-# Accept: Option<i64>::None — unit arm of the same generic enum.
+# Accept: Option<i64>.None — unit arm of the same generic enum.
 # Exit 99 proves the None arm matched (no payload confusion with Some).
 run_accept_expect_status "generic_enum_option_none" 99
 
@@ -3988,15 +3997,15 @@ run_accept_expect_panic "if_else_all_panic_arms_nonscalar_return" "one"
   >"${accept_output}" 2>&1
 test -s "${ROOT}/.tmp/compile-out/stdlib_option_none.wasm"
 
-# Accept: Maybe<i64>::Just { value: 42 } — struct-variant (named-field) generic enum.
+# Accept: Maybe<i64>.Just { value: 42 } — struct-variant (named-field) generic enum.
 # Exit 42 proves named-field variant payloads lower through the generic path.
 run_accept_expect_status "generic_enum_maybe_just" 42
 
-# Accept: Result<i64, bool>::Ok(7) — two-type-parameter generic enum.
+# Accept: Result<i64, bool>.Ok(7) — two-type-parameter generic enum.
 # Exit 7 proves the Ok arm matched and the i64 payload was read correctly.
 run_accept_expect_status "generic_enum_result_ok" 7
 
-# Accept: Option<Option<i64>>::Some(Some(5)) — nested generic instantiation.
+# Accept: Option<Option<i64>>.Some(Some(5)) — nested generic instantiation.
 # The HIR mono-pass must register both Option<i64> and Option<Option<i64>>
 # layouts. Exit 5 proves both layouts lower and the nested match dispatched
 # correctly.
@@ -4079,18 +4088,18 @@ run_accept_expect_status "tuple_heap_return" 42
     "${ROOT}/tests/vertical-slice/accept/result_handler_heap_oracle.hew" \
     >"${accept_output}" 2>&1
 
-# Accept: Node::lookup(name) must expose the registered local actor as a
+# Accept: Node.lookup(name) must expose the registered local actor as a
 # RemotePid<T>, and pid.send(msg) must deliver through the in-process
 # send-by-id path.
 rm -f "${node_lookup_identity}" "${node_lookup_identity}.hew-state"
 run_accept_expect_status "node_lookup_send" 0
 
 # Accept: compiler-owned identity aggregates project, compare, hash, display,
-# and round-trip through Node::lookup without scalar reinterpretation.
+# and round-trip through Node.lookup without scalar reinterpretation.
 rm -f "${identity_aggregates_identity}" "${identity_aggregates_identity}.hew-state"
 run_accept_expect_status "identity_aggregates" 0
 
-# A640/S3: compile-time Serializable floor for RemotePid<T>::send.
+# A640/S3: compile-time Serializable floor for RemotePid<T>.send.
 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/positive_record_remote_send.hew" \
     >"${accept_output}" 2>&1
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/negative_fn_msg_remote_send.hew" \
@@ -4180,7 +4189,7 @@ run_accept_expect_status "sibling_module_call" 42
 # lowering and execution.
 run_accept_expect_status "flat_file_import_bare_fn_call" 42
 
-# Accept: multi-level import (import lib::math;) — flat form lib/math.hew, exit 42
+# Accept: multi-level import (import lib.math;) — flat form lib/math.hew, exit 42
 # Only the flat form exists (no lib/math/math.hew) so no ambiguity fires.
 run_accept_expect_status "multilevel_import" 42
 
@@ -4192,13 +4201,13 @@ if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unresolved_module.hew" 
 fi
 grep -q 'does_not_exist' "${reject_output}"
 
-# Reject: duplicate short module name (import alpha; import beta::alpha — both short name "alpha")
+# Reject: duplicate short module name (import alpha; import beta.alpha — both short name "alpha")
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/duplicate_short_name.hew" \
   >"${reject_output}" 2>&1; then
   echo "W3.025: expected duplicate_short_name to fail" >&2
   exit 1
 fi
-grep -q "imports both \`alpha\` and \`beta::alpha\` under the ambiguous binding \`alpha\`" \
+grep -q "imports both \`alpha\` and \`beta.alpha\` under the ambiguous binding \`alpha\`" \
   "${reject_output}"
 
 # Reject: ambiguous module resolution (both flat ambig_mod.hew and dir ambig_mod/ambig_mod.hew exist)
@@ -4290,7 +4299,7 @@ fi
 # ---------------------------------------------------------------------------
 
 # Accept: impl signature structurally matches the trait after `Self`-sub and
-# `Self::Item` projection (Container::unwrap → Holder::unwrap), so the program
+# `Self.Item` projection (Container.unwrap → Holder.unwrap), so the program
 # compiles and runs.
 run_accept_expect_status "q004_trait_impl_sig_match" 7
 
@@ -4305,7 +4314,7 @@ q004_check_reject() {
     exit 1
   fi
   # Q004 diagnostics are rendered as human-readable messages anchored at the
-  # impl method span ("impl method `Type::method` ..."). We check both the
+  # impl method span ("impl method `Type.method` ..."). We check both the
   # common impl-method prefix and a discriminating per-fixture substring so a
   # regression to a generic "type does not satisfy trait" cascade is caught.
   grep -q 'error: impl method `' "${reject_output}" || {
@@ -4363,7 +4372,7 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/opaque_handle_non_empty_b
 fi
 grep -q 'E_OPAQUE_TYPE_SHAPE' "${reject_output}"
 
-# G1: HashMap::get returns an owned Option<V>, so heap values must clone out of
+# G1: HashMap.get returns an owned Option<V>, so heap values must clone out of
 # the slot and V with no clone_fn must fail closed at check time.
 run_accept_expect_status "hashmap_get_clone_string_value" 0
 expect_check_fail_contains \
@@ -4385,7 +4394,7 @@ expect_check_fail_contains \
 # Accept (worker-free deadline oracle): `await s.block() | after 60ms` where the
 # callee parks worker-free on an empty channel recv and never replies. Under
 # HEW_WORKERS=1 the deadline timer (its own ticker thread) cancels the in-flight
-# ask and resumes the caller with Err(AskError::Timeout) → exit 7. Proves the
+# ask and resumes the caller with Err(AskError.Timeout) → exit 7. Proves the
 # deadline-before-reply race AND that the lone worker is freed + resumed by the
 # timer (a blocking path would strand the worker / hang).
 compile_accept "await_ask_deadline_timeout"
@@ -4423,7 +4432,7 @@ fi
 
 # Accept (worker-free read-deadline oracle): `await conn.read() | after 60ms`
 # where the peer stays silent. Under HEW_WORKERS=1 the read parks worker-free and
-# the deadline timer resumes the actor with Err(NetError::TimedOut) -> exit 7.
+# the deadline timer resumes the actor with Err(NetError.TimedOut) -> exit 7.
 compile_accept "await_read_deadline_deferred"
 read_timeout_bin="${ROOT}/.tmp/compile-out/await_read_deadline_deferred"
 read_deadline_status=0
@@ -4458,7 +4467,7 @@ fi
 
 # Accept (#2446 read-half shutdown outcome): a read registration is confirmed
 # live and its actor parked before explicit shutdown. The sweep must resume it
-# with the exact Err(NetError::Cancelled) branch -> exit 43.
+# with the exact Err(NetError.Cancelled) branch -> exit 43.
 compile_accept "await_read_shutdown_cancelled"
 read_shutdown_bin="${ROOT}/.tmp/compile-out/await_read_shutdown_cancelled"
 read_shutdown_status=0
@@ -4477,7 +4486,7 @@ fi
 # Accept (TCP write-side backpressure): a producer with a short write timeout
 # writes a 16 MiB payload to a peer that never reads. The send buffer fills, the
 # write cannot complete within the deadline, and conn.write() returns
-# Err(WriteError::BackpressureExceeded) -> exit 42. A small write Ok'd first;
+# Err(WriteError.BackpressureExceeded) -> exit 42. A small write Ok'd first;
 # exit 5 (large write Ok'd) / 7 (wrong Err variant) / 3 (small write failed)
 # would prove the backpressure signal is missing or misclassified.
 compile_accept "tcp_write_backpressure"
@@ -4497,7 +4506,7 @@ fi
 
 # Accept (read_string worker-free timeout oracle): `await conn.read_string() | after 60ms`
 # where the peer stays silent. Under HEW_WORKERS=1 the read parks worker-free and
-# the deadline timer resumes the actor with Err(NetError::TimedOut) -> exit 7.
+# the deadline timer resumes the actor with Err(NetError.TimedOut) -> exit 7.
 # Proves the to_string deadline path does NOT apply bytes-to-string on the timeout edge.
 compile_accept "await_read_string_deadline_timeout"
 read_str_timeout_bin="${ROOT}/.tmp/compile-out/await_read_string_deadline_timeout"
@@ -4631,7 +4640,7 @@ fi
 
 # Accept (accept-deadline worker-free timeout oracle): `await ln.accept() | after 60ms`
 # where no client connects. Under HEW_WORKERS=1 the accept parks worker-free and
-# the deadline timer resumes the actor with Err(NetError::TimedOut) -> exit 7.
+# the deadline timer resumes the actor with Err(NetError.TimedOut) -> exit 7.
 compile_accept "await_accept_deadline_timeout"
 accept_timeout_bin="${ROOT}/.tmp/compile-out/await_accept_deadline_timeout"
 accept_timeout_status=0
@@ -4667,7 +4676,7 @@ if [[ "${accept_ok_status}" -ne 42 ]]; then
 fi
 
 # Accept (#2446 accept-half shutdown outcome): the accept is confirmed parked
-# before explicit shutdown. It must resume with Err(NetError::Cancelled) -> 42,
+# before explicit shutdown. It must resume with Err(NetError.Cancelled) -> 42,
 # never Ok(INVALID_CONNECTION_HANDLE), its own deadline, or abandonment.
 compile_accept "await_accept_shutdown_abandoned"
 accept_shutdown_bin="${ROOT}/.tmp/compile-out/await_accept_shutdown_abandoned"
@@ -4882,7 +4891,7 @@ if "${HEW}" check \
   exit 1
 fi
 # shellcheck disable=SC2016  # backticks are literal diagnostic text.
-grep -q 'a `Vec` whose element is the indirect enum `Wrapped` has no per-element release protocol, so every yielded or received frame would leak its heap nodes is not implemented yet' "${reject_output}"
+grep -q '`Wrapped` cannot be a `Vec` element: it is an indirect enum whose per-element release protocol is not yet wired, so its heap nodes would leak at scope exit' "${reject_output}"
 
 # Guard (#2359, recv leg): `Channel<Vec<indirect-enum>>` stays rejected
 # UPSTREAM by the channel element-layout witness at check time — the recv
@@ -5339,7 +5348,7 @@ expect_check_fail_contains \
 
 # .wrapping_as_<W> and .saturating_as_<W> width-conversion methods.
 # Tests exact values: wrapping narrowing/widening/sign-change and
-# saturating clamp to [W::MIN, W::MAX].
+# saturating clamp to [W.MIN, W.MAX].
 run_check_run_expect_stdout wrapping_saturating_as_cast
 
 # CBOR wire body codec round-trips. Each #[wire] type is built, encoded to CBOR
@@ -5412,7 +5421,7 @@ expect_check_fail_contains \
 # by `wire_cbor_vec_nested_rejected` below (#2737).
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_vec_owned_compound_rejected.hew" \
-    "has an element outside the supported wire-body floor" \
+    "has no clone/drop thunk path for the owned-element Vec runtime" \
     "wire_cbor_vec_owned_compound_rejected"
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_vec_nested_rejected.hew" \
@@ -5438,7 +5447,7 @@ expect_check_fail_contains \
 # Layout: accept/imported_shadow_variant_call.hew imports
 # accept/imported_shadow_errmod.hew.  A pub enum in a non-root (imported)
 # module that declares NotFound(string) must have its bare constructor
-# registered over the builtin LookupError::NotFound unit variant; the
+# registered over the builtin LookupError.NotFound unit variant; the
 # program must compile and run without HIR shape-mismatch diagnostics.
 run_accept_expect_status "imported_shadow_variant_call" 0
 

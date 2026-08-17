@@ -1,8 +1,8 @@
 fn main() {
-    let x: bytes = bytes::new();
+    let x: bytes = bytes.new();
     x.push(65);
     x.push(66);
-    let y: bytes = bytes::new();
+    let y: bytes = bytes.new();
     y.push(65);
     y.push(66);
     y.push(67);

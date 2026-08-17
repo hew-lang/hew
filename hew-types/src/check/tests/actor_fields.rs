@@ -705,8 +705,8 @@ mod every_attribute {
         // into "pattern has no resolution" / verifier leakage.
         let output = check_source(
             "enum E { A; B(i64); }
-             fn make_e(g: bool) -> E { if g { E::A } else { E::B(3) } }
-             fn f(g: bool) -> Result<i64, string> { let E::A = make_e(g) else { return Err(\"x\") }; Ok(1) }",
+             fn make_e(g: bool) -> E { if g { E.A } else { E.B(3) } }
+             fn f(g: bool) -> Result<i64, string> { let E.A = make_e(g) else { return Err(\"x\") }; Ok(1) }",
         );
         assert!(
             output.errors.is_empty(),
@@ -1520,7 +1520,7 @@ mod reserved_names {
         let output = check_source(
             r"
             fn main() {
-                let _e: LookupError = LookupError::NotFound;
+                let _e: LookupError = LookupError.NotFound;
             }
             ",
         );

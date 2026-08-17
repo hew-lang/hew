@@ -718,7 +718,7 @@ fn main() {
 // The native probe must synchronize with the first delivery instead of using a
 // wall-clock sleep: under scheduler pressure, main can wake and begin shutdown
 // before the periodic ticker thread runs, cancelling the still-pending first tick.
-const NATIVE_PERIODIC_HANDSHAKE_SOURCE: &str = r#"import std::channel::channel;
+const NATIVE_PERIODIC_HANDSHAKE_SOURCE: &str = r#"import std.channel.channel;
 
 actor Pulse {
     let ready: channel.Sender<i64>;

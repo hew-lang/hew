@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed (breaking)
+
+- **We have adopted one dotted path surface throughout Hew.** `::` path
+  separators, Rust-style turbofish generic application (`::<...>`), and glob
+  imports are retired. Write dotted paths, explicit `.{ Name, Other }`
+  selections, ordinary Hew generic application (`name<T>(...)`), and
+  contextual `.Variant` patterns and constructors instead. Each retired
+  spelling now produces a diagnostic that names the migrated form. Run
+  `hew fmt --migrate --root .` to mechanically migrate every Hew source file
+  in a codebase before reviewing and committing the result.
+
 ## [0.6.0-rc1] - 2026-07-29
 
 Hew v0.6.0-rc1 is the first release candidate for v0.6. It completes the

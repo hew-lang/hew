@@ -3,7 +3,7 @@
 
 import "file_imported_machine_support/machine.hew";
 
-import std::testing;
+import std.testing;
 
 fn carry_file_lifecycle(value: FileLifecycle) -> FileLifecycle {
     value
@@ -13,8 +13,8 @@ fn carry_file_lifecycle(value: FileLifecycle) -> FileLifecycle {
 fn file_imported_machine_crosses_the_importer_boundary() {
     let carried = carry_file_lifecycle(initial_file_lifecycle());
     let running = match carried {
-        FileLifecycle::Running => 1,
-        FileLifecycle::Completed => 0,
+        FileLifecycle.Running => 1,
+        FileLifecycle.Completed => 0,
     };
     testing.assert_eq(running, 1);
 }

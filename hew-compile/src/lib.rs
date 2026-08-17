@@ -4874,7 +4874,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std::pipeline;\n\
+            "import std.pipeline;\n\
              fn main() {\n\
                  let chain = pipeline.run(pipeline.from(1));\n\
                  let item: pipeline.PipelineItemI64 = PipelineItemI64 {\n\

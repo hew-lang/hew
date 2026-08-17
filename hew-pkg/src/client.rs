@@ -721,9 +721,9 @@ fn build_agent() -> ureq::Agent {
 
 /// Encode a package name for use in URL paths.
 ///
-/// Replaces `::` with `/` for the API path format.
+/// Replaces dotted segments with `/` for the API path format.
 fn encode_name(name: &str) -> String {
-    name.replace("::", "/")
+    name.replace('.', "/")
 }
 
 /// Extract the path component from an absolute URL.

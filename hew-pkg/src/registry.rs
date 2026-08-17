@@ -45,13 +45,13 @@ impl Registry {
 
     /// Return the directory for a specific package name and version.
     ///
-    /// Package names use `::` as namespace separator; each segment becomes a
+    /// Package names use dots as namespace separators; each segment becomes a
     /// directory component.  For example `ecosystem::db::postgres` at `1.0.0`
     /// returns `<root>/ecosystem/db/postgres/1.0.0`.
     #[must_use]
     pub fn package_dir(&self, name: &str, version: &str) -> PathBuf {
         let mut path = self.root.clone();
-        for part in name.split("::") {
+        for part in crate::package_name::segments(name) {
             path = path.join(part);
         }
         path.join(version)
@@ -73,7 +73,7 @@ impl Registry {
     ///
     /// A directory is considered an installed package version when it contains
     /// a `hew.toml` file.  The path relative to the registry root determines
-    /// the name (all but the last segment joined with `::`) and version (the
+    /// the name (all but the last segment joined with dots) and version (the
     /// last segment).
     #[must_use]
     pub fn list_packages(&self) -> Vec<InstalledPackage> {
@@ -122,7 +122,7 @@ fn collect_packages(
             if let Some((version, name_parts)) = parts.split_last() {
                 if !name_parts.is_empty() {
                     packages.push(InstalledPackage {
-                        name: name_parts.join("::"),
+                        name: name_parts.join("."),
                         version: (*version).to_string(),
                         path: dir.to_path_buf(),
                     });

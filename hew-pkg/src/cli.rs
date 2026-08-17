@@ -939,7 +939,7 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>, local
     // Validate package name format.
     if !is_valid_package_name(&m.package.name) {
         eprintln!(
-            "hew publish: invalid package name `{}`: only alphanumeric, `_`, and `::` (or `/`) allowed",
+            "hew publish: invalid package name `{}`: only lowercase alphanumeric, `_`, and dotted segments allowed",
             m.package.name
         );
         std::process::exit(1);
@@ -1489,7 +1489,7 @@ fn cmd_check(registry: &registry::Registry) {
 
     if !is_valid_package_name(&m.package.name) {
         issues.push(format!(
-            "invalid package name `{}`: only alphanumeric, `_`, and `::` allowed",
+            "invalid package name `{}`: only lowercase alphanumeric, `_`, and dotted segments allowed",
             m.package.name
         ));
     }
@@ -2016,7 +2016,7 @@ fn local_link_path(base: &Path, package_name: &str) -> Result<PathBuf, String> {
     }
 
     Ok(package_name
-        .split("::")
+        .split('.')
         .fold(base.to_path_buf(), |path, segment| path.join(segment)))
 }
 

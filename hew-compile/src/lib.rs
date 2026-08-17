@@ -283,7 +283,10 @@ pub fn validate_imports_against_manifest(
         if package_name.is_some_and(|pkg| decl.path.first().is_some_and(|seg| seg == pkg)) {
             continue;
         }
-        if !manifest_deps.contains(&module_str) {
+        if !manifest_deps
+            .iter()
+            .any(|dependency| dependency == &module_str || dependency == &source_module)
+        {
             errors.push(format!(
                 "Error: module `{source_module}` is not declared in hew.toml\n  hint: add it with `hew add {source_module}`"
             ));
@@ -1212,7 +1215,11 @@ fn resolve_file_imports_internal(
                 let mut locked_project_candidates = Vec::new();
                 let locked_version = ctx
                     .locked_versions
-                    .and_then(|locked| locked.iter().find(|(name, _)| name == &module_str))
+                    .and_then(|locked| {
+                        locked
+                            .iter()
+                            .find(|(name, _)| name == &module_str || name == &source_module)
+                    })
                     .map(|(_, version)| version.as_str());
 
                 if is_local && !rest_path.is_empty() {
@@ -1256,7 +1263,7 @@ fn resolve_file_imports_internal(
                             project_package_entry.clone(),
                             LockedPackageCheck {
                                 package_dir: project_package_dir,
-                                name: module_str.clone(),
+                                name: source_module.clone(),
                                 version: version.to_string(),
                             },
                         ));
@@ -1358,10 +1365,11 @@ fn resolve_file_imports_internal(
                         .map(|candidate| candidate.display().to_string())
                         .collect::<Vec<_>>()
                         .join(", ");
-                    let hint = if ctx
-                        .manifest_deps
-                        .is_some_and(|deps| deps.contains(&module_str))
-                    {
+                    let hint = if ctx.manifest_deps.is_some_and(|deps| {
+                        deps.iter().any(|dependency| {
+                            dependency == &module_str || dependency == &source_module
+                        })
+                    }) {
                         "\n  hint: this dependency is declared in hew.toml — run `hew install`"
                     } else if ctx.manifest_deps.is_some() {
                         "\n  hint: add this module to [dependencies] in hew.toml"

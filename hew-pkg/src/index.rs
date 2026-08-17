@@ -180,12 +180,12 @@ impl From<std::io::Error> for IndexError {
 
 /// Convert a package name to its index file path relative to the index root.
 ///
-/// Namespace `::` segments become directory components.
-/// `"alice::router"` → `"alice/router"`.
+/// Dotted package segments become directory components.
+/// `"alice.router"` → `"alice/router"`.
 #[must_use]
 pub fn index_path(package_name: &str) -> PathBuf {
     let mut path = PathBuf::new();
-    for segment in package_name.split("::") {
+    for segment in crate::package_name::segments(package_name) {
         path = path.join(segment);
     }
     path

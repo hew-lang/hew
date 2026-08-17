@@ -1144,7 +1144,9 @@ struct ImplCloseSignature {
 /// modules. Carries the same-module fn-name rewrite map (bare helper name →
 /// mangled qualified symbol, identical to the free-function imported path) and
 /// the set of method names to skip because their bodies or signatures cannot
-/// be resolved safely across the module boundary.
+/// be resolved safely across the module boundary. `symbol_self_name` is the
+/// exact declaration-keyed owner selected by the pre-lowering body plan,
+/// including any concrete type-argument suffix.
 struct ImportedImplLowering<'a> {
     rewrites: &'a HashMap<String, String>,
     skip_methods: &'a HashSet<String>,
@@ -12684,7 +12686,11 @@ impl LowerCtx {
                 .and_then(|context| context.symbol_self_name)
                 .unwrap_or(self_type_name.as_str())
         };
-        let symbol_self_name: std::borrow::Cow<str> = if self_type_concrete_args.is_empty() {
+        let symbol_self_name: std::borrow::Cow<str> = if imported
+            .and_then(|context| context.symbol_self_name)
+            .is_some()
+            || self_type_concrete_args.is_empty()
+        {
             std::borrow::Cow::Borrowed(base_symbol_self_name)
         } else {
             std::borrow::Cow::Owned(crate::monomorph::mangle(

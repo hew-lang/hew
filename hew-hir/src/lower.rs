@@ -20353,7 +20353,7 @@ impl LowerCtx {
                 return self.unsupported_expr(span, "dyn-to-dyn trait adaptation");
             }
             let concrete_resolved = match ResolvedTy::from_ty(&coercion.concrete_type) {
-                Ok(r) => r,
+                Ok(r) => self.qualify_current_module_record_ty(r),
                 Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
@@ -23840,6 +23840,20 @@ impl LowerCtx {
                 && self.current_module_name.is_none()
                 && !name.contains('.')
                 && self.root_opaque_type_short_names.contains(&name));
+        // Checker expression facts for a flat-file-imported return type can
+        // retain the root-visible bare spelling. Project it through the same
+        // declaration map source annotations use before MIR observes the
+        // nominal, preserving the defining file's qualified layout identity.
+        if !name.contains('.') && self.current_module_name.is_none() {
+            if let Some(canonical) = self.file_import_root_type_aliases.get(&name) {
+                return self.qualify_current_module_record_ty(ResolvedTy::Named {
+                    name: canonical.clone(),
+                    args,
+                    builtin: None,
+                    is_opaque,
+                });
+            }
+        }
         if let Some(builtin) = builtin {
             // Checker-authored runtime signatures may retain the bare
             // presentation name for a source-owned lifecycle carrier. When
@@ -37007,6 +37021,22 @@ impl Widget {
             ctx.resolve_named_type_ref("CrashNotification", Vec::new()),
             ResolvedTy::named_user("CrashNotification", Vec::new()),
             "a user-authored same-spelling record must not acquire the lifecycle ABI"
+        );
+    }
+
+    #[test]
+    fn checker_result_type_uses_flat_file_import_identity() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.file_import_root_type_aliases
+            .insert("Box".to_string(), "support.file_render.Box".to_string());
+
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::named_user("Box", Vec::new())),
+            ResolvedTy::named_user("support.file_render.Box", Vec::new())
         );
     }
 

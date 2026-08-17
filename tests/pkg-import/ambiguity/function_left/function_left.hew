@@ -1,3 +1,0 @@
-pub fn clash_fn() -> i64 {
-    11
-}

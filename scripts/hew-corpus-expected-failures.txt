@@ -206,6 +206,8 @@ tests/pkg-import/aliased_import_qualified_field_control.hew
 tests/pkg-import/aliased_import_record_field_member.hew
 tests/pkg-import/aliased_import_type_annotation.hew
 tests/pkg-import/aliased_multimethod_trait_collision_accept.hew
+tests/pkg-import/aliased_selective_function_import.hew
+tests/pkg-import/aliased_selective_type_import.hew
 tests/pkg-import/aliased_subtrait_inline_supermethod_accept.hew
 tests/pkg-import/aliased_trait_sig.hew
 tests/pkg-import/aliased_trait_source_name_collision_accept.hew
@@ -235,6 +237,7 @@ tests/pkg-import/local_type_shadows_import_alias.hew
 tests/pkg-import/missing_assoc_type_collision_accept.hew
 tests/pkg-import/mixed_collision_reply.hew
 tests/pkg-import/mixed_import_impl_collision.hew
+tests/pkg-import/mixed_import_impl_collision_lib.hew
 tests/pkg-import/nested_qualified_payload.hew
 tests/pkg-import/package_module_type_alias.hew
 tests/pkg-import/private_generic_record_option_element.hew
@@ -268,6 +271,9 @@ tests/pkg-import/pkgs/selfqualtype/selfqualtype.hew
 # positive (pkgs/sinkok) checks clean standalone and is intentionally not listed.
 tests/pkg-import/pkgs/sinkres/sinkres.hew
 
+# requires-package-resolver: testffi package source
+tests/pkg-import/pkgs/testffi/testffi.hew
+
 # requires-package-resolver: more accept/trait tests
 tests/pkg-import/postmono_qualified_layout.hew
 tests/pkg-import/published_bare_no_poison.hew
@@ -285,6 +291,7 @@ tests/pkg-import/sameleaf_named_function_ambiguous.hew
 tests/pkg-import/sameleaf_named_machine_ambiguous.hew
 tests/pkg-import/sameleaf_named_trait_ambiguous.hew
 tests/pkg-import/sameleaf_named_type_ambiguous.hew
+tests/pkg-import/sameleaf_qualified_alias_accept.hew
 tests/pkg-import/samename_type_layout.hew
 tests/pkg-import/self_qualified_type_identity.hew
 

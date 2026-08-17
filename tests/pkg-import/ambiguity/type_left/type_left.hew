@@ -1,7 +1,0 @@
-pub type ClashType {
-    value: i64;
-}
-
-pub fn make() -> ClashType {
-    ClashType { value: 14 }
-}

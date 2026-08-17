@@ -12437,6 +12437,27 @@ impl LowerCtx {
             return None;
         }
 
+        // A file import splices declarations into the root scope, but the
+        // checker publishes each trait binding under its declaring file index.
+        // If the root has no exact file-local binding, accept only one
+        // unambiguous checker-published owner across those flat-import files.
+        if self.current_module_name.is_none() {
+            let mut flat_file_owners: Vec<String> = self
+                .trait_method_ids_by_binding
+                .iter()
+                .filter(|((scope, _, binding, _), _)| scope.is_none() && binding == trait_bound)
+                .map(|(_, (trait_id, _))| trait_id.full_path().to_string())
+                .collect();
+            flat_file_owners.sort_unstable();
+            flat_file_owners.dedup();
+            if let [owner] = flat_file_owners.as_slice() {
+                return Some(owner.clone());
+            }
+            if !flat_file_owners.is_empty() {
+                return None;
+            }
+        }
+
         let local_owner = self.current_module_name.as_ref().map_or_else(
             || trait_bound.to_string(),
             |module| format!("{module}.{trait_bound}"),
@@ -36224,6 +36245,41 @@ impl Sample for Broken {
         assert!(defaults.contains_key("support.greeting.Greet"));
         assert!(!defaults.contains_key("Greet"));
         assert_eq!(module_indices.get("support.greeting.Greet"), Some(&7));
+    }
+
+    #[test]
+    fn root_trait_default_owner_uses_unambiguous_flat_file_binding() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        let owner = hew_types::DefId::new("support.greeting.Greet");
+        ctx.trait_method_ids_by_binding.insert(
+            (None, 7, "Greet".to_string(), "greeting".to_string()),
+            (
+                owner.clone(),
+                hew_types::DefId::new("support.greeting.Greet::greeting"),
+            ),
+        );
+
+        assert_eq!(
+            ctx.trait_default_owner_key("Greet"),
+            Some(owner.full_path().to_string())
+        );
+
+        ctx.trait_method_ids_by_binding.insert(
+            (None, 8, "Greet".to_string(), "greeting".to_string()),
+            (
+                hew_types::DefId::new("other.greeting.Greet"),
+                hew_types::DefId::new("other.greeting.Greet::greeting"),
+            ),
+        );
+        assert_eq!(
+            ctx.trait_default_owner_key("Greet"),
+            None,
+            "same-leaf flat-file traits must remain ambiguous"
+        );
     }
 
     #[test]

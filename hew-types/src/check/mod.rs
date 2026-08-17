@@ -1437,14 +1437,15 @@ impl Checker {
     /// A checker may be reused by front ends, but every table populated while
     /// checking one program must be absent from the next program.  Rebuilding
     /// the checker is less error-prone than maintaining a second, incomplete
-    /// list of registries whenever a new checker-side cache is added.  Keep
-    /// only the caller-owned configuration and the module loader cache, which
-    /// deliberately outlive a single compilation.
+    /// list of registries whenever a new checker-side cache is added. The
+    /// module registry preserves only parsed module data; its active modules
+    /// and derived handle/drop metadata are structurally replaced.
     fn reset_for_program(&mut self) {
         let module_registry = std::mem::replace(
             &mut self.module_registry,
             crate::module_registry::ModuleRegistry::new(vec![]),
-        );
+        )
+        .for_new_program();
         let wasm_target = self.wasm_target;
         let repl_fragment = self.repl_fragment;
         let is_stdlib_source = self.is_stdlib_source;

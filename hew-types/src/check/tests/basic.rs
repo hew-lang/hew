@@ -1657,6 +1657,97 @@ fn checker_reuse_does_not_leak_type_definitions() {
     );
 }
 
+#[test]
+fn checker_reuse_does_not_leak_loaded_handle_methods_into_user_module() {
+    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-types lives under the repo root")
+        .to_path_buf();
+    let mut checker = Checker::new(ModuleRegistry::new(vec![repo_root]));
+
+    let first = hew_parser::parse("import std::net;\n");
+    assert!(
+        first.errors.is_empty(),
+        "first parse errors: {:?}",
+        first.errors
+    );
+    let first_output = checker.check_program(&first.program);
+    assert!(
+        first_output.errors.is_empty(),
+        "first compile should load std.net cleanly, got: {:?}",
+        first_output.errors
+    );
+    assert_eq!(
+        checker
+            .module_registry()
+            .resolve_handle_method("net.Listener", "accept")
+            .as_deref(),
+        Some("hew_tcp_accept"),
+        "first compile should seed the legacy extracted receiver spelling"
+    );
+
+    let second = hew_parser::parse(
+        r"
+        pub type Listener { value: i64; }
+        impl Listener {
+            fn accept(self) -> i64 { self.value }
+        }
+        fn call(listener: Listener) -> i64 { listener.accept() }
+        ",
+    );
+    assert!(
+        second.errors.is_empty(),
+        "second parse errors: {:?}",
+        second.errors
+    );
+    let root_id = ModuleId::root();
+    let module_id = ModuleId::new(vec!["net".to_string()]);
+    let module = Module {
+        id: module_id.clone(),
+        items: second.program.items,
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+    let mut module_graph = ModuleGraph::new(root_id.clone());
+    module_graph
+        .add_module(module)
+        .expect("add user net module");
+    module_graph.topo_order = vec![module_id, root_id];
+    let second_program = Program {
+        module_graph: Some(module_graph),
+        items: vec![],
+        module_doc: None,
+    };
+
+    let second_output = checker.check_program(&second_program);
+    assert!(
+        second_output.errors.is_empty(),
+        "second compile should resolve its own net.Listener::accept: {:?}",
+        second_output.errors
+    );
+    let listener = second_output
+        .type_defs
+        .get("net.Listener")
+        .expect("second compile should publish its own net.Listener declaration");
+    assert!(
+        listener.fields.contains_key("value"),
+        "second compile should retain its own net.Listener fields: {listener:?}"
+    );
+    assert!(
+        !second_output
+            .method_call_rewrites
+            .values()
+            .any(|rewrite| matches!(
+                rewrite,
+                MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                    if c_symbol == "hew_tcp_accept"
+            )),
+        "user net.Listener::accept acquired the cached std.net rewrite: {:?}",
+        second_output.method_call_rewrites
+    );
+}
+
 // --- Reserved compiler type fragments ---
 
 #[test]

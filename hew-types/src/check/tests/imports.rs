@@ -1610,10 +1610,6 @@ fn flat_file_owner_selection_ignores_same_leaf_package_owner() {
         checker.flat_file_import_type_owner("Result"),
         Some("pkg.flat.Result".to_string())
     );
-    assert_eq!(
-        checker.canonical_nominal_name("Result"),
-        Some("pkg.flat.Result".to_string())
-    );
 }
 
 #[test]

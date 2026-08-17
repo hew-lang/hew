@@ -23844,7 +23844,7 @@ impl LowerCtx {
         // retain the root-visible bare spelling. Project it through the same
         // declaration map source annotations use before MIR observes the
         // nominal, preserving the defining file's qualified layout identity.
-        if !name.contains('.') && self.current_module_name.is_none() {
+        if builtin.is_none() && !name.contains('.') && self.current_module_name.is_none() {
             if let Some(canonical) = self.file_import_root_type_aliases.get(&name) {
                 return self.qualify_current_module_record_ty(ResolvedTy::Named {
                     name: canonical.clone(),

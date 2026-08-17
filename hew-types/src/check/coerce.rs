@@ -636,9 +636,18 @@ impl Checker {
             return None;
         }
 
-        let canonical_type_name = self
-            .canonical_nominal_name(concrete_type_name)
-            .unwrap_or_else(|| concrete_type_name.to_string());
+        let canonical_type_name = match concrete_type {
+            Ty::Named { builtin: None, .. } => self
+                .flat_file_import_type_owner(concrete_type_name)
+                .or_else(|| self.canonical_nominal_name(concrete_type_name))
+                .unwrap_or_else(|| concrete_type_name.to_string()),
+            Ty::Named {
+                builtin: Some(_), ..
+            } => concrete_type_name.to_string(),
+            _ => self
+                .canonical_nominal_name(concrete_type_name)
+                .unwrap_or_else(|| concrete_type_name.to_string()),
+        };
         let mut table: Vec<DynVtableEntry> = Vec::with_capacity(trait_info.methods.len());
         for method in &trait_info.methods {
             let impl_fn_key = format!("{canonical_type_name}::{}", method.name);

@@ -504,14 +504,6 @@ impl Checker {
                 return None;
             }
         }
-        // A flat file import shares the root lexical namespace but retains its
-        // declaring file's nominal identity. Prefer that exact owner before
-        // the global same-leaf registry, which may also contain package types.
-        if self.current_module.is_none() {
-            if let Some(owner) = self.flat_file_import_type_owner(name) {
-                return Some(owner);
-            }
-        }
         // Root expressions may carry a compiler builtin through a bare
         // source-facing declaration name (notably `LocalPid`).  Its builtin
         // discriminator is established before lowering; qualifying that
@@ -528,6 +520,9 @@ impl Checker {
         // qualification every non-builtin-shaped leaf receives below — and
         // keep the builtin presentation only when no such user owner exists.
         if self.current_module.is_none() && crate::lookup_builtin_type(name).is_some() {
+            if let Some(owner) = self.flat_file_import_type_owner(name) {
+                return Some(owner);
+            }
             return None;
         }
         // Exactly one module published this bare name → its owner-qualified

@@ -167,17 +167,19 @@ impl Checker {
         member: &str,
         usage: &DottedTypeMemberUse<'_>,
     ) -> Option<Ty> {
-        let (builtin, constructor, expected_arity) = match (head.builtin, member) {
-            (Some(crate::BuiltinType::Option), "Some" | "None") => {
-                (crate::BuiltinType::Option, member, 1)
-            }
-            (Some(crate::BuiltinType::Result), "Ok" | "Err") => {
-                (crate::BuiltinType::Result, member, 2)
-            }
-            _ => return None,
-        };
+        let builtin = head.builtin?;
+        let variant = builtin.enum_variant(member)?;
+        let constructor = variant.name;
+        let expected_arity = builtin.arity();
 
         let result = match usage {
+            DottedTypeMemberUse::Reference { span: _ } if variant.payload_arity == 0 => Ty::Named {
+                builtin: Some(builtin),
+                name: head.canonical_type.clone(),
+                args: (0..expected_arity)
+                    .map(|_| Ty::Var(TypeVar::fresh()))
+                    .collect(),
+            },
             DottedTypeMemberUse::Reference { span } => {
                 self.synthesize_identifier(constructor, span)
             }

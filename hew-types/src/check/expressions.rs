@@ -6310,16 +6310,6 @@ impl Checker {
             return Ty::Error;
         }
 
-        if let Expr::Identifier(type_name) = &object.0 {
-            if type_name == "Option" && field == "None" {
-                return Ty::Named {
-                    name: "Option".to_string(),
-                    args: vec![Ty::Var(TypeVar::fresh())],
-                    builtin: Some(BuiltinType::Option),
-                };
-            }
-        }
-
         if let Some(head) = self.resolve_dotted_type_head(object, field) {
             if let Some(result) = self.dispatch_dotted_type_member(
                 &head,

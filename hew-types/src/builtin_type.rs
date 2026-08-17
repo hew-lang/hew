@@ -97,6 +97,35 @@ pub enum BuiltinType {
     TimeoutError,
 }
 
+/// One constructor variant registered by a compiler-known generic enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuiltinEnumVariant {
+    pub name: &'static str,
+    pub payload_arity: usize,
+}
+
+const OPTION_VARIANTS: &[BuiltinEnumVariant] = &[
+    BuiltinEnumVariant {
+        name: "Some",
+        payload_arity: 1,
+    },
+    BuiltinEnumVariant {
+        name: "None",
+        payload_arity: 0,
+    },
+];
+
+const RESULT_VARIANTS: &[BuiltinEnumVariant] = &[
+    BuiltinEnumVariant {
+        name: "Ok",
+        payload_arity: 1,
+    },
+    BuiltinEnumVariant {
+        name: "Err",
+        payload_arity: 1,
+    },
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuiltinTypeInfo {
     pub kind: BuiltinType,
@@ -226,6 +255,17 @@ builtin_types! {
 }
 
 impl BuiltinType {
+    /// Look up a constructor variant registered for this generic builtin enum.
+    #[must_use]
+    pub fn enum_variant(self, name: &str) -> Option<&'static BuiltinEnumVariant> {
+        let variants = match self {
+            Self::Option => OPTION_VARIANTS,
+            Self::Result => RESULT_VARIANTS,
+            _ => return None,
+        };
+        variants.iter().find(|variant| variant.name == name)
+    }
+
     /// Whether cloning this builtin duplicates only its outer handle and treats
     /// type arguments as protocol/identity tags rather than stored payloads.
     ///

@@ -206,6 +206,8 @@ tests/pkg-import/aliased_import_qualified_field_control.hew
 tests/pkg-import/aliased_import_record_field_member.hew
 tests/pkg-import/aliased_import_type_annotation.hew
 tests/pkg-import/aliased_multimethod_trait_collision_accept.hew
+tests/pkg-import/aliased_selective_function_import.hew
+tests/pkg-import/aliased_selective_type_import.hew
 tests/pkg-import/aliased_subtrait_inline_supermethod_accept.hew
 tests/pkg-import/aliased_trait_sig.hew
 tests/pkg-import/aliased_trait_source_name_collision_accept.hew

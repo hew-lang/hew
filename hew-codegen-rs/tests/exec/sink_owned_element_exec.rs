@@ -198,6 +198,143 @@ fn close_count_is_scoped_to_its_owner_function() {
     );
 }
 
+#[test]
+fn contextual_file_sink_binders_close_once_per_exit() {
+    let dir = std::env::temp_dir().join(format!("hew-contextual-file-sink-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create contextual sink temp dir");
+    let output_path = dir.join("out.txt");
+    let early_path = dir.join("early.txt");
+    let missing_path = dir.join("missing").join("out.txt");
+    let source = r#"import std.stream;
+
+fn if_implicit(path: string) {
+    if let .Ok(sink) = stream.to_file(path) {
+        sink.write("if implicit");
+    }
+}
+
+fn if_explicit(path: string) {
+    if let .Ok(sink) = stream.to_file(path) {
+        sink.write("if explicit");
+        sink.close();
+    }
+}
+
+fn match_implicit(path: string) {
+    match stream.to_file(path) {
+        .Ok(sink) => sink.write("match implicit"),
+        _ => {},
+    }
+}
+
+fn match_explicit(path: string) {
+    match stream.to_file(path) {
+        .Ok(sink) => {
+            sink.write("match explicit");
+            sink.close();
+        },
+        _ => {},
+    }
+}
+
+fn while_implicit(path: string) {
+    while let .Ok(sink) = stream.to_file(path) {
+        sink.write("while implicit");
+        break;
+    }
+}
+
+fn while_explicit(path: string) {
+    while let .Ok(sink) = stream.to_file(path) {
+        sink.write("while explicit");
+        sink.close();
+        break;
+    }
+}
+
+fn let_else_implicit(path: string) {
+    let .Ok(sink) = stream.to_file(path) else { return; };
+    sink.write("let else implicit");
+}
+
+fn let_else_explicit(path: string) {
+    let .Ok(sink) = stream.to_file(path) else { return; };
+    sink.write("let else explicit");
+    sink.close();
+}
+
+fn if_explicit_early(path: string, before: bool, after: bool) {
+    if let .Ok(sink) = stream.to_file(path) {
+        if before { return; }
+        sink.close();
+        if after { return; }
+    }
+}
+
+fn main() {
+    let ok = "__OK_PATH__";
+    let early = "__EARLY_PATH__";
+    let bad = "__BAD_PATH__";
+    if_implicit(ok);
+    if_implicit(bad);
+    if_explicit(ok);
+    if_explicit(bad);
+    match_implicit(ok);
+    match_implicit(bad);
+    match_explicit(ok);
+    match_explicit(bad);
+    while_implicit(ok);
+    while_implicit(bad);
+    while_explicit(ok);
+    while_explicit(bad);
+    let_else_implicit(ok);
+    let_else_implicit(bad);
+    let_else_explicit(ok);
+    let_else_explicit(bad);
+    if_explicit_early(early, true, false);
+    if_explicit_early(early, false, true);
+    if_explicit_early(early, false, false);
+    println("matrix-ok");
+}
+"#
+    .replace("__OK_PATH__", &output_path.to_string_lossy())
+    .replace("__EARLY_PATH__", &early_path.to_string_lossy())
+    .replace("__BAD_PATH__", &missing_path.to_string_lossy());
+
+    let stdout = run_hew_source_env("contextual_file_sink_matrix", &source, true);
+    assert_eq!(stdout, "matrix-ok");
+    assert_eq!(
+        std::fs::read_to_string(&output_path).expect("read final file-sink output"),
+        "let else explicit"
+    );
+
+    let ir = emit_llvm_ir("contextual_file_sink_matrix_ir", &source);
+    let expected_sites = [
+        ("if_implicit", 3, 0),
+        ("if_explicit", 1, 1),
+        ("match_implicit", 3, 0),
+        ("match_explicit", 1, 1),
+        ("while_implicit", 3, 0),
+        ("while_explicit", 1, 1),
+        ("let_else_implicit", 2, 0),
+        ("let_else_explicit", 1, 1),
+        ("if_explicit_early", 4, 1),
+    ];
+    for (function, total, source_calls) in expected_sites {
+        assert_eq!(
+            count_calls_in_function(&ir, function, "hew_sink_close"),
+            total,
+            "{function} must retain exactly its mutually exclusive exit close sites"
+        );
+        assert_eq!(
+            count_source_calls_in_function(&ir, function, "hew_sink_close"),
+            source_calls,
+            "{function} must emit the expected explicit close count"
+        );
+    }
+}
+
 // ── Slice B: awaited non-byte send routing ────────────────────────────────
 
 /// `await sink.send(f"...")` over a `Sink<string>` inside an actor handler

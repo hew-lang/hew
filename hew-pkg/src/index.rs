@@ -187,6 +187,16 @@ pub fn index_path(package_name: &str) -> PathBuf {
     PathBuf::from(package_name)
 }
 
+/// Return the package-level deprecation sidecar beside its index file.
+///
+/// `Path::with_extension` cannot be used for dotted package names because it
+/// would turn `alice.router` into `alice.deprecated`, discarding the final
+/// namespace segment. The sidecar appends its suffix instead.
+#[must_use]
+pub fn deprecation_path(package_name: &str) -> PathBuf {
+    PathBuf::from(format!("{package_name}.deprecated"))
+}
+
 // ── Reading / writing ───────────────────────────────────────────────────────
 
 /// Read all version entries for a package from its index file.
@@ -348,6 +358,18 @@ mod tests {
     #[test]
     fn index_path_preserves_deep_dotted_name() {
         assert_eq!(index_path("std.net.http"), PathBuf::from("std.net.http"));
+    }
+
+    #[test]
+    fn deprecation_path_preserves_every_dotted_segment() {
+        assert_eq!(
+            deprecation_path("alice.router"),
+            PathBuf::from("alice.router.deprecated")
+        );
+        assert_eq!(
+            deprecation_path("std.net.http"),
+            PathBuf::from("std.net.http.deprecated")
+        );
     }
 
     #[test]

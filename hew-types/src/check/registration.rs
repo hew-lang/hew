@@ -11042,7 +11042,7 @@ impl Checker {
                         continue;
                     }
                     if !self.register_machine_type_namespace_names(
-                        Some(module_short),
+                        Some(module_full_path),
                         &md.name,
                         span,
                     ) {
@@ -12214,7 +12214,7 @@ impl Checker {
                         continue;
                     }
                     if !self.register_machine_type_namespace_names(
-                        Some(module_short),
+                        Some(module_full_path),
                         &md.name,
                         span,
                     ) {

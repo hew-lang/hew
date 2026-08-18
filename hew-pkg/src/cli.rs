@@ -1961,9 +1961,7 @@ fn cmd_index_list(package: &str) {
     }
 
     // Check for deprecation metadata alongside the package index file.
-    let deprecation_path = index_dir
-        .join(index::index_path(package))
-        .with_extension("deprecated");
+    let deprecation_path = index_dir.join(index::deprecation_path(package));
     if let Ok(content) = std::fs::read_to_string(&deprecation_path) {
         if let Ok(info) = serde_json::from_str::<index::DeprecationInfo>(&content) {
             if info.deprecated {

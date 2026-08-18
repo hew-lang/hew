@@ -423,29 +423,32 @@ done
 # as an identical root declaration. This specifically exercises publication
 # while the importer is the active checker frame: authority must follow the
 # declaring package, and rejection must stop at the checker boundary.
-prelude_decl_reject="imported_prelude_decl_collision_reject"
-prelude_decl_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${prelude_decl_reject}.hew" 2>&1)" && {
-  echo "FAIL ${prelude_decl_reject}: package-owned Result declaration unexpectedly succeeded" >&2
-  echo "${prelude_decl_out}" >&2
-  exit 1
-}
-if ! grep -q "collides with the protected prelude binding" <<<"${prelude_decl_out}"; then
-  echo "FAIL ${prelude_decl_reject}: expected protected-prelude collision diagnostic" >&2
-  echo "${prelude_decl_out}" >&2
-  exit 1
-fi
-prelude_decl_json="$("${HEW}" check --format json --pkg-path "${PKGS}" "${DIR}/${prelude_decl_reject}.hew" 2>&1 || true)"
-if ! grep -q '"code": "E_PRELUDE_DECL_COLLISION"' <<<"${prelude_decl_json}"; then
-  echo "FAIL ${prelude_decl_reject}: missing E_PRELUDE_DECL_COLLISION code" >&2
-  echo "${prelude_decl_json}" >&2
-  exit 1
-fi
-if grep -qE "E_HIR|E_MIR|E_CODEGEN_FRONT|E_NOT_YET_IMPLEMENTED" <<<"${prelude_decl_out}"; then
-  echo "FAIL ${prelude_decl_reject}: collision reached a downstream lowering boundary" >&2
-  echo "${prelude_decl_out}" >&2
-  exit 1
-fi
-echo "PASS ${prelude_decl_reject}"
+for prelude_decl_reject in \
+  imported_prelude_decl_collision_reject \
+  imported_prelude_machine_collision_reject; do
+  prelude_decl_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${prelude_decl_reject}.hew" 2>&1)" && {
+    echo "FAIL ${prelude_decl_reject}: package-owned Result declaration unexpectedly succeeded" >&2
+    echo "${prelude_decl_out}" >&2
+    exit 1
+  }
+  if [[ "$(grep -c "collides with the protected prelude binding" <<<"${prelude_decl_out}")" -ne 1 ]]; then
+    echo "FAIL ${prelude_decl_reject}: expected exactly one protected-prelude collision diagnostic" >&2
+    echo "${prelude_decl_out}" >&2
+    exit 1
+  fi
+  prelude_decl_json="$("${HEW}" check --format json --pkg-path "${PKGS}" "${DIR}/${prelude_decl_reject}.hew" 2>&1 || true)"
+  if [[ "$(grep -c '"code": "E_PRELUDE_DECL_COLLISION"' <<<"${prelude_decl_json}")" -ne 1 ]]; then
+    echo "FAIL ${prelude_decl_reject}: expected exactly one E_PRELUDE_DECL_COLLISION code" >&2
+    echo "${prelude_decl_json}" >&2
+    exit 1
+  fi
+  if grep -qE "E_HIR|E_MIR|E_CODEGEN_FRONT|E_NOT_YET_IMPLEMENTED" <<<"${prelude_decl_out}"; then
+    echo "FAIL ${prelude_decl_reject}: collision reached a downstream lowering boundary" >&2
+    echo "${prelude_decl_out}" >&2
+    exit 1
+  fi
+  echo "PASS ${prelude_decl_reject}"
+done
 
 # Reject fixture: two imported packages (`hew::replysend`, `hew::replynonsend`)
 # both export a type named `Reply` — one Send (`i64`), one non-Send (`Rc<i64>`).

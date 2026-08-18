@@ -935,30 +935,51 @@ pub(super) fn terminator_escape_places(
     suspend_kind: Option<&SuspendKind>,
     local_tys: &[ResolvedTy],
 ) -> Vec<Place> {
-    let arg_is_borrowed =
-        |builtin: Option<hew_types::runtime_call::RuntimeCallFamily>, place: &Place| -> bool {
-            let arg_ty = base_local(*place).and_then(|l| local_tys.get(l as usize));
-            // A no-close actor-pid leaf is a borrow under ANY callee; the
-            // `is_borrowing_call_abi` allowlist additionally borrows the callee's
-            // non-handle-leaf args by value (e.g. `hew_tcp_attach_local`'s
-            // LocalPid handler — but its `conn` is consumed, so the per-arg
-            // owned-handle-leaf guard keeps `conn` poisoned). The
-            // `is_handle_borrowing_call_abi` allowlist promotes the stricter
-            // shape: the callee borrows EVERY arg including owned-handle leaves
-            // (the stream recv / try_recv runtime entries borrow the stream
-            // handle to read one item — the handle continues to live in the
-            // caller's slot afterwards, identical drop semantics to the
-            // suspending `Terminator::SuspendingStreamNext` path).
-            //
-            // Both allowlists key on the call's carried typed family — a
-            // callee that arrives without its family (`None`) is never
-            // exempted, which fails CLOSED: the arg stays poisoned and the
-            // gate over-refuses rather than ever admitting a phantom borrow.
-            arg_ty.is_some_and(ty_is_nonowning_handle_leaf)
-                || (is_borrowing_call_abi(builtin)
-                    && arg_ty.is_some_and(|t| !ty_is_owned_handle_leaf(t)))
-                || is_handle_borrowing_call_abi(builtin)
-        };
+    let arg_is_borrowed = |builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
+                           index: usize,
+                           place: &Place|
+     -> bool {
+        let arg_ty = base_local(*place).and_then(|l| local_tys.get(l as usize));
+        let is_sink = matches!(
+            arg_ty,
+            Some(ResolvedTy::Named {
+                builtin: Some(BuiltinType::Sink),
+                ..
+            })
+        );
+        // A typed Sink write receiver uses the catalog's per-argument ownership
+        // verdict: the write borrows its handle at index 0. Close and every
+        // unrelated runtime family retain the existing escape posture. A
+        // no-close actor-pid leaf is a borrow under ANY callee; the
+        // `is_borrowing_call_abi` allowlist additionally borrows the callee's
+        // non-handle-leaf args by value (e.g. `hew_tcp_attach_local`'s
+        // LocalPid handler — but its `conn` is consumed, so the per-arg
+        // owned-handle-leaf guard keeps `conn` poisoned). The
+        // `is_handle_borrowing_call_abi` allowlist promotes the stricter
+        // shape: the callee borrows EVERY arg including owned-handle leaves
+        // (the stream recv / try_recv runtime entries borrow the stream
+        // handle to read one item — the handle continues to live in the
+        // caller's slot afterwards, identical drop semantics to the
+        // suspending `Terminator::SuspendingStreamNext` path).
+        //
+        // All three authorities key on the call's carried typed family. A
+        // callee that arrives without its family (`None`) is never exempted,
+        // which fails CLOSED: the arg stays poisoned and the gate over-refuses
+        // rather than ever admitting a phantom borrow.
+        arg_ty.is_some_and(ty_is_nonowning_handle_leaf)
+            || builtin.is_some_and(|family| {
+                index == 0
+                    && is_sink
+                    && matches!(
+                        family,
+                        hew_types::runtime_call::RuntimeCallFamily::SinkWrite(_)
+                    )
+                    && !family.arg_consume_verdict(index).is_consume()
+            })
+            || (is_borrowing_call_abi(builtin)
+                && arg_ty.is_some_and(|t| !ty_is_owned_handle_leaf(t)))
+            || is_handle_borrowing_call_abi(builtin)
+    };
     match term {
         Terminator::Call {
             callee,
@@ -974,14 +995,17 @@ pub(super) fn terminator_escape_places(
             );
             args.iter()
                 .copied()
-                .filter(|place| {
+                .enumerate()
+                .filter_map(|(index, place)| {
                     let borrowed_handle = borrows_owned_handle
-                        && base_local(*place).is_some_and(|local| {
+                        && base_local(place).is_some_and(|local| {
                             local_tys
                                 .get(local as usize)
                                 .is_some_and(ty_is_owned_handle_leaf)
                         });
-                    !(borrowed_handle || arg_is_borrowed(authority.runtime_family(), place))
+                    (!borrowed_handle
+                        && !arg_is_borrowed(authority.runtime_family(), index, &place))
+                    .then_some(place)
                 })
                 .collect()
         }
@@ -1082,6 +1106,52 @@ mod f1_suspending_escape_poison {
             cleanup: 2,
             is_final: false,
         }
+    }
+
+    #[test]
+    fn sink_runtime_receiver_escape_follows_typed_consume_contract() {
+        use hew_types::runtime_call::{RuntimeCallFamily, StreamElementKind};
+
+        let receiver = Place::Local(1);
+        let value = Place::Local(2);
+        let local_tys = vec![ResolvedTy::Unit, sink_string_ty(), ResolvedTy::String];
+        let write = Terminator::Call {
+            callee: "hew_sink_write_string".to_string(),
+            authority: crate::CallAuthority::Runtime(RuntimeCallFamily::SinkWrite(
+                StreamElementKind::String,
+            )),
+            args: vec![receiver, value],
+            dest: None,
+            next: 1,
+        };
+        let write_escapes = terminator_escape_places(&write, None, &local_tys);
+        assert!(!write_escapes.contains(&receiver));
+        assert!(write_escapes.contains(&value));
+
+        let close = Terminator::Call {
+            callee: "hew_sink_close".to_string(),
+            authority: crate::CallAuthority::Runtime(RuntimeCallFamily::SinkClose),
+            args: vec![receiver],
+            dest: None,
+            next: 1,
+        };
+        assert_eq!(
+            terminator_escape_places(&close, None, &local_tys),
+            vec![receiver]
+        );
+
+        let untyped_write = Terminator::Call {
+            callee: "hew_sink_write_string".to_string(),
+            authority: crate::CallAuthority::Direct,
+            args: vec![receiver, value],
+            dest: None,
+            next: 1,
+        };
+        assert_eq!(
+            terminator_escape_places(&untyped_write, None, &local_tys),
+            vec![receiver, value],
+            "an untyped symbol collision must retain fail-closed escape poisoning"
+        );
     }
 
     #[test]

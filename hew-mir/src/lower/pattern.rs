@@ -4621,6 +4621,12 @@ impl Builder {
                     dest,
                     src: payload_source,
                 });
+                let transferred_sink = self.transfer_contextual_sink_payload(
+                    call_scrutinee_owner.as_ref(),
+                    payload_source,
+                    dest,
+                    &binding_ty,
+                );
                 if projected_tuple_owner_active && keep_for_drop_elab {
                     self.push_move_out_neutralize(
                         payload_source,
@@ -4657,7 +4663,7 @@ impl Builder {
                 // that transfer as a re-readable-place move-out. Skip it.
                 let is_fresh_owned_frame_payload =
                     arm_is_fresh_owned_vec_iter_some || arm_is_generator_some || arm_is_recv_some;
-                if !is_fresh_owned_frame_payload {
+                if !is_fresh_owned_frame_payload && !transferred_sink {
                     self.record_projected_payload_provenance(
                         binding.binding,
                         &binding.name,

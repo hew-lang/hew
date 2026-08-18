@@ -121,6 +121,51 @@ impl crate::return_provenance::LeafPolicy for ClosureStringReturnPolicy<'_> {
 }
 
 impl Builder {
+    /// Transfer a runtime-close payload out of a fresh contextual scrutinee.
+    ///
+    /// A builtin `Sink` payload is a nullable handle with a typed runtime close
+    /// descriptor. Once a fresh call carrier is the proven
+    /// owner, moving its active payload into the contextual binder and clearing
+    /// that exact variant slot makes the binder the sole close authority. The
+    /// carrier can still clean up a different active variant on the mismatch
+    /// path, and its drop is a no-op over the cleared handle on the success
+    /// path. User-close resources are deliberately excluded: their close body
+    /// can observe zeroed storage, so nulling a field does not make the shell's
+    /// later user close inert.
+    pub(crate) fn transfer_contextual_sink_payload(
+        &mut self,
+        scrutinee_owner: Option<&(BindingId, ResolvedTy)>,
+        source: Place,
+        dest: Place,
+        binding_ty: &ResolvedTy,
+    ) -> bool {
+        let Some((owner, _)) = scrutinee_owner else {
+            return false;
+        };
+        let Some(source_root) = base_local(source) else {
+            return false;
+        };
+        if self.binding_locals.get(owner) != Some(&Place::Local(source_root))
+            || !matches!(
+                super::drop_plan::resource_drop_fn(binding_ty, &self.type_classes),
+                Some(crate::model::DropFnSpec::Runtime(
+                    hew_types::runtime_call::RuntimeDropDescriptor::SinkClose
+                ))
+            )
+        {
+            return false;
+        }
+        self.push_instr(Instr::NeutralizePayloadSlot {
+            place: source,
+            transferee: Some(dest),
+            authority: crate::model::NeutralizeAuthority::EphemeralTempConsume,
+        });
+        if let Some(local) = base_local(dest) {
+            self.fresh_variant_payload_binder_locals.insert(local);
+        }
+        true
+    }
+
     pub(crate) fn publish_produced_value_place(&mut self, expr: &HirExpr, place: Place) {
         self.published_value_places.insert(expr.site, place);
         let borrowed_publication = self

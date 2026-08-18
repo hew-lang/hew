@@ -48,11 +48,15 @@ pub(super) fn direct_independent_resource_payloads(
                     ..
                 }
             ) && lifecycle_registry.opaque_resource_for_ty(ty).is_some();
-            let consumed_user_close = matches!(
+            let consumed_resource_close = matches!(
                 super::super::drop_plan::resource_drop_fn(ty, type_classes),
-                Some(crate::model::DropFnSpec::UserClose(_))
+                Some(
+                    crate::model::DropFnSpec::Runtime(
+                        hew_types::runtime_call::RuntimeDropDescriptor::SinkClose
+                    ) | crate::model::DropFnSpec::UserClose(_)
+                )
             ) && neutralized_payload_slots.contains(src);
-            if opaque_resource || consumed_user_close {
+            if opaque_resource || consumed_resource_close {
                 payloads.insert(dest);
             }
         }

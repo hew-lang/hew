@@ -58,7 +58,7 @@ use support::leak_slope::{
 use support::{describe_output, require_codegen};
 
 const PROBE_TEMPLATE: &str = r#"
-import std::text::semver;
+import std.text.semver;
 
 fn weighted(matched: bool, weight: i64) -> i64 {
     if matched { weight } else { 0 }

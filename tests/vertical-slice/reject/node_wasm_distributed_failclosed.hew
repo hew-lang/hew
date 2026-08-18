@@ -13,7 +13,7 @@
 // run.sh exercises this under BOTH wasm triples (wasm32-unknown-unknown and
 // wasm32-wasip1) and confirms the identical source still type-checks on native.
 fn main() {
-    Node::start("node-a@127.0.0.1:9000");
-    Node::connect("node-b@127.0.0.1:9001");
-    Node::load_keys("/keys/node.pem");
+    Node.start("node-a@127.0.0.1:9000");
+    Node.connect("node-b@127.0.0.1:9001");
+    Node.load_keys("/keys/node.pem");
 }

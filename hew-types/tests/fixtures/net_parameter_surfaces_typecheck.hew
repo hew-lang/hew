@@ -1,12 +1,12 @@
-import std::net;
+import std.net;
 
-import std::net::quic;
+import std.net.quic;
 
-import std::net::smtp;
+import std.net.smtp;
 
-import std::net::tls;
+import std.net.tls;
 
-import std::net::websocket;
+import std.net.websocket;
 
 fn main() {
     let tls_port: i64 = 443;

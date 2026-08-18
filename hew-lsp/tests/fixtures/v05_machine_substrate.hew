@@ -45,8 +45,8 @@ machine Lifecycle<T: Resource> {
 
 fn machine_substrate_probe() -> string {
     let handle = FileHandle { fd: 7 };
-    var lifecycle: Lifecycle<FileHandle> = Lifecycle::Idle;
-    lifecycle.step(LifecycleEvent::Start { handle: handle });
+    var lifecycle: Lifecycle<FileHandle> = Lifecycle.Idle;
+    lifecycle.step(LifecycleEvent.Start { handle: handle });
     lifecycle.state_name()
 }
 

@@ -2,19 +2,19 @@
 // Testing pattern matching in conditionals and loops
 fn main() {
     let first: Option<i64> = Some(42);
-    if let Some(value) = first {
+    if let .Some(value) = first {
         println(value);
     } else {
         println(0);
     }
     let missing: Option<i64> = None;
-    if let Some(value) = missing {
+    if let .Some(value) = missing {
         println(value);
     } else {
         println("no value");
     }
     var current: Option<i64> = Some(3);
-    while let Some(value) = current {
+    while let .Some(value) = current {
         println(value);
         if value > 0 {
             current = Some(value - 1);

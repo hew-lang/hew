@@ -328,7 +328,7 @@ fn checker_output_contract_prunes_method_call_metadata_for_leaked_inference_var_
 fn module_qualified_call_rewrites_record_registry_c_symbol_metadata() {
     let parsed = hew_parser::parse(
         r#"
-import std::fs;
+import std.fs;
 
 fn main() {
     let _ = fs.exists("test.txt");
@@ -362,7 +362,7 @@ fn main() {
 fn module_qualified_pure_hew_stdlib_wrapper_rewrites_to_qualified_symbol() {
     let parsed = hew_parser::parse(
         r#"
-import std::path;
+import std.path;
 
 fn main() {
     let _ = path.dirname("a/b");

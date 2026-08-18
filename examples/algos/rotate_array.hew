@@ -14,7 +14,7 @@ fn reverse_range(arr: Vec<i32>, start: i32, end: i32) {
 }
 
 fn main() {
-    let arr: Vec<i32> = Vec::new();
+    let arr: Vec<i32> = Vec.new();
     arr.push(1);
     arr.push(2);
     arr.push(3);
@@ -28,7 +28,7 @@ fn main() {
     reverse_range(arr, k as i32, n as i32);
 
     // Expected: [4,5,1,2,3]
-    let expected: Vec<i32> = Vec::new();
+    let expected: Vec<i32> = Vec.new();
     expected.push(4);
     expected.push(5);
     expected.push(1);

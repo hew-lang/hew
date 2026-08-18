@@ -406,7 +406,7 @@ fn consume(h: Holder) -> i64 {\n\
 }\n\
 \n\
 fn main() -> i64 {\n\
-\x20   consume(Holder { n: 0, chain: Chain::End })\n\
+\x20   consume(Holder { n: 0, chain: Chain.End })\n\
 }\n";
     let dump = dump_raw_mir("skip_indirect", source);
     assert!(

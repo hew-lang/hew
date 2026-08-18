@@ -101,7 +101,7 @@ fn frees<'d>(drops: &'d [ElabDrop], symbol: &str) -> Vec<&'d ElabDrop> {
 
 const CONDITIONAL_MOVE: &str = r"
     fn make_vec() -> Vec<i64> {
-        let v: Vec<i64> = Vec::new();
+        let v: Vec<i64> = Vec.new();
         v.push(40);
         v.push(2);
         return v;
@@ -179,7 +179,7 @@ fn unconsumed_local_drop_carries_no_guard() {
     let pipeline = pipeline_with_tc(
         r"
         fn main() -> i64 {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             v.push(1);
             v.len()
         }
@@ -207,7 +207,7 @@ fn unconditional_move_leaves_single_return_release() {
     let pipeline = pipeline_with_tc(
         r"
         fn main() -> i64 {
-            let a: Vec<i64> = Vec::new();
+            let a: Vec<i64> = Vec.new();
             a.push(7);
             let b = a;
             b.len()
@@ -235,7 +235,7 @@ fn conditional_move_hashmap_gets_guarded_return_drop() {
     let pipeline = pipeline_with_tc(
         r#"
         fn probe(take: bool) {
-            let m: HashMap<string, i64> = HashMap::new();
+            let m: HashMap<string, i64> = HashMap.new();
             m.insert("k", 1);
             if take {
                 let n = m;
@@ -263,7 +263,7 @@ fn conditional_move_hashmap_gets_guarded_return_drop() {
 
 const DOUBLE_DESTINATION: &str = r"
     fn make_vec() -> Vec<i64> {
-        let v: Vec<i64> = Vec::new();
+        let v: Vec<i64> = Vec.new();
         v.push(40);
         v.push(2);
         return v;
@@ -327,7 +327,7 @@ fn both_arm_destinations_each_release_once() {
     let pipeline = pipeline_with_tc(
         r"
         fn make_vec() -> Vec<i64> {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             v.push(40);
             v.push(2);
             return v;
@@ -387,7 +387,7 @@ fn mixed_rebind_and_record_ingress_keeps_destination_release() {
     let pipeline = pipeline_with_tc(
         r"
         fn make_vec() -> Vec<i64> {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             v.push(40);
             v.push(2);
             return v;
@@ -462,7 +462,7 @@ fn conditional_borrowing_value_call_drops_on_both_exits() {
         }
 
         fn make_vec() -> Vec<i64> {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             v.push(1);
             return v;
         }
@@ -488,7 +488,7 @@ fn conditional_return_stays_excluded() {
     let pipeline = pipeline_with_tc(
         r"
         fn make_vec() -> Vec<i64> {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             v.push(1);
             return v;
         }
@@ -498,7 +498,7 @@ fn conditional_return_stays_excluded() {
             if take {
                 return xs;
             }
-            let other: Vec<i64> = Vec::new();
+            let other: Vec<i64> = Vec.new();
             other
         }
 

@@ -227,7 +227,7 @@ fn concrete_specialised_builtin_var_self_preserves_vec_dispatch_authority() {
 
 #[test]
 fn user_generic_builtin_shadow_var_self_preserves_source_identity() {
-    let output = check_source(
+    let output = check_source_allowing_prelude_redeclaration(
         r"
         type Option<T> { value: T; }
 

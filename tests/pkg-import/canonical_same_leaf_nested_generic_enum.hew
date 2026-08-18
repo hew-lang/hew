@@ -5,8 +5,8 @@
 // Each owner constructs, clones, matches, and consumes its own enum.  This is
 // an end-to-end layout/clone/drop oracle: neither generic enum layout nor its
 // owned payload traversal may retry by leaf name.
-import left::render as left_render;
-import right::render as right_render;
+import left.render as left_render;
+import right.render as right_render;
 
 fn main() {
     println(left_render.clone_and_consume_parcel(left_render.make_parcel()));

@@ -13,7 +13,7 @@
 //! `HEW_WORKERS=1` to be deterministic) is a separate manual validation gate,
 //! not asserted here where the ratchet runs with the default worker count.
 
-import std::testing;
+import std.testing;
 
 actor Sleeper {
     var done: i64 = 0;
@@ -37,8 +37,8 @@ fn sleep_returns_after_duration_in_handler() {
     // The handler sleeps 20ms then increments; the value proves the handler
     // resumed correctly after the timer fired (exact value 1, not >= 1).
     match await s.nap(20ms) {
-        Ok(n) => testing.assert_eq(n, 1),
-        Err(_) => testing.assert_true(false),
+        .Ok(n) => testing.assert_eq(n, 1),
+        .Err(_) => testing.assert_true(false),
     }
 }
 
@@ -50,8 +50,8 @@ fn two_sleeps_in_one_handler_resume_in_order() {
     // suspend points resumed in order through one persistent frame — a
     // multi-suspend frame correctness check, not just a single-suspend pass.
     match await s.nap_twice(15ms) {
-        Ok(n) => testing.assert_eq(n, 11),
-        Err(_) => testing.assert_true(false),
+        .Ok(n) => testing.assert_eq(n, 11),
+        .Err(_) => testing.assert_true(false),
     }
 }
 
@@ -67,15 +67,15 @@ fn many_handlers_each_sleep_then_resume() {
     let rb = await b.nap(10ms);
     let rc = await c.nap(10ms);
     match ra {
-        Ok(na) => testing.assert_eq(na, 1),
-        Err(_) => testing.assert_true(false),
+        .Ok(na) => testing.assert_eq(na, 1),
+        .Err(_) => testing.assert_true(false),
     }
     match rb {
-        Ok(nb) => testing.assert_eq(nb, 1),
-        Err(_) => testing.assert_true(false),
+        .Ok(nb) => testing.assert_eq(nb, 1),
+        .Err(_) => testing.assert_true(false),
     }
     match rc {
-        Ok(nc) => testing.assert_eq(nc, 1),
-        Err(_) => testing.assert_true(false),
+        .Ok(nc) => testing.assert_eq(nc, 1),
+        .Err(_) => testing.assert_true(false),
     }
 }

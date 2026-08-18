@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 /// An installed package discovered in the global registry.
 #[derive(Debug)]
 pub struct InstalledPackage {
-    /// Package name in `::` notation, e.g. `std::net::http`.
+    /// Package name in dotted notation, e.g. `std.net.http`.
     pub name: String,
     /// Installed version string, e.g. `1.0.0`.
     pub version: String,
@@ -17,10 +17,10 @@ pub struct InstalledPackage {
 ///
 /// Package layout on disk:
 /// ```text
-/// ~/.hew/packages/{seg1}/{seg2}/{…}/{version}/hew.toml
+/// ~/.hew/packages/{package}/{version}/hew.toml
 /// ```
-/// e.g. `~/.hew/packages/std/net/http/1.0.0/hew.toml`
-/// corresponds to the package `std::net::http` at version `1.0.0`.
+/// e.g. `~/.hew/packages/std.net.http/1.0.0/hew.toml`
+/// corresponds to the package `std.net.http` at version `1.0.0`.
 #[derive(Debug)]
 pub struct Registry {
     root: PathBuf,
@@ -45,16 +45,12 @@ impl Registry {
 
     /// Return the directory for a specific package name and version.
     ///
-    /// Package names use `::` as namespace separator; each segment becomes a
-    /// directory component.  For example `ecosystem::db::postgres` at `1.0.0`
-    /// returns `<root>/ecosystem/db/postgres/1.0.0`.
+    /// Dotted package names are valid directory names. For example
+    /// `ecosystem.db.postgres` at `1.0.0` returns
+    /// `<root>/ecosystem.db.postgres/1.0.0`.
     #[must_use]
     pub fn package_dir(&self, name: &str, version: &str) -> PathBuf {
-        let mut path = self.root.clone();
-        for part in name.split("::") {
-            path = path.join(part);
-        }
-        path.join(version)
+        self.root.join(name).join(version)
     }
 
     /// Return `true` if `name@version` is present in the registry.
@@ -73,7 +69,7 @@ impl Registry {
     ///
     /// A directory is considered an installed package version when it contains
     /// a `hew.toml` file.  The path relative to the registry root determines
-    /// the name (all but the last segment joined with `::`) and version (the
+    /// the name (all but the last segment joined with dots) and version (the
     /// last segment).
     #[must_use]
     pub fn list_packages(&self) -> Vec<InstalledPackage> {
@@ -122,7 +118,7 @@ fn collect_packages(
             if let Some((version, name_parts)) = parts.split_last() {
                 if !name_parts.is_empty() {
                     packages.push(InstalledPackage {
-                        name: name_parts.join("::"),
+                        name: name_parts.join("."),
                         version: (*version).to_string(),
                         path: dir.to_path_buf(),
                     });
@@ -152,15 +148,8 @@ mod tests {
     fn package_dir_namespaced() {
         let dir = tempfile::tempdir().unwrap();
         let reg = Registry::with_root(dir.path().to_path_buf());
-        let p = reg.package_dir("ecosystem::db::postgres", "1.0.0");
-        assert_eq!(
-            p,
-            dir.path()
-                .join("ecosystem")
-                .join("db")
-                .join("postgres")
-                .join("1.0.0")
-        );
+        let p = reg.package_dir("ecosystem.db.postgres", "1.0.0");
+        assert_eq!(p, dir.path().join("ecosystem.db.postgres").join("1.0.0"));
     }
 
     #[test]
@@ -175,17 +164,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let reg = Registry::with_root(dir.path().to_path_buf());
 
-        let pkg_dir = reg.package_dir("std::net::http", "1.0.0");
+        let pkg_dir = reg.package_dir("std.net.http", "1.0.0");
         std::fs::create_dir_all(&pkg_dir).unwrap();
         std::fs::write(
             pkg_dir.join("hew.toml"),
-            "[package]\nname = \"std::net::http\"\nversion = \"1.0.0\"\n",
+            "[package]\nname = \"std.net.http\"\nversion = \"1.0.0\"\n",
         )
         .unwrap();
 
         let pkgs = reg.list_packages();
         assert_eq!(pkgs.len(), 1);
-        assert_eq!(pkgs[0].name, "std::net::http");
+        assert_eq!(pkgs[0].name, "std.net.http");
         assert_eq!(pkgs[0].version, "1.0.0");
     }
 
@@ -195,8 +184,8 @@ mod tests {
         let reg = Registry::with_root(dir.path().to_path_buf());
 
         for (name, ver) in [
-            ("std::net::http", "1.0.0"),
-            ("ecosystem::db::postgres", "2.1.0"),
+            ("std.net.http", "1.0.0"),
+            ("ecosystem.db.postgres", "2.1.0"),
         ] {
             let pkg_dir = reg.package_dir(name, ver);
             std::fs::create_dir_all(&pkg_dir).unwrap();
@@ -210,23 +199,23 @@ mod tests {
         let mut pkgs = reg.list_packages();
         pkgs.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(pkgs.len(), 2);
-        assert_eq!(pkgs[0].name, "ecosystem::db::postgres");
-        assert_eq!(pkgs[1].name, "std::net::http");
+        assert_eq!(pkgs[0].name, "ecosystem.db.postgres");
+        assert_eq!(pkgs[1].name, "std.net.http");
     }
 
     #[test]
     fn is_installed_returns_false_when_absent() {
         let dir = tempfile::tempdir().unwrap();
         let reg = Registry::with_root(dir.path().to_path_buf());
-        assert!(!reg.is_installed("std::net::http", "1.0.0"));
+        assert!(!reg.is_installed("std.net.http", "1.0.0"));
     }
 
     #[test]
     fn is_installed_returns_true_when_present() {
         let dir = tempfile::tempdir().unwrap();
         let reg = Registry::with_root(dir.path().to_path_buf());
-        let pkg_dir = reg.package_dir("std::net::http", "1.0.0");
+        let pkg_dir = reg.package_dir("std.net.http", "1.0.0");
         std::fs::create_dir_all(&pkg_dir).unwrap();
-        assert!(reg.is_installed("std::net::http", "1.0.0"));
+        assert!(reg.is_installed("std.net.http", "1.0.0"));
     }
 }

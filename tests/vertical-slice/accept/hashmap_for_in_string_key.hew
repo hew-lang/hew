@@ -6,7 +6,7 @@
 // key with the source map. Keys "a","bb","ccc" (lens 1+2+3 = 6) with values
 // 1,2,3 (sum 6): exit 12.
 pub fn main() -> i64 {
-    let m: HashMap<string, i64> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap.new();
     m.insert("a", 1);
     m.insert("bb", 2);
     m.insert("ccc", 3);

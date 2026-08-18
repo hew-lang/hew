@@ -19,7 +19,7 @@ fn hew_wasi_unicode_is_punct_matches_all_unicode_17_punctuation_scalars() {
     let source = dir.path().join("punctuation_oracle.hew");
     fs::write(
         &source,
-        r"import std::text::unicode;
+        r"import std.text.unicode;
 
 fn main() {
     for cp in 0 .. 1114112 {

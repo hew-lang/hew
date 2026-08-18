@@ -16,7 +16,7 @@ actor Counter {
     var count: i64;
     receive fn handle(msg: CounterMsg) {
         match msg {
-            CounterMsg::Increment(n) => {
+            CounterMsg.Increment(n) => {
                 count = count + n;
             },
         }
@@ -33,10 +33,10 @@ impl ActorMsg for Counter {
 
 fn lookup_counter() -> Result<RemotePid<Counter>, LookupError> {
     for attempt in 0 .. 40 {
-        let found: Result<RemotePid<Counter>, LookupError> = Node::lookup("counter");
+        let found: Result<RemotePid<Counter>, LookupError> = Node.lookup("counter");
         match found {
-            Ok(counter) => return Ok(counter),
-            Err(error) => {
+            .Ok(counter) => return Ok(counter),
+            .Err(error) => {
                 if attempt == 39 {
                     return Err(error);
                 }
@@ -44,43 +44,43 @@ fn lookup_counter() -> Result<RemotePid<Counter>, LookupError> {
             },
         }
     }
-    Err(LookupError::NotFound)
+    Err(LookupError.NotFound)
 }
 
 fn main() {
     println("[client] starting QUIC mesh node...");
-    Node::set_transport("quic");
-    Node::start("127.0.0.1:9001");
+    Node.set_transport("quic");
+    Node.start("127.0.0.1:9001");
     println("[client] listening on 127.0.0.1:9001 (QUIC/TLS 1.3)");
 
     // Connect to the server node over QUIC.
     println("[client] connecting to server at 127.0.0.1:9000...");
-    Node::connect("127.0.0.1:9000");
+    Node.connect("127.0.0.1:9000");
     println("[client] connected (QUIC/TLS 1.3 encrypted)");
 
     // Look up the remote Counter actor via cross-node registry gossip.
     let found = lookup_counter();
     match found {
-        Err(_) => println("[client] remote 'counter' actor was not found"),
-        Ok(counter) => {
+        .Err(_) => println("[client] remote 'counter' actor was not found"),
+        .Ok(counter) => {
             println("[client] found remote 'counter' actor via registry gossip");
-            match counter.send(CounterMsg::Increment(10)) {
-                Ok(_) => {},
-                Err(_) => println("[client] failed to send increment 10"),
+            match counter.send(CounterMsg.Increment(10)) {
+                .Ok(_) => {},
+                .Err(_) => println("[client] failed to send increment 10"),
             }
-            match counter.send(CounterMsg::Increment(20)) {
-                Ok(_) => {},
-                Err(_) => println("[client] failed to send increment 20"),
+            match counter.send(CounterMsg.Increment(20)) {
+                .Ok(_) => {},
+                .Err(_) => println("[client] failed to send increment 20"),
             }
-            match counter.send(CounterMsg::Increment(30)) {
-                Ok(_) => {},
-                Err(_) => println("[client] failed to send increment 30"),
+            match counter.send(CounterMsg.Increment(30)) {
+                .Ok(_) => {},
+                .Err(_) => println("[client] failed to send increment 30"),
             }
             println("[client] sent 3 increments to remote counter");
         },
     }
     // Allow messages to be delivered.
     sleep(500ms);
-    Node::shutdown();
+    Node.shutdown();
     println("[client] shut down");
 }

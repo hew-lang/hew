@@ -115,14 +115,14 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
 }
 
 fn test_insert_front() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_front(n, head, 30);
     head = insert_front(n, head, 20);
     head = insert_front(n, head, 10);
-    let r: Vec<i64> = Vec::new();
+    let r: Vec<i64> = Vec.new();
     traverse_forward(n, head, r);
-    let e: Vec<i64> = Vec::new();
+    let e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(20);
     e.push(30);
@@ -135,14 +135,14 @@ fn test_insert_front() -> i64 {
 }
 
 fn test_insert_back() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_back(n, head, 10);
     head = insert_back(n, head, 20);
     head = insert_back(n, head, 30);
-    let r: Vec<i64> = Vec::new();
+    let r: Vec<i64> = Vec.new();
     traverse_forward(n, head, r);
-    let e: Vec<i64> = Vec::new();
+    let e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(20);
     e.push(30);
@@ -155,14 +155,14 @@ fn test_insert_back() -> i64 {
 }
 
 fn test_backward_traverse() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_back(n, head, 10);
     head = insert_back(n, head, 20);
     head = insert_back(n, head, 30);
-    let r: Vec<i64> = Vec::new();
+    let r: Vec<i64> = Vec.new();
     traverse_backward(n, head, r);
-    let e: Vec<i64> = Vec::new();
+    let e: Vec<i64> = Vec.new();
     e.push(30);
     e.push(20);
     e.push(10);
@@ -175,20 +175,20 @@ fn test_backward_traverse() -> i64 {
 }
 
 fn test_delete() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_back(n, head, 10);
     head = insert_back(n, head, 20);
     head = insert_back(n, head, 30);
     head = delete_val(n, head, 20);
-    let fwd: Vec<i64> = Vec::new();
+    let fwd: Vec<i64> = Vec.new();
     traverse_forward(n, head, fwd);
-    let ef: Vec<i64> = Vec::new();
+    let ef: Vec<i64> = Vec.new();
     ef.push(10);
     ef.push(30);
-    let bwd: Vec<i64> = Vec::new();
+    let bwd: Vec<i64> = Vec.new();
     traverse_backward(n, head, bwd);
-    let eb: Vec<i64> = Vec::new();
+    let eb: Vec<i64> = Vec.new();
     eb.push(30);
     eb.push(10);
     if vecs_equal(fwd, ef) == 1 {
@@ -202,7 +202,7 @@ fn test_delete() -> i64 {
 }
 
 fn test_delete_head() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_back(n, head, 10);
     head = insert_back(n, head, 20);
@@ -218,12 +218,12 @@ fn test_delete_head() -> i64 {
 }
 
 fn test_delete_tail() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_back(n, head, 10);
     head = insert_back(n, head, 20);
     head = delete_val(n, head, 20);
-    let r: Vec<i64> = Vec::new();
+    let r: Vec<i64> = Vec.new();
     traverse_forward(n, head, r);
     if r.len() == 1 {
         if r[0] == 10 {

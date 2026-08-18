@@ -12,9 +12,9 @@ impl Tok {
 }
 
 fn main() {
-    let v: Vec<Tok> = Vec::new();
+    let v: Vec<Tok> = Vec.new();
     v.push(Tok { id: 1 });
-    let w: Vec<Tok> = Vec::new();
+    let w: Vec<Tok> = Vec.new();
     let e = v[0];
     w.push(e);
     println("body");

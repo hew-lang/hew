@@ -35,7 +35,7 @@ fn get_digits(num: i64, digits: Vec<i64>) -> i64 {
         return 0;
     }
     var n = num;
-    let tmp: Vec<i64> = Vec::new();
+    let tmp: Vec<i64> = Vec.new();
     while n > 0 {
         tmp.push(n - n / 10 * 10);
         n = n / 10;
@@ -50,7 +50,7 @@ fn get_digits(num: i64, digits: Vec<i64>) -> i64 {
 }
 
 fn trie_insert(nodes: Vec<i64>, num: i64, NIL: i64) -> i64 {
-    let digits: Vec<i64> = Vec::new();
+    let digits: Vec<i64> = Vec.new();
     let _ = get_digits(num, digits);
     var cur = 0;
     for d in digits {
@@ -68,7 +68,7 @@ fn trie_insert(nodes: Vec<i64>, num: i64, NIL: i64) -> i64 {
 }
 
 fn trie_search(nodes: Vec<i64>, num: i64, NIL: i64) -> bool {
-    let digits: Vec<i64> = Vec::new();
+    let digits: Vec<i64> = Vec.new();
     let _ = get_digits(num, digits);
     var cur = 0;
     var found = true;
@@ -89,7 +89,7 @@ fn trie_search(nodes: Vec<i64>, num: i64, NIL: i64) -> bool {
 }
 
 fn trie_starts_with(nodes: Vec<i64>, prefix: i64, NIL: i64) -> bool {
-    let digits: Vec<i64> = Vec::new();
+    let digits: Vec<i64> = Vec.new();
     let _ = get_digits(prefix, digits);
     var cur = 0;
     var found = true;
@@ -108,7 +108,7 @@ fn trie_starts_with(nodes: Vec<i64>, prefix: i64, NIL: i64) -> bool {
 
 fn test_insert_and_search() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     let _ = new_trie_node(nodes, NIL); // root
     let _ = trie_insert(nodes, 123, NIL);
     let _ = trie_insert(nodes, 456, NIL);
@@ -136,7 +136,7 @@ fn test_insert_and_search() -> i64 {
 
 fn test_starts_with() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     let _ = new_trie_node(nodes, NIL);
     let _ = trie_insert(nodes, 1234, NIL);
     let _ = trie_insert(nodes, 1256, NIL);
@@ -164,7 +164,7 @@ fn test_starts_with() -> i64 {
 
 fn test_zero() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     let _ = new_trie_node(nodes, NIL);
     let _ = trie_insert(nodes, 0, NIL);
     let found = trie_search(nodes, 0, NIL);
@@ -179,7 +179,7 @@ fn test_zero() -> i64 {
 
 fn test_overlapping_numbers() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     let _ = new_trie_node(nodes, NIL);
     let _ = trie_insert(nodes, 1, NIL);
     let _ = trie_insert(nodes, 12, NIL);
@@ -204,7 +204,7 @@ fn test_overlapping_numbers() -> i64 {
 
 fn test_many_numbers() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     let _ = new_trie_node(nodes, NIL);
     // Insert 100, 200, ..., 900
     var i = 1;

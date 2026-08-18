@@ -1,7 +1,7 @@
 // Regression for F17: the `?` desugar must preserve the checker-selected
 // payload representation. An opaque JSON Value remains pointer-shaped instead
 // of becoming an inline `%std.encoding.json.Value = type {}` local.
-import std::encoding::json;
+import std.encoding.json;
 
 type Box<T> {
     value: T;

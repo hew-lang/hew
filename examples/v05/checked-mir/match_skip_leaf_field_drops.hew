@@ -52,7 +52,7 @@ fn skip_string_tuple(k: i64) -> i64 {
 }
 
 fn skip_vec_record(k: i64) -> i64 {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     v.push(string_concat("leaf-v-", "payload"));
     let t = TaggedVec { n: k, items: v };
     let x = match t {

@@ -13,7 +13,7 @@
 // caller retains the stream handle for outbound writes; the actor only receives
 // inbound `on_data` / `on_close` messages from the background reader thread.
 // This is the same pattern as WebSocket active mode.
-import std::net::tls;
+import std.net.tls;
 
 // An actor that receives TLS data chunks from the background reader.
 // The TlsStream handle is passed in so the actor can echo data back.

@@ -1,4 +1,4 @@
-import std::string;
+import std.string;
 
 enum Choice<T> {
     Present(T);
@@ -11,23 +11,17 @@ record EnumHolder<T> {
 }
 
 fn replace_many(frames: i64) -> i64 {
-    var enums = EnumHolder {
-        item: Choice::Present(string.repeat("initial", 8)),
-        count: 0,
-    };
+    var enums = EnumHolder { item: Choice.Present(string.repeat("initial", 8)), count: 0 };
     var i = 0;
     while i < frames {
-        enums.item = Choice::Present(string.repeat("replacement", 8));
+        enums.item = Choice.Present(string.repeat("replacement", 8));
         i = i + 1;
     }
     enums.count
 }
 
 fn untouched() -> i64 {
-    let enums = EnumHolder {
-        item: Choice::Present(string.repeat("untouched", 8)),
-        count: 0,
-    };
+    let enums = EnumHolder { item: Choice.Present(string.repeat("untouched", 8)), count: 0 };
     enums.count
 }
 

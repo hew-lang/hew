@@ -3,7 +3,7 @@
 // value with offset > 0 must report NOT empty -- the Vec-backed shim mis-read
 // the len field over the triple's offset bytes; the dedicated entry reads len.
 fn main() -> i64 {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     if !b.is_empty() {
         return 61;
     }

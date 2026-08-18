@@ -124,7 +124,7 @@ fn vec_iter_owned_yields_and_first_class_cursors_balance_exact_counts() {
         }
 
         fn tuple_total() -> i64 {
-            let pairs: Vec<(string, string)> = Vec::new();
+            let pairs: Vec<(string, string)> = Vec.new();
             pairs.push(("alpha" + "-left", "alpha" + "-right"));
             pairs.push(("beta" + "-left", "beta" + "-right"));
             var total = 0;
@@ -135,8 +135,8 @@ fn vec_iter_owned_yields_and_first_class_cursors_balance_exact_counts() {
         }
 
         fn main() {
-            let root = Rc::new(7);
-            let values: Vec<Rc<i64>> = Vec::new();
+            let root = Rc.new(7);
+            let values: Vec<Rc<i64>> = Vec.new();
             values.push(root);
             if root.strong_count() != 2 { panic("Rc source count"); }
 
@@ -159,7 +159,7 @@ fn vec_iter_owned_yields_and_first_class_cursors_balance_exact_counts() {
             if root.strong_count() != 2 { panic("Rc manual cursor exit count"); }
 
             let edge = root.downgrade();
-            let weak_values: Vec<Weak<i64>> = Vec::new();
+            let weak_values: Vec<Weak<i64>> = Vec.new();
             weak_values.push(edge);
             if root.weak_count() != 2 { panic("Weak source count"); }
             for weak in weak_values.iter() {
@@ -331,8 +331,8 @@ fn vec_iter_cursor_transfers_are_path_sensitive_and_overwrite_safe() {
         }
 
         fn main() {
-            let root = Rc::new(11);
-            let values: Vec<Rc<i64>> = Vec::new();
+            let root = Rc.new(11);
+            let values: Vec<Rc<i64>> = Vec.new();
             values.push(root);
             print(root.strong_count());
 
@@ -363,8 +363,8 @@ fn vec_iter_cursor_transfers_are_path_sensitive_and_overwrite_safe() {
             loop_edges(values);
             print(root.strong_count());
 
-            let other_root = Rc::new(22);
-            let other_values: Vec<Rc<i64>> = Vec::new();
+            let other_root = Rc.new(22);
+            let other_values: Vec<Rc<i64>> = Vec.new();
             other_values.push(other_root);
             binding_reassign(values, other_values, root, other_root);
             if root.strong_count() != 2 { panic("assignment first final count"); }
@@ -392,8 +392,8 @@ fn vec_iter_non_owning_values_and_call_carriers_release_exactly_once() {
         }
 
         fn main() {
-            let root = Rc::new(11);
-            let values: Vec<Rc<i64>> = Vec::new();
+            let root = Rc.new(11);
+            let values: Vec<Rc<i64>> = Vec.new();
             values.push(root);
 
             {
@@ -488,7 +488,7 @@ fn for_in_simple_concat_runs_correct() {
             out
         }
         fn main() {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             v.push("foo"); v.push("bar"); v.push("baz");
             print(join_all(v));
         }
@@ -515,7 +515,7 @@ fn for_in_continue_skips_empty_runs_correct() {
             out
         }
         fn main() {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             v.push("a"); v.push(""); v.push("b"); v.push(""); v.push("c");
             print(keep_nonempty(v));
         }
@@ -542,7 +542,7 @@ fn for_in_break_at_sentinel_runs_correct() {
             out
         }
         fn main() {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             v.push("one"); v.push("two"); v.push("STOP"); v.push("three");
             print(until_stop(v));
         }
@@ -565,7 +565,7 @@ fn for_in_unused_binding_runs_correct() {
             n
         }
         fn main() {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             v.push("x"); v.push("y"); v.push("z");
             print(f"{count_iters(v)}");
         }
@@ -591,7 +591,7 @@ fn for_in_returned_binding_runs_correct() {
             "none"
         }
         fn main() {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             v.push("alpha"); v.push("beta"); v.push("gamma");
             print(first_match(v, "beta"));
         }
@@ -612,7 +612,7 @@ fn for_in_stress_branched_runs_correct() {
         "stress",
         r#"
         fn build(n: i64) -> Vec<string> {
-            var v: Vec<string> = Vec::new();
+            var v: Vec<string> = Vec.new();
             for i in 0..n {
                 if i % 3 == 0 { v.push("fizz"); } else { v.push("buzz"); }
             }

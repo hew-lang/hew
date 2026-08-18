@@ -1,4 +1,4 @@
-import std::channel::channel;
+import std.channel.channel;
 
 // Sender is a cloneable Vec element. The first Vec takes tx by move, the
 // second one is a descriptor-backed clone, and both must drop exactly one

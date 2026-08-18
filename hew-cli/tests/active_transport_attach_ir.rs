@@ -16,9 +16,9 @@ use tempfile::tempdir;
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const SOURCE: &str = r#"
-import std::net;
-import std::net::tls;
-import std::net::websocket;
+import std.net;
+import std.net.tls;
+import std.net.websocket;
 
 actor TcpProbe {
     receive fn on_data(data: bytes) {}
@@ -60,7 +60,7 @@ fn main() {}
 /// before code generation; accepting it would schedule a stale scope-drop
 /// against a handle now owned by active-mode shutdown.
 const TCP_ATTACH_USE_AFTER_TRANSFER_SOURCE: &str = r"
-import std::net;
+import std.net;
 
 actor TcpProbe {
     receive fn on_data(data: bytes) {}

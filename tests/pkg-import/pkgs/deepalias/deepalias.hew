@@ -12,12 +12,12 @@
 //! Root-importer fixtures (path depth 1) cannot catch this: short and full keys
 //! coincide there. Only an alias declared and used INSIDE a package module
 //! exercises the per-module key agreement.
-import hew::aliassrc::{ Color as Hue, Payload as Tag };
+import hew.aliassrc.{ Color as Hue, Payload as Tag };
 
 /// `Hue` used in TYPE-ANNOTATION position (return type) and VARIANT-PATH
 /// position (`Hue::Blue`).
 pub fn make() -> Hue {
-    Hue::Blue(42)
+    Hue.Blue(42)
 }
 
 /// `Tag` (record alias) used in type-annotation position (parameter) plus a
@@ -29,7 +29,7 @@ pub fn code_of(t: Tag) -> i64 {
 pub fn score() -> i64 {
     let c: Hue = make();
     let n: i64 = match c {
-        Hue::Blue(v) => v,
+        Hue.Blue(v) => v,
         _ => 0,
     };
     let t: Tag = Tag { code: 8 };

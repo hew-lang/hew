@@ -3,7 +3,7 @@
 // pins the generic-record drop spine independently from nested string-concat
 // temps: a double-free SIGSEGVs and a missed field drop leaks; 100k iterations
 // surface either without relying on `first + " " + last`.
-import std::string;
+import std.string;
 
 type Pair<A, B> {
     first: A;

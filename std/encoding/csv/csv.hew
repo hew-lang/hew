@@ -16,7 +16,7 @@
 //! }
 //! ```
 
-import std::fs;
+import std.fs;
 
 /// A parsed CSV table with headers and data rows.
 type Table {
@@ -127,7 +127,7 @@ pub fn parse(data: string) -> Table {
         Ok(tbl) => tbl,
         Err(reason) => {
             panic(reason);
-            Table { hdrs: Vec::new(), data: Vec::new() }
+            Table { hdrs: Vec.new(), data: Vec.new() }
         },
     }
 }
@@ -141,7 +141,7 @@ pub fn parse_no_headers(data: string) -> Table {
         Ok(tbl) => tbl,
         Err(reason) => {
             panic(reason);
-            Table { hdrs: Vec::new(), data: Vec::new() }
+            Table { hdrs: Vec.new(), data: Vec.new() }
         },
     }
 }
@@ -156,7 +156,7 @@ pub fn parse_file(path: string) -> Table {
         Ok(tbl) => tbl,
         Err(reason) => {
             panic(reason);
-            Table { hdrs: Vec::new(), data: Vec::new() }
+            Table { hdrs: Vec.new(), data: Vec.new() }
         },
     }
 }
@@ -176,14 +176,14 @@ pub fn parse_file(path: string) -> Table {
 /// consumed before advancing to the next field. Inside a quoted field
 /// (state 2), '\r\n' is preserved verbatim in the field value per RFC 4180 §2.6.
 fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
-    let headers: Vec<string> = Vec::new();
-    let rows: Vec<Vec<string>> = Vec::new();
+    let headers: Vec<string> = Vec.new();
+    let rows: Vec<Vec<string>> = Vec.new();
     let ilen = data.len();
     if ilen == 0 {
         return Ok(Table { hdrs: headers, data: rows });
     }
     // Current row accumulator and field accumulator.
-    let cur_row: Vec<string> = Vec::new();
+    let cur_row: Vec<string> = Vec.new();
     var cur_field = "";
     // state: 0=Outside, 1=InUnquoted, 2=InQuoted, 3=AfterClosingQuote
     var state = 0;

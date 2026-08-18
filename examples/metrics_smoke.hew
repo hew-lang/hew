@@ -1,13 +1,13 @@
 //! Status: runnable
 //! Description: metrics_smoke.hew — declare user metrics and read them back from the observe scrape
 
-// Declares a counter, a gauge, and a histogram through std::metrics, mutates
+// Declares a counter, a gauge, and a histogram through std.metrics, mutates
 // each, then reads the values back out of the shared observe scrape surface and
 // asserts the exact emitted values. The same scrape that carries the runtime
 // built-ins now also carries developer-defined metrics.
-import std::metrics;
+import std.metrics;
 
-import std::observe;
+import std.observe;
 
 fn main() {
     // Counter: register, increment five times, add four more → 9.
@@ -39,8 +39,8 @@ fn main() {
     // try_* recovers a structured error instead of panicking. Re-registering
     // an existing name returns a handle to the same slot.
     match metrics.try_counter("app.requests") {
-        Ok(again) => again.inc(), // app.requests → 10
-        Err(_) => println("unexpected counter rejection"),
+        .Ok(again) => again.inc(), // app.requests → 10
+        .Err(_) => println("unexpected counter rejection"),
     }
     let scrape = observe.scrape();
     println(scrape);

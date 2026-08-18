@@ -27,7 +27,7 @@ impl QualifiedCtorInput {
         };
 
         format!(
-            r#"import std::fs;
+            r#"import std.fs;
 
 fn fuzz_qualified_ctor_resolution() -> i64 {{
     let err = {ctor}({});

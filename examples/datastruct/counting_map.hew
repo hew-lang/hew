@@ -10,7 +10,7 @@ fn hash(key: i64, capacity: i64) -> i64 {
 }
 
 fn make_keys(capacity: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     let EMPTY = 0 - 1;
     for i in 0 .. capacity {
         v.push(EMPTY);
@@ -19,7 +19,7 @@ fn make_keys(capacity: i64) -> Vec<i64> {
 }
 
 fn make_vals(capacity: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     for i in 0 .. capacity {
         v.push(0);
     }

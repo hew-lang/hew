@@ -3,9 +3,9 @@
 //! Sanitized output must stay HTML: the Markdown-generated structure survives
 //! and only author-written raw HTML and refused URLs are removed.
 
-import std::encoding::markdown;
+import std.encoding.markdown;
 
-import std::testing;
+import std.testing;
 
 fn assert_contains(haystack: string, needle: string, what: string) {
     if !haystack.contains(needle) {

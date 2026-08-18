@@ -14,18 +14,15 @@
 //   - report records mode: share at the send site
 //   - sender can continue reading the value after the send
 //   - PersistentShare send is always share mode (structurally safe, no refcount needed)
-
 actor Broadcaster {
-    receive fn broadcast(msg: string) {
-    }
+    receive fn broadcast(msg: string) {}
 }
 
 fn main() {
     let broadcaster = spawn Broadcaster;
-
     let announcement = "system ready";
-    broadcaster.broadcast(announcement);  // share mode: announcement still usable
-    broadcaster.broadcast(announcement);  // second send: still share mode, same backing
+    broadcaster.broadcast(announcement); // share mode: announcement still usable
+    broadcaster.broadcast(announcement); // second send: still share mode, same backing
     // announcement is still valid here; no copy was made
     let _ = announcement;
 }

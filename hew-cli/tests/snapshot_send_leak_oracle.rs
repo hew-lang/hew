@@ -16,7 +16,7 @@ type Boxed {{
     payload: Vec<i64>,
 }}
 
-actor Sink {{
+actor ProbeSink {{
     var seen: i64;
 
     receive fn take(value: Boxed, tag: i64) {{
@@ -32,8 +32,8 @@ actor Sink {{
 }}
 
 fn main() -> i64 {{
-    let a = spawn Sink(seen: 0);
-    let b = spawn Sink(seen: 0);
+    let a = spawn ProbeSink(seen: 0);
+    let b = spawn ProbeSink(seen: 0);
     var sender_ok: i64 = 0;
     var i: i64 = 0;
     while i < {frames} {{
@@ -62,7 +62,7 @@ type Boxed {{
     payload: Vec<i64>,
 }}
 
-actor Sink {{
+actor ProbeSink {{
     var seen: i64;
     receive fn take(value: Boxed) {{
         seen = seen + value.payload.len();
@@ -71,7 +71,7 @@ actor Sink {{
 }}
 
 fn main() -> i64 {{
-    let sink = spawn Sink(seen: 0);
+    let sink = spawn ProbeSink(seen: 0);
     var i: i64 = 0;
     while i < {frames} {{
         sink.take(Boxed {{ payload: [i] }});
@@ -97,7 +97,7 @@ type Envelope {{
     boxed: Boxed,
 }}
 
-actor Sink {{
+actor ProbeSink {{
     var seen: i64;
 
     receive fn take(value: Boxed, tag: i64) {{
@@ -113,7 +113,7 @@ actor Sink {{
 }}
 
 fn main() -> i64 {{
-    let sink = spawn Sink(seen: 0);
+    let sink = spawn ProbeSink(seen: 0);
     var sender_ok: i64 = 0;
     var i: i64 = 0;
     while i < {frames} {{
@@ -144,7 +144,7 @@ type Envelope {{
     boxed: Boxed,
 }}
 
-actor Sink {{
+actor ProbeSink {{
     var seen: i64;
 
     receive fn take(value: Boxed, tag: i64) {{
@@ -159,7 +159,7 @@ supervisor App {{
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child sink: Sink(seen: 0);
+    child sink: ProbeSink(seen: 0);
 }}
 
 fn main() -> i64 {{

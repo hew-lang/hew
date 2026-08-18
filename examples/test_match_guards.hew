@@ -10,19 +10,19 @@ enum Event {
 
 fn classify(e: Event) -> i32 {
     match e {
-        Number(n) if n != 0 && 100 / n > 5 => 3,
-        Number(n) if n == 0 || n < 0 => 2,
-        Number(_) => 1,
-        Text(s) if s.len() > 3 => 4,
-        Text(_) => 0,
-        Empty => -1,
+        .Number(n) if n != 0 && 100 / n > 5 => 3,
+        .Number(n) if n == 0 || n < 0 => 2,
+        .Number(_) => 1,
+        .Text(s) if s.len() > 3 => 4,
+        .Text(_) => 0,
+        .Empty => -1,
     }
 }
 
 fn main() {
-    println(classify(Number(20)));
-    println(classify(Number(0)));
-    println(classify(Text("hew")));
-    println(classify(Text("compiler")));
-    println(classify(Empty));
+    println(classify(.Number(20)));
+    println(classify(.Number(0)));
+    println(classify(.Text("hew")));
+    println(classify(.Text("compiler")));
+    println(classify(.Empty));
 }

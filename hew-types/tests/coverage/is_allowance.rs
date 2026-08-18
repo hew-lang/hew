@@ -80,8 +80,8 @@ fn vec_is_vec_accepted() {
     assert_clean(
         r"
             fn main() {
-                let v1: Vec<i64> = Vec::new();
-                let v2: Vec<i64> = Vec::new();
+                let v1: Vec<i64> = Vec.new();
+                let v2: Vec<i64> = Vec.new();
                 let _eq: bool = v1 is v2;
             }
         ",
@@ -93,8 +93,8 @@ fn hashmap_is_hashmap_accepted() {
     assert_clean(
         r"
             fn main() {
-                let m1: HashMap<string, i64> = HashMap::new();
-                let m2: HashMap<string, i64> = HashMap::new();
+                let m1: HashMap<string, i64> = HashMap.new();
+                let m2: HashMap<string, i64> = HashMap.new();
                 let _eq: bool = m1 is m2;
             }
         ",
@@ -106,8 +106,8 @@ fn hashset_is_hashset_accepted() {
     assert_clean(
         r"
             fn main() {
-                let s1: HashSet<i64> = HashSet::new();
-                let s2: HashSet<i64> = HashSet::new();
+                let s1: HashSet<i64> = HashSet.new();
+                let s2: HashSet<i64> = HashSet.new();
                 let _eq: bool = s1 is s2;
             }
         ",
@@ -119,8 +119,8 @@ fn bytes_is_bytes_accepted() {
     assert_clean(
         r"
             fn main() {
-                let a = bytes::new();
-                let b = bytes::new();
+                let a = bytes.new();
+                let b = bytes.new();
                 let _eq: bool = a is b;
             }
         ",
@@ -157,8 +157,8 @@ fn is_result_typed_as_bool() {
     assert_clean(
         r"
             fn main() {
-                let v1: Vec<i64> = Vec::new();
-                let v2: Vec<i64> = Vec::new();
+                let v1: Vec<i64> = Vec.new();
+                let v2: Vec<i64> = Vec.new();
                 if v1 is v2 {
                     let _x: i64 = 1;
                 }
@@ -254,7 +254,7 @@ fn actor_ref_is_vec_rejected_as_mismatch() {
 
             fn main() {
                 let a = spawn Worker(_id: 1);
-                let v: Vec<i64> = Vec::new();
+                let v: Vec<i64> = Vec.new();
                 let _eq: bool = a is v;
             }
         ",
@@ -267,8 +267,8 @@ fn vec_int_is_vec_string_rejected_as_mismatch() {
     assert_has_mismatch(
         r"
             fn main() {
-                let a: Vec<i64> = Vec::new();
-                let b: Vec<string> = Vec::new();
+                let a: Vec<i64> = Vec.new();
+                let b: Vec<string> = Vec.new();
                 let _eq: bool = a is b;
             }
         ",
@@ -284,13 +284,13 @@ fn is_after_actor_send_reads_sender_snapshot_source() {
     let src = r#"
         type Payload { data: string; }
 
-        actor Sink {
+        actor SnapshotSink {
             let _id: i64;
             receive fn consume(p: Payload) {}
         }
 
         fn main() {
-            let s = spawn Sink(_id: 0);
+            let s = spawn SnapshotSink(_id: 0);
             let h = Payload { data: "hello" };
             let q = Payload { data: "world" };
             s.consume(h);

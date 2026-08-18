@@ -575,7 +575,7 @@ fn escaped_inline_enum_source(frames: usize) -> String {
          \n\
          fn make_outer(k: i64) -> Outer {{\n\
          \x20   Outer {{\n\
-         \x20       payload: Payload::Text(\"enum-heap-payload\".to_upper()),\n\
+         \x20       payload: Payload.Text(\"enum-heap-payload\".to_upper()),\n\
          \x20       sibling: \"enum-sibling-payload\".to_upper(),\n\
          \x20   }}\n\
          }}\n\

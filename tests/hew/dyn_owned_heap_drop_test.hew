@@ -32,9 +32,9 @@
 //! Coercions use heap-promoted storage so the same owner can safely cross a
 //! return boundary.
 
-import std::string;
+import std.string;
 
-import std::testing;
+import std.testing;
 
 trait Named {
     fn name(val: Self) -> string;
@@ -113,7 +113,7 @@ fn test_borrowed_dyn_argument_temporary_drops_clean() {
 /// dropped. Exercises slot-0 → `__hew_record_drop_inplace_Bag` → vec free.
 #[test]
 fn test_dyn_vec_field_record_drops_clean() {
-    let items: Vec<i64> = Vec::new();
+    let items: Vec<i64> = Vec.new();
     items.push(10);
     items.push(20);
     items.push(30);
@@ -130,7 +130,7 @@ fn test_dyn_vec_field_record_drops_clean() {
 #[test]
 fn test_dyn_enum_owned_payload_drops_clean() {
     let heaped = string.repeat("y", 64);
-    let s = Status::Active(heaped);
+    let s = Status.Active(heaped);
     let _d: dyn Describe = s;
     testing.assert_true(true);
 }
@@ -140,7 +140,7 @@ fn test_dyn_enum_owned_payload_drops_clean() {
 /// and must not abort.
 #[test]
 fn test_dyn_enum_bitcopy_payload_drops_clean() {
-    let s = Status::Inactive(7);
+    let s = Status.Inactive(7);
     let _d: dyn Describe = s;
     testing.assert_true(true);
 }

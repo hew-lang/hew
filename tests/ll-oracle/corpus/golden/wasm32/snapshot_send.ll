@@ -4,14 +4,14 @@ target datalayout = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-i128:128-n32:64-S128-n
 target triple = "wasm32-unknown-unknown"
 
 %Boxed = type { ptr }
-%Sink = type { i64 }
+%TestSink = type { i64 }
 %__hew_packed_args_main_0 = type { %Boxed, i64 }
 %__hew_packed_args_main_1 = type { %Boxed, i64 }
 
-@str_actor_meta_name_Sink = private unnamed_addr constant [5 x i8] c"Sink\00", align 1
-@str_actor_meta_handler_Sink_0_take = private unnamed_addr constant [5 x i8] c"take\00", align 1
-@str_actor_type_name_Sink = private unnamed_addr constant [5 x i8] c"Sink\00", align 1
-@str_actor_handler_name_Sink_0_take = private unnamed_addr constant [11 x i8] c"Sink::take\00", align 1
+@str_actor_meta_name_TestSink = private unnamed_addr constant [9 x i8] c"TestSink\00", align 1
+@str_actor_meta_handler_TestSink_0_take = private unnamed_addr constant [5 x i8] c"take\00", align 1
+@str_actor_type_name_TestSink = private unnamed_addr constant [9 x i8] c"TestSink\00", align 1
+@str_actor_handler_name_TestSink_0_take = private unnamed_addr constant [15 x i8] c"TestSink::take\00", align 1
 @str_lit = private unnamed_addr constant [3 x i8] c"ns\00", align 1
 
 declare void @hew_sleep_ns(i64)
@@ -46,9 +46,25 @@ declare ptr @hew_string_clone(ptr)
 
 declare ptr @hew_string_concat(ptr, ptr)
 
+declare void @hew_assert_eq_i8(i8, i8)
+
+declare void @hew_assert_eq_i16(i16, i16)
+
+declare void @hew_assert_eq_i32(i32, i32)
+
 declare void @hew_assert_eq_i64(i64, i64)
 
+declare void @hew_assert_eq_isize(i32, i32)
+
 declare void @hew_assert_eq_u8(i8, i8)
+
+declare void @hew_assert_eq_u16(i16, i16)
+
+declare void @hew_assert_eq_u32(i32, i32)
+
+declare void @hew_assert_eq_u64(i64, i64)
+
+declare void @hew_assert_eq_usize(i32, i32)
 
 declare void @hew_assert_eq_str(ptr, ptr)
 
@@ -56,9 +72,25 @@ declare void @hew_assert_eq_f64(double, double)
 
 declare void @hew_assert_eq_bool(i8, i8)
 
+declare void @hew_assert_ne_i8(i8, i8)
+
+declare void @hew_assert_ne_i16(i16, i16)
+
+declare void @hew_assert_ne_i32(i32, i32)
+
 declare void @hew_assert_ne_i64(i64, i64)
 
+declare void @hew_assert_ne_isize(i32, i32)
+
 declare void @hew_assert_ne_u8(i8, i8)
+
+declare void @hew_assert_ne_u16(i16, i16)
+
+declare void @hew_assert_ne_u32(i32, i32)
+
+declare void @hew_assert_ne_u64(i64, i64)
+
+declare void @hew_assert_ne_usize(i32, i32)
 
 declare void @hew_assert_ne_str(ptr, ptr)
 
@@ -304,7 +336,7 @@ declare void @hew_actor_gen_sink_register(ptr, ptr)
 
 declare void @hew_actor_gen_sink_complete(ptr, ptr)
 
-define internal i8 @Sink__recv__take(ptr %0, %Boxed %1, i64 %2, i32 %3) {
+define internal i8 @TestSink__recv__take(ptr %0, %Boxed %1, i64 %2, i32 %3) {
 entry:
   %return_slot = alloca i8, align 1
   %local_0 = alloca %Boxed, align 8
@@ -504,7 +536,7 @@ bb15:                                             ; preds = %bb13
   %ctx_actor_ptr = load ptr, ptr %ctx_actor_ptr_slot, align 4
   %actor_state_slot = getelementptr i8, ptr %ctx_actor_ptr, i64 16
   %actor_state_ptr = load ptr, ptr %actor_state_slot, align 4
-  %actor_state_field_0_ptr = getelementptr inbounds nuw %Sink, ptr %actor_state_ptr, i32 0, i32 0
+  %actor_state_field_0_ptr = getelementptr inbounds nuw %TestSink, ptr %actor_state_ptr, i32 0, i32 0
   %state_f0_crash_begin_replace_call = call i1 @hew_dispatch_state_cleanup_begin_replace(ptr %actor_state_field_0_ptr, i64 8)
   br i1 %state_f0_crash_begin_replace_call, label %state_f0_crash_begin_replace_accepted, label %state_f0_crash_begin_replace_rejected
 
@@ -828,10 +860,10 @@ helper_crash_cleanup_return_retire_0_rejected:    ; preds = %helper_crash_cleanu
 define i8 @__original_main() {
 entry:
   %return_slot = alloca i8, align 1
-  %local_0 = alloca %Sink, align 8
+  %local_0 = alloca %TestSink, align 8
   %local_1 = alloca i64, align 8
   %local_2 = alloca ptr, align 4
-  %local_3 = alloca %Sink, align 8
+  %local_3 = alloca %TestSink, align 8
   %local_4 = alloca i64, align 8
   %local_5 = alloca ptr, align 4
   %local_6 = alloca ptr, align 4
@@ -859,16 +891,16 @@ entry:
 
 bb0:                                              ; preds = %after_cooperate
   store i64 -1, ptr %local_1, align 8
-  %field_0_init_ptr = getelementptr inbounds nuw %Sink, ptr %local_0, i32 0, i32 0
+  %field_0_init_ptr = getelementptr inbounds nuw %TestSink, ptr %local_0, i32 0, i32 0
   %field_0_init_src = load i64, ptr %local_1, align 8
   store i64 %field_0_init_src, ptr %field_0_init_ptr, align 8
   %hew_sched_init_call = call i32 @hew_sched_init()
-  %actor_meta_handlers_Sink = alloca [1 x { ptr, i32, i32, ptr, ptr, i32 }], align 8
-  %actor_meta_handler_0 = getelementptr [1 x { ptr, i32, i32, ptr, ptr, i32 }], ptr %actor_meta_handlers_Sink, i32 0, i32 0
+  %actor_meta_handlers_TestSink = alloca [1 x { ptr, i32, i32, ptr, ptr, i32 }], align 8
+  %actor_meta_handler_0 = getelementptr [1 x { ptr, i32, i32, ptr, ptr, i32 }], ptr %actor_meta_handlers_TestSink, i32 0, i32 0
   %actor_meta_handler_0_f0 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_0, i32 0, i32 0
-  store ptr @str_actor_meta_handler_Sink_0_take, ptr %actor_meta_handler_0_f0, align 4
+  store ptr @str_actor_meta_handler_TestSink_0_take, ptr %actor_meta_handler_0_f0, align 4
   %actor_meta_handler_0_f1 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_0, i32 0, i32 1
-  store i32 1476289385, ptr %actor_meta_handler_0_f1, align 4
+  store i32 -1599914196, ptr %actor_meta_handler_0_f1, align 4
   %actor_meta_handler_0_f2 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_0, i32 0, i32 2
   store i32 0, ptr %actor_meta_handler_0_f2, align 4
   %actor_meta_handler_0_f3 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_0, i32 0, i32 3
@@ -877,34 +909,34 @@ bb0:                                              ; preds = %after_cooperate
   store ptr null, ptr %actor_meta_handler_0_f4, align 4
   %actor_meta_handler_0_f5 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_0, i32 0, i32 5
   store i32 0, ptr %actor_meta_handler_0_f5, align 4
-  %actor_meta_handlers_ptr = getelementptr [1 x { ptr, i32, i32, ptr, ptr, i32 }], ptr %actor_meta_handlers_Sink, i32 0, i32 0
-  %actor_meta_Sink = alloca { ptr, i32, ptr }, align 8
-  %actor_meta_f0 = getelementptr inbounds nuw { ptr, i32, ptr }, ptr %actor_meta_Sink, i32 0, i32 0
-  store ptr @str_actor_meta_name_Sink, ptr %actor_meta_f0, align 4
-  %actor_meta_f1 = getelementptr inbounds nuw { ptr, i32, ptr }, ptr %actor_meta_Sink, i32 0, i32 1
+  %actor_meta_handlers_ptr = getelementptr [1 x { ptr, i32, i32, ptr, ptr, i32 }], ptr %actor_meta_handlers_TestSink, i32 0, i32 0
+  %actor_meta_TestSink = alloca { ptr, i32, ptr }, align 8
+  %actor_meta_f0 = getelementptr inbounds nuw { ptr, i32, ptr }, ptr %actor_meta_TestSink, i32 0, i32 0
+  store ptr @str_actor_meta_name_TestSink, ptr %actor_meta_f0, align 4
+  %actor_meta_f1 = getelementptr inbounds nuw { ptr, i32, ptr }, ptr %actor_meta_TestSink, i32 0, i32 1
   store i32 1, ptr %actor_meta_f1, align 4
-  %actor_meta_f2 = getelementptr inbounds nuw { ptr, i32, ptr }, ptr %actor_meta_Sink, i32 0, i32 2
+  %actor_meta_f2 = getelementptr inbounds nuw { ptr, i32, ptr }, ptr %actor_meta_TestSink, i32 0, i32 2
   store ptr %actor_meta_handlers_ptr, ptr %actor_meta_f2, align 4
-  call void @hew_wasm_register_actor_meta(ptr %actor_meta_Sink)
-  call void @hew_actor_register_type(ptr @__hew_actor_dispatch_Sink, ptr @str_actor_type_name_Sink)
-  call void @hew_register_handler_name(ptr @__hew_actor_dispatch_Sink, i32 1476289385, ptr @str_actor_handler_name_Sink_0_take)
-  %hew_actor_spawn_call = call ptr @hew_actor_spawn(ptr %local_0, i32 ptrtoint (ptr getelementptr (%Sink, ptr null, i32 1) to i32), ptr @__hew_actor_dispatch_Sink)
-  call void @hew_actor_set_state_drop(ptr %hew_actor_spawn_call, ptr @__hew_state_drop_Sink)
-  call void @hew_actor_set_state_clone(ptr %hew_actor_spawn_call, ptr @__hew_state_clone_Sink)
-  call void @hew_actor_set_message_drop(ptr %hew_actor_spawn_call, ptr @__hew_message_drop_Sink)
-  call void @hew_actor_set_sys_dispatch(ptr %hew_actor_spawn_call, ptr @__hew_actor_sys_dispatch_Sink)
+  call void @hew_wasm_register_actor_meta(ptr %actor_meta_TestSink)
+  call void @hew_actor_register_type(ptr @__hew_actor_dispatch_TestSink, ptr @str_actor_type_name_TestSink)
+  call void @hew_register_handler_name(ptr @__hew_actor_dispatch_TestSink, i32 -1599914196, ptr @str_actor_handler_name_TestSink_0_take)
+  %hew_actor_spawn_call = call ptr @hew_actor_spawn(ptr %local_0, i32 ptrtoint (ptr getelementptr (%TestSink, ptr null, i32 1) to i32), ptr @__hew_actor_dispatch_TestSink)
+  call void @hew_actor_set_state_drop(ptr %hew_actor_spawn_call, ptr @__hew_state_drop_TestSink)
+  call void @hew_actor_set_state_clone(ptr %hew_actor_spawn_call, ptr @__hew_state_clone_TestSink)
+  call void @hew_actor_set_message_drop(ptr %hew_actor_spawn_call, ptr @__hew_message_drop_TestSink)
+  call void @hew_actor_set_sys_dispatch(ptr %hew_actor_spawn_call, ptr @__hew_actor_sys_dispatch_TestSink)
   store ptr %hew_actor_spawn_call, ptr %local_2, align 4
   store i64 -1, ptr %local_4, align 8
-  %field_0_init_ptr1 = getelementptr inbounds nuw %Sink, ptr %local_3, i32 0, i32 0
+  %field_0_init_ptr1 = getelementptr inbounds nuw %TestSink, ptr %local_3, i32 0, i32 0
   %field_0_init_src2 = load i64, ptr %local_4, align 8
   store i64 %field_0_init_src2, ptr %field_0_init_ptr1, align 8
   %hew_sched_init_call3 = call i32 @hew_sched_init()
-  %actor_meta_handlers_Sink4 = alloca [1 x { ptr, i32, i32, ptr, ptr, i32 }], align 8
-  %actor_meta_handler_05 = getelementptr [1 x { ptr, i32, i32, ptr, ptr, i32 }], ptr %actor_meta_handlers_Sink4, i32 0, i32 0
+  %actor_meta_handlers_TestSink4 = alloca [1 x { ptr, i32, i32, ptr, ptr, i32 }], align 8
+  %actor_meta_handler_05 = getelementptr [1 x { ptr, i32, i32, ptr, ptr, i32 }], ptr %actor_meta_handlers_TestSink4, i32 0, i32 0
   %actor_meta_handler_0_f06 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_05, i32 0, i32 0
-  store ptr @str_actor_meta_handler_Sink_0_take, ptr %actor_meta_handler_0_f06, align 4
+  store ptr @str_actor_meta_handler_TestSink_0_take, ptr %actor_meta_handler_0_f06, align 4
   %actor_meta_handler_0_f17 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_05, i32 0, i32 1
-  store i32 1476289385, ptr %actor_meta_handler_0_f17, align 4
+  store i32 -1599914196, ptr %actor_meta_handler_0_f17, align 4
   %actor_meta_handler_0_f28 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_05, i32 0, i32 2
   store i32 0, ptr %actor_meta_handler_0_f28, align 4
   %actor_meta_handler_0_f39 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_05, i32 0, i32 3
@@ -913,22 +945,22 @@ bb0:                                              ; preds = %after_cooperate
   store ptr null, ptr %actor_meta_handler_0_f410, align 4
   %actor_meta_handler_0_f511 = getelementptr inbounds nuw { ptr, i32, i32, ptr, ptr, i32 }, ptr %actor_meta_handler_05, i32 0, i32 5
   store i32 0, ptr %actor_meta_handler_0_f511, align 4
-  %actor_meta_handlers_ptr12 = getelementptr [1 x { ptr, i32, i32, ptr, ptr, i32 }], ptr %actor_meta_handlers_Sink4, i32 0, i32 0
-  %actor_meta_Sink13 = alloca { ptr, i32, ptr }, align 8
-  %actor_meta_f014 = getelementptr inbounds nuw { ptr, i32, ptr }, ptr %actor_meta_Sink13, i32 0, i32 0
-  store ptr @str_actor_meta_name_Sink, ptr %actor_meta_f014, align 4
-  %actor_meta_f115 = getelementptr inbounds nuw { ptr, i32, ptr }, ptr %actor_meta_Sink13, i32 0, i32 1
+  %actor_meta_handlers_ptr12 = getelementptr [1 x { ptr, i32, i32, ptr, ptr, i32 }], ptr %actor_meta_handlers_TestSink4, i32 0, i32 0
+  %actor_meta_TestSink13 = alloca { ptr, i32, ptr }, align 8
+  %actor_meta_f014 = getelementptr inbounds nuw { ptr, i32, ptr }, ptr %actor_meta_TestSink13, i32 0, i32 0
+  store ptr @str_actor_meta_name_TestSink, ptr %actor_meta_f014, align 4
+  %actor_meta_f115 = getelementptr inbounds nuw { ptr, i32, ptr }, ptr %actor_meta_TestSink13, i32 0, i32 1
   store i32 1, ptr %actor_meta_f115, align 4
-  %actor_meta_f216 = getelementptr inbounds nuw { ptr, i32, ptr }, ptr %actor_meta_Sink13, i32 0, i32 2
+  %actor_meta_f216 = getelementptr inbounds nuw { ptr, i32, ptr }, ptr %actor_meta_TestSink13, i32 0, i32 2
   store ptr %actor_meta_handlers_ptr12, ptr %actor_meta_f216, align 4
-  call void @hew_wasm_register_actor_meta(ptr %actor_meta_Sink13)
-  call void @hew_actor_register_type(ptr @__hew_actor_dispatch_Sink, ptr @str_actor_type_name_Sink)
-  call void @hew_register_handler_name(ptr @__hew_actor_dispatch_Sink, i32 1476289385, ptr @str_actor_handler_name_Sink_0_take)
-  %hew_actor_spawn_call17 = call ptr @hew_actor_spawn(ptr %local_3, i32 ptrtoint (ptr getelementptr (%Sink, ptr null, i32 1) to i32), ptr @__hew_actor_dispatch_Sink)
-  call void @hew_actor_set_state_drop(ptr %hew_actor_spawn_call17, ptr @__hew_state_drop_Sink)
-  call void @hew_actor_set_state_clone(ptr %hew_actor_spawn_call17, ptr @__hew_state_clone_Sink)
-  call void @hew_actor_set_message_drop(ptr %hew_actor_spawn_call17, ptr @__hew_message_drop_Sink)
-  call void @hew_actor_set_sys_dispatch(ptr %hew_actor_spawn_call17, ptr @__hew_actor_sys_dispatch_Sink)
+  call void @hew_wasm_register_actor_meta(ptr %actor_meta_TestSink13)
+  call void @hew_actor_register_type(ptr @__hew_actor_dispatch_TestSink, ptr @str_actor_type_name_TestSink)
+  call void @hew_register_handler_name(ptr @__hew_actor_dispatch_TestSink, i32 -1599914196, ptr @str_actor_handler_name_TestSink_0_take)
+  %hew_actor_spawn_call17 = call ptr @hew_actor_spawn(ptr %local_3, i32 ptrtoint (ptr getelementptr (%TestSink, ptr null, i32 1) to i32), ptr @__hew_actor_dispatch_TestSink)
+  call void @hew_actor_set_state_drop(ptr %hew_actor_spawn_call17, ptr @__hew_state_drop_TestSink)
+  call void @hew_actor_set_state_clone(ptr %hew_actor_spawn_call17, ptr @__hew_state_clone_TestSink)
+  call void @hew_actor_set_message_drop(ptr %hew_actor_spawn_call17, ptr @__hew_message_drop_TestSink)
+  call void @hew_actor_set_sys_dispatch(ptr %hew_actor_spawn_call17, ptr @__hew_actor_sys_dispatch_TestSink)
   store ptr %hew_actor_spawn_call17, ptr %local_5, align 4
   %hew_vec_new_i64_call = call ptr @hew_vec_new_i64()
   store ptr %hew_vec_new_i64_call, ptr %local_6, align 4
@@ -1032,7 +1064,7 @@ clone_ok:                                         ; preds = %frame_cleanup_regis
   %"actor_send receiver" = load ptr, ptr %local_2, align 4
   %actor_id_slot = getelementptr i8, ptr %"actor_send receiver", i64 8
   %actor_id = load i64, ptr %actor_id_slot, align 8
-  %hew_actor_send_by_id_call = call i32 @hew_actor_send_by_id(i64 %actor_id, ptr null, i32 1476289385, ptr %local_14, i32 ptrtoint (ptr getelementptr (%__hew_packed_args_main_0, ptr null, i32 1) to i32))
+  %hew_actor_send_by_id_call = call i32 @hew_actor_send_by_id(i64 %actor_id, ptr null, i32 -1599914196, ptr %local_14, i32 ptrtoint (ptr getelementptr (%__hew_packed_args_main_0, ptr null, i32 1) to i32))
   %send_not_ok = icmp ne i32 %hew_actor_send_by_id_call, 0
   br i1 %send_not_ok, label %actor_send_fail, label %bb4
 
@@ -1057,7 +1089,7 @@ clone_ok29:                                       ; preds = %bb4
   %"actor_send receiver35" = load ptr, ptr %local_5, align 4
   %actor_id_slot36 = getelementptr i8, ptr %"actor_send receiver35", i64 8
   %actor_id37 = load i64, ptr %actor_id_slot36, align 8
-  %hew_actor_send_by_id_call38 = call i32 @hew_actor_send_by_id(i64 %actor_id37, ptr null, i32 1476289385, ptr %local_16, i32 ptrtoint (ptr getelementptr (%__hew_packed_args_main_1, ptr null, i32 1) to i32))
+  %hew_actor_send_by_id_call38 = call i32 @hew_actor_send_by_id(i64 %actor_id37, ptr null, i32 -1599914196, ptr %local_16, i32 ptrtoint (ptr getelementptr (%__hew_packed_args_main_1, ptr null, i32 1) to i32))
   %send_not_ok40 = icmp ne i32 %hew_actor_send_by_id_call38, 0
   br i1 %send_not_ok40, label %actor_send_fail39, label %bb5
 
@@ -1757,7 +1789,7 @@ entry:
   ret i32 0
 }
 
-define internal ptr @__hew_actor_dispatch_Sink(ptr %0, ptr %1, i32 %2, ptr %3, i32 %4, i32 %5) {
+define internal ptr @__hew_actor_dispatch_TestSink(ptr %0, ptr %1, i32 %2, ptr %3, i32 %4, i32 %5) {
 entry:
   %dispatch_is_borrow = icmp ne i32 %5, 0
   br i1 %dispatch_is_borrow, label %borrow_src, label %copy_src
@@ -1767,8 +1799,8 @@ unknown_msg_type:                                 ; preds = %payload_src
   call void @llvm.trap()
   unreachable
 
-dispatch_done:                                    ; preds = %msg_1476289385
-  %dispatch_suspend_handle = phi ptr [ null, %msg_1476289385 ]
+dispatch_done:                                    ; preds = %msg_-1599914196
+  %dispatch_suspend_handle = phi ptr [ null, %msg_-1599914196 ]
   ret ptr %dispatch_suspend_handle
 
 borrow_src:                                       ; preds = %entry
@@ -1782,7 +1814,7 @@ copy_src:                                         ; preds = %entry
 payload_src:                                      ; preds = %copy_src, %borrow_payload_ok
   %payload_src_ptr = phi ptr [ %envelope_payload_ptr, %borrow_payload_ok ], [ %3, %copy_src ]
   switch i32 %2, label %unknown_msg_type [
-    i32 1476289385, label %msg_1476289385
+    i32 -1599914196, label %msg_-1599914196
   ]
 
 borrow_payload_null:                              ; preds = %borrow_src
@@ -1792,12 +1824,12 @@ borrow_payload_null:                              ; preds = %borrow_src
 borrow_payload_ok:                                ; preds = %borrow_src
   br label %payload_src
 
-msg_1476289385:                                   ; preds = %payload_src
+msg_-1599914196:                                  ; preds = %payload_src
   %msg_arg_0_ptr = getelementptr inbounds nuw { %Boxed, i64 }, ptr %payload_src_ptr, i32 0, i32 0
   %msg_arg_0 = load %Boxed, ptr %msg_arg_0_ptr, align 4
   %msg_arg_1_ptr = getelementptr inbounds nuw { %Boxed, i64 }, ptr %payload_src_ptr, i32 0, i32 1
   %msg_arg_1 = load i64, ptr %msg_arg_1_ptr, align 8
-  %call_take = call i8 @Sink__recv__take(ptr %0, %Boxed %msg_arg_0, i64 %msg_arg_1, i32 %5)
+  %call_take = call i8 @TestSink__recv__take(ptr %0, %Boxed %msg_arg_0, i64 %msg_arg_1, i32 %5)
   br label %dispatch_done
 }
 
@@ -1810,7 +1842,7 @@ declare void @hew_trap_with_code(i32)
 ; Function Attrs: cold noreturn nounwind memory(inaccessiblemem: write)
 declare void @llvm.trap() #0
 
-define internal void @__hew_actor_sys_dispatch_Sink(ptr %0, ptr %1, i32 %2, ptr %3, i32 %4) {
+define internal void @__hew_actor_sys_dispatch_TestSink(ptr %0, ptr %1, i32 %2, ptr %3, i32 %4) {
 entry:
   switch i32 %2, label %sys_dispatch_done [
     i32 4, label %sys_exit_guard
@@ -1844,21 +1876,21 @@ sys_down_payload_ok:                              ; preds = %sys_down_guard
 
 declare void @hew_actor_exit_unhandled(i32)
 
-define internal void @__hew_message_drop_Sink(i32 %0, ptr %1, i32 %2) {
+define internal void @__hew_message_drop_TestSink(i32 %0, ptr %1, i32 %2) {
 entry:
   switch i32 %0, label %unknown_msg_type [
-    i32 1476289385, label %msg_1476289385
+    i32 -1599914196, label %msg_-1599914196
   ]
 
 unknown_msg_type:                                 ; preds = %entry
   ret void
 
-msg_1476289385:                                   ; preds = %entry
-  call void @__hew_message_drop_Sink_1476289385(ptr %1)
+msg_-1599914196:                                  ; preds = %entry
+  call void @__hew_message_drop_TestSink_-1599914196(ptr %1)
   ret void
 }
 
-define internal void @__hew_message_drop_Sink_1476289385(ptr %0) {
+define internal void @__hew_message_drop_TestSink_-1599914196(ptr %0) {
 entry:
   %rec_int = ptrtoint ptr %0 to i64
   %rec_is_null = icmp eq i64 %rec_int, 0
@@ -1940,7 +1972,7 @@ entry:
   ret void
 }
 
-define ptr @__hew_state_clone_Sink(ptr %0) {
+define ptr @__hew_state_clone_TestSink(ptr %0) {
 entry:
   %src_as_int = ptrtoint ptr %0 to i64
   %src_is_null = icmp eq i64 %src_as_int, 0
@@ -1968,7 +2000,7 @@ declare ptr @malloc(i32)
 ; Function Attrs: nocallback nofree nounwind willreturn memory(argmem: readwrite)
 declare void @llvm.memcpy.p0.p0.i64(ptr noalias writeonly captures(none), ptr noalias readonly captures(none), i64, i1 immarg) #1
 
-define void @__hew_state_drop_Sink(ptr %0) {
+define void @__hew_state_drop_TestSink(ptr %0) {
 entry:
   %state_int = ptrtoint ptr %0 to i64
   %state_is_null = icmp eq i64 %state_int, 0

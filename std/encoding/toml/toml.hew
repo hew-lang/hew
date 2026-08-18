@@ -19,7 +19,7 @@
 //! }
 //! ```
 
-import std::encoding::wire::value_trait;
+import std.encoding.wire.value_trait;
 
 /// Structured error type for TOML parsing failures.
 ///
@@ -299,7 +299,7 @@ pub fn try_parse(s: string) -> Result<Value, ParseError> {
     if val.type_of() >= 0 {
         Ok(val)
     } else {
-        Err(ParseError::Invalid(parse_error_message()))
+        Err(ParseError.Invalid(parse_error_message()))
     }
 }
 

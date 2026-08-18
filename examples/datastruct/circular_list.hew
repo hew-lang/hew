@@ -132,14 +132,14 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
 
 // --- Tests ---
 fn test_insert_and_traverse() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_tail(n, head, 10);
     head = insert_tail(n, head, 20);
     head = insert_tail(n, head, 30);
-    let r: Vec<i64> = Vec::new();
+    let r: Vec<i64> = Vec.new();
     traverse(n, head, r);
-    let e: Vec<i64> = Vec::new();
+    let e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(20);
     e.push(30);
@@ -152,7 +152,7 @@ fn test_insert_and_traverse() -> i64 {
 }
 
 fn test_circular_property() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_tail(n, head, 1);
     head = insert_tail(n, head, 2);
@@ -176,15 +176,15 @@ fn test_circular_property() -> i64 {
 }
 
 fn test_delete_middle() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_tail(n, head, 10);
     head = insert_tail(n, head, 20);
     head = insert_tail(n, head, 30);
     head = delete_val(n, head, 20);
-    let r: Vec<i64> = Vec::new();
+    let r: Vec<i64> = Vec.new();
     traverse(n, head, r);
-    let e: Vec<i64> = Vec::new();
+    let e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(30);
     if vecs_equal(r, e) == 1 {
@@ -196,15 +196,15 @@ fn test_delete_middle() -> i64 {
 }
 
 fn test_delete_head() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_tail(n, head, 10);
     head = insert_tail(n, head, 20);
     head = insert_tail(n, head, 30);
     head = delete_val(n, head, 10);
-    let r: Vec<i64> = Vec::new();
+    let r: Vec<i64> = Vec.new();
     traverse(n, head, r);
-    let e: Vec<i64> = Vec::new();
+    let e: Vec<i64> = Vec.new();
     e.push(20);
     e.push(30);
     if vecs_equal(r, e) == 1 {
@@ -219,7 +219,7 @@ fn test_delete_head() -> i64 {
 }
 
 fn test_single_element() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_tail(n, head, 42);
     if list_len(n, head) == 1 {
@@ -236,7 +236,7 @@ fn test_single_element() -> i64 {
 }
 
 fn test_length() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     if list_len(n, head) != 0 {
         println("FAIL: length");

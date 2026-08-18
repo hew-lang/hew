@@ -64,7 +64,7 @@ const INDEX_GET_SINGLE_ROUNDTRIP_SOURCE: &str = "\
 type Name { label: string; }\n\
 \n\
 fn main() {\n\
-\x20   let m: HashMap<string, Name> = HashMap::new();\n\
+\x20   let m: HashMap<string, Name> = HashMap.new();\n\
 \x20   m.insert(\"k\", Name { label: \"owned-ok\" });\n\
 \x20   let got: Name = m[\"k\"];\n\
 \x20   let removed = m.remove(\"k\");\n\
@@ -92,7 +92,7 @@ fn index_roundtrip_loop_source(frames: usize) -> String {
         "type Name {{ label: string; }}\n\
          \n\
          fn run_cycle() -> i64 {{\n\
-         \x20   let m: HashMap<string, Name> = HashMap::new();\n\
+         \x20   let m: HashMap<string, Name> = HashMap.new();\n\
          \x20   m.insert(\"k\", Name {{ label: \"owned-ok\".to_upper() }});\n\
          \x20   let got: Name = m[\"k\"];\n\
          \x20   let removed = m.remove(\"k\");\n\

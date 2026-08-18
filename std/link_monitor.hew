@@ -19,7 +19,7 @@
 // the `link()` builtin, like `SendError` for `.tell`), so it is NOT redeclared
 // here — that would collide with the always-loaded prelude on import. Programs
 // name `LinkError::AlreadyLinked` / `TargetDead` without importing this module.
-import std::failure::{CrashKind};
+import std.failure.{CrashKind};
 
 /// Error returned when a monitor delivery cannot be completed.
 pub enum MonitorError {
@@ -132,11 +132,11 @@ impl MonitorRef {
 /// never silently send an unmapped policy.
 pub fn set_partition_policy(policy: PartitionPolicy) -> bool {
     let tag = match policy {
-        PartitionPolicy::FailFast => 0,
-        PartitionPolicy::Deadline => 1,
-        PartitionPolicy::MonitorLost => 2,
-        PartitionPolicy::CrashLinked => 3,
-        PartitionPolicy::Quarantine => 4,
+        PartitionPolicy.FailFast => 0,
+        PartitionPolicy.Deadline => 1,
+        PartitionPolicy.MonitorLost => 2,
+        PartitionPolicy.CrashLinked => 3,
+        PartitionPolicy.Quarantine => 4,
     };
     unsafe {
         hew_set_partition_policy(tag)

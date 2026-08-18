@@ -11,7 +11,7 @@
 //! record — not a zeroed slot — and (for the string payload) that the owned
 //! clone/drop spine round-trips the non-BitCopy payload.
 
-import std::testing;
+import std.testing;
 
 // ── Payload-free machine field ────────────────────────────────────────────
 machine F {
@@ -44,7 +44,7 @@ fn state_tag(p: P) -> i64 {
 
 #[test]
 fn payload_free_machine_field_carries_scalar_and_tag() {
-    let p = P { f: F::S1, x: 7 };
+    let p = P { f: F.S1, x: 7 };
     testing.assert_eq(p.x, 7);
     testing.assert_eq(state_tag(p), 1);
 }
@@ -53,7 +53,7 @@ fn payload_free_machine_field_carries_scalar_and_tag() {
 fn payload_free_machine_field_preserves_non_zero_tag() {
     // F::S2 is variant 1, not the zero tag — proves the record carries the
     // live machine tag, not a default-initialised slot.
-    let p = P { f: F::S2, x: 42 };
+    let p = P { f: F.S2, x: 42 };
     testing.assert_eq(p.x, 42);
     testing.assert_eq(state_tag(p), 2);
 }
@@ -89,7 +89,7 @@ fn running_count(q: Q) -> i64 {
 
 #[test]
 fn i64_payload_machine_field_reads_payload_back() {
-    let q = Q { g: G::Running { count: 99 }, x: 3 };
+    let q = Q { g: G.Running { count: 99 }, x: 3 };
     testing.assert_eq(q.x, 3);
     testing.assert_eq(running_count(q), 99);
 }
@@ -128,7 +128,7 @@ fn string_payload_machine_field_round_trips_the_payload() {
 
     // The non-BitCopy string payload rides the record's clone/drop spine;
     // reading it back proves no leak / no abort and the exact value survives.
-    let r = R { h: H::Named { label: "hello-payload" }, x: 9 };
+    let r = R { h: H.Named { label: "hello-payload" }, x: 9 };
     testing.assert_eq(r.x, 9);
     testing.assert_eq_str(label_of(r), "hello-payload");
 }

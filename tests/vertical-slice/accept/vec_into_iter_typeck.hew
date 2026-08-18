@@ -21,14 +21,14 @@ fn main() {
     // `v.into_iter()` resolves through `impl<T> IntoIterator for Vec<T>` in
     // std/builtins.hew. Both Vec<i32> and Vec<i64> are pinned (the two
     // concrete element types in the v0.5 stdlib catalog).
-    let a: Vec<i32> = Vec::new();
+    let a: Vec<i32> = Vec.new();
     let _ia: VecIter<i32> = a.into_iter();
 
-    let b: Vec<i64> = Vec::new();
+    let b: Vec<i64> = Vec.new();
     let _ib: VecIter<i64> = b.into_iter();
 
     // VecIter<T> constructed directly through its record literal: confirms
     // the new builtin type is resolvable at user sites.
-    let _c: Vec<i64> = Vec::new();
+    let _c: Vec<i64> = Vec.new();
     let _vi: VecIter<i64> = VecIter { vec: _c, idx: 0 };
 }

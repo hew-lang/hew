@@ -12,7 +12,7 @@ use support::leak_slope::assert_frame_slope_below_tolerance;
 
 fn valid_decimal_source(frames: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          fn main() -> i64 {{\n\
          \x20   var checks: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\
@@ -29,7 +29,7 @@ fn valid_decimal_source(frames: usize) -> String {
 fn varied_float_source(frames: usize) -> String {
     let expected_checks = frames * 10;
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          fn main() -> i64 {{\n\
          \x20   var checks: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\

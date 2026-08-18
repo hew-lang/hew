@@ -89,6 +89,10 @@ fn binding_name_for_pattern(pattern: &Pattern) -> Option<String> {
     }
 }
 
+fn nominal_path_leaf(path: &hew_parser::ast::Path) -> Option<&str> {
+    path.segments.last().map(String::as_str)
+}
+
 /// Classify the payload subpattern kind label for use in
 /// `UnsupportedPayloadSubpattern` diagnostics.
 ///
@@ -109,7 +113,9 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
             None
         }
         Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => Some("record destructure"),
-        Pattern::Constructor { .. } => Some("nested constructor"),
+        Pattern::Constructor { .. } | Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
+            Some("nested constructor")
+        }
         Pattern::Or(_, _) => Some("or-pattern"),
         // Regex literals are only legal as top-level match-arm predicates
         // (scrutinee must be `string`). A regex in payload subpattern
@@ -133,7 +139,9 @@ fn unsupported_project_subpattern_label(pattern: &Pattern) -> Option<&'static st
         // Wildcard and bare identifiers: allowed or deferred to call site.
         Pattern::Wildcard | Pattern::Identifier(_) | Pattern::Literal(_) => None,
         Pattern::Tuple(pats) if pats.is_empty() => None,
-        Pattern::Constructor { .. } => Some("nested constructor"),
+        Pattern::Constructor { .. } | Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
+            Some("nested constructor")
+        }
         Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => Some("record destructure"),
         Pattern::Tuple(_) => Some("tuple destructure"),
         Pattern::Or(_, _) => Some("or-pattern"),
@@ -384,12 +392,18 @@ impl Checker {
             | Pattern::Constructor { .. }
             | Pattern::RecordShorthand { .. }
             | Pattern::Or(_, _)
-            | Pattern::Regex { .. } => false,
+            | Pattern::Regex { .. }
+            | Pattern::NominalPath { .. }
+            | Pattern::ContextVariant(_) => false,
         }
     }
 
     /// True when at least one row of `patterns` headed by `variant_name`
     /// covers every value of the variant's payload.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "coverage handles every origin-preserving nominal payload shape in one authority"
+    )]
     pub(super) fn variant_covered(
         &self,
         patterns: &[&Pattern],
@@ -436,6 +450,51 @@ impl Checker {
                         })
                     {
                         has_struct_cover = true;
+                    }
+                }
+                Pattern::ContextVariant(context) if context.name == variant_name => {
+                    match context.payload.as_ref() {
+                        None => has_unit_row = true,
+                        Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                            ctor_rows.push(patterns.as_slice());
+                        }
+                        Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                            if fields.iter().all(|field| {
+                                field.pattern.as_ref().is_none_or(|(subpattern, _)| {
+                                    struct_field_tys.get(field.name.as_str()).is_some_and(
+                                        |field_ty| {
+                                            self.is_payload_irrefutable_for_ty(subpattern, field_ty)
+                                        },
+                                    )
+                                })
+                            }) {
+                                has_struct_cover = true;
+                            }
+                        }
+                    }
+                }
+                Pattern::NominalPath { path, payload }
+                    if nominal_path_leaf(path) == Some(variant_name)
+                        && self.variant_path_owner_matches(path, enum_ty) =>
+                {
+                    match payload.as_ref() {
+                        None => has_unit_row = true,
+                        Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                            ctor_rows.push(patterns.as_slice());
+                        }
+                        Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                            if fields.iter().all(|field| {
+                                field.pattern.as_ref().is_none_or(|(subpattern, _)| {
+                                    struct_field_tys.get(field.name.as_str()).is_some_and(
+                                        |field_ty| {
+                                            self.is_payload_irrefutable_for_ty(subpattern, field_ty)
+                                        },
+                                    )
+                                })
+                            }) {
+                                has_struct_cover = true;
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -558,7 +617,7 @@ impl Checker {
         clippy::too_many_lines,
         reason = "building the canonical plan keeps validation, declaration ordering, and subpattern classification in one authority"
     )]
-    fn prepare_record_pattern_plan(&mut self, pattern: &Pattern, ty: &Ty, span: &Span) {
+    pub(super) fn prepare_record_pattern_plan(&mut self, pattern: &Pattern, ty: &Ty, span: &Span) {
         let key = super::types::SpanKey::in_module(span, self.current_module_idx);
         if self.pending_pattern_plans.contains_key(&key)
             || self.invalid_pattern_plan_spans.contains(&key)
@@ -566,12 +625,30 @@ impl Checker {
             return;
         }
 
-        let (pattern_name, fields, rest) = match pattern {
+        let (pattern_name, fields, rest, nominal_path) = match pattern {
             Pattern::Struct {
                 name, fields, rest, ..
-            } => (name.as_str(), fields.as_slice(), rest.as_ref()),
+            } => (name.as_str(), fields.as_slice(), rest.as_ref(), None),
+            Pattern::NominalPath { path, payload } => match payload.as_ref() {
+                Some(hew_parser::ast::NominalPatternPayload::Record { fields, rest }) => (
+                    nominal_path_leaf(path).unwrap_or_default(),
+                    fields.as_slice(),
+                    rest.as_ref(),
+                    Some(path),
+                ),
+                _ => return,
+            },
+            Pattern::ContextVariant(context) => match context.payload.as_ref() {
+                Some(hew_parser::ast::NominalPatternPayload::Record { fields, rest }) => (
+                    context.name.as_str(),
+                    fields.as_slice(),
+                    rest.as_ref(),
+                    None,
+                ),
+                _ => return,
+            },
             Pattern::RecordShorthand { fields, rest } => {
-                ("record shorthand", fields.as_slice(), rest.as_ref())
+                ("record shorthand", fields.as_slice(), rest.as_ref(), None)
             }
             _ => return,
         };
@@ -586,6 +663,10 @@ impl Checker {
             self.invalid_pattern_plan_spans.insert(key);
             return;
         }
+        if nominal_path.is_some_and(|path| !self.variant_path_owner_matches(path, &resolved)) {
+            self.invalid_pattern_plan_spans.insert(key);
+            return;
+        }
         let Some(td) = self.lookup_type_def(type_name) else {
             return;
         };
@@ -597,7 +678,9 @@ impl Checker {
         let short_name = pattern_name.rsplit("::").next().unwrap_or(pattern_name);
         let (canonical_fields, requires_rest_for_omission): (Vec<(String, Ty)>, bool) =
             match pattern {
-                Pattern::Struct { .. } => {
+                Pattern::Struct { .. }
+                | Pattern::NominalPath { .. }
+                | Pattern::ContextVariant(_) => {
                     if let Some(VariantDef::Struct(variant_fields)) = td.variants.get(short_name) {
                         (
                             variant_fields
@@ -807,16 +890,18 @@ impl Checker {
         is_mutable: bool,
         span: &Span,
     ) {
-        let (Pattern::Struct {
-            fields: source_fields,
-            ..
-        }
-        | Pattern::RecordShorthand {
-            fields: source_fields,
-            ..
-        }) = pattern
-        else {
-            return;
+        let source_fields = match pattern {
+            Pattern::Struct { fields, .. }
+            | Pattern::RecordShorthand { fields, .. }
+            | Pattern::NominalPath {
+                payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
+                ..
+            } => fields,
+            Pattern::ContextVariant(context) => match context.payload.as_ref() {
+                Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => fields,
+                _ => return,
+            },
+            _ => return,
         };
         for field in &plan.fields {
             match &field.sub {
@@ -927,6 +1012,157 @@ impl Checker {
         let resolved_ty = self.subst.resolve(ty);
         let projected_ty = self.project_assoc_types(&resolved_ty);
         let ty = &projected_ty;
+
+        if let Pattern::NominalPath { path, payload } = pattern {
+            if self.reject_machine_event_pattern_outside_transition(ty, span) {
+                return;
+            }
+            match payload.as_ref() {
+                None => {
+                    if self.resolve_variant_path_match(path, ty).is_none()
+                        && !matches!(ty, Ty::Var(_) | Ty::Error)
+                    {
+                        let expected = ty.user_facing().to_string();
+                        let actual = path.source_spelling();
+                        self.report_error(
+                            TypeErrorKind::Mismatch {
+                                expected: expected.clone(),
+                                actual: actual.clone(),
+                            },
+                            span,
+                            format!(
+                                "variant `{actual}` is not a member of scrutinee type `{expected}`"
+                            ),
+                        );
+                    }
+                }
+                Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                    if let Some(payload_tys) =
+                        self.lookup_variant_path_types(path, ty, patterns.len())
+                    {
+                        for (pattern, payload_ty) in patterns.iter().zip(payload_tys.iter()) {
+                            self.bind_pattern(&pattern.0, payload_ty, is_mutable, &pattern.1);
+                        }
+                    } else if !matches!(ty, Ty::Var(_) | Ty::Error) {
+                        let expected = ty.user_facing().to_string();
+                        let actual = path.source_spelling();
+                        self.report_error(
+                            TypeErrorKind::Mismatch {
+                                expected: expected.clone(),
+                                actual: actual.clone(),
+                            },
+                            span,
+                            format!("constructor pattern `{actual}` cannot match `{expected}`"),
+                        );
+                    }
+                }
+                Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                    if !self.variant_path_owner_matches(path, ty) {
+                        let expected = ty.user_facing().to_string();
+                        let actual = path.source_spelling();
+                        self.report_error(
+                            TypeErrorKind::Mismatch {
+                                expected: expected.clone(),
+                                actual: actual.clone(),
+                            },
+                            span,
+                            format!(
+                                "struct-variant pattern `{actual}` does not belong to scrutinee type `{expected}`"
+                            ),
+                        );
+                        self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
+                        return;
+                    }
+                    let key = super::types::SpanKey::in_module(span, self.current_module_idx);
+                    if self.invalid_pattern_plan_spans.contains(&key) {
+                        self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
+                    } else if let Some(plan) = self.pending_pattern_plans.get(&key).cloned() {
+                        self.bind_record_pattern_plan(pattern, &plan, is_mutable, span);
+                    } else {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!(
+                                "nominal record pattern `{}` has no field plan",
+                                path.source_spelling()
+                            ),
+                        );
+                        self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
+                    }
+                }
+            }
+            return;
+        }
+
+        if let Pattern::ContextVariant(context) = pattern {
+            if self.context_variant_expected_owner(ty, span).is_none() {
+                if let Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) =
+                    context.payload.as_ref()
+                {
+                    for pattern in patterns {
+                        self.bind_pattern(&pattern.0, &Ty::Error, is_mutable, &pattern.1);
+                    }
+                }
+                return;
+            }
+            if self.reject_machine_event_pattern_outside_transition(ty, span) {
+                return;
+            }
+            match context.payload.as_ref() {
+                None => {
+                    if self.resolve_variant_match(&context.name, ty).is_none()
+                        && !matches!(ty, Ty::Var(_) | Ty::Error)
+                    {
+                        self.report_error(
+                            TypeErrorKind::PathMemberNotFound,
+                            span,
+                            format!(
+                                "E_PATH_MEMBER_NOT_FOUND: expected type `{}` has no variant `{}`",
+                                ty.user_facing(),
+                                context.name
+                            ),
+                        );
+                    }
+                }
+                Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                    if let Some(payload_tys) =
+                        self.lookup_variant_types(&context.name, ty, patterns.len())
+                    {
+                        for (pattern, payload_ty) in patterns.iter().zip(payload_tys.iter()) {
+                            self.bind_pattern(&pattern.0, payload_ty, is_mutable, &pattern.1);
+                        }
+                    } else if !matches!(ty, Ty::Var(_) | Ty::Error) {
+                        self.report_error(
+                            TypeErrorKind::PathMemberNotFound,
+                            span,
+                            format!(
+                                "E_PATH_MEMBER_NOT_FOUND: expected type `{}` has no tuple variant `{}`",
+                                ty.user_facing(), context.name
+                            ),
+                        );
+                    }
+                }
+                Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                    let key = super::types::SpanKey::in_module(span, self.current_module_idx);
+                    if self.invalid_pattern_plan_spans.contains(&key) {
+                        self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
+                    } else if let Some(plan) = self.pending_pattern_plans.get(&key).cloned() {
+                        self.bind_record_pattern_plan(pattern, &plan, is_mutable, span);
+                    } else {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!(
+                                "contextual record pattern `.{}` has no field plan",
+                                context.name
+                            ),
+                        );
+                        self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
+                    }
+                }
+            }
+            return;
+        }
         match pattern {
             Pattern::Wildcard => {}
             Pattern::Literal(literal) => {
@@ -1018,6 +1254,9 @@ impl Checker {
                     self.resolve_variant_match(name, ty).is_some()
                 };
                 if is_constructor_like {
+                    if !name.contains("::") {
+                        self.warn_bare_variant_pattern(name, span);
+                    }
                     // A unit-variant constructor pattern introduces no binding. Gate the
                     // machine-event rejection for its side effect, then return WITHOUT
                     // defining a name: a constructor is not a binder, so the env must not
@@ -1044,6 +1283,9 @@ impl Checker {
                 }
                 // Look up variant in enum definition
                 if let Some(payload_tys) = self.lookup_variant_types(name, ty, patterns.len()) {
+                    if !name.contains("::") {
+                        self.warn_bare_variant_pattern(name, span);
+                    }
                     for (p, pty) in patterns.iter().zip(payload_tys.iter()) {
                         self.bind_pattern(&p.0, pty, is_mutable, &p.1);
                     }
@@ -1508,7 +1750,117 @@ impl Checker {
                     self.errors.push(error);
                 }
             }
+            Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
+                unreachable!("handled before checker dispatch")
+            }
         }
+    }
+
+    fn tuple_variant_arm_resolution(
+        &mut self,
+        name: &str,
+        patterns: &[Spanned<Pattern>],
+        pattern_span: &Span,
+        scrutinee_ty: &Ty,
+    ) -> Option<ArmResolution> {
+        let short_name = name.rsplit("::").next().unwrap_or(name);
+        let variant_match = self.resolve_variant_match(name, scrutinee_ty);
+        let payload_tys = self
+            .lookup_variant_types(name, scrutinee_ty, patterns.len())
+            .unwrap_or_else(|| vec![Ty::Error; patterns.len()]);
+        let mut ctor_field_idxs = HashSet::new();
+        let mut payload_variant_patterns = Vec::new();
+        for (field_idx, (sub_pattern, sub_span)) in patterns.iter().enumerate() {
+            let payload_ty = payload_tys.get(field_idx).cloned().unwrap_or(Ty::Error);
+            let resolved_payload = self.project_assoc_types(&self.subst.resolve(&payload_ty));
+            let nested_constructor: Option<(&str, &[Spanned<Pattern>])> = match sub_pattern {
+                Pattern::Constructor { name, patterns } => {
+                    Some((name.as_str(), patterns.as_slice()))
+                }
+                Pattern::Identifier(name) if name.contains("::") => Some((name.as_str(), &[])),
+                Pattern::Identifier(name) => self
+                    .resolve_variant_match(name, &resolved_payload)
+                    .is_some()
+                    .then_some((name.as_str(), &[])),
+                Pattern::ContextVariant(context) => match context.payload.as_ref() {
+                    None => Some((context.name.as_str(), &[])),
+                    Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                        Some((context.name.as_str(), patterns.as_slice()))
+                    }
+                    Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => None,
+                },
+                Pattern::NominalPath { path, payload }
+                    if self
+                        .resolve_variant_path_match(path, &resolved_payload)
+                        .is_some() =>
+                {
+                    match payload.as_ref() {
+                        None => Some((nominal_path_leaf(path)?, &[])),
+                        Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                            Some((nominal_path_leaf(path)?, patterns.as_slice()))
+                        }
+                        Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some((constructor_name, inner_patterns)) = nested_constructor {
+                ctor_field_idxs.insert(field_idx);
+                let nested = self.build_payload_variant_pattern(
+                    field_idx,
+                    &payload_ty,
+                    constructor_name,
+                    inner_patterns,
+                    sub_span,
+                    pattern_span,
+                )?;
+                payload_variant_patterns.push(nested);
+            } else if !matches!(sub_pattern, Pattern::Identifier(_)) {
+                if let Some(label) = unsupported_payload_subpattern_label(sub_pattern) {
+                    self.report_error_with_note(
+                        crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
+                            variant_name: short_name.to_string(),
+                            kind_label: label.to_string(),
+                        },
+                        sub_span,
+                        format!(
+                            "payload subpattern `{label}` in `{short_name}(...)` is not yet supported"
+                        ),
+                        pattern_span,
+                        "v0.5 payload subpatterns support plain bindings (`x`), wildcards (`_`), \
+                         literal predicates, and nested constructor patterns; aggregate \
+                         destructures and or-patterns are reserved for a future \
+                         match-destructure stage"
+                            .to_string(),
+                    );
+                    return None;
+                }
+            }
+        }
+        let payload_bindings = patterns
+            .iter()
+            .zip(payload_tys.iter())
+            .enumerate()
+            .filter_map(|(field_idx, ((sub_pattern, _), ty))| {
+                if ctor_field_idxs.contains(&field_idx) {
+                    return None;
+                }
+                let Pattern::Identifier(binding_name) = sub_pattern else {
+                    return None;
+                };
+                Some(PayloadBinding {
+                    field_idx,
+                    binding_name: binding_name.clone(),
+                    ty: self.project_assoc_types(ty),
+                })
+            })
+            .collect();
+        Some(ArmResolution {
+            pattern_kind: PatternKind::VariantCtor,
+            variant_match,
+            payload_bindings,
+            payload_variant_patterns,
+        })
     }
 
     /// Classify an arm pattern into an [`ArmResolution`] and record it in
@@ -1618,6 +1970,32 @@ impl Checker {
                                 Some((n.as_str(), &[] as &[(Pattern, Span)]))
                             } else {
                                 None // plain binding regardless of case
+                            }
+                        }
+                        Pattern::ContextVariant(context) => match context.payload.as_ref() {
+                            None => Some((context.name.as_str(), &[] as &[(Pattern, Span)])),
+                            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                                Some((context.name.as_str(), patterns.as_slice()))
+                            }
+                            Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => None,
+                        },
+                        Pattern::NominalPath { path, payload }
+                            if self
+                                .resolve_variant_path_match(path, &resolved_payload)
+                                .is_some() =>
+                        {
+                            match payload.as_ref() {
+                                None => Some((
+                                    nominal_path_leaf(path).unwrap_or_default(),
+                                    &[] as &[(Pattern, Span)],
+                                )),
+                                Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                                    Some((
+                                        nominal_path_leaf(path).unwrap_or_default(),
+                                        patterns.as_slice(),
+                                    ))
+                                }
+                                Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => None,
                             }
                         }
                         _ => None,
@@ -2084,6 +2462,160 @@ impl Checker {
                     payload_variant_patterns: vec![],
                 }
             }
+            Pattern::ContextVariant(context) => match context.payload.as_ref() {
+                None => ArmResolution {
+                    pattern_kind: PatternKind::VariantCtor,
+                    variant_match: self.resolve_variant_match(&context.name, scrutinee_ty),
+                    payload_bindings: Vec::new(),
+                    payload_variant_patterns: Vec::new(),
+                },
+                Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                    let Some(resolution) = self.tuple_variant_arm_resolution(
+                        &context.name,
+                        patterns,
+                        pattern_span,
+                        scrutinee_ty,
+                    ) else {
+                        return;
+                    };
+                    resolution
+                }
+                Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => {
+                    let payload_bindings = self
+                        .pending_pattern_plans
+                        .get(&key)
+                        .map(|plan| {
+                            plan.fields
+                                .iter()
+                                .filter_map(|field| {
+                                    let PlanSub::Binding(binding_name) = &field.sub else {
+                                        return None;
+                                    };
+                                    Some(PayloadBinding {
+                                        field_idx: field.decl_idx as usize,
+                                        binding_name: binding_name.clone(),
+                                        ty: self.project_assoc_types(&field.ty),
+                                    })
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    ArmResolution {
+                        pattern_kind: PatternKind::VariantCtor,
+                        variant_match: self.resolve_variant_match(&context.name, scrutinee_ty),
+                        payload_bindings,
+                        payload_variant_patterns: Vec::new(),
+                    }
+                }
+            },
+            Pattern::NominalPath { path, payload } => {
+                let Some(name) = nominal_path_leaf(path) else {
+                    return;
+                };
+                if self.variant_path_owner_matches(path, scrutinee_ty) {
+                    match payload.as_ref() {
+                        None => ArmResolution {
+                            pattern_kind: PatternKind::VariantCtor,
+                            variant_match: self.resolve_variant_path_match(path, scrutinee_ty),
+                            payload_bindings: Vec::new(),
+                            payload_variant_patterns: Vec::new(),
+                        },
+                        Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                            let Some(resolution) = self.tuple_variant_arm_resolution(
+                                name,
+                                patterns,
+                                pattern_span,
+                                scrutinee_ty,
+                            ) else {
+                                return;
+                            };
+                            resolution
+                        }
+                        Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                            let plan = self.pending_pattern_plans.get(&key).cloned();
+                            if let Some(plan) = &plan {
+                                for source_field in fields {
+                                    let Some((subpattern, sub_span)) = &source_field.pattern else {
+                                        continue;
+                                    };
+                                    let field_ty = plan
+                                        .fields
+                                        .iter()
+                                        .find(|field| field.name == source_field.name)
+                                        .map_or(Ty::Error, |field| field.ty.clone());
+                                    let nested_constructor = match subpattern {
+                                        Pattern::Identifier(name) => {
+                                            let resolved_field = self.project_assoc_types(
+                                                &self.subst.resolve(&field_ty),
+                                            );
+                                            self.resolve_variant_match(name, &resolved_field)
+                                                .is_some()
+                                        }
+                                        Pattern::NominalPath { .. }
+                                        | Pattern::ContextVariant(_) => true,
+                                        _ => false,
+                                    };
+                                    let label = if nested_constructor {
+                                        Some("nested constructor")
+                                    } else {
+                                        unsupported_payload_subpattern_label(subpattern)
+                                    };
+                                    if let Some(label) = label {
+                                        self.report_error_with_note(
+                                            crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
+                                                variant_name: name.to_string(),
+                                                kind_label: label.to_string(),
+                                            },
+                                            sub_span,
+                                            format!(
+                                                "payload subpattern `{label}` in `{name} {{ {} }}` is not yet supported",
+                                                source_field.name
+                                            ),
+                                            pattern_span,
+                                            "v0.5 payload subpatterns must be a plain binding (`x`) or wildcard (`_`); \
+                                             and literal predicates; nested patterns are reserved for a future \
+                                             match-destructure stage"
+                                                .to_string(),
+                                        );
+                                        return;
+                                    }
+                                }
+                            }
+                            let payload_bindings = plan
+                                .as_ref()
+                                .map(|plan| {
+                                    plan.fields
+                                        .iter()
+                                        .filter_map(|field| {
+                                            let PlanSub::Binding(binding_name) = &field.sub else {
+                                                return None;
+                                            };
+                                            Some(PayloadBinding {
+                                                field_idx: field.decl_idx as usize,
+                                                binding_name: binding_name.clone(),
+                                                ty: self.project_assoc_types(&field.ty),
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            ArmResolution {
+                                pattern_kind: PatternKind::VariantCtor,
+                                variant_match: self.resolve_variant_path_match(path, scrutinee_ty),
+                                payload_bindings,
+                                payload_variant_patterns: Vec::new(),
+                            }
+                        }
+                    }
+                } else {
+                    ArmResolution {
+                        pattern_kind: PatternKind::VariantCtor,
+                        variant_match: None,
+                        payload_bindings: Vec::new(),
+                        payload_variant_patterns: Vec::new(),
+                    }
+                }
+            }
         };
 
         self.pending_pattern_resolutions.insert(key, resolution);
@@ -2168,6 +2700,26 @@ impl Checker {
                         None // plain binding regardless of case
                     }
                 }
+                Pattern::ContextVariant(context) => match context.payload.as_ref() {
+                    None => Some((context.name.as_str(), &[] as &[(Pattern, Span)])),
+                    Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                        Some((context.name.as_str(), patterns.as_slice()))
+                    }
+                    Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => None,
+                },
+                Pattern::NominalPath { path, payload }
+                    if self
+                        .resolve_variant_path_match(path, &resolved_inner)
+                        .is_some() =>
+                {
+                    match payload.as_ref() {
+                        None => Some((nominal_path_leaf(path)?, &[] as &[(Pattern, Span)])),
+                        Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                            Some((nominal_path_leaf(path)?, patterns.as_slice()))
+                        }
+                        Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => None,
+                    }
+                }
                 _ => None,
             };
             if let Some((inner_ctor, inner_subs)) = inner_nested_opt {
@@ -2208,6 +2760,9 @@ impl Checker {
                         Pattern::Tuple(_) => "tuple destructure",
                         Pattern::Or(_, _) => "or-pattern",
                         Pattern::Regex { .. } => "regex pattern",
+                        Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
+                            "nested constructor"
+                        }
                         Pattern::Wildcard
                         | Pattern::Identifier(_)
                         | Pattern::Constructor { .. } => {
@@ -2291,6 +2846,29 @@ impl Checker {
             }
         }
         None
+    }
+
+    fn resolve_variant_path_match(
+        &self,
+        path: &hew_parser::ast::Path,
+        scrutinee_ty: &Ty,
+    ) -> Option<VariantMatch> {
+        if !self.variant_path_owner_matches(path, scrutinee_ty) {
+            return None;
+        }
+        self.resolve_variant_match(nominal_path_leaf(path)?, scrutinee_ty)
+    }
+
+    fn lookup_variant_path_types(
+        &self,
+        path: &hew_parser::ast::Path,
+        enum_ty: &Ty,
+        fallback_arity: usize,
+    ) -> Option<Vec<Ty>> {
+        if !self.variant_path_owner_matches(path, enum_ty) {
+            return None;
+        }
+        self.lookup_variant_types(nominal_path_leaf(path)?, enum_ty, fallback_arity)
     }
 
     pub(super) fn lookup_variant_types(

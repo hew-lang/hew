@@ -6,10 +6,10 @@ enum Shape {
 
 fn main() {
     let x: Shape = Circle(3);
-    let m: HashMap<string, Shape> = HashMap::new();
+    let m: HashMap<string, Shape> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
+        Option.Some(e) => {
             match e {
                 Empty => println("empty"),
                 Circle(e_r) => println(f"circle {e_r}"),

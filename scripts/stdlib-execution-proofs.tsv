@@ -16,7 +16,7 @@ std::process	tests/hew/process_test.hew	make test-hew-ratchet	process.
 std::vec	tests/hew/vec_test.hew	make test-hew-ratchet	vec.
 std::arena	tests/vertical-slice/accept/arena_insert_get_roundtrip.hew	make test-vertical-slice	arena.new
 std::deque	tests/hew/deque_test.hew	make test-hew-ratchet	deque.
-std::iter	tests/hew/iter_test.hew	make test-hew-ratchet	iter::
+std::iter	tests/hew/vec_iter_test.hew	make test-hew-ratchet	iter.
 std::sort	tests/hew/sort_test.hew	make test-hew-ratchet	sort.
 std::stream	tests/hew/fs_stream_test.hew	make test-hew-ratchet	stream.
 std::channel::channel	tests/vertical-slice/accept/actor_nested_handle_tuple_transfer.hew	make test-vertical-slice	channel.

@@ -1,8 +1,9 @@
-import std::testing;
-import std::text::regex;
+import std.testing;
+
+import std.text.regex;
 
 type PatternWrapper {
-    pattern: regex.Pattern
+    pattern: regex.Pattern;
 }
 
 impl PatternWrapper {

@@ -12,17 +12,17 @@ enum Packet {
 
 fn make(good: bool) -> Packet {
     if good {
-        Packet::Data { a: "match-a".to_upper(), b: "match-b".to_upper() }
+        Packet.Data { a: "match-a".to_upper(), b: "match-b".to_upper() }
     } else {
-        Packet::Empty
+        Packet.Empty
     }
 }
 
 fn probe(good: bool) -> i64 {
     let p = make(good);
     match p {
-        Packet::Data { a, b: _ } => a.len(),
-        Packet::Empty => 0,
+        Packet.Data { a, b: _ } => a.len(),
+        Packet.Empty => 0,
     }
 }
 

@@ -12,7 +12,7 @@ impl Tok {
 fn main() {
     let x = Tok { id: 1 };
     let y = Tok { id: 2 };
-    let v: Vec<Tok> = Vec::new();
+    let v: Vec<Tok> = Vec.new();
     v.push(x);
     v.push(y);
     let n = v.len();

@@ -17,7 +17,7 @@ use support::{describe_output, require_codegen};
 fn dyn_vec_source(frames: usize) -> String {
     format!(
         r#"
-import std::string;
+import std.string;
 
 trait Labeled {{
     fn label_size(val: Self) -> i64;
@@ -46,7 +46,7 @@ fn make_parcel(seed: string) -> dyn Labeled {{
 fn inspect(value: dyn Labeled) -> i64 {{ value.label_size() }}
 
 fn run_frame(frame: i64) -> i64 {{
-    let values: Vec<dyn Labeled> = Vec::new();
+    let values: Vec<dyn Labeled> = Vec.new();
     values.push(make_person(f"person-{{frame}}"));
     values.push(make_parcel(f"parcel-{{frame}}"));
     values.push(make_person(f"tail-{{frame}}"));

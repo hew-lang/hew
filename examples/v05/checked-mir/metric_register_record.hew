@@ -5,7 +5,7 @@
 // `hew_metric_gauge_register`, `hew_metric_histogram_register_simple`)
 // and the mutators reached through the handle methods — counter
 // inc/add, gauge inc/dec/set/add, and histogram record.
-import std::metrics;
+import std.metrics;
 
 fn main() {
     let hits = metrics.counter("app.cache_hits");

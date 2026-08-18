@@ -30,7 +30,7 @@ fn pushMixed(p: string, h: Holder) -> i64 {
 }
 
 fn newArena<T>() -> Arena<T> {
-    Arena { slots: Vec::new() }
+    Arena { slots: Vec.new() }
 }
 
 impl<T> Arena<T> {

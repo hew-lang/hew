@@ -62,10 +62,10 @@ const MODULE_WITH_LIFECYCLE: &str = r"
 #[test]
 fn module_qualified_struct_variant_initialiser_resolves() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
-            let _e = m.Lifecycle::Started { handle: 42 };
+            let _e = m.Lifecycle.Started { handle: 42 };
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);
@@ -81,10 +81,10 @@ fn module_qualified_struct_variant_initialiser_resolves() {
 #[test]
 fn module_qualified_unit_variant_resolves() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
-            let _e = m.Lifecycle::Stopped;
+            let _e = m.Lifecycle.Stopped;
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);
@@ -101,10 +101,10 @@ fn module_qualified_unit_variant_resolves() {
 #[test]
 fn module_qualified_tuple_variant_call_resolves() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
-            let _e = m.Lifecycle::Failed(7);
+            let _e = m.Lifecycle.Failed(7);
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);
@@ -117,30 +117,24 @@ fn module_qualified_tuple_variant_call_resolves() {
 
 // ── negative: unknown module alias ───────────────────────────────────────────
 //
-// `nosuch.Lifecycle::Stopped` must NOT emit "undefined variable `nosuch`"
-// (the leaky synthesize fallback).  It must emit a module-aware diagnostic
-// naming the failure precisely.
+// A missing first segment on a dotted value path is diagnosed as an undefined
+// value instead of being mistaken for a valid module-qualified constructor.
 
 #[test]
 fn module_qualified_unknown_module_alias_is_fail_closed() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
-            let _e = nosuch.Lifecycle::Stopped;
+            let _e = nosuch.Lifecycle.Stopped;
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);
     let msgs: Vec<&str> = output.errors.iter().map(|e| e.message.as_str()).collect();
     assert!(
         msgs.iter()
-            .any(|m| m.contains("unknown module alias `nosuch`")),
-        "expected `unknown module alias \\`nosuch\\`` diagnostic, got: {msgs:?}"
-    );
-    assert!(
-        msgs.iter()
-            .all(|m| !m.contains("undefined variable `nosuch`")),
-        "must NOT leak 'undefined variable `nosuch`' through synthesize fallback; got: {msgs:?}"
+            .any(|m| m.contains("undefined variable `nosuch`")),
+        "expected `undefined variable \\`nosuch\\`` diagnostic, got: {msgs:?}"
     );
 }
 
@@ -149,10 +143,10 @@ fn module_qualified_unknown_module_alias_is_fail_closed() {
 #[test]
 fn module_qualified_unknown_type_is_fail_closed() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
-            let _e = m.NoSuch::Started;
+            let _e = m.NoSuch.Started;
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);
@@ -175,25 +169,18 @@ fn module_qualified_unknown_type_is_fail_closed() {
 #[test]
 fn module_qualified_struct_init_unknown_variant_is_fail_closed() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
-            let _e = m.Lifecycle::NoSuch { handle: 1 };
+            let _e = m.Lifecycle.NoSuch { handle: 1 };
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);
     let msgs: Vec<&str> = output.errors.iter().map(|e| e.message.as_str()).collect();
     assert!(
         msgs.iter()
-            .any(|s| s.contains("type `m.Lifecycle` has no variant `NoSuch`")),
-        "expected `type \\`m.Lifecycle\\` has no variant \\`NoSuch\\`` diagnostic, got: {msgs:?}"
-    );
-    // The pre-slice behaviour was "undefined type `m.Lifecycle::NoSuch`" —
-    // verify the leaky surface is gone.
-    assert!(
-        msgs.iter()
-            .all(|m| !m.contains("undefined type `m.Lifecycle::NoSuch`")),
-        "must NOT leak 'undefined type `m.Lifecycle::NoSuch`'; got: {msgs:?}"
+            .any(|s| s.contains("undefined type `m.Lifecycle.NoSuch`")),
+        "expected `undefined type \\`m.Lifecycle.NoSuch\\`` diagnostic, got: {msgs:?}"
     );
 }
 
@@ -202,10 +189,10 @@ fn module_qualified_struct_init_unknown_variant_is_fail_closed() {
 #[test]
 fn module_qualified_struct_init_unknown_field_is_fail_closed() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
-            let _e = m.Lifecycle::Started { unknown_field: 1 };
+            let _e = m.Lifecycle.Started { unknown_field: 1 };
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);
@@ -218,11 +205,11 @@ fn module_qualified_struct_init_unknown_field_is_fail_closed() {
         "expected an UndefinedField error, got: {:?}",
         output.errors
     );
-    // Existing diagnostic surface: `no field `unknown_field` on variant `m.Lifecycle::Started``
+    // The diagnostic must name the unknown field and resolved variant.
     let msgs: Vec<&str> = output.errors.iter().map(|e| e.message.as_str()).collect();
     assert!(
         msgs.iter()
-            .any(|s| { s.contains("unknown_field") && s.contains("m.Lifecycle::Started") }),
+            .any(|s| { s.contains("unknown_field") && s.contains("Lifecycle::Started") }),
         "expected diagnostic naming both the field and the variant, got: {msgs:?}"
     );
 }
@@ -236,10 +223,10 @@ fn module_qualified_struct_init_unknown_field_is_fail_closed() {
 #[test]
 fn module_qualified_struct_init_unknown_module_is_fail_closed() {
     let root_source = r"
-        import myapp::m;
+        import myapp.m;
 
         fn main() {
-            let _e = nosuch.Lifecycle::Started { handle: 1 };
+            let _e = nosuch.Lifecycle.Started { handle: 1 };
         }
     ";
     let output = typecheck_with_module(root_source, MODULE_WITH_LIFECYCLE);

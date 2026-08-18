@@ -13,7 +13,7 @@
 //
 // Harness verb: hew run
 // Expected: code value passed through the aliased-type parameter is returned.
-import hew::aliassrc::{ Payload as Tag };
+import hew.aliassrc.{ Payload as Tag };
 
 fn get_code(item: Tag) -> i64 {
     item.code

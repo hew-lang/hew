@@ -89,7 +89,7 @@ const SLOPE_TOLERANCE: usize = 5;
 /// the new record is built.
 fn string_field_source(frames: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          \n\
          record Cfg {{\n\
          \x20   label: string,\n\
@@ -134,7 +134,7 @@ fn bytes_field_source(frames: usize) -> String {
 
 fn direct_string_field_store_source(frames: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          record Cfg {{ label: string, count: i64 }}\n\
          fn main() -> i64 {{\n\
          \x20   var c = Cfg {{ label: string.repeat(\"a\", 32), count: 0 }};\n\
@@ -150,7 +150,7 @@ fn direct_string_field_store_source(frames: usize) -> String {
 
 fn direct_string_self_store_source(frames: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          record Cfg {{ label: string }}\n\
          fn main() -> i64 {{\n\
          \x20   var c = Cfg {{ label: string.repeat(\"self\", 32) }};\n\
@@ -174,7 +174,7 @@ fn direct_string_self_store_source(frames: usize) -> String {
 /// the record's scope-exit obligation.
 fn callee_scope_string_store_source(frames: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          record Cfg {{ label: string, count: i64 }}\n\
          fn churn(seed: string) -> i64 {{\n\
          \x20   var c = Cfg {{ label: seed, count: 0 }};\n\
@@ -202,7 +202,7 @@ fn callee_scope_string_store_source(frames: usize) -> String {
 /// re-runs the closed handle double-frees under `MallocScribble`.
 fn callee_scope_resource_string_sibling_source(frames: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          #[resource]\n\
          type Handle {{ fd: i64 }}\n\
          impl Handle {{ fn close(consuming self) {{}} }}\n\
@@ -254,12 +254,12 @@ fn vec_field_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let init: Vec<i64> = Vec::new();\n\
+         \x20   let init: Vec<i64> = Vec.new();\n\
          \x20   init.push(99);\n\
          \x20   var h = VecHolder {{ items: init, tag: 0 }};\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let next: Vec<i64> = Vec::new();\n\
+         \x20       let next: Vec<i64> = Vec.new();\n\
          \x20       next.push(i);\n\
          \x20       h = VecHolder {{ items: next, ..h }};\n\
          \x20       i = i + 1;\n\
@@ -282,12 +282,12 @@ fn hashmap_field_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let init: HashMap<string, i64> = HashMap::new();\n\
+         \x20   let init: HashMap<string, i64> = HashMap.new();\n\
          \x20   init.insert(\"seed\", 1);\n\
          \x20   var h = MapHolder {{ m: init, tag: 0 }};\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let next: HashMap<string, i64> = HashMap::new();\n\
+         \x20       let next: HashMap<string, i64> = HashMap.new();\n\
          \x20       next.insert(\"k\", i);\n\
          \x20       h = MapHolder {{ m: next, ..h }};\n\
          \x20       i = i + 1;\n\
@@ -310,12 +310,12 @@ fn hashset_field_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let init: HashSet<i64> = HashSet::<i64>::new();\n\
+         \x20   let init: HashSet<i64> = HashSet<i64>.new();\n\
          \x20   init.insert(99);\n\
          \x20   var h = SetHolder {{ s: init, tag: 0 }};\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let next: HashSet<i64> = HashSet::<i64>::new();\n\
+         \x20       let next: HashSet<i64> = HashSet<i64>.new();\n\
          \x20       next.insert(i);\n\
          \x20       h = SetHolder {{ s: next, ..h }};\n\
          \x20       i = i + 1;\n\
@@ -331,7 +331,7 @@ fn hashset_field_source(frames: usize) -> String {
 /// Post-fix: both fields independently released before `RecordInit`.
 fn multi_field_source(frames: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          \n\
          record Multi {{\n\
          \x20   label: string,\n\
@@ -340,12 +340,12 @@ fn multi_field_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let init: Vec<i64> = Vec::new();\n\
+         \x20   let init: Vec<i64> = Vec.new();\n\
          \x20   init.push(0);\n\
          \x20   var m = Multi {{ label: string.repeat(\"z\", 16), items: init, id: 0 }};\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let next: Vec<i64> = Vec::new();\n\
+         \x20       let next: Vec<i64> = Vec.new();\n\
          \x20       next.push(i);\n\
          \x20       m = Multi {{ label: string.repeat(\"y\", 16), items: next, ..m }};\n\
          \x20       i = i + 1;\n\
@@ -369,7 +369,7 @@ fn multi_field_source(frames: usize) -> String {
 /// Carry a nested owned-RECORD field while churning a `string`.
 fn carry_record_field_source(frames: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          \n\
          record Inner {{\n\
          \x20   label: string,\n\
@@ -395,7 +395,7 @@ fn carry_record_field_source(frames: usize) -> String {
 /// Carry a `string` field while churning a different `string` field.
 fn carry_string_field_source(frames: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          \n\
          record Pair {{\n\
          \x20   keep: string,\n\
@@ -417,7 +417,7 @@ fn carry_string_field_source(frames: usize) -> String {
 /// Carry a `Vec<string>` (owned-element) field while churning a `string`.
 fn carry_vec_field_source(frames: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          \n\
          record Pair {{\n\
          \x20   keep: Vec<string>,\n\
@@ -425,7 +425,7 @@ fn carry_vec_field_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let v: Vec<string> = Vec::new();\n\
+         \x20   let v: Vec<string> = Vec.new();\n\
          \x20   v.push(string.repeat(\"k\", 32));\n\
          \x20   var p = Pair {{ keep: v, churn: string.repeat(\"a\", 32) }};\n\
          \x20   var i: i64 = 0;\n\
@@ -441,7 +441,7 @@ fn carry_vec_field_source(frames: usize) -> String {
 /// Carry a `HashMap<string,string>` field while churning a `string`.
 fn carry_hashmap_field_source(frames: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          \n\
          record Pair {{\n\
          \x20   keep: HashMap<string, string>,\n\
@@ -449,7 +449,7 @@ fn carry_hashmap_field_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let m: HashMap<string, string> = HashMap::new();\n\
+         \x20   let m: HashMap<string, string> = HashMap.new();\n\
          \x20   m.insert(string.repeat(\"k\", 32), string.repeat(\"v\", 32));\n\
          \x20   var p = Pair {{ keep: m, churn: string.repeat(\"a\", 32) }};\n\
          \x20   var i: i64 = 0;\n\
@@ -465,7 +465,7 @@ fn carry_hashmap_field_source(frames: usize) -> String {
 /// Carry a `HashSet<string>` field while churning a `string`.
 fn carry_hashset_field_source(frames: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          \n\
          record Pair {{\n\
          \x20   keep: HashSet<string>,\n\
@@ -473,7 +473,7 @@ fn carry_hashset_field_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let s: HashSet<string> = HashSet::new();\n\
+         \x20   let s: HashSet<string> = HashSet.new();\n\
          \x20   s.insert(string.repeat(\"k\", 32));\n\
          \x20   var p = Pair {{ keep: s, churn: string.repeat(\"a\", 32) }};\n\
          \x20   var i: i64 = 0;\n\
@@ -489,7 +489,7 @@ fn carry_hashset_field_source(frames: usize) -> String {
 /// Carry a `bytes` field while churning a `string`.
 fn carry_bytes_field_source(frames: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          \n\
          record Pair {{\n\
          \x20   keep: bytes,\n\

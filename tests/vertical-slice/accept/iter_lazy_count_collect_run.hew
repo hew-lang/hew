@@ -81,7 +81,7 @@ fn count_i64<I>(it: I) -> i64 where I: Iterator<Item = i64> {
 
 /// Collect a fixed-`i64` iterator into a `Vec<i64>` (mirrors `std::iter::collect`).
 fn collect_i64<I>(it: I) -> Vec<i64> where I: Iterator<Item = i64> {
-    let out: Vec<i64> = Vec::new();
+    let out: Vec<i64> = Vec.new();
     var iter = it;
     loop {
         match iter.next() {

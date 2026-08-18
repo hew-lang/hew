@@ -7,7 +7,7 @@
 //
 // Harness verb: hew compile (must fail)
 // Expected diagnostic substring: "on a non-await expression"
-import std::channel::channel;
+import std.channel.channel;
 
 actor Worker {
     receive fn run() -> i64 {

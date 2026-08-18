@@ -41,7 +41,7 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 /// buffer of length 3 per call.
 const SEED_FN: &str = "\
 fn seed() -> Vec<i64> {\n\
-\x20   let v: Vec<i64> = Vec::new();\n\
+\x20   let v: Vec<i64> = Vec.new();\n\
 \x20   v.push(1);\n\
 \x20   v.push(2);\n\
 \x20   v.push(3);\n\
@@ -130,18 +130,18 @@ fn reread_loop_source() -> String {
          }}\n\
          \n\
          fn main() {{\n\
-         \x20   let b = Box::Full(seed());\n\
+         \x20   let b = Box.Full(seed());\n\
          \x20   var i = 0;\n\
          \x20   var sum = 0;\n\
          \x20   while i < 5 {{\n\
          \x20       match b {{\n\
-         \x20           Box::Full(v) => {{\n\
+         \x20           Box.Full(v) => {{\n\
          \x20               sum = sum + v.len();\n\
          \x20               var w = v;\n\
          \x20               w = seed();\n\
          \x20               sum = sum + w.len();\n\
          \x20           }}\n\
-         \x20           Box::Empty => {{}}\n\
+         \x20           Box.Empty => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -164,16 +164,16 @@ fn move_reassign_no_reread_source() -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let b = Box::Full(seed());\n\
+         \x20   let b = Box.Full(seed());\n\
          \x20   var out = 0;\n\
          \x20   match b {{\n\
-         \x20       Box::Full(v) => {{\n\
+         \x20       Box.Full(v) => {{\n\
          \x20           out = v.len();\n\
          \x20           var w = v;\n\
          \x20           w = seed();\n\
          \x20           out = out + w.len();\n\
          \x20       }}\n\
-         \x20       Box::Empty => {{}}\n\
+         \x20       Box.Empty => {{}}\n\
          \x20   }}\n\
          \x20   out\n\
          }}\n\
@@ -194,15 +194,15 @@ fn move_scope_drop_no_reread_source() -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let b = Box::Full(seed());\n\
+         \x20   let b = Box.Full(seed());\n\
          \x20   var out = 0;\n\
          \x20   match b {{\n\
-         \x20       Box::Full(v) => {{\n\
+         \x20       Box.Full(v) => {{\n\
          \x20           out = v.len();\n\
          \x20           let w = v;\n\
          \x20           out = out + w.len();\n\
          \x20       }}\n\
-         \x20       Box::Empty => {{}}\n\
+         \x20       Box.Empty => {{}}\n\
          \x20   }}\n\
          \x20   out\n\
          }}\n\
@@ -223,15 +223,15 @@ fn aggregate_payload_no_reread_source() -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let b = Pair::Both((seed(), seed()));\n\
+         \x20   let b = Pair.Both((seed(), seed()));\n\
          \x20   var out = 0;\n\
          \x20   match b {{\n\
-         \x20       Pair::Both(v) => {{\n\
+         \x20       Pair.Both(v) => {{\n\
          \x20           out = v.0.len() + v.1.len();\n\
          \x20           let w = v;\n\
          \x20           out = out + w.0.len();\n\
          \x20       }}\n\
-         \x20       Pair::Neither => {{}}\n\
+         \x20       Pair.Neither => {{}}\n\
          \x20   }}\n\
          \x20   out\n\
          }}\n\
@@ -257,14 +257,14 @@ fn fresh_scrutinee_loop_source(frames: usize) -> String {
          \x20   var i = 0;\n\
          \x20   var acc = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let b = Box::Full(seed());\n\
+         \x20       let b = Box.Full(seed());\n\
          \x20       match b {{\n\
-         \x20           Box::Full(v) => {{\n\
+         \x20           Box.Full(v) => {{\n\
          \x20               var w = v;\n\
          \x20               w = seed();\n\
          \x20               acc = acc + w.len();\n\
          \x20           }}\n\
-         \x20           Box::Empty => {{}}\n\
+         \x20           Box.Empty => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -288,15 +288,15 @@ fn borrow_only_loop_source() -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let b = Box::Full(seed());\n\
+         \x20   let b = Box.Full(seed());\n\
          \x20   var i = 0;\n\
          \x20   var sum = 0;\n\
          \x20   while i < 5 {{\n\
          \x20       match b {{\n\
-         \x20           Box::Full(v) => {{\n\
+         \x20           Box.Full(v) => {{\n\
          \x20               sum = sum + v.len();\n\
          \x20           }}\n\
-         \x20           Box::Empty => {{}}\n\
+         \x20           Box.Empty => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -385,13 +385,13 @@ fn field_place_reread_loop_source() -> String {
          record Holder {{ b: Box, }}\n\
          \n\
          fn main() {{\n\
-         \x20   let h = Holder {{ b: Box::Full(seed()) }};\n\
+         \x20   let h = Holder {{ b: Box.Full(seed()) }};\n\
          \x20   var i = 0;\n\
          \x20   var sum = 0;\n\
          \x20   while i < 5 {{\n\
          \x20       match h.b {{\n\
-         \x20           Box::Full(v) => {{ sum = sum + v.len(); var w = v; w = seed(); }}\n\
-         \x20           Box::Empty => {{}}\n\
+         \x20           Box.Full(v) => {{ sum = sum + v.len(); var w = v; w = seed(); }}\n\
+         \x20           Box.Empty => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -415,11 +415,11 @@ fn field_place_no_reread_source() -> String {
          record Holder {{ b: Box, }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let h = Holder {{ b: Box::Full(seed()) }};\n\
+         \x20   let h = Holder {{ b: Box.Full(seed()) }};\n\
          \x20   var out = 0;\n\
          \x20   match h.b {{\n\
-         \x20       Box::Full(v) => {{ out = v.len(); var w = v; w = seed(); out = out + w.len(); }}\n\
-         \x20       Box::Empty => {{}}\n\
+         \x20       Box.Full(v) => {{ out = v.len(); var w = v; w = seed(); out = out + w.len(); }}\n\
+         \x20       Box.Empty => {{}}\n\
          \x20   }}\n\
          \x20   out\n\
          }}\n\
@@ -441,13 +441,13 @@ fn tuple_place_reread_loop_source() -> String {
          }}\n\
          \n\
          fn main() {{\n\
-         \x20   let pair = (Box::Full(seed()), 0);\n\
+         \x20   let pair = (Box.Full(seed()), 0);\n\
          \x20   var i = 0;\n\
          \x20   var sum = 0;\n\
          \x20   while i < 5 {{\n\
          \x20       match pair.0 {{\n\
-         \x20           Box::Full(v) => {{ sum = sum + v.len(); var w = v; w = seed(); }}\n\
-         \x20           Box::Empty => {{}}\n\
+         \x20           Box.Full(v) => {{ sum = sum + v.len(); var w = v; w = seed(); }}\n\
+         \x20           Box.Empty => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -470,13 +470,13 @@ fn nested_field_place_reread_loop_source() -> String {
          record Outer {{ inner: Inner, }}\n\
          \n\
          fn main() {{\n\
-         \x20   let o = Outer {{ inner: Inner {{ b: Box::Full(seed()) }} }};\n\
+         \x20   let o = Outer {{ inner: Inner {{ b: Box.Full(seed()) }} }};\n\
          \x20   var i = 0;\n\
          \x20   var sum = 0;\n\
          \x20   while i < 5 {{\n\
          \x20       match o.inner.b {{\n\
-         \x20           Box::Full(v) => {{ sum = sum + v.len(); var w = v; w = seed(); }}\n\
-         \x20           Box::Empty => {{}}\n\
+         \x20           Box.Full(v) => {{ sum = sum + v.len(); var w = v; w = seed(); }}\n\
+         \x20           Box.Empty => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -499,13 +499,13 @@ fn field_place_borrow_only_source() -> String {
          record Holder {{ b: Box, }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let h = Holder {{ b: Box::Full(seed()) }};\n\
+         \x20   let h = Holder {{ b: Box.Full(seed()) }};\n\
          \x20   var i = 0;\n\
          \x20   var sum = 0;\n\
          \x20   while i < 5 {{\n\
          \x20       match h.b {{\n\
-         \x20           Box::Full(v) => {{ sum = sum + v.len(); }}\n\
-         \x20           Box::Empty => {{}}\n\
+         \x20           Box.Full(v) => {{ sum = sum + v.len(); }}\n\
+         \x20           Box.Empty => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -526,13 +526,13 @@ fn call_scrutinee_move_reassign_source() -> String {
          \x20   Full(Vec<i64>);\n\
          \x20   Empty;\n\
          }}\n\
-         fn mk() -> Box {{ Box::Full(seed()) }}\n\
+         fn mk() -> Box {{ Box.Full(seed()) }}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   var out = 0;\n\
          \x20   match mk() {{\n\
-         \x20       Box::Full(v) => {{ out = v.len(); var w = v; w = seed(); out = out + w.len(); }}\n\
-         \x20       Box::Empty => {{}}\n\
+         \x20       Box.Full(v) => {{ out = v.len(); var w = v; w = seed(); out = out + w.len(); }}\n\
+         \x20       Box.Empty => {{}}\n\
          \x20   }}\n\
          \x20   out\n\
          }}\n\
@@ -624,13 +624,13 @@ fn block_wrapped_field_place_source() -> String {
          record Holder {{ b: Box, }}\n\
          \n\
          fn main() {{\n\
-         \x20   let h = Holder {{ b: Box::Full(seed()) }};\n\
+         \x20   let h = Holder {{ b: Box.Full(seed()) }};\n\
          \x20   var i = 0;\n\
          \x20   var sum = 0;\n\
          \x20   while i < 5 {{\n\
          \x20       match {{ h.b }} {{\n\
-         \x20           Box::Full(v) => {{ sum = sum + v.len(); var w = v; w = seed(); }}\n\
-         \x20           Box::Empty => {{}}\n\
+         \x20           Box.Full(v) => {{ sum = sum + v.len(); var w = v; w = seed(); }}\n\
+         \x20           Box.Empty => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -653,13 +653,13 @@ fn if_wrapped_field_place_source() -> String {
          record Holder {{ b: Box, }}\n\
          \n\
          fn main() {{\n\
-         \x20   let h = Holder {{ b: Box::Full(seed()) }};\n\
+         \x20   let h = Holder {{ b: Box.Full(seed()) }};\n\
          \x20   var i = 0;\n\
          \x20   var sum = 0;\n\
          \x20   while i < 5 {{\n\
          \x20       match if i < 2 {{ h.b }} else {{ h.b }} {{\n\
-         \x20           Box::Full(v) => {{ sum = sum + v.len(); var w = v; w = seed(); }}\n\
-         \x20           Box::Empty => {{}}\n\
+         \x20           Box.Full(v) => {{ sum = sum + v.len(); var w = v; w = seed(); }}\n\
+         \x20           Box.Empty => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -726,13 +726,13 @@ fn nested_enum_move_out_source() -> String {
     format!(
         "enum Inner {{ Full(Vec<i64>); Hollow; }}\n\
          enum Outer {{ Wrap(Inner); Bare; }}\n\
-         fn mk() -> Outer {{ Outer::Wrap(Inner::Full(seed())) }}\n\
+         fn mk() -> Outer {{ Outer.Wrap(Inner.Full(seed())) }}\n\
          fn main() -> i64 {{\n\
          \x20   var total = 0;\n\
          \x20   match mk() {{\n\
-         \x20       Outer::Wrap(Inner::Full(v)) => {{ var w = v; total = w.len(); w = seed(); total = total + w.len(); }}\n\
-         \x20       Outer::Wrap(Inner::Hollow) => {{}}\n\
-         \x20       Outer::Bare => {{}}\n\
+         \x20       Outer.Wrap(Inner.Full(v)) => {{ var w = v; total = w.len(); w = seed(); total = total + w.len(); }}\n\
+         \x20       Outer.Wrap(Inner.Hollow) => {{}}\n\
+         \x20       Outer.Bare => {{}}\n\
          \x20   }}\n\
          \x20   total\n\
          }}\n\
@@ -749,12 +749,12 @@ fn nested_enum_move_out_binding_source() -> String {
         "enum Inner {{ Full(Vec<i64>); Hollow; }}\n\
          enum Outer {{ Wrap(Inner); Bare; }}\n\
          fn main() -> i64 {{\n\
-         \x20   let b = Outer::Wrap(Inner::Full(seed()));\n\
+         \x20   let b = Outer.Wrap(Inner.Full(seed()));\n\
          \x20   var total = 0;\n\
          \x20   match b {{\n\
-         \x20       Outer::Wrap(Inner::Full(v)) => {{ var w = v; total = w.len(); w = seed(); total = total + w.len(); }}\n\
-         \x20       Outer::Wrap(Inner::Hollow) => {{}}\n\
-         \x20       Outer::Bare => {{}}\n\
+         \x20       Outer.Wrap(Inner.Full(v)) => {{ var w = v; total = w.len(); w = seed(); total = total + w.len(); }}\n\
+         \x20       Outer.Wrap(Inner.Hollow) => {{}}\n\
+         \x20       Outer.Bare => {{}}\n\
          \x20   }}\n\
          \x20   total\n\
          }}\n\
@@ -771,12 +771,12 @@ fn nested_enum_borrow_only_source() -> String {
         "enum Inner {{ Full(Vec<i64>); Hollow; }}\n\
          enum Outer {{ Wrap(Inner); Bare; }}\n\
          fn main() -> i64 {{\n\
-         \x20   let b = Outer::Wrap(Inner::Full(seed()));\n\
+         \x20   let b = Outer.Wrap(Inner.Full(seed()));\n\
          \x20   var total = 0;\n\
          \x20   match b {{\n\
-         \x20       Outer::Wrap(Inner::Full(v)) => {{ total = v.len(); }}\n\
-         \x20       Outer::Wrap(Inner::Hollow) => {{}}\n\
-         \x20       Outer::Bare => {{}}\n\
+         \x20       Outer.Wrap(Inner.Full(v)) => {{ total = v.len(); }}\n\
+         \x20       Outer.Wrap(Inner.Hollow) => {{}}\n\
+         \x20       Outer.Bare => {{}}\n\
          \x20   }}\n\
          \x20   total\n\
          }}\n\
@@ -793,12 +793,12 @@ fn captured_binding_move_out_source() -> String {
     format!(
         "enum Box {{ Full(Vec<i64>); Empty; }}\n\
          fn main() -> i64 {{\n\
-         \x20   let b = Box::Full(seed());\n\
+         \x20   let b = Box.Full(seed());\n\
          \x20   var total = 0;\n\
          \x20   let f = || {{\n\
          \x20       match b {{\n\
-         \x20           Box::Full(v) => {{ var w = v; total = w.len(); w = seed(); }}\n\
-         \x20           Box::Empty => {{}}\n\
+         \x20           Box.Full(v) => {{ var w = v; total = w.len(); w = seed(); }}\n\
+         \x20           Box.Empty => {{}}\n\
          \x20       }}\n\
          \x20   }};\n\
          \x20   f();\n\
@@ -816,11 +816,11 @@ fn captured_binding_borrow_only_source() -> String {
     format!(
         "enum Box {{ Full(Vec<i64>); Empty; }}\n\
          fn main() -> i64 {{\n\
-         \x20   let b = Box::Full(seed());\n\
+         \x20   let b = Box.Full(seed());\n\
          \x20   let f = || -> i64 {{\n\
          \x20       match b {{\n\
-         \x20           Box::Full(v) => v.len(),\n\
-         \x20           Box::Empty => 0,\n\
+         \x20           Box.Full(v) => v.len(),\n\
+         \x20           Box.Empty => 0,\n\
          \x20       }}\n\
          \x20   }};\n\
          \x20   f()\n\
@@ -837,16 +837,16 @@ fn captured_binding_borrow_only_source() -> String {
 fn two_field_move_out_source() -> String {
     format!(
         "enum Pair {{ Both(Vec<i64>, Vec<i64>); Neither; }}\n\
-         fn mk() -> Pair {{ Pair::Both(seed(), seed()) }}\n\
+         fn mk() -> Pair {{ Pair.Both(seed(), seed()) }}\n\
          fn main() -> i64 {{\n\
          \x20   var out = 0;\n\
          \x20   match mk() {{\n\
-         \x20       Pair::Both(x, y) => {{\n\
+         \x20       Pair.Both(x, y) => {{\n\
          \x20           var wx = x; var wy = y;\n\
          \x20           wx = seed(); wy = seed();\n\
          \x20           out = wx.len() + wy.len();\n\
          \x20       }}\n\
-         \x20       Pair::Neither => {{}}\n\
+         \x20       Pair.Neither => {{}}\n\
          \x20   }}\n\
          \x20   out\n\
          }}\n\
@@ -862,15 +862,15 @@ fn two_field_move_out_binding_source() -> String {
     format!(
         "enum Pair {{ Both(Vec<i64>, Vec<i64>); Neither; }}\n\
          fn main() -> i64 {{\n\
-         \x20   let b = Pair::Both(seed(), seed());\n\
+         \x20   let b = Pair.Both(seed(), seed());\n\
          \x20   var out = 0;\n\
          \x20   match b {{\n\
-         \x20       Pair::Both(x, y) => {{\n\
+         \x20       Pair.Both(x, y) => {{\n\
          \x20           var wx = x; var wy = y;\n\
          \x20           wx = seed(); wy = seed();\n\
          \x20           out = wx.len() + wy.len();\n\
          \x20       }}\n\
-         \x20       Pair::Neither => {{}}\n\
+         \x20       Pair.Neither => {{}}\n\
          \x20   }}\n\
          \x20   out\n\
          }}\n\
@@ -887,15 +887,15 @@ fn two_field_reread_source() -> String {
     format!(
         "enum Pair {{ Both(Vec<i64>, Vec<i64>); Neither; }}\n\
          fn main() -> i64 {{\n\
-         \x20   let b = Pair::Both(seed(), seed());\n\
+         \x20   let b = Pair.Both(seed(), seed());\n\
          \x20   var out = 0;\n\
          \x20   match b {{\n\
-         \x20       Pair::Both(x, y) => {{ var wx = x; var wy = y; out = wx.len() + wy.len(); }}\n\
-         \x20       Pair::Neither => {{}}\n\
+         \x20       Pair.Both(x, y) => {{ var wx = x; var wy = y; out = wx.len() + wy.len(); }}\n\
+         \x20       Pair.Neither => {{}}\n\
          \x20   }}\n\
          \x20   match b {{\n\
-         \x20       Pair::Both(x2, y2) => {{ out = out + x2.len() + y2.len(); }}\n\
-         \x20       Pair::Neither => {{}}\n\
+         \x20       Pair.Both(x2, y2) => {{ out = out + x2.len() + y2.len(); }}\n\
+         \x20       Pair.Neither => {{}}\n\
          \x20   }}\n\
          \x20   out\n\
          }}\n\
@@ -1006,12 +1006,12 @@ fn guarded_consume_fallthrough_source() -> String {
     format!(
         "enum Box {{ Full(Vec<i64>); Empty; }}\n\
          fn main() -> i64 {{\n\
-         \x20   let b = Box::Full(seed());\n\
+         \x20   let b = Box.Full(seed());\n\
          \x20   var out = 0;\n\
          \x20   match b {{\n\
-         \x20       Box::Full(v) if {{ var w = v; w.len() > 100 }} => {{ out = 1; }}\n\
-         \x20       Box::Full(v2) => {{ out = v2.len(); }}\n\
-         \x20       Box::Empty => {{}}\n\
+         \x20       Box.Full(v) if {{ var w = v; w.len() > 100 }} => {{ out = 1; }}\n\
+         \x20       Box.Full(v2) => {{ out = v2.len(); }}\n\
+         \x20       Box.Empty => {{}}\n\
          \x20   }}\n\
          \x20   out\n\
          }}\n\
@@ -1028,12 +1028,12 @@ fn true_guarded_consume_source() -> String {
     format!(
         "enum Box {{ Full(Vec<i64>); Empty; }}\n\
          fn main() -> i64 {{\n\
-         \x20   let b = Box::Full(seed());\n\
+         \x20   let b = Box.Full(seed());\n\
          \x20   var out = 0;\n\
          \x20   match b {{\n\
-         \x20       Box::Full(v) if {{ var w = v; w.len() > 0 }} => {{ out = 1; }}\n\
-         \x20       Box::Full(v2) => {{ out = v2.len(); }}\n\
-         \x20       Box::Empty => {{}}\n\
+         \x20       Box.Full(v) if {{ var w = v; w.len() > 0 }} => {{ out = 1; }}\n\
+         \x20       Box.Full(v2) => {{ out = v2.len(); }}\n\
+         \x20       Box.Empty => {{}}\n\
          \x20   }}\n\
          \x20   out\n\
          }}\n\
@@ -1050,12 +1050,12 @@ fn borrow_only_guard_fallthrough_source() -> String {
     format!(
         "enum Box {{ Full(Vec<i64>); Empty; }}\n\
          fn main() -> i64 {{\n\
-         \x20   let b = Box::Full(seed());\n\
+         \x20   let b = Box.Full(seed());\n\
          \x20   var out = 0;\n\
          \x20   match b {{\n\
-         \x20       Box::Full(v) if v.len() > 100 => {{ out = 1; }}\n\
-         \x20       Box::Full(v2) => {{ out = v2.len(); }}\n\
-         \x20       Box::Empty => {{}}\n\
+         \x20       Box.Full(v) if v.len() > 100 => {{ out = 1; }}\n\
+         \x20       Box.Full(v2) => {{ out = v2.len(); }}\n\
+         \x20       Box.Empty => {{}}\n\
          \x20   }}\n\
          \x20   out\n\
          }}\n\

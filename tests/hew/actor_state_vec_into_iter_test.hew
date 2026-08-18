@@ -6,7 +6,7 @@
 //! second use panicked on a missing descriptor / freed heap, and teardown
 //! crashed after #[on(stop)]).
 
-import std::testing;
+import std.testing;
 
 trait Formatter {
     fn format(val: Self, msg: string) -> string;
@@ -28,14 +28,7 @@ fn make_formatter(tag: string) -> dyn Formatter {
 }
 
 actor DynHolder {
-    var plugins: Vec<dyn Formatter> = Vec::new();
-
-    #[on(start)]
-    fn boot() {
-        plugins.push(make_formatter("U"));
-        plugins.push(make_formatter("V"));
-    }
-
+    var plugins: Vec<dyn Formatter> = Vec.new();
     receive fn drain_format(msg: string) -> i64 {
         var count: i64 = 0;
         for p in plugins.into_iter() {
@@ -44,25 +37,21 @@ actor DynHolder {
         }
         count
     }
-
     receive fn refill() {
         plugins.push(make_formatter("W"));
     }
-
     receive fn plugin_count() -> i64 {
         plugins.len()
+    }
+    #[on(start)]
+    fn boot() {
+        plugins.push(make_formatter("U"));
+        plugins.push(make_formatter("V"));
     }
 }
 
 actor StrHolder {
-    var items: Vec<string> = Vec::new();
-
-    #[on(start)]
-    fn boot() {
-        items.push("a");
-        items.push("b");
-    }
-
+    var items: Vec<string> = Vec.new();
     receive fn drain_count() -> i64 {
         var count: i64 = 0;
         for _s in items.into_iter() {
@@ -70,60 +59,68 @@ actor StrHolder {
         }
         count
     }
+
+    // Previously: deterministic "Vec owned operation requires an element
+    // layout descriptor" panic. Now: the drained field is a valid empty vec.
+
+    // Refill after the drain: the descriptor-stamped empty vec accepts a
+    // fresh element, and a later drain yields exactly that element.
+
+    // Previously: the second dispatch iterated freed heap (a hang or crash).
+    #[on(start)]
+    fn boot() {
+        items.push("a");
+        items.push("b");
+    }
 }
 
 #[test]
 fn test_second_dispatch_after_dyn_state_drain_sees_valid_empty_vec() {
-    let h = spawn DynHolder();
+    let h = spawn DynHolder;
     let first = await h.drain_format("m1");
     match first {
-        Ok(n) => testing.assert_eq(n, 2),
-        Err(_) => testing.assert_eq(0, 1),
+        .Ok(n) => testing.assert_eq(n, 2),
+        .Err(_) => testing.assert_eq(0, 1),
     }
-    // Previously: deterministic "Vec owned operation requires an element
-    // layout descriptor" panic. Now: the drained field is a valid empty vec.
     let second = await h.drain_format("m2");
     match second {
-        Ok(n) => testing.assert_eq(n, 0),
-        Err(_) => testing.assert_eq(0, 2),
+        .Ok(n) => testing.assert_eq(n, 0),
+        .Err(_) => testing.assert_eq(0, 2),
     }
 }
 
 #[test]
 fn test_push_into_drained_dyn_state_field_lands_in_valid_vec() {
-    let h = spawn DynHolder();
+    let h = spawn DynHolder;
     let first = await h.drain_format("m1");
     match first {
-        Ok(n) => testing.assert_eq(n, 2),
-        Err(_) => testing.assert_eq(0, 1),
+        .Ok(n) => testing.assert_eq(n, 2),
+        .Err(_) => testing.assert_eq(0, 1),
     }
-    // Refill after the drain: the descriptor-stamped empty vec accepts a
-    // fresh element, and a later drain yields exactly that element.
     h.refill();
     let count = await h.plugin_count();
     match count {
-        Ok(n) => testing.assert_eq(n, 1),
-        Err(_) => testing.assert_eq(0, 2),
+        .Ok(n) => testing.assert_eq(n, 1),
+        .Err(_) => testing.assert_eq(0, 2),
     }
     let third = await h.drain_format("m3");
     match third {
-        Ok(n) => testing.assert_eq(n, 1),
-        Err(_) => testing.assert_eq(0, 3),
+        .Ok(n) => testing.assert_eq(n, 1),
+        .Err(_) => testing.assert_eq(0, 3),
     }
 }
 
 #[test]
 fn test_second_dispatch_after_string_state_drain_terminates() {
-    let h = spawn StrHolder();
+    let h = spawn StrHolder;
     let first = await h.drain_count();
     match first {
-        Ok(n) => testing.assert_eq(n, 2),
-        Err(_) => testing.assert_eq(0, 1),
+        .Ok(n) => testing.assert_eq(n, 2),
+        .Err(_) => testing.assert_eq(0, 1),
     }
-    // Previously: the second dispatch iterated freed heap (a hang or crash).
     let second = await h.drain_count();
     match second {
-        Ok(n) => testing.assert_eq(n, 0),
-        Err(_) => testing.assert_eq(0, 2),
+        .Ok(n) => testing.assert_eq(n, 0),
+        .Err(_) => testing.assert_eq(0, 2),
     }
 }

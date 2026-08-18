@@ -124,7 +124,7 @@ fn main() {
     name: 'keywords_declarations',
     category: 'keywords',
     source: `
-import std::string;
+import std.string;
 package foo;
 
 pub fn example() -> i32 { 0 }
@@ -293,8 +293,8 @@ fn types() {
     let o: string = "hello";
     let p: bytes = b"data";
     let q: duration = 5s;
-    let v: Vec<i32> = Vec::new();
-    let h: HashMap<string, i32> = HashMap::new();
+    let v: Vec<i32> = Vec.new();
+    let h: HashMap<string, i32> = HashMap.new();
     let opt: Option<i32> = Some(1);
     let res: Result<i32, string> = Ok(42);
     let none: Option<i32> = None;
@@ -309,8 +309,8 @@ fn types() {
     let send: Send = get_sendable();
     let frozen: Frozen = get_frozen();
     let copy: Copy = get_copy();
-    let arc: Arc<i32> = Arc::new(1);
-    let rc: Rc<i32> = Rc::new(2);
+    let arc: Arc<i32> = Arc.new(1);
+    let rc: Rc<i32> = Rc.new(2);
     let weak: Weak<i32> = get_weak();
     let range: Range<i32> = 0..10;
     let st2: Stream<i32> = get_stream();
@@ -660,8 +660,8 @@ fn generic_fn<T, U>(x: T, y: U) -> Result<T, U> where T: Send, U: Copy {
 }
 
 fn nested_generics() {
-    let x: Vec<HashMap<string, Vec<Option<i32>>>> = Vec::new();
-    let y: Result<Option<Vec<i32>>, string> = Ok(Some(Vec::new()));
+    let x: Vec<HashMap<string, Vec<Option<i32>>>> = Vec.new();
+    let y: Result<Option<Vec<i32>>, string> = Ok(Some(Vec.new()));
 }
 
 type Generic<T> {

@@ -10,9 +10,9 @@ impl Tok {
 }
 
 fn run() -> i64 {
-    let h: HashMap<string, Tok> = HashMap::new();
+    let h: HashMap<string, Tok> = HashMap.new();
     h.insert("k", Tok { id: 1 });
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     println("before trap");
     v[3]
 }

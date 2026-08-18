@@ -27,14 +27,14 @@ fn bag_same<T>(a: Bag<T>, b: Bag<T>) -> bool {
 }
 
 fn make_bag_1_2() -> Bag<i64> {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(2);
     Bag { items: v }
 }
 
 fn make_bag_1_3() -> Bag<i64> {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(3);
     Bag { items: v }

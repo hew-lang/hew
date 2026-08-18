@@ -15,7 +15,7 @@ use std::process::Command;
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const VEC_RESOURCE: &str = r#"
-import std::encoding::json;
+import std.encoding.json;
 
 fn release_vec() {
     let handles = [json.null(), json.null()];

@@ -68,7 +68,7 @@ fn count_items(xs: Vec<Item>) -> i64 {\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let xs: Vec<Item> = Vec::new();\n\
+\x20   let xs: Vec<Item> = Vec.new();\n\
 \x20   xs.push(Item { name: \"a\", n: 1 });\n\
 \x20   print(count_items(xs));\n\
 }\n";
@@ -91,7 +91,7 @@ fn count_iter<T>(xs: Vec<T>) -> i64 {\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let xs: Vec<Item> = Vec::new();\n\
+\x20   let xs: Vec<Item> = Vec.new();\n\
 \x20   xs.push(Item { name: \"a\", n: 1 });\n\
 \x20   print(count_iter(xs));\n\
 }\n";

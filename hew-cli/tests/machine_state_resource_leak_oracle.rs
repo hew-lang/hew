@@ -50,10 +50,10 @@ machine Session {
 }
 
 fn main() {
-    var s = Session::Idle;
-    s.step(SessionEvent::Open);
+    var s = Session.Idle;
+    s.step(SessionEvent.Open);
     for _ in 0..6 {
-        s.step(SessionEvent::UseIt);
+        s.step(SessionEvent.UseIt);
         print("R");
     }
 }
@@ -100,11 +100,11 @@ machine Plain {
 }
 
 fn main() {
-    var s = Mixed::Idle;
-    s.step(MixedEvent::Open);
-    var p = Plain::Idle;
-    p.step(PlainEvent::Open);
-    p.step(PlainEvent::Shut);
+    var s = Mixed.Idle;
+    s.step(MixedEvent.Open);
+    var p = Plain.Idle;
+    p.step(PlainEvent.Open);
+    p.step(PlainEvent.Shut);
 }
 "#;
 

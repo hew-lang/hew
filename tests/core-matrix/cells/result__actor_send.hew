@@ -2,17 +2,17 @@ actor Sink {
     var hits: i64;
 
     receive fn take(v: Result<i64, string>) -> i64 {
-        match v { Ok(v_v) => println(f"ok {v_v}"), Err(v_e) => println(f"err {v_e}"), }
+        match v { Result.Ok(v_v) => println(f"ok {v_v}"), Err(v_e) => println(f"err {v_e}"), }
         hits = hits + 1;
         hits
     }
 }
 
 fn main() {
-    let x: Result<i64, string> = Ok(6);
+    let x: Result<i64, string> = Result.Ok(6);
     let s = spawn Sink(hits: 0);
     match await s.take(x) {
-        Ok(n) => println(f"hits {n}"),
+        Result.Ok(n) => println(f"hits {n}"),
         Err(_) => println("err"),
     }
 }

@@ -7,7 +7,7 @@
 //! yields the correct value (the warning itself is pinned in
 //! `hew-hir/tests/clone_not_yet_supported.rs`).
 
-import std::testing;
+import std.testing;
 
 // Clone on a scalar is a redundant no-op that still produces the value.
 #[test]

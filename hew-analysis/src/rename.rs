@@ -690,7 +690,7 @@ mod tests {
     fn plan_rename_same_file_shadows_import_returns_conflict() {
         // Rename the top-level `foo` to `bar`, but `bar` is already imported
         // in the same file.  Detect before producing any edit.
-        let source = "import other::{ bar };\nfn foo() -> i32 { 1 }\nfn main() { foo() }";
+        let source = "import other.{ bar };\nfn foo() -> i32 { 1 }\nfn main() { foo() }";
         let pr = parse(source);
         let offset = source.find("fn foo").unwrap() + 3;
         let err = plan_rename(source, &pr, offset, "bar").unwrap_err();

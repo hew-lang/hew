@@ -68,9 +68,9 @@
 //! | `SplitLines` | Lines split on `\n`; `\r\n` stripped (default).   |
 //! | `SplitWords` | Fields split on any run of ASCII whitespace.       |
 
-import std::fs;
+import std.fs;
 
-import std::io;
+import std.io;
 
 // ── Split mode ────────────────────────────────────────────────────────
 /// How the scanner tokenises its source.
@@ -122,7 +122,7 @@ pub type Scanner {
 /// }
 /// ```
 pub fn from_string(s: string) -> Scanner {
-    Scanner { source: s, pos: 0, current: "", valid: false, done: false, mode: SplitLines }
+    Scanner { source: s, pos: 0, current: "", valid: false, done: false, mode: .SplitLines }
 }
 
 /// Create a scanner over all data read from standard input.
@@ -139,8 +139,8 @@ pub fn from_stdin() -> Scanner {
 /// Returns `Err(fs.IoError)` if the file cannot be opened or read.
 pub fn from_file(path: string) -> Result<Scanner, fs.IoError> {
     match fs.try_read(path) {
-        Ok(contents) => Ok(Scanner { source: contents, pos: 0, current: "", valid: false, done: false, mode: SplitLines }),
-        Err(e) => Err(e),
+        .Ok(contents) => Ok(Scanner { source: contents, pos: 0, current: "", valid: false, done: false, mode: .SplitLines }),
+        .Err(e) => Err(e),
     }
 }
 
@@ -190,8 +190,8 @@ pub fn with_split(sc: Scanner, mode: SplitMode) -> Scanner {
 /// ```
 pub fn scan(sc: Scanner) -> Scanner {
     match sc.mode {
-        SplitLines => scan_line(sc),
-        SplitWords => scan_word(sc),
+        .SplitLines => scan_line(sc),
+        .SplitWords => scan_word(sc),
     }
 }
 
@@ -201,7 +201,7 @@ pub fn scan(sc: Scanner) -> Scanner {
 /// A real empty line returns `Some("")`; EOF returns `None`.
 pub fn next_line(sc: Scanner) -> (Scanner, Option<string>) {
     let mode = sc.mode;
-    let line_sc = Scanner { source: sc.source, pos: sc.pos, current: sc.current, valid: sc.valid, done: sc.done, mode: SplitLines };
+    let line_sc = Scanner { source: sc.source, pos: sc.pos, current: sc.current, valid: sc.valid, done: sc.done, mode: .SplitLines };
     let next = scan(line_sc);
     let restored = Scanner { source: next.source, pos: next.pos, current: next.current, valid: next.valid, done: next.done, mode: mode };
     if has_next(next) {
@@ -249,7 +249,7 @@ pub fn text(sc: Scanner) -> string {
 /// }
 /// ```
 pub fn lines(s: string) -> Vec<string> {
-    let result: Vec<string> = Vec::new();
+    let result: Vec<string> = Vec.new();
     if s.len() == 0 {
         return result;
     }
@@ -279,12 +279,12 @@ pub fn lines(s: string) -> Vec<string> {
 /// }
 /// ```
 pub fn words(s: string) -> Vec<string> {
-    let result: Vec<string> = Vec::new();
+    let result: Vec<string> = Vec.new();
     if s.len() == 0 {
         return result;
     }
     var sc = from_string(s);
-    sc = with_split(sc, SplitWords);
+    sc = with_split(sc, .SplitWords);
     sc = scan(sc);
     while has_next(sc) {
         result.push(sc.current);
@@ -313,7 +313,7 @@ pub fn words(s: string) -> Vec<string> {
 /// }
 /// ```
 pub fn collect(sc: Scanner) -> Vec<string> {
-    let result: Vec<string> = Vec::new();
+    let result: Vec<string> = Vec.new();
     if has_next(sc) {
         result.push(sc.current);
     }

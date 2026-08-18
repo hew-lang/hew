@@ -14,17 +14,17 @@ enum Status {
 
 fn colour_to_int(c: Colour) -> i64 {
     match c {
-        Red => 1,
-        Green => 2,
-        Blue => 3,
+        .Red => 1,
+        .Green => 2,
+        .Blue => 3,
     }
 }
 
 fn status_to_int(s: Status) -> i64 {
     match s {
-        Active => 100,
-        Inactive => 200,
-        Pending => 300,
+        .Active => 100,
+        .Inactive => 200,
+        .Pending => 300,
     }
 }
 

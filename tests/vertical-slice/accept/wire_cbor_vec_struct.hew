@@ -17,7 +17,7 @@ type Container {
 }
 
 fn main() -> i64 {
-    let xs: Vec<Inner> = Vec::new();
+    let xs: Vec<Inner> = Vec.new();
     xs.push(Inner { v: 10 });
     xs.push(Inner { v: 20 });
     xs.push(Inner { v: 12 });

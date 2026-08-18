@@ -15,5 +15,5 @@ pub machine FileLifecycle {
 }
 
 pub fn initial_file_lifecycle() -> FileLifecycle {
-    FileLifecycle::Running
+    FileLifecycle.Running
 }

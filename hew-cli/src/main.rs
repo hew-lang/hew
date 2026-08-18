@@ -444,16 +444,14 @@ fn mir_pointer_width(target: &target::TargetSpec) -> hew_mir::PointerWidth {
     }
 }
 
-/// `true` when `input` is the compiler's own `std/builtins.hew` substrate
-/// inside a Hew source checkout. Recognised by canonical path shape plus an
-/// enclosing checkout root (so an unrelated external `std/builtins.hew` is not
-/// matched). The substrate is pre-registered via `include_str!` and never
-/// compiled standalone, so `hew check` skips its HIR/MIR deep gates.
-fn is_embedded_stdlib_builtins(input: &str) -> bool {
+/// `true` when `input` is a compiler-owned, import-only stdlib substrate in a
+/// Hew source checkout. Recognised by canonical path shape plus an enclosing
+/// checkout root, so lookalike external paths cannot skip deep gates.
+fn is_embedded_stdlib_substrate(input: &str, source: &str) -> bool {
     let Ok(path) = std::path::Path::new(input).canonicalize() else {
         return false;
     };
-    if !path.ends_with("std/builtins.hew") {
+    if !path.ends_with(source) {
         return false;
     }
     hew_types::module_registry::find_enclosing_hew_root(&path).is_some()
@@ -465,15 +463,15 @@ fn run_check_deep_gates(
     state: &hew_compile::FileFrontendState,
     levels: &hew_types::LintLevels,
 ) -> Result<(), ()> {
-    // `std/builtins.hew` is the compiler's embedded builtin-surface substrate:
-    // it is consumed by the checker's builtins pre-registration (`include_str!`)
-    // and is never compiled as a standalone program. It carries inherent impls
-    // on builtin pid types (`LocalPid`/`RemotePid`) and `Display` blanket impls
-    // that route through the compiler-magic `to_string` — constructs the
-    // user-facing HIR/MIR deep gates correctly reject in user position. The
-    // type-check above already validated its declarations; the substrate has no
-    // standalone lowering to gate, so stop here.
-    if is_embedded_stdlib_builtins(input) {
+    // `std/builtins.hew` is compiler-embedded, while `std/prelude.hew` is an
+    // import-only authority manifest. Neither has a standalone lowering
+    // surface: the former is pre-registered by the checker and the latter's
+    // imports are consumed by later user programs. Their type-check above is
+    // authoritative, so do not lower their imported implementation bodies as
+    // though they belonged to a standalone executable.
+    if is_embedded_stdlib_substrate(input, "std/builtins.hew")
+        || is_embedded_stdlib_substrate(input, "std/prelude.hew")
+    {
         return Ok(());
     }
     let Some(tco) = state.typecheck_result.tco.as_ref() else {
@@ -1940,15 +1938,38 @@ fn cmd_fmt(a: &args::FmtArgs) {
         return;
     }
 
-    if a.files.is_empty() {
+    if a.root.is_some() && !a.migrate {
+        eprintln!("Error: --root requires --migrate");
+        std::process::exit(2);
+    }
+
+    if a.files.is_empty() && !a.migrate {
         eprintln!("Usage: hew fmt [--check] (--stdin | <file.hew>...)");
         std::process::exit(1);
     }
 
+    let files = if a.migrate && a.files.is_empty() {
+        let root = a.root.clone().unwrap_or_else(|| PathBuf::from("."));
+        match migration_files(&root) {
+            Ok(files) => files,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        a.files.clone()
+    };
+
+    if checked_migration_in_snapshot(a, &files) {
+        return;
+    }
+
     let mut had_errors = false;
     let mut needs_formatting = false;
+    let mut formatted_files = Vec::new();
 
-    for file_path in &a.files {
+    for file_path in &files {
         let file = file_path.display().to_string();
         let source = match std::fs::read_to_string(file_path) {
             Ok(s) => s,
@@ -1959,11 +1980,33 @@ fn cmd_fmt(a: &args::FmtArgs) {
             }
         };
 
-        let Some(formatted) = format_for_display(&file, &source) else {
+        let migrated = if a.migrate {
+            if let Ok(migrated) = migrate_source_file(file_path, &file, &source) {
+                migrated
+            } else {
+                had_errors = true;
+                continue;
+            }
+        } else {
+            source.clone()
+        };
+
+        let Some(formatted) = format_for_display(&file, &migrated) else {
             had_errors = true;
             continue;
         };
 
+        formatted_files.push((file_path, file, source, formatted));
+    }
+
+    // A migration is a cross-file rewrite.  Compute every checker-backed edit
+    // against the original tree before writing anything, so one migrated import
+    // cannot affect the semantic decision for a later source file.
+    if a.migrate && had_errors {
+        std::process::exit(1);
+    }
+
+    for (file_path, file, source, formatted) in formatted_files {
         if a.check {
             if formatted != source {
                 eprintln!("{file}: needs formatting");
@@ -1982,6 +2025,405 @@ fn cmd_fmt(a: &args::FmtArgs) {
     if had_errors || needs_formatting {
         std::process::exit(1);
     }
+}
+
+fn checked_migration_in_snapshot(a: &args::FmtArgs, files: &[PathBuf]) -> bool {
+    if !a.migrate || !a.check {
+        return false;
+    }
+    let root = a
+        .files
+        .is_empty()
+        .then(|| a.root.as_deref().unwrap_or_else(|| Path::new(".")));
+    match migration_snapshot_needs_changes(files, root) {
+        Ok(false) => true,
+        Ok(true) | Err(()) => std::process::exit(1),
+    }
+}
+
+fn migration_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    if !root.is_dir() {
+        return Err(format!(
+            "migration root `{}` is not a directory",
+            root.display()
+        ));
+    }
+
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .map_err(|error| format!("cannot read `{}`: {error}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| format!("cannot read directory entry: {error}"))?;
+            let path = entry.path();
+            if path.is_dir() {
+                if !matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some(".git" | "target")
+                ) {
+                    pending.push(path);
+                }
+            } else if path.extension().is_some_and(|extension| extension == "hew") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    if files.is_empty() {
+        return Err(format!(
+            "migration root `{}` contains no .hew files",
+            root.display()
+        ));
+    }
+    Ok(files)
+}
+
+fn migration_snapshot_needs_changes(files: &[PathBuf], root: Option<&Path>) -> Result<bool, ()> {
+    let snapshot = tempfile::tempdir().map_err(|error| {
+        eprintln!("Error: cannot create migration check snapshot: {error}");
+    })?;
+    let mut mapped_files = Vec::with_capacity(files.len());
+
+    if let Some(root) = root {
+        let snapshot_root = snapshot.path().join("root");
+        copy_migration_snapshot_tree(root, &snapshot_root).map_err(|error| {
+            eprintln!("Error: cannot create migration check snapshot: {error}");
+        })?;
+        for file in files {
+            let relative = file.strip_prefix(root).map_err(|error| {
+                eprintln!(
+                    "Error: cannot map {} into migration check snapshot: {error}",
+                    file.display()
+                );
+            })?;
+            mapped_files.push((file.clone(), snapshot_root.join(relative)));
+        }
+    } else {
+        for (index, file) in files.iter().enumerate() {
+            let parent = file
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let snapshot_parent = snapshot.path().join(format!("input-{index}"));
+            copy_migration_snapshot_tree(parent, &snapshot_parent).map_err(|error| {
+                eprintln!("Error: cannot create migration check snapshot: {error}");
+            })?;
+            let Some(file_name) = file.file_name() else {
+                eprintln!(
+                    "Error: migration input has no file name: {}",
+                    file.display()
+                );
+                return Err(());
+            };
+            mapped_files.push((file.clone(), snapshot_parent.join(file_name)));
+        }
+    }
+
+    let mut regenerated = Vec::with_capacity(mapped_files.len());
+    for (original, mapped) in &mapped_files {
+        let file = original.display().to_string();
+        let source = std::fs::read_to_string(mapped).map_err(|error| {
+            eprintln!("Error: cannot read migration snapshot for {file}: {error}");
+        })?;
+        let migrated = migrate_source_file(mapped, &file, &source)?;
+        let Some(formatted) = format_for_display(&file, &migrated) else {
+            return Err(());
+        };
+        regenerated.push((mapped, source, formatted));
+    }
+
+    for (mapped, source, formatted) in regenerated {
+        if formatted != source {
+            std::fs::write(mapped, formatted).map_err(|error| {
+                eprintln!(
+                    "Error: cannot write migration check snapshot {}: {error}",
+                    mapped.display()
+                );
+            })?;
+        }
+    }
+
+    let mut needs_changes = false;
+    for (original, mapped) in mapped_files {
+        let original_bytes = std::fs::read(&original).map_err(|error| {
+            eprintln!("Error: cannot read {}: {error}", original.display());
+        })?;
+        let regenerated_bytes = std::fs::read(&mapped).map_err(|error| {
+            eprintln!(
+                "Error: cannot read migration check snapshot {}: {error}",
+                mapped.display()
+            );
+        })?;
+        if original_bytes != regenerated_bytes {
+            eprintln!("{}: needs formatting", original.display());
+            needs_changes = true;
+        }
+    }
+    Ok(needs_changes)
+}
+
+fn copy_migration_snapshot_tree(source: &Path, destination: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(destination)
+        .map_err(|error| format!("cannot create `{}`: {error}", destination.display()))?;
+    let entries = std::fs::read_dir(source)
+        .map_err(|error| format!("cannot read `{}`: {error}", source.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("cannot read directory entry: {error}"))?;
+        let path = entry.path();
+        let target = destination.join(entry.file_name());
+        if path.is_dir() {
+            if !matches!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some(".git" | "target")
+            ) {
+                copy_migration_snapshot_tree(&path, &target)?;
+            }
+            continue;
+        }
+        let is_hew_source = path.extension().is_some_and(|extension| extension == "hew");
+        let is_project_metadata = matches!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("hew.toml" | "hew.lock")
+        );
+        if is_hew_source || is_project_metadata {
+            std::fs::copy(&path, &target).map_err(|error| {
+                format!(
+                    "cannot copy `{}` to `{}`: {error}",
+                    path.display(),
+                    target.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the migration must keep checker resolution, refusal reporting, and source edits in one transaction"
+)]
+fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<String, ()> {
+    let options = compile::frontend_options_for_check(&compile::CompileOptions::default());
+    let state = match hew_compile::run_file_frontend_to_typecheck_for_migration(
+        &file_path.display().to_string(),
+        &options,
+    ) {
+        Ok(state) => state,
+        Err(failure) => {
+            compile::render_frontend_diagnostics(&failure.diagnostics);
+            let mut listed_site = false;
+            for diagnostic in &failure.diagnostics {
+                let (span, reason) = match &diagnostic.kind {
+                    hew_compile::FrontendDiagnosticKind::Parse(error)
+                        if error.severity == hew_parser::Severity::Error =>
+                    {
+                        (&error.span, error.message.as_str())
+                    }
+                    hew_compile::FrontendDiagnosticKind::Type(error)
+                        if error.severity == hew_types::error::Severity::Error =>
+                    {
+                        (&error.span, error.message.as_str())
+                    }
+                    hew_compile::FrontendDiagnosticKind::Hir(error) => {
+                        (&error.span, error.note.as_str())
+                    }
+                    _ => continue,
+                };
+                let site_file = diagnostic.filename.as_deref().unwrap_or(file);
+                eprintln!(
+                    "Error: migration refused {site_file}:{}-{}: type checking failed: {reason}",
+                    span.start, span.end
+                );
+                listed_site = true;
+            }
+            if !listed_site {
+                eprintln!("Error: migration refused {file}: type checking failed: {failure}");
+            }
+            eprintln!("{file}: migration requires a successfully type-checked source file");
+            return Err(());
+        }
+    };
+
+    let Some(typecheck) = state.typecheck_result.tco.as_ref() else {
+        eprintln!("{file}: migration requires checker output");
+        return Err(());
+    };
+
+    let tokens = hew_lexer::lex(source);
+    let mut variants = Vec::new();
+    let mut refusals = Vec::new();
+    for error in &typecheck.warnings {
+        let is_expression = matches!(error.kind, hew_types::error::TypeErrorKind::BareVariantExpr);
+        let is_pattern = matches!(
+            error.kind,
+            hew_types::error::TypeErrorKind::BareVariantPattern
+        );
+        if !is_expression && !is_pattern {
+            continue;
+        }
+        if error.source_module.is_some() {
+            continue;
+        }
+        let Some((name, span)) = tokens.iter().find_map(|(token, span)| {
+            (span.start >= error.span.start && span.end <= error.span.end).then(|| match token {
+                hew_lexer::Token::Identifier(name) => {
+                    Some(((*name).to_string(), span.start..span.end))
+                }
+                _ => None,
+            })?
+        }) else {
+            refusals.push(format!(
+                "{}:{}-{}: checker-selected variant has no identifier token",
+                file, error.span.start, error.span.end
+            ));
+            continue;
+        };
+
+        let is_contextual_expression = error
+            .suggestions
+            .iter()
+            .any(|suggestion| suggestion == &format!("replace `{name}` with `.{name}`"));
+        let replacement = if is_pattern || is_contextual_expression {
+            format!(".{name}")
+        } else if let Some(owner) = typecheck
+            .expr_types
+            .get(&hew_types::SpanKey::from(&error.span))
+            .and_then(hew_types::Ty::type_name)
+        {
+            format!("{owner}.{name}")
+        } else {
+            refusals.push(format!(
+                "{}:{}-{}: checker did not resolve a variant owner for `{name}`",
+                file, span.start, span.end
+            ));
+            continue;
+        };
+        variants.push(hew_parser::fmt::VariantMigration {
+            span,
+            name,
+            replacement,
+        });
+    }
+
+    let selected_variant_spans = variants
+        .iter()
+        .map(|variant| (variant.span.start, variant.span.end))
+        .collect::<std::collections::HashSet<_>>();
+    refusals.extend(unlisted_bare_variant_refusals(
+        typecheck,
+        &tokens,
+        &selected_variant_spans,
+        file,
+    ));
+
+    if !refusals.is_empty() {
+        for refusal in refusals {
+            eprintln!("Error: migration refused {refusal}");
+        }
+        return Err(());
+    }
+
+    match hew_parser::fmt::migrate_legacy_syntax(source, &variants) {
+        Ok(migrated) => Ok(migrated),
+        Err(error) => {
+            for refusal in error.refusals {
+                eprintln!(
+                    "Error: migration refused {file}:{}-{}: {}",
+                    refusal.span.start, refusal.span.end, refusal.reason
+                );
+            }
+            Err(())
+        }
+    }
+}
+
+fn unlisted_bare_variant_refusals(
+    typecheck: &hew_types::check::TypeCheckOutput,
+    tokens: &[(hew_lexer::Token<'_>, hew_lexer::Span)],
+    selected: &std::collections::HashSet<(usize, usize)>,
+    file: &str,
+) -> Vec<String> {
+    let mut refusals = Vec::new();
+    let mut refused = std::collections::HashSet::new();
+
+    for (expression_span, ty) in &typecheck.expr_types {
+        if expression_span.module_idx != 0 {
+            continue;
+        }
+        let Some(owner) = ty.type_name() else {
+            continue;
+        };
+        let type_def = typecheck.type_defs.get(owner).or_else(|| {
+            typecheck
+                .type_defs
+                .values()
+                .find(|type_def| type_def.name == owner)
+        });
+        let Some(type_def) = type_def else {
+            continue;
+        };
+        for (index, (token, span)) in tokens.iter().enumerate() {
+            let hew_lexer::Token::Identifier(name) = token else {
+                continue;
+            };
+            if span.start < expression_span.start
+                || span.end > expression_span.end
+                || !type_def.variants.contains_key(*name)
+                || selected.contains(&(span.start, span.end))
+                || token_has_variant_qualifier(tokens, index)
+                || !refused.insert((span.start, span.end))
+            {
+                continue;
+            }
+            refusals.push(format!(
+                "{file}:{}-{}: checker resolved bare variant `{name}` without a migration warning",
+                span.start, span.end
+            ));
+        }
+    }
+
+    for (pattern_span, resolution) in &typecheck.pattern_resolutions {
+        if pattern_span.module_idx != 0 {
+            continue;
+        }
+        let Some(variant_match) = &resolution.variant_match else {
+            continue;
+        };
+        for (index, (token, span)) in tokens.iter().enumerate() {
+            if span.start < pattern_span.start || span.end > pattern_span.end {
+                continue;
+            }
+            let hew_lexer::Token::Identifier(name) = token else {
+                continue;
+            };
+            if *name != variant_match.variant_name.as_str()
+                || selected.contains(&(span.start, span.end))
+                || token_has_variant_qualifier(tokens, index)
+                || !refused.insert((span.start, span.end))
+            {
+                continue;
+            }
+            refusals.push(format!(
+                "{file}:{}-{}: checker resolved bare variant `{name}` without a migration warning",
+                span.start, span.end
+            ));
+        }
+    }
+
+    refusals
+}
+
+fn token_has_variant_qualifier(
+    tokens: &[(hew_lexer::Token<'_>, hew_lexer::Span)],
+    index: usize,
+) -> bool {
+    index.checked_sub(1).is_some_and(|previous| {
+        matches!(
+            tokens[previous].0,
+            hew_lexer::Token::Dot | hew_lexer::Token::DoubleColon
+        )
+    })
 }
 
 fn format_for_display(input_name: &str, source: &str) -> Option<String> {
@@ -2121,3 +2563,29 @@ fn exec_sibling_binary(binary_name: &str, extra_args: &[String]) -> ! {
 // ---------------------------------------------------------------------------
 // Helper utilities
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod embedded_stdlib_tests {
+    use super::is_embedded_stdlib_substrate;
+    use std::path::PathBuf;
+
+    #[test]
+    fn embedded_stdlib_substrates_require_their_canonical_checkout_path() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-cli is in the workspace root")
+            .to_path_buf();
+        assert!(is_embedded_stdlib_substrate(
+            &root.join("std/builtins.hew").display().to_string(),
+            "std/builtins.hew"
+        ));
+        assert!(is_embedded_stdlib_substrate(
+            &root.join("std/prelude.hew").display().to_string(),
+            "std/prelude.hew"
+        ));
+        assert!(!is_embedded_stdlib_substrate(
+            &root.join("std/prelude.hew").display().to_string(),
+            "std/builtins.hew"
+        ));
+    }
+}

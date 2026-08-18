@@ -11,12 +11,12 @@ actor Sink {
 }
 
 fn main() {
-    let x: Vec<i64> = Vec::new();
+    let x: Vec<i64> = Vec.new();
     x.push(10);
     x.push(20);
     let s = spawn Sink(hits: 0);
     match await s.take(x) {
-        Ok(n) => println(f"hits {n}"),
+        Result.Ok(n) => println(f"hits {n}"),
         Err(_) => println("err"),
     }
 }

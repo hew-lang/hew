@@ -32,7 +32,7 @@
 //! Cluster-1 capture-lowering gap (#1909). Both are substrate-independent and
 //! orthogonal to the thread->coro migration.
 
-import std::testing;
+import std.testing;
 
 // ── Exact yield sequence + count ──────────────────────────────────────
 // The value channel must surface each yielded value exactly once, in order.

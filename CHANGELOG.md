@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed (breaking)
+
+- **We have adopted one dotted path surface throughout Hew.** `::` path
+  separators, Rust-style turbofish generic application (`::<...>`), and glob
+  imports are retired. Write dotted paths, explicit `.{ Name, Other }`
+  selections, ordinary Hew generic application (`name<T>(...)`), and
+  contextual `.Variant` patterns and constructors instead. Each retired
+  spelling now produces a diagnostic that names the migrated form. Run
+  `hew fmt --migrate --root .` to mechanically migrate every Hew source file
+  in a codebase before reviewing and committing the result.
+- **Always-in-scope prelude declarations are protected in every module.** A
+  root, file-import, or package declaration that reuses a protected prelude
+  name such as `Option`, `Result`, or `Iterator` now fails with
+  `E_PRELUDE_DECL_COLLISION`. Rename the user declaration; importing it under
+  another module does not create a separate authority for the protected name.
+
 ## [0.6.0-rc1] - 2026-07-29
 
 Hew v0.6.0-rc1 is the first release candidate for v0.6. It completes the

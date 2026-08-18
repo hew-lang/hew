@@ -1306,7 +1306,7 @@ fn generator_pump_releases_enum_yield_value_in_place() {
          }\n\
          actor Maker {\n\
          \x20   receive gen fn notes() -> Note {\n\
-         \x20       yield Note::Text(\"alpha\");\n\
+         \x20       yield Note.Text(\"alpha\");\n\
          \x20   }\n\
          }\n\
          fn main() {\n\
@@ -1984,7 +1984,7 @@ fn canonical_failure_lifecycle_payloads_expand_to_runtime_abi() {
 
     let mut parsed = hew_parser::parse(
         r#"
-        import std::failure as f;
+        import std.failure as f;
 
         actor Watcher {
             #[on(crash)]

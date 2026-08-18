@@ -1,9 +1,9 @@
 fn make() -> Option<i64> {
-    let m: Option<i64> = Some(5);
+    let m: Option<i64> = Option.Some(5);
     m
 }
 
 fn main() {
     let x = make();
-    match x { Some(x_v) => println(f"some {x_v}"), None => println("none"), }
+    match x { Option.Some(x_v) => println(f"some {x_v}"), None => println("none"), }
 }

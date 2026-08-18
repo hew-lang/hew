@@ -21,7 +21,7 @@
 //
 // Harness verb: hew run
 // Expected: the field read returns the constructed index (7).
-import hew::keyed;
+import hew.keyed;
 
 fn main() {
     let key: keyed.Key<string> = keyed.mk(7);

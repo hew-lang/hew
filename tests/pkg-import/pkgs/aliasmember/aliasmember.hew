@@ -23,7 +23,7 @@
 //! member would freeze as the bare `Tag`, which then fails closed at the MIR
 //! boundary (`unknown type Tag`). A depth-1 (root) importer cannot catch this:
 //! short and full keys coincide there.
-import hew::aliassrc::{ Payload as Tag };
+import hew.aliassrc.{ Payload as Tag };
 
 /// Type-decl member: a struct field typed by this module's own import alias.
 pub type DeepBoxed {
@@ -40,9 +40,9 @@ pub enum DeepWrap {
 /// all type-check and lower through the depth-2 module's own alias map.
 pub fn member_score() -> i64 {
     let boxed: DeepBoxed = DeepBoxed { item: Tag { code: 20 } };
-    let wrapped: DeepWrap = DeepWrap::Has(Tag { code: 13 });
+    let wrapped: DeepWrap = DeepWrap.Has(Tag { code: 13 });
     let from_enum: i64 = match wrapped {
-        DeepWrap::Has(t) => t.code,
+        DeepWrap.Has(t) => t.code,
     };
     boxed.item.code + from_enum
 }

@@ -22,33 +22,33 @@ impl ActorMsg for Worker {
 }
 
 fn main() -> i64 {
-    Node::set_transport("tcp");
-    Node::load_keys("/tmp/hew-cap13-node-lookup-send.key");
-    Node::start("127.0.0.1:0");
+    Node.set_transport("tcp");
+    Node.load_keys("/tmp/hew-cap13-node-lookup-send.key");
+    Node.start("127.0.0.1:0");
 
     let worker = spawn Worker(count: 0);
-    Node::register("node-lookup-worker", worker);
+    Node.register("node-lookup-worker", worker);
 
-    let missing: Result<RemotePid<Worker>, LookupError> = Node::lookup("node-lookup-missing");
+    let missing: Result<RemotePid<Worker>, LookupError> = Node.lookup("node-lookup-missing");
     let missing_code = match missing {
-        Result::Ok(pid) => {
+        Result.Ok(pid) => {
             let unexpected = pid.send(Ping { n: 1 });
             match unexpected {
-                Result::Ok(_) => 10,
-                Result::Err(_) => 11,
+                Result.Ok(_) => 10,
+                Result.Err(_) => 11,
             }
         },
-        Result::Err(_) => 0,
+        Result.Err(_) => 0,
     };
     assert_eq(missing_code, 0);
 
-    let found: Result<RemotePid<Worker>, LookupError> = Node::lookup("node-lookup-worker");
+    let found: Result<RemotePid<Worker>, LookupError> = Node.lookup("node-lookup-worker");
     let status = match found {
-        Result::Ok(pid) => {
+        Result.Ok(pid) => {
             let delivered = pid.send(Ping { n: 42 });
             let send_code = match delivered {
-                Result::Ok(_) => 0,
-                Result::Err(_) => 20,
+                Result.Ok(_) => 0,
+                Result.Err(_) => 20,
             };
             if send_code == 0 {
                 let total = match await worker.total() {
@@ -61,9 +61,9 @@ fn main() -> i64 {
                 send_code
             }
         },
-        Result::Err(_) => 30,
+        Result.Err(_) => 30,
     };
 
-    Node::shutdown();
+    Node.shutdown();
     status
 }

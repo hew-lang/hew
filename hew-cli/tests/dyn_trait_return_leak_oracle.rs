@@ -18,7 +18,7 @@ use support::{describe_output, require_codegen};
 fn returned_dyn_source(frames: usize) -> String {
     format!(
         r#"
-import std::string;
+import std.string;
 
 trait Labeled {{
     fn label_size(val: Self) -> i64;
@@ -80,7 +80,7 @@ fn main() -> i64 {{
 fn passed_through_dyn_source(frames: usize) -> String {
     format!(
         r#"
-import std::string;
+import std.string;
 
 trait Labeled {{
     fn label_size(val: Self) -> i64;

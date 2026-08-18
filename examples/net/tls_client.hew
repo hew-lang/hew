@@ -2,7 +2,7 @@
 //!         status line over a real TLS round-trip.
 //! Description: TLS client — connect over TLS with system-root verification, then GET a page.
 //!
-//! This is the idiomatic `std::net::tls` client shape using the FREE-FUNCTION
+//! This is the idiomatic `std.net.tls` client shape using the FREE-FUNCTION
 //! surface (`tls.connect` / `tls.write` / `tls.read` / `tls.close`). The method
 //! form (`stream.read(n)`) is intentionally NOT used — it is not supported yet.
 //! Request/response bodies are `bytes`; build a request payload with the public
@@ -10,7 +10,7 @@
 //! The short write is detected with a fail-closed guard so the program
 //! terminates cleanly instead of blocking on a read that will never arrive.
 
-import std::net::tls;
+import std.net.tls;
 
 fn main() {
     let host = "example.com";
@@ -27,16 +27,16 @@ fn main() {
     // below runs.
     if sent == want {
         match tls.read(stream, 256) {
-            Ok(data) => {
+            .Ok(data) => {
                 let text = data.to_string();
                 let crlf = "\r\n";
                 let status_line = match text.find(crlf) {
-                    Some(cut) => text.slice(0, cut),
-                    None => text,
+                    .Some(cut) => text.slice(0, cut),
+                    .None => text,
                 };
                 println(f"response: {status_line}");
             },
-            Err(_) => println(f"read error: {tls.last_error()}"),
+            .Err(_) => println(f"read error: {tls.last_error()}"),
         }
     } else {
         println("short write — skipping read (TLS data-plane ABI gap)");

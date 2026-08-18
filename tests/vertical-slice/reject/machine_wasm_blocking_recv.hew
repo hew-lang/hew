@@ -5,7 +5,7 @@
 // The .recv() call is on a real `Receiver<i64>` obtained from
 // `channel.new(capacity)` so the type checker accepts the program; the
 // wasm32 gate then rejects the blocking `.recv()` at HIR-lower time.
-import std::channel::channel;
+import std.channel.channel;
 
 machine M {
     events {

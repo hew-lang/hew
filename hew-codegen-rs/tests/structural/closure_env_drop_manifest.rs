@@ -160,7 +160,7 @@ fn captured_string_freed_inside_env_free_thunk() {
 fn captured_vec_freed_inside_env_free_thunk() {
     let ll = emit_ll(
         "fn make() -> fn() -> i64 {\n\
-        \x20   var xs: Vec<i64> = Vec::new();\n\
+        \x20   var xs: Vec<i64> = Vec.new();\n\
         \x20   xs.push(10);\n\
         \x20   || xs.len()\n\
         }\n\
@@ -278,7 +278,7 @@ fn captured_vec_bearing_record_drop_thunk_releases_heap() {
         \x20   counts: Vec<i64>;\n\
         }\n\
         fn make() -> fn() -> i64 {\n\
-        \x20   var counts: Vec<i64> = Vec::new();\n\
+        \x20   var counts: Vec<i64> = Vec.new();\n\
         \x20   counts.push(4);\n\
         \x20   let h = Holder { counts: counts };\n\
         \x20   || h.counts.len()\n\
@@ -316,10 +316,10 @@ fn captured_enum_drop_thunk_defined_and_called() {
         \x20   Anon;\n\
         }\n\
         fn make() -> fn() -> i64 {\n\
-        \x20   let t = Tag::Named(\"hi\");\n\
+        \x20   let t = Tag.Named(\"hi\");\n\
         \x20   || match t {\n\
-        \x20       Tag::Named(_) => 1,\n\
-        \x20       Tag::Anon => 0,\n\
+        \x20       Tag.Named(_) => 1,\n\
+        \x20       Tag.Anon => 0,\n\
         \x20   }\n\
         }\n\
         fn main() -> i64 { let f = make(); f() }\n",

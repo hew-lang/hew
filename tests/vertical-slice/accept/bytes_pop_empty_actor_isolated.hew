@@ -1,6 +1,6 @@
 actor BytesPopCrasher {
     receive fn boom() {
-        let b: bytes = bytes::new();
+        let b: bytes = bytes.new();
         let _x: u8 = b.pop();
     }
 }

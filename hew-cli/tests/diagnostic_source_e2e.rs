@@ -30,7 +30,7 @@ fn write_fixture(files: &[(&str, &str)]) -> tempfile::TempDir {
 /// `hew check` output.
 #[test]
 fn hyphenated_import_rendered_with_filename_and_underscore_suggestion() {
-    let fixture = write_fixture(&[("hyphenated_import.hew", "import config-telemetry::types;\n")]);
+    let fixture = write_fixture(&[("hyphenated_import.hew", "import config-telemetry.types;\n")]);
     let source_path = fixture.path().join("hyphenated_import.hew");
 
     let output = Command::new(hew_binary())

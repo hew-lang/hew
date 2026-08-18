@@ -16,9 +16,9 @@
 // Harness verb: hew run
 // Expected: counts printed for both the direct and relayed factory; the owned
 // Vec<Box> (and its inner Vec<string> tags) drop cleanly at scope exit.
-import hew::nestbox;
+import hew.nestbox;
 
-import hew::nestrelay;
+import hew.nestrelay;
 
 fn count_via_owner(a: string, b: string) -> i64 {
     match nestbox.collect(a, b) {

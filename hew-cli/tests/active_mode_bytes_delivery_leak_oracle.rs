@@ -45,23 +45,23 @@ fn allocate_loopback_port() -> u16 {
 
 /// The handler does NOT hold the connection: `attach(consuming self, ..)`
 /// transfers it to the reactor, which is then its sole owner and closes it.
-/// Giving `Sink` a `Connection` field as well would spawn-transfer the same
+/// Giving `ProbeSink` a `Connection` field as well would spawn-transfer the same
 /// connection into actor state and close it a second time on `on_close` — the
 /// exact double-close the sibling `active_transport_attach_ir` oracle pins as
 /// refused. The measurement here is the per-delivery `bytes` payload, which is
 /// unaffected by dropping the redundant field.
 fn server_source(port: u16, deliveries: usize) -> String {
     format!(
-        "import std::net::{{Connection, ConnectionHandler}};\n\
+        "import std.net.{{Connection, ConnectionHandler}};\n\
          \n\
-         actor Sink {{\n\
+         actor ProbeSink {{\n\
          \x20   receive fn on_data(data: bytes) {{\n\
          \x20       println(\"DATA\");\n\
          \x20   }}\n\
          \x20   receive fn on_close() {{}}\n\
          }}\n\
          \n\
-         impl ConnectionHandler for Sink {{\n\
+         impl ConnectionHandler for ProbeSink {{\n\
          \x20   fn on_data(data: bytes) {{}}\n\
          \x20   fn on_close() {{}}\n\
          }}\n\
@@ -71,7 +71,7 @@ fn server_source(port: u16, deliveries: usize) -> String {
          \x20   var accepted: i64 = 0;\n\
          \x20   while accepted < {deliveries} {{\n\
          \x20       let conn = listener.accept();\n\
-         \x20       let sink = spawn Sink();\n\
+         \x20       let sink = spawn ProbeSink();\n\
          \x20       conn.attach(sink);\n\
          \x20       accepted = accepted + 1;\n\
          \x20   }}\n\
@@ -178,11 +178,11 @@ fn run_under_leaks(bin: &Path, port: u16, deliveries: usize) -> (usize, usize) {
 }
 
 const CONDITIONAL_HANDLER_BYTES_SOURCE: &str = r#"
-actor Sink {
+actor ProbeSink {
     receive fn take(data: bytes) { println("FORWARDED"); }
 }
 actor Router {
-    let sink: LocalPid<Sink>;
+    let sink: LocalPid<ProbeSink>;
     receive fn route(data: bytes, forward: bool) {
         if forward {
             sink.take(data);
@@ -194,7 +194,7 @@ actor Router {
     }
 }
 fn main() -> i64 {
-    let sink = spawn Sink();
+    let sink = spawn ProbeSink();
     let router = spawn Router(sink: sink);
     router.route(b"forward-owner", true);
     router.route(b"local-owner", false);

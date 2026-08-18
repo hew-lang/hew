@@ -215,6 +215,7 @@ jobs:
           make test-opaque-resource-lifecycle-matrix-external
           make test-vertical-slice
           make test-hew-ratchet
+          make test-migrate-corpus
           make test-stdlib-ratchet
           make test-stdlib-execution-proofs
 

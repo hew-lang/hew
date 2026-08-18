@@ -889,7 +889,7 @@ fn first_class_cursor_abandonment_plans_cover_cancel_panic_suspend_and_yield() {
 
         actor Sleeper {
             receive fn park() {
-                let values: Vec<i64> = Vec::new();
+                let values: Vec<i64> = Vec.new();
                 values.push(1);
                 var cursor = values.iter();
                 sleep(10s);

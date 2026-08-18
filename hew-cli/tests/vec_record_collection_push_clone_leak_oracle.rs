@@ -80,8 +80,8 @@ enum Reply {\n\
 \n\
 fn main() {\n\
 \x20   var xs: [Reply] = [];\n\
-\x20   xs.push(Reply::Num(7));\n\
-\x20   xs.push(Reply::Arr([Reply::Nil, Reply::Num(9)]));\n\
+\x20   xs.push(Reply.Num(7));\n\
+\x20   xs.push(Reply.Arr([Reply.Nil, Reply.Num(9)]));\n\
 \x20   let n = xs.len();\n\
 \x20   print(f\"{n}\");\n\
 \x20   print(\"OK\");\n\
@@ -132,8 +132,8 @@ fn push_recursive_enum_drop_loop_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       var xs: [Reply] = [];\n\
-         \x20       xs.push(Reply::Num(7));\n\
-         \x20       xs.push(Reply::Arr([Reply::Nil, Reply::Num(9)]));\n\
+         \x20       xs.push(Reply.Num(7));\n\
+         \x20       xs.push(Reply.Arr([Reply.Nil, Reply.Num(9)]));\n\
          \x20       total = total + xs.len();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\

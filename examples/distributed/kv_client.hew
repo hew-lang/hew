@@ -6,7 +6,7 @@
 //
 // Run after server.hew is already listening:
 //   hew run examples/distributed/kv_client.hew
-import std::os;
+import std.os;
 
 // Mirror the server's serializable types.  Both nodes must agree on these.
 record KvPut {
@@ -30,8 +30,8 @@ enum KvResp {
 actor KeyValue {
     receive fn handle(req: KvReq) -> KvResp {
         match req {
-            KvReq::Put(_) => KvResp::Ack,
-            KvReq::GetKey(_) => KvResp::Value(""),
+            KvReq.Put(_) => KvResp.Ack,
+            KvReq.GetKey(_) => KvResp.Value(""),
         }
     }
 }
@@ -52,96 +52,96 @@ fn main() -> i64 {
     }
     let remote_addr = f"{server_addr}:{port}";
     println(f"[kv-client] starting node, will connect to {remote_addr}");
-    Node::set_transport("tcp");
-    Node::start("0.0.0.0:0");
+    Node.set_transport("tcp");
+    Node.start("0.0.0.0:0");
     println("[kv-client] local node started");
     sleep(500ms);
-    Node::connect(remote_addr);
+    Node.connect(remote_addr);
     println(f"[kv-client] connected to {remote_addr}");
     // Wait for the connection handshake to complete and registry gossip to arrive.
     // hew_node_connect is non-blocking; gossip propagates asynchronously.
     sleep(2s);
-    let found: Result<RemotePid<KeyValue>, LookupError> = Node::lookup("kv");
+    let found: Result<RemotePid<KeyValue>, LookupError> = Node.lookup("kv");
     match found {
-        Err(_) => {
+        .Err(_) => {
             println("[kv-client] FAIL: 'kv' not found in registry");
-            Node::shutdown();
+            Node.shutdown();
             return 1;
         },
-        Ok(kv) => {
+        .Ok(kv) => {
             // Scenario 1: put("hello","world") — fire and forget via send.
-            let send1 = kv.send(KvReq::Put(KvPut { key: "hello", val: "world" }));
+            let send1 = kv.send(KvReq.Put(KvPut { key: "hello", val: "world" }));
             match send1 {
-                Err(_) => {
+                .Err(_) => {
                     println("[kv-client] FAIL: put('hello','world') send error");
-                    Node::shutdown();
+                    Node.shutdown();
                     return 2;
                 },
-                Ok(_) => {},
+                .Ok(_) => {},
             }
             // Scenario 2: put("count","42") — fire and forget via send.
-            let send2 = kv.send(KvReq::Put(KvPut { key: "count", val: "42" }));
+            let send2 = kv.send(KvReq.Put(KvPut { key: "count", val: "42" }));
             match send2 {
-                Err(_) => {
+                .Err(_) => {
                     println("[kv-client] FAIL: put('count','42') send error");
-                    Node::shutdown();
+                    Node.shutdown();
                     return 3;
                 },
-                Ok(_) => {},
+                .Ok(_) => {},
             }
             println("[kv-client] put('hello','world') and put('count','42') dispatched");
             // Give the server time to process the send messages before asking.
             sleep(500ms);
 
             // Scenario 3: get("hello") — blocking remote ask, exercises await-over-wire.
-            let ask1 = kv.ask(KvReq::GetKey("hello"), 5000);
+            let ask1 = kv.ask(KvReq.GetKey("hello"), 5000);
             match ask1 {
-                Err(_) => {
+                .Err(_) => {
                     println("[kv-client] FAIL: get('hello') remote ask error");
-                    Node::shutdown();
+                    Node.shutdown();
                     return 4;
                 },
-                Ok(resp) => {
+                .Ok(resp) => {
                     match resp {
-                        KvResp::Value(v) => {
+                        KvResp.Value(v) => {
                             if v == "world" {
                                 println("[kv-client] PASS: get('hello') == 'world'");
                             } else {
                                 println(f"[kv-client] FAIL: get('hello') returned '{v}', expected 'world'");
-                                Node::shutdown();
+                                Node.shutdown();
                                 return 5;
                             }
                         },
-                        KvResp::Ack => {
+                        KvResp.Ack => {
                             println("[kv-client] FAIL: get('hello') returned Ack, expected Value");
-                            Node::shutdown();
+                            Node.shutdown();
                             return 5;
                         },
                     }
                 },
             }
             // Scenario 4: get("count") — second blocking remote ask.
-            let ask2 = kv.ask(KvReq::GetKey("count"), 5000);
+            let ask2 = kv.ask(KvReq.GetKey("count"), 5000);
             match ask2 {
-                Err(_) => {
+                .Err(_) => {
                     println("[kv-client] FAIL: get('count') remote ask error");
-                    Node::shutdown();
+                    Node.shutdown();
                     return 6;
                 },
-                Ok(resp) => {
+                .Ok(resp) => {
                     match resp {
-                        KvResp::Value(v) => {
+                        KvResp.Value(v) => {
                             if v == "42" {
                                 println("[kv-client] PASS: get('count') == '42'");
                             } else {
                                 println(f"[kv-client] FAIL: get('count') returned '{v}', expected '42'");
-                                Node::shutdown();
+                                Node.shutdown();
                                 return 7;
                             }
                         },
-                        KvResp::Ack => {
+                        KvResp.Ack => {
                             println("[kv-client] FAIL: get('count') returned Ack, expected Value");
-                            Node::shutdown();
+                            Node.shutdown();
                             return 7;
                         },
                     }
@@ -150,7 +150,7 @@ fn main() -> i64 {
         },
     }
     println("[kv-client] all assertions passed");
-    Node::shutdown();
+    Node.shutdown();
     println("[kv-client] shutdown complete");
     0
 }

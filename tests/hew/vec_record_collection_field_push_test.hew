@@ -8,7 +8,7 @@
 //! fails when the push aliases instead of deep-cloning, and a companion to the
 //! memory-safety leak oracle that pins the source's exactly-once field drop.
 
-import std::testing;
+import std.testing;
 
 type Boxed {
     payload: [i64];
@@ -64,12 +64,12 @@ fn test_record_collection_field_push_reads_back_exact() {
 #[test]
 fn test_self_recursive_enum_push() {
     var xs: [Reply] = [];
-    xs.push(Reply::Num(7));
-    xs.push(Reply::Arr([Reply::Nil, Reply::Num(9)]));
+    xs.push(Reply.Num(7));
+    xs.push(Reply.Arr([Reply.Nil, Reply.Num(9)]));
     testing.assert_eq(xs.len(), 2);
     let head = xs[0];
     match head {
-        Reply::Num(n) => testing.assert_eq(n, 7),
+        Reply.Num(n) => testing.assert_eq(n, 7),
         _ => testing.assert_true(false),
     }
 }
@@ -79,12 +79,12 @@ fn test_self_recursive_enum_push() {
 #[test]
 fn test_self_recursive_enum_live_source_push() {
     var xs: [Reply] = [];
-    let src = Reply::Arr([Reply::Nil, Reply::Num(9)]);
+    let src = Reply.Arr([Reply.Nil, Reply.Num(9)]);
     xs.push(src);
     xs.push(src);
     testing.assert_eq(xs.len(), 2);
     match src {
-        Reply::Arr(items) => testing.assert_eq(items.len(), 2),
+        Reply.Arr(items) => testing.assert_eq(items.len(), 2),
         _ => testing.assert_true(false),
     }
 }

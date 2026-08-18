@@ -4,7 +4,7 @@
 // `hew_sink_write_bytes` symbol materialises at codegen), the
 // layout-witness stream recv, and the sink/stream close releases
 // (`hew_sink_close` / `hew_stream_close`).
-import std::stream;
+import std.stream;
 
 actor Echo {
     let n: i64;
@@ -18,8 +18,8 @@ actor Echo {
         while !done {
             let item = await input.recv();
             match item {
-                Some(b) => println(b.to_string()),
-                None => {
+                .Some(b) => println(b.to_string()),
+                .None => {
                     done = true;
                 },
             }

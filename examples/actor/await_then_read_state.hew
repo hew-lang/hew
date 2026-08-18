@@ -19,8 +19,8 @@ actor Coordinator {
         let r = await worker.compute(n);
         match r {
             // `bias` is an actor-state field read AFTER the await resolves.
-            Ok(v) => v + bias,
-            Err(_) => -1,
+            .Ok(v) => v + bias,
+            .Err(_) => -1,
         }
     }
 }
@@ -31,7 +31,7 @@ fn main() {
     let r = await c.run(7);
     match r {
         // compute(7) = 42; + bias(100) = 142
-        Ok(v) => println(f"result={v}"),
-        Err(_) => println("ask failed"),
+        .Ok(v) => println(f"result={v}"),
+        .Err(_) => println("ask failed"),
     }
 }

@@ -22,13 +22,13 @@ use support::{describe_output, require_codegen};
 
 fn ignored_string_source(frames: usize) -> String {
     format!(
-        "actor Sink {{\n\
+        "actor ProbeSink {{\n\
          \x20   var seen: i64;\n\
          \x20   receive fn take(label: string) {{ seen = seen + 1; }}\n\
          \x20   receive fn count() -> i64 {{ seen }}\n\
          }}\n\
          fn main() -> i64 {{\n\
-         \x20   let sink = spawn Sink(seen: 0);\n\
+         \x20   let sink = spawn ProbeSink(seen: 0);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       sink.take(\"unused\".to_upper());\n\
@@ -43,13 +43,13 @@ fn ignored_recursive_record_source(frames: usize) -> String {
     format!(
         "type Inner {{ label: string; values: Vec<i64> }}\n\
          type Envelope {{ payload: Inner }}\n\
-         actor Sink {{\n\
+         actor ProbeSink {{\n\
          \x20   var seen: i64;\n\
          \x20   receive fn take(message: Envelope) {{ seen = seen + 1; }}\n\
          \x20   receive fn count() -> i64 {{ seen }}\n\
          }}\n\
          fn main() -> i64 {{\n\
-         \x20   let sink = spawn Sink(seen: 0);\n\
+         \x20   let sink = spawn ProbeSink(seen: 0);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let message = Envelope {{ payload: Inner {{ label: \"record\".to_upper(), values: [i, i + 1] }} }};\n\
@@ -63,13 +63,13 @@ fn ignored_recursive_record_source(frames: usize) -> String {
 
 fn ignored_container_source(frames: usize) -> String {
     format!(
-        "actor Sink {{\n\
+        "actor ProbeSink {{\n\
          \x20   var seen: i64;\n\
          \x20   receive fn take(values: Vec<string>) {{ seen = seen + 1; }}\n\
          \x20   receive fn count() -> i64 {{ seen }}\n\
          }}\n\
          fn main() -> i64 {{\n\
-         \x20   let sink = spawn Sink(seen: 0);\n\
+         \x20   let sink = spawn ProbeSink(seen: 0);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let values: Vec<string> = [\"left\".to_upper(), \"right\".to_upper()];\n\
@@ -83,7 +83,7 @@ fn ignored_container_source(frames: usize) -> String {
 
 fn branch_and_early_exit_source(frames: usize) -> String {
     format!(
-        "actor Sink {{\n\
+        "actor ProbeSink {{\n\
          \x20   var seen: i64;\n\
          \x20   receive fn take(label: string, early: bool) {{\n\
          \x20       if early {{ seen = seen + 1; return; }}\n\
@@ -92,7 +92,7 @@ fn branch_and_early_exit_source(frames: usize) -> String {
          \x20   receive fn count() -> i64 {{ seen }}\n\
          }}\n\
          fn main() -> i64 {{\n\
-         \x20   let sink = spawn Sink(seen: 0);\n\
+         \x20   let sink = spawn ProbeSink(seen: 0);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       sink.take(\"branch\".to_upper(), i % 2 == 0);\n\

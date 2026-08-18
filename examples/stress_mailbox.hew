@@ -27,8 +27,8 @@ fn send_batch(counter: LocalPid<Counter>, remaining: i64) {
 fn read_count(counter: LocalPid<Counter>) -> i64 {
     let count_result = await counter.report();
     match count_result {
-        Ok(value) => value,
-        Err(_) => -1,
+        .Ok(value) => value,
+        .Err(_) => -1,
     }
 }
 

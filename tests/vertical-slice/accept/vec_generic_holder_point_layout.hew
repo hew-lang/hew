@@ -8,7 +8,7 @@ type Holder<T> {
 }
 
 fn main() {
-    let values: Vec<Holder<Point>> = Vec::new();
+    let values: Vec<Holder<Point>> = Vec.new();
     values.push(Holder { value: Point { x: 5, y: 6 } });
     values.push(Holder { value: Point { x: 7, y: 8 } });
     values.push(Holder { value: Point { x: 9, y: 10 } });

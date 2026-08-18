@@ -14,5 +14,5 @@ fn make() -> LocalPid<Echo> {
 
 fn main() {
     let x = make();
-    match await x.take(1) { Ok(x_v) => println(f"echo {x_v}"), Err(_) => println("err"), }
+    match await x.take(1) { Result.Ok(x_v) => println(f"echo {x_v}"), Err(_) => println("err"), }
 }

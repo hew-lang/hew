@@ -8,13 +8,13 @@
 //! fails closed (400), and CRLF in caller-provided builder fields is rejected
 //! (no injected header). A clean run prints `codec-hardening-ok`.
 
-import std::net::http::http_async_server;
+import std.net.http.http_async_server;
 
-import std::net::http::http_async_client;
+import std.net.http.http_async_client;
 
-import std::string;
+import std.string;
 
-import std::testing;
+import std.testing;
 
 // ── F2: size caps fail closed (413 server / -1 client) ────────────────
 fn check_f2_size_caps() {

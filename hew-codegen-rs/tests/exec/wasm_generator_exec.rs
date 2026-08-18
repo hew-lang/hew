@@ -128,7 +128,7 @@ fn wasm_generator_teardown_runs_and_releases_frames() {
     let source_path = dir.path().join("gen_wasm_teardown.hew");
     std::fs::write(
         &source_path,
-        r#"import std::observe;
+        r#"import std.observe;
 
 type Capture {
     label: string,

@@ -35,7 +35,7 @@ pub machine Toggle {
 ";
     let root_src = r"
 fn main() {
-    var t = Toggle::Off;
+    var t = Toggle.Off;
     t.step(Flip);
 }
 ";
@@ -178,8 +178,8 @@ pub machine Lifecycle<T> {
 import m;
 
 fn main() {
-    var lifecycle: m.Lifecycle<i64> = m.Lifecycle::Created;
-    lifecycle.step(m.LifecycleEvent::Stop);
+    var lifecycle: m.Lifecycle<i64> = m.Lifecycle.Created;
+    lifecycle.step(m.LifecycleEvent.Stop);
 }
 ";
     let program = support::checker_pipeline::program_with_imported_module(imported_src, root_src);
@@ -232,7 +232,7 @@ machine RunLifecycle {
     default { state }
 }
 
-pub fn initial() -> RunLifecycle { RunLifecycle::Running }
+pub fn initial() -> RunLifecycle { RunLifecycle.Running }
 ";
     let root_src = "import m; fn main() {}";
     let program = support::checker_pipeline::program_with_imported_module(imported_src, root_src);
@@ -301,15 +301,15 @@ pub machine Toggle {
     on Flip: On => Off { Off }
 }
 
-pub fn initial() -> Toggle { Toggle::Off }
+pub fn initial() -> Toggle { Toggle.Off }
 ";
     let root_src = r"
 import m;
 
 fn tag(value: m.Toggle) -> i64 {
     match value {
-        m.Toggle::Off => 0,
-        m.Toggle::On => 1,
+        m.Toggle.Off => 0,
+        m.Toggle.On => 1,
     }
 }
 

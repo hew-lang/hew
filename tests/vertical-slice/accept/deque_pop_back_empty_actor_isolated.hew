@@ -1,4 +1,4 @@
-import std::deque;
+import std.deque;
 
 actor DequePopBackCrasher {
     receive fn boom() {

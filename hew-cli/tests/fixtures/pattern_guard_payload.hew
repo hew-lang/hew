@@ -11,19 +11,19 @@ enum MyOpt {
 
 fn describe(v: MyOpt) -> string {
     match v {
-        MyOpt::Some(n) if n > 0 => "positive",
-        MyOpt::Some(_) => "non-positive",
-        MyOpt::None => "absent",
+        MyOpt.Some(n) if n > 0 => "positive",
+        MyOpt.Some(_) => "non-positive",
+        MyOpt.None => "absent",
     }
 }
 
 fn main() {
-    print(describe(MyOpt::Some(5)));
+    print(describe(MyOpt.Some(5)));
     print("\n");
-    print(describe(MyOpt::Some(0)));
+    print(describe(MyOpt.Some(0)));
     print("\n");
-    print(describe(MyOpt::Some(-3)));
+    print(describe(MyOpt.Some(-3)));
     print("\n");
-    print(describe(MyOpt::None));
+    print(describe(MyOpt.None));
     print("\n");
 }

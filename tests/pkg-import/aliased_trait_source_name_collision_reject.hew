@@ -20,8 +20,8 @@
 // collision-free. The impl must be REJECTED with `TraitImplSignatureMismatch`.
 //
 // Harness verb: hew check (negative — see run.sh).
-import hew::srccollidea::{ Source as A };
-import hew::srccollideb;
+import hew.srccollidea.{ Source as A };
+import hew.srccollideb;
 
 type W {
     id: i64;

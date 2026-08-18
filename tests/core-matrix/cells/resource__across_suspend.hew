@@ -25,7 +25,7 @@ fn main() {
     let x = Tok { id: 1 };
     let h = spawn Holder(ready: false);
     match await h.hold(x) {
-        Ok(n) => println(f"held {n}"),
+        Result.Ok(n) => println(f"held {n}"),
         Err(_) => println("err"),
     }
 }

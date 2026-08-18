@@ -90,30 +90,30 @@ fn nested_match_source(iters: usize) -> String {
         "enum ParseError {{ Invalid(string); }}\n\
          enum Tri {{ A(string); B(string); C(string); }}\n\
          fn make(n: i64) -> Result<i64, ParseError> {{\n\
-         \x20   if n == 0 {{ Ok(1) }} else {{ Err(ParseError::Invalid(\"bad-input\".to_upper())) }}\n\
+         \x20   if n == 0 {{ Ok(1) }} else {{ Err(ParseError.Invalid(\"bad-input\".to_upper())) }}\n\
          }}\n\
          fn pick(n: i64) -> Result<i64, Tri> {{\n\
          \x20   match n % 3 {{\n\
-         \x20       0 => Err(Tri::A(\"alpha\".to_upper())),\n\
-         \x20       1 => Err(Tri::B(\"beta\".to_upper())),\n\
-         \x20       _ => Err(Tri::C(\"gamma\".to_upper())),\n\
+         \x20       0 => Err(Tri.A(\"alpha\".to_upper())),\n\
+         \x20       1 => Err(Tri.B(\"beta\".to_upper())),\n\
+         \x20       _ => Err(Tri.C(\"gamma\".to_upper())),\n\
          \x20   }}\n\
          }}\n\
          fn wild(n: i64) -> i64 {{\n\
          \x20   let r = make(n);\n\
-         \x20   match r {{ Ok(v) => v, Err(ParseError::Invalid(_)) => -1 }}\n\
+         \x20   match r {{ Ok(v) => v, Err(ParseError.Invalid(_)) => -1 }}\n\
          }}\n\
          fn bound(n: i64) -> i64 {{\n\
          \x20   let r = make(n);\n\
-         \x20   match r {{ Ok(v) => v, Err(ParseError::Invalid(m)) => m.len() }}\n\
+         \x20   match r {{ Ok(v) => v, Err(ParseError.Invalid(m)) => m.len() }}\n\
          }}\n\
          fn probe(n: i64) -> i64 {{\n\
          \x20   let r = pick(n);\n\
          \x20   match r {{\n\
          \x20       Ok(v) => v,\n\
-         \x20       Err(Tri::A(_)) => 1,\n\
-         \x20       Err(Tri::B(m)) => m.len(),\n\
-         \x20       Err(Tri::C(_)) => 3,\n\
+         \x20       Err(Tri.A(_)) => 1,\n\
+         \x20       Err(Tri.B(m)) => m.len(),\n\
+         \x20       Err(Tri.C(_)) => 3,\n\
          \x20   }}\n\
          }}\n\
          fn main() {{\n\

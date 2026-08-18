@@ -733,6 +733,32 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.visitor
                     .visit_identifier(name, span, binding, Self::context(body));
             }
+            Expr::ContextVariant(context) => {
+                if let Some(record) = &context.record {
+                    for (_, value) in &record.fields {
+                        self.walk_expr(&value.0, &value.1, body);
+                    }
+                    if let Some(base) = &record.base {
+                        self.walk_expr(&base.0, &base.1, body);
+                    }
+                }
+            }
+            Expr::GenericApplySuffix { target, .. } => {
+                self.walk_expr(&target.0, &target.1, body);
+            }
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                self.walk_expr(&target.0, &target.1, body);
+                for (_, value) in fields {
+                    self.walk_expr(&value.0, &value.1, body);
+                }
+                if let Some(base) = base {
+                    self.walk_expr(&base.0, &base.1, body);
+                }
+            }
             Expr::Binary { left, right, .. } => {
                 self.walk_expr(&left.0, &left.1, body);
                 self.walk_expr(&right.0, &right.1, body);
@@ -892,6 +918,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.walk_expr(&rhs.0, &rhs.1, body);
             }
             Expr::Literal(_)
+            | Expr::QualifiedAssoc(_)
             | Expr::This
             | Expr::Yield(None)
             | Expr::Return(None)
@@ -1067,6 +1094,16 @@ fn collect_pattern_bindings<'ast>(
                 collect_pattern_bindings(source, pattern, span, bindings);
             }
         }
+        Pattern::NominalPath { payload, .. } => {
+            if let Some(payload) = payload {
+                collect_nominal_payload_bindings(source, payload, span, bindings);
+            }
+        }
+        Pattern::ContextVariant(context) => {
+            if let Some(payload) = &context.payload {
+                collect_nominal_payload_bindings(source, payload, span, bindings);
+            }
+        }
         Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
             for field in fields {
                 collect_pattern_field_bindings(source, span, field, bindings);
@@ -1083,6 +1120,26 @@ fn collect_pattern_bindings<'ast>(
             }
         }
         Pattern::Wildcard | Pattern::Literal(_) => {}
+    }
+}
+
+fn collect_nominal_payload_bindings<'ast>(
+    source: Option<&str>,
+    payload: &'ast hew_parser::ast::NominalPatternPayload,
+    span: &Span,
+    bindings: &mut Vec<BindingInfo<'ast>>,
+) {
+    match payload {
+        hew_parser::ast::NominalPatternPayload::Tuple(patterns) => {
+            for (pattern, pattern_span) in patterns {
+                collect_pattern_bindings(source, pattern, pattern_span, bindings);
+            }
+        }
+        hew_parser::ast::NominalPatternPayload::Record { fields, .. } => {
+            for field in fields {
+                collect_pattern_field_bindings(source, span, field, bindings);
+            }
+        }
     }
 }
 

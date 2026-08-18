@@ -42,7 +42,7 @@ fn ingest(store: HashMap<string, bytes>, payload: bytes) -> i64 {\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let store: HashMap<string, bytes> = HashMap::new();\n\
+\x20   let store: HashMap<string, bytes> = HashMap.new();\n\
 \x20   let payload = b\"0123456789abcdef\";\n\
 \x20   let n = ingest(store, payload);\n\
 \x20   let still = payload.len();\n\
@@ -59,7 +59,7 @@ fn borrowed_bytes_loop_source(frames: usize) -> String {
          }}\n\
          \n\
          fn run_cycle() -> i64 {{\n\
-         \x20   let store: HashMap<string, bytes> = HashMap::new();\n\
+         \x20   let store: HashMap<string, bytes> = HashMap.new();\n\
          \x20   let payload = b\"0123456789abcdef0123456789abcdef\";\n\
          \x20   return ingest(store, payload);\n\
          }}\n\
@@ -87,7 +87,7 @@ fn put(counts: HashMap<string, i64>, var key: string, amount: i64) -> i64 {\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let counts: HashMap<string, i64> = HashMap::new();\n\
+\x20   let counts: HashMap<string, i64> = HashMap.new();\n\
 \x20   let first = put(counts, \"caller\" + \"-a\", 1);\n\
 \x20   let second = put(counts, \"caller\" + \"-b\", 2);\n\
 \x20   let stored = match counts.get(\"FRESH-KEY\") { Some(n) => n, None => -1 };\n\
@@ -105,7 +105,7 @@ fn reassigned_param_loop_source(frames: usize) -> String {
          }}\n\
          \n\
          fn run_cycle() -> i64 {{\n\
-         \x20   let counts: HashMap<string, i64> = HashMap::new();\n\
+         \x20   let counts: HashMap<string, i64> = HashMap.new();\n\
          \x20   let a = put(counts, \"caller\" + \"-a\", 1);\n\
          \x20   let b = put(counts, \"caller\" + \"-b\", 2);\n\
          \x20   return a + b;\n\
@@ -128,7 +128,7 @@ fn reassigned_param_loop_source(frames: usize) -> String {
 /// assignment escaping the loop (formerly `ObligationUnderReleased`).
 const YIELD_SHARE_SOURCE: &str = "\
 fn keep_expensive(totals: HashMap<string, i64>) -> i64 {\n\
-\x20   let kept: HashMap<string, i64> = HashMap::new();\n\
+\x20   let kept: HashMap<string, i64> = HashMap.new();\n\
 \x20   for category in totals.keys() {\n\
 \x20   \x20   let cents = totals.get(category).unwrap_or(0);\n\
 \x20   \x20   if cents > 500 {\n\
@@ -154,7 +154,7 @@ fn best_category(totals: HashMap<string, i64>) -> string {\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let totals: HashMap<string, i64> = HashMap::new();\n\
+\x20   let totals: HashMap<string, i64> = HashMap.new();\n\
 \x20   totals.insert(\"groceries\" + \"-heap\", 1200);\n\
 \x20   totals.insert(\"transit\" + \"-heap\", 400);\n\
 \x20   totals.insert(\"rent\" + \"-heap\", 90000);\n\
@@ -168,7 +168,7 @@ const YIELD_SHARE_EXPECTED: &str = "2|rent-heap|3";
 fn yield_share_loop_source(frames: usize) -> String {
     format!(
         "fn keep_expensive(totals: HashMap<string, i64>) -> i64 {{\n\
-         \x20   let kept: HashMap<string, i64> = HashMap::new();\n\
+         \x20   let kept: HashMap<string, i64> = HashMap.new();\n\
          \x20   for category in totals.keys() {{\n\
          \x20   \x20   let cents = totals.get(category).unwrap_or(0);\n\
          \x20   \x20   if cents > 500 {{\n\
@@ -192,7 +192,7 @@ fn yield_share_loop_source(frames: usize) -> String {
          }}\n\
          \n\
          fn run_cycle() -> i64 {{\n\
-         \x20   let totals: HashMap<string, i64> = HashMap::new();\n\
+         \x20   let totals: HashMap<string, i64> = HashMap.new();\n\
          \x20   totals.insert(\"groceries\" + \"-heap\", 1200);\n\
          \x20   totals.insert(\"transit\" + \"-heap\", 400);\n\
          \x20   totals.insert(\"rent\" + \"-heap\", 90000);\n\

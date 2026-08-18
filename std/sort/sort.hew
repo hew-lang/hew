@@ -21,7 +21,7 @@
 
 // ── Helpers ───────────────────────────────────────────────────────────
 fn copy_ints(v: Vec<i64>) -> Vec<i64> {
-    let out: Vec<i64> = Vec::new();
+    let out: Vec<i64> = Vec.new();
     for i in 0 .. v.len() {
         out.push(v[i]);
     }
@@ -33,7 +33,7 @@ fn copy_strings(v: Vec<string>) -> Vec<string> {
 }
 
 fn copy_floats(v: Vec<f64>) -> Vec<f64> {
-    let out: Vec<f64> = Vec::new();
+    let out: Vec<f64> = Vec.new();
     for i in 0 .. v.len() {
         out.push(v[i]);
     }

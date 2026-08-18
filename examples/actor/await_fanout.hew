@@ -21,8 +21,8 @@ actor Hub {
     receive fn relay(n: i64) -> i64 {
         let r = await worker.work(n);
         match r {
-            Ok(v) => v,
-            Err(_) => -1,
+            .Ok(v) => v,
+            .Err(_) => -1,
         }
     }
 }
@@ -34,10 +34,10 @@ fn main() {
     for i in 0 .. 5 {
         let r = await h.relay(i);
         match r {
-            Ok(v) => {
+            .Ok(v) => {
                 total = total + v;
             },
-            Err(_) => {},
+            .Err(_) => {},
         }
     }
     println(f"total={total}");

@@ -10,11 +10,11 @@ enum Status {
 }
 
 fn main() -> i64 {
-    let s = Status::Pending;
+    let s = Status.Pending;
     let back = Status.decode(s.encode());
     match back {
-        Status::Active => 1,
-        Status::Inactive => 2,
-        Status::Pending => 42,
+        Status.Active => 1,
+        Status.Inactive => 2,
+        Status.Pending => 42,
     }
 }

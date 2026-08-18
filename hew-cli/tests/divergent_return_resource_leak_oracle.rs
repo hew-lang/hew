@@ -29,7 +29,7 @@ use support::leak_slope::{
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const DIVERGENT_TUPLE_TEMPLATE: &str = r#"
-import std::stream;
+import std.stream;
 
 fn choose(c: bool) -> (Sink<string>, Stream<string>) {
     let (s1, r1) = stream.pipe(8);
@@ -48,7 +48,7 @@ fn main() {
 "#;
 
 const DIVERGENT_RECORD_TEMPLATE: &str = r#"
-import std::stream;
+import std.stream;
 
 type Pipe {
     sink: Sink<string>,
@@ -76,7 +76,7 @@ fn main() {
 "#;
 
 const EARLY_ERROR_TEMPLATE: &str = r#"
-import std::stream;
+import std.stream;
 
 type Pipe {
     sink: Sink<string>,
@@ -111,7 +111,7 @@ fn main() {
 "#;
 
 const COMBINED_TEMPLATE: &str = r#"
-import std::stream;
+import std.stream;
 
 type Pipe {
     sink: Sink<string>,

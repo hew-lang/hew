@@ -56,8 +56,8 @@ actor HealthMonitor {
         println(f"[monitor] --- health check #{check_count} ---");
         for i in 0 .. svc_refs.len() {
             let svc = match svc_refs.get(i) {
-                Some(value) => value,
-                None => panic("service registry is inconsistent"),
+                .Some(value) => value,
+                .None => panic("service registry is inconsistent"),
             };
             // Use select with timeout — if the service doesn't respond
             // within 500ms, mark it unhealthy.
@@ -66,8 +66,8 @@ actor HealthMonitor {
                 after 500ms => -1,
             };
             let svc_name = match svc_names.get(i) {
-                Some(value) => value,
-                None => panic("service registry is inconsistent"),
+                .Some(value) => value,
+                .None => panic("service registry is inconsistent"),
             };
             if result == 1 {
                 svc_status.set(i, 1);
@@ -85,12 +85,12 @@ actor HealthMonitor {
         let total = svc_names.len();
         for i in 0 .. total {
             let name = match svc_names.get(i) {
-                Some(value) => value,
-                None => panic("service registry is inconsistent"),
+                .Some(value) => value,
+                .None => panic("service registry is inconsistent"),
             };
             let status = match svc_status.get(i) {
-                Some(value) => value,
-                None => panic("service registry is inconsistent"),
+                .Some(value) => value,
+                .None => panic("service registry is inconsistent"),
             };
             if status == 1 {
                 println(f"  {name}: UP");
@@ -113,9 +113,9 @@ fn main() {
     let api = spawn Service(name: "api", healthy: 1, requests: 0);
     let cache = spawn Service(name: "cache", healthy: 1, requests: 0);
     // Create monitor
-    let empty_names: Vec<string> = Vec::new();
-    let empty_refs: Vec<LocalPid<Service>> = Vec::new();
-    let empty_status: Vec<i64> = Vec::new();
+    let empty_names: Vec<string> = Vec.new();
+    let empty_refs: Vec<LocalPid<Service>> = Vec.new();
+    let empty_status: Vec<i64> = Vec.new();
     let monitor = spawn HealthMonitor(svc_names: empty_names, svc_refs: empty_refs, svc_status: empty_status, check_count: 0);
     // Register services
     monitor.register("auth", auth);

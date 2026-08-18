@@ -1,14 +1,14 @@
 // HashMap test
 fn main() {
-    let map: HashMap<string, i64> = HashMap::new();
+    let map: HashMap<string, i64> = HashMap.new();
     map.insert("a", 100);
     map.insert("b", 200);
     match map.get("a") {
-        Some(v) => println(v),
-        None => println("missing"),
+        .Some(v) => println(v),
+        .None => println("missing"),
     }
     match map.get("b") {
-        Some(v) => println(v),
-        None => println("missing"),
+        .Some(v) => println(v),
+        .None => println("missing"),
     }
 }

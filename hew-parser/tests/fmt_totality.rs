@@ -135,6 +135,10 @@ fn _variant_coverage_guard_expr(expr: &Expr) {
         Expr::Clone(_) => {}
         Expr::Literal(_) => {}
         Expr::Identifier(_) => {}
+        Expr::ContextVariant(_) => {}
+        Expr::GenericApplySuffix { .. } => {}
+        Expr::RecordInitSuffix { .. } => {}
+        Expr::QualifiedAssoc(_) => {}
         Expr::Tuple(_) => {}
         Expr::Array(_) => {}
         Expr::ArrayRepeat { .. } => {}
@@ -220,6 +224,8 @@ fn _variant_coverage_guard_pattern(pat: &Pattern) {
         Pattern::Wildcard => {}
         Pattern::Literal(_) => {}
         Pattern::Identifier(_) => {}
+        Pattern::NominalPath { .. } => {}
+        Pattern::ContextVariant(_) => {}
         Pattern::Constructor { .. } => {}
         Pattern::Struct { .. } => {}
         Pattern::RecordShorthand { .. } => {}
@@ -241,6 +247,7 @@ fn _variant_coverage_guard_pattern(pat: &Pattern) {
 fn _variant_coverage_guard_type_expr(ty: &TypeExpr) {
     match ty {
         TypeExpr::Named { .. } => {}
+        TypeExpr::QualifiedAssocPath(_) => {}
         TypeExpr::Result { .. } => {}
         TypeExpr::Option(_) => {}
         TypeExpr::Tuple(_) => {}
@@ -261,7 +268,7 @@ fn _variant_coverage_guard_type_expr(ty: &TypeExpr) {
 /// `Item::Import` — plain path import.
 #[test]
 fn fmt_totality_item_import() {
-    assert_roundtrip("import std::io;\n");
+    assert_roundtrip("import std.io;\n");
 }
 
 /// `Item::Const`

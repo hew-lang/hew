@@ -881,7 +881,7 @@ fn foreign_producer_joins_release_declared_only_by_nominal_owner() {
         (
             &["example", "bridge"],
             r#"
-            import example::owner;
+            import example.owner;
             extern "C" {
                 fn example_socket_open() -> owner.Socket;
             }
@@ -910,7 +910,7 @@ fn module_and_named_import_aliases_preserve_imported_owner() {
         (
             &["example", "module_alias"][..],
             r#"
-            import example::owner as device;
+            import example.owner as device;
             extern "C" {
                 fn example_socket_open() -> device.Socket;
             }
@@ -919,7 +919,7 @@ fn module_and_named_import_aliases_preserve_imported_owner() {
         (
             &["example", "named_alias"][..],
             r#"
-            import example::owner::{ Socket as ImportedSocket };
+            import example.owner.{ Socket as ImportedSocket };
             extern "C" {
                 fn example_socket_open() -> ImportedSocket;
             }
@@ -974,7 +974,7 @@ fn unimported_and_wrong_module_lookalikes_have_no_candidate_authority() {
         (
             &["example", "wrong"],
             r#"
-            import example::other;
+            import example.other;
             extern "C" {
                 fn example_socket_open_wrong() -> other.Socket;
             }
@@ -1004,7 +1004,7 @@ fn release_declared_off_owner_cannot_discharge_imported_result() {
         (
             &["example", "bridge"],
             r#"
-            import example::owner;
+            import example.owner;
             extern "C" {
                 fn example_socket_open() -> owner.Socket;
                 fn example_socket_close(consume socket: owner.Socket) -> i32;
@@ -1033,7 +1033,7 @@ fn imported_producers_aggregate_only_with_matching_lifecycle() {
         (
             &["example", "left"],
             r#"
-            import example::owner;
+            import example.owner;
             extern "C" {
                 fn example_socket_open_left() -> owner.Socket;
             }
@@ -1042,7 +1042,7 @@ fn imported_producers_aggregate_only_with_matching_lifecycle() {
         (
             &["example", "right"],
             r#"
-            import example::owner;
+            import example.owner;
             extern "C" {
                 fn example_socket_open_right() -> owner.Socket;
             }
@@ -1051,7 +1051,7 @@ fn imported_producers_aggregate_only_with_matching_lifecycle() {
         (
             &["example", "noise"],
             r#"
-            import example::owner;
+            import example.owner;
             extern "C" {
                 fn example_socket_open_left() -> i64;
             }

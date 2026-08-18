@@ -287,8 +287,8 @@ mod cross_module_same_name {
             output
                 .errors
                 .iter()
-                .any(|e| matches!(e.kind, TypeErrorKind::AmbiguousType)),
-            "ambiguous bare imports must fail closed instead of falling back to the wrong record; got: {:?}",
+                .any(|e| matches!(e.kind, TypeErrorKind::ImportBindingCollision)),
+            "colliding bare imports must fail before either declaration can win; got: {:?}",
             output.errors
         );
         assert!(
@@ -976,7 +976,7 @@ mod assoc_types_slice1 {
             r"
             trait Counter {
                 type Step = i32;
-                fn step(val: Self) -> Self::Step;
+                fn step(val: Self) -> Self.Step;
             }
 
             type Tick {}
@@ -1001,7 +1001,7 @@ mod assoc_types_slice1 {
             r"
             trait Show {
                 type Out: Display;
-                fn show(val: Self) -> Self::Out;
+                fn show(val: Self) -> Self.Out;
             }
 
             type Widget {}
@@ -1033,7 +1033,7 @@ mod assoc_types_slice1 {
             r"
             trait Show {
                 type Out: Display;
-                fn show(val: Self) -> Self::Out;
+                fn show(val: Self) -> Self.Out;
             }
 
             type Holder<T> {
@@ -1065,7 +1065,7 @@ mod assoc_types_slice1 {
             r"
             trait Container {
                 type Item;
-                fn first(val: Self) -> Self::Item;
+                fn first(val: Self) -> Self.Item;
             }
 
             type Box {}
@@ -1092,11 +1092,11 @@ mod assoc_types_slice1 {
         // The method's declared return type is `Self::Item`; the impl
         // binds `type Item = i64`. Checker must accept the impl's `next`
         // returning `Option<i64>` against `Option<Self::Item>`.
-        let output = check_source(
+        let output = check_source_allowing_prelude_redeclaration(
             r"
             trait Iterator {
                 type Item;
-                fn next(var val: Self) -> Option<Self::Item>;
+                fn next(var val: Self) -> Option<Self.Item>;
             }
 
             type Counter {
@@ -1149,7 +1149,7 @@ mod assoc_types_slice1 {
             r"
             trait Show {
                 type Out: Display;
-                fn show(val: Self) -> Self::Out;
+                fn show(val: Self) -> Self.Out;
             }
 
             type Widget {}
@@ -1186,7 +1186,7 @@ mod assoc_types_slice1 {
         let source = r"
             trait Show {
                 type Out: Display = Plain;
-                fn show(val: Self) -> Self::Out;
+                fn show(val: Self) -> Self.Out;
             }
 
             type Plain {}
@@ -1226,7 +1226,7 @@ mod assoc_types_slice1 {
             r"
             trait Show {
                 type Out: Display;
-                fn show(val: Self) -> Self::Out;
+                fn show(val: Self) -> Self.Out;
             }
 
             type Container<T> {
@@ -1274,10 +1274,10 @@ mod assoc_types_slice2 {
             r"
             trait Iterator {
                 type Item;
-                fn next(it: Self) -> Option<Self::Item>;
+                fn next(it: Self) -> Option<Self.Item>;
             }
 
-            fn make<I: Iterator>(it: I) -> I::Item {
+            fn make<I: Iterator>(it: I) -> I.Item {
                 it.next().unwrap()
             }
             ",
@@ -1306,7 +1306,7 @@ mod assoc_types_slice2 {
             r"
             trait Iterator {
                 type Item;
-                fn next(var it: Self) -> Option<Self::Item>;
+                fn next(var it: Self) -> Option<Self.Item>;
             }
 
             type Counter {
@@ -1318,7 +1318,7 @@ mod assoc_types_slice2 {
                 fn next(var c: Counter) -> Option<i64> { Some(c.value) }
             }
 
-            fn make<I: Iterator>(it: I) -> Option<I::Item> {
+            fn make<I: Iterator>(it: I) -> Option<I.Item> {
                 it.next()
             }
 
@@ -1345,17 +1345,17 @@ mod assoc_types_slice2 {
 
     #[test]
     fn tbar_missing_bound_diagnostic() {
-        // `fn bad<T>(_: T) -> T::Item` with no bound on `T`. The resolver
+        // `fn bad<T>(_: T) -> T.Item` with no bound on `T`. The resolver
         // must reject with a typed diagnostic naming the missing-bound
         // surface — not silently treat `T::Item` as an opaque named type.
         let output = check_source(
             r"
             trait Iterator {
                 type Item;
-                fn next(it: Self) -> Option<Self::Item>;
+                fn next(it: Self) -> Option<Self.Item>;
             }
 
-            fn bad<T>(it: T) -> T::Item {
+            fn bad<T>(it: T) -> T.Item {
                 it.next().unwrap()
             }
             ",
@@ -1365,7 +1365,7 @@ mod assoc_types_slice2 {
                 .errors
                 .iter()
                 .any(|e| matches!(e.kind, TypeErrorKind::UndefinedType)
-                    && e.message.contains("T::Item")
+                    && e.message.contains("T.Item")
                     && (e.message.contains("no bounds") || e.message.contains("no trait bound"))),
             "expected projection-missing-bound diagnostic; got: {:?}",
             output.errors
@@ -1381,7 +1381,7 @@ mod assoc_types_slice2 {
             r"
             trait Iterator {
                 type Item;
-                fn next(var it: Self) -> Option<Self::Item>;
+                fn next(var it: Self) -> Option<Self.Item>;
             }
 
             type Counter {}
@@ -1391,8 +1391,8 @@ mod assoc_types_slice2 {
                 fn next(var c: Counter) -> Option<i64> { None }
             }
 
-            fn collect<I: Iterator>(it: I) -> Vec<I::Item> {
-                Vec::new()
+            fn collect<I: Iterator>(it: I) -> Vec<I.Item> {
+                Vec.new()
             }
 
             fn caller() -> Vec<i64> {
@@ -1421,10 +1421,10 @@ mod assoc_types_slice2 {
             r"
             trait Iterator {
                 type Item;
-                fn next(it: Self) -> Option<Self::Item>;
+                fn next(it: Self) -> Option<Self.Item>;
             }
 
-            fn bad<T: Iterator>(it: T) -> T::Other {
+            fn bad<T: Iterator>(it: T) -> T.Other {
                 it.next().unwrap()
             }
             ",

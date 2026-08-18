@@ -73,8 +73,9 @@ impl Checker {
         for child in &sd.children {
             if let Some((module, _)) = child.actor_type.split_once('.') {
                 if self.modules.contains(module) {
-                    self.used_modules.borrow_mut().insert(ImportKey::new(
+                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
                         self.current_module.clone(),
+                        self.current_module_idx,
                         module.to_string(),
                     ));
                 }
@@ -738,7 +739,7 @@ impl Checker {
                 format!(
                     "E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: in supervisor `{supervisor_name}`, \
                      child `{dependent_child_name}` (`{dependent_actor_type}`) is wired via key \
-                     `{param_key}` but `{dependent_actor_type}::init` has no parameter named \
+                     `{param_key}` but `{dependent_actor_type}.init` has no parameter named \
                      `{param_key}`"
                 ),
             ));
@@ -760,7 +761,7 @@ impl Checker {
                 format!(
                     "E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: in supervisor `{supervisor_name}`, \
                      child `{dependent_child_name}` wires `{param_key}` to sibling of type \
-                     `{expected_sibling_type}`, but `{dependent_actor_type}::init` parameter \
+                     `{expected_sibling_type}`, but `{dependent_actor_type}.init` parameter \
                      `{param_key}` has type `{}` (expected `LocalPid<{expected_sibling_type}>`)",
                     param.ty.user_facing()
                 ),
@@ -1325,7 +1326,7 @@ impl Checker {
                     TypeErrorKind::InvalidOperation,
                     hook_attr.span.clone(),
                     format!(
-                        "`#[on]` on `{actor_name}::{method_name}` requires a hook kind argument; \
+                        "`#[on]` on `{actor_name}.{method_name}` requires a hook kind argument; \
                          valid hook kinds are: start, stop, crash, exit, down, upgrade"
                     ),
                 ));
@@ -1337,7 +1338,7 @@ impl Checker {
                     TypeErrorKind::InvalidOperation,
                     hook_attr.span.clone(),
                     format!(
-                        "`#[on({unknown})]` on `{actor_name}::{method_name}` is not a recognised \
+                        "`#[on({unknown})]` on `{actor_name}.{method_name}` is not a recognised \
                          lifecycle hook; valid hook kinds are: start, stop, crash, exit, down, upgrade"
                     ),
                 ));
@@ -1355,7 +1356,7 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 hook_attr.span.clone(),
                 format!(
-                    "`#[on({hook_kind_str})]` on `{actor_name}::{method_name}` does not accept \
+                    "`#[on({hook_kind_str})]` on `{actor_name}.{method_name}` does not accept \
                      extra arguments"
                 ),
             ));
@@ -1373,7 +1374,7 @@ impl Checker {
             TypeErrorKind::OnUpgradeNotYetWired,
             attr_span,
             format!(
-                "`#[on(upgrade)]` on `{actor_name}::{method_name}` is reserved and not supported: \
+                "`#[on(upgrade)]` on `{actor_name}.{method_name}` is reserved and not supported: \
                  the runtime never invokes this hook, so it would silently never run; \
                  remove the attribute"
             ),
@@ -1536,7 +1537,7 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 hook.decl_span.clone(),
                 format!(
-                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` cannot \
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` cannot \
                      have type parameters",
                     hook.name
                 ),
@@ -1547,7 +1548,7 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 hook.decl_span.clone(),
                 format!(
-                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` cannot \
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` cannot \
                      have a `where` clause",
                     hook.name
                 ),
@@ -1563,7 +1564,7 @@ impl Checker {
                     TypeErrorKind::InvalidOperation,
                     rt.1.clone(),
                     format!(
-                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must \
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` must \
                          return `()` (the unit type); declared return type rejected",
                         hook.name
                     ),
@@ -1582,7 +1583,7 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 hook.decl_span.clone(),
                 format!(
-                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must take \
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` must take \
                      no parameters; actor fields are in scope by bare name (see \
                      `init {{ }}` for the same convention)",
                     hook.name
@@ -1644,7 +1645,7 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 hook.decl_span.clone(),
                 format!(
-                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` cannot \
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` cannot \
                      have type parameters",
                     hook.name
                 ),
@@ -1655,7 +1656,7 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 hook.decl_span.clone(),
                 format!(
-                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` cannot \
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` cannot \
                      have a `where` clause",
                     hook.name
                 ),
@@ -1680,8 +1681,8 @@ impl Checker {
                         TypeErrorKind::InvalidOperation,
                         p.ty.1.clone(),
                         format!(
-                            "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` parameter \
-                             must have type `CrashInfo` (from `std::failure`)",
+                            "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` parameter \
+                             must have type `CrashInfo` (from `std.failure`)",
                             hook.name
                         ),
                     ));
@@ -1692,7 +1693,7 @@ impl Checker {
                     TypeErrorKind::InvalidOperation,
                     hook.decl_span.clone(),
                     format!(
-                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must take \
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` must take \
                          exactly one parameter `info: CrashInfo`; got {} parameter(s)",
                         hook.name,
                         other.len()
@@ -1723,8 +1724,8 @@ impl Checker {
                     TypeErrorKind::InvalidOperation,
                     rt.1.clone(),
                     format!(
-                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must \
-                         return `CrashAction` (from `std::failure`)",
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` must \
+                         return `CrashAction` (from `std.failure`)",
                         hook.name
                     ),
                 ));
@@ -1735,8 +1736,8 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 hook.decl_span.clone(),
                 format!(
-                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must declare \
-                     a return type of `CrashAction` (from `std::failure`)",
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` must declare \
+                     a return type of `CrashAction` (from `std.failure`)",
                     hook.name
                 ),
             ));
@@ -1826,8 +1827,8 @@ impl Checker {
                         TypeErrorKind::InvalidOperation,
                         p.ty.1.clone(),
                         format!(
-                            "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` parameter \
-                             must have type `CrashNotification` (from `std::failure`)",
+                            "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` parameter \
+                             must have type `CrashNotification` (from `std.failure`)",
                             hook.name
                         ),
                     ));
@@ -1838,7 +1839,7 @@ impl Checker {
                     TypeErrorKind::InvalidOperation,
                     hook.decl_span.clone(),
                     format!(
-                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must take \
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` must take \
                          exactly one parameter `note: CrashNotification`; got {} parameter(s)",
                         hook.name,
                         other.len()
@@ -1855,7 +1856,7 @@ impl Checker {
                     TypeErrorKind::InvalidOperation,
                     rt.1.clone(),
                     format!(
-                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must return `()`; \
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` must return `()`; \
                          an exit hook reacts to a peer's failure, it does not return a value",
                         hook.name
                     ),
@@ -1909,8 +1910,8 @@ impl Checker {
                         TypeErrorKind::InvalidOperation,
                         p.ty.1.clone(),
                         format!(
-                            "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` parameter \
-                             must have type `DownNotification` (from `std::link_monitor`)",
+                            "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` parameter \
+                             must have type `DownNotification` (from `std.link_monitor`)",
                             hook.name
                         ),
                     ));
@@ -1921,7 +1922,7 @@ impl Checker {
                     TypeErrorKind::InvalidOperation,
                     hook.decl_span.clone(),
                     format!(
-                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must take \
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` must take \
                          exactly one parameter `note: DownNotification`; got {} parameter(s)",
                         hook.name,
                         other.len()
@@ -1937,7 +1938,7 @@ impl Checker {
                     TypeErrorKind::InvalidOperation,
                     rt.1.clone(),
                     format!(
-                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must return `()`",
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}.{}` must return `()`",
                         hook.name
                     ),
                 ));
@@ -2248,7 +2249,10 @@ impl Checker {
         self.env.pop_scope(); // fields scope
     }
 
-    pub(super) fn check_const(&mut self, cd: &ConstDecl, _span: &Span) {
+    pub(super) fn check_const(&mut self, cd: &ConstDecl, span: &Span) {
+        if self.reject_protected_prelude_declaration(&cd.name, span) {
+            return;
+        }
         let expected =
             self.resolve_annotation_with_holes(&cd.ty, format!("constant `{}`", cd.name));
         let actual = self.check_against(&cd.value.0, &cd.value.1, &expected);
@@ -2296,7 +2300,8 @@ impl Checker {
             // Orphan rule check: if implementing a trait, either the type or the
             // trait must be defined in the current compilation unit.
             if let Some(tb) = &id.trait_bound {
-                let type_is_local = self.local_type_defs.contains(type_name);
+                let type_is_local = self.local_type_defs.contains(type_name)
+                    || self.intrinsic_type_is_local_to_builtin_surface(type_name);
                 // Route through the one canonical resolver: a trait reference is
                 // "local" exactly when it resolves to a local declaration (the
                 // resolver's local-shadow step), so the orphan-rule warning keys
@@ -2429,6 +2434,20 @@ impl Checker {
                 self.generic_ctx.pop();
             }
         }
+    }
+
+    /// Compiler-intrinsic types have no source declaration to seed
+    /// `local_type_defs`. Their canonical declarative surface owns their impls
+    /// for coherence purposes, but only when the active item's canonical path
+    /// is below the stdlib root owned by the running compiler installation.
+    fn intrinsic_type_is_local_to_builtin_surface(&self, type_name: &str) -> bool {
+        self.current_item_source.as_ref().is_some_and(|source| {
+            self.module_registry
+                .source_has_stdlib_authority(source, "std.builtins")
+        }) && (Ty::from_name(type_name).is_some()
+            || self
+                .resolved_builtin_type(type_name)
+                .is_some_and(|builtin| !builtin.requires_source_import()))
     }
 }
 

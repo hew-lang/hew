@@ -95,7 +95,7 @@ fn stdlib_shape(extern_decls: &str, producer: &str) -> IrPipeline {
          type WithHandle {{ slot: Handle; code: i64 }}\n\
          enum Carrier {{ Failed(Holder); Ok }}\n\
          {producer}\n\
-         fn message(c: Carrier) -> i64 {{ match c {{ Carrier::Failed(h) => h.label.len(), Carrier::Ok => 0 }} }}\n\
+         fn message(c: Carrier) -> i64 {{ match c {{ Carrier.Failed(h) => h.label.len(), Carrier.Ok => 0 }} }}\n\
          fn main() -> i64 {{\n    \
              var i: i64 = 0;\n    \
              while i < 2 {{\n        \
@@ -130,10 +130,10 @@ fn pod_carrier_shape(
          type WithHandle {{ slot: Handle; code: i64 }}\n\
          enum Carrier {{ Failed(Holder); Ok }}\n\
          fn to_carrier(p: {pod_ty}) -> Carrier {{ \
-             Carrier::Failed(Holder {{ label: f\"e{{{scalar_read}}}\" }}) }}\n\
+             Carrier.Failed(Holder {{ label: f\"e{{{scalar_read}}}\" }}) }}\n\
          fn mk(i: i64) -> Carrier {{ to_carrier(unsafe {{ {call} }}) }}\n\
          fn message(c: Carrier) -> i64 {{ \
-             match c {{ Carrier::Failed(h) => h.label.len(), Carrier::Ok => 0 }} }}\n\
+             match c {{ Carrier.Failed(h) => h.label.len(), Carrier.Ok => 0 }} }}\n\
          fn main() -> i64 {{\n    \
              var i: i64 = 0;\n    \
              while i < 2 {{\n        \
@@ -158,7 +158,7 @@ fn pod_carrier_shape(
 fn an_unaudited_extern_result_is_still_proven_foreign_and_still_refused() {
     let p = stdlib_shape(
         "    fn host_record() -> Holder;\n",
-        "fn mk(i: i64) -> Carrier { Carrier::Failed(unsafe { host_record() }) }",
+        "fn mk(i: i64) -> Carrier { Carrier.Failed(unsafe { host_record() }) }",
     );
     assert!(
         transfers_are_refused(&p),
@@ -178,7 +178,7 @@ fn an_unaudited_extern_result_is_still_proven_foreign_and_still_refused() {
 fn an_audited_fresh_result_extern_is_not_proven_foreign() {
     let p = stdlib_shape(
         "    fn hew_process_last_error() -> Holder;\n",
-        "fn mk(i: i64) -> Carrier { Carrier::Failed(unsafe { hew_process_last_error() }) }",
+        "fn mk(i: i64) -> Carrier { Carrier.Failed(unsafe { hew_process_last_error() }) }",
     );
     assert!(
         p.diagnostics.is_empty(),
@@ -197,7 +197,7 @@ fn an_audited_fresh_result_extern_is_not_proven_foreign() {
 fn an_audited_name_declared_at_the_wrong_arity_is_still_refused() {
     let p = stdlib_shape(
         "    fn hew_process_last_error(unused: i64) -> Holder;\n",
-        "fn mk(i: i64) -> Carrier { Carrier::Failed(unsafe { hew_process_last_error(i) }) }",
+        "fn mk(i: i64) -> Carrier { Carrier.Failed(unsafe { hew_process_last_error(i) }) }",
     );
     assert!(
         transfers_are_refused(&p),
@@ -214,7 +214,7 @@ fn an_audited_name_declared_at_the_wrong_arity_is_still_refused() {
 fn an_audited_borrowed_result_extern_is_still_proven_foreign() {
     let p = stdlib_shape(
         "    fn hew_vec_get_owned(v: i64, idx: i64) -> Holder;\n",
-        "fn mk(i: i64) -> Carrier { Carrier::Failed(unsafe { hew_vec_get_owned(i, i) }) }",
+        "fn mk(i: i64) -> Carrier { Carrier.Failed(unsafe { hew_vec_get_owned(i, i) }) }",
     );
     assert!(
         transfers_are_refused(&p),

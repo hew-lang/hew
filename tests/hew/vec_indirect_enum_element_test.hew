@@ -17,7 +17,7 @@
 //! constructing one would leak the element nodes at scope exit. The reject is
 //! lifted once the per-element release is wired.
 
-import std::testing;
+import std.testing;
 
 // Direct (non-indirect) enum Vec must keep the layout-descriptor path.
 enum Dir {
@@ -28,18 +28,18 @@ enum Dir {
 
 fn dir_name(d: Dir) -> string {
     match d {
-        North => "N",
-        South => "S",
-        East(n) => f"E{n}",
+        .North => "N",
+        .South => "S",
+        .East(n) => f"E{n}",
     }
 }
 
 #[test]
 fn direct_enum_vec_unaffected() {
-    let v: Vec<Dir> = Vec::new();
-    v.push(Dir::North);
-    v.push(Dir::East(7));
-    v.push(Dir::South);
+    let v: Vec<Dir> = Vec.new();
+    v.push(Dir.North);
+    v.push(Dir.East(7));
+    v.push(Dir.South);
     testing.assert_eq_str(dir_name(v[0]), "N");
     testing.assert_eq_str(dir_name(v[1]), "E7");
     testing.assert_eq_str(dir_name(v[2]), "S");

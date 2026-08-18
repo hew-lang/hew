@@ -119,6 +119,12 @@ pub struct DocTypeAlias {
 fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
     use hew_parser::ast::TypeExpr;
     match ty {
+        TypeExpr::QualifiedAssocPath(path) => format!(
+            "<{} as {}>.{}",
+            format_type(&path.base.0),
+            path.trait_path.source_spelling(),
+            path.members.join(".")
+        ),
         TypeExpr::Named { name, type_args } => {
             if let Some(args) = type_args {
                 let arg_strs: Vec<String> = args.iter().map(|(t, _)| format_type(t)).collect();

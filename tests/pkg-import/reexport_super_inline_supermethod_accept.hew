@@ -7,7 +7,7 @@
 // as extra even though neither `Base` nor `reexbase` was imported here — and the
 // inline `base`'s signature is checked against `reexbase.Base` (`-> i64`). Run
 // e2e so both the inherited `base` and the sub's own `tag` are dispatched.
-import hew::reexsub::{Sub};
+import hew.reexsub.{Sub};
 
 type W {
     id: i64;

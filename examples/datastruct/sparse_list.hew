@@ -127,7 +127,7 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
 
 // --- Tests ---
 fn test_set_and_get() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = sparse_set(n, head, 100, 10);
     head = sparse_set(n, head, 500, 50);
@@ -148,7 +148,7 @@ fn test_set_and_get() -> i64 {
 }
 
 fn test_get_missing() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = sparse_set(n, head, 10, 100);
     let v = sparse_get(n, head, 5, -999);
@@ -161,7 +161,7 @@ fn test_get_missing() -> i64 {
 }
 
 fn test_update() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = sparse_set(n, head, 42, 100);
     head = sparse_set(n, head, 42, 200);
@@ -177,15 +177,15 @@ fn test_update() -> i64 {
 }
 
 fn test_sorted_order() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = sparse_set(n, head, 1000, 1);
     head = sparse_set(n, head, 10, 2);
     head = sparse_set(n, head, 500, 3);
     head = sparse_set(n, head, 50, 4);
-    let r: Vec<i64> = Vec::new();
+    let r: Vec<i64> = Vec.new();
     iterate(n, head, r);
-    let e: Vec<i64> = Vec::new();
+    let e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(2);
     e.push(50);
@@ -203,7 +203,7 @@ fn test_sorted_order() -> i64 {
 }
 
 fn test_sparse_pattern() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     // Only store at indices 0, 100, 10000
     head = sparse_set(n, head, 0, 1);
@@ -228,12 +228,12 @@ fn test_sparse_pattern() -> i64 {
 }
 
 fn test_iterate() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = sparse_set(n, head, 5, 50);
     head = sparse_set(n, head, 2, 20);
     head = sparse_set(n, head, 8, 80);
-    let r: Vec<i64> = Vec::new();
+    let r: Vec<i64> = Vec.new();
     iterate(n, head, r);
     // Should be sorted by index: (2,20), (5,50), (8,80)
     if r.len() == 6 {

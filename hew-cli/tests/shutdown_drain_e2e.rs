@@ -34,7 +34,7 @@ fn allocate_loopback_port() -> u16 {
 fn fixture_source(port: u16) -> String {
     format!(
         r#"
-import std::net;
+import std.net;
 
 actor Handler {{
     let addr: string;

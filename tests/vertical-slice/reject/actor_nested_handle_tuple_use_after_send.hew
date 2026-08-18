@@ -7,7 +7,7 @@
 // top-level type. The MIR dataflow checker therefore never saw a Consume
 // intent for `rx`, and `rx.close()` after the send compiled silently —
 // producing a double-close at runtime (SIGABRT).
-import std::channel::channel;
+import std.channel.channel;
 
 actor Worker {
     receive fn accept(pair: (channel.Receiver<i64>, i64)) {

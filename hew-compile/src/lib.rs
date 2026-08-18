@@ -4364,6 +4364,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "}\n",
         );
         write_source(&workflow_dir, "state.hew", peer_source);
+        let peer_suffix = Path::new("workflow").join("state.hew");
 
         let failure = check_file(&main, &FrontendOptions::default())
             .expect_err("the deliberate state-field error must reject the fixture");
@@ -4384,7 +4385,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 .0
                 .filename
                 .as_deref()
-                .is_some_and(|filename| filename.ends_with("workflow/state.hew")),
+                .is_some_and(|filename| Path::new(filename).ends_with(&peer_suffix)),
             "diagnostic must name the declaring peer, got {:?}",
             diagnostic.0.filename
         );
@@ -4412,7 +4413,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 .0
                 .filename
                 .as_deref()
-                .is_some_and(|filename| filename.ends_with("workflow/state.hew")),
+                .is_some_and(|filename| Path::new(filename).ends_with(&peer_suffix)),
             "deferred diagnostic must name the declaring peer, got {:?}",
             inference.0.filename
         );

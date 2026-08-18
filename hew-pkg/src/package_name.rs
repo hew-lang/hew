@@ -32,10 +32,6 @@ pub(crate) fn is_valid(name: &str) -> bool {
     true
 }
 
-pub(crate) fn segments(name: &str) -> impl Iterator<Item = &str> {
-    name.split('.')
-}
-
 #[must_use]
 pub(crate) fn invalid_message(name: &str) -> String {
     format!("invalid package name `{name}`: {PACKAGE_NAME_RULES}")
@@ -65,9 +61,10 @@ mod tests {
             "std.",
             "std/net/http",
             "std\\net",
-            "evil::..::etc",
-            "evil::../../../tmp/pwned",
-            "evil::/tmp/pwned",
+            "..",
+            "evil..etc",
+            "evil.../../../tmp/pwned",
+            "evil./tmp/pwned",
         ] {
             assert!(!is_valid(name), "{name} should be invalid");
         }

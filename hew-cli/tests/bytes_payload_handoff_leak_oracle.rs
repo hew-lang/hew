@@ -25,7 +25,7 @@ enum Blob {
 }
 
 fn same_scope(i: i64) -> i64 {
-    let b = Blob::Data(f"same-{i}".to_bytes());
+    let b = Blob.Data(f"same-{i}".to_bytes());
     match b {
         Data(data) => {
             let inner = data;
@@ -36,7 +36,7 @@ fn same_scope(i: i64) -> i64 {
 }
 
 fn nested_scope(i: i64) -> i64 {
-    let b = Blob::Data(f"nested-{i}".to_bytes());
+    let b = Blob.Data(f"nested-{i}".to_bytes());
     match b {
         Data(data) => {
             let n = {
@@ -50,7 +50,7 @@ fn nested_scope(i: i64) -> i64 {
 }
 
 fn direct(i: i64) -> i64 {
-    let b = Blob::Data(f"direct-{i}".to_bytes());
+    let b = Blob.Data(f"direct-{i}".to_bytes());
     match b {
         Data(data) => data.len(),
         Empty => 0,

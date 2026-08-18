@@ -1,7 +1,7 @@
-// words.hew — the `text_stats::words` sub-module.
+// words.hew — the `text_stats.words` sub-module.
 //
 // Lives inside the `text_stats/words/` directory so its full import path
-// is `text_stats::words`.  This is a separate module from `text_stats`:
+// is `text_stats.words`.  This is a separate module from `text_stats`:
 // `import text_stats;` does not bring `words.*` into scope.
 //
 // A directory named `words` with a matching `words.hew` entry file is the

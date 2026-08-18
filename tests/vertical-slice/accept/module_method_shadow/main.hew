@@ -1,0 +1,20 @@
+import util;
+
+type Counter {
+    value: i64;
+}
+
+impl Counter {
+    fn len(self) -> i64 {
+        self.value
+    }
+}
+
+fn measure(util: Counter) -> i64 {
+    util.len()
+}
+
+fn main() {
+    println(measure(Counter { value: 7 }));
+    println(util.module_value());
+}

@@ -4,9 +4,9 @@
 // complete impl must still be accepted — the owner-qualified check must not
 // over-reject a correct impl just because an empty same-named `Source` is in
 // the graph.
-import hew::assocreqimplok;
+import hew.assocreqimplok;
 
-import hew::assocemptyuse;
+import hew.assocemptyuse;
 
 fn main() -> i64 {
     0

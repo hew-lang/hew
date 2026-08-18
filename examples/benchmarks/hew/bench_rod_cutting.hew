@@ -1,5 +1,5 @@
 fn rod_cutting(prices: Vec<i64>, n: i64) -> i64 {
-    let dp: Vec<i64> = Vec::new();
+    let dp: Vec<i64> = Vec.new();
     var idx = 0;
     while idx <= n {
         dp.push(0);
@@ -24,7 +24,7 @@ const ITERS: i64 = 100000;
 
 fn main() {
     let n = 50;
-    let prices: Vec<i64> = Vec::new();
+    let prices: Vec<i64> = Vec.new();
     for k in 0 .. n {
         prices.push(k % 10 + 1 + k / 5);
     }

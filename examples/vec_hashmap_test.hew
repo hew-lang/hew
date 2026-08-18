@@ -4,7 +4,7 @@
 // Vec and HashMap test
 // Exercises the core collection types from Hew programs
 fn test_vec() -> i32 {
-    let v: Vec<i32> = Vec::new();
+    let v: Vec<i32> = Vec.new();
     v.push(10);
     v.push(20);
     v.push(30);
@@ -24,17 +24,17 @@ fn test_vec() -> i32 {
 }
 
 fn test_hashmap() -> i32 {
-    let m: HashMap<string, i32> = HashMap::new();
+    let m: HashMap<string, i32> = HashMap.new();
     m.insert("one", 1);
     m.insert("two", 2);
     m.insert("three", 3);
     let one: i32 = match m.get("one") {
-        Some(_) => 1,
-        None => 0,
+        .Some(_) => 1,
+        .None => 0,
     };
     let two: i32 = match m.get("two") {
-        Some(_) => 2,
-        None => 0,
+        .Some(_) => 2,
+        .None => 0,
     };
     let has_three = m.contains_key("three");
     let has_four = m.contains_key("four");

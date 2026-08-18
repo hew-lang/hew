@@ -249,9 +249,11 @@ impl Checker {
                 // The implicit `use std::text::regex` injected by the CLI is the
                 // provider of this type; mark it as used so the unused-import
                 // check doesn't fire a false-positive warning.
-                self.used_modules
-                    .borrow_mut()
-                    .insert(ImportKey::new(self.current_module.clone(), "regex"));
+                self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    "regex",
+                ));
                 // Validate the pattern using the same regex engine the runtime
                 // uses. An invalid pattern is a compile-time hard error.
                 if let Err(err) = regex::Regex::new(pattern) {
@@ -266,7 +268,7 @@ impl Checker {
                 }
                 Ty::Named {
                     builtin: None,
-                    name: "regex.Pattern".to_string(),
+                    name: "std.text.regex.Pattern".to_string(),
                     args: vec![],
                 }
             }
@@ -301,6 +303,46 @@ impl Checker {
             // (admissibility.rs) surfaces it as an inference error. See W4.042.
             Expr::Identifier(name) if name == "None" => Ty::option(Ty::Var(TypeVar::fresh())),
             Expr::Identifier(name) => self.synthesize_identifier(name, span),
+            Expr::ContextVariant(context) => {
+                if let Some(record) = &context.record {
+                    for (_, value) in &record.fields {
+                        self.synthesize(&value.0, &value.1);
+                    }
+                    if let Some(base) = &record.base {
+                        self.synthesize(&base.0, &base.1);
+                    }
+                }
+                self.report_error(
+                    TypeErrorKind::ContextVariantNoType,
+                    span,
+                    format!(
+                        "E_CONTEXT_VARIANT_NO_TYPE: contextual variant `.{}` requires an expected enum or machine type",
+                        context.name
+                    ),
+                );
+                Ty::Error
+            }
+            Expr::GenericApplySuffix { target, type_args } => {
+                for type_arg in type_args {
+                    self.resolve_type_expr(type_arg);
+                }
+                self.synthesize(&target.0, &target.1)
+            }
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                let target_ty = self.synthesize(&target.0, &target.1);
+                for (_, (value, value_span)) in fields {
+                    self.synthesize(value, value_span);
+                }
+                if let Some(base) = base {
+                    self.synthesize(&base.0, &base.1);
+                }
+                target_ty
+            }
+            Expr::QualifiedAssoc(path) => self.synthesize_qualified_assoc(path, span),
 
             // Binary ops
             Expr::Binary { left, op, right } => self.check_binary_op(left, *op, right),
@@ -1575,7 +1617,11 @@ impl Checker {
             // Function name used as a value (e.g., variant constructor)
             if let Some(source_identity) = self
                 .import_fn_name_aliases
-                .get(&(self.current_module.clone(), name.to_string()))
+                .get(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    name.to_string(),
+                ))
                 .cloned()
             {
                 self.reject_wasm_native_only_function_identity(&source_identity, span);
@@ -1609,9 +1655,128 @@ impl Checker {
                     ret: Box::new(sig.return_type),
                 }
             }
+        } else if self.module_binding_in_current_file(surface_name) {
+            self.report_error(
+                TypeErrorKind::ModuleUsedAsValue,
+                span,
+                format!("module `{surface_name}` cannot be used as a value"),
+            );
+            Ty::Error
+        } else if self.type_defs.contains_key(surface_name)
+            || self.known_types.contains(surface_name)
+            || self.type_aliases.contains_key(surface_name)
+            || crate::lookup_builtin_type(surface_name).is_some()
+            || crate::ty::is_reserved_type_name(surface_name)
+        {
+            self.report_error(
+                TypeErrorKind::TypeUsedAsValue,
+                span,
+                format!("type `{surface_name}` cannot be used as a value"),
+            );
+            Ty::Error
         } else {
             self.resolve_identifier_variant(name, span)
         }
+    }
+
+    fn synthesize_qualified_assoc(
+        &mut self,
+        path: &hew_parser::ast::QualifiedAssocExpr,
+        span: &Span,
+    ) -> Ty {
+        self.resolve_type_expr(&path.base);
+        let Some(member) = path.members.first() else {
+            self.report_error(
+                TypeErrorKind::PathMemberNotFound,
+                span,
+                "qualified associated path requires an item name".to_string(),
+            );
+            return Ty::Error;
+        };
+        if path.members.len() != 1 {
+            self.report_error(
+                TypeErrorKind::PathKindMismatch,
+                span,
+                "qualified associated values cannot continue through another path segment"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
+
+        let trait_name = path.trait_path.source_spelling();
+        let mut candidates = Vec::new();
+        if self.trait_defs.contains_key(&trait_name) {
+            candidates.push(trait_name.clone());
+        } else if !trait_name.contains('.') && !trait_name.contains("::") {
+            if let Some(owners) = self.published_bare_trait_owners.get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                trait_name.clone(),
+            )) {
+                candidates.extend(
+                    owners
+                        .iter()
+                        .filter(|owner| self.trait_defs.contains_key(*owner))
+                        .cloned(),
+                );
+            }
+        }
+        candidates.sort_unstable();
+        candidates.dedup();
+
+        if candidates.len() > 1 {
+            self.report_error_with_suggestions(
+                TypeErrorKind::AssocItemAmbiguous,
+                span,
+                format!(
+                    "associated item `{member}` is ambiguous because trait `{trait_name}` has multiple imported owners"
+                ),
+                candidates
+                    .iter()
+                    .map(|candidate| format!("qualify the trait as `{candidate}`"))
+                    .collect(),
+            );
+            return Ty::Error;
+        }
+        let Some(trait_key) = candidates.first() else {
+            self.report_error(
+                TypeErrorKind::PathMemberNotFound,
+                span,
+                format!("cannot resolve trait `{trait_name}` for associated item `{member}`"),
+            );
+            return Ty::Error;
+        };
+        let info = &self.trait_defs[trait_key];
+        if info
+            .associated_types
+            .iter()
+            .any(|associated| associated.name == *member)
+        {
+            self.report_error(
+                TypeErrorKind::PathKindMismatch,
+                span,
+                format!(
+                    "associated item `{trait_key}.{member}` is a type and cannot be used as a value"
+                ),
+            );
+            return Ty::Error;
+        }
+        if info.methods.iter().any(|method| method.name == *member) {
+            self.report_error(
+                TypeErrorKind::PathKindMismatch,
+                span,
+                format!(
+                    "associated method `{trait_key}.{member}` requires method-call syntax on a value"
+                ),
+            );
+            return Ty::Error;
+        }
+        self.report_error(
+            TypeErrorKind::PathMemberNotFound,
+            span,
+            format!("trait `{trait_key}` has no associated item `{member}`"),
+        );
+        Ty::Error
     }
 
     /// Reject a bare constant binding published by multiple imported owners.
@@ -1629,10 +1794,11 @@ impl Checker {
         if self.current_module.is_none() && self.root_value_bindings.contains(name) {
             return false;
         }
-        let Some(owners) = self
-            .published_bare_const_owners
-            .get(&(self.current_module.clone(), name.to_string()))
-        else {
+        let Some(owners) = self.published_bare_const_owners.get(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            name.to_string(),
+        )) else {
             return false;
         };
         if owners.len() < 2 {
@@ -1680,6 +1846,7 @@ impl Checker {
         }
         if self.local_type_defs.contains(type_name.as_str())
             || self.source_type_defs.contains(type_name.as_str())
+            || self.is_current_module_type_def(&type_name)
         {
             Ty::named(type_name, type_args)
         } else {
@@ -1766,6 +1933,7 @@ impl Checker {
         for (type_name, td) in &self.type_defs {
             if !self.local_type_defs.contains(type_name.as_str())
                 && !self.source_type_defs.contains(type_name.as_str())
+                && !self.is_current_module_type_def(type_name)
             {
                 continue;
             }
@@ -1782,6 +1950,7 @@ impl Checker {
             for (type_name, td) in &self.type_defs {
                 if self.local_type_defs.contains(type_name.as_str())
                     || self.source_type_defs.contains(type_name.as_str())
+                    || self.is_current_module_type_def(type_name)
                 {
                     continue; // already scanned in pass 1
                 }
@@ -1804,13 +1973,19 @@ impl Checker {
                 // exact published owner before constructing the variant result
                 // so `LookupError::NotFound` agrees with a `LookupError`
                 // annotation that already resolved to `std.lookup_error`.
-                let canonical_type_prefix = if !self.local_type_defs.contains(type_prefix)
-                    && !self.source_type_defs.contains(type_prefix)
-                {
-                    self.published_bare_type_qualified(type_prefix)
-                        .unwrap_or_else(|| type_prefix.to_string())
-                } else {
+                let canonical_type_prefix = if type_prefix.contains('.') {
                     type_prefix.to_string()
+                } else {
+                    self.current_module_identity()
+                        .map(|owner| format!("{owner}.{type_prefix}"))
+                        .filter(|candidate| self.type_defs.contains_key(candidate))
+                        .or_else(|| {
+                            (!self.local_type_defs.contains(type_prefix)
+                                && !self.source_type_defs.contains(type_prefix))
+                            .then(|| self.published_bare_type_qualified(type_prefix))
+                            .flatten()
+                        })
+                        .unwrap_or_else(|| type_prefix.to_string())
                 };
                 if let Some(td) = self.type_defs.get(&canonical_type_prefix) {
                     if let Some(variant) = td.variants.get(variant_name) {
@@ -1849,7 +2024,11 @@ impl Checker {
                 if found.is_none() {
                     if let Some(canonical) = self
                         .import_type_name_aliases
-                        .get(&(self.current_module.clone(), type_prefix.to_string()))
+                        .get(&(
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            type_prefix.to_string(),
+                        ))
                         .cloned()
                     {
                         if let Some(td) = self.type_defs.get(canonical.as_str()) {
@@ -1865,6 +2044,12 @@ impl Checker {
             }
         }
         if let Some(ty) = found {
+            if !name.contains("::") {
+                let replacement = ty
+                    .type_name()
+                    .map_or_else(|| format!(".{name}"), |owner| format!("{owner}.{name}"));
+                self.warn_bare_variant_expr(name, &replacement, span);
+            }
             ty
         } else {
             // Detect recursive closure self-reference: if we are inside a lambda
@@ -2150,7 +2335,7 @@ impl Checker {
                             },
                             span,
                             format!(
-                                "could not project associated type `<{} as Index>::Output` \
+                                "could not project associated type `<{} as Index>.Output` \
                                  while checking `[]`; ensure the impl defines \
                                  `type Output = ...`",
                                 resolved_obj.user_facing()
@@ -2228,7 +2413,7 @@ impl Checker {
             .map_or_else(
                 || crate::check::dispatch::CallTarget::Unsupported {
                     reason: format!(
-                        "dynamic trait method `{trait_name}::at` has no registered declaration identity"
+                        "dynamic trait method `{trait_name}.at` has no registered declaration identity"
                     ),
                 },
                 |(declaring_trait, method)| crate::check::dispatch::CallTarget::DynamicVtable {
@@ -2905,6 +3090,49 @@ impl Checker {
         // `tail_ok_armed` to perform the actual coercion.
         let tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
         match (expr, expected) {
+            (Expr::ContextVariant(context), _) => {
+                let Some(owner) = self.context_variant_expected_owner(expected, span) else {
+                    return Ty::Error;
+                };
+                let Some(variant) = self.context_variant_definition(&owner, &context.name) else {
+                    self.report_error(
+                        TypeErrorKind::PathMemberNotFound,
+                        span,
+                        format!(
+                            "E_PATH_MEMBER_NOT_FOUND: expected type `{owner}` has no variant `{}`",
+                            context.name
+                        ),
+                    );
+                    return Ty::Error;
+                };
+                let shape_matches = matches!(
+                    (&context.record, &variant),
+                    (None, VariantDef::Unit) | (Some(_), VariantDef::Struct(_))
+                );
+                if !shape_matches {
+                    self.report_error(
+                        TypeErrorKind::PathKindMismatch,
+                        span,
+                        format!(
+                            "E_PATH_KIND_MISMATCH: variant `{owner}.{}` does not use this constructor form",
+                            context.name
+                        ),
+                    );
+                    return Ty::Error;
+                }
+                let qualified_name = format!("{owner}::{}", context.name);
+                let compatibility_expr = if let Some(record) = &context.record {
+                    Expr::StructInit {
+                        name: qualified_name,
+                        fields: record.fields.clone(),
+                        type_args: None,
+                        base: record.base.clone(),
+                    }
+                } else {
+                    Expr::Identifier(qualified_name)
+                };
+                self.check_against(&compatibility_expr, span, expected)
+            }
             // Lambda with expected function type — propagate param types!
             (
                 Expr::Lambda {
@@ -3774,6 +4002,33 @@ impl Checker {
             }
 
             (
+                Expr::MethodCall {
+                    receiver,
+                    method,
+                    args,
+                },
+                _,
+            ) => {
+                let actual = self
+                    .check_dotted_type_member_call_against_expected(
+                        receiver, method, args, expected, span,
+                    )
+                    .unwrap_or_else(|| self.synthesize(expr, span));
+                if tail_ok_armed {
+                    if let Some(coerced) = self.try_tail_ok_coercion(expected, &actual, span) {
+                        return coerced;
+                    }
+                }
+                let n = self.errors.len();
+                self.expect_type(expected, &actual, span);
+                if self.errors.len() > n {
+                    Ty::Error
+                } else {
+                    actual
+                }
+            }
+
+            (
                 Expr::Call {
                     function,
                     type_args,
@@ -3862,6 +4117,9 @@ impl Checker {
                     .is_some_and(|v| matches!(v, VariantDef::Unit))
                     && (variant_after_owner.is_some() || !name.contains("::"));
                 if is_unit_variant {
+                    if !name.contains("::") {
+                        self.warn_bare_variant_expr(name, &format!(".{name}"), span);
+                    }
                     self.enforce_type_def_instantiation_bounds(
                         expected_type_name,
                         expected_args,
@@ -3918,7 +4176,7 @@ impl Checker {
                     let receiver_is_known_type = self.type_defs.contains_key(module_name);
                     !receiver_is_binding
                         && !receiver_is_known_type
-                        && self.modules.contains(module_name)
+                        && self.module_binding_in_current_file(module_name)
                         && !field.contains("::")
                         && {
                             let qk = format!("{module_name}.{field}");
@@ -3995,8 +4253,9 @@ impl Checker {
                 self.record_concrete_call_type_args(span, &concrete_args);
 
                 // Mark the module as used.
-                self.used_modules.borrow_mut().insert(ImportKey::new(
+                self.used_modules.borrow_mut().insert(ImportKey::in_file(
                     self.current_module.clone(),
+                    self.current_module_idx,
                     module_name.clone(),
                 ));
 
@@ -4035,6 +4294,86 @@ impl Checker {
                 }
             }
         }
+    }
+
+    pub(super) fn context_variant_expected_owner(
+        &mut self,
+        expected: &Ty,
+        span: &Span,
+    ) -> Option<String> {
+        let resolved = self.subst.resolve(expected);
+        let Ty::Named { name, builtin, .. } = &resolved else {
+            self.report_error(
+                TypeErrorKind::ContextVariantNoType,
+                span,
+                format!(
+                    "E_CONTEXT_VARIANT_NO_TYPE: contextual variant requires one expected enum or machine type, found `{}`",
+                    resolved.user_facing()
+                ),
+            );
+            return None;
+        };
+
+        if !name.contains('.') {
+            if let Some(owners) = self.published_bare_type_owners.get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                name.clone(),
+            )) {
+                if owners.len() > 1 {
+                    let candidates = owners.iter().cloned().collect::<Vec<_>>();
+                    self.report_error_with_suggestions(
+                        TypeErrorKind::ContextVariantAmbiguous,
+                        span,
+                        format!(
+                            "E_CONTEXT_VARIANT_AMBIGUOUS: expected type `{name}` has {} imported owners",
+                            candidates.len()
+                        ),
+                        candidates
+                            .iter()
+                            .map(|candidate| format!("use an owner-qualified type such as `{candidate}`"))
+                            .collect(),
+                    );
+                    return None;
+                }
+            }
+        }
+
+        if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
+            return Some(name.clone());
+        }
+        let Some(definition) = self.type_defs.get(name) else {
+            self.report_error(
+                TypeErrorKind::ContextVariantNoType,
+                span,
+                format!(
+                    "E_CONTEXT_VARIANT_NO_TYPE: expected type `{name}` is not an enum or machine"
+                ),
+            );
+            return None;
+        };
+        if !matches!(definition.kind, TypeDefKind::Enum | TypeDefKind::Machine) {
+            self.report_error(
+                TypeErrorKind::ContextVariantNoType,
+                span,
+                format!(
+                    "E_CONTEXT_VARIANT_NO_TYPE: expected type `{name}` is not an enum or machine"
+                ),
+            );
+            return None;
+        }
+        Some(name.clone())
+    }
+
+    pub(super) fn context_variant_definition(
+        &self,
+        owner: &str,
+        variant: &str,
+    ) -> Option<VariantDef> {
+        self.type_defs
+            .get(owner)
+            .and_then(|definition| definition.variants.get(variant))
+            .cloned()
     }
 
     /// Attempt the function-tail Ok-coercion described in
@@ -4987,7 +5326,33 @@ impl Checker {
             Expr::Call { function, args, .. }
                 if self.callee_is_aggregate_constructor(&function.0) =>
             {
-                if matches!(&function.0, Expr::Identifier(name) if name == "Rc::new") {
+                if matches!(
+                    &function.0,
+                    Expr::Identifier(name)
+                        if crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
+                            == Some(crate::runtime_call::RuntimeCallFamily::RcNew)
+                ) {
+                    return;
+                }
+                for arg in args {
+                    let (e, s) = arg.expr();
+                    self.check_expr_is_rc_param_return(e, s, scopes);
+                }
+            }
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } if self
+                .dotted_static_aggregate_identity(&receiver.0, method)
+                .is_some() =>
+            {
+                let identity = self
+                    .dotted_static_aggregate_identity(&receiver.0, method)
+                    .expect("guarded by a successful static aggregate lookup");
+                if crate::runtime_call::RuntimeCallFamily::from_checker_signature(&identity)
+                    == Some(crate::runtime_call::RuntimeCallFamily::RcNew)
+                {
                     return;
                 }
                 for arg in args {
@@ -5080,6 +5445,24 @@ impl Checker {
         // User enum / struct tuple-variant constructors, resolved by name
         // (any casing) rather than an uppercase-first heuristic.
         self.lookup_variant_constructor(name).is_some()
+    }
+
+    /// Return the checker identity for a dotted static call whose receiver is
+    /// a declared type, rather than a value binding. Dotted variant/static
+    /// calls parse as `MethodCall`, so the escape scanner must classify this
+    /// shape alongside the internal qualified `Call` representation.
+    fn dotted_static_aggregate_identity(&self, receiver: &Expr, method: &str) -> Option<String> {
+        let Expr::Identifier(owner) = receiver else {
+            return None;
+        };
+        if self.env.lookup_ref(owner).is_some() {
+            return None;
+        }
+        let identity = format!("{owner}::{method}");
+        (self.lookup_variant_constructor(&identity).is_some()
+            || self.source_nominal_declaration(owner).is_some()
+            || crate::lookup_builtin_type(owner).is_some())
+        .then_some(identity)
     }
 
     /// Return the nearest visible dangerous Rc binding for `name`.
@@ -5207,7 +5590,36 @@ impl Checker {
             Expr::Call { function, args, .. }
                 if self.callee_is_aggregate_constructor(&function.0) =>
             {
-                if matches!(&function.0, Expr::Identifier(name) if name == "Rc::new") {
+                if matches!(
+                    &function.0,
+                    Expr::Identifier(name)
+                        if crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
+                            == Some(crate::runtime_call::RuntimeCallFamily::RcNew)
+                ) {
+                    return None;
+                }
+                for arg in args {
+                    let (e, _) = arg.expr();
+                    if let Some(hit) = self.dangerous_source_in_expr(e, scopes) {
+                        return Some(hit);
+                    }
+                }
+                None
+            }
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } if self
+                .dotted_static_aggregate_identity(&receiver.0, method)
+                .is_some() =>
+            {
+                let identity = self
+                    .dotted_static_aggregate_identity(&receiver.0, method)
+                    .expect("guarded by a successful static aggregate lookup");
+                if crate::runtime_call::RuntimeCallFamily::from_checker_signature(&identity)
+                    == Some(crate::runtime_call::RuntimeCallFamily::RcNew)
+                {
                     return None;
                 }
                 for arg in args {
@@ -5748,6 +6160,10 @@ impl Checker {
             | Expr::Clone(_)
             | Expr::Literal(_)
             | Expr::Identifier(_)
+            | Expr::ContextVariant(_)
+            | Expr::GenericApplySuffix { .. }
+            | Expr::RecordInitSuffix { .. }
+            | Expr::QualifiedAssoc(_)
             | Expr::Tuple(_)
             | Expr::Array(_)
             | Expr::ArrayRepeat { .. }
@@ -5894,6 +6310,16 @@ impl Checker {
             return Ty::Error;
         }
 
+        if let Some(head) = self.resolve_dotted_type_head(object, field) {
+            if let Some(result) = self.dispatch_dotted_type_member(
+                &head,
+                field,
+                &DottedTypeMemberUse::Reference { span },
+            ) {
+                return result;
+            }
+        }
+
         if let Expr::Identifier(name) = &object.0 {
             if name == "self" {
                 if let Some(ty) = self.check_machine_transition_self_field_access(field, span) {
@@ -5920,6 +6346,10 @@ impl Checker {
                     return ty;
                 }
             }
+
+            // Dotted type members were dispatched from the canonical head
+            // above. Remaining identifiers are ordinary value projections or
+            // unresolved names and continue through the existing diagnostics.
         }
 
         // Dotted module-qualified unit constructor:
@@ -5934,7 +6364,7 @@ impl Checker {
         } = &object.0
         {
             if let Expr::Identifier(module_short) = &module.0 {
-                if self.modules.contains(module_short)
+                if self.module_binding_in_current_file(module_short)
                     && self.env.lookup_ref(module_short).is_none()
                 {
                     let constructor = format!("{module_short}.{type_name}::{field}");
@@ -5993,21 +6423,27 @@ impl Checker {
                     let lexical_key = format!("{name}.{field}");
                     let qualified_key = self
                         .module_import_bindings
-                        .get(&(self.current_module.clone(), name.clone()))
+                        .get(&(
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            name.clone(),
+                        ))
                         .map_or_else(|| lexical_key.clone(), |owner| format!("{owner}.{field}"));
                     if let Some(binding) = self.env.lookup_ref(&qualified_key) {
                         let ty = binding.ty.clone();
-                        if self.modules.contains(name) {
-                            self.used_modules
-                                .borrow_mut()
-                                .insert(ImportKey::new(self.current_module.clone(), name.clone()));
+                        if self.module_binding_in_current_file(name) {
+                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                name.clone(),
+                            ));
                         }
                         return ty;
                     }
                     // If the receiver looks like a module (known to self.modules) but
                     // the const is not exported, emit a targeted diagnostic rather than
                     // falling through to the generic "undefined variable `module`" error.
-                    if self.modules.contains(name) {
+                    if self.module_binding_in_current_file(name) {
                         // The module DOES export a function under this name:
                         // a non-generic cross-module function in value
                         // position resolves to its function type (the HIR
@@ -6022,8 +6458,9 @@ impl Checker {
                                     params: sig.params.clone(),
                                     ret: Box::new(sig.return_type.clone()),
                                 };
-                                self.used_modules.borrow_mut().insert(ImportKey::new(
+                                self.used_modules.borrow_mut().insert(ImportKey::in_file(
                                     self.current_module.clone(),
+                                    self.current_module_idx,
                                     name.clone(),
                                 ));
                                 // Apply the same wasm native-only guard used for call
@@ -6077,10 +6514,18 @@ impl Checker {
                                 .filter_map(|k| k.strip_prefix(&format!("{name}.")))
                                 .filter(|k| !k.contains('.')),
                         );
+                        if self.resolve_module_type(name, field).is_some() {
+                            self.report_error(
+                                TypeErrorKind::PathKindMismatch,
+                                span,
+                                format!("module member `{name}.{field}` is a type, not a value"),
+                            );
+                            return Ty::Error;
+                        }
                         self.report_error_with_suggestions(
-                            TypeErrorKind::UndefinedField,
+                            TypeErrorKind::PathMemberNotFound,
                             span,
-                            format!("module `{name}` has no exported constant `{field}`"),
+                            format!("module `{name}` has no exported value `{field}`"),
                             similar,
                         );
                         return Ty::Error;
@@ -6809,6 +7254,10 @@ impl Checker {
     /// — never falls through to the leaky "undefined variable" /
     /// "undefined type" surface.  Called only from the
     /// `check_field_access` pre-dispatch arm.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "qualified variant resolution handles each failure shape together"
+    )]
     pub(super) fn check_module_qualified_variant_ref(
         &mut self,
         module_short: &str,
@@ -6822,7 +7271,7 @@ impl Checker {
         else {
             return Ty::Error;
         };
-        if !self.modules.contains(module_short) {
+        if !self.module_binding_in_current_file(module_short) {
             let similar =
                 crate::error::find_similar(module_short, self.modules.iter().map(String::as_str));
             self.report_error_with_suggestions(
@@ -6833,8 +7282,9 @@ impl Checker {
             );
             return Ty::Error;
         }
-        self.used_modules.borrow_mut().insert(ImportKey::new(
+        self.used_modules.borrow_mut().insert(ImportKey::in_file(
             self.current_module.clone(),
+            self.current_module_idx,
             module_short.to_string(),
         ));
         let Some(td) = self.resolve_module_type(module_short, type_name) else {
@@ -6843,7 +7293,7 @@ impl Checker {
                 .map(|set| crate::error::find_similar(type_name, set.iter().map(String::as_str)))
                 .unwrap_or_default();
             self.report_error_with_suggestions(
-                TypeErrorKind::UndefinedType,
+                TypeErrorKind::PathMemberNotFound,
                 span,
                 format!("module `{module_short}` has no exported type `{type_name}`"),
                 similar,
@@ -6856,7 +7306,7 @@ impl Checker {
             let similar =
                 crate::error::find_similar(variant_name, td.variants.keys().map(String::as_str));
             self.report_error_with_suggestions(
-                TypeErrorKind::UndefinedField,
+                TypeErrorKind::PathMemberNotFound,
                 span,
                 format!("type `{module_short}.{type_name}` has no variant `{variant_name}`"),
                 similar,
@@ -6920,8 +7370,8 @@ impl Checker {
                     TypeErrorKind::UndefinedField,
                     span,
                     format!(
-                        "variant `{module_short}.{type_name}::{variant_name}` is a struct \
-                         variant; use `{module_short}.{type_name}::{variant_name} {{ ... }}` \
+                        "variant `{module_short}.{type_name}.{variant_name}` is a struct \
+                         variant; use `{module_short}.{type_name}.{variant_name} {{ ... }}` \
                          to construct it"
                     ),
                 );
@@ -7001,6 +7451,47 @@ impl Checker {
         base: Option<&Spanned<Expr>>,
         span: &Span,
     ) -> Ty {
+        // Expression-position struct variants use the final dotted surface
+        // (`Type.Variant { ... }`). Normalize that spelling only after the
+        // owner has been selected by checker authority: a lexical nominal
+        // binding for `Type.Variant`, or the exact export table for
+        // `module.Type.Variant`. The resulting registry key retains the full
+        // declaration owner and never scans by final segment.
+        let dotted_struct_variant = if name.contains("::") {
+            None
+        } else {
+            let segments = name.split('.').collect::<Vec<_>>();
+            match segments.as_slice() {
+                [surface_type, variant] if self.env.lookup_ref(surface_type).is_none() => self
+                    .source_nominal_declaration(surface_type)
+                    .and_then(|canonical_type| {
+                        self.lookup_type_def(&canonical_type)
+                            .filter(|type_def| {
+                                matches!(
+                                    type_def.variants.get(*variant),
+                                    Some(VariantDef::Struct(_))
+                                )
+                            })
+                            .map(|_| format!("{canonical_type}::{variant}"))
+                    }),
+                [module_short, surface_type, variant]
+                    if self.env.lookup_ref(module_short).is_none() =>
+                {
+                    self.resolve_module_variant(module_short, surface_type, variant)
+                        .filter(|(_, variant_def)| matches!(variant_def, VariantDef::Struct(_)))
+                        .map(|(type_def, _)| {
+                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                (*module_short).to_string(),
+                            ));
+                            format!("{}::{variant}", type_def.name)
+                        })
+                }
+                _ => None,
+            }
+        };
+        let name = dotted_struct_variant.as_deref().unwrap_or(name);
         let Ok(canonical_lifecycle_name) =
             self.canonicalize_source_lifecycle_value_path(name, span)
         else {
@@ -7021,13 +7512,14 @@ impl Checker {
         let mut resolved_module_variant_name = None;
         if let Some(dot) = name.find('.') {
             let module_short = &name[..dot];
-            if self.modules.contains(module_short) {
+            if self.module_binding_in_current_file(module_short) {
                 let after_dot = &name[dot + 1..];
                 if let Some(colon) = after_dot.find("::") {
                     let type_name = &after_dot[..colon];
                     let variant_name = &after_dot[colon + 2..];
-                    self.used_modules.borrow_mut().insert(ImportKey::new(
+                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
                         self.current_module.clone(),
+                        self.current_module_idx,
                         module_short.to_string(),
                     ));
                     let Some(td) = self.resolve_module_type(module_short, type_name) else {
@@ -7094,11 +7586,14 @@ impl Checker {
         // from colliding in the downstream MIR record-layout / field-order
         // registry (the same identity discipline `samename_type_layout` proves
         // for explicitly qualified constructions).
-        let qualified_owned = self.published_bare_type_qualified(name);
+        let qualified_owned = self
+            .published_bare_type_qualified(name)
+            .or_else(|| self.flat_file_import_type_owner(name));
         if let Some(qualified) = qualified_owned.as_deref() {
             if let Some((module, _)) = qualified.split_once('.') {
-                self.used_modules.borrow_mut().insert(ImportKey::new(
+                self.used_modules.borrow_mut().insert(ImportKey::in_file(
                     self.current_module.clone(),
+                    self.current_module_idx,
                     module.to_string(),
                 ));
             }
@@ -7608,7 +8103,7 @@ impl Checker {
             // Handle module-qualified actor: spawn module.ActorName(args)
             Expr::FieldAccess { object, field } => {
                 if let Expr::Identifier(module) = &object.0 {
-                    if self.modules.contains(module) {
+                    if self.module_binding_in_current_file(module) {
                         // Verify the qualifier resolves to an ACTOR that is a
                         // public export of `module` before stripping it to the
                         // bare name. `module_type_exports` membership alone is
@@ -7651,9 +8146,11 @@ impl Checker {
                             // keeping a single clear diagnostic.
                             return Err(());
                         };
-                        self.used_modules
-                            .borrow_mut()
-                            .insert(ImportKey::new(self.current_module.clone(), module.clone()));
+                        self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            module.clone(),
+                        ));
                         // Keep the exact source identity recovered through the
                         // lexical module binding. The surface spelling may be
                         // an alias or share its leaf with another module.
@@ -7985,6 +8482,10 @@ impl Checker {
                 ProducedValueFact::result(Ownership::owned(Acquisition::Fresh))
             }
             Expr::Literal(_)
+            | Expr::ContextVariant(_)
+            | Expr::GenericApplySuffix { .. }
+            | Expr::RecordInitSuffix { .. }
+            | Expr::QualifiedAssoc(_)
             | Expr::Unary { .. }
             | Expr::Cast { .. }
             | Expr::Range { .. }

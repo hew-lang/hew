@@ -7,9 +7,9 @@
 // ACCEPT. The aliased import binding follows `B` to `reexbase.Base` (i64), so
 // `base` is REJECTED with `TraitImplSignatureMismatch`. Proves the re-export
 // chain fix reaches the alias path.
-import hew::reexsubalias::{SubA};
+import hew.reexsubalias.{SubA};
 
-import hew::wrongbase::{Base};
+import hew.wrongbase.{Base};
 
 type W {
     id: i64;

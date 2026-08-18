@@ -12,11 +12,11 @@ fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
 }
 
 fn main() {
-    let t = Tag::Named("hi");
+    let t = Tag.Named("hi");
     let f = |x: i64| -> i64 {
         match t {
-            Tag::Named(_) => 1 + x,
-            Tag::Anon => x,
+            Tag.Named(_) => 1 + x,
+            Tag.Anon => x,
         }
     };
     println(apply(f, 1));

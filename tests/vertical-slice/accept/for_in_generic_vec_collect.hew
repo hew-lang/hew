@@ -16,7 +16,7 @@
 type Point { x: i64; y: i64 }
 
 fn copy_all<T>(items: Vec<T>) -> Vec<T> {
-    let out: Vec<T> = Vec::new();
+    let out: Vec<T> = Vec.new();
     for x in items {
         out.push(x);
     }
@@ -24,7 +24,7 @@ fn copy_all<T>(items: Vec<T>) -> Vec<T> {
 }
 
 fn main() {
-    let nums: Vec<i64> = Vec::new();
+    let nums: Vec<i64> = Vec.new();
     nums.push(10);
     nums.push(20);
     nums.push(30);
@@ -34,7 +34,7 @@ fn main() {
     }
     println(sum);
 
-    let pts: Vec<Point> = Vec::new();
+    let pts: Vec<Point> = Vec.new();
     pts.push(Point { x: 1, y: 2 });
     pts.push(Point { x: 3, y: 4 });
     var total: i64 = 0;

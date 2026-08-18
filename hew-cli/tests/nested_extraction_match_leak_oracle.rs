@@ -218,7 +218,7 @@ fn enum_payload_nested_destructure_source(frames: usize) -> String {
          }}\n\
          \n\
          fn make_wrap(k: i64) -> Wrap {{\n\
-         \x20   Wrap::Item(Inner {{\n\
+         \x20   Wrap.Item(Inner {{\n\
          \x20       a: \"wrap-a-heap-payload\".to_upper(),\n\
          \x20       b: \"wrap-b-heap-payload\".to_upper(),\n\
          \x20   }})\n\
@@ -227,12 +227,12 @@ fn enum_payload_nested_destructure_source(frames: usize) -> String {
          fn run_cycle(k: i64) -> i64 {{\n\
          \x20   let w = make_wrap(k);\n\
          \x20   let x = match w {{\n\
-         \x20       Wrap::Item(row) => {{\n\
+         \x20       Wrap.Item(row) => {{\n\
          \x20           match row {{\n\
          \x20               Inner {{ a, b: _ }} => a.len(),\n\
          \x20           }}\n\
          \x20       }}\n\
-         \x20       Wrap::Nothing => 0,\n\
+         \x20       Wrap.Nothing => 0,\n\
          \x20   }};\n\
          \x20   x\n\
          }}\n\

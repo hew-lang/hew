@@ -1,5 +1,5 @@
-import std::fs;
-import std::io::scanner;
+import std.fs;
+import std.io.scanner;
 
 fn print_line(label: string, line: Option<string>) {
     match line {

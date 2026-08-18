@@ -7,9 +7,9 @@ enum Colour {
 
 fn colour_name(c: Colour) {
     match c {
-        Red => println("Red"),
-        Green => println("Green"),
-        Blue => println("Blue"),
+        .Red => println("Red"),
+        .Green => println("Green"),
+        .Blue => println("Blue"),
     }
 }
 

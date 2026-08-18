@@ -939,7 +939,7 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>, local
     // Validate package name format.
     if !is_valid_package_name(&m.package.name) {
         eprintln!(
-            "hew publish: invalid package name `{}`: only alphanumeric, `_`, and `::` (or `/`) allowed",
+            "hew publish: invalid package name `{}`: only lowercase alphanumeric, `_`, and dotted segments allowed",
             m.package.name
         );
         std::process::exit(1);
@@ -1489,7 +1489,7 @@ fn cmd_check(registry: &registry::Registry) {
 
     if !is_valid_package_name(&m.package.name) {
         issues.push(format!(
-            "invalid package name `{}`: only alphanumeric, `_`, and `::` allowed",
+            "invalid package name `{}`: only lowercase alphanumeric, `_`, and dotted segments allowed",
             m.package.name
         ));
     }
@@ -1961,9 +1961,7 @@ fn cmd_index_list(package: &str) {
     }
 
     // Check for deprecation metadata alongside the package index file.
-    let deprecation_path = index_dir
-        .join(index::index_path(package))
-        .with_extension("deprecated");
+    let deprecation_path = index_dir.join(index::deprecation_path(package));
     if let Ok(content) = std::fs::read_to_string(&deprecation_path) {
         if let Ok(info) = serde_json::from_str::<index::DeprecationInfo>(&content) {
             if info.deprecated {
@@ -2016,7 +2014,7 @@ fn local_link_path(base: &Path, package_name: &str) -> Result<PathBuf, String> {
     }
 
     Ok(package_name
-        .split("::")
+        .split('.')
         .fold(base.to_path_buf(), |path, segment| path.join(segment)))
 }
 
@@ -2435,7 +2433,7 @@ mod tests {
     fn is_valid_package_name_accepts_simple() {
         assert!(is_valid_package_name("mypackage"));
         assert!(is_valid_package_name("my_package"));
-        assert!(is_valid_package_name("std::net::http"));
+        assert!(is_valid_package_name("std.net.http"));
     }
 
     #[test]
@@ -2445,8 +2443,8 @@ mod tests {
         assert!(!is_valid_package_name("my@package"));
         assert!(!is_valid_package_name("my:package")); // single colon
         assert!(!is_valid_package_name("my/package"));
-        assert!(!is_valid_package_name("evil::../../../tmp/pwned"));
-        assert!(!is_valid_package_name("evil::/tmp/pwned"));
+        assert!(!is_valid_package_name("evil.../../../tmp/pwned"));
+        assert!(!is_valid_package_name("evil./tmp/pwned"));
     }
 
     #[test]
@@ -2471,9 +2469,9 @@ mod tests {
     #[test]
     fn search_finds_matching_packages() {
         let (_dir, reg) = setup_registry();
-        install_fake(&reg, "std::net::http", "1.0.0");
-        install_fake(&reg, "std::net::websocket", "1.0.0");
-        install_fake(&reg, "ecosystem::db::postgres", "1.0.0");
+        install_fake(&reg, "std.net.http", "1.0.0");
+        install_fake(&reg, "std.net.websocket", "1.0.0");
+        install_fake(&reg, "ecosystem.db.postgres", "1.0.0");
 
         let pkgs = reg.list_packages();
         let query_lower = "net";
@@ -2501,18 +2499,13 @@ mod tests {
     #[test]
     fn tree_dep_resolution() {
         let (_dir, reg) = setup_registry();
-        install_fake_with_deps(
-            &reg,
-            "std::net::http",
-            "1.0.0",
-            &[("hew::net::tcp", "1.0.0")],
-        );
-        install_fake(&reg, "hew::net::tcp", "1.0.0");
+        install_fake_with_deps(&reg, "std.net.http", "1.0.0", &[("hew.net.tcp", "1.0.0")]);
+        install_fake(&reg, "hew.net.tcp", "1.0.0");
 
-        let dep_toml = reg.package_dir("std::net::http", "1.0.0").join("hew.toml");
+        let dep_toml = reg.package_dir("std.net.http", "1.0.0").join("hew.toml");
         let dep_m = manifest::parse_manifest(&dep_toml).unwrap();
         assert_eq!(dep_m.dependencies.len(), 1);
-        assert!(dep_m.dependencies.contains_key("hew::net::tcp"));
+        assert!(dep_m.dependencies.contains_key("hew.net.tcp"));
     }
 
     #[test]
@@ -2520,13 +2513,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hew.toml");
         manifest::write_default_manifest(&path, "myproject").unwrap();
-        manifest::add_dependency(&path, "std::net::http", "1.0", None).unwrap();
+        manifest::add_dependency(&path, "std.net.http", "1.0", None).unwrap();
 
-        let removed = manifest::remove_dependency(&path, "std::net::http").unwrap();
+        let removed = manifest::remove_dependency(&path, "std.net.http").unwrap();
         assert!(removed);
 
         let m = manifest::parse_manifest(&path).unwrap();
-        assert!(!m.dependencies.contains_key("std::net::http"));
+        assert!(!m.dependencies.contains_key("std.net.http"));
     }
 
     #[test]
@@ -2759,24 +2752,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hew.toml");
         manifest::write_default_manifest(&path, "myproject").unwrap();
-        manifest::add_dependency(&path, "std::net::http", "1.0", None).unwrap();
+        manifest::add_dependency(&path, "std.net.http", "1.0", None).unwrap();
 
         // Simulate installed package symlink directory.
         let pkg_dir = dir
             .path()
             .join(".hew")
             .join("packages")
-            .join("std")
-            .join("net")
-            .join("http");
+            .join("std.net.http");
         std::fs::create_dir_all(&pkg_dir).unwrap();
         std::fs::write(pkg_dir.join("marker"), "x").unwrap();
 
         // Remove the dependency from manifest directly.
-        let removed = manifest::remove_dependency(&path, "std::net::http").unwrap();
+        let removed = manifest::remove_dependency(&path, "std.net.http").unwrap();
         assert!(removed);
         let m = manifest::parse_manifest(&path).unwrap();
-        assert!(!m.dependencies.contains_key("std::net::http"));
+        assert!(!m.dependencies.contains_key("std.net.http"));
     }
 
     // ── check command tests ────────────────────────────────────────────

@@ -207,7 +207,7 @@ enum Status {
 }
 
 fn main() {
-    let status = Status::Packet(Payload { code: 7 });
+    let status = Status.Packet(Payload { code: 7 });
     println(1);
 }
 ";

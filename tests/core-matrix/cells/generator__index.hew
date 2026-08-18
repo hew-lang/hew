@@ -7,7 +7,7 @@ fn main() {
         yield 2;
         yield 3;
     };
-    let v: Vec<Generator<i64, ()>> = Vec::new();
+    let v: Vec<Generator<i64, ()>> = Vec.new();
     v.push(a);
     v.push(b);
     let e = v[0];

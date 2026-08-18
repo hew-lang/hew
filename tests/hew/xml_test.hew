@@ -1,8 +1,8 @@
 //! Behavioural tests for std::encoding::xml.
 
-import std::encoding::xml;
+import std.encoding.xml;
 
-import std::testing;
+import std.testing;
 
 // ── Happy-path parse ──────────────────────────────────────────────────
 #[test]
@@ -92,117 +92,117 @@ fn test_is_wellformed_false_for_malformed_xml() {
 #[test]
 fn test_try_parse_rejects_multiple_root_elements() {
     match xml.try_parse("<a/><b/>") {
-        Ok(node) => {
+        .Ok(node) => {
             node.close();
             panic("expected a document with two roots to be rejected");
         },
-        Err(reason) => testing.assert_eq_str(reason, "xml: document has more than one root element"),
+        .Err(reason) => testing.assert_eq_str(reason, "xml: document has more than one root element"),
     }
 }
 
 #[test]
 fn test_try_parse_rejects_a_close_tag_that_does_not_match() {
     match xml.try_parse("<a><b></c></a>") {
-        Ok(node) => {
+        .Ok(node) => {
             node.close();
             panic("expected a mismatched close tag to be rejected");
         },
-        Err(reason) => testing.assert_true(reason.contains("</c>")),
+        .Err(reason) => testing.assert_true(reason.contains("</c>")),
     }
 }
 
 #[test]
 fn test_try_parse_rejects_a_malformed_attribute() {
     match xml.try_parse("<a b>text</a>") {
-        Ok(node) => {
+        .Ok(node) => {
             node.close();
             panic("expected a malformed attribute to be rejected");
         },
-        Err(reason) => testing.assert_eq_str(reason, "xml: element `a` has a malformed attribute"),
+        .Err(reason) => testing.assert_eq_str(reason, "xml: element `a` has a malformed attribute"),
     }
 }
 
 #[test]
 fn test_try_parse_rejects_an_unknown_entity_reference() {
     match xml.try_parse("<root>&nope;</root>") {
-        Ok(node) => {
+        .Ok(node) => {
             node.close();
             panic("expected an unknown entity reference to be rejected");
         },
-        Err(reason) => testing.assert_eq_str(reason, "xml: `&nope;` is not a known entity reference"),
+        .Err(reason) => testing.assert_eq_str(reason, "xml: `&nope;` is not a known entity reference"),
     }
 }
 
 #[test]
 fn test_try_parse_rejects_a_document_with_no_root_element() {
     match xml.try_parse("just text") {
-        Ok(node) => {
+        .Ok(node) => {
             node.close();
             panic("expected a document with no root element to be rejected");
         },
-        Err(reason) => testing.assert_eq_str(reason, "xml: document has no root element"),
+        .Err(reason) => testing.assert_eq_str(reason, "xml: document has no root element"),
     }
 }
 
 #[test]
 fn test_try_parse_preserves_a_well_formed_document() {
     match xml.try_parse("<root a=\"1\"><kid>hi</kid></root>") {
-        Ok(node) => {
+        .Ok(node) => {
             testing.assert_eq_str(node.get_tag(), "root");
             testing.assert_eq_str(node.get_attribute("a"), "1");
             testing.assert_eq(node.children_count(), 1);
             testing.assert_eq_str(node.get_text(), "hi");
             node.close();
         },
-        Err(reason) => panic(f"a well-formed document must parse: {reason}"),
+        .Err(reason) => panic(f"a well-formed document must parse: {reason}"),
     }
 }
 
 #[test]
 fn test_try_parse_preserves_predefined_entities() {
     match xml.try_parse("<root>a &lt; b &amp; c</root>") {
-        Ok(node) => {
+        .Ok(node) => {
             testing.assert_eq_str(node.get_text(), "a < b & c");
             node.close();
         },
-        Err(reason) => panic(f"predefined entities must still expand: {reason}"),
+        .Err(reason) => panic(f"predefined entities must still expand: {reason}"),
     }
 }
 
 #[test]
 fn test_try_parse_decodes_entities_in_attributes() {
     match xml.try_parse("<root label=\"a &lt; b &amp; &quot;q&quot;\"/>") {
-        Ok(node) => {
+        .Ok(node) => {
             testing.assert_eq_str(node.get_attribute("label"), "a < b & \"q\"");
             node.close();
         },
-        Err(reason) => panic(f"attribute entities must expand: {reason}"),
+        .Err(reason) => panic(f"attribute entities must expand: {reason}"),
     }
 }
 
 #[test]
 fn test_try_parse_rejects_non_whitespace_outside_the_root() {
     match xml.try_parse("before<root/>") {
-        Ok(node) => {
+        .Ok(node) => {
             node.close();
             panic("text before the root must be rejected");
         },
-        Err(reason) => testing.assert_true(reason.contains("outside the root")),
+        .Err(reason) => testing.assert_true(reason.contains("outside the root")),
     }
     match xml.try_parse("<root/>after") {
-        Ok(node) => {
+        .Ok(node) => {
             node.close();
             panic("text after the root must be rejected");
         },
-        Err(reason) => testing.assert_true(reason.contains("outside the root")),
+        .Err(reason) => testing.assert_true(reason.contains("outside the root")),
     }
 }
 
 #[test]
 fn test_try_parse_allows_xml_whitespace_around_the_root() {
     match xml.try_parse(" \t\n<root/>\r\n") {
-        Ok(node) => node.close(),
-        Err(reason) => panic(f"XML whitespace around the root is valid: {reason}"),
+        .Ok(node) => node.close(),
+        .Err(reason) => panic(f"XML whitespace around the root is valid: {reason}"),
     }
 }
 

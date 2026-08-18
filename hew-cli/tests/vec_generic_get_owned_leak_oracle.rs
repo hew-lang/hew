@@ -65,7 +65,7 @@ fn first<T>(v: Vec<T>) -> Option<T> {\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let vn: Vec<Name> = Vec::new();\n\
+\x20   let vn: Vec<Name> = Vec.new();\n\
 \x20   vn.push(Name { label: \"owned-ok\" });\n\
 \x20   let got = match first(vn) {\n\
 \x20       Some(g) => g,\n\
@@ -94,7 +94,7 @@ fn generic_get_loop_source(frames: usize) -> String {
          }}\n\
          \n\
          fn run_cycle() -> i64 {{\n\
-         \x20   let vn: Vec<Name> = Vec::new();\n\
+         \x20   let vn: Vec<Name> = Vec.new();\n\
          \x20   vn.push(Name {{ label: \"owned-ok\".to_upper() }});\n\
          \x20   let got = match first(vn) {{\n\
          \x20       Some(g) => g,\n\

@@ -201,6 +201,30 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 collect_calls_in_expr(arg.expr(), calls);
             }
         }
+        Expr::ContextVariant(context) => {
+            if let Some(record) = &context.record {
+                for (_, value) in &record.fields {
+                    collect_calls_in_expr(value, calls);
+                }
+                if let Some(base) = &record.base {
+                    collect_calls_in_expr(base, calls);
+                }
+            }
+        }
+        Expr::GenericApplySuffix { target, .. } => collect_calls_in_expr(target, calls),
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            collect_calls_in_expr(target, calls);
+            for (_, value) in fields {
+                collect_calls_in_expr(value, calls);
+            }
+            if let Some(base) = base {
+                collect_calls_in_expr(base, calls);
+            }
+        }
         Expr::MethodCall {
             receiver,
             method,
@@ -348,6 +372,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         }
         Expr::Literal(_)
         | Expr::Identifier(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)

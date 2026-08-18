@@ -12,11 +12,11 @@
 //! regex method call on a Pattern and assert exact results — the coverage that
 //! was missing when the wrapper migration first landed.
 
-import std::testing;
-import std::text::regex;
+import std.testing;
+
+import std.text.regex;
 
 // ── Borrowing thin-forward methods (is_match / find / replace / find_all) ──
-
 #[test]
 fn test_is_match_positive_and_negative() {
     let p = regex.new("[a-z]+[0-9]+");
@@ -56,22 +56,21 @@ fn test_find_all_exact_matches() {
 }
 
 // ── Impl-body methods that return capture data (capture / captures) ──
-
 #[test]
 fn test_capture_indexed_groups() {
     let p = regex.new("([a-z]+)([0-9]+)");
     match p.capture("ab12", 1) {
-        Some(g) => testing.assert_eq_str(g, "ab"),
-        None => testing.assert_true(false),
+        .Some(g) => testing.assert_eq_str(g, "ab"),
+        .None => testing.assert_true(false),
     }
     match p.capture("ab12", 2) {
-        Some(g) => testing.assert_eq_str(g, "12"),
-        None => testing.assert_true(false),
+        .Some(g) => testing.assert_eq_str(g, "12"),
+        .None => testing.assert_true(false),
     }
     // Non-matching input yields None, not a fabricated capture.
     match p.capture("!!!", 1) {
-        Some(_) => testing.assert_true(false),
-        None => testing.assert_true(true),
+        .Some(_) => testing.assert_true(false),
+        .None => testing.assert_true(true),
     }
 }
 
@@ -83,21 +82,20 @@ fn test_captures_flat_row() {
     testing.assert_eq(rows.width(), 3);
     testing.assert_eq(rows.len(), 1);
     match rows.whole(0) {
-        Some(w) => testing.assert_eq_str(w, "ab12"),
-        None => testing.assert_true(false),
+        .Some(w) => testing.assert_eq_str(w, "ab12"),
+        .None => testing.assert_true(false),
     }
     match rows.group(0, 1) {
-        Some(g) => testing.assert_eq_str(g, "ab"),
-        None => testing.assert_true(false),
+        .Some(g) => testing.assert_eq_str(g, "ab"),
+        .None => testing.assert_true(false),
     }
     match rows.group(0, 2) {
-        Some(g) => testing.assert_eq_str(g, "12"),
-        None => testing.assert_true(false),
+        .Some(g) => testing.assert_eq_str(g, "12"),
+        .None => testing.assert_true(false),
     }
 }
 
 // ── Handle-returning method (clone) rebuilds the wrapper ──
-
 #[test]
 fn test_clone_yields_independent_pattern() {
     let p = regex.new("[0-9]+");
@@ -111,7 +109,6 @@ fn test_clone_yields_independent_pattern() {
 }
 
 // ── Value-position `re"..."` literal producer path ──
-
 #[test]
 fn test_literal_pattern_dispatch() {
     let lit = re"[a-z]+";

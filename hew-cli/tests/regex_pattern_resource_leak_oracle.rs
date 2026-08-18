@@ -13,7 +13,7 @@ use support::leak_slope::assert_frame_slope_below_tolerance;
 
 fn explicit_close_loop_source(frames: usize) -> String {
     format!(
-        "import std::text::regex;\n\
+        "import std.text.regex;\n\
          fn main() -> i64 {{\n\
          \x20   var matched: i64 = 0;\n\
          \x20   for _ in 0..{frames} {{\n\
@@ -44,7 +44,7 @@ fn regex_pattern_explicit_close_has_no_per_iteration_leak() {
 /// clone, so the slope stays flat.
 fn literal_close_loop_source(frames: usize) -> String {
     format!(
-        "import std::text::regex;\n\
+        "import std.text.regex;\n\
          fn main() -> i64 {{\n\
          \x20   var matched: i64 = 0;\n\
          \x20   for _ in 0..{frames} {{\n\

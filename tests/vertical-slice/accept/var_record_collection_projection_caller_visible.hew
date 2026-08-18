@@ -14,7 +14,7 @@ fn mutate(var holder: Holder) {
 
 fn main() -> i64 {
     let items: Vec<i64> = [1, 2];
-    let counts: HashMap<string, i64> = HashMap::new();
+    let counts: HashMap<string, i64> = HashMap.new();
     let holder = Holder { items: items, counts: counts };
     mutate(holder);
     println(holder.items[0]);

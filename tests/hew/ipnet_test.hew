@@ -1,7 +1,8 @@
 //! Tests for std::net::ipnet invalid-input handling.
 
-import std::net::ipnet;
-import std::testing;
+import std.net.ipnet;
+
+import std.testing;
 
 #[test]
 fn test_cidr_hosts_returns_exact_valid_host_count() {

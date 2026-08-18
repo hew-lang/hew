@@ -23,7 +23,7 @@ fn expected_lines(frames: usize) -> usize {
 
 fn normal_source(frames: usize) -> String {
     source_with_frames(
-        r#"import std::pipeline;
+        r#"import std.pipeline;
 
 fn main() -> i64 {
     let source = pipeline.run(pipeline.from(__FRAMES__));
@@ -53,7 +53,7 @@ fn main() -> i64 {
 
 fn cancellation_source(frames: usize) -> String {
     source_with_frames(
-        r#"import std::pipeline;
+        r#"import std.pipeline;
 
 fn item(value: i64, label: string) -> pipeline.PipelineItemI64 {
     PipelineItemI64 { value: value, label: label, crash_stage: false }
@@ -112,7 +112,7 @@ fn main() -> i64 {
 
 fn crash_source(frames: usize) -> String {
     source_with_frames(
-        r#"import std::pipeline;
+        r#"import std.pipeline;
 
 fn main() -> i64 {
     var i: i64 = 0;
@@ -143,7 +143,7 @@ fn main() -> i64 {
 
 fn shutdown_drain_source(frames: usize) -> String {
     source_with_frames(
-        r#"import std::pipeline;
+        r#"import std.pipeline;
 
 fn main() -> i64 {
     let source = pipeline.run(pipeline.from(__FRAMES__));

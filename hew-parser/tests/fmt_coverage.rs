@@ -340,13 +340,13 @@ fn fmt_match_with_enum_patterns() {
 
 fn name(c: Colour) -> i32 {
     match c {
-        Colour::Red => 1,
-        Colour::Green => 2,
-        Colour::Blue => 3,
+        Colour.Red => 1,
+        Colour.Green => 2,
+        Colour.Blue => 3,
     }
 }";
     let out = roundtrip(src);
-    assert!(out.contains("Colour::Red => 1,"), "output: {out}");
+    assert!(out.contains("Colour.Red => 1,"), "output: {out}");
 }
 
 #[test]
@@ -714,36 +714,80 @@ fn fmt_string_interpolation_multiple() {
 
 #[test]
 fn fmt_import_path() {
-    let src = "import std::io;";
+    let src = "import std.io;";
     let out = roundtrip(src);
-    assert!(out.contains("import std::io;"), "output: {out}");
+    assert!(out.contains("import std.io;"), "output: {out}");
 }
 
 #[test]
-fn fmt_import_glob() {
-    let src = "import std::collections::*;";
+fn fmt_import_selection() {
+    let src = "import std.collections.{HashMap, HashSet};";
     let out = roundtrip(src);
-    assert!(out.contains("import std::collections::*;"), "output: {out}");
+    assert!(
+        out.contains("import std.collections.{HashMap, HashSet};"),
+        "output: {out}"
+    );
 }
 
 #[test]
 fn fmt_import_named() {
-    let src = "import std::{println, print};";
+    let src = "import std.{println, print};";
     let out = roundtrip(src);
     assert!(
-        out.contains("import std::{println, print};"),
+        out.contains("import std.{println, print};"),
         "output: {out}"
     );
 }
 
 #[test]
 fn fmt_import_alias_roundtrip() {
-    exact_roundtrip("import std::net::{http as h, websocket as ws};\n");
+    exact_roundtrip("import std.net.{http as h, websocket as ws};\n");
 }
 
 #[test]
 fn fmt_import_whole_module_alias_roundtrip() {
-    exact_roundtrip("import std::net as n;\n");
+    exact_roundtrip("import std.net as n;\n");
+}
+
+#[test]
+fn fmt_dotted_import_forms_roundtrip() {
+    exact_roundtrip("import app.net.http as transport;\n");
+    exact_roundtrip("import app.net.http.{self as transport, Client as C,};\n");
+}
+
+#[test]
+fn fmt_contextual_variants_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let a = .None;\n    let b = .Some(value);\n    let c = .Ready { value: value, ..base };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_dotted_and_mixed_nominal_patterns_roundtrip() {
+    exact_roundtrip(
+        "fn f(value: module.E) {\n    match value {\n        module.E.Some(x) => x,\n        module.E.None => 0,\n        .Other => 1,\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_generic_apply_suffix_forms_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let a = worker<Vec<Vec<i64>>>();\n    let b = service.compute<string>();\n    let c = HashMap<string, User>.new();\n    let d = Tag<bool> { value: true };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_qualified_assoc_paths_roundtrip() {
+    exact_roundtrip(
+        "fn project<T>(x: <T as iter.Iterator>.Item) {\n    let make = <T as iter.Iterator>.make();\n}\n",
+    );
+}
+
+#[test]
+fn fmt_pure_dot_record_init_with_update_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let data = wire.Message.Data { bytes: payload, ..base };\n}\n",
+    );
 }
 
 #[test]
@@ -1463,7 +1507,7 @@ impl Point {
 }
 
 fn main() {
-    var p = Point::origin();
+    var p = Point.origin();
     for i in 0..MAX {
         println(i);
     }
@@ -1486,9 +1530,9 @@ fn fmt_enum_and_match_combined() {
 
 fn to_hex(c: Colour) -> i32 {
     match c {
-        Colour::Red => 1,
-        Colour::Green => 2,
-        Colour::Blue => 3,
+        Colour.Red => 1,
+        Colour.Green => 2,
+        Colour.Blue => 3,
     }
 }
 ";
@@ -1801,7 +1845,7 @@ fn fmt_trait_object_assoc_binding_roundtrip() {
 #[test]
 fn fmt_trait_implicit_self_roundtrip() {
     exact_roundtrip(
-        "trait Iterator {\n    type Item;\n\n    fn next(self) -> Option<Self::Item>;\n}\n",
+        "trait Iterator {\n    type Item;\n\n    fn next(self) -> Option<Self.Item>;\n}\n",
     );
 }
 
@@ -1819,13 +1863,13 @@ fn fmt_trait_object_type_args_and_assoc_bindings_roundtrip() {
 
 #[test]
 fn fmt_trait_associated_type_roundtrip() {
-    exact_roundtrip("trait Container {\n    type Item;\n\n    fn get(c: Self) -> Self::Item;\n}\n");
+    exact_roundtrip("trait Container {\n    type Item;\n\n    fn get(c: Self) -> Self.Item;\n}\n");
 }
 
 #[test]
 fn fmt_trait_associated_type_bound_default_and_interleaved_fns_roundtrip() {
     exact_roundtrip(
-        "trait AssocForms {\n    type Plain;\n\n    fn make(c: Self) -> Self::Plain;\n\n    type Bounded: Display;\n\n    type Defaulted = i32;\n\n    fn show(c: Self) -> Self::Bounded;\n\n    type BoundedDefault: Display = string;\n}\n",
+        "trait AssocForms {\n    type Plain;\n\n    fn make(c: Self) -> Self.Plain;\n\n    type Bounded: Display;\n\n    type Defaulted = i32;\n\n    fn show(c: Self) -> Self.Bounded;\n\n    type BoundedDefault: Display = string;\n}\n",
     );
 }
 
@@ -1839,25 +1883,25 @@ fn fmt_impl_associated_type_binding_roundtrip() {
 #[test]
 fn fmt_impl_associated_type_bindings_before_methods_roundtrip() {
     let formatted = roundtrip_no_comments(
-        "impl Container for Widget {\n    fn get(c: Widget) -> Self::Item {\n        1\n    }\n\n    type Item = i32;\n}\n",
+        "impl Container for Widget {\n    fn get(c: Widget) -> Self.Item {\n        1\n    }\n\n    type Item = i32;\n}\n",
     );
     assert_eq!(
         formatted,
-        "impl Container for Widget {\n    type Item = i32;\n\n    fn get(c: Widget) -> Self::Item {\n        1\n    }\n}\n",
+        "impl Container for Widget {\n    type Item = i32;\n\n    fn get(c: Widget) -> Self.Item {\n        1\n    }\n}\n",
     );
 }
 
 #[test]
 fn fmt_projection_in_generic_where_position_roundtrip() {
     exact_roundtrip(
-        "fn collect<I: Iterator>(it: I) -> Vec<I::Item> where I::Item: Display {\n    empty()\n}\n",
+        "fn collect<I: Iterator>(it: I) -> Vec<I.Item> where I.Item: Display {\n    empty()\n}\n",
     );
 }
 
 #[test]
 fn fmt_assoc_binding_in_where_trait_bound_roundtrip() {
     exact_roundtrip(
-        "fn collect_display<I>(it: I) -> Vec<I::Item> where I: Iterator<Item = string>, I::Item: Display {\n    empty()\n}\n",
+        "fn collect_display<I>(it: I) -> Vec<I.Item> where I: Iterator<Item = string>, I.Item: Display {\n    empty()\n}\n",
     );
 }
 

@@ -19,24 +19,24 @@ indirect enum B {
 
 fn eval_a(a: A) -> i64 {
     match a {
-        ALeaf(n) => n,
-        AWrap(b) => eval_b(b),
+        .ALeaf(n) => n,
+        .AWrap(b) => eval_b(b),
     }
 }
 
 fn eval_b(b: B) -> i64 {
     match b {
-        BLeaf(n) => n,
-        BWrap(a) => eval_a(a),
+        .BLeaf(n) => n,
+        .BWrap(a) => eval_a(a),
     }
 }
 
 fn main() {
     // ALeaf(7) → 7
-    println(eval_a(ALeaf(7)));
+    println(eval_a(.ALeaf(7)));
     // AWrap(BLeaf(42)) → 42
-    println(eval_a(AWrap(BLeaf(42))));
+    println(eval_a(.AWrap(.BLeaf(42))));
     // BWrap(ALeaf(3)) → 3
-    println(eval_b(BWrap(ALeaf(3))));
+    println(eval_b(.BWrap(.ALeaf(3))));
     println("ok");
 }

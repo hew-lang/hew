@@ -48,7 +48,7 @@ fn main() {
     var passed = 0;
     var failed = 0;
     // Test 1: find element
-    let v1: Vec<i64> = Vec::new();
+    let v1: Vec<i64> = Vec.new();
     v1.push(2);
     v1.push(4);
     v1.push(6);
@@ -70,7 +70,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 2: find first element
-    let v2: Vec<i64> = Vec::new();
+    let v2: Vec<i64> = Vec.new();
     v2.push(2);
     v2.push(4);
     v2.push(6);
@@ -87,7 +87,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 3: find last element
-    let v3: Vec<i64> = Vec::new();
+    let v3: Vec<i64> = Vec.new();
     v3.push(2);
     v3.push(4);
     v3.push(6);
@@ -104,7 +104,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 4: not found
-    let v4: Vec<i64> = Vec::new();
+    let v4: Vec<i64> = Vec.new();
     v4.push(2);
     v4.push(4);
     v4.push(6);
@@ -121,7 +121,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 5: empty array
-    let v5: Vec<i64> = Vec::new();
+    let v5: Vec<i64> = Vec.new();
     let r5 = exponential_search(v5, 5);
     if r5 == 0 - 1 {
         println("Test 5 - empty array: PASS");
@@ -133,7 +133,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 6: single element found
-    let v6: Vec<i64> = Vec::new();
+    let v6: Vec<i64> = Vec.new();
     v6.push(42);
     let r6 = exponential_search(v6, 42);
     if r6 == 0 {
@@ -146,7 +146,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 7: large array, find near end
-    let v7: Vec<i64> = Vec::new();
+    let v7: Vec<i64> = Vec.new();
     for i in 0 .. 100 {
         v7.push(i * 3);
     }

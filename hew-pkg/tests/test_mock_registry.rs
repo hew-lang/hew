@@ -38,9 +38,9 @@ enum MockResponse {
 ///
 /// ```ignore
 /// let mock = MockRegistry::start();
-/// mock.seed_package("alice::router", &[entry]);
+/// mock.seed_package("alice.router", &[entry]);
 /// let client = RegistryClient::with_url(mock.api_url());
-/// let versions = client.get_package("alice::router").unwrap();
+/// let versions = client.get_package("alice.router").unwrap();
 /// ```
 struct MockRegistry {
     server: Arc<tiny_http::Server>,
@@ -126,7 +126,7 @@ impl MockRegistry {
     /// Add a custom response override. The first matching override wins.
     ///
     /// `method` is e.g. `"GET"`, `path_prefix` is matched against the full
-    /// request URL path (e.g. `"/api/v1/packages/alice/router"`).
+    /// request URL path (e.g. `"/api/v1/packages/alice.router"`).
     fn add_override(&self, method: &str, path_prefix: &str, response: MockResponse) {
         self.overrides.lock().unwrap().push((
             method.to_uppercase(),
@@ -298,16 +298,15 @@ impl MockRegistry {
         }
     }
 
-    /// GET /api/v1/packages/{namespace}/{name} or /api/v1/packages/{name}
+    /// GET /api/v1/packages/{name}
     fn route_get_package(
         path: &str,
         packages: &Mutex<HashMap<String, Vec<IndexEntry>>>,
     ) -> RouteResult {
-        // path = "/packages/alice/router" or "/packages/simple"
+        // path = "/packages/alice.router" or "/packages/simple"
         let pkg_path = path.strip_prefix("/packages/").unwrap_or("");
 
-        // Reconstruct the package name: "alice/router" -> "alice::router"
-        let pkg_name = pkg_path.replace('/', "::");
+        let pkg_name = pkg_path.to_string();
 
         let pkgs = packages.lock().unwrap();
         if let Some(entries) = pkgs.get(&pkg_name) {
@@ -392,7 +391,7 @@ impl MockRegistry {
     fn route_registry_key() -> RouteResult {
         let body = serde_json::json!({
             "key_id": "registry-key-001",
-            "public_key": "bW9jay1yZWdpc3RyeS1rZXk=",
+            "public_key": "mock-registry-public-key",
             "algorithm": "ed25519",
         });
         RouteResult::Json {
@@ -409,7 +408,7 @@ impl MockRegistry {
 
         let body = serde_json::json!({
             "fingerprint": fp,
-            "public_key": "bW9jay1wdWJsaWMta2V5",
+            "public_key": "mock-user-public-key",
             "key_type": "ed25519",
             "github_user": "mock-user",
             "github_id": 12345,
@@ -503,21 +502,21 @@ fn hex_val(b: u8) -> Option<u8> {
 fn get_package_returns_seeded_versions() {
     let mock = MockRegistry::start();
     mock.seed_package(
-        "alice::router",
+        "alice.router",
         &[
-            sample_entry("alice::router", "0.1.0"),
-            sample_entry("alice::router", "0.2.0"),
-            sample_entry("alice::router", "1.0.0"),
+            sample_entry("alice.router", "0.1.0"),
+            sample_entry("alice.router", "0.2.0"),
+            sample_entry("alice.router", "1.0.0"),
         ],
     );
 
     let client = RegistryClient::with_url(mock.api_url());
-    let versions = client.get_package("alice::router").unwrap();
+    let versions = client.get_package("alice.router").unwrap();
     assert_eq!(versions.len(), 3);
     assert_eq!(versions[0].vers, "0.1.0");
     assert_eq!(versions[1].vers, "0.2.0");
     assert_eq!(versions[2].vers, "1.0.0");
-    assert_eq!(versions[0].name, "alice::router");
+    assert_eq!(versions[0].name, "alice.router");
 }
 
 #[test]
@@ -526,7 +525,7 @@ fn get_package_not_found_returns_404_error() {
     // No packages seeded.
 
     let client = RegistryClient::with_url(mock.api_url());
-    let result = client.get_package("nonexistent::pkg");
+    let result = client.get_package("nonexistent.pkg");
     match result {
         Err(ApiError::Server { status, .. }) => assert_eq!(status, 404),
         other => panic!("expected Server 404 error, got {other:?}"),
@@ -547,9 +546,9 @@ fn get_package_single_segment_name() {
 #[test]
 fn search_returns_matching_packages() {
     let mock = MockRegistry::start();
-    mock.seed_package("alice::router", &[sample_entry("alice::router", "1.0.0")]);
-    mock.seed_package("alice::logger", &[sample_entry("alice::logger", "0.5.0")]);
-    mock.seed_package("bob::router", &[sample_entry("bob::router", "2.0.0")]);
+    mock.seed_package("alice.router", &[sample_entry("alice.router", "1.0.0")]);
+    mock.seed_package("alice.logger", &[sample_entry("alice.logger", "0.5.0")]);
+    mock.seed_package("bob.router", &[sample_entry("bob.router", "2.0.0")]);
 
     let client = RegistryClient::with_url(mock.api_url());
     let result = client.search("router", None, 1, 20).unwrap();
@@ -557,14 +556,14 @@ fn search_returns_matching_packages() {
     assert_eq!(result.results.len(), 2);
 
     let names: Vec<&str> = result.results.iter().map(|h| h.name.as_str()).collect();
-    assert!(names.contains(&"alice::router"));
-    assert!(names.contains(&"bob::router"));
+    assert!(names.contains(&"alice.router"));
+    assert!(names.contains(&"bob.router"));
 }
 
 #[test]
 fn search_returns_empty_for_no_match() {
     let mock = MockRegistry::start();
-    mock.seed_package("alice::router", &[sample_entry("alice::router", "1.0.0")]);
+    mock.seed_package("alice.router", &[sample_entry("alice.router", "1.0.0")]);
 
     let client = RegistryClient::with_url(mock.api_url());
     let result = client.search("nonexistent", None, 1, 20).unwrap();
@@ -598,10 +597,10 @@ fn search_pagination() {
 fn download_tarball_returns_bytes() {
     let mock = MockRegistry::start();
     let tarball_data = b"fake-tarball-contents-1234567890".to_vec();
-    mock.serve_tarball("/packages/alice/router/1.0.0.tar.zst", tarball_data.clone());
+    mock.serve_tarball("/packages/alice.router/1.0.0.tar.zst", tarball_data.clone());
 
     let client = RegistryClient::with_url(mock.api_url());
-    let download_url = format!("{}/packages/alice/router/1.0.0.tar.zst", mock.raw_url());
+    let download_url = format!("{}/packages/alice.router/1.0.0.tar.zst", mock.raw_url());
     let result = client.download_tarball(&download_url).unwrap();
     assert_eq!(result, tarball_data);
 }
@@ -612,7 +611,7 @@ fn download_tarball_404_returns_error() {
     // No tarball served.
 
     let client = RegistryClient::with_url(mock.api_url());
-    let download_url = format!("{}/packages/alice/router/1.0.0.tar.zst", mock.raw_url());
+    let download_url = format!("{}/packages/alice.router/1.0.0.tar.zst", mock.raw_url());
     let result = client.download_tarball(&download_url);
     match result {
         Err(ApiError::Server { status, .. }) => assert_eq!(status, 404),
@@ -664,11 +663,11 @@ fn fallback_on_primary_500() {
     // Primary always returns 500 for packages.
     primary.fail_with_500("/api/v1/packages");
     // Fallback has the data.
-    fallback.seed_package("alice::router", &[sample_entry("alice::router", "1.0.0")]);
+    fallback.seed_package("alice.router", &[sample_entry("alice.router", "1.0.0")]);
 
     let client = RegistryClient::with_url(primary.api_url()).with_fallback(fallback.api_url());
 
-    let versions = client.get_package("alice::router").unwrap();
+    let versions = client.get_package("alice.router").unwrap();
     assert_eq!(versions.len(), 1);
     assert_eq!(versions[0].vers, "1.0.0");
 }
@@ -679,7 +678,7 @@ fn fallback_on_primary_500_for_search() {
     let fallback = MockRegistry::start();
 
     primary.fail_with_500("/api/v1/search");
-    fallback.seed_package("alice::router", &[sample_entry("alice::router", "1.0.0")]);
+    fallback.seed_package("alice.router", &[sample_entry("alice.router", "1.0.0")]);
 
     let client = RegistryClient::with_url(primary.api_url()).with_fallback(fallback.api_url());
 
@@ -722,11 +721,11 @@ fn no_fallback_on_4xx_error() {
     // The client should NOT try the fallback.
     // We verify this by checking that a 404 error is returned even though
     // the fallback has the package.
-    fallback.seed_package("alice::router", &[sample_entry("alice::router", "1.0.0")]);
+    fallback.seed_package("alice.router", &[sample_entry("alice.router", "1.0.0")]);
 
     let client = RegistryClient::with_url(primary.api_url()).with_fallback(fallback.api_url());
 
-    let result = client.get_package("alice::router");
+    let result = client.get_package("alice.router");
     match result {
         Err(ApiError::Server { status, .. }) => assert_eq!(status, 404),
         other => panic!("expected Server 404 error (no fallback), got {other:?}"),
@@ -740,7 +739,7 @@ fn no_fallback_on_404_for_search() {
     let fallback = MockRegistry::start();
 
     primary.fail_with_404("/api/v1/search");
-    fallback.seed_package("alice::router", &[sample_entry("alice::router", "1.0.0")]);
+    fallback.seed_package("alice.router", &[sample_entry("alice.router", "1.0.0")]);
 
     let client = RegistryClient::with_url(primary.api_url()).with_fallback(fallback.api_url());
 
@@ -767,12 +766,12 @@ fn tarball_fallback_on_primary_500() {
         },
     );
     // Fallback serves the tarball.
-    fallback.serve_tarball("/packages/alice/router/1.0.0.tar.zst", tarball_data.clone());
+    fallback.serve_tarball("/packages/alice.router/1.0.0.tar.zst", tarball_data.clone());
 
     let client = RegistryClient::with_url(primary.api_url()).with_fallback(fallback.raw_url());
 
     // Primary URL for the tarball.
-    let download_url = format!("{}/packages/alice/router/1.0.0.tar.zst", primary.raw_url());
+    let download_url = format!("{}/packages/alice.router/1.0.0.tar.zst", primary.raw_url());
     let result = client.download_tarball(&download_url).unwrap();
     assert_eq!(result, tarball_data);
 }
@@ -784,13 +783,13 @@ fn tarball_no_fallback_on_404() {
 
     let tarball_data = b"tarball-on-fallback".to_vec();
     // Primary returns 404 for the tarball.
-    primary.fail_with_404("/packages/alice/router/1.0.0.tar.zst");
+    primary.fail_with_404("/packages/alice.router/1.0.0.tar.zst");
     // Fallback has the tarball.
-    fallback.serve_tarball("/packages/alice/router/1.0.0.tar.zst", tarball_data);
+    fallback.serve_tarball("/packages/alice.router/1.0.0.tar.zst", tarball_data);
 
     let client = RegistryClient::with_url(primary.api_url()).with_fallback(fallback.raw_url());
 
-    let download_url = format!("{}/packages/alice/router/1.0.0.tar.zst", primary.raw_url());
+    let download_url = format!("{}/packages/alice.router/1.0.0.tar.zst", primary.raw_url());
     let result = client.download_tarball(&download_url);
     // 404 is NOT retriable, so the fallback should not be tried.
     match result {
@@ -807,13 +806,13 @@ fn multiple_fallbacks_tried_in_order() {
 
     primary.fail_with_500("/api/v1/packages");
     fallback1.fail_with_500("/api/v1/packages");
-    fallback2.seed_package("alice::router", &[sample_entry("alice::router", "3.0.0")]);
+    fallback2.seed_package("alice.router", &[sample_entry("alice.router", "3.0.0")]);
 
     let client = RegistryClient::with_url(primary.api_url())
         .with_fallback(fallback1.api_url())
         .with_fallback(fallback2.api_url());
 
-    let versions = client.get_package("alice::router").unwrap();
+    let versions = client.get_package("alice.router").unwrap();
     assert_eq!(versions.len(), 1);
     assert_eq!(versions[0].vers, "3.0.0");
 }
@@ -832,7 +831,7 @@ fn all_fallbacks_fail_returns_last_error() {
         .with_fallback(fallback1.api_url())
         .with_fallback(fallback2.api_url());
 
-    let result = client.get_package("alice::router");
+    let result = client.get_package("alice.router");
     match result {
         Err(ApiError::Server { status, .. }) => assert_eq!(status, 500),
         other => panic!("expected Server 500 error, got {other:?}"),
@@ -845,9 +844,9 @@ fn all_fallbacks_fail_returns_last_error() {
 fn package_entries_preserve_all_fields() {
     let mock = MockRegistry::start();
 
-    let mut entry = sample_entry("alice::router", "1.0.0");
+    let mut entry = sample_entry("alice.router", "1.0.0");
     entry.deps.push(hew_pkg::index::IndexDep {
-        name: "std::net::http".to_string(),
+        name: "std.net.http".to_string(),
         req: "^2.0".to_string(),
         features: vec!["tls".to_string()],
         optional: false,
@@ -859,21 +858,21 @@ fn package_entries_preserve_all_fields() {
         .insert("default".to_string(), vec!["json".to_string()]);
     entry.edition = Some("2026".to_string());
     entry.hew = Some("0.1.0".to_string());
-    entry.dl = Some("https://cdn.example.com/alice/router/1.0.0.tar.zst".to_string());
+    entry.dl = Some("https://cdn.example.com/alice.router/1.0.0.tar.zst".to_string());
 
-    mock.seed_package("alice::router", &[entry]);
+    mock.seed_package("alice.router", &[entry]);
 
     let client = RegistryClient::with_url(mock.api_url());
-    let versions = client.get_package("alice::router").unwrap();
+    let versions = client.get_package("alice.router").unwrap();
     assert_eq!(versions.len(), 1);
     let v = &versions[0];
-    assert_eq!(v.name, "alice::router");
+    assert_eq!(v.name, "alice.router");
     assert_eq!(v.vers, "1.0.0");
     assert_eq!(v.cksum, "sha256:abc123");
     assert_eq!(v.sig, "ed25519:def456");
     assert_eq!(v.key_fp, "SHA256:xyz");
     assert_eq!(v.deps.len(), 1);
-    assert_eq!(v.deps[0].name, "std::net::http");
+    assert_eq!(v.deps[0].name, "std.net.http");
     assert_eq!(v.deps[0].req, "^2.0");
     assert_eq!(v.deps[0].features, vec!["tls"]);
     assert_eq!(v.features["default"], vec!["json"]);
@@ -913,7 +912,7 @@ fn custom_override_json_response() {
             status: 200,
             body: serde_json::json!({
                 "key_id": "custom-key-42",
-                "public_key": "Y3VzdG9tLWtleQ==",
+                "public_key": "custom-public-key",
                 "algorithm": "ed25519",
             })
             .to_string(),

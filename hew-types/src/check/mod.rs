@@ -47,6 +47,8 @@ mod resolution;
 mod statements;
 #[cfg(test)]
 mod tests;
+mod type_members;
+use self::type_members::DottedTypeMemberUse;
 mod types;
 mod util;
 mod visibility;
@@ -429,6 +431,15 @@ impl Checker {
         }
     }
 
+    /// Check the compiler-embedded builtin source under its declaration
+    /// authority. User programs must enter through [`Self::check_program`].
+    pub fn check_embedded_builtins(&mut self, program: &Program) -> TypeCheckOutput {
+        self.checking_embedded_builtins = true;
+        let output = self.check_program(program);
+        self.checking_embedded_builtins = false;
+        output
+    }
+
     /// Pass 3: Check all bodies
     #[expect(
         clippy::too_many_lines,
@@ -457,9 +468,11 @@ impl Checker {
         self.canonical_std_root_sources.clear();
         self.module_source_paths.clear();
         self.module_item_sources.clear();
+        self.source_file_span_indices.clear();
         self.current_item_source = None;
         self.file_type_decls.clear();
         if let Some(module_graph) = &program.module_graph {
+            let span_indices = module_graph.file_span_indices();
             self.module_item_sources
                 .clone_from(&module_graph.item_sources);
             // `hew check std/foo.hew` rewrites the graph root to a synthetic,
@@ -476,6 +489,13 @@ impl Checker {
                 if !module.source_paths.is_empty() {
                     self.module_source_paths
                         .insert(module_full_path.clone(), module.source_paths.clone());
+                    for source in &module.source_paths {
+                        if let Some(index) = span_indices.path_index(source) {
+                            self.source_file_span_indices
+                                .entry(source.clone())
+                                .or_insert(index);
+                        }
+                    }
                 }
                 if module.source_paths.iter().any(|source| {
                     crate::module_registry::is_canonical_stdlib_module_source(
@@ -500,6 +520,8 @@ impl Checker {
             }
         }
         self.register_builtins();
+        self.capture_protected_prelude_bindings();
+        self.reject_non_root_protected_prelude_declarations(program);
         // `register_builtins` parses the compiler-embedded `std/builtins.hew`
         // source outside the module graph.  Record that exact producer so
         // later trait/source identity normalization can relate prelude traits
@@ -630,13 +652,6 @@ impl Checker {
                         }
                     }
 
-                    // Snapshot error/warning counts before body-checking this module.
-                    // Everything emitted during the body check that still has
-                    // `source_module: None` is tagged below with the module name,
-                    // so the CLI can route it to the correct source file.
-                    let err_before = self.errors.len();
-                    let warn_before = self.warnings.len();
-
                     // Builtin/standard-library modules (`std::`, `hew::`,
                     // `ecosystem::`) ship with the compiler; scope-level lints
                     // inside them (UnusedVariable, UnusedMut) are implementation
@@ -662,26 +677,52 @@ impl Checker {
                     }
 
                     for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                        self.current_item_source = self
+                            .module_item_sources
+                            .get(&module_name)
+                            .and_then(|sources| sources.get(item_idx))
+                            .or_else(|| module.source_paths.first())
+                            .cloned();
                         self.current_module_idx = span_indices
                             .item_index(mod_id, item_idx)
                             .unwrap_or(self.current_module_idx);
+                        let diagnostic_source = self
+                            .item_file_routing_token(
+                                Some(&module_name),
+                                self.current_item_source.as_ref(),
+                            )
+                            .unwrap_or_else(|| module_name.clone());
+                        let err_before = self.errors.len();
+                        let warn_before = self.warnings.len();
                         self.check_item(item, span);
+
+                        // An assembled peer retains file-relative spans, so
+                        // tag each item's diagnostics before advancing to the
+                        // next file. Replace the aggregate module fallback as
+                        // well as an absent source, while preserving an
+                        // explicitly different diagnostic owner.
+                        for error in &mut self.errors[err_before..] {
+                            if error
+                                .source_module
+                                .as_deref()
+                                .is_none_or(|source| source == module_name)
+                            {
+                                error.source_module = Some(diagnostic_source.clone());
+                            }
+                        }
+                        for warning in &mut self.warnings[warn_before..] {
+                            if warning
+                                .source_module
+                                .as_deref()
+                                .is_none_or(|source| source == module_name)
+                            {
+                                warning.source_module = Some(diagnostic_source.clone());
+                            }
+                        }
                     }
+                    self.current_item_source = None;
 
                     self.is_stdlib_source = saved_is_stdlib_source;
-
-                    // Tag diagnostics that were not already tagged (e.g. by a
-                    // nested call that already knew the origin).
-                    for e in &mut self.errors[err_before..] {
-                        if e.source_module.is_none() {
-                            e.source_module = Some(module_name.clone());
-                        }
-                    }
-                    for w in &mut self.warnings[warn_before..] {
-                        if w.source_module.is_none() {
-                            w.source_module = Some(module_name.clone());
-                        }
-                    }
 
                     self.local_type_defs = saved_local_type_defs;
                     self.source_type_defs = saved_source_type_defs;
@@ -726,6 +767,9 @@ impl Checker {
         // reference on later inputs, so suppress this lint for eval fragments.
         if !self.repl_fragment {
             for (key, (import_span, stored_module)) in &self.import_spans {
+                if self.is_canonical_prelude_manifest_import(stored_module.as_deref()) {
+                    continue;
+                }
                 if !self.used_modules.borrow().contains(key) {
                     self.warnings.push(TypeError {
                         severity: crate::error::Severity::Warning,
@@ -1430,6 +1474,13 @@ impl Checker {
         output.cycle_capable_actors = cycle_capable;
 
         output
+    }
+
+    /// The canonical prelude is an import-only authority manifest: its imports
+    /// are intentionally consumed by later user programs, not by its own body.
+    fn is_canonical_prelude_manifest_import(&self, stored_module: Option<&str>) -> bool {
+        stored_module == Some("std.prelude")
+            || (stored_module.is_none() && self.canonical_std_root_sources.contains("std.prelude"))
     }
 
     /// Validate the raw checker-authored ownership graph before following any
@@ -2321,6 +2372,37 @@ impl Checker {
                     self.classify_escapes_in_expr(&b.0, &b.1, in_fork, AnonContext::Other);
                 }
             }
+            Expr::ContextVariant(context) => {
+                if let Some(record) = &context.record {
+                    for (_, (e, s)) in &record.fields {
+                        self.classify_escapes_in_expr(e, s, in_fork, AnonContext::StoredInBinding);
+                    }
+                    if let Some(base) = &record.base {
+                        self.classify_escapes_in_expr(
+                            &base.0,
+                            &base.1,
+                            in_fork,
+                            AnonContext::Other,
+                        );
+                    }
+                }
+            }
+            Expr::GenericApplySuffix { target, .. } => {
+                self.classify_escapes_in_expr(&target.0, &target.1, in_fork, ctx);
+            }
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                self.classify_escapes_in_expr(&target.0, &target.1, in_fork, AnonContext::Other);
+                for (_, (e, s)) in fields {
+                    self.classify_escapes_in_expr(e, s, in_fork, AnonContext::StoredInBinding);
+                }
+                if let Some(base) = base {
+                    self.classify_escapes_in_expr(&base.0, &base.1, in_fork, AnonContext::Other);
+                }
+            }
             Expr::Tuple(items) | Expr::Array(items) => {
                 for (e, s) in items {
                     self.classify_escapes_in_expr(e, s, in_fork, AnonContext::StoredInBinding);
@@ -2448,6 +2530,7 @@ impl Checker {
             Expr::GenBlock { body } => self.classify_escapes_in_block(body, in_fork),
             Expr::Literal(_)
             | Expr::Identifier(_)
+            | Expr::QualifiedAssoc(_)
             | Expr::This
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
@@ -2776,6 +2859,32 @@ fn collect_lambda_spans_in_expr(
                 collect_lambda_spans_in_expr(&b.0, &b.1, out);
             }
         }
+        Expr::ContextVariant(context) => {
+            if let Some(record) = &context.record {
+                for (_, (e, s)) in &record.fields {
+                    collect_lambda_spans_in_expr(e, s, out);
+                }
+                if let Some(base) = &record.base {
+                    collect_lambda_spans_in_expr(&base.0, &base.1, out);
+                }
+            }
+        }
+        Expr::GenericApplySuffix { target, .. } => {
+            collect_lambda_spans_in_expr(&target.0, &target.1, out);
+        }
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            collect_lambda_spans_in_expr(&target.0, &target.1, out);
+            for (_, (e, s)) in fields {
+                collect_lambda_spans_in_expr(e, s, out);
+            }
+            if let Some(base) = base {
+                collect_lambda_spans_in_expr(&base.0, &base.1, out);
+            }
+        }
         Expr::Tuple(items) | Expr::Array(items) => {
             for (e, s) in items {
                 collect_lambda_spans_in_expr(e, s, out);
@@ -2876,6 +2985,7 @@ fn collect_lambda_spans_in_expr(
         }
         Expr::Literal(_)
         | Expr::Identifier(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
@@ -3163,8 +3273,8 @@ fn report_cross_actor_msg_id_collisions(
         reported_msg_ids.push(*msg_id_i);
         let message = format!(
             "actors `{actor_j}` and `{actor_i}` have `receive fn`s with the same \
-             cross-node msg_id 0x{msg_id_i:08x}: `{actor_j}::{handler_j}` and \
-             `{actor_i}::{handler_i}` — the 32-bit wire discriminant is ambiguous"
+             cross-node msg_id 0x{msg_id_i:08x}: `{actor_j}.{handler_j}` and \
+             `{actor_i}.{handler_i}` — the 32-bit wire discriminant is ambiguous"
         );
         let mut err = TypeError::new(
             TypeErrorKind::CrossActorProtocolCollision {
@@ -3178,7 +3288,7 @@ fn report_cross_actor_msg_id_collisions(
             message,
         );
         err = err.with_suggestion(format!(
-            "rename `{actor_j}::{handler_j}` or `{actor_i}::{handler_i}` so their \
+            "rename `{actor_j}.{handler_j}` or `{actor_i}.{handler_i}` so their \
              fully-qualified names hash to distinct msg_ids; explicit `#[msg_id(N)]` \
              pinning is reserved for a future release (not yet supported)"
         ));

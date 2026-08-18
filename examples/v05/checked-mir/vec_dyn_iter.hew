@@ -5,7 +5,7 @@
 // slot and the source slot's data word is nulled) alongside the
 // trait-object element push transfer and the descriptor-driven teardown
 // of a partially consumed Vec<dyn Trait>.
-import std::string;
+import std.string;
 
 trait Labeled {
     fn label_size(val: Self) -> i64;
@@ -42,7 +42,7 @@ fn make_parcel(seed: string) -> dyn Labeled {
 }
 
 fn main() {
-    let values: Vec<dyn Labeled> = Vec::new();
+    let values: Vec<dyn Labeled> = Vec.new();
     values.push(make_person("p"));
     values.push(make_parcel("q"));
     values.push(make_person("r"));
@@ -51,7 +51,7 @@ fn main() {
         total = total + value.label_size();
     }
     println(total);
-    let partial: Vec<dyn Labeled> = Vec::new();
+    let partial: Vec<dyn Labeled> = Vec.new();
     partial.push(make_person("a"));
     partial.push(make_parcel("b"));
     var seen: i64 = 0;

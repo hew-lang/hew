@@ -6,8 +6,8 @@
 // both. The impl provides only `tick`, omitting the required `close`, so it must
 // be REJECTED against the LOCAL trait's required method set — never accepted by
 // reading an imported neighbour's method set.
-import hew::multitrait::{ Proc as P, Tally as MTally, ProcErr as MErr };
-import hew::multitraitb;
+import hew.multitrait.{ Proc as P, Tally as MTally, ProcErr as MErr };
+import hew.multitraitb;
 
 pub type Tally {
     code: i64;

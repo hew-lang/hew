@@ -19,19 +19,19 @@ fn first<T>(v: Vec<T>) -> Option<T> {
 }
 
 fn main() {
-    let vn: Vec<Name> = Vec::new();
+    let vn: Vec<Name> = Vec.new();
     vn.push(Name { label: "owned-ok" });
     match first(vn) {
         Some(n) => println(n.label),
         None => println("empty"),
     }
-    let vi: Vec<i64> = Vec::new();
+    let vi: Vec<i64> = Vec.new();
     vi.push(42);
     match first(vi) {
         Some(x) => println(x),
         None => println("empty"),
     }
-    let vs: Vec<string> = Vec::new();
+    let vs: Vec<string> = Vec.new();
     vs.push("ok");
     match first(vs) {
         Some(s) => println(s),

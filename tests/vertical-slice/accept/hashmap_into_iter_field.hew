@@ -1,14 +1,14 @@
 // HashMap::into_iter over a record field uses two synthetic projection calls.
 // Their keys()/values() call spans carry Vec results while both receivers keep
 // the real `holder.m` field span and HashMap type.
-import std::iter;
+import std.iter;
 
 type MapBox {
     m: HashMap<i64, i64>;
 }
 
 fn make_box() -> MapBox {
-    let m: HashMap<i64, i64> = HashMap::new();
+    let m: HashMap<i64, i64> = HashMap.new();
     m.insert(1, 10);
     m.insert(2, 20);
     m.insert(3, 30);
@@ -17,7 +17,7 @@ fn make_box() -> MapBox {
 
 pub fn main() -> i64 {
     let holder = make_box();
-    let count = iter::count(holder.m.into_iter());
+    let count = iter.count(holder.m.into_iter());
     if holder.m.len() != 3 {
         return 99;
     }

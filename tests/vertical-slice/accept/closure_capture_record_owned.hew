@@ -10,7 +10,7 @@ type Holder {
 }
 
 fn make() -> fn() -> i64 {
-    let counts: Vec<i64> = Vec::new();
+    let counts: Vec<i64> = Vec.new();
     counts.push(4);
     counts.push(7);
     let h = Holder { counts: counts };

@@ -140,7 +140,7 @@ enum Shape {
 }
 
 fn main() {
-    let v: Vec<Shape> = Vec::new();
+    let v: Vec<Shape> = Vec.new();
     v.push(Circle(7));
     v.push(Dot);
     v.push(Square(3, 4));

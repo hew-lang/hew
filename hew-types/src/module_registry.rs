@@ -21,6 +21,13 @@ pub struct ModuleRegistry {
     modules: HashMap<ModuleId, ModuleInfo>,
     /// Ordered search paths for module resolution.
     search_paths: Vec<PathBuf>,
+    /// Compiler-owned root that may confer stdlib-only authority.
+    ///
+    /// This is resolved exclusively from the running compiler's installation
+    /// or development-binary layout. It is deliberately independent of
+    /// `search_paths`, which may contain project-, cwd-, or environment-owned
+    /// roots.
+    compiler_stdlib_root: Option<PathBuf>,
     /// Accumulated handle types from all loaded modules.
     handle_types: HashSet<String>,
     /// Accumulated fielded `#[resource]` handle-wrapper types from all loaded
@@ -33,13 +40,10 @@ pub struct ModuleRegistry {
     drop_funcs: HashMap<String, String>,
 }
 
-/// Parse a module identity at the registry boundary. Source declarations use
-/// canonical dotted owners (`std.math`) while import syntax and the loader use
-/// `::` (`std::math`); both denote the same exact `ModuleId`.
+/// Parse a canonical dotted module identity at the registry boundary.
 fn module_id_from_identity(module_path: &str) -> ModuleId {
     ModuleId::new(
         module_path
-            .replace("::", ".")
             .split('.')
             .filter(|segment| !segment.is_empty())
             .map(String::from)
@@ -70,6 +74,40 @@ pub fn find_enclosing_hew_root(from: &std::path::Path) -> Option<PathBuf> {
             None => return None,
         }
     }
+}
+
+/// Resolve the standard-library root owned by the running compiler binary.
+///
+/// Installed binaries use `<bin>/../share/hew`; development binaries use the
+/// checkout above `target/<profile>`. Rust test executables add a `deps/`
+/// component below the same development layout. No project path, cwd, or
+/// environment override participates in this decision. If neither layout has
+/// the compiler's `std/builtins.hew`, authority is unavailable and callers
+/// must fail closed.
+#[must_use]
+pub fn compiler_stdlib_root() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
+    compiler_stdlib_root_for_executable(&executable)
+}
+
+fn compiler_stdlib_root_for_executable(executable: &std::path::Path) -> Option<PathBuf> {
+    let executable_dir = executable.parent()?;
+    let installed = executable_dir.parent()?.join("share/hew");
+    let development = if executable_dir
+        .file_name()
+        .is_some_and(|name| name == "deps")
+    {
+        executable_dir.parent()?.parent()?.parent()?.to_path_buf()
+    } else {
+        executable_dir.parent()?.parent()?.to_path_buf()
+    };
+
+    [installed, development].into_iter().find_map(|root| {
+        root.join("std/builtins.hew")
+            .is_file()
+            .then(|| root.canonicalize().ok())
+            .flatten()
+    })
 }
 
 /// Build the stdlib search-path list, applying exclusive precedence tiers.
@@ -142,14 +180,10 @@ pub fn build_module_search_paths_for(source_hint: Option<&std::path::Path>) -> V
     // --- Tier 3: installed binary / external project ---
     let mut tier3: Vec<PathBuf> = Vec::new();
 
-    // FHS: <exe>/../share/hew
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            let share_hew = exe_dir.join("../share/hew");
-            if share_hew.join("std").exists() && !tier3.contains(&share_hew) {
-                tier3.push(share_hew);
-            }
-        }
+    // Compiler-owned installed or development layout. This resolver is also
+    // the sole source of stdlib authority inside `ModuleRegistry`.
+    if let Some(root) = compiler_stdlib_root() {
+        tier3.push(root);
     }
 
     // XDG: ~/.local/share/hew
@@ -173,22 +207,6 @@ pub fn build_module_search_paths_for(source_hint: Option<&std::path::Path>) -> V
         let p = PathBuf::from(prefix);
         if p.join("std").exists() && !tier3.contains(&p) {
             tier3.push(p);
-        }
-    }
-
-    // Dev fallback: two levels above the binary (e.g. target/debug/hew → repo root).
-    // Only reached for an installed/external project when tier-2 found nothing —
-    // i.e. a developer binary compiling a project outside any Hew checkout.
-    // WHY: `cargo run` builds land in target/debug/ so exe/../.. is the repo root.
-    // WHEN obsolete: when Hew has a proper install prefix and std is co-installed.
-    // WHAT the real solution is: install std alongside the binary under share/hew.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            if let Some(repo_root) = exe_dir.parent().and_then(|p| p.parent()) {
-                if repo_root.join("std").exists() && !tier3.contains(&repo_root.to_path_buf()) {
-                    tier3.push(repo_root.to_path_buf());
-                }
-            }
         }
     }
 
@@ -262,6 +280,18 @@ pub fn is_canonical_stdlib_module_source(
     source_file: &std::path::Path,
     dotted_module: &str,
 ) -> bool {
+    canonical_stdlib_module_source_in_roots(
+        source_file,
+        dotted_module,
+        &build_module_search_paths_for(Some(source_file)),
+    )
+}
+
+fn canonical_stdlib_module_source_in_roots(
+    source_file: &std::path::Path,
+    dotted_module: &str,
+    roots: &[PathBuf],
+) -> bool {
     let Ok(input_canonical) = std::fs::canonicalize(source_file) else {
         return false;
     };
@@ -272,26 +302,24 @@ pub fn is_canonical_stdlib_module_source(
     let rel = segments.iter().collect::<PathBuf>();
     let candidates = [rel.join(format!("{last}.hew")), rel.with_extension("hew")];
 
-    build_module_search_paths_for(Some(source_file))
-        .iter()
-        .any(|root| {
-            candidates.iter().any(|candidate| {
-                std::fs::canonicalize(root.join(candidate))
-                    .is_ok_and(|canonical| canonical == input_canonical)
-            }) || {
-                // Directory modules are assembled from their primary source
-                // plus peer `.hew` files.  A direct check of one such peer
-                // must retain the same canonical module authority as an
-                // import of the directory; comparing its canonical parent to
-                // the trusted stdlib module directory keeps this provenance
-                // path-based rather than granting it from a filename.
-                input_canonical.extension().is_some_and(|ext| ext == "hew")
-                    && input_canonical.parent().is_some_and(|parent| {
-                        std::fs::canonicalize(root.join(&rel))
-                            .is_ok_and(|module_dir| module_dir == parent)
-                    })
-            }
-        })
+    roots.iter().any(|root| {
+        candidates.iter().any(|candidate| {
+            std::fs::canonicalize(root.join(candidate))
+                .is_ok_and(|canonical| canonical == input_canonical)
+        }) || {
+            // Directory modules are assembled from their primary source
+            // plus peer `.hew` files.  A direct check of one such peer
+            // must retain the same canonical module authority as an
+            // import of the directory; comparing its canonical parent to
+            // the trusted stdlib module directory keeps this provenance
+            // path-based rather than granting it from a filename.
+            input_canonical.extension().is_some_and(|ext| ext == "hew")
+                && input_canonical.parent().is_some_and(|parent| {
+                    std::fs::canonicalize(root.join(&rel))
+                        .is_ok_and(|module_dir| module_dir == parent)
+                })
+        }
+    })
 }
 
 /// Return the declaration owner selected by an import's resolved source.
@@ -495,6 +523,7 @@ impl ModuleRegistry {
         Self {
             modules: HashMap::new(),
             search_paths,
+            compiler_stdlib_root: compiler_stdlib_root(),
             handle_types: HashSet::new(),
             resource_wrapper_types: HashSet::new(),
             drop_types: HashSet::new(),
@@ -504,6 +533,26 @@ impl ModuleRegistry {
 
     pub(crate) fn has_search_paths(&self) -> bool {
         !self.search_paths.is_empty()
+    }
+
+    /// Whether `source_file` is the exact source for `dotted_module` below the
+    /// running compiler's own stdlib root.
+    ///
+    /// Module search paths are intentionally excluded: projects, cwd, `HEWPATH`,
+    /// and `HEW_STD` may affect resolution but cannot confer compiler authority.
+    /// A missing compiler-owned root returns `false`.
+    pub(crate) fn source_has_stdlib_authority(
+        &self,
+        source_file: &std::path::Path,
+        dotted_module: &str,
+    ) -> bool {
+        self.compiler_stdlib_root.as_ref().is_some_and(|root| {
+            canonical_stdlib_module_source_in_roots(
+                source_file,
+                dotted_module,
+                std::slice::from_ref(root),
+            )
+        })
     }
 
     /// Load a module by its full path (e.g. `std::encoding::json`).
@@ -939,10 +988,10 @@ mod tests {
     #[test]
     fn channel_legacy_request_resolves_source_before_consulting_canonical_cache() {
         let mut reg = registry();
-        reg.load("std::channel")
+        reg.load("std.channel")
             .expect("prime the canonical shipped channel owner");
         let shipped = reg
-            .get("std::channel")
+            .get("std.channel")
             .and_then(|info| info.source_path.clone())
             .expect("canonical cache entry has a source path");
 
@@ -961,17 +1010,17 @@ mod tests {
         // its repeated basename denotes the canonical shipped owner.
         reg.search_paths = vec![user_dir.root.clone()];
         let loaded = reg
-            .load("std::channel::channel")
+            .load("std.channel.channel")
             .expect("load the user lookalike through the legacy spelling");
         assert_eq!(loaded.source_path.as_deref(), Some(user_source.as_path()));
         assert_eq!(
-            reg.get("std::channel::channel")
+            reg.get("std.channel.channel")
                 .and_then(|info| info.source_path.as_deref()),
             Some(user_source.as_path()),
             "the user source keeps the nested nominal owner"
         );
         assert_eq!(
-            reg.get("std::channel")
+            reg.get("std.channel")
                 .and_then(|info| info.source_path.as_deref()),
             Some(shipped.as_path()),
             "resolving a lookalike must not replace the proven shipped owner"
@@ -1016,9 +1065,46 @@ mod tests {
     }
 
     #[test]
+    fn compiler_stdlib_root_uses_only_binary_relative_layouts() {
+        let installed = TestDir::new("compiler-stdlib-installed");
+        let installed_root = installed.root.join("share/hew");
+        fs::create_dir_all(installed_root.join("std")).unwrap();
+        fs::write(
+            installed_root.join("std/builtins.hew"),
+            "// installed compiler std\n",
+        )
+        .unwrap();
+        let installed_executable = installed.root.join("bin/hew");
+        assert_eq!(
+            compiler_stdlib_root_for_executable(&installed_executable),
+            installed_root.canonicalize().ok()
+        );
+
+        let development = TestDir::new("compiler-stdlib-development");
+        fs::create_dir_all(development.root.join("std")).unwrap();
+        fs::write(
+            development.root.join("std/builtins.hew"),
+            "// development compiler std\n",
+        )
+        .unwrap();
+        let development_executable = development.root.join("target/debug/hew");
+        assert_eq!(
+            compiler_stdlib_root_for_executable(&development_executable),
+            development.root.canonicalize().ok()
+        );
+
+        let missing = TestDir::new("compiler-stdlib-missing");
+        assert_eq!(
+            compiler_stdlib_root_for_executable(&missing.root.join("bin/hew")),
+            None,
+            "a compiler without its own stdlib layout must fail closed"
+        );
+    }
+
+    #[test]
     fn load_json_module() {
         let mut reg = registry();
-        let info = reg.load("std::encoding::json").unwrap();
+        let info = reg.load("std.encoding.json").unwrap();
         assert!(!info.functions.is_empty(), "json should have functions");
         assert!(
             info.handle_types.contains(&"json.Value".to_string()),
@@ -1029,22 +1115,22 @@ mod tests {
     #[test]
     fn load_caches_result() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
         // Second call should return cached.
-        let info = reg.get("std::encoding::json");
+        let info = reg.get("std.encoding.json");
         assert!(info.is_some(), "should be cached after load");
     }
 
     #[test]
     fn load_nonexistent_returns_not_found() {
         let mut reg = registry();
-        let err = reg.load("std::does::not::exist").unwrap_err();
+        let err = reg.load("std.does.not.exist").unwrap_err();
         match err {
             ModuleError::NotFound {
                 module_path,
                 searched,
             } => {
-                assert_eq!(module_path, "std::does::not::exist");
+                assert_eq!(module_path, "std.does.not.exist");
                 assert_eq!(searched.len(), 1);
                 assert_eq!(searched[0], test_root());
             }
@@ -1070,7 +1156,7 @@ mod tests {
         .unwrap();
 
         let mut reg = ModuleRegistry::new(vec![broken_dir.root.clone(), fallback_dir.root.clone()]);
-        let err = reg.load("std::broken").unwrap_err();
+        let err = reg.load("std.broken").unwrap_err();
         match err {
             ModuleError::ParseError {
                 module_path,
@@ -1090,7 +1176,7 @@ mod tests {
             ModuleError::NotFound { .. } => panic!("expected ParseError, got NotFound"),
         }
         assert!(
-            reg.get("std::broken").is_none(),
+            reg.get("std.broken").is_none(),
             "malformed modules must not be cached or loaded from later search paths"
         );
     }
@@ -1098,7 +1184,7 @@ mod tests {
     #[test]
     fn handle_types_accumulated() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
         assert!(
             reg.is_handle_type("json.Value"),
             "json.Value should be a handle type"
@@ -1109,7 +1195,7 @@ mod tests {
         );
 
         // Load another module — types accumulate.
-        reg.load("std::net::http").unwrap();
+        reg.load("std.net.http").unwrap();
         assert!(reg.is_handle_type("json.Value"), "json.Value still present");
         assert!(
             !reg.is_handle_type("http.Request"),
@@ -1120,17 +1206,17 @@ mod tests {
     #[test]
     fn drop_types_accumulated() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
         assert!(
             reg.is_drop_type("json.Value"),
             "json.Value is a `#[resource]` handle, so it is a drop type"
         );
-        reg.load("std::net::http").unwrap();
+        reg.load("std.net.http").unwrap();
         assert!(
             reg.is_drop_type("http.Request"),
             "http.Request is a `#[resource]` handle, so it is a drop type"
         );
-        reg.load("std::process").unwrap();
+        reg.load("std.process").unwrap();
         assert!(
             reg.is_drop_type("process.Child"),
             "process.Child should be a drop type"
@@ -1139,7 +1225,7 @@ mod tests {
             reg.is_drop_type("http.Server"),
             "http.Server is now a closeable opaque resource"
         );
-        reg.load("std::text::regex").unwrap();
+        reg.load("std.text.regex").unwrap();
         assert!(
             reg.is_drop_type("regex.Pattern"),
             "regex.Pattern is a `#[resource]` handle, so it is a drop type"
@@ -1149,19 +1235,19 @@ mod tests {
     #[test]
     fn drop_funcs_accumulated() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
         assert_eq!(
             reg.drop_func_for("json.Value"),
             Some("hew_json_free"),
             "json.Value.close directly forwards to its sole raw disposer"
         );
-        reg.load("std::net::http").unwrap();
+        reg.load("std.net.http").unwrap();
         assert_eq!(
             reg.drop_func_for("http.Request"),
             None,
             "http.Request should not have a drop func"
         );
-        reg.load("std::process").unwrap();
+        reg.load("std.process").unwrap();
         assert_eq!(
             reg.drop_func_for("process.Child"),
             None,
@@ -1191,7 +1277,7 @@ mod tests {
             Some("hew_http_server_close"),
             "http.Server must use its sole raw disposer"
         );
-        reg.load("std::text::regex").unwrap();
+        reg.load("std.text.regex").unwrap();
         assert_eq!(
             reg.drop_func_for("regex.Pattern"),
             None,
@@ -1219,7 +1305,7 @@ mod tests {
     #[test]
     fn registry_signature_owner_projection_requires_exact_source_declaration() {
         let mut reg = registry();
-        reg.load("std::text::regex").unwrap();
+        reg.load("std.text.regex").unwrap();
 
         assert_eq!(
             reg.canonical_registry_signature_type_identity("regex.Pattern", "std.text.regex"),
@@ -1243,7 +1329,7 @@ mod tests {
         let fixture = TestDir::new("registry-signature-channel-physical-alias");
         fs::write(
             fixture.root.join("signature_importer.hew"),
-            "import std::channel::channel as ch;\n",
+            "import std.channel.channel as ch;\n",
         )
         .expect("write signature importer");
 
@@ -1268,7 +1354,7 @@ mod tests {
     #[test]
     fn imported_registry_signature_user_lookalike_is_order_independent() {
         let mut reg = registry();
-        reg.load("std::channel")
+        reg.load("std.channel")
             .expect("prime canonical shipped channel cache");
 
         let fixture = TestDir::new("registry-signature-channel-user-lookalike");
@@ -1281,7 +1367,7 @@ mod tests {
         .expect("write user channel lookalike");
         fs::write(
             fixture.root.join("signature_importer.hew"),
-            "import std::channel::channel as ch;\n",
+            "import std.channel.channel as ch;\n",
         )
         .expect("write user signature importer");
 
@@ -1353,8 +1439,8 @@ mod tests {
     #[test]
     fn resolve_module_call_json_parse() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
-        let c_sym = reg.resolve_module_call("std::encoding::json", "parse");
+        reg.load("std.encoding.json").unwrap();
+        let c_sym = reg.resolve_module_call("std.encoding.json", "parse");
         assert!(
             c_sym.is_some(),
             "should resolve the exact json module owner"
@@ -1399,11 +1485,11 @@ mod tests {
         );
 
         assert_eq!(
-            reg.resolve_module_call("vendor_a::nested::shared", "run"),
+            reg.resolve_module_call("vendor_a.nested.shared", "run"),
             Some("vendor_a_shared_run".to_string())
         );
         assert_eq!(
-            reg.resolve_module_call("vendor_b::nested::shared", "run"),
+            reg.resolve_module_call("vendor_b.nested.shared", "run"),
             Some("vendor_b_shared_run".to_string())
         );
         assert_eq!(
@@ -1422,7 +1508,7 @@ mod tests {
             "even an unambiguous leaf has no module-selection authority"
         );
         assert_eq!(
-            reg.resolve_module_call("missing::nested::unique", "run"),
+            reg.resolve_module_call("missing.nested.unique", "run"),
             None,
             "a qualified miss must not fall back to its unique leaf"
         );
@@ -1432,9 +1518,9 @@ mod tests {
     #[test]
     fn resolve_handle_method_json_value() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
         // json.Value should have handle methods from its impl block.
-        let info = reg.get("std::encoding::json").unwrap();
+        let info = reg.get("std.encoding.json").unwrap();
         if !info.handle_methods.is_empty() {
             let hm = &info.handle_methods[0];
             let c_sym = reg.resolve_handle_method(&hm.type_name, &hm.method_name);
@@ -1445,8 +1531,8 @@ mod tests {
     #[test]
     fn resolve_handle_method_rejects_short_handle_name() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
-        let info = reg.get("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
+        let info = reg.get("std.encoding.json").unwrap();
         if let Some(hm) = info.handle_methods.first() {
             let short = crate::short_name(&hm.type_name);
             let c_sym = reg.resolve_handle_method(short, &hm.method_name);
@@ -1550,7 +1636,7 @@ mod tests {
     #[test]
     fn fielded_process_child_does_not_publish_a_short_handle_alias() {
         let mut reg = registry();
-        reg.load("std::process").unwrap();
+        reg.load("std.process").unwrap();
 
         // The loader retains qualified imported-signature metadata for normal
         // named-type/trait method resolution.
@@ -1572,8 +1658,8 @@ mod tests {
     #[test]
     fn resolve_handle_method_sig_returns_listener_and_request_close() {
         let mut reg = registry();
-        reg.load("std::net").unwrap();
-        reg.load("std::net::http").unwrap();
+        reg.load("std.net").unwrap();
+        reg.load("std.net.http").unwrap();
 
         let listener_close = reg
             .resolve_handle_method_sig("net.Listener", "close")
@@ -1599,7 +1685,7 @@ mod tests {
     #[test]
     fn qualify_handle_type_requires_canonical_name() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
         assert_eq!(
             reg.qualify_handle_type("Value"),
             None,
@@ -1620,7 +1706,7 @@ mod tests {
     #[test]
     fn all_handle_types_returns_loaded() {
         let mut reg = registry();
-        reg.load("std::encoding::json").unwrap();
+        reg.load("std.encoding.json").unwrap();
         let all = reg.all_handle_types();
         assert!(
             all.contains(&"json.Value".to_string()),
@@ -1648,6 +1734,20 @@ mod tests {
         fn root(&self) -> &PathBuf {
             &self.dir.root
         }
+    }
+
+    #[test]
+    fn missing_compiler_stdlib_root_confers_no_authority() {
+        let project = TestHewTree::new("missing-compiler-authority");
+        let mut registry = ModuleRegistry::new(vec![project.root().clone()]);
+        registry.compiler_stdlib_root = None;
+        assert!(
+            !registry.source_has_stdlib_authority(
+                &project.root().join("std/builtins.hew"),
+                "std.builtins"
+            ),
+            "project search paths cannot replace unavailable compiler authority"
+        );
     }
 
     /// HEWPATH set → tier-1 returns exactly those paths, no dev/cwd leakage.

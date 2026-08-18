@@ -1,12 +1,12 @@
-import std::fs;
+import std.fs;
 
-import std::os;
+import std.os;
 
-import std::net::url;
+import std.net.url;
 
-import std::text::regex;
+import std.text.regex;
 
-import std::time::cron;
+import std.time.cron;
 
 fn main() -> i64 {
     let re = regex.new("[a-z]+");

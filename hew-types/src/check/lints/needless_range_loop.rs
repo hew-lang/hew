@@ -537,10 +537,35 @@ impl BodyScan<'_> {
                 }
             }
             Expr::This
+            | Expr::QualifiedAssoc(_)
             | Expr::Literal(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}
+            Expr::ContextVariant(context) => {
+                if let Some(record) = &context.record {
+                    for (_, value) in &record.fields {
+                        self.expr(&value.0);
+                    }
+                    if let Some(base) = &record.base {
+                        self.expr(&base.0);
+                    }
+                }
+            }
+            Expr::GenericApplySuffix { target, .. } => self.expr(&target.0),
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                self.expr(&target.0);
+                for (_, value) in fields {
+                    self.expr(&value.0);
+                }
+                if let Some(base) = base {
+                    self.expr(&base.0);
+                }
+            }
             Expr::Binary { left, right, .. } => {
                 self.expr(&left.0);
                 self.expr(&right.0);
@@ -774,6 +799,13 @@ fn pattern_binds(pattern: &Pattern, name: &str) -> bool {
         Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
             patterns.iter().any(|p| pattern_binds(&p.0, name))
         }
+        Pattern::NominalPath { payload, .. } => payload
+            .as_ref()
+            .is_some_and(|payload| nominal_payload_binds(payload, name)),
+        Pattern::ContextVariant(context) => context
+            .payload
+            .as_ref()
+            .is_some_and(|payload| nominal_payload_binds(payload, name)),
         Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
             fields.iter().any(|field| match &field.pattern {
                 Some(sub) => pattern_binds(&sub.0, name),
@@ -782,6 +814,24 @@ fn pattern_binds(pattern: &Pattern, name: &str) -> bool {
         }
         Pattern::Or(a, b) => pattern_binds(&a.0, name) || pattern_binds(&b.0, name),
         Pattern::Wildcard | Pattern::Literal(_) | Pattern::Regex { .. } => false,
+    }
+}
+
+fn nominal_payload_binds(payload: &hew_parser::ast::NominalPatternPayload, name: &str) -> bool {
+    match payload {
+        hew_parser::ast::NominalPatternPayload::Tuple(patterns) => patterns
+            .iter()
+            .any(|pattern| pattern_binds(&pattern.0, name)),
+        hew_parser::ast::NominalPatternPayload::Record { fields, .. } => {
+            fields.iter().any(|field| {
+                field
+                    .pattern
+                    .as_ref()
+                    .map_or(field.name == name, |pattern| {
+                        pattern_binds(&pattern.0, name)
+                    })
+            })
+        }
     }
 }
 

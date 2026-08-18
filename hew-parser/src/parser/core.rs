@@ -24,7 +24,7 @@ impl<'src> Parser<'src> {
         let raw_tokens = hew_lexer::lex(source);
         let mut errors = Vec::new();
         let mut tokens = Vec::new();
-        for (t, s) in raw_tokens {
+        for (index, (mut t, s)) in raw_tokens.iter().cloned().enumerate() {
             let span = (s.start + offset)..(s.end + offset);
             if matches!(t, Token::Error) {
                 errors.push(ParseError {
@@ -34,9 +34,63 @@ impl<'src> Parser<'src> {
                     severity: Severity::Error,
                     kind: ParseDiagnosticKind::InvalidLiteral,
                 });
-            } else {
-                tokens.push((t, span));
+                continue;
             }
+
+            if matches!(t, Token::DoubleColon) {
+                let next = raw_tokens.get(index + 1).map(|(token, _)| token);
+                let line_start = source[..s.start].rfind('\n').map_or(0, |at| at + 1);
+                let line_end = source[s.end..]
+                    .find('\n')
+                    .map_or(source.len(), |at| s.end + at);
+                let line = source[line_start..line_end].trim();
+                let migrated = line
+                    .replace("::*", ".{ Name }")
+                    .replace("::<", "<")
+                    .replace("::", ".");
+                let (kind, message, hint) = if matches!(next, Some(Token::Less)) {
+                    (
+                        ParseDiagnosticKind::LegacyTurbofish,
+                        format!(
+                            "E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `{migrated}`"
+                        ),
+                        format!("use the migrated spelling `{migrated}`"),
+                    )
+                } else if matches!(next, Some(Token::Star)) {
+                    (
+                        ParseDiagnosticKind::ImportGlobRemoved,
+                        format!(
+                            "E_IMPORT_GLOB_REMOVED: glob imports have been removed; import explicit names: `{migrated}`"
+                        ),
+                        format!("replace the glob with an explicit selection such as `{migrated}`"),
+                    )
+                } else {
+                    (
+                        ParseDiagnosticKind::LegacyPathSeparator,
+                        format!(
+                            "E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `{migrated}`"
+                        ),
+                        format!("use the migrated spelling `{migrated}`"),
+                    )
+                };
+                errors.push(ParseError {
+                    message,
+                    span: span.clone(),
+                    hint: Some(hint),
+                    severity: Severity::Error,
+                    kind,
+                });
+
+                // Preserve parser recovery without retaining a successful legacy production:
+                // `::<` disappears before generic application, while ordinary separators become
+                // dots. The recorded hard error still makes the parse fail closed.
+                if matches!(next, Some(Token::Less)) {
+                    continue;
+                }
+                t = Token::Dot;
+            }
+
+            tokens.push((t, span));
         }
         Self {
             tokens,

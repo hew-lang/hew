@@ -138,7 +138,7 @@ fn hashmap_point_i64_insert_lowers_to_hew_hashmap_insert_layout_with_arity_3() {
 record Point { x: i64, y: i64 }
 
 fn main() {
-    let m: HashMap<Point, i64> = HashMap::new();
+    let m: HashMap<Point, i64> = HashMap.new();
     m.insert(Point { x: 1, y: 2 }, 42);
 }
 ";
@@ -213,7 +213,7 @@ fn hashmap_kernel_symbol_matrix_named_record_k_by_accepted_v_classes() {
 record Point {{ x: i64, y: i64 }}
 
 fn main() {{
-    let m: HashMap<Point, {v_ty}> = HashMap::new();
+    let m: HashMap<Point, {v_ty}> = HashMap.new();
     let _r = m.{expr};
 }}
 "
@@ -273,7 +273,7 @@ fn hashset_kernel_symbol_matrix_named_record_t_across_every_op() {
 record Point {{ x: i64, y: i64 }}
 
 fn main() {{
-    let s: HashSet<Point> = HashSet::new();
+    let s: HashSet<Point> = HashSet.new();
     let _r = s.{expr};
 }}
 "
@@ -312,14 +312,14 @@ fn hashmap_and_hashset_run_pass_topology_pins_every_kernel_symbol() {
 record Point { x: i64, y: i64 }
 
 fn main() {
-    let m: HashMap<Point, i64> = HashMap::new();
+    let m: HashMap<Point, i64> = HashMap.new();
     m.insert(Point { x: 1, y: 2 }, 10);
     let _g = m.get(Point { x: 1, y: 2 });
     let _c = m.contains_key(Point { x: 1, y: 2 });
     let _r = m.remove(Point { x: 1, y: 2 });
     let _n = m.len();
 
-    let s: HashSet<Point> = HashSet::new();
+    let s: HashSet<Point> = HashSet.new();
     s.insert(Point { x: 1, y: 2 });
     let _sc = s.contains(Point { x: 1, y: 2 });
     let _sr = s.remove(Point { x: 1, y: 2 });

@@ -1,7 +1,7 @@
 //! Status: runnable (v0.5 for-await over Receiver<i64>)
 //! Description: Drains an integer channel receiver with `for await`.
 
-import std::channel::channel;
+import std.channel.channel;
 
 actor DrainInts {
     receive fn run(unused: i64) {

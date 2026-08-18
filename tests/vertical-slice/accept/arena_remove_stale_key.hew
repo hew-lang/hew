@@ -1,6 +1,6 @@
 // Arena<T>: remove returns the exact value once, then the key fails closed —
 // double-remove, get, and contains all reject the stale key.
-import std::arena::{ Arena, Key };
+import std.arena.{ Arena, Key };
 
 fn main() {
     let store: Arena<i64> = arena.new();

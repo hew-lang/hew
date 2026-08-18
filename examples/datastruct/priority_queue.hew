@@ -57,7 +57,7 @@ fn run_test(name: string, passed: i64) -> i64 {
 fn main() {
     var total = 0;
     var passed = 0;
-    let pq: Vec<i64> = Vec::new();
+    let pq: Vec<i64> = Vec.new();
     // Test 1: empty
     total = total + 1;
     let r1 = if pq_is_empty(pq) == 1 {
@@ -129,7 +129,7 @@ fn main() {
 
     // Test 7: ascending insert order
     total = total + 1;
-    let pq2: Vec<i64> = Vec::new();
+    let pq2: Vec<i64> = Vec.new();
     pq_insert(pq2, 1);
     pq_insert(pq2, 2);
     pq_insert(pq2, 3);
@@ -148,7 +148,7 @@ fn main() {
 
     // Test 8: descending insert order
     total = total + 1;
-    let pq3: Vec<i64> = Vec::new();
+    let pq3: Vec<i64> = Vec.new();
     pq_insert(pq3, 50);
     pq_insert(pq3, 40);
     pq_insert(pq3, 30);

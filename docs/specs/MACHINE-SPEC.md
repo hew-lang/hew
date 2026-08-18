@@ -233,15 +233,15 @@ Transitions produce a new state and may additionally emit named output events vi
 
 ```hew
 actor ConnectionManager {
-    var tcp: TcpState = TcpState::Closed;
+    var tcp: TcpState = TcpState.Closed;
 
     receive fn handle(event: TcpStateEvent) {
         tcp.step(event);
 
         // Side effects happen here, not in the machine body
         match tcp {
-            TcpState::Established { local_seq, remote_seq } => println("Connection established"),
-            TcpState::Closed => println("Connection closed"),
+            TcpState.Established { local_seq, remote_seq } => println("Connection established"),
+            TcpState.Closed => println("Connection closed"),
             _ => {}
         }
     }
@@ -253,7 +253,7 @@ _A dedicated `/ Output` arrow syntax is a declined non-goal — `emit` covers Me
 **Delivery semantics.** A unit `emit` pushes onto a thread-local emit queue tagged with the emitting machine's stable type id (a name-derived digest, not the instance). `step()`'s implicit queue wrapper keeps every pushed event queued — it never drains or discards. A machine method `m.take_emits(EventName) -> i64` removes every queued event matching (this machine's TYPE, `EventName`'s tag) and returns the count removed; unconsumed events — of other tags, or from other machine instances that share the same type — accumulate on the queue exactly like today's unbounded default mailbox. Delivery is per-thread, per-machine-TYPE: it is NOT per-instance and NOT per-actor. A machine stepped inside an actor's `receive fn` must call `take_emits` within that same handler activation — cross-activation delivery (routing an emit to a specific actor or scheduler slot) is deferred to the actor-scheduler integration slice and composes on top of this ABI without changing it.
 
 ```hew
-var s = Signal::Idle;
+var s = Signal.Idle;
 s.step(Start);            // transitions to Active, emits Ready {}
 s.take_emits(Ready);       // 1 — removes the queued Ready event
 s.take_emits(Ready);       // 0 — nothing left to remove
@@ -383,7 +383,7 @@ compile time (fail-closed).
 A `machine` declaration introduces a nominal type. The type name is the machine identifier.
 
 ```hew
-let state: TcpState = TcpState::Closed;
+let state: TcpState = TcpState.Closed;
 ```
 
 Machine types are:
@@ -473,9 +473,9 @@ For a machine named `M` with event type `MEvent`, the compiler generates:
 The primary API. Accepts an event, applies the matching transition, and mutates the machine in place. Does not return a value (like `Vec.push()`).
 
 ```hew
-var s = TcpState::Closed;
-s.step(TcpStateEvent::Connect);
-// s is now TcpState::Listen { backlog: 128 }
+var s = TcpState.Closed;
+s.step(TcpStateEvent.Connect);
+// s is now TcpState.Listen { backlog: 128 }
 ```
 
 _Implementation note: `step()` compiles to a nested switch on (tag, event_tag). The outer switch dispatches on the current state tag; the inner switch dispatches on the event tag. Each branch executes the corresponding transition body._
@@ -485,7 +485,7 @@ _Implementation note: `step()` compiles to a nested switch on (tag, event_tag). 
 Returns the name of the current state as a string, for debugging and logging.
 
 ```hew
-let s = TcpState::Established { local_seq: 42, remote_seq: 7 };
+let s = TcpState.Established { local_seq: 42, remote_seq: 7 };
 assert(s.state_name() == "Established");
 ```
 
@@ -523,9 +523,9 @@ match tcp_state {
 Each state is a constructor for the machine type, qualified by the machine name:
 
 ```hew
-let a = TcpState::Closed;
-let b = TcpState::Listen { backlog: 64 };
-let c = TcpState::Established { local_seq: 0, remote_seq: 0 };
+let a = TcpState.Closed;
+let b = TcpState.Listen { backlog: 64 };
+let c = TcpState.Established { local_seq: 0, remote_seq: 0 };
 ```
 
 Within the machine's own transition bodies, the machine name qualifier is optional:
@@ -539,7 +539,7 @@ on Connect: Closed => Listen {
 Outside the machine, the full qualifier is required:
 
 ```hew
-let s = TcpState::Listen { backlog: 128 };  // Required outside machine body
+let s = TcpState.Listen { backlog: 128 };  // Required outside machine body
 ```
 
 ### §7.5 Event constructors
@@ -547,7 +547,7 @@ let s = TcpState::Listen { backlog: 128 };  // Required outside machine body
 Events follow the same pattern:
 
 ```hew
-let e = TcpStateEvent::Data { payload: "hello" };
+let e = TcpStateEvent.Data { payload: "hello" };
 s1.step(e);
 ```
 
@@ -752,28 +752,28 @@ current MIR limitation, not yet fully lowered):
 
 ```hew
 actor ApiGateway {
-    var breaker: CircuitBreaker = CircuitBreaker::Closed { failures: 0 };
+    var breaker: CircuitBreaker = CircuitBreaker.Closed { failures: 0 };
 
     receive fn call(req: Request) -> Result<Response, string> {
         // Check circuit state
         match breaker {
-            CircuitBreaker::Open { expires_at } => {
+            CircuitBreaker.Open { expires_at } => {
                 return Err("circuit open");
             },
             _ => {}
         }
 
-        let result = http::send(req);
+        let result = http.send(req);
 
         // Update machine based on outcome
         match result {
             Ok(resp) => {
-                breaker.step(CircuitBreakerEvent::Success);
+                breaker.step(CircuitBreakerEvent.Success);
                 Ok(resp)
             },
             Err(e) => {
-                let now = time::now_ms();
-                breaker.step(CircuitBreakerEvent::Failure { timestamp: now });
+                let now = time.now_ms();
+                breaker.step(CircuitBreakerEvent.Failure { timestamp: now });
                 Err(e)
             },
         }
@@ -786,22 +786,22 @@ Testing (verified to compile and pass `hew check`):
 ```hew
 fn main() {
     // Test: circuit opens after 5 failures
-    var breaker = CircuitBreaker::Closed { failures: 0 };
+    var breaker = CircuitBreaker.Closed { failures: 0 };
     for i in 0..5 {
-        breaker.step(CircuitBreakerEvent::Failure { timestamp: i * 1000 });
+        breaker.step(CircuitBreakerEvent.Failure { timestamp: i * 1000 });
     }
     match breaker {
-        CircuitBreaker::Open { expires_at } => assert(expires_at > 0),
+        CircuitBreaker.Open { expires_at } => assert(expires_at > 0),
         _ => assert(false),
     }
 
     // Test: half-open recovers after 3 successes
-    var b2 = CircuitBreaker::HalfOpen { successes: 0 };
+    var b2 = CircuitBreaker.HalfOpen { successes: 0 };
     for i in 0..3 {
-        b2.step(CircuitBreakerEvent::Success);
+        b2.step(CircuitBreakerEvent.Success);
     }
     match b2 {
-        CircuitBreaker::Closed { failures } => assert(failures == 0),
+        CircuitBreaker.Closed { failures } => assert(failures == 0),
         _ => assert(false),
     }
 }

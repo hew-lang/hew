@@ -9,9 +9,9 @@
 //! Note: `bytes` is a by-value type on this branch — `put_*` returns
 //! a fresh buffer rather than mutating a caller-owned buffer.
 
-import std::encoding::binary;
+import std.encoding.binary;
 
-import std::testing;
+import std.testing;
 
 // ── u16 little-endian — known pattern ────────────────────────────────
 #[test]

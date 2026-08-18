@@ -1,15 +1,15 @@
-// Accept: generic enum Option<T> with Some variant — end-to-end lowering.
-// Option::Some(42) must lower through HIR EnumLayoutRegistry → MIR layout-gather
+// Accept: generic enum Maybe<T> with Some variant — end-to-end lowering.
+// Maybe::Some(42) must lower through HIR EnumLayoutRegistry → MIR layout-gather
 // → codegen and exit 42.
-enum Option<T> {
+enum Maybe<T> {
     Some(T);
     None;
 }
 
 fn main() -> i64 {
-    let x: Option<i64> = Option::Some(42);
+    let x: Maybe<i64> = Maybe.Some(42);
     match x {
-        Option::Some(v) => v,
-        Option::None => 0,
+        Maybe.Some(v) => v,
+        Maybe.None => 0,
     }
 }

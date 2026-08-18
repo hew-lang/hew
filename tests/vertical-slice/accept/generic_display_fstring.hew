@@ -21,7 +21,7 @@ fn main() {
     show(99);
     show("ok");
     show(Point { x: 1, y: 2 });
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(3);
     v.push(4);
     show_all(v);

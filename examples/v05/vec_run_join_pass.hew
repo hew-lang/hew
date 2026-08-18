@@ -1,6 +1,6 @@
-// Vec<string>::join accept fixture.
+// Vec<string>.join accept fixture.
 fn main() -> i64 {
-    let words: Vec<string> = Vec::new();
+    let words: Vec<string> = Vec.new();
     words.push("hew");
     words.push("lang");
     let _joined = words.join("-");

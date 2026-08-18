@@ -111,9 +111,9 @@ fn colour_vec_loop_source(frames: usize) -> String {
          \n\
          fn tag(c: Colour) -> i64 {{\n\
          \x20   match c {{\n\
-         \x20       Colour::Red => 1,\n\
-         \x20       Colour::Green => 2,\n\
-         \x20       Colour::Blue => 3,\n\
+         \x20       Colour.Red => 1,\n\
+         \x20       Colour.Green => 2,\n\
+         \x20       Colour.Blue => 3,\n\
          \x20   }}\n\
          }}\n\
          \n\
@@ -121,9 +121,9 @@ fn colour_vec_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let v: Vec<Colour> = Vec::new();\n\
-         \x20       v.push(Colour::Red);\n\
-         \x20       v.push(Colour::Green);\n\
+         \x20       let v: Vec<Colour> = Vec.new();\n\
+         \x20       v.push(Colour.Red);\n\
+         \x20       v.push(Colour.Green);\n\
          \x20       total = total + v.len() + tag(v[0]);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -147,9 +147,9 @@ fn payload_enum_vec_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let v: Vec<Shape> = Vec::new();\n\
-         \x20       v.push(Shape::Label(\"heap-owning-per-iteration-payload\"));\n\
-         \x20       v.push(Shape::Dot);\n\
+         \x20       let v: Vec<Shape> = Vec.new();\n\
+         \x20       v.push(Shape.Label(\"heap-owning-per-iteration-payload\"));\n\
+         \x20       v.push(Shape.Dot);\n\
          \x20       total = total + v.len();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -170,16 +170,16 @@ enum Colour { Red; Green; Blue; }\n\
 \n\
 fn tag(c: Colour) -> i64 {\n\
 \x20   match c {\n\
-\x20       Colour::Red => 1,\n\
-\x20       Colour::Green => 2,\n\
-\x20       Colour::Blue => 3,\n\
+\x20       Colour.Red => 1,\n\
+\x20       Colour.Green => 2,\n\
+\x20       Colour.Blue => 3,\n\
 \x20   }\n\
 }\n\
 \n\
 fn make() -> Vec<Colour> {\n\
-\x20   let v: Vec<Colour> = Vec::new();\n\
-\x20   v.push(Colour::Green);\n\
-\x20   v.push(Colour::Blue);\n\
+\x20   let v: Vec<Colour> = Vec.new();\n\
+\x20   v.push(Colour.Green);\n\
+\x20   v.push(Colour.Blue);\n\
 \x20   return v;\n\
 }\n\
 \n\
@@ -190,9 +190,9 @@ fn total(xs: Vec<Colour>) -> i64 {\n\
 fn main() {\n\
 \x20   let made = make();\n\
 \x20   let a = tag(made[0]) + tag(made[1]);\n\
-\x20   let v: Vec<Colour> = Vec::new();\n\
-\x20   v.push(Colour::Blue);\n\
-\x20   v.push(Colour::Blue);\n\
+\x20   let v: Vec<Colour> = Vec.new();\n\
+\x20   v.push(Colour.Blue);\n\
+\x20   v.push(Colour.Blue);\n\
 \x20   let b = total(v);\n\
 \x20   print(a + b);\n\
 \x20   print(\"OK\");\n\

@@ -11,7 +11,7 @@
 //
 // `score()` = match Hue::Blue(42) -> 42, plus code_of(Tag { code: 8 }) -> 8.
 // Output "50" proves the aliases resolved end-to-end through codegen.
-import hew::deepalias;
+import hew.deepalias;
 
 fn main() {
     println(deepalias.score());

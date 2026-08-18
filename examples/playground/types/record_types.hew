@@ -18,16 +18,16 @@ enum Shape {
 
 fn area_description(s: Shape) -> string {
     match s {
-        Dot(_p) => "a single point",
-        Ring(c) => f"a circle with radius {c.radius}",
+        .Dot(_p) => "a single point",
+        .Ring(c) => f"a circle with radius {c.radius}",
     }
 }
 
 fn main() {
     let origin = Point { x: 0, y: 0 };
-    let dot = Dot(origin);
+    let dot = Shape.Dot(origin);
     println(area_description(dot));
     let centre = Point { x: 3, y: 4 };
-    let ring = Ring(Circle { centre: centre, radius: 10 });
+    let ring = Shape.Ring(Circle { centre: centre, radius: 10 });
     println(area_description(ring));
 }

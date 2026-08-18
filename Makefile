@@ -72,7 +72,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
+.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -1301,6 +1301,40 @@ hew-fmt-check: hew
 	    | xargs -0 "$(DEBUG_DIR)/hew" fmt --check \
 	    && echo "hew-fmt-check passed: all $$total .hew sources are formatted." \
 	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
+
+# Exercise representative migration inputs in an isolated copy so the proof
+# never edits the checkout. The second pass must leave the first-pass snapshot
+# byte-identical.
+test-migrate-corpus: hew
+	@set -e; migration_root=$$(mktemp -d); migration_fixed=$$(mktemp -d); \
+	trap 'rm -rf "$$migration_root" "$$migration_fixed"' 0; \
+	cp -R tests/corpus/migrate/. "$$migration_root/"; \
+	echo "1/6 migrate accepted representative sources"; \
+	"$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_root/accept"; \
+	echo "2/6 compare exact migrated sources"; \
+	for migration_source in "$$migration_root"/accept/*.hew; do \
+		migration_expected="$${migration_source%.hew}.expected"; \
+		diff -u "$$migration_expected" "$$migration_source"; \
+	done; \
+	echo "3/6 require the unresolvable source to fail loudly"; \
+	migration_refusal="$$migration_root/refusal.log"; \
+	if "$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_root/reject" >"$$migration_refusal" 2>&1; then \
+		cat "$$migration_refusal"; \
+		echo "error: migration accepted the unresolvable representative site" >&2; \
+		exit 1; \
+	fi; \
+	grep -F 'unresolvable.hew:24-35: type checking failed: undefined function `Missing`' "$$migration_refusal"; \
+	diff -u tests/corpus/migrate/reject/unresolvable.hew "$$migration_root/reject/unresolvable.hew"; \
+	echo "4/6 prove the migrated snapshot reaches a successful typecheck"; \
+	for migration_source in "$$migration_root"/accept/*.hew; do \
+		"$(DEBUG_DIR)/hew" check "$$migration_source"; \
+	done; \
+	echo "5/6 require a byte-identical second migration pass"; \
+	cp -R "$$migration_root/accept/." "$$migration_fixed/"; \
+	"$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_root/accept"; \
+	diff -ru "$$migration_fixed" "$$migration_root/accept"; \
+	echo "6/6 require check mode to recognize the fixed point"; \
+	"$(DEBUG_DIR)/hew" fmt --migrate --check --root "$$migration_root/accept"
 
 # Derive the compilable corpus from the tracked source roots, format a private
 # path-preserving mirror, then require the result to check and reach a fixed point.

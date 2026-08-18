@@ -1,15 +1,15 @@
-// Accept: generic enum Option<T> with None variant — end-to-end lowering.
-// Option::None must lower through HIR EnumLayoutRegistry → MIR → codegen
+// Accept: generic enum Maybe<T> with None variant — end-to-end lowering.
+// Maybe::None must lower through HIR EnumLayoutRegistry → MIR → codegen
 // and the default arm must match, exiting 99.
-enum Option<T> {
+enum Maybe<T> {
     Some(T);
     None;
 }
 
 fn main() -> i64 {
-    let x: Option<i64> = Option::None;
+    let x: Maybe<i64> = Maybe.None;
     match x {
-        Option::Some(v) => v,
-        Option::None => 99,
+        Maybe.Some(v) => v,
+        Maybe.None => 99,
     }
 }

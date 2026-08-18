@@ -8,11 +8,11 @@
 //! the catalog has no concrete `println_*`/`print_*`/`to_string_*` overload for
 //! (#2351), plus a named type carrying a real `impl Display` (#2492).
 
-import std::testing;
+import std.testing;
 
 type Point {
-    x: i64,
-    y: i64,
+    x: i64;
+    y: i64;
 }
 
 impl Display for Point {
@@ -30,7 +30,6 @@ fn test_direct_to_string_char_and_narrow_primitives() {
     let isizev: isize = -4096;
     let usizev: usize = 4000000000;
     let f32v: f32 = 1.5;
-
     testing.assert_eq_str(to_string(cv), "h");
     testing.assert_eq_str(to_string(i8v), "-7");
     testing.assert_eq_str(to_string(i16v), "-1234");
@@ -55,7 +54,6 @@ fn test_direct_println_and_print_run_without_trap() {
     let i8v: i8 = -7;
     let f32v: f32 = 1.5;
     let p = Point { x: 1, y: 2 };
-
     println(cv);
     print(i8v);
     println(f32v);
@@ -74,7 +72,6 @@ fn test_concrete_fstring_renders_through_same_shell() {
     let cv: char = 'h';
     let f32v: f32 = 1.5;
     let p = Point { x: 3, y: 4 };
-
     testing.assert_eq_str(f"{cv}", "h");
     testing.assert_eq_str(f"{f32v}", "1.5");
     testing.assert_eq_str(f"{p}", "Point(3, 4)");

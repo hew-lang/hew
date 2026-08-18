@@ -53,8 +53,8 @@ fn main() {
     var failed = 0;
     let n = 8;
     // Initialize: each node is its own parent
-    let parent: Vec<i64> = Vec::new();
-    let rank: Vec<i64> = Vec::new();
+    let parent: Vec<i64> = Vec.new();
+    let rank: Vec<i64> = Vec.new();
     for i in 0 .. n {
         parent.push(i);
         rank.push(0);

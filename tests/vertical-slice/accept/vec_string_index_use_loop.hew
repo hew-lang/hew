@@ -29,7 +29,7 @@
 // Vec is reused: a = xs[0] ("item0", len 5), c = xs[3] ("item3", len 5),
 // n = len (4).  a.len() + c.len() + n = 5 + 5 + 4 = 14  ->  exit 14
 fn main() -> i64 {
-    let xs: Vec<string> = Vec::new();
+    let xs: Vec<string> = Vec.new();
     for k in 0 .. 4 {
         xs.push(f"item{k}"); // heap strings: interpolation allocates a fresh buffer
     }

@@ -341,7 +341,7 @@ fn d65_shape_exact_count(name: &str) -> (usize, usize) {
             state_source(
                 "Vec<i64>",
                 "var total: i64 = 0; for value in values { total = total + value; } total",
-                "let values: Vec<i64> = Vec::new(); values.push(1); values.push(2);",
+                "let values: Vec<i64> = Vec.new(); values.push(1); values.push(2);",
             ),
             "__hew_state_drop_Holder",
             1,
@@ -351,7 +351,7 @@ fn d65_shape_exact_count(name: &str) -> (usize, usize) {
             state_source(
                 "Vec<i64>",
                 "for value in values { if value == 1 { break; } } 0",
-                "let values: Vec<i64> = Vec::new(); values.push(1); values.push(2);",
+                "let values: Vec<i64> = Vec.new(); values.push(1); values.push(2);",
             ),
             "__hew_state_drop_Holder",
             1,
@@ -361,7 +361,7 @@ fn d65_shape_exact_count(name: &str) -> (usize, usize) {
             state_source(
                 "Vec<Vec<i64>>",
                 "var total: i64 = 0; for row in values { total = total + row[0]; } total",
-                "let values: Vec<Vec<i64>> = Vec::new(); let row: Vec<i64> = Vec::new(); \
+                "let values: Vec<Vec<i64>> = Vec.new(); let row: Vec<i64> = Vec.new(); \
                  row.push(1); values.push(row);",
             ),
             "__hew_state_drop_Holder",
@@ -372,7 +372,7 @@ fn d65_shape_exact_count(name: &str) -> (usize, usize) {
             state_source(
                 "Vec<Vec<i64>>",
                 "for value in values[0] { if value == 1 { break; } } 0",
-                "let values: Vec<Vec<i64>> = Vec::new(); let row: Vec<i64> = Vec::new(); \
+                "let values: Vec<Vec<i64>> = Vec.new(); let row: Vec<i64> = Vec.new(); \
                  row.push(1); row.push(2); values.push(row);",
             ),
             "__hew_state_drop_Holder",
@@ -404,7 +404,7 @@ fn enforce_exact_release_count(name: &str, observed: usize, expected: usize) {
 
 const LOCAL_FLAT_FULL: &str = r#"
 fn main() -> i64 {
-    let values: Vec<i64> = Vec::new();
+    let values: Vec<i64> = Vec.new();
     values.push(1);
     values.push(2);
     var total: i64 = 0;
@@ -417,7 +417,7 @@ fn main() -> i64 {
 
 const LOCAL_FLAT_PARTIAL: &str = r#"
 fn main() -> i64 {
-    let values: Vec<i64> = Vec::new();
+    let values: Vec<i64> = Vec.new();
     values.push(1);
     values.push(2);
     for value in values {
@@ -431,8 +431,8 @@ fn main() -> i64 {
 
 const LOCAL_NESTED_FULL: &str = r#"
 fn main() -> i64 {
-    let rows: Vec<Vec<i64>> = Vec::new();
-    let row: Vec<i64> = Vec::new();
+    let rows: Vec<Vec<i64>> = Vec.new();
+    let row: Vec<i64> = Vec.new();
     row.push(1);
     rows.push(row);
     var total: i64 = 0;
@@ -445,8 +445,8 @@ fn main() -> i64 {
 
 const LOCAL_NESTED_PARTIAL: &str = r#"
 fn main() -> i64 {
-    let rows: Vec<Vec<i64>> = Vec::new();
-    let row: Vec<i64> = Vec::new();
+    let rows: Vec<Vec<i64>> = Vec.new();
+    let row: Vec<i64> = Vec.new();
     row.push(1);
     row.push(2);
     rows.push(row);
@@ -534,7 +534,7 @@ fn d65_cursor_recursion_truth_table_has_one_owner_release_per_shape() {
             state_source(
                 "Vec<i64>",
                 "var total: i64 = 0; for value in values { total = total + value; } total",
-                "let values: Vec<i64> = Vec::new(); values.push(1); values.push(2);",
+                "let values: Vec<i64> = Vec.new(); values.push(1); values.push(2);",
             ),
         ),
         (
@@ -542,7 +542,7 @@ fn d65_cursor_recursion_truth_table_has_one_owner_release_per_shape() {
             state_source(
                 "Vec<i64>",
                 "for value in values { if value == 1 { break; } } 0",
-                "let values: Vec<i64> = Vec::new(); values.push(1); values.push(2);",
+                "let values: Vec<i64> = Vec.new(); values.push(1); values.push(2);",
             ),
         ),
         (
@@ -550,7 +550,7 @@ fn d65_cursor_recursion_truth_table_has_one_owner_release_per_shape() {
             state_source(
                 "Vec<Vec<i64>>",
                 "var total: i64 = 0; for row in values { total = total + row[0]; } total",
-                "let values: Vec<Vec<i64>> = Vec::new(); let row: Vec<i64> = Vec::new(); \
+                "let values: Vec<Vec<i64>> = Vec.new(); let row: Vec<i64> = Vec.new(); \
                  row.push(1); values.push(row);",
             ),
         ),
@@ -559,7 +559,7 @@ fn d65_cursor_recursion_truth_table_has_one_owner_release_per_shape() {
             state_source(
                 "Vec<Vec<i64>>",
                 "for value in values[0] { if value == 1 { break; } } 0",
-                "let values: Vec<Vec<i64>> = Vec::new(); let row: Vec<i64> = Vec::new(); \
+                "let values: Vec<Vec<i64>> = Vec.new(); let row: Vec<i64> = Vec.new(); \
                  row.push(1); row.push(2); values.push(row);",
             ),
         ),
@@ -702,7 +702,7 @@ fn d65_actor_state_borrow_proof_rejects_a_live_release_flag() {
     let source = state_source(
         "Vec<i64>",
         "var total: i64 = 0; for value in values { total = total + value; } total",
-        "let values: Vec<i64> = Vec::new(); values.push(1); values.push(2);",
+        "let values: Vec<i64> = Vec.new(); values.push(1); values.push(2);",
     );
     let ir = emit_ir(&source, "state_flat_full_flag_counterfactual");
     let handler = function_body(&ir, "Holder__recv__scan");

@@ -24,7 +24,7 @@ extern "C" {
 fn main() {
     let a = Dq { handle: unsafe { hew_deque_new() }, tag: 1 };
     let b = Dq { handle: unsafe { hew_deque_new() }, tag: 2 };
-    let v: Vec<Dq> = Vec::new();
+    let v: Vec<Dq> = Vec.new();
     v.push(a);
     v.push(b);
     for e in v {

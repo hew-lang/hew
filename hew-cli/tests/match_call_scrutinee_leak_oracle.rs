@@ -194,7 +194,7 @@ fn early_return_loop_source(frames: usize) -> String {
 /// bridge no longer materialising a discarded `last_error()` string per Err.
 fn tls_read_loop_source(frames: usize) -> String {
     format!(
-        "import std::net::tls;\n\
+        "import std.net.tls;\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   let stream = tls.connect(\"127.0.0.1\", 1);\n\

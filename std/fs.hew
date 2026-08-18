@@ -77,22 +77,22 @@ pub enum IoError {
 pub fn io_error_from_errno(errno: i64) -> IoError {
     // ENOENT: Linux=2, macOS=2
     if errno == 2 {
-        IoError::NotFound(errno)
+        IoError.NotFound(errno)
     // EACCES: Linux=13, macOS=13
     } else if errno == 13 {
-        IoError::PermissionDenied(errno)
+        IoError.PermissionDenied(errno)
     // EEXIST: Linux=17, macOS=17; ERROR_ALREADY_EXISTS: Windows=183.
     // 183 is not a POSIX errno, so mapping it here is unambiguous.
     } else if errno == 17 || errno == 183 {
-        IoError::AlreadyExists(errno)
+        IoError.AlreadyExists(errno)
     // ETIMEDOUT: Linux=110, macOS=60
     } else if errno == 110 || errno == 60 {
-        IoError::TimedOut(errno)
+        IoError.TimedOut(errno)
     // ECANCELED: Linux=125, macOS=89
     } else if errno == 125 || errno == 89 {
-        IoError::Cancelled(errno)
+        IoError.Cancelled(errno)
     } else {
-        IoError::Other(errno)
+        IoError.Other(errno)
     }
 }
 
@@ -112,13 +112,13 @@ pub fn io_error_from_errno(errno: i64) -> IoError {
 /// this one authority rather than re-deriving it from the raw errno.
 pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
     if kind == 1 {
-        IoError::NotFound(errno)
+        IoError.NotFound(errno)
     } else if kind == 2 {
-        IoError::PermissionDenied(errno)
+        IoError.PermissionDenied(errno)
     } else if kind == 3 {
-        IoError::AlreadyExists(errno)
+        IoError.AlreadyExists(errno)
     } else if kind == 4 {
-        IoError::TimedOut(errno)
+        IoError.TimedOut(errno)
     } else {
         io_error_from_errno(errno)
     }
@@ -138,12 +138,12 @@ pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
 /// ```
 pub fn io_error_message(e: IoError) -> string {
     match e {
-        IoError::NotFound(code) => f"NotFound({code})",
-        IoError::PermissionDenied(code) => f"PermissionDenied({code})",
-        IoError::AlreadyExists(code) => f"AlreadyExists({code})",
-        IoError::TimedOut(code) => f"TimedOut({code})",
-        IoError::Cancelled(code) => f"Cancelled({code})",
-        IoError::Other(code) => f"Other({code})",
+        IoError.NotFound(code) => f"NotFound({code})",
+        IoError.PermissionDenied(code) => f"PermissionDenied({code})",
+        IoError.AlreadyExists(code) => f"AlreadyExists({code})",
+        IoError.TimedOut(code) => f"TimedOut({code})",
+        IoError.Cancelled(code) => f"Cancelled({code})",
+        IoError.Other(code) => f"Other({code})",
     }
 }
 
@@ -152,14 +152,14 @@ pub fn io_error_message(e: IoError) -> string {
 /// to map (e.g. `fs.io_error_from_errno` would need a platform-aware errno
 /// constant that the caller does not have).
 pub fn io_error_timed_out() -> IoError {
-    IoError::TimedOut(0)
+    IoError.TimedOut(0)
 }
 
 /// Construct an `IoError::Cancelled(0)` value without a platform-specific
 /// errno. Useful for in-process cancellation (e.g. blocking pool stopped)
 /// where there is no OS error to map.
 pub fn io_error_cancelled() -> IoError {
-    IoError::Cancelled(0)
+    IoError.Cancelled(0)
 }
 
 fn last_io_error() -> IoError {
@@ -170,7 +170,7 @@ fn last_io_error() -> IoError {
         let errno = hew_stream_last_errno() as i64;
         let _ = hew_stream_last_error();
         if errno == 0 && kind == 0 {
-            IoError::Other(5)
+            IoError.Other(5)
         } else {
             io_error_from_kind(kind, errno)
         }

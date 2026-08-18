@@ -10,16 +10,16 @@ enum Feed {
 
 fn step(n: i64) -> Feed {
     if n > 0 {
-        Feed::Item { a: "feed-cs-a".to_upper(), b: "feed-cs-b".to_upper() }
+        Feed.Item { a: "feed-cs-a".to_upper(), b: "feed-cs-b".to_upper() }
     } else {
-        Feed::Done
+        Feed.Done
     }
 }
 
 fn main() -> i64 {
     var i = 3;
     var total = 0;
-    while let Feed::Item { a, b } = step(i) {
+    while let Feed.Item { a, b } = step(i) {
         total = total + a.len() + b.len();
         i = i - 1;
     }

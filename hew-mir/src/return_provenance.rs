@@ -4560,7 +4560,14 @@ fn callee_is_proven_pure_item(
 /// summary (consulted FIRST) resolves.
 #[must_use]
 pub fn is_builtin_fresh_ctor(name: &str) -> bool {
-    matches!(name, "Vec::new" | "HashMap::new" | "HashSet::new")
+    matches!(
+        hew_types::runtime_call::RuntimeCallFamily::from_checker_signature(name),
+        Some(
+            hew_types::runtime_call::RuntimeCallFamily::VecNew
+                | hew_types::runtime_call::RuntimeCallFamily::HashMapNew
+                | hew_types::runtime_call::RuntimeCallFamily::HashSetNew
+        )
+    )
 }
 
 /// The stdlib catalog's IDENTITY JOIN: the emitted runtime symbol a body-less
@@ -5978,7 +5985,7 @@ pub(crate) mod tests {
                     0 if { return p; } => 0,
                     _ => 1,
                 };
-                let out: Vec<i64> = Vec::new();
+                let out: Vec<i64> = Vec.new();
                 out.push(d);
                 out
             }
@@ -6137,9 +6144,9 @@ pub(crate) mod tests {
             fn parse(input: string, fail: bool) -> Status {
                 let result = match fail {
                     true => {
-                        return Status::Bad;
+                        return Status.Bad;
                     },
-                    false => Status::Good(input),
+                    false => Status.Good(input),
                 };
                 result
             }
@@ -6295,7 +6302,7 @@ pub(crate) mod tests {
         // literal's non-tail push statement, which a tail-only walk misses.
         let (m, prov) = provenance_of_source(
             r"
-            fn helper(xs: Vec<Vec<i64>>, x: i64) { xs.push(Vec::new()); }
+            fn helper(xs: Vec<Vec<i64>>, x: i64) { xs.push(Vec.new()); }
             fn caller(h: Vec<i64>, x: i64) -> Vec<i64> {
                 helper([h], x);
                 h

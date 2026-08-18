@@ -34,13 +34,13 @@ pub fn encode_url(data: bytes) -> string {
 /// Returns an empty `bytes` buffer if the input is not valid Base64.
 pub fn decode(s: string) -> bytes {
     let slen = s.len();
-    let out: bytes = bytes::new();
+    let out: bytes = bytes.new();
     if slen == 0 {
         return out;
     }
     let has_padding = s.slice(slen - 1, slen) == "=";
     if has_padding && slen % 4 != 0 {
-        return bytes::new();
+        return bytes.new();
     }
     // Strip trailing '=' padding
     var data_len = slen;
@@ -51,12 +51,12 @@ pub fn decode(s: string) -> bytes {
         data_len = data_len - 1;
     }
     // Collect 6-bit values
-    let vals: bytes = bytes::new();
+    let vals: bytes = bytes.new();
     for i in 0 .. data_len {
         let ch = s.slice(i, i + 1);
         let v = decode_char(ch);
         if v < 0 {
-            return bytes::new();
+            return bytes.new();
         }
         vals.push(v as u8);
     }
@@ -76,7 +76,7 @@ pub fn decode(s: string) -> bytes {
     // Handle remaining values (from stripped padding)
     let remaining = nvals - i;
     if remaining == 1 {
-        return bytes::new();
+        return bytes.new();
     }
     if remaining == 2 {
         let a = vals[i];
@@ -122,7 +122,7 @@ fn b64_char(idx: i32, url_safe: bool) -> i32 { // INTERNAL-ABI: byte-level 6-bit
 /// Encode binary data to a Base64 string using the standard or URL-safe alphabet.
 fn encode_impl(data: bytes, url_safe: bool) -> string {
     let dlen = data.len();
-    let out: bytes = bytes::new();
+    let out: bytes = bytes.new();
     var i = 0;
     // Process complete 3-byte groups
     while i + 3 <= dlen {

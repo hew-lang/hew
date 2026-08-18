@@ -5,6 +5,308 @@
 pub(super) use super::*;
 
 #[test]
+fn contextual_variants_resolve_only_from_the_expected_type() {
+    let output = check_source(
+        r"
+enum Choice { Some(i64); None }
+
+fn choose(flag: bool) -> Choice {
+    if flag { .Some(7) } else { .None }
+}
+
+fn read(value: Choice) -> i64 {
+    match value {
+        .Some(number) => number,
+        .None => 0,
+    }
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "context-selected expression and pattern variants must check: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn contextual_variant_without_expected_enum_is_rejected() {
+    let output = check_source("fn main() { let value = .None; }");
+    assert!(output.errors.iter().any(|error| {
+        error.kind == TypeErrorKind::ContextVariantNoType
+            && error.message.contains("E_CONTEXT_VARIANT_NO_TYPE")
+    }));
+}
+
+#[test]
+fn contextual_variant_missing_from_expected_enum_is_rejected() {
+    let output = check_source("enum Choice { Ready } fn make() -> Choice { .Missing }");
+    assert!(output.errors.iter().any(|error| {
+        error.kind == TypeErrorKind::PathMemberNotFound
+            && error.message.contains("E_PATH_MEMBER_NOT_FOUND")
+    }));
+}
+
+#[test]
+fn contextual_variant_reports_ambiguous_expected_owner() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .published_bare_type_owners
+        .entry((None, 0, "State".to_string()))
+        .or_default()
+        .extend(["left.State".to_string(), "right.State".to_string()]);
+
+    assert!(checker
+        .context_variant_expected_owner(&Ty::named("State", vec![]), &(0..6))
+        .is_none());
+    assert!(checker.errors.iter().any(|error| {
+        error.kind == TypeErrorKind::ContextVariantAmbiguous
+            && error.message.contains("E_CONTEXT_VARIANT_AMBIGUOUS")
+    }));
+}
+
+#[test]
+fn accepted_bare_variants_emit_migration_warnings() {
+    let output = check_source(
+        r"
+enum Choice { Present(i64); Absent }
+fn make() -> Choice { Present(7) }
+fn read(value: Choice) -> i64 {
+    match value { Present(number) => number, Absent => 0 }
+}
+",
+    );
+    assert!(output.errors.is_empty(), "legacy form remains accepted");
+    assert!(output
+        .warnings
+        .iter()
+        .any(|warning| warning.kind == TypeErrorKind::BareVariantExpr));
+    assert!(output
+        .warnings
+        .iter()
+        .any(|warning| warning.kind == TypeErrorKind::BareVariantPattern));
+}
+
+#[test]
+fn bare_variant_expression_suggestions_preserve_expected_type_context() {
+    let output = check_source(
+        r"
+enum Choice { Present(i64) }
+fn contextual() -> Choice { Present(7) }
+fn inferred() { let value = Present(9); }
+",
+    );
+    assert!(output.errors.is_empty(), "legacy form remains accepted");
+    let suggestions = output
+        .warnings
+        .iter()
+        .filter(|warning| warning.kind == TypeErrorKind::BareVariantExpr)
+        .flat_map(|warning| warning.suggestions.iter())
+        .collect::<Vec<_>>();
+    assert!(suggestions
+        .iter()
+        .any(|suggestion| suggestion.contains("with `.Present`")));
+    assert!(suggestions
+        .iter()
+        .any(|suggestion| suggestion.contains("with `Choice.Present`")));
+}
+
+#[test]
+fn dotted_owner_variants_typecheck_in_expression_position() {
+    let output = check_source(
+        r"
+enum Choice { Present(i64); Absent }
+fn tuple() -> Choice { Choice.Present(7) }
+fn unit() -> Choice { Choice.Absent }
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "dotted owner variants must typecheck: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn dotted_struct_variant_typechecks_in_expression_position() {
+    let output = check_source(
+        r"
+enum Choice { Named { value: i64 } }
+fn make() -> Choice { Choice.Named { value: 7 } }
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "dotted struct variant must typecheck: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn dotted_associated_calls_resolve_without_using_the_head_as_a_value() {
+    let output = check_source(
+        r#"
+fn main() {
+    let values: Vec<i64> = Vec.new();
+    Node.start("127.0.0.1:0");
+}
+"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "dotted associated and namespace calls must check: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn uppercase_pattern_binding_is_not_classified_as_a_variant() {
+    let output = check_source(
+        r"
+fn read(value: i64) -> i64 {
+    match value { Value => Value }
+}
+",
+    );
+    assert!(output.errors.is_empty());
+    assert!(output
+        .warnings
+        .iter()
+        .all(|warning| warning.kind != TypeErrorKind::BareVariantPattern));
+}
+
+#[test]
+fn prelude_declarations_are_protected_before_source_registration() {
+    let output = check_source("type Iterator { value: i64; }");
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::PreludeDeclCollision));
+}
+
+#[test]
+fn non_root_prelude_declarations_are_protected_by_their_owner() {
+    let output = check_source_in_module(
+        "type Result { value: i64; }",
+        vec!["hew".to_string(), "fixture".to_string()],
+    );
+    let collisions = output
+        .errors
+        .iter()
+        .filter(|error| error.kind == TypeErrorKind::PreludeDeclCollision)
+        .count();
+    assert_eq!(
+        collisions, 1,
+        "one package declaration must produce one protected-prelude error: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn ordinary_builtin_declarations_remain_shadowable() {
+    let output = check_source("type HashMapIter { value: i64; }");
+    assert!(
+        output.errors.is_empty(),
+        "an ordinary builtin must remain shadowable: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn modules_and_types_are_rejected_in_value_position() {
+    let output = check_source("fn main() { let module_value = math; let type_value = Vec; }");
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::ModuleUsedAsValue));
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::TypeUsedAsValue));
+}
+
+#[test]
+fn bare_type_remains_rejected_as_a_value_after_dotted_path_dispatch() {
+    let output = check_source("enum Choice { Present(i64) } fn main() { let value = Choice; }");
+    let type_as_value_errors = output
+        .errors
+        .iter()
+        .filter(|error| error.kind == TypeErrorKind::TypeUsedAsValue)
+        .count();
+    assert_eq!(
+        type_as_value_errors, 1,
+        "the bare enum must produce exactly the type-as-value diagnostic: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|error| error.kind != TypeErrorKind::UndefinedVariable),
+        "the nominal head must not fall through to variable lookup: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn module_member_lookup_uses_path_diagnostics() {
+    let output = check_source("fn main() { math.missing(); }");
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::PathMemberNotFound));
+}
+
+#[test]
+fn contextual_variant_constructor_kind_must_match() {
+    let output = check_source("enum State { Ready } fn make() -> State { .Ready(1) }");
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::PathKindMismatch));
+}
+
+#[test]
+fn qualified_associated_item_rejects_multiple_trait_owners() {
+    let parsed_trait = hew_parser::parse("pub trait Shared { type Item; }");
+    assert!(parsed_trait.errors.is_empty());
+    let trait_decl = parsed_trait
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            Item::Trait(trait_decl) => Some(trait_decl),
+            _ => None,
+        })
+        .expect("trait fixture");
+    let info = Checker::trait_info_from_decl(trait_decl);
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .trait_defs
+        .insert("left.Shared".to_string(), info.clone());
+    checker.trait_defs.insert("right.Shared".to_string(), info);
+    checker.published_bare_trait_owners.insert(
+        (None, 0, "Shared".to_string()),
+        ["left.Shared".to_string(), "right.Shared".to_string()]
+            .into_iter()
+            .collect(),
+    );
+    let program =
+        hew_parser::parse("fn main() { let item = <i64 as Shared>.Item; println(item); }");
+    assert!(
+        program.errors.is_empty(),
+        "fixture parse: {:?}",
+        program.errors
+    );
+    let output = checker.check_program(&program.program);
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::AssocItemAmbiguous));
+}
+
+#[test]
 fn test_arity_mismatch_too_many_args() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.register_builtins();
@@ -277,7 +579,7 @@ fn record_inequality_typechecks_and_ordering_is_rejected() {
 /// structural-equality gate.
 #[test]
 fn enum_equality_not_gated_by_record_comparison_refusal() {
-    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() -> bool {\n    let a = Colour::Red;\n    let b = Colour::Green;\n    a == b\n}";
+    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() -> bool {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    a == b\n}";
     let output = check_source(source);
     assert!(
         output.errors.is_empty(),
@@ -288,7 +590,7 @@ fn enum_equality_not_gated_by_record_comparison_refusal() {
 
 #[test]
 fn enum_ordering_reports_checker_diagnostic() {
-    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() {\n    let a = Colour::Red;\n    let b = Colour::Green;\n    let _ = a < b;\n}";
+    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    let _ = a < b;\n}";
     let output = check_source(source);
     assert!(
         output
@@ -683,7 +985,7 @@ fn for_range_start_literal_and_unannotated_end_bound_narrow_together() {
     let source = r"
         fn main() {
             let n = 6;
-            let xs: Vec<i32> = Vec::new();
+            let xs: Vec<i32> = Vec.new();
             for i in 0 .. n {
                 xs.push(i);
             }
@@ -707,11 +1009,11 @@ fn for_range_narrowing_does_not_leak_to_sibling_range_over_concrete_i64_bound() 
     let source = r"
         fn main() {
             let n = 6;
-            let xs: Vec<i32> = Vec::new();
+            let xs: Vec<i32> = Vec.new();
             for i in 0 .. n {
                 xs.push(i);
             }
-            let ys: Vec<i32> = Vec::new();
+            let ys: Vec<i32> = Vec.new();
             ys.push(1);
             let len = ys.len();
             for e in 0 .. len {
@@ -1227,7 +1529,7 @@ fn typecheck_if_branch_type_consistency() {
 
 #[test]
 fn typecheck_vec_type_annotation() {
-    let source = "fn main() { let v: Vec<i32> = Vec::new(); }";
+    let source = "fn main() { let v: Vec<i32> = Vec.new(); }";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.is_empty(),
@@ -1242,7 +1544,7 @@ fn typecheck_vec_type_annotation() {
 
 #[test]
 fn unresolved_vec_new_method_chain_fails_closed() {
-    let source = "fn main() { Vec::new().clear(); }";
+    let source = "fn main() { Vec.new().clear(); }";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.is_empty(),
@@ -1523,7 +1825,7 @@ fn typecheck_recursive_function() {
 #[test]
 fn typecheck_local_result_enum_not_qualified_to_sqlite() {
     let source = concat!(
-        "import ecosystem::db::sqlite;\n",
+        "import ecosystem.db.sqlite;\n",
         "enum Result {\n",
         "    Ok(i64);\n",
         "    Err(i64)\n",
@@ -1542,6 +1844,7 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
         result.errors
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.checking_embedded_builtins = true;
     let output = checker.check_program(&result.program);
     // Filter out the expected UnresolvedImport for the dummy stdlib import — the
     // test is about local type naming, not module resolution.

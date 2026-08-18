@@ -60,7 +60,7 @@
 //! {"ts":1234567890.123,"level":"INFO","msg":"server starting","port":"8080"}
 //! ```
 
-import std::string;
+import std.string;
 
 // ── Level constants ───────────────────────────────────────────────────
 /// Error-level severity (highest priority).

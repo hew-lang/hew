@@ -1,6 +1,6 @@
 // Dutch National Flag: 3-way partition (0s, 1s, 2s)
 fn main() {
-    let arr: Vec<i32> = Vec::new();
+    let arr: Vec<i32> = Vec.new();
     arr.push(2);
     arr.push(0);
     arr.push(1);
@@ -28,7 +28,7 @@ fn main() {
         }
     }
     // Expected: [0,0,1,1,2,2]
-    let expected: Vec<i32> = Vec::new();
+    let expected: Vec<i32> = Vec.new();
     expected.push(0);
     expected.push(0);
     expected.push(1);

@@ -9,11 +9,11 @@ actor Echo {
 
 fn main() {
     let x = spawn Echo(seen: 0);
-    let v: Vec<LocalPid<Echo>> = Vec::new();
+    let v: Vec<LocalPid<Echo>> = Vec.new();
     v.push(x);
     match v.get(0) {
-        Some(e) => {
-            match await e.take(1) { Ok(e_v) => println(f"echo {e_v}"), Err(_) => println("err"), }
+        Option.Some(e) => {
+            match await e.take(1) { Result.Ok(e_v) => println(f"echo {e_v}"), Err(_) => println("err"), }
         },
         None => println("missing"),
     }

@@ -8,7 +8,7 @@
 //   cli_argparse --verbose --output=result.txt --port=8080 file1.txt file2.txt
 //   cli_argparse --help
 //   cli_argparse -v -h
-import std::os;
+import std.os;
 
 fn print_help() {
     println("Usage: cli_argparse [OPTIONS] [FILES...]");
@@ -56,10 +56,10 @@ fn main() {
         print_help();
         return;
     }
-    let flags: Vec<string> = Vec::new();
-    let opt_keys: Vec<string> = Vec::new();
-    let opt_vals: Vec<string> = Vec::new();
-    let positional: Vec<string> = Vec::new();
+    let flags: Vec<string> = Vec.new();
+    let opt_keys: Vec<string> = Vec.new();
+    let opt_vals: Vec<string> = Vec.new();
+    let positional: Vec<string> = Vec.new();
     var show_help = 0;
     // Parse arguments (skip argv[0] which is the program name)
     for i in 1 .. argc {
@@ -67,7 +67,7 @@ fn main() {
         if arg.starts_with("--") {
             // Long option: check for "=" to distinguish flag from key=value
             let eq_pos = arg.find("=");
-            if let Some(pos) = eq_pos {
+            if let .Some(pos) = eq_pos {
                 // Key-value option: --key=value
                 let key = arg.slice(2, pos);
                 let val = arg.slice(pos + 1, arg.len());

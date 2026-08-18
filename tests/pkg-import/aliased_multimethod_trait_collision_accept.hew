@@ -7,8 +7,8 @@
 // with A's signatures. Conformance must resolve `P` to its owner-qualified
 // identity (`multitrait.Proc`) and ACCEPT — exercising the method-set membership
 // AND per-method signature paths against the collision-free owner key. Run e2e.
-import hew::multitrait::{ Proc as P, Tally, ProcErr };
-import hew::multitraitb;
+import hew.multitrait.{ Proc as P, Tally, ProcErr };
+import hew.multitraitb;
 
 type W {
     id: i64;

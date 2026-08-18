@@ -78,13 +78,13 @@ fn snapshot_send_materializes_independent_record_carriers() {
             payload: Vec<i64>,
         }
 
-        actor Sink {
+        actor TestSink {
             receive fn take(value: Boxed, tag: i64) {}
         }
 
         fn main() {
-            let a = spawn Sink;
-            let b = spawn Sink;
+            let a = spawn TestSink;
+            let b = spawn TestSink;
             let value = Boxed { payload: [1, 2] };
             a.take(value, 7);
             b.take(value, 8);
@@ -102,7 +102,7 @@ fn snapshot_send_materializes_independent_record_carriers() {
     assert!(ll.contains("call ptr @hew_vec_clone_owned"), "{ll}");
     assert_eq!(ll.matches("call i32 @hew_actor_send_by_id").count(), 2);
     assert!(
-        ll.contains("define internal void @__hew_message_drop_Sink"),
+        ll.contains("define internal void @__hew_message_drop_TestSink"),
         "{ll}"
     );
     assert_eq!(
@@ -134,13 +134,13 @@ fn indirect_enum_actor_messages_use_the_pointer_value_abi() {
             Node(Tree, Tree);
         }
 
-        actor Sink {
+        actor TestSink {
             receive fn take(value: Tree) {}
             receive fn tagged(tag: i64, value: Tree) {}
         }
 
         fn main() {
-            let sink = spawn Sink;
+            let sink = spawn TestSink;
             sink.take(Node(Leaf(1), Leaf(2)));
             sink.tagged(10, Node(Leaf(3), Leaf(4)));
         }
@@ -148,7 +148,7 @@ fn indirect_enum_actor_messages_use_the_pointer_value_abi() {
     );
 
     assert!(
-        ll.contains("define internal ptr @__hew_actor_dispatch_Sink"),
+        ll.contains("define internal ptr @__hew_actor_dispatch_TestSink"),
         "{ll}"
     );
     assert!(ll.contains("load ptr, ptr %payload_src_ptr"), "{ll}");

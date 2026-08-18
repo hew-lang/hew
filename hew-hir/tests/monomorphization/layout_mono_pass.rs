@@ -141,13 +141,13 @@ fn generic_enum_in_generic_body_registers_concrete_layout() {
         }
 
         fn wrap<T>(x: T) -> Holder<T> {
-            Holder::Present(x)
+            Holder.Present(x)
         }
 
         fn unwrap_or<T>(h: Holder<T>, fallback: T) -> T {
             match h {
-                Holder::Present(v) => v,
-                Holder::Absent => fallback,
+                Holder.Present(v) => v,
+                Holder.Absent => fallback,
             }
         }
 

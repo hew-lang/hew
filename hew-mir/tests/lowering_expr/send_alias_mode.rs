@@ -48,12 +48,12 @@ fn snapshot_send_resolves_every_argument_independently() {
             payload: Vec<i64>,
         }
 
-        actor Sink {
+        actor TestSink {
             receive fn take(n: i64, text: string, boxed: Boxed, last: string) {}
         }
 
         fn main() {
-            let sink = spawn Sink;
+            let sink = spawn TestSink;
             let n = 1;
             let text = "shared";
             let boxed = Boxed { payload: [2, 3] };
@@ -98,12 +98,12 @@ fn loop_back_edge_and_projection_force_snapshot() {
             payload: Vec<i64>,
         }
 
-        actor Sink {
+        actor TestSink {
             receive fn take(value: Vec<i64>) {}
         }
 
         fn main() {
-            let sink = spawn Sink;
+            let sink = spawn TestSink;
             let boxed = Boxed { payload: [1] };
             var i = 0;
             while i < 3 {
@@ -163,12 +163,12 @@ fn loop_back_edge_and_projection_force_snapshot() {
 fn checked_mir_rejects_unresolved_outbound_modes() {
     let pipeline = lower(
         r#"
-        actor Sink {
+        actor TestSink {
             receive fn take(value: string) {}
         }
 
         fn main() {
-            let sink = spawn Sink;
+            let sink = spawn TestSink;
             sink.take("payload");
         }
         "#,

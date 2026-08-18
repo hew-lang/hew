@@ -370,7 +370,7 @@ fn eval_std_observe_reads_runtime_metric() {
     let path = dir.path().join("observe_eval.hew");
     std::fs::write(
         &path,
-        "import std::observe;\n\nobserve.read(\"heap.live_bytes\") >= 0\n",
+        "import std.observe;\n\nobserve.read(\"heap.live_bytes\") >= 0\n",
     )
     .unwrap();
 
@@ -398,7 +398,7 @@ fn eval_std_observe_scrape_and_series_include_actor_attribution() {
     let path = dir.path().join("observe_attribution_eval.hew");
     std::fs::write(
         &path,
-        r"import std::observe;
+        r"import std.observe;
 
 actor Counter {
     var count: i64;
@@ -919,7 +919,7 @@ fn eval_large_stderr_completes_before_timeout() {
     let path = dir.path().join("large_stderr_eval.hew");
     std::fs::write(
         &path,
-        "import std::io;\n\nfn spam_err() {\n    var i = 0;\n    while i < 20000 {\n        io.write_err(\"line\\n\");\n        i = i + 1;\n    }\n}\n\nspam_err()\n42\n",
+        "import std.io;\n\nfn spam_err() {\n    var i = 0;\n    while i < 20000 {\n        io.write_err(\"line\\n\");\n        i = i + 1;\n    }\n}\n\nspam_err()\n42\n",
     )
     .unwrap();
 
@@ -1585,7 +1585,7 @@ fn eval_wasm_hashmap_string_i64_values_are_correct() {
         "wasm_hashmap_string_i64",
         r#"
 {
-    let m: HashMap<string, i64> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap.new();
     m.insert("alpha", 17);
     m.insert("beta", 25);
 
@@ -1632,7 +1632,7 @@ record Point {
 }
 
 {
-    let m: HashMap<Point, i64> = HashMap::new();
+    let m: HashMap<Point, i64> = HashMap.new();
     m.insert(Point { x: 3, y: 4 }, 88);
     m.insert(Point { x: 5, y: 6 }, 99);
 
@@ -1670,7 +1670,7 @@ fn eval_wasm_hashset_string_values_are_correct() {
         "wasm_hashset_string",
         r#"
 {
-    let s: HashSet<string> = HashSet::new();
+    let s: HashSet<string> = HashSet.new();
     let inserted_alpha = s.insert("alpha");
     let inserted_beta = s.insert("beta");
     let duplicate_alpha = s.insert("alpha");
@@ -1831,7 +1831,7 @@ fn compile_wasm_rejects_for_await_receiver_before_link() {
     std::fs::write(
         &path,
         concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "fn main() {\n",
             "    let (tx, rx) = channel.new(1);\n",
             "    tx.send(\"hello\");\n",
@@ -3373,9 +3373,9 @@ fn repl_fragment_no_unused_lints_for_stdlib_chunk() {
     // called as an expression.  All locals are used inside the function body,
     // so no "unused variable" noise should appear.
     let input = concat!(
-        "import std::string;\n",
-        "import std::option;\n",
-        "import std::iter;\n",
+        "import std.string;\n",
+        "import std.option;\n",
+        "import std.iter;\n",
         "fn stdlib_demo() -> string {\n",
         "    let s = string.from_int(42);\n",
         "    let opt = option.map_int(Some(20), |v: i64| v + 22);\n",
@@ -3408,7 +3408,7 @@ fn repl_fragment_no_unused_lints_for_stdlib_chunk() {
 fn repl_fragment_veciter_string_overwrite_helper_is_defined() {
     require_codegen();
     let input = concat!(
-        "import std::iter;\n",
+        "import std.iter;\n",
         "fn collect_strings() -> i64 {\n",
         "    let values: Vec<string> = [\"a\", \"bb\"];\n",
         "    let mapped = iter.map(values.into_iter(), |x: string| x);\n",
@@ -3462,9 +3462,8 @@ fn repl_no_side_effect_duplication() {
 
     // Two evals: one that appends, one that doesn't.  If binding replay were
     // still live the append would fire a second time during the `1 + 1` eval.
-    let input = format!(
-        "import std::fs;\nlet _rc = fs.append(\"{file_path_str}\", \"x\");\n1 + 1\n:quit\n"
-    );
+    let input =
+        format!("import std.fs;\nlet _rc = fs.append(\"{file_path_str}\", \"x\");\n1 + 1\n:quit\n");
     let output = run_eval_with_stdin(&["eval"], &input);
 
     assert!(

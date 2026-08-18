@@ -22,6 +22,6 @@ fn keep_big(rows: Vec<i64>, keep: HashMap<string, Vec<i64>>) {
 }
 
 fn main() {
-    let keep: HashMap<string, Vec<i64>> = HashMap::new();
+    let keep: HashMap<string, Vec<i64>> = HashMap.new();
     keep_big([1, 2, 3], keep);
 }

@@ -1,4 +1,4 @@
-import std::os;
+import std.os;
 
 fn main() -> i64 {
     let arg = os.args(os.args_count());

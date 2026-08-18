@@ -6,13 +6,13 @@
 //! `2^32 + 80` as port 80, and an address whose port never parsed at all as
 //! `127.0.0.1:0`.
 
-import std::net;
+import std.net;
 
-import std::net::http::http_client;
+import std.net.http.http_client;
 
-import std::net::tls;
+import std.net.tls;
 
-import std::testing;
+import std.testing;
 
 fn wrapped_to_500() -> i64 {
     4294967796 // 2^32 + 500: narrows to 500 as i32
@@ -24,11 +24,11 @@ fn wrapped_to_80() -> i64 {
 
 fn expect_invalid(label: string, result: Result<i64, net.NetError>) -> string {
     match result {
-        Ok(value) => {
+        .Ok(value) => {
             panic(f"{label}: expected rejection, got {value}");
             ""
         },
-        Err(err) => net.net_error_message(err),
+        .Err(err) => net.net_error_message(err),
     }
 }
 
@@ -43,16 +43,16 @@ fn test_duration_above_abi_range_is_rejected_not_narrowed() {
 #[test]
 fn test_duration_within_abi_range_is_preserved() {
     match net.try_duration_ms("net.probe", 500) {
-        Ok(ms) => testing.assert_eq(ms, 500),
-        Err(_) => panic("expected 500 ms to be accepted"),
+        .Ok(ms) => testing.assert_eq(ms, 500),
+        .Err(_) => panic("expected 500 ms to be accepted"),
     }
     match net.try_duration_ms("net.probe", 0) {
-        Ok(ms) => testing.assert_eq(ms, 0),
-        Err(_) => panic("expected 0 ms to be accepted"),
+        .Ok(ms) => testing.assert_eq(ms, 0),
+        .Err(_) => panic("expected 0 ms to be accepted"),
     }
     match net.try_duration_ms("net.probe", net.abi_i32_max()) {
-        Ok(ms) => testing.assert_eq(ms, net.abi_i32_max()),
-        Err(_) => panic("expected the ABI ceiling to be accepted"),
+        .Ok(ms) => testing.assert_eq(ms, net.abi_i32_max()),
+        .Err(_) => panic("expected the ABI ceiling to be accepted"),
     }
 }
 
@@ -61,8 +61,8 @@ fn test_size_above_abi_range_is_rejected() {
     let size = expect_invalid("try_size_arg", net.try_size_arg("tls.TlsStream.read", 4294967296));
     testing.assert_eq_str(size, "InvalidArgument(tls.TlsStream.read: invalid size 4294967296 (must be <= 2147483647))");
     match net.try_size_arg("tls.TlsStream.read", 4096) {
-        Ok(size_ok) => testing.assert_eq(size_ok, 4096),
-        Err(_) => panic("expected a 4096-byte read size to be accepted"),
+        .Ok(size_ok) => testing.assert_eq(size_ok, 4096),
+        .Err(_) => panic("expected a 4096-byte read size to be accepted"),
     }
 }
 
@@ -73,18 +73,18 @@ fn test_port_above_abi_range_is_rejected_not_narrowed() {
     let over = expect_invalid("try_port_arg", net.try_port_arg("tls.connect", 65536));
     testing.assert_eq_str(over, "InvalidArgument(tls.connect: invalid port 65536 (must be 0..=65535))");
     match net.try_port_arg("tls.connect", 443) {
-        Ok(port) => testing.assert_eq(port, 443),
-        Err(_) => panic("expected port 443 to be accepted"),
+        .Ok(port) => testing.assert_eq(port, 443),
+        .Err(_) => panic("expected port 443 to be accepted"),
     }
 }
 
 fn expect_endpoint_rejected(addr: string) -> string {
     match net.try_parse_endpoint("net.connect_timeout", addr) {
-        Ok(endpoint) => {
+        .Ok(endpoint) => {
             panic(f"expected '{addr}' to be rejected, got {endpoint.host}:{endpoint.port}");
             ""
         },
-        Err(err) => net.net_error_message(err),
+        .Err(err) => net.net_error_message(err),
     }
 }
 
@@ -112,8 +112,8 @@ fn test_unbracketed_ipv6_is_rejected_not_split_at_the_first_colon() {
 
 fn endpoint_text(addr: string) -> string {
     match net.try_parse_endpoint("net.connect_timeout", addr) {
-        Ok(endpoint) => f"{endpoint.host}|{endpoint.port}",
-        Err(err) => {
+        .Ok(endpoint) => f"{endpoint.host}|{endpoint.port}",
+        .Err(err) => {
             panic(f"expected '{addr}' to parse: {net.net_error_message(err)}");
             ""
         },
@@ -132,24 +132,24 @@ fn test_valid_endpoints_are_preserved_exactly() {
 #[test]
 fn test_connect_timeout_deadline_overflow_is_rejected() {
     match net.try_connect_timeout("127.0.0.1:9", 4294967, 0) {
-        Ok(_) => panic("expected an out-of-range deadline to be rejected"),
-        Err(err) => testing.assert_eq_str(net.net_error_message(err), "InvalidArgument(net.connect_timeout: invalid timeout_sec 4294967 (deadline exceeds 2147483647 ms))"),
+        .Ok(_) => panic("expected an out-of-range deadline to be rejected"),
+        .Err(err) => testing.assert_eq_str(net.net_error_message(err), "InvalidArgument(net.connect_timeout: invalid timeout_sec 4294967 (deadline exceeds 2147483647 ms))"),
     }
     match net.try_connect_timeout("127.0.0.1:9", 2147483, 648000) {
-        Ok(_) => panic("expected an accumulated deadline overflow to be rejected"),
-        Err(err) => testing.assert_eq_str(net.net_error_message(err), "InvalidArgument(net.connect_timeout: invalid deadline (timeout_sec 2147483 + timeout_usec 648000 exceeds 2147483647 ms))"),
+        .Ok(_) => panic("expected an accumulated deadline overflow to be rejected"),
+        .Err(err) => testing.assert_eq_str(net.net_error_message(err), "InvalidArgument(net.connect_timeout: invalid deadline (timeout_sec 2147483 + timeout_usec 648000 exceeds 2147483647 ms))"),
     }
     match net.try_connect_timeout("127.0.0.1:9", -1, 0) {
-        Ok(_) => panic("expected a negative timeout_sec to be rejected"),
-        Err(err) => testing.assert_eq_str(net.net_error_message(err), "InvalidArgument(net.connect_timeout: invalid timeout_sec -1 (must be >= 0))"),
+        .Ok(_) => panic("expected a negative timeout_sec to be rejected"),
+        .Err(err) => testing.assert_eq_str(net.net_error_message(err), "InvalidArgument(net.connect_timeout: invalid timeout_sec -1 (must be >= 0))"),
     }
 }
 
 #[test]
 fn test_connect_timeout_rejects_a_malformed_address_before_connecting() {
     match net.try_connect_timeout("::1:9000", 1, 0) {
-        Ok(_) => panic("expected an unbracketed IPv6 address to be rejected"),
-        Err(err) => testing.assert_eq_str(net.net_error_message(err), "InvalidArgument(net.connect_timeout: invalid endpoint '::1:9000' (unbracketed IPv6 literal; write [address]:port))"),
+        .Ok(_) => panic("expected an unbracketed IPv6 address to be rejected"),
+        .Err(err) => testing.assert_eq_str(net.net_error_message(err), "InvalidArgument(net.connect_timeout: invalid endpoint '::1:9000' (unbracketed IPv6 literal; write [address]:port))"),
     }
 }
 
@@ -168,12 +168,12 @@ fn test_connect_timeout_panics_at_legacy_boundary_on_a_missing_port() {
 #[test]
 fn test_http_client_timeout_above_abi_range_is_rejected() {
     match http_client.try_set_timeout(wrapped_to_500()) {
-        Ok(_) => panic("expected a wrapped HTTP timeout to be rejected"),
-        Err(err) => testing.assert_eq_str(net.net_error_message(err), "InvalidArgument(http_client.set_timeout: invalid duration 4294967796 ms (must be <= 2147483647))"),
+        .Ok(_) => panic("expected a wrapped HTTP timeout to be rejected"),
+        .Err(err) => testing.assert_eq_str(net.net_error_message(err), "InvalidArgument(http_client.set_timeout: invalid duration 4294967796 ms (must be <= 2147483647))"),
     }
     match http_client.try_set_timeout(1000) {
-        Ok(_) => {},
-        Err(_) => panic("expected a 1000 ms HTTP timeout to be accepted"),
+        .Ok(_) => {},
+        .Err(_) => panic("expected a 1000 ms HTTP timeout to be accepted"),
     }
     http_client.set_timeout(0);
 }

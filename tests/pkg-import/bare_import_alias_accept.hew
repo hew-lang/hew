@@ -13,7 +13,7 @@
 // Harness verb: hew run
 // Expected: bare=7 then qual=7 — the same `Widget` value read through a bare and
 // a qualified parameter type.
-import hew::widgeti8::{ Widget };
+import hew.widgeti8.{ Widget };
 
 // Bare parameter type: the single-publisher bare `Widget` binds to the imported
 // `widgeti8.Widget`.

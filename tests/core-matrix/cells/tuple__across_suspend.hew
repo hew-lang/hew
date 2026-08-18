@@ -14,7 +14,7 @@ fn main() {
     let x: (i64, string) = (1, "x0");
     let h = spawn Holder(ready: false);
     match await h.hold(x) {
-        Ok(n) => println(f"held {n}"),
+        Result.Ok(n) => println(f"held {n}"),
         Err(_) => println("err"),
     }
 }

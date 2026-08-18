@@ -1,7 +1,7 @@
 // Imported module-qualified affine identities must retain their resource/linear
 // marker at the structural record-clone gate. Both clone syntaxes route through
 // the same checker authority and must reject before HIR.
-import hew::affineclone;
+import hew.affineclone;
 
 fn main() {
     let r1: affineclone.ResourceToken = ResourceToken { id: 1 };

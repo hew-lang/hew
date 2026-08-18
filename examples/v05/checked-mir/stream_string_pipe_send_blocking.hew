@@ -7,7 +7,7 @@
 // actor handler suspends instead: every describable sink-send element
 // suspends in a context-carrying caller, but a context-free caller keeps the
 // blocking call so it never parks a non-existent scheduler frame.
-import std::stream;
+import std.stream;
 
 fn main() {
     let (sink, input) = stream.pipe(2);

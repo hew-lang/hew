@@ -37,7 +37,7 @@ mod iflet_tail_stack_hint_coverage {
         let names = stack_hint_names(
             r"fn foo(opt: (i64, i64)) {
     if let (a, _b) = opt {
-        let v: Vec<i64> = Vec::new();
+        let v: Vec<i64> = Vec.new();
         v
     }
 }",
@@ -57,7 +57,7 @@ mod iflet_tail_stack_hint_coverage {
     if let (a, _b) = opt {
         a
     } else {
-        let w: Vec<i64> = Vec::new();
+        let w: Vec<i64> = Vec.new();
         0
     }
 }",

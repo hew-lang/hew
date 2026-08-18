@@ -106,7 +106,7 @@ fn enum_with_payload_is_rejected() {
             "    Circle(i64);\n",
             "    Square(i64);\n",
             "}\n",
-            "fn resize(var s: Shape) { s = Shape::Square(9); }\n",
+            "fn resize(var s: Shape) { s = Shape.Square(9); }\n",
         ),
         "`var s` on a by-value parameter of type `Shape` has no caller-visible effect",
     );

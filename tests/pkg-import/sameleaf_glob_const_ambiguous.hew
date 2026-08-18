@@ -1,6 +1,0 @@
-import ambiguity::const_left::*;
-import ambiguity::const_right::*;
-
-fn main() {
-    println(CLASH_CONST);
-}

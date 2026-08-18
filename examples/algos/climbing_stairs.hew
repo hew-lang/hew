@@ -4,7 +4,7 @@ fn climb(n: i32) -> i32 {
     if n <= 1 {
         1
     } else {
-        let dp: Vec<i32> = Vec::new();
+        let dp: Vec<i32> = Vec.new();
         dp.push(1);
         dp.push(1);
         let n64: i64 = n as i64;

@@ -1,8 +1,8 @@
 //! Tests for std::text::unicode codepoint boundaries.
 
-import std::testing;
+import std.testing;
 
-import std::text::unicode;
+import std.text.unicode;
 
 #[test]
 fn test_valid_codepoint_case_mapping_still_works() {

@@ -25,7 +25,7 @@ pub fn make_box(a: string, b: string) -> Box {
 /// caller's scope exit, exercising the generic-enum / owned-Vec-element drop
 /// path for a nested qualified payload.
 pub fn collect(a: string, b: string) -> Result<Vec<Box>, i64> {
-    let boxes: Vec<Box> = Vec::new();
+    let boxes: Vec<Box> = Vec.new();
     boxes.push(make_box(a, b));
     boxes.push(make_box(b, a));
     Ok(boxes)

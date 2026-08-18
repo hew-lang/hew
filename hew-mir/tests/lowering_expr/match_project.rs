@@ -1145,7 +1145,7 @@ fn carrier_payload_transfer_forward_keeps_sole_owner() {
     let pipeline = pipeline_with_tc(
         r#"
 fn stash(s: string) -> i64 {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     v.push(s);
     v.len()
 }

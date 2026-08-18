@@ -6,7 +6,7 @@ enum Colour {
 fn main() {
     let x: Colour = Red;
     let y: Colour = Green;
-    let v: Vec<Colour> = Vec::new();
+    let v: Vec<Colour> = Vec.new();
     v.push(x);
     v.push(y);
     let n = v.len();

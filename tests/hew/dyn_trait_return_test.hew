@@ -2,9 +2,9 @@
 //! transfers that box through its return slot; the caller is the sole final
 //! owner on both normal and panic exits.
 
-import std::string;
+import std.string;
 
-import std::testing;
+import std.testing;
 
 trait Labeled {
     fn label_size(val: Self) -> i64;
@@ -79,6 +79,6 @@ fn test_dyn_param_passes_through_without_reboxing() {
 fn test_returned_dyn_drops_during_panic_unwind() {
     let value = make_labeled("u", 0);
     testing.assert_eq(inspect(value), 64);
-    let empty: Vec<i64> = Vec::new();
+    let empty: Vec<i64> = Vec.new();
     let _missing = empty[0];
 }

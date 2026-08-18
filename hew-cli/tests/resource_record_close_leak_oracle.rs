@@ -121,7 +121,7 @@ fn heap_field_loop_source(frames: usize) -> String {
         "#[resource] type Box {{ payload: Vec<i64>; fd: i64; }}\n\
          impl Box {{ fn close(self) {{ }} }}\n\
          fn build(n: i64) -> i64 {{\n\
-         \x20   let v: Vec<i64> = Vec::new();\n\
+         \x20   let v: Vec<i64> = Vec.new();\n\
          \x20   v.push(n);\n\
          \x20   v.push(n + 1);\n\
          \x20   let b = Box {{ payload: v, fd: n }};\n\

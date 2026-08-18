@@ -44,4 +44,7 @@ if [[ "$INSTALL_ONLY" == 1 ]]; then
 fi
 cd "$REPO_ROOT"
 python3 scripts/structural-authority-audit.py --ast-grep "$AST_GREP"
+python3 scripts/tests/test_canonical_keyspace_lint.py "$AST_GREP"
+python3 scripts/canonical-keyspace-lint.py --ast-grep "$AST_GREP"
+python3 scripts/tests/test_qualified_identity_literal_rule.py "$AST_GREP"
 exec "$AST_GREP" scan "$@"

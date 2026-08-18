@@ -13,7 +13,7 @@ use support::leak_slope::assert_frame_slope_below_tolerance;
 fn valid_multi_digit_source(frames: usize) -> String {
     let expected = frames * 1_234_567;
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\
@@ -29,7 +29,7 @@ fn valid_multi_digit_source(frames: usize) -> String {
 
 fn invalid_trailing_digit_source(frames: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          fn main() -> i64 {{\n\
          \x20   var failures: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\

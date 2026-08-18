@@ -1,4 +1,4 @@
-fn Sink__recv__take -> ()
+fn TestSink__recv__take -> ()
   statements:
     drop BindingId(3) last ty=string
     drop BindingId(2) boxed ty=Boxed
@@ -11,7 +11,7 @@ fn Sink__recv__take -> ()
 
 fn main -> ()
   statements:
-    bind BindingId(4) sink site=SiteId(0) ty=LocalPid<Sink>
+    bind BindingId(4) sink site=SiteId(0) ty=LocalPid<TestSink>
     bind BindingId(5) n site=SiteId(1) ty=i64
     bind BindingId(6) text site=SiteId(2) ty=string
     bind BindingId(4294967231) __hew_produced_value site=SiteId(8) ty=Vec<i64>
@@ -25,7 +25,7 @@ fn main -> ()
     bind BindingId(4294967229) __hew_produced_value site=SiteId(3) ty=Boxed
     bind BindingId(9) boxed site=SiteId(3) ty=Boxed
     bind BindingId(10) last site=SiteId(14) ty=string
-    use BindingId(4) sink site=SiteId(16) ty=LocalPid<Sink> intent=Read
+    use BindingId(4) sink site=SiteId(16) ty=LocalPid<TestSink> intent=Read
     use BindingId(5) n site=SiteId(17) ty=i64 intent=Read
     use BindingId(6) text site=SiteId(18) ty=string intent=Read
     use BindingId(9) boxed site=SiteId(19) ty=Boxed intent=Read
@@ -39,7 +39,7 @@ fn main -> ()
     drop BindingId(9) boxed ty=Boxed
     drop BindingId(8) __hew_array_7 ty=Vec<i64>
     drop BindingId(6) text ty=string
-    drop BindingId(4) sink ty=LocalPid<Sink>
+    drop BindingId(4) sink ty=LocalPid<TestSink>
   drop_plans:
     call[bb0 Vec::new -> bb1] ->
       (none)
@@ -58,7 +58,7 @@ fn main -> ()
     return[bb6] ->
       drop _11 ty=Boxed kind=record_in_place
       drop _4 ty=string kind=cow_heap(hew_string_drop)
-      drop actor0 ty=LocalPid<Sink> kind=resource
+      drop actor0 ty=LocalPid<TestSink> kind=resource
 
 fn i8::fmt -> string
   statements:

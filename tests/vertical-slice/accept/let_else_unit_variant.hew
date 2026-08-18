@@ -19,15 +19,15 @@ enum E {
 
 fn make_e(good: bool) -> E {
     if good {
-        E::A
+        E.A
     } else {
-        E::B(3)
+        E.B(3)
     }
 }
 
 fn parse(good: bool) -> Result<string, string> {
     // User-enum unit variant: matches E::A (binds nothing) or diverges.
-    let E::A = make_e(good) else {
+    let E.A = make_e(good) else {
         return Err("not-A")
     };
     Ok("unit")

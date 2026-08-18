@@ -80,8 +80,8 @@ pub fn from_char(code: i64) -> string {
 /// ```
 pub fn to_int(s: string) -> Option<i64> {
     match try_to_int(s) {
-        Ok(value) => Some(value),
-        Err(_) => None,
+        .Ok(value) => Some(value),
+        .Err(_) => None,
     }
 }
 
@@ -153,8 +153,8 @@ pub fn try_to_int(s: string) -> Result<i64, string> {
 /// ```
 pub fn to_float(s: string) -> f64 {
     match try_to_float(s) {
-        Ok(value) => value,
-        Err(_) => 0.0,
+        .Ok(value) => value,
+        .Err(_) => 0.0,
     }
 }
 
@@ -536,8 +536,8 @@ pub fn count(haystack: string, needle: string) -> i64 {
     while pos <= hlen - nlen {
         let rest = haystack.slice(pos, hlen);
         let idx = match rest.find(needle) {
-            Some(i) => i,
-            None => return n,
+            .Some(i) => i,
+            .None => return n,
         };
         n = n + 1;
         pos = pos + idx + nlen;
@@ -595,8 +595,8 @@ pub fn is_ascii(s: string) -> bool {
         // In-bounds loop: char_at(i) is always Some; treat the unreachable
         // None defensively as non-ASCII rather than unwrapping.
         let ch = match s.char_at(i) {
-            Some(c) => c,
-            None => return false,
+            .Some(c) => c,
+            .None => return false,
         };
         if ch as i64 > 127 {
             return false;
@@ -654,7 +654,7 @@ pub fn split(s: string, sep: string) -> Vec<string> {
 /// let trail = string.lines("foo\n");     // ["foo", ""]
 /// ```
 pub fn lines(s: string) -> Vec<string> {
-    let result: Vec<string> = Vec::new();
+    let result: Vec<string> = Vec.new();
     let slen = s.len();
     var start = 0;
     while start < slen {
@@ -760,11 +760,11 @@ impl string {
     }
     #[extern_symbol(hew_string_split)]
     fn split(s: string, sep: string) -> Vec<string> {
-        Vec::new()
+        Vec.new()
     }
     #[extern_symbol(hew_string_lines)]
     fn lines(s: string) -> Vec<string> {
-        Vec::new()
+        Vec.new()
     }
     /// Return `Some` of the byte index of the first occurrence of `needle`,
     /// or `None` when `needle` does not occur.
@@ -796,7 +796,7 @@ impl string {
     }
     #[extern_symbol(hew_string_chars)]
     fn chars(s: string) -> Vec<char> {
-        Vec::new()
+        Vec.new()
     }
     /// Return the number of Unicode codepoints (runes) in this string.
     ///
@@ -820,7 +820,7 @@ impl string {
     /// reaching for raw FFI. The inverse is `bytes.to_string()`.
     #[extern_symbol(hew_string_to_bytes)]
     fn to_bytes(s: string) -> bytes {
-        bytes::new()
+        bytes.new()
     }
 }
 

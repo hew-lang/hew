@@ -62,7 +62,7 @@
 //! }
 //! ```
 
-import std::string;
+import std.string;
 
 // ── Hardening limits (fail-closed DoS / injection bounds) ─────────────
 /// Maximum bytes accepted in the request head (request line + headers). A head
@@ -147,8 +147,8 @@ impl AsyncRequestMethods for AsyncRequest {
 /// for the peer to close).
 pub fn request_complete(raw: string) -> bool {
     let sep = match raw.find("\r\n\r\n") {
-        Some(i) => i,
-        None => return false,
+        .Some(i) => i,
+        .None => return false,
     };
     let head = raw.slice(0, sep);
     let body_start = sep + 4;
@@ -168,9 +168,9 @@ pub fn over_limit(raw: string) -> bool {
         return true;
     }
     let sep = match raw.find("\r\n\r\n") {
-        Some(i) => i,
+        .Some(i) => i,
         // No header terminator yet: bound the head we are willing to buffer.
-        None => return raw.len() > MAX_HEADER_BYTES,
+        .None => return raw.len() > MAX_HEADER_BYTES,
     };
     let head = raw.slice(0, sep);
     if head.len() > MAX_HEADER_BYTES {
@@ -190,12 +190,12 @@ pub fn over_limit(raw: string) -> bool {
 pub fn parse_request(raw: string) -> AsyncRequest {
     let sep = raw.find("\r\n\r\n");
     let head = match sep {
-        Some(i) => raw.slice(0, i),
-        None => raw,
+        .Some(i) => raw.slice(0, i),
+        .None => raw,
     };
     let body = match sep {
-        Some(i) => raw.slice(i + 4, raw.len()),
-        None => "",
+        .Some(i) => raw.slice(i + 4, raw.len()),
+        .None => "",
     };
     let head_lines = string.split(head, "\r\n");
     let request_line = if head_lines.len() > 0 {
@@ -334,8 +334,8 @@ fn token_at(line: string, index: i64) -> string {
 /// re-joined with CRLF for header lookups + Content-Length framing.
 fn header_section_after_request_line(head: string) -> string {
     match head.find("\r\n") {
-        Some(first) => head.slice(first + 2, head.len()),
-        None => "",
+        .Some(first) => head.slice(first + 2, head.len()),
+        .None => "",
     }
 }
 
@@ -355,8 +355,8 @@ fn content_length_of(header_section: string) -> i64 {
         return 0;
     }
     match string.try_to_int(value) {
-        Ok(n) => n,
-        Err(_) => MAX_BODY_BYTES + 1,
+        .Ok(n) => n,
+        .Err(_) => MAX_BODY_BYTES + 1,
     }
 }
 
@@ -374,7 +374,7 @@ fn find_header(header_section: string, name: string) -> string {
         // A colon at index 0 is an empty header name — skip it, exactly as
         // the old `colon > 0` guard did.
         match line.find(":") {
-            Some(colon) if colon > 0 => {
+            .Some(colon) if colon > 0 => {
                 let key = string.trim(line.slice(0, colon)).to_lower();
                 if key == target {
                     found = string.trim(line.slice(colon + 1, line.len()));
@@ -399,7 +399,7 @@ fn header_count(header_section: string, name: string) -> i64 {
     for i in 0 .. n {
         let line = lines[i];
         match line.find(":") {
-            Some(colon) if colon > 0 => {
+            .Some(colon) if colon > 0 => {
                 let key = string.trim(line.slice(0, colon)).to_lower();
                 if key == target {
                     count = count + 1;
@@ -428,7 +428,7 @@ fn headers_have_colons(header_section: string) -> bool {
             // are malformed — the old `<= 0` guard covered both; a blind
             // `is_some()` here would wrongly accept `:value`.
             match line.find(":") {
-                Some(colon) if colon > 0 => {},
+                .Some(colon) if colon > 0 => {},
                 _ => return false,
             }
         }
@@ -439,8 +439,8 @@ fn headers_have_colons(header_section: string) -> bool {
 /// The first CRLF-terminated line of a head block (the request line).
 fn first_line(head: string) -> string {
     match head.find("\r\n") {
-        Some(nl) => head.slice(0, nl),
-        None => head,
+        .Some(nl) => head.slice(0, nl),
+        .None => head,
     }
 }
 
@@ -481,8 +481,8 @@ fn is_alpha_token(s: string) -> bool {
         // In-bounds loop: char_at(i) is always Some; the unreachable None
         // fails CLOSED (not a valid method token).
         let b = match s.char_at(i) {
-            Some(c) => c as i64,
-            None => return false,
+            .Some(c) => c as i64,
+            .None => return false,
         };
         let upper = b >= 65 && b <= 90;
         let lower = b >= 97 && b <= 122;
@@ -503,8 +503,8 @@ fn has_control_char(s: string) -> bool {
         // In-bounds loop: char_at(i) is always Some; the unreachable None
         // fails CLOSED (treat as a control character -> reject).
         let b = match s.char_at(i) {
-            Some(c) => c as i64,
-            None => return true,
+            .Some(c) => c as i64,
+            .None => return true,
         };
         if b < 32 || b == 127 {
             return true;

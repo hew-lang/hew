@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import sys
 
@@ -69,6 +70,13 @@ impl Tok {
 def ind(text: str, n: int = 4) -> str:
     pad = " " * n
     return "\n".join(pad + line if line.strip() else line for line in text.splitlines())
+
+
+def ratify_surface(src: str) -> str:
+    """Emit dotted constructors and owner-qualified enum variants."""
+    src = re.sub(r"(?<![.\w])Some\(", "Option.Some(", src)
+    src = re.sub(r"(?<![.\w])Ok\(", "Result.Ok(", src)
+    return src
 
 
 class Row:
@@ -156,7 +164,7 @@ ROWS.append(
         "bytes",
         "bytes",
         mk=lambda n, i: (
-            f"let {n}: bytes = bytes::new();\n"
+            f"let {n}: bytes = bytes.new();\n"
             + "\n".join(f"{n}.push({65 + k});" for k in range(2 + i))
         ),
         show=lambda n: (
@@ -174,7 +182,7 @@ ROWS.append(
         "vec",
         "Vec<i64>",
         mk=lambda n, i: (
-            f"let {n}: Vec<i64> = Vec::new();\n"
+            f"let {n}: Vec<i64> = Vec.new();\n"
             + "\n".join(f"{n}.push({10 * (k + 1) + i});" for k in range(2))
         ),
         show=lambda n: (
@@ -185,7 +193,7 @@ ROWS.append(
         eq=False,
         owns_resource=(
             TOK,
-            lambda n: f"let {n}: Vec<Tok> = Vec::new();\n{n}.push(Tok {{ id: 1 }});",
+            lambda n: f"let {n}: Vec<Tok> = Vec.new();\n{n}.push(Tok {{ id: 1 }});",
             ["close 1"],
         ),
     )
@@ -197,7 +205,7 @@ ROWS.append(
         "hashmap",
         "HashMap<string, i64>",
         mk=lambda n, i: (
-            f"let {n}: HashMap<string, i64> = HashMap::new();\n"
+            f"let {n}: HashMap<string, i64> = HashMap.new();\n"
             f'{n}.insert("a", {1 + i});\n'
             f'{n}.insert("b", {2 + i});'
         ),
@@ -212,7 +220,7 @@ ROWS.append(
         owns_resource=(
             TOK,
             lambda n: (
-                f'let {n}: HashMap<string, Tok> = HashMap::new();\n{n}.insert("k", Tok {{ id: 1 }});'
+                f'let {n}: HashMap<string, Tok> = HashMap.new();\n{n}.insert("k", Tok {{ id: 1 }});'
             ),
             ["close 1"],
         ),
@@ -225,7 +233,7 @@ ROWS.append(
         "hashset",
         "HashSet<i64>",
         mk=lambda n, i: (
-            f"let {n}: HashSet<i64> = HashSet::new();\n"
+            f"let {n}: HashSet<i64> = HashSet.new();\n"
             f"{n}.insert({1 + i});\n"
             f"{n}.insert({2 + i});"
         ),
@@ -245,7 +253,7 @@ ROWS.append(
     Row(
         "option",
         "Option<i64>",
-        mk=lambda n, i: f"let {n}: Option<i64> = Some({5 + i});",
+        mk=lambda n, i: f"let {n}: Option<i64> = Option.Some({5 + i});",
         show=lambda n: (
             f'match {n} {{ Some({n}_v) => println(f"some {{{n}_v}}"), None => println("none"), }}'
         ),
@@ -253,7 +261,7 @@ ROWS.append(
         display=False,
         owns_resource=(
             TOK,
-            lambda n: f"let {n}: Option<Tok> = Some(Tok {{ id: 1 }});",
+            lambda n: f"let {n}: Option<Tok> = Option.Some(Tok {{ id: 1 }});",
             ["close 1"],
         ),
     )
@@ -264,7 +272,7 @@ ROWS.append(
     Row(
         "result",
         "Result<i64, string>",
-        mk=lambda n, i: f"let {n}: Result<i64, string> = Ok({6 + i});",
+        mk=lambda n, i: f"let {n}: Result<i64, string> = Result.Ok({6 + i});",
         show=lambda n: (
             f'match {n} {{ Ok({n}_v) => println(f"ok {{{n}_v}}"), Err({n}_e) => println(f"err {{{n}_e}}"), }}'
         ),
@@ -272,7 +280,7 @@ ROWS.append(
         display=False,
         owns_resource=(
             TOK,
-            lambda n: f"let {n}: Result<Tok, string> = Ok(Tok {{ id: 1 }});",
+            lambda n: f"let {n}: Result<Tok, string> = Result.Ok(Tok {{ id: 1 }});",
             ["close 1"],
         ),
     )
@@ -635,7 +643,7 @@ def col_store_vec(r):
         r.mk("x", 0)
         + "\n"
         + r.mk("y", 1)
-        + f"\nlet v: Vec<{r.ty}> = Vec::new();\nv.push(x);\nv.push(y);\nlet n = v.len();\n"
+        + f"\nlet v: Vec<{r.ty}> = Vec.new();\nv.push(x);\nv.push(y);\nlet n = v.len();\n"
         + 'println(f"len={n}");'
     )
     return prog(r, body), ["len=2"]
@@ -644,7 +652,7 @@ def col_store_vec(r):
 def col_store_map_value(r):
     body = (
         r.mk("x", 0)
-        + f'\nlet m: HashMap<string, {r.ty}> = HashMap::new();\nm.insert("k", x);\n'
+        + f'\nlet m: HashMap<string, {r.ty}> = HashMap.new();\nm.insert("k", x);\n'
         + 'match m.get("k") {\n'
         + "    Some(e) => {\n"
         + ind(r.show("e"), 8)
@@ -660,7 +668,7 @@ def col_map_key(r):
     # key a map with: the quality of the refusal is itself the measurement.
     body = (
         r.mk("k", 0)
-        + f"\nlet m: HashMap<{r.ty}, i64> = HashMap::new();\nm.insert(k, 9);\n"
+        + f"\nlet m: HashMap<{r.ty}, i64> = HashMap.new();\nm.insert(k, 9);\n"
         + "match m.get(k) {\n"
         + '    Some(v) => println(f"got {v}"),\n'
         + '    None => println("missing"),\n'
@@ -672,7 +680,7 @@ def col_map_key(r):
 def col_read_back(r):
     body = (
         r.mk("x", 0)
-        + f"\nlet v: Vec<{r.ty}> = Vec::new();\nv.push(x);\n"
+        + f"\nlet v: Vec<{r.ty}> = Vec.new();\nv.push(x);\n"
         + "match v.get(0) {\n"
         + "    Some(e) => {\n"
         + ind(r.show("e"), 8)
@@ -688,7 +696,7 @@ def col_iterate(r):
         r.mk("a", 0)
         + "\n"
         + r.mk("b", 1)
-        + f"\nlet v: Vec<{r.ty}> = Vec::new();\nv.push(a);\nv.push(b);\n"
+        + f"\nlet v: Vec<{r.ty}> = Vec.new();\nv.push(a);\nv.push(b);\n"
         + "for e in v {\n"
         + ind(r.show("e"))
         + "\n}"
@@ -701,7 +709,7 @@ def col_index(r):
         r.mk("a", 0)
         + "\n"
         + r.mk("b", 1)
-        + f"\nlet v: Vec<{r.ty}> = Vec::new();\nv.push(a);\nv.push(b);\nlet e = v[0];\n"
+        + f"\nlet v: Vec<{r.ty}> = Vec.new();\nv.push(a);\nv.push(b);\nlet e = v[0];\n"
         + r.show("e")
     )
     return prog(r, body), [r.exp(0)]
@@ -814,7 +822,7 @@ def col_drop_panic(r):
     fn = (
         "fn run() -> i64 {\n"
         + ind(mk("h"))
-        + "\n    let v: Vec<i64> = Vec::new();\n"
+        + "\n    let v: Vec<i64> = Vec.new();\n"
         + '    println("before trap");\n'
         + "    v[3]\n}\n"
     )
@@ -903,64 +911,64 @@ def OV(body, expected, decls=None, fns=None):
 
 OVERRIDES = {
     ("bytes", "mutate"): OV(
-        "let b: bytes = bytes::new();\nb.push(65);\nb.push(66);\nb.set(0, 67);\n"
+        "let b: bytes = bytes.new();\nb.push(65);\nb.push(66);\nb.set(0, 67);\n"
         'let f = b[0];\nlet l = b.len();\nprintln(f"len={l} b0={f}");',
         ["len=2 b0=67"],
     ),
     ("vec", "mutate"): OV(
-        "let v: Vec<i64> = Vec::new();\nv.push(10);\nv.push(20);\nv.set(0, 99);\n"
+        "let v: Vec<i64> = Vec.new();\nv.push(10);\nv.push(20);\nv.set(0, 99);\n"
         'let f = v[0];\nlet l = v.len();\nprintln(f"len={l} v0={f}");',
         ["len=2 v0=99"],
     ),
     ("vec", "iterate"): OV(
-        "let v: Vec<i64> = Vec::new();\nv.push(10);\nv.push(20);\n"
+        "let v: Vec<i64> = Vec.new();\nv.push(10);\nv.push(20);\n"
         "for e in v {\n    println(e);\n}",
         ["10", "20"],
     ),
     ("vec", "index"): OV(
-        "let v: Vec<i64> = Vec::new();\nv.push(10);\nv.push(20);\n"
+        "let v: Vec<i64> = Vec.new();\nv.push(10);\nv.push(20);\n"
         'let a = v[0];\nlet b = v[1];\nprintln(f"{a} {b}");',
         ["10 20"],
     ),
     ("bytes", "iterate"): OV(
-        "let b: bytes = bytes::new();\nb.push(65);\nb.push(66);\nvar i = 0;\n"
+        "let b: bytes = bytes.new();\nb.push(65);\nb.push(66);\nvar i = 0;\n"
         "while i < b.len() {\n    println(b[i]);\n    i = i + 1;\n}",
         ["65", "66"],
     ),
     ("bytes", "index"): OV(
-        "let b: bytes = bytes::new();\nb.push(65);\nb.push(66);\n"
+        "let b: bytes = bytes.new();\nb.push(65);\nb.push(66);\n"
         'let a = b[0];\nlet c = b[1];\nprintln(f"{a} {c}");',
         ["65 66"],
     ),
     ("hashmap", "mutate"): OV(
-        'let m: HashMap<string, i64> = HashMap::new();\nm.insert("a", 1);\n'
+        'let m: HashMap<string, i64> = HashMap.new();\nm.insert("a", 1);\n'
         'match m.get("a") {\n    Some(v) => m.insert("a", v + 5),\n    None => {},\n}\n'
         'match m.get("a") {\n    Some(v) => println(f"a={v}"),\n    None => println("missing"),\n}',
         ["a=6"],
     ),
     ("hashmap", "iterate"): OV(
-        'let m: HashMap<string, i64> = HashMap::new();\nm.insert("a", 1);\n'
+        'let m: HashMap<string, i64> = HashMap.new();\nm.insert("a", 1);\n'
         "let ks = m.keys();\nlet vs = m.values();\n"
         'let k0 = ks[0];\nlet v0 = vs[0];\nprintln(f"{k0}={v0}");',
         ["a=1"],
     ),
     ("hashmap", "index"): OV(
-        'let m: HashMap<string, i64> = HashMap::new();\nm.insert("a", 1);\n'
+        'let m: HashMap<string, i64> = HashMap.new();\nm.insert("a", 1);\n'
         'let v = m["a"];\nprintln(v);',
         ["1"],
     ),
     ("hashset", "mutate"): OV(
-        "let s: HashSet<i64> = HashSet::new();\ns.insert(1);\ns.insert(2);\n"
+        "let s: HashSet<i64> = HashSet.new();\ns.insert(1);\ns.insert(2);\n"
         'let r = s.remove(1);\nlet n = s.len();\nprintln(f"removed={r} len={n}");',
         ["removed=true len=1"],
     ),
     ("hashset", "iterate"): OV(
-        "let s: HashSet<i64> = HashSet::new();\ns.insert(7);\n"
+        "let s: HashSet<i64> = HashSet.new();\ns.insert(7);\n"
         "let v = s.to_vec();\nfor e in v {\n    println(e);\n}",
         ["7"],
     ),
     ("hashset", "index"): OV(
-        "let s: HashSet<i64> = HashSet::new();\ns.insert(7);\n"
+        "let s: HashSet<i64> = HashSet.new();\ns.insert(7);\n"
         'let h = s.contains(7);\nprintln(f"{h}");',
         ["true"],
     ),
@@ -1097,7 +1105,7 @@ def generate(outdir):
                 exp = apply_close_trace(r, c, exp)
             name = f"{r.id}__{c}"
             with open(os.path.join(outdir, name + ".hew"), "w") as f:
-                f.write(src)
+                f.write(ratify_surface(src))
             with open(os.path.join(outdir, name + ".expected"), "w") as f:
                 f.write("\n".join(exp) + "\n")
             if trap:

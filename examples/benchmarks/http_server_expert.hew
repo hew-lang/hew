@@ -1,6 +1,6 @@
-import std::net::http::{Server};
+import std.net.http.{Server};
 
-import std::net;
+import std.net;
 
 fn serve_forever(server: Server) {
     loop {
@@ -48,10 +48,10 @@ fn main() {
     let addr = "0.0.0.0:18080";
     println("Listening on " + addr);
     match http.listen(addr) {
-        Ok(server) => {
+        .Ok(server) => {
             serve_forever(server);
         },
-        Err(err) => {
+        .Err(err) => {
             let reason = net.net_error_message(err);
             let detail = http.listen_error();
             println(f"cannot listen on {addr}: {reason} - {detail}");

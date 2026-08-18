@@ -10,5 +10,5 @@ actor Echo {
 fn main() {
     let x = spawn Echo(seen: 0);
     let y = x;
-    match await y.take(1) { Ok(y_v) => println(f"echo {y_v}"), Err(_) => println("err"), }
+    match await y.take(1) { Result.Ok(y_v) => println(f"echo {y_v}"), Err(_) => println("err"), }
 }

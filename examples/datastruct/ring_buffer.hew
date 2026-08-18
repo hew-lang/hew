@@ -2,7 +2,7 @@
 // Layout: Vec<i64> = [capacity, head, tail, count, data...]
 // head = read position, tail = write position
 fn rb_create(capacity: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(capacity); // index 0: capacity
     v.push(0); // index 1: head (read pos)
     v.push(0); // index 2: tail (write pos)

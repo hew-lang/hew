@@ -5,12 +5,12 @@ indirect enum Tree {
 
 fn sum(t: Tree) -> i64 {
     match t {
-        Leaf(value) => value,
-        Node(left, right) => sum(left) + sum(right),
+        .Leaf(value) => value,
+        .Node(left, right) => sum(left) + sum(right),
     }
 }
 
-actor Sink {
+actor TestSink {
     receive fn take(t: Tree) {
         print(sum(t));
     }
@@ -21,8 +21,8 @@ actor Sink {
 }
 
 fn main() -> i64 {
-    let sink = spawn Sink;
-    sink.take(Node(Leaf(4), Node(Leaf(5), Leaf(6))));
-    sink.tagged(10, Node(Leaf(1), Leaf(2)));
+    let sink = spawn TestSink;
+    sink.take(.Node(.Leaf(4), .Node(.Leaf(5), .Leaf(6))));
+    sink.tagged(10, .Node(.Leaf(1), .Leaf(2)));
     0
 }

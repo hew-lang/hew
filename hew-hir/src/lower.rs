@@ -90,6 +90,14 @@ fn flatten_or_pattern(pattern: &Spanned<Pattern>) -> Vec<Spanned<Pattern>> {
     }
 }
 
+fn nominal_path_leaf(path: &hew_parser::ast::Path) -> Option<&str> {
+    path.segments.last().map(String::as_str)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the exhaustive payload classifier keeps all pattern forms in one match"
+)]
 fn collect_match_payload_predicates(
     ctx: &LowerCtx,
     pattern: &Spanned<Pattern>,
@@ -182,6 +190,126 @@ fn collect_match_payload_predicates(
             }
             Ok(predicates)
         }
+        Pattern::NominalPath { path, payload } => match payload.as_ref() {
+            None => Ok(Vec::new()),
+            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                let field_tys = nominal_path_leaf(path)
+                    .and_then(|name| ctx.lookup_variant_ctor(name, Some(scrutinee_ty)))
+                    .map(|(_, _, kind)| match kind {
+                        HirVariantKind::Tuple(field_tys) => field_tys.clone(),
+                        HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
+                    })
+                    .unwrap_or_default();
+                Ok(patterns
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(field_idx, (sub_pattern, _))| {
+                        let Pattern::Literal(literal) = sub_pattern else {
+                            return None;
+                        };
+                        let Ok(field_idx) = u32::try_from(field_idx) else {
+                            return None;
+                        };
+                        let (literal, literal_ty) = literal_to_hir(literal);
+                        let ty = field_tys
+                            .get(field_idx as usize)
+                            .cloned()
+                            .unwrap_or(literal_ty);
+                        Some(HirPayloadPredicate {
+                            field_idx,
+                            literal,
+                            ty,
+                        })
+                    })
+                    .collect())
+            }
+            Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => {
+                let key = ctx.mk_key(&pattern.1);
+                let plan = ctx.pattern_plans.get(&key).ok_or_else(|| {
+                    "checker did not provide a PatternPlan for nominal record predicates"
+                        .to_string()
+                })?;
+                let mut predicates = Vec::new();
+                for field in &plan.fields {
+                    let hew_types::PlanSub::Literal(literal) = &field.sub else {
+                        continue;
+                    };
+                    let ty = ResolvedTy::from_ty(&field.ty).map_err(|err| {
+                        format!(
+                            "nominal record predicate field `{}` has unresolved plan type ({err:?})",
+                            field.name
+                        )
+                    })?;
+                    let (literal, _) = literal_to_hir(literal);
+                    predicates.push(HirPayloadPredicate {
+                        field_idx: field.decl_idx,
+                        literal,
+                        ty,
+                    });
+                }
+                Ok(predicates)
+            }
+        },
+        Pattern::ContextVariant(context) => match context.payload.as_ref() {
+            None => Ok(Vec::new()),
+            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                let field_tys = ctx
+                    .lookup_variant_ctor(&context.name, Some(scrutinee_ty))
+                    .map(|(_, _, kind)| match kind {
+                        HirVariantKind::Tuple(field_tys) => field_tys.clone(),
+                        HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
+                    })
+                    .unwrap_or_default();
+                Ok(patterns
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(field_idx, (sub_pattern, _))| {
+                        let Pattern::Literal(literal) = sub_pattern else {
+                            return None;
+                        };
+                        let Ok(field_idx) = u32::try_from(field_idx) else {
+                            return None;
+                        };
+                        let (literal, literal_ty) = literal_to_hir(literal);
+                        let ty = field_tys
+                            .get(field_idx as usize)
+                            .cloned()
+                            .unwrap_or(literal_ty);
+                        Some(HirPayloadPredicate {
+                            field_idx,
+                            literal,
+                            ty,
+                        })
+                    })
+                    .collect())
+            }
+            Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => {
+                let key = ctx.mk_key(&pattern.1);
+                let plan = ctx.pattern_plans.get(&key).ok_or_else(|| {
+                    "checker did not provide a PatternPlan for contextual record predicates"
+                        .to_string()
+                })?;
+                let mut predicates = Vec::new();
+                for field in &plan.fields {
+                    let hew_types::PlanSub::Literal(literal) = &field.sub else {
+                        continue;
+                    };
+                    let ty = ResolvedTy::from_ty(&field.ty).map_err(|err| {
+                        format!(
+                            "contextual record predicate field `{}` has unresolved plan type ({err:?})",
+                            field.name
+                        )
+                    })?;
+                    let (literal, _) = literal_to_hir(literal);
+                    predicates.push(HirPayloadPredicate {
+                        field_idx: field.decl_idx,
+                        literal,
+                        ty,
+                    });
+                }
+                Ok(predicates)
+            }
+        },
         Pattern::Wildcard
         | Pattern::Identifier(_)
         | Pattern::Literal(_)
@@ -192,7 +320,7 @@ fn collect_match_payload_predicates(
 }
 
 fn constructor_payload_aggregate_subpatterns(pattern: &Pattern) -> bool {
-    let Pattern::Constructor { patterns, .. } = pattern else {
+    let Some((_, patterns)) = tuple_variant_pattern_parts(pattern) else {
         return false;
     };
     patterns.iter().any(|(sub_pat, _)| {
@@ -214,7 +342,7 @@ fn constructor_payload_aggregate_subpatterns(pattern: &Pattern) -> bool {
 /// (`lower_struct_variant_payload_aggregates`). Mirrors
 /// `constructor_payload_aggregate_subpatterns` for the struct-variant shape.
 fn struct_variant_payload_aggregate_subpatterns(pattern: &Pattern) -> bool {
-    let Pattern::Struct { fields, .. } = pattern else {
+    let Some((_, fields)) = struct_variant_pattern_parts(pattern) else {
         return false;
     };
     fields.iter().any(|pf| match &pf.pattern {
@@ -224,6 +352,42 @@ fn struct_variant_payload_aggregate_subpatterns(pattern: &Pattern) -> bool {
         }
         None => false,
     })
+}
+
+fn tuple_variant_pattern_parts(pattern: &Pattern) -> Option<(&str, &[Spanned<Pattern>])> {
+    match pattern {
+        Pattern::Constructor { name, patterns } => Some((name, patterns)),
+        Pattern::NominalPath {
+            path,
+            payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)),
+        } => Some((nominal_path_leaf(path)?, patterns)),
+        Pattern::ContextVariant(context) => match context.payload.as_ref() {
+            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                Some((&context.name, patterns))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn struct_variant_pattern_parts(
+    pattern: &Pattern,
+) -> Option<(&str, &[hew_parser::ast::PatternField])> {
+    match pattern {
+        Pattern::Struct { name, fields, .. } => Some((name, fields)),
+        Pattern::NominalPath {
+            path,
+            payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
+        } => Some((nominal_path_leaf(path)?, fields)),
+        Pattern::ContextVariant(context) => match context.payload.as_ref() {
+            Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                Some((&context.name, fields))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Resolve the type of an `if`/`else` expression from its two branch types,
@@ -980,7 +1144,9 @@ struct ImplCloseSignature {
 /// modules. Carries the same-module fn-name rewrite map (bare helper name →
 /// mangled qualified symbol, identical to the free-function imported path) and
 /// the set of method names to skip because their bodies or signatures cannot
-/// be resolved safely across the module boundary.
+/// be resolved safely across the module boundary. `symbol_self_name` is the
+/// exact declaration-keyed owner selected by the pre-lowering body plan,
+/// including any concrete type-argument suffix.
 struct ImportedImplLowering<'a> {
     rewrites: &'a HashMap<String, String>,
     skip_methods: &'a HashSet<String>,
@@ -994,7 +1160,78 @@ struct ImportedImplLowering<'a> {
 #[derive(Debug, Default)]
 struct ImplBodyPlan {
     symbols: HashMap<hew_types::DefId, String>,
+    /// Declarations whose executable bodies are supplied by the compiler,
+    /// rather than selected from source/import traversal.
+    compiler_selected: HashSet<hew_types::DefId>,
     symbol_self_names: HashMap<*const hew_parser::ast::ImplDecl, String>,
+}
+
+/// Whether two linker spellings are compatibility projections of one
+/// checker-owned impl declaration.
+///
+/// The checker publishes an imported impl under both its canonical owner
+/// (`pkg.Type::method`) and, where the surface permits it, the bare dispatch
+/// alias (`Type::method`).  Reaching the same source through two import paths
+/// can therefore present both spellings to the HIR planner.  The declaration
+/// key is the authority: both symbols must name its exact receiver and method.
+/// A merely same-shaped symbol for another receiver remains a genuine
+/// conflict and fails closed.
+fn impl_body_symbol_matches_declaration(declaration: &hew_types::DefId, symbol: &str) -> bool {
+    let Some((receiver, declaration_tail)) = declaration.full_path().split_once("::<") else {
+        return false;
+    };
+    let Some((_, method)) = declaration_tail.rsplit_once(">::") else {
+        return false;
+    };
+    let Some((symbol_owner, symbol_method)) = symbol.rsplit_once("::") else {
+        return false;
+    };
+    if symbol_method != method {
+        return false;
+    }
+    let receiver_leaf = hew_types::short_name(receiver);
+    symbol_owner == receiver
+        || symbol_owner == receiver_leaf
+        || symbol_owner
+            .strip_prefix(receiver)
+            .is_some_and(|suffix| suffix.starts_with("$$"))
+        || symbol_owner
+            .strip_prefix(receiver_leaf)
+            .is_some_and(|suffix| suffix.starts_with("$$"))
+}
+
+fn impl_body_symbols_alias_one_declaration(
+    declaration: &hew_types::DefId,
+    left: &str,
+    right: &str,
+) -> bool {
+    left != right
+        && impl_body_symbol_matches_declaration(declaration, left)
+        && impl_body_symbol_matches_declaration(declaration, right)
+}
+
+fn declaration_owned_impl_body_symbol<'a>(
+    declaration: &hew_types::DefId,
+    left: &'a str,
+    right: &'a str,
+) -> &'a str {
+    let receiver = declaration
+        .full_path()
+        .split_once("::<")
+        .map_or("", |(receiver, _)| receiver);
+    let is_declaration_owned = |symbol: &str| {
+        symbol.rsplit_once("::").is_some_and(|(owner, _)| {
+            owner == receiver
+                || owner
+                    .strip_prefix(receiver)
+                    .is_some_and(|suffix| suffix.starts_with("$$"))
+        })
+    };
+    if is_declaration_owned(right) && !is_declaration_owned(left) {
+        right
+    } else {
+        left
+    }
 }
 
 fn imported_impl_symbol_self_name(source_module: &str, source_name: &str) -> String {
@@ -1005,34 +1242,123 @@ fn imported_impl_symbol_self_name(source_module: &str, source_name: &str) -> Str
     }
 }
 
+fn validate_impl_body_owner_alias(
+    ctx: &mut LowerCtx,
+    declaration_key: *const hew_parser::ast::ImplDecl,
+    base_symbol_self_name: &str,
+    planned: &[(hew_types::DefId, String)],
+) -> bool {
+    let Some(existing_owner) = ctx
+        .impl_body_plan
+        .symbol_self_names
+        .get(&declaration_key)
+        .cloned()
+    else {
+        return true;
+    };
+    if existing_owner == base_symbol_self_name {
+        return true;
+    }
+    let aliases_existing_plan = !planned.is_empty()
+        && planned.iter().all(|(declaration, symbol)| {
+            ctx.impl_body_plan
+                .symbols
+                .get(declaration)
+                .is_some_and(|existing| {
+                    existing == symbol
+                        || impl_body_symbols_alias_one_declaration(declaration, existing, symbol)
+                })
+        });
+    if aliases_existing_plan {
+        return true;
+    }
+    ctx.impl_body_plan
+        .symbol_self_names
+        .remove(&declaration_key);
+    ctx.diagnostics.push(HirDiagnostic::new(
+        HirDiagnosticKind::CheckerBoundaryViolation {
+            name: "impl body owner".to_string(),
+            reason: format!(
+                "conflicting pre-lowering owners `{existing_owner}` and `{base_symbol_self_name}`"
+            ),
+        },
+        0..0,
+        "one implementation declaration selected two distinct canonical owners",
+    ));
+    false
+}
+
+fn merge_planned_impl_body_symbols(
+    ctx: &mut LowerCtx,
+    planned: &[(hew_types::DefId, String)],
+) -> bool {
+    let mut conflict = false;
+    for (declaration, symbol) in planned {
+        if let Some(existing) = ctx
+            .impl_body_plan
+            .symbols
+            .insert(declaration.clone(), symbol.clone())
+        {
+            if existing == *symbol {
+                continue;
+            }
+            if impl_body_symbols_alias_one_declaration(declaration, &existing, symbol) {
+                let selected = if ctx.impl_body_plan.compiler_selected.contains(declaration) {
+                    existing
+                } else {
+                    declaration_owned_impl_body_symbol(declaration, &existing, symbol).to_string()
+                };
+                ctx.impl_body_plan
+                    .symbols
+                    .insert(declaration.clone(), selected);
+                continue;
+            }
+            ctx.impl_body_plan.symbols.remove(declaration);
+            conflict = true;
+            ctx.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: format!("impl body `{}`", declaration.full_path()),
+                    reason: format!(
+                        "conflicting pre-lowering symbols `{existing}` and `{symbol}`"
+                    ),
+                },
+                0..0,
+                format!(
+                    "implementation declaration `{}` selected two distinct emitted-body symbols: `{existing}` and `{symbol}`",
+                    declaration.full_path()
+                ),
+            ));
+        }
+    }
+    !conflict
+}
+
+fn record_impl_body_owner(
+    ctx: &mut LowerCtx,
+    declaration_key: *const hew_parser::ast::ImplDecl,
+    base_symbol_self_name: &str,
+    planned: &[(hew_types::DefId, String)],
+) {
+    let selected_owner = planned
+        .iter()
+        .find_map(|(declaration, _)| {
+            ctx.impl_body_plan
+                .symbols
+                .get(declaration)
+                .and_then(|symbol| symbol.rsplit_once("::").map(|(owner, _)| owner.to_string()))
+        })
+        .unwrap_or_else(|| base_symbol_self_name.to_string());
+    ctx.impl_body_plan
+        .symbol_self_names
+        .insert(declaration_key, selected_owner);
+}
+
 fn plan_impl_block_symbols(
     ctx: &mut LowerCtx,
     impl_decl: &hew_parser::ast::ImplDecl,
     base_symbol_self_name: &str,
     skip_methods: &HashSet<String>,
 ) {
-    let declaration_key = impl_decl as *const _;
-    if let Some(existing) = ctx
-        .impl_body_plan
-        .symbol_self_names
-        .insert(declaration_key, base_symbol_self_name.to_string())
-    {
-        if existing != base_symbol_self_name {
-            ctx.impl_body_plan
-                .symbol_self_names
-                .remove(&declaration_key);
-            ctx.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: "impl body owner".to_string(),
-                    reason: format!(
-                        "conflicting pre-lowering owners `{existing}` and `{base_symbol_self_name}`"
-                    ),
-                },
-                0..0,
-                "one implementation declaration selected two distinct canonical owners",
-            ));
-        }
-    }
     if impl_decl.where_clause.is_some() && classify_unsupported_where_clause(impl_decl).is_some() {
         return;
     }
@@ -1090,27 +1416,17 @@ fn plan_impl_block_symbols(
         impl_decl,
         &symbol_self_name,
     ));
-    for (declaration, symbol) in planned {
-        if let Some(existing) = ctx
-            .impl_body_plan
-            .symbols
-            .insert(declaration.clone(), symbol.clone())
-        {
-            if existing != symbol {
-                ctx.impl_body_plan.symbols.remove(&declaration);
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: format!("impl body `{}`", declaration.full_path()),
-                        reason: format!(
-                            "conflicting pre-lowering symbols `{existing}` and `{symbol}`"
-                        ),
-                    },
-                    0..0,
-                    "one implementation declaration selected two distinct emitted-body symbols",
-                ));
-            }
-        }
+    let declaration_key = impl_decl as *const _;
+    if !validate_impl_body_owner_alias(ctx, declaration_key, base_symbol_self_name, &planned) {
+        return;
     }
+    if !merge_planned_impl_body_symbols(ctx, &planned) {
+        ctx.impl_body_plan
+            .symbol_self_names
+            .remove(&declaration_key);
+        return;
+    }
+    record_impl_body_owner(ctx, declaration_key, base_symbol_self_name, &planned);
 }
 
 /// The `(declaration, emitted symbol)` pairs for every trait default an impl
@@ -1169,14 +1485,22 @@ fn plan_imported_impl_bodies(
     ctx: &mut LowerCtx,
     program: &Program,
     file_import_module_idx: &HashMap<usize, u32>,
-    span_indices: &hew_parser::module::FileSpanIndices,
     file_import_modules: &HashSet<hew_parser::module::ModuleId>,
     preferred_modules: &HashSet<hew_parser::module::ModuleId>,
+    span_indices: &hew_parser::module::FileSpanIndices,
+    skip_imported_builtin_impls: bool,
 ) {
     let empty_skips = HashSet::new();
     // Source-order bodies include root declarations and flattened file imports.
     // They may be called before their tail-spliced item is emitted.
     for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_module_idx = file_import_module_idx
+            .get(&item_idx)
+            .copied()
+            .unwrap_or_default();
+        ctx.current_module_name = span_indices
+            .module_name(ctx.current_module_idx)
+            .map(str::to_string);
         if let Item::Impl(impl_decl) = item {
             if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
                 let symbol_self_name = file_import_module_idx
@@ -1190,6 +1514,8 @@ fn plan_imported_impl_bodies(
             }
         }
     }
+    ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
 
     let Some(module_graph) = &program.module_graph else {
         return;
@@ -1203,6 +1529,9 @@ fn plan_imported_impl_bodies(
         }
         let module = &module_graph.modules[module_id];
         let source_module = module_id.path.join(".");
+        if skip_imported_builtin_impls && source_module == "std.builtins" {
+            continue;
+        }
         let previous_module = ctx.current_module_name.replace(source_module.clone());
         let private_fns: HashSet<String> = module
             .items
@@ -1235,7 +1564,11 @@ fn plan_imported_impl_bodies(
                 )
             })
             .collect();
-        for (item, _) in &module.items {
+        let previous_module_idx = ctx.current_module_idx;
+        for (item_idx, (item, _)) in module.items.iter().enumerate() {
+            ctx.current_module_idx = span_indices
+                .item_index(module_id, item_idx)
+                .unwrap_or_default();
             let Item::Impl(impl_decl) = item else {
                 continue;
             };
@@ -1249,6 +1582,7 @@ fn plan_imported_impl_bodies(
             let base_symbol_self_name = imported_impl_symbol_self_name(&source_module, name);
             plan_impl_block_symbols(ctx, impl_decl, &base_symbol_self_name, &skip_methods);
         }
+        ctx.current_module_idx = previous_module_idx;
         ctx.current_module_name = previous_module;
     }
 }
@@ -1398,16 +1732,17 @@ fn collect_trait_default_methods(
     program: &Program,
     file_import_module_idx: &HashMap<usize, u32>,
     trait_method_ids_by_binding: &HashMap<
-        (Option<String>, String, String),
+        TraitMethodBindingKey,
         (hew_types::DefId, hew_types::DefId),
     >,
 ) -> (HashMap<String, Vec<TraitMethod>>, HashMap<String, u32>) {
     fn checker_binding_owner(
         scope: Option<&str>,
+        module_idx: u32,
         trait_name: &str,
         defaults: &[TraitMethod],
         trait_method_ids_by_binding: &HashMap<
-            (Option<String>, String, String),
+            TraitMethodBindingKey,
             (hew_types::DefId, hew_types::DefId),
         >,
     ) -> Option<String> {
@@ -1416,7 +1751,12 @@ fn collect_trait_default_methods(
             .iter()
             .map(|method| {
                 trait_method_ids_by_binding
-                    .get(&(scope.clone(), trait_name.to_string(), method.name.clone()))
+                    .get(&(
+                        scope.clone(),
+                        module_idx,
+                        trait_name.to_string(),
+                        method.name.clone(),
+                    ))
                     .map(|(trait_id, _)| trait_id.full_path().to_string())
             })
             .collect::<Option<Vec<_>>>()?;
@@ -1447,6 +1787,7 @@ fn collect_trait_default_methods(
                 let key = if flat_file_items.is_some_and(|items| items.contains_key(&item_idx)) {
                     let Some(owner) = checker_binding_owner(
                         None,
+                        idx_for(item_idx),
                         &trait_decl.name,
                         &defaults,
                         trait_method_ids_by_binding,
@@ -1687,6 +2028,12 @@ fn trait_method_to_fn_decl(method: &TraitMethod) -> FnDecl {
 /// to direct them to the fix, not to round-trip the AST.
 fn render_type_expr(ty: &TypeExpr) -> String {
     match ty {
+        TypeExpr::QualifiedAssocPath(path) => format!(
+            "<{} as {}>.{}",
+            render_type_expr(&path.base.0),
+            path.trait_path.source_spelling(),
+            path.members.join(".")
+        ),
         TypeExpr::Named { name, type_args } => match type_args {
             Some(args) if !args.is_empty() => {
                 let inner: Vec<String> = args.iter().map(|a| render_type_expr(&a.0)).collect();
@@ -1896,7 +2243,9 @@ fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn check_builtin_receiver_impl_program(program: &Program) -> TypeCheckOutput {
+fn check_builtin_receiver_impl_program(
+    program: &Program,
+) -> Result<TypeCheckOutput, Box<HirDiagnostic>> {
     // The parsed embedded source uses private leaf spellings for its synthetic
     // cursor declarations. Type-check a projection whose impl targets carry
     // their exact compiler owner so declaration IDs and call facts cannot
@@ -1922,17 +2271,32 @@ fn check_builtin_receiver_impl_program(program: &Program) -> TypeCheckOutput {
     }
     let mut checker =
         hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
-    let output = checker.check_program(&checker_program);
-    debug_assert!(
-        output.errors.is_empty(),
-        "std/builtins.hew receiver impls failed to type-check: {:?}",
-        output.errors
-    );
-    output
+    let output = checker.check_embedded_builtins(&checker_program);
+    if output.errors.is_empty() {
+        return Ok(output);
+    }
+
+    let reason = output
+        .errors
+        .iter()
+        .map(|error| error.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(Box::new(HirDiagnostic::new(
+        HirDiagnosticKind::CheckerBoundaryViolation {
+            name: "std/builtins.hew receiver impls".to_string(),
+            reason,
+        },
+        0..0,
+        "compiler-injected receiver impls were not lowered",
+    )))
 }
 
 fn canonicalize_injected_cursor_type_expr(ty: &mut TypeExpr) {
     match ty {
+        TypeExpr::QualifiedAssocPath(path) => {
+            canonicalize_injected_cursor_type_expr(&mut path.base.0);
+        }
         TypeExpr::Named { name, type_args } => {
             let canonical = injected_builtin_impl_symbol_owner(name).to_string();
             if canonical != *name {
@@ -2341,7 +2705,7 @@ fn imported_type_name_collides(
 /// Build the root scope's bare imported-function bindings.
 ///
 /// The checker publishes selected names from `import module::{name}` and
-/// `import module::*`, but HIR emits the function body under its module-qualified
+/// `import module.{name}`, but HIR emits the function body under its module-qualified
 /// symbol. Preserve that source-to-symbol mapping while root bodies lower, except
 /// where the checker's root value namespace already owns the same binding.
 fn root_imported_fn_rewrites(
@@ -2365,7 +2729,6 @@ fn root_imported_fn_rewrites(
                 continue;
             }
             let binding = match &decl.spec {
-                Some(ImportSpec::Glob) => Some(function.name.clone()),
                 Some(ImportSpec::Names(names)) => names
                     .iter()
                     .find(|imported| imported.name == function.name)
@@ -2453,6 +2816,16 @@ pub fn lower_program_with_mono_cap(
     target_arch: TargetArch,
 ) -> LowerOutput {
     let mut ctx = LowerCtx::new(type_check_output, mono_cap, target_arch);
+    let compiling_prelude_manifest = program.module_graph.as_ref().is_some_and(|graph| {
+        graph
+            .modules
+            .get(&graph.root)
+            .is_some_and(|root| root.items.is_empty() && root.source_paths.is_empty())
+            && graph
+                .modules
+                .keys()
+                .any(|module| module.path.join(".") == "std.prelude")
+    });
     ctx.type_aliases = collect_type_aliases(program);
     let file_import_module_idx = file_import_item_module_indices(program);
     // Source items flattened from a file import still belong to that file's
@@ -2467,10 +2840,17 @@ pub fn lower_program_with_mono_cap(
         .map(hew_parser::module::ModuleGraph::file_span_indices)
         .unwrap_or_default();
     ctx.seed_stdlib_fn_registry();
-    let builtin_receiver_impl_program = builtin_receiver_impl_program();
-    let builtin_receiver_impl_output = builtin_receiver_impl_program
-        .as_ref()
-        .map(check_builtin_receiver_impl_program);
+    let (builtin_receiver_impl_program, builtin_receiver_impl_output) =
+        match builtin_receiver_impl_program() {
+            Some(program) => match check_builtin_receiver_impl_program(&program) {
+                Ok(output) => (Some(program), Some(output)),
+                Err(diagnostic) => {
+                    ctx.diagnostics.push(*diagnostic);
+                    (None, None)
+                }
+            },
+            None => (None, None),
+        };
 
     // Pre-pre-pass: harvest inherent-impl `close` method signatures from
     // the root program and imported modules so the type-decl pre-pass below
@@ -2813,7 +3193,11 @@ pub fn lower_program_with_mono_cap(
                 // by the full dotted path) instead of freezing as a bare name
                 // that MIR cannot resolve.
                 let saved_module_name = ctx.current_module_name.replace(module_full_path.clone());
-                for (item, item_span) in &module.items {
+                let saved_module_idx = ctx.current_module_idx;
+                for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
+                    ctx.current_module_idx = span_indices
+                        .item_index(mod_id, item_idx)
+                        .unwrap_or_default();
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
                             if item_is_duplicated_in_distinct_leaf_module(
@@ -3026,6 +3410,7 @@ pub fn lower_program_with_mono_cap(
                         | Item::Supervisor(_) => {}
                     }
                 }
+                ctx.current_module_idx = saved_module_idx;
                 ctx.current_module_name = saved_module_name;
             }
         }
@@ -3064,7 +3449,6 @@ pub fn lower_program_with_mono_cap(
                 continue;
             }
             let binding = match spec {
-                ImportSpec::Glob => Some(const_decl.name.clone()),
                 ImportSpec::Names(names) => names
                     .iter()
                     .find(|imported| imported.name == const_decl.name)
@@ -3090,7 +3474,14 @@ pub fn lower_program_with_mono_cap(
     // user record?" regardless of declaration order relative to the
     // function that uses it. This mirrors the fn pre-pass above and is
     // the producer half of the record-layout registry.
-    for (item, _) in &program.items {
+    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_module_idx = file_import_module_idx
+            .get(&item_idx)
+            .copied()
+            .unwrap_or_default();
+        ctx.current_module_name = span_indices
+            .module_name(ctx.current_module_idx)
+            .map(str::to_string);
         match item {
             Item::TypeDecl(decl) => {
                 let id = ctx.ids.item();
@@ -3186,6 +3577,8 @@ pub fn lower_program_with_mono_cap(
             | Item::Supervisor(_) => {}
         }
     }
+    ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
     // Pre-pass: target architecture gates (P0.1-P0.4 fail-closed runtime-panic
     // prevention). Check if the program uses coroutine-dependent constructs
     // (actors/tasks) or wasm32-unsupported constructs (blocking channel recv)
@@ -3765,11 +4158,20 @@ pub fn lower_program_with_mono_cap(
     }
     ctx.current_module_idx = 0;
     ctx.current_module_name = None;
-    for (item, _) in &program.items {
+    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_module_idx = file_import_module_idx
+            .get(&item_idx)
+            .copied()
+            .unwrap_or_default();
+        ctx.current_module_name = span_indices
+            .module_name(ctx.current_module_idx)
+            .map(str::to_string);
         if let Item::Machine(machine) = item {
             ctx.register_machine_ctor_variant_metadata(None, machine);
         }
     }
+    ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root {
@@ -3781,7 +4183,11 @@ pub fn lower_program_with_mono_cap(
                 // #2202: canonicalise this module's imported enum-payload and
                 // machine state/event member aliases under its own context.
                 let saved_module_name = ctx.current_module_name.replace(source_module.clone());
-                for (item, span) in &module.items {
+                let saved_module_idx = ctx.current_module_idx;
+                for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    ctx.current_module_idx = span_indices
+                        .item_index(mod_id, item_idx)
+                        .unwrap_or_default();
                     match item {
                         Item::TypeDecl(decl)
                             if decl.visibility.is_pub() && decl.kind == TypeDeclKind::Enum =>
@@ -3820,6 +4226,7 @@ pub fn lower_program_with_mono_cap(
                     }
                 }
                 ctx.tag_diagnostics_since(diag_start, &source_module);
+                ctx.current_module_idx = saved_module_idx;
                 ctx.current_module_name = saved_module_name;
             }
         }
@@ -3868,7 +4275,11 @@ pub fn lower_program_with_mono_cap(
                 // the HIR descriptors MIR consumes; resolve their alias-typed
                 // members under this module's own context.
                 let saved_module_name = ctx.current_module_name.replace(source_module.clone());
-                for (item, span) in &module.items {
+                let saved_module_idx = ctx.current_module_idx;
+                for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    ctx.current_module_idx = span_indices
+                        .item_index(mod_id, item_idx)
+                        .unwrap_or_default();
                     match item {
                         Item::TypeDecl(decl)
                             if decl.visibility.is_pub()
@@ -4093,6 +4504,7 @@ pub fn lower_program_with_mono_cap(
                     }
                 }
                 ctx.tag_diagnostics_since(diag_start, &source_module);
+                ctx.current_module_idx = saved_module_idx;
                 ctx.current_module_name = saved_module_name;
             }
         }
@@ -4210,6 +4622,9 @@ pub fn lower_program_with_mono_cap(
                             })
                         {
                             ctx.impl_body_plan
+                                .compiler_selected
+                                .insert(declaration.clone());
+                            ctx.impl_body_plan
                                 .symbols
                                 .entry(declaration)
                                 .or_insert(emitted_symbol);
@@ -4230,9 +4645,10 @@ pub fn lower_program_with_mono_cap(
         &mut ctx,
         program,
         &file_import_module_idx,
-        &span_indices,
         &file_import_modules,
         &preferred_modules,
+        &span_indices,
+        compiling_prelude_manifest,
     );
 
     // Third pass: emit all items in source order now that both fn signatures
@@ -4850,6 +5266,15 @@ pub fn lower_program_with_mono_cap(
                         // private-helper closure reachable from impl methods, a
                         // follow-up to the free-fn closure already wired here.)
                         Item::Impl(impl_decl) => {
+                            // `std/prelude.hew` is the compiler's import-only
+                            // authority manifest. Its explicit `std.builtins`
+                            // edge selects the same implicit declarations whose
+                            // executable receiver bodies are injected below;
+                            // it must not materialise a second body set through
+                            // the package-import path.
+                            if compiling_prelude_manifest && source_module == "std.builtins" {
+                                continue;
+                            }
                             // Skip impl blocks of FILE-import modules: their
                             // items were spliced into `program.items` and
                             // already lowered by the source-order third pass.
@@ -6818,6 +7243,8 @@ enum AwaitPosition {
     BindableValueLet,
 }
 
+type TraitMethodBindingKey = (Option<String>, u32, String, String);
+
 #[derive(Debug)]
 struct LowerCtx {
     ids: IdGen,
@@ -6888,10 +7315,6 @@ struct LowerCtx {
     /// Missing facts lower as an explicit unsupported target; HIR never
     /// guesses from the callee spelling.
     direct_call_targets: HashMap<SpanKey, CallTarget>,
-    /// User-module names reported by the checker. This lets a missing
-    /// module-qualified call rewrite fail at the checker/HIR boundary instead
-    /// of being misreported as an ordinary receiver-method omission.
-    user_modules: HashSet<String>,
     /// Checker-published canonical `(trait, method)` declaration identities,
     /// keyed by owner-qualified source method paths. HIR only carries these
     /// declaration facts; it does not rebuild IDs from method spellings.
@@ -6900,7 +7323,7 @@ struct LowerCtx {
     /// importer binding.  This resolves default-method ownership for `impl
     /// AliasTrait for Type` without a leaf-name or suffix lookup.
     trait_method_ids_by_binding:
-        HashMap<(Option<String>, String, String), (hew_types::DefId, hew_types::DefId)>,
+        HashMap<TraitMethodBindingKey, (hew_types::DefId, hew_types::DefId)>,
     /// Checker-owned impl-method declaration identities.  Keys are linker
     /// presentation strings retained only to locate the already-allocated ID;
     /// HIR never constructs an ID from a method spelling.
@@ -6964,9 +7387,9 @@ struct LowerCtx {
     /// constructor so it returns the declared `Result`. See
     /// `TypeCheckOutput::tail_ok_coercions`.
     tail_ok_coercions: std::collections::HashSet<SpanKey>,
-    /// Checker-owned method-call receiver classifications. Used only to fail
-    /// closed when the checker classified a receiver as actor-dispatchable but
-    /// omitted the corresponding `actor_method_dispatch` discriminator.
+    /// Checker-owned method-call receiver classifications. These facts prevent
+    /// HIR from reclassifying a lexical spelling as a module and fail closed
+    /// when a classified module or actor call lacks its dispatch fact.
     method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     /// Per-call-site `T → dyn Trait` coercion side-table. Keyed by the
     /// argument expression span. `lower_expr` consults this at every
@@ -7549,13 +7972,13 @@ struct LowerCtx {
     /// Type references consult the source binding before the builtin catalog,
     /// so an explicitly imported user `Receiver` cannot become the channel
     /// endpoint. Local-shadow filtering remains checker-authoritative.
-    import_type_name_aliases: HashMap<(Option<String>, String), String>,
+    import_type_name_aliases: HashMap<(Option<String>, u32, String), String>,
     /// Exact owner identities for lexical module qualifiers. Both whole and
     /// selective module-path imports carry this fact: after
     /// `import hew::closableerr::{ Closable as C }`,
     /// `closableerr.CloseError` still resolves to
     /// `hew.closableerr.CloseError` without a leaf-name retry.
-    module_import_bindings: HashMap<(Option<String>, String), String>,
+    module_import_bindings: HashMap<(Option<String>, u32, String), String>,
 }
 
 #[derive(Debug, Clone)]
@@ -8023,7 +8446,6 @@ impl LowerCtx {
                 sigs
             },
             direct_call_targets: tc_output.direct_call_targets.clone(),
-            user_modules: tc_output.user_modules.clone(),
             trait_method_ids: tc_output.trait_method_ids.clone(),
             trait_method_ids_by_binding: tc_output.trait_method_ids_by_binding.clone(),
             impl_method_declaration_ids: tc_output.impl_method_declaration_ids.clone(),
@@ -8182,6 +8604,10 @@ impl LowerCtx {
                 &mut self.resolved_expr_types,
                 tc_output.resolved_expr_types.clone(),
             ),
+            std::mem::replace(
+                &mut self.record_init_type_args,
+                tc_output.record_init_type_args.clone(),
+            ),
         );
 
         let result = f(self);
@@ -8201,6 +8627,7 @@ impl LowerCtx {
             self.produced_value_ownership,
             self.produced_value_dependencies,
             self.resolved_expr_types,
+            self.record_init_type_args,
         ) = saved;
 
         result
@@ -8480,10 +8907,20 @@ impl LowerCtx {
     /// record-shaped and the plan is missing; the caller then bails on its own
     /// fail-closed path.
     fn record_shape_missing_plan(&mut self, pattern: &Spanned<Pattern>) -> bool {
-        if !matches!(
-            pattern.0,
-            Pattern::Struct { .. } | Pattern::RecordShorthand { .. }
-        ) {
+        let record_shaped = matches!(
+            &pattern.0,
+            Pattern::Struct { .. }
+                | Pattern::RecordShorthand { .. }
+                | Pattern::NominalPath {
+                    payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
+                    ..
+                }
+                | Pattern::ContextVariant(hew_parser::ast::ContextVariantPattern {
+                    payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
+                    ..
+                })
+        );
+        if !record_shaped {
             return false;
         }
         let key = self.mk_key(&pattern.1);
@@ -9246,6 +9683,10 @@ fn method_signature_type_exprs(method: &FnDecl) -> impl Iterator<Item = &TypeExp
 /// spellings only — no resolution, no qualification.
 fn collect_type_expr_named_leaves(ty: &TypeExpr, out: &mut Vec<String>) {
     match ty {
+        TypeExpr::QualifiedAssocPath(path) => {
+            collect_type_expr_named_leaves(&path.base.0, out);
+            out.push(path.trait_path.source_spelling());
+        }
         TypeExpr::Named { name, type_args } => {
             out.push(name.clone());
             for arg in type_args.as_deref().unwrap_or(&[]) {
@@ -11594,7 +12035,10 @@ impl LowerCtx {
     ) -> (HirExprKind, ResolvedTy) {
         if !matches!(
             target,
-            CallTarget::User(_) | CallTarget::ImplMethod(_) | CallTarget::Runtime(_)
+            CallTarget::User(_)
+                | CallTarget::ImplMethod(_)
+                | CallTarget::Runtime(_)
+                | CallTarget::Builtin { .. }
         ) {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
@@ -11611,12 +12055,31 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         }
-        let symbol = crate::mangle_dotted_name(c_symbol);
+        let symbol = if let CallTarget::ImplMethod(declaration) = &target {
+            let Some(symbol) = self.registered_impl_method_symbol(declaration) else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CallableUnsupportedInMir {
+                        name: declaration.full_path().to_string(),
+                    },
+                    span.clone(),
+                    "checker selected an associated implementation declaration whose HIR body was not registered",
+                ));
+                return (
+                    HirExprKind::Unsupported(
+                        "associated implementation call has no registered HIR body".to_string(),
+                    ),
+                    ResolvedTy::Unit,
+                );
+            };
+            symbol
+        } else {
+            crate::mangle_dotted_name(c_symbol)
+        };
         let selected_declaration = match &target {
             CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
                 Some(declaration)
             }
-            CallTarget::Runtime(_) => None,
+            CallTarget::Runtime(_) | CallTarget::Builtin { .. } => None,
             _ => unreachable!("direct-call target shape was validated above"),
         };
         self.register_free_fn_monomorphisation(&symbol, selected_declaration, span, site);
@@ -11630,11 +12093,11 @@ impl LowerCtx {
                 self.qualify_current_module_record_ty(ty)
             });
         self.assert_resolved_ty_totality(span);
-        let resolved_ref = match target {
+        let resolved_ref = match &target {
             // The checker has already selected this closed executable family.
             // Do not require a synthetic fn-registry spelling (or recover one
             // from `symbol`) merely to mark the binding as directly callable.
-            CallTarget::Runtime(family) => ResolvedRef::Builtin(family),
+            CallTarget::Runtime(family) => ResolvedRef::Builtin(*family),
             _ => self
                 .fn_registry
                 .get(&symbol)
@@ -11681,7 +12144,7 @@ impl LowerCtx {
         span: &Span,
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
-        // Namespaced module-qualified call `module::fn(args)`: the callee is a
+        // Module-qualified call `module.fn(args)`: the callee is a
         // `FieldAccess` on a module identifier, not a value. The checker
         // recorded a `RewriteModuleQualifiedToFunction` on this call span (the
         // same rewrite the dot form `module.fn(args)` records via the
@@ -11735,14 +12198,18 @@ impl LowerCtx {
             );
         }
         let source_name = Self::ordinary_call_presentation_name(function);
-        if source_name == "LambdaActorHandle::new" {
+        if hew_types::has_builtin_associated_item_identity(
+            &source_name,
+            BuiltinType::LambdaActorHandle,
+            "new",
+        ) {
             self.discard_rejected_call_child_facts(span);
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CallableUnsupportedInMir {
                     name: source_name.clone(),
                 },
                 span.clone(),
-                "`LambdaActorHandle::new` is not a public constructor; use \
+                "`LambdaActorHandle.new` is not a public constructor; use \
                  `actor |params| { body }` to create a lambda actor",
             ));
             return (
@@ -11897,6 +12364,7 @@ impl LowerCtx {
         // Never reinterpret a final path segment as this module's owner.
         if let Some(ids) = self.trait_method_ids_by_binding.get(&(
             self.current_module_name.clone(),
+            self.current_module_idx,
             declaring_trait.to_string(),
             method_name.to_string(),
         )) {
@@ -11953,8 +12421,10 @@ impl LowerCtx {
         let mut binding_owners: Vec<String> = self
             .trait_method_ids_by_binding
             .iter()
-            .filter(|((scope, binding, _), _)| {
-                scope == &self.current_module_name && binding == trait_bound
+            .filter(|((scope, file, binding, _), _)| {
+                scope == &self.current_module_name
+                    && *file == self.current_module_idx
+                    && binding == trait_bound
             })
             .map(|(_, (trait_id, _))| trait_id.full_path().to_string())
             .collect();
@@ -11965,6 +12435,27 @@ impl LowerCtx {
         }
         if !binding_owners.is_empty() {
             return None;
+        }
+
+        // A file import splices declarations into the root scope, but the
+        // checker publishes each trait binding under its declaring file index.
+        // If the root has no exact file-local binding, accept only one
+        // unambiguous checker-published owner across those flat-import files.
+        if self.current_module_name.is_none() {
+            let mut flat_file_owners: Vec<String> = self
+                .trait_method_ids_by_binding
+                .iter()
+                .filter(|((scope, _, binding, _), _)| scope.is_none() && binding == trait_bound)
+                .map(|(_, (trait_id, _))| trait_id.full_path().to_string())
+                .collect();
+            flat_file_owners.sort_unstable();
+            flat_file_owners.dedup();
+            if let [owner] = flat_file_owners.as_slice() {
+                return Some(owner.clone());
+            }
+            if !flat_file_owners.is_empty() {
+                return None;
+            }
         }
 
         let local_owner = self.current_module_name.as_ref().map_or_else(
@@ -12007,7 +12498,7 @@ impl LowerCtx {
         match &function.0 {
             Expr::Identifier(name) => name.clone(),
             Expr::FieldAccess { object, field } => match &object.0 {
-                Expr::Identifier(owner) => format!("{owner}::{field}"),
+                Expr::Identifier(owner) => format!("{owner}.{field}"),
                 _ => "<call expression>".to_string(),
             },
             _ => "<call expression>".to_string(),
@@ -12216,7 +12707,11 @@ impl LowerCtx {
                 .and_then(|context| context.symbol_self_name)
                 .unwrap_or(self_type_name.as_str())
         };
-        let symbol_self_name: std::borrow::Cow<str> = if self_type_concrete_args.is_empty() {
+        let symbol_self_name: std::borrow::Cow<str> = if imported
+            .and_then(|context| context.symbol_self_name)
+            .is_some()
+            || self_type_concrete_args.is_empty()
+        {
             std::borrow::Cow::Borrowed(base_symbol_self_name)
         } else {
             std::borrow::Cow::Owned(crate::monomorph::mangle(
@@ -12459,6 +12954,20 @@ impl LowerCtx {
                 }
             }
             let symbol = crate::node::HirImplBlock::method_symbol(&symbol_self_name, &method.name);
+            let declaration = self.impl_method_declaration_ids.get(&symbol).cloned();
+            if let Some((declaration, selected)) = declaration.as_ref().and_then(|declaration| {
+                self.impl_body_plan
+                    .symbols
+                    .get(declaration)
+                    .map(|selected| (declaration, selected))
+            }) {
+                if impl_body_symbols_alias_one_declaration(declaration, selected, &symbol) {
+                    // This AST body is a second import-path view of the exact
+                    // declaration already selected by the plan. Only the
+                    // selected spelling may materialise a HIR function.
+                    continue;
+                }
+            }
             // Pass impl-level type params so that methods of e.g. `impl<U> Trait for Wrapper<U>`
             // carry `U` as a `HirFn::type_params` entry — required for monomorphization
             // of generic-over-generic impl methods (W3.022 Stage 3).
@@ -12487,13 +12996,12 @@ impl LowerCtx {
             // The plan deliberately excludes imported methods skipped for an
             // unresolved body/signature, so a checker compatibility alias can
             // never be promoted into a callable implementation body.
-            if let Some(declaration) = self.impl_method_declaration_ids.get(&symbol) {
-                let declaration = declaration.clone();
+            if let Some(declaration) = &declaration {
                 if self.lowering_injected_items
-                    || self.validate_impl_body_plan(&declaration, &symbol, &span)
+                    || self.validate_impl_body_plan(declaration, &symbol, &span)
                 {
                     self.impl_method_body_symbols
-                        .entry(declaration)
+                        .entry(declaration.clone())
                         .or_insert_with(|| symbol.clone());
                 }
             }
@@ -12516,7 +13024,7 @@ impl LowerCtx {
             method_declaring_traits.push(declaring_trait);
             method_declaring_trait_ids.push(ids.as_ref().map(|(trait_id, _)| trait_id.clone()));
             method_trait_method_ids.push(ids.as_ref().map(|(_, method_id)| method_id.clone()));
-            method_ids.push(self.impl_method_declaration_ids.get(&symbol).cloned());
+            method_ids.push(declaration);
         }
 
         // Lower trait default methods that are NOT overridden in this impl.
@@ -15155,7 +15663,9 @@ impl LowerCtx {
             Pattern::Constructor { .. }
             | Pattern::Literal(_)
             | Pattern::Or(_, _)
-            | Pattern::Regex { .. } => {
+            | Pattern::Regex { .. }
+            | Pattern::NominalPath { .. }
+            | Pattern::ContextVariant(_) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::NotYetImplemented {
                         construct: "unsupported nested let pattern".into(),
@@ -16837,10 +17347,20 @@ impl LowerCtx {
         // produce no prelude.
         let success_prelude = if binding_error {
             Vec::new()
-        } else if let Pattern::Constructor { name, patterns } = &pattern.0 {
+        } else if let Some((name, patterns)) = tuple_variant_pattern_parts(&pattern.0) {
             let (prelude, had_error) = self.lower_constructor_payload_aggregates(
                 name,
                 patterns,
+                &scrutinee_hir.ty,
+                &mut bindings,
+                "let-else-substrate",
+            );
+            binding_error |= had_error;
+            prelude
+        } else if let Some((name, fields)) = struct_variant_pattern_parts(&pattern.0) {
+            let (prelude, had_error) = self.lower_struct_variant_payload_aggregates(
+                name,
+                fields,
                 &scrutinee_hir.ty,
                 &mut bindings,
                 "let-else-substrate",
@@ -17475,6 +17995,127 @@ impl LowerCtx {
         let in_stmt_position = await_position == AwaitPosition::Statement;
         let in_bindable_value_position = await_position == AwaitPosition::BindableValueLet;
         let span = expr.1.clone();
+        if let Expr::Call {
+            function,
+            type_args,
+            args,
+            is_tail_call,
+        } = &expr.0
+        {
+            if let Expr::FieldAccess { object, field } = &function.0 {
+                if let Expr::Identifier(owner) = &object.0 {
+                    if hew_types::lookup_builtin_type(owner).is_some() {
+                        let compatibility = Expr::Call {
+                            function: Box::new((
+                                Expr::Identifier(format!("{owner}::{field}")),
+                                function.1.clone(),
+                            )),
+                            type_args: type_args.clone(),
+                            args: args.clone(),
+                            is_tail_call: *is_tail_call,
+                        };
+                        return self.lower_expr_inner(&(compatibility, span), intent);
+                    }
+                }
+            }
+        }
+        if let Expr::FieldAccess { object, field } = &expr.0 {
+            if let Expr::Identifier(owner) = &object.0 {
+                let qualified = format!("{owner}::{field}");
+                let checker_ty = self.checker_expr_ty_if_present(&span);
+                if matches!(
+                    self.lookup_variant_ctor(&qualified, checker_ty.as_ref()),
+                    Some((_, _, HirVariantKind::Unit))
+                ) {
+                    return self.lower_expr_inner(&(Expr::Identifier(qualified), span), intent);
+                }
+            }
+        }
+        if let Expr::MethodCall {
+            receiver,
+            method,
+            args,
+        } = &expr.0
+        {
+            if matches!(
+                self.method_call_rewrites.get(&self.mk_key(&span)),
+                Some(MethodCallRewrite::VecFrom)
+            ) {
+                if let [arg] = args.as_slice() {
+                    let site = self.ids.site();
+                    let lowered = self.lower_expr(arg.expr(), IntentKind::Consume);
+                    return self.subsumed_value(
+                        site,
+                        &span,
+                        intent,
+                        lowered,
+                        HirProducedValueProducer::Call,
+                    );
+                }
+            }
+            if let Expr::GenericApplySuffix { target, type_args } = &receiver.0 {
+                if !self.method_call_rewrites.contains_key(&self.mk_key(&span)) {
+                    if let Expr::Identifier(owner) = &target.0 {
+                        let compatibility = Expr::Call {
+                            function: Box::new((
+                                Expr::Identifier(format!("{owner}::{method}")),
+                                target.1.clone(),
+                            )),
+                            type_args: Some(type_args.clone()),
+                            args: args.clone(),
+                            is_tail_call: false,
+                        };
+                        return self.lower_expr_inner(&(compatibility, span), intent);
+                    }
+                }
+            }
+            if let Expr::Identifier(owner) = &receiver.0 {
+                let qualified = format!("{owner}::{method}");
+                let checker_ty = self.checker_expr_ty_if_present(&span);
+                if !self
+                    .method_call_receiver_kinds
+                    .contains_key(&self.mk_key(&span))
+                    && matches!(
+                        self.lookup_variant_ctor(&qualified, checker_ty.as_ref()),
+                        Some((_, _, HirVariantKind::Tuple(_)))
+                    )
+                {
+                    let compatibility = Expr::Call {
+                        function: Box::new((Expr::Identifier(qualified), receiver.1.clone())),
+                        type_args: None,
+                        args: args.clone(),
+                        is_tail_call: false,
+                    };
+                    return self.lower_expr_inner(&(compatibility, span), intent);
+                }
+            }
+        }
+        if let Expr::ContextVariant(context) = &expr.0 {
+            let owner = self
+                .checker_expr_ty_if_present(&span)
+                .and_then(|ty| match ty {
+                    ResolvedTy::Named { name, .. } => Some(name),
+                    _ => None,
+                });
+            let contextual_name = owner.map_or_else(
+                || context.name.clone(),
+                |owner| format!("{owner}::{}", context.name),
+            );
+            let compatibility = if let Some(record) = &context.record {
+                Expr::StructInit {
+                    name: contextual_name,
+                    fields: record.fields.clone(),
+                    type_args: None,
+                    base: record.base.clone(),
+                }
+            } else {
+                Expr::Identifier(contextual_name)
+            };
+            return self.lower_expr_inner(&(compatibility, span), intent);
+        }
+        if let Expr::GenericApplySuffix { target, .. } = &expr.0 {
+            return self.lower_expr(&(target.0.clone(), span), intent);
+        }
         // Pre-allocate the SiteId for this expression so call-site
         // side-tables (e.g. `call_site_type_args`) can be keyed
         // by the eventual HirExpr.site before the wrapping struct is
@@ -17508,7 +18149,7 @@ impl LowerCtx {
             Expr::RegexLiteral(pattern) => {
                 // A standalone `re"..."` expression. Allocate (or reuse) the
                 // module-level literal-table entry. The checker-assigned type is
-                // `regex.Pattern`; read it from `expr_types` if present (it is
+                // `std.text.regex.Pattern`; read it from `expr_types` if present (it is
                 // set by `synthesize_inner` for `Expr::RegexLiteral`), otherwise
                 // fall back to the canonical `Named` form. Using the checker's
                 // resolved type rather than hard-coding keeps capture / generic
@@ -17516,14 +18157,14 @@ impl LowerCtx {
                 let checker_key = self.mk_key(&span);
                 let resolved_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
                     ResolvedTy::from_ty(&ty).unwrap_or(ResolvedTy::Named {
-                        name: "regex.Pattern".to_string(),
+                        name: "std.text.regex.Pattern".to_string(),
                         args: Vec::new(),
                         builtin: None,
                         is_opaque: false,
                     })
                 } else {
                     ResolvedTy::Named {
-                        name: "regex.Pattern".to_string(),
+                        name: "std.text.regex.Pattern".to_string(),
                         args: Vec::new(),
                         builtin: None,
                         is_opaque: false,
@@ -17570,6 +18211,43 @@ impl LowerCtx {
                 } else {
                     self.lower_identifier(name, span.clone())
                 }
+            }
+            Expr::ContextVariant(_) | Expr::GenericApplySuffix { .. } => {
+                unreachable!("compatibility suffix expressions are lowered before site allocation")
+            }
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                self.lower_expr(target, IntentKind::Read);
+                for (_, value) in fields {
+                    self.lower_expr(value, IntentKind::Read);
+                }
+                if let Some(base) = base {
+                    self.lower_expr(base, IntentKind::Read);
+                }
+                self.unsupported(
+                    span.clone(),
+                    "qualified record initializer",
+                    "qualified-record-init",
+                );
+                (
+                    HirExprKind::Unsupported("unsupported qualified record initializer".into()),
+                    ResolvedTy::Unit,
+                )
+            }
+            Expr::QualifiedAssoc(path) => {
+                let _ = render_type_expr(&path.base.0);
+                self.unsupported(
+                    span.clone(),
+                    "qualified associated value",
+                    "qualified-assoc-value",
+                );
+                (
+                    HirExprKind::Unsupported("unsupported qualified associated value".into()),
+                    ResolvedTy::Unit,
+                )
             }
             Expr::Binary { left, op, right } => {
                 let left = self.lower_expr(left, IntentKind::Read);
@@ -17659,16 +18337,16 @@ impl LowerCtx {
                     }
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "Vec::from".to_string(),
+                            name: "Vec.from".to_string(),
                             reason: format!(
-                                "checker selected Vec::from rewrite with {} argument(s)",
+                                "checker selected Vec.from rewrite with {} argument(s)",
                                 args.len()
                             ),
                         },
                         span.clone(),
-                        "Vec::from lowering requires exactly one checked source value",
+                        "Vec.from lowering requires exactly one checked source value",
                     ));
-                    return self.unsupported_expr(span, "Vec::from has invalid arity");
+                    return self.unsupported_expr(span, "Vec.from has invalid arity");
                 }
                 // Hew array literals already lower to the owned `Vec<T>`
                 // construction sequence. `Vec::from([..])` is therefore an
@@ -17677,7 +18355,45 @@ impl LowerCtx {
                 // The checker accepts only the array/Vec source forms, so any
                 // other source form is a clean checker diagnostic before this
                 // lowering boundary.
-                if let Expr::Identifier(name) = &function.0 {
+                if let Expr::ContextVariant(context) = &function.0 {
+                    let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
+                    let contextual_name = match &checker_ctor_ty {
+                        Some(ResolvedTy::Named { name, .. }) => {
+                            format!("{name}::{}", context.name)
+                        }
+                        _ => context.name.clone(),
+                    };
+                    let variant_kind_for_call = self
+                        .lookup_variant_ctor(&contextual_name, checker_ctor_ty.as_ref())
+                        .map(|(_, _, kind)| kind.clone());
+                    if let Some(HirVariantKind::Tuple(_)) = &variant_kind_for_call {
+                        let taken = std::mem::take(&mut args);
+                        self.lower_variant_ctor_tuple_call(&contextual_name, taken, &span)
+                    } else {
+                        if let Some(kind) = &variant_kind_for_call {
+                            self.report_variant_ctor_call_shape_mismatch(
+                                &contextual_name,
+                                kind,
+                                &span,
+                            );
+                        } else {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: contextual_name.clone(),
+                                    reason: "missing contextual variant constructor".to_string(),
+                                },
+                                span.clone(),
+                                "checker admitted a contextual variant call without an exact constructor",
+                            ));
+                        }
+                        (
+                            HirExprKind::Unsupported(format!(
+                                "contextual variant call `{contextual_name}` is not a tuple constructor"
+                            )),
+                            ResolvedTy::Unit,
+                        )
+                    }
+                } else if let Expr::Identifier(name) = &function.0 {
                     // Intercept payload-bearing variant constructors written
                     // as calls (`Shape::Line(5)`, bare `Line(5)`). The bare
                     // identifier path produces `MachineVariantCtor { payload:
@@ -19211,13 +19927,14 @@ impl LowerCtx {
                 };
                 if let Some((module_name, module)) = missing_import {
                     let name = format!("{module_name}.{field}");
+                    let source_module = module.replace("::", ".");
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::ImportMissing {
-                            module: module.to_string(),
+                            module: source_module,
                             name,
                         },
                         span.clone(),
-                        stdlib_catalog::missing_import_hint(module),
+                        stdlib_catalog::missing_import_hint(module).replace("::", "."),
                     ));
                     (
                         HirExprKind::FieldAccess {
@@ -19590,7 +20307,7 @@ impl LowerCtx {
                             HirDiagnosticKind::CheckerBoundaryViolation {
                                 name: "dyn-trait assoc binding".to_string(),
                                 reason: format!(
-                                    "`{}::{}` failed boundary conversion",
+                                    "`{}.{}` failed boundary conversion",
                                     binding.trait_name, binding.assoc_name
                                 ),
                             },
@@ -19636,7 +20353,7 @@ impl LowerCtx {
                 return self.unsupported_expr(span, "dyn-to-dyn trait adaptation");
             }
             let concrete_resolved = match ResolvedTy::from_ty(&coercion.concrete_type) {
-                Ok(r) => r,
+                Ok(r) => self.qualify_current_module_record_ty(r),
                 Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
@@ -21505,7 +22222,7 @@ impl LowerCtx {
                     reason: format!("no Vec push runtime symbol for element type `{elem_ty}`"),
                 },
                 span,
-                "array literal desugar reuses Vec::push infrastructure and cannot fabricate an element ABI",
+                "array literal desugar reuses Vec.push infrastructure and cannot fabricate an element ABI",
             ));
             return None;
         };
@@ -21913,9 +22630,9 @@ impl LowerCtx {
     ) -> (HirExprKind, ResolvedTy) {
         use hew_types::VecHigherOrderOp as HofOp;
         let (label, expected_args) = match op {
-            HofOp::Map => ("Vec::map", 1),
-            HofOp::Filter => ("Vec::filter", 1),
-            HofOp::Reduce => ("Vec::reduce", 2),
+            HofOp::Map => ("Vec.map", 1),
+            HofOp::Filter => ("Vec.filter", 1),
+            HofOp::Reduce => ("Vec.reduce", 2),
         };
         if args.len() != expected_args {
             self.diagnostics.push(HirDiagnostic::new(
@@ -22065,7 +22782,7 @@ impl LowerCtx {
                     self.pop_scope();
                     return (
                         HirExprKind::Unsupported(
-                            "Vec::map result element type has no Vec push ABI".into(),
+                            "Vec.map result element type has no Vec push ABI".into(),
                         ),
                         result_ty,
                     );
@@ -22109,7 +22826,7 @@ impl LowerCtx {
                     self.pop_scope();
                     return (
                         HirExprKind::Unsupported(
-                            "Vec::filter element type has no Vec push ABI".into(),
+                            "Vec.filter element type has no Vec push ABI".into(),
                         ),
                         result_ty,
                     );
@@ -22559,13 +23276,14 @@ impl LowerCtx {
             )
         } else {
             if let Some(module) = self.missing_stdlib_module_import(name) {
+                let source_module = module.replace("::", ".");
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::ImportMissing {
-                        module: module.to_string(),
+                        module: source_module,
                         name: name.to_string(),
                     },
                     span,
-                    stdlib_catalog::missing_import_hint(module),
+                    stdlib_catalog::missing_import_hint(module).replace("::", "."),
                 ));
             } else {
                 self.diagnostics.push(HirDiagnostic::new(
@@ -22686,7 +23404,11 @@ impl LowerCtx {
         if name.contains('.') {
             if let Some(canonical) = self
                 .import_type_name_aliases
-                .get(&(self.current_module_name.clone(), name.to_string()))
+                .get(&(
+                    self.current_module_name.clone(),
+                    self.current_module_idx,
+                    name.to_string(),
+                ))
                 .cloned()
             {
                 if canonical != name {
@@ -22701,10 +23423,11 @@ impl LowerCtx {
         // preserves every path segment (`lmonobox.Box` →
         // `hew.lmonobox.Box`) and deliberately does not use a leaf fallback.
         if let Some((binding, tail)) = name.split_once('.') {
-            if let Some(owner) = self
-                .module_import_bindings
-                .get(&(self.current_module_name.clone(), binding.to_string()))
-            {
+            if let Some(owner) = self.module_import_bindings.get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                binding.to_string(),
+            )) {
                 let canonical = format!("{owner}.{tail}");
                 if canonical != name {
                     return self.resolve_named_type_ref(&canonical, args);
@@ -22746,7 +23469,11 @@ impl LowerCtx {
         if !name.contains('.') {
             if let Some(canonical) = self
                 .import_type_name_aliases
-                .get(&(self.current_module_name.clone(), name.to_string()))
+                .get(&(
+                    self.current_module_name.clone(),
+                    self.current_module_idx,
+                    name.to_string(),
+                ))
                 .cloned()
             {
                 return self.resolve_named_type_ref(&canonical, args);
@@ -22855,10 +23582,11 @@ impl LowerCtx {
             return None;
         }
 
-        if let Some(canonical) = self
-            .import_type_name_aliases
-            .get(&(self.current_module_name.clone(), name.to_string()))
-        {
+        if let Some(canonical) = self.import_type_name_aliases.get(&(
+            self.current_module_name.clone(),
+            self.current_module_idx,
+            name.to_string(),
+        )) {
             return Some(self.resolve_named_type_ref(canonical, args));
         }
 
@@ -23112,6 +23840,20 @@ impl LowerCtx {
                 && self.current_module_name.is_none()
                 && !name.contains('.')
                 && self.root_opaque_type_short_names.contains(&name));
+        // Checker expression facts for a flat-file-imported return type can
+        // retain the root-visible bare spelling. Project it through the same
+        // declaration map source annotations use before MIR observes the
+        // nominal, preserving the defining file's qualified layout identity.
+        if builtin.is_none() && !name.contains('.') && self.current_module_name.is_none() {
+            if let Some(canonical) = self.file_import_root_type_aliases.get(&name) {
+                return self.qualify_current_module_record_ty(ResolvedTy::Named {
+                    name: canonical.clone(),
+                    args,
+                    builtin: None,
+                    is_opaque,
+                });
+            }
+        }
         if let Some(builtin) = builtin {
             // Checker-authored runtime signatures may retain the bare
             // presentation name for a source-owned lifecycle carrier. When
@@ -23122,10 +23864,11 @@ impl LowerCtx {
             if !name.contains('.')
                 && hew_types::lookup_source_owned_lifecycle_type(&name) == Some(builtin)
             {
-                if let Some(imported) = self
-                    .import_type_name_aliases
-                    .get(&(self.current_module_name.clone(), name.clone()))
-                {
+                if let Some(imported) = self.import_type_name_aliases.get(&(
+                    self.current_module_name.clone(),
+                    self.current_module_idx,
+                    name.clone(),
+                )) {
                     if self.qualified_source_builtin(imported) == Some(builtin) {
                         return Self::resolved_source_builtin_ty(imported, builtin, args);
                     }
@@ -23163,10 +23906,11 @@ impl LowerCtx {
         if !name.contains('.')
             && !self.current_scope_declares_source_type(&name, current_module_is_file_import)
         {
-            if let Some(imported) = self
-                .import_type_name_aliases
-                .get(&(self.current_module_name.clone(), name.clone()))
-            {
+            if let Some(imported) = self.import_type_name_aliases.get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                name.clone(),
+            )) {
                 return self.qualify_current_module_record_ty(ResolvedTy::named_user(
                     imported.clone(),
                     args,
@@ -23255,10 +23999,11 @@ impl LowerCtx {
         // that *full* identity. There is intentionally no short-name retry.
         if name.contains('.') {
             if let Some((binding, tail)) = name.split_once('.') {
-                if let Some(owner) = self
-                    .module_import_bindings
-                    .get(&(self.current_module_name.clone(), binding.to_string()))
-                {
+                if let Some(owner) = self.module_import_bindings.get(&(
+                    self.current_module_name.clone(),
+                    self.current_module_idx,
+                    binding.to_string(),
+                )) {
                     return format!("{owner}.{tail}");
                 }
             }
@@ -23314,7 +24059,11 @@ impl LowerCtx {
 
     fn imported_module_member_key(&self, module_binding: &str, member: &str) -> String {
         self.module_import_bindings
-            .get(&(self.current_module_name.clone(), module_binding.to_string()))
+            .get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                module_binding.to_string(),
+            ))
             .map_or_else(
                 || format!("{module_binding}.{member}"),
                 |owner| format!("{owner}.{member}"),
@@ -23590,7 +24339,11 @@ impl LowerCtx {
                         .contains(&format!("{source_module}.{name}"))
                     || name.rsplit_once('.').is_some_and(|(binding, item)| {
                         self.module_import_bindings
-                            .get(&(Some(source_module.to_string()), binding.to_string()))
+                            .get(&(
+                                Some(source_module.to_string()),
+                                self.current_module_idx,
+                                binding.to_string(),
+                            ))
                             .is_some_and(|owner| {
                                 self.source_type_identities
                                     .contains(&format!("{owner}.{item}"))
@@ -24967,7 +25720,7 @@ impl LowerCtx {
         else {
             self.unsupported(
                 span.clone(),
-                "VecIter::next requires a mutable binding receiver in the Rust MIR pipeline",
+                "VecIter.next requires a mutable binding receiver in the Rust MIR pipeline",
                 "iterator-runtime-dispatch",
             );
             return (
@@ -26237,6 +26990,34 @@ impl LowerCtx {
         // diagnostic so the user is never left guessing why their code "works"
         // but produces aliased references instead of independent copies.
         let key = self.mk_key(&span);
+        if let Some(MethodCallReceiverKind::EnumConstructorPath { type_name }) =
+            self.method_call_receiver_kinds.get(&key).cloned()
+        {
+            let constructor = format!("{type_name}::{method}");
+            let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
+            let variant_kind = self
+                .lookup_variant_ctor(&constructor, checker_ctor_ty.as_ref())
+                .map(|(_, _, kind)| kind.clone());
+            if let Some(HirVariantKind::Tuple(_)) = variant_kind {
+                let lowered_args = self.lower_call_args(args);
+                return self.lower_variant_ctor_tuple_call(&constructor, lowered_args, &span);
+            }
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: constructor.clone(),
+                    reason: "checker-selected enum constructor is absent from HIR registry"
+                        .to_string(),
+                },
+                span.clone(),
+                "dotted enum construction must carry the exact checker-selected declaration",
+            ));
+            return (
+                HirExprKind::Unsupported(format!(
+                    "dotted enum constructor `{constructor}` has no HIR declaration"
+                )),
+                ResolvedTy::Unit,
+            );
+        }
         if method == "clone"
             && args.is_empty()
             && !self.resolved_calls.contains_key(&key)
@@ -26883,8 +27664,9 @@ impl LowerCtx {
                     .get(&key)
                     .cloned()
                     .unwrap_or(ResolvedTy::Unit);
-                let receiver = Some(Box::new(self.lower_expr(receiver, IntentKind::Read)));
-                let value = if op == RcIntrinsicOp::Set {
+                let receiver = (op != RcIntrinsicOp::New)
+                    .then(|| Box::new(self.lower_expr(receiver, IntentKind::Read)));
+                let value = if matches!(op, RcIntrinsicOp::New | RcIntrinsicOp::Set) {
                     args.first()
                         .map(|arg| Box::new(self.lower_expr(arg.expr(), IntentKind::Consume)))
                 } else {
@@ -26916,7 +27698,7 @@ impl LowerCtx {
                 out_ty,
             }) => self.lower_builtin_vec_higher_order(receiver, args, op, &elem_ty, &out_ty, span),
             Some(MethodCallRewrite::VecFrom) => (
-                HirExprKind::Unsupported("Vec::from is a static-call rewrite".to_string()),
+                HirExprKind::Unsupported("Vec.from is a static-call rewrite".to_string()),
                 ResolvedTy::Unit,
             ),
             Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) => {
@@ -27571,13 +28353,14 @@ impl LowerCtx {
                 if let Expr::Identifier(module_name) = &receiver.0 {
                     if let Some(module) = self.missing_stdlib_module_import(module_name) {
                         let name = format!("{module_name}.{method}");
+                        let source_module = module.replace("::", ".");
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::ImportMissing {
-                                module: module.to_string(),
+                                module: source_module,
                                 name: name.clone(),
                             },
                             span.clone(),
-                            stdlib_catalog::missing_import_hint(module),
+                            stdlib_catalog::missing_import_hint(module).replace("::", "."),
                         ));
                         return (
                             // This source call was rejected by the checker/import
@@ -27588,12 +28371,17 @@ impl LowerCtx {
                             ResolvedTy::Unit,
                         );
                     }
-                    if self.user_modules.contains(module_name) {
+                    if let Some(MethodCallReceiverKind::ModuleBinding {
+                        module_name: resolved_module,
+                    }) = self.method_call_receiver_kinds.get(&key)
+                    {
                         let name = format!("{module_name}.{method}");
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::CheckerBoundaryViolation {
                                 name,
-                                reason: "missing module-qualified call rewrite".to_string(),
+                                reason: format!(
+                                    "missing module-qualified call rewrite for `{resolved_module}`"
+                                ),
                             },
                             span.clone(),
                             "checker admitted a user module-qualified call without its canonical rewrite target",
@@ -27743,7 +28531,10 @@ impl LowerCtx {
         name: &str,
         owner_ty: Option<&ResolvedTy>,
     ) -> Option<(String, usize, &HirVariantKind)> {
-        let variant_name = name.rsplit_once("::").map_or(name, |(_, variant)| variant);
+        let variant_name = name
+            .rsplit_once("::")
+            .or_else(|| name.rsplit_once('.'))
+            .map_or(name, |(_, variant)| variant);
         let mut candidates = Vec::with_capacity(5);
         if let Some(ResolvedTy::Named { name: owner, .. }) = owner_ty {
             candidates.push(format!("{owner}::{variant_name}"));
@@ -27754,10 +28545,11 @@ impl LowerCtx {
             }
         }
         if let Some((prefix, variant)) = name.rsplit_once("::") {
-            if let Some(canonical_prefix) = self
-                .import_type_name_aliases
-                .get(&(self.current_module_name.clone(), prefix.to_string()))
-            {
+            if let Some(canonical_prefix) = self.import_type_name_aliases.get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                prefix.to_string(),
+            )) {
                 candidates.push(format!("{canonical_prefix}::{variant}"));
             }
             if let Some(module) = self.current_module_name.as_deref() {
@@ -28010,10 +28802,10 @@ impl LowerCtx {
         let arms = match method {
             OptionResultMethod::OptionIsSome => {
                 let Some(some) = variant(self, BuiltinType::Option, "Some") else {
-                    return self.unsupported_postfix_try(&span, "Option::Some predicate");
+                    return self.unsupported_postfix_try(&span, "Option.Some predicate");
                 };
                 let Some(none) = variant(self, BuiltinType::Option, "None") else {
-                    return self.unsupported_postfix_try(&span, "Option::None predicate");
+                    return self.unsupported_postfix_try(&span, "Option.None predicate");
                 };
                 vec![
                     HirMatchArm {
@@ -28040,10 +28832,10 @@ impl LowerCtx {
             }
             OptionResultMethod::OptionIsNone => {
                 let Some(some) = variant(self, BuiltinType::Option, "Some") else {
-                    return self.unsupported_postfix_try(&span, "Option::Some predicate");
+                    return self.unsupported_postfix_try(&span, "Option.Some predicate");
                 };
                 let Some(none) = variant(self, BuiltinType::Option, "None") else {
-                    return self.unsupported_postfix_try(&span, "Option::None predicate");
+                    return self.unsupported_postfix_try(&span, "Option.None predicate");
                 };
                 vec![
                     HirMatchArm {
@@ -28070,10 +28862,10 @@ impl LowerCtx {
             }
             OptionResultMethod::ResultIsOk => {
                 let Some(ok) = variant(self, BuiltinType::Result, "Ok") else {
-                    return self.unsupported_postfix_try(&span, "Result::Ok predicate");
+                    return self.unsupported_postfix_try(&span, "Result.Ok predicate");
                 };
                 let Some(err) = variant(self, BuiltinType::Result, "Err") else {
-                    return self.unsupported_postfix_try(&span, "Result::Err predicate");
+                    return self.unsupported_postfix_try(&span, "Result.Err predicate");
                 };
                 vec![
                     HirMatchArm {
@@ -28100,10 +28892,10 @@ impl LowerCtx {
             }
             OptionResultMethod::ResultIsErr => {
                 let Some(ok) = variant(self, BuiltinType::Result, "Ok") else {
-                    return self.unsupported_postfix_try(&span, "Result::Ok predicate");
+                    return self.unsupported_postfix_try(&span, "Result.Ok predicate");
                 };
                 let Some(err) = variant(self, BuiltinType::Result, "Err") else {
-                    return self.unsupported_postfix_try(&span, "Result::Err predicate");
+                    return self.unsupported_postfix_try(&span, "Result.Err predicate");
                 };
                 vec![
                     HirMatchArm {
@@ -28150,13 +28942,13 @@ impl LowerCtx {
                 let Some(payload_predicate) = variant(self, builtin, variant_name) else {
                     return self.unsupported_postfix_try(
                         &span,
-                        format!("{type_name}::{variant_name} predicate"),
+                        format!("{type_name}.{variant_name} predicate"),
                     );
                 };
                 let Some(empty_predicate) = variant(self, builtin, empty_variant) else {
                     return self.unsupported_postfix_try(
                         &span,
-                        format!("{type_name}::{empty_variant} predicate"),
+                        format!("{type_name}.{empty_variant} predicate"),
                     );
                 };
                 let payload_binding = self.ids.binding();
@@ -28221,13 +29013,13 @@ impl LowerCtx {
                 let Some(payload_predicate) = variant(self, builtin, payload_variant) else {
                     return self.unsupported_postfix_try(
                         &span,
-                        format!("{type_name}::{payload_variant} predicate"),
+                        format!("{type_name}.{payload_variant} predicate"),
                     );
                 };
                 let Some(empty_predicate) = variant(self, builtin, empty_variant) else {
                     return self.unsupported_postfix_try(
                         &span,
-                        format!("{type_name}::{empty_variant} predicate"),
+                        format!("{type_name}.{empty_variant} predicate"),
                     );
                 };
                 let payload_binding = self.ids.binding();
@@ -28451,12 +29243,12 @@ impl LowerCtx {
         let Some((ok_predicate, _)) =
             self.builtin_variant_predicate(BuiltinType::Result, "Ok", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Result::Ok predicate");
+            return self.unsupported_postfix_try(span, "`?` Result.Ok predicate");
         };
         let Some((err_predicate, err_idx)) =
             self.builtin_variant_predicate(BuiltinType::Result, "Err", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Result::Err predicate");
+            return self.unsupported_postfix_try(span, "`?` Result.Err predicate");
         };
 
         let ok_binding = self.ids.binding();
@@ -28527,12 +29319,12 @@ impl LowerCtx {
         let Some((some_predicate, _)) =
             self.builtin_variant_predicate(BuiltinType::Option, "Some", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Option::Some predicate");
+            return self.unsupported_postfix_try(span, "`?` Option.Some predicate");
         };
         let Some((none_predicate, none_idx)) =
             self.builtin_variant_predicate(BuiltinType::Option, "None", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Option::None predicate");
+            return self.unsupported_postfix_try(span, "`?` Option.None predicate");
         };
 
         let some_binding = self.ids.binding();
@@ -28810,7 +29602,7 @@ impl LowerCtx {
                         variant: name.to_string(),
                     },
                     span.clone(),
-                    "struct-variant constructors require named-field syntax (e.g. `Shape::Box { w: ..., h: ... }`)",
+                    "struct-variant constructors require named-field syntax (e.g. `Shape.Box { w: ..., h: ... }`)",
                 ));
             }
             HirVariantKind::Tuple(_) => {
@@ -29800,7 +30592,7 @@ impl LowerCtx {
             }
 
             let mut body_prelude = Vec::new();
-            if let Pattern::Constructor { name, patterns } = &arm.pattern.0 {
+            if let Some((name, patterns)) = tuple_variant_pattern_parts(&arm.pattern.0) {
                 let (prelude, had_error) = self.lower_constructor_payload_aggregates(
                     name,
                     patterns,
@@ -29810,7 +30602,7 @@ impl LowerCtx {
                 );
                 body_prelude = prelude;
                 binding_error |= had_error;
-            } else if let Pattern::Struct { name, fields, .. } = &arm.pattern.0 {
+            } else if let Some((name, fields)) = struct_variant_pattern_parts(&arm.pattern.0) {
                 // Enum struct-variant arm with aggregate field sub-patterns
                 // (`Variant { field: (a, b) }`). Plain record-project arms
                 // (`Point { x, y }`) and plain field binders route through the
@@ -32525,7 +33317,13 @@ struct SupervisorRegistry {
     /// Exact owner selected for each lexical whole-module import binding.
     /// This is semantic authority for `spawn alias.Supervisor(...)`; the
     /// module leaf is never used as a lookup fallback.
-    module_bindings: HashMap<(Option<String>, String), String>,
+    module_bindings: HashMap<(Option<String>, u32, String), String>,
+}
+
+#[derive(Clone, Copy)]
+struct SupervisorScanScope<'a> {
+    module: Option<&'a str>,
+    file: u32,
 }
 
 impl SupervisorRegistry {
@@ -32541,12 +33339,13 @@ impl SupervisorRegistry {
 
     fn resolve_module_binding<'a>(
         &'a self,
-        current_module: Option<&str>,
+        scope: SupervisorScanScope<'_>,
         lexical_binding: &'a str,
     ) -> Option<&'a str> {
         self.module_bindings
             .get(&(
-                current_module.map(str::to_string),
+                scope.module.map(str::to_string),
+                scope.file,
                 lexical_binding.to_string(),
             ))
             .map(String::as_str)
@@ -32564,7 +33363,7 @@ impl SupervisorRegistry {
 /// declared in imported modules.
 fn collect_supervisor_registry(
     program: &Program,
-    module_bindings: HashMap<(Option<String>, String), String>,
+    module_bindings: HashMap<(Option<String>, u32, String), String>,
 ) -> SupervisorRegistry {
     let mut root: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
     for (item, _) in &program.items {
@@ -32608,8 +33407,23 @@ fn check_supervisor_spawn_gate(ctx: &mut LowerCtx, program: &Program) {
 
     // Walk root items. `current_module = None` selects the root supervisor
     // set for bare-name spawn targets.
-    for (item, _span) in &program.items {
-        scan_item_for_supervisor_spawn(item, None, &registry, &mut ctx.diagnostics);
+    let root_span_indices = program
+        .module_graph
+        .as_ref()
+        .map(hew_parser::module::ModuleGraph::file_span_indices);
+    for (item_idx, (item, _span)) in program.items.iter().enumerate() {
+        let file = program
+            .module_graph
+            .as_ref()
+            .zip(root_span_indices.as_ref())
+            .and_then(|(graph, indices)| indices.item_index(&graph.root, item_idx))
+            .unwrap_or_default();
+        scan_item_for_supervisor_spawn(
+            item,
+            SupervisorScanScope { module: None, file },
+            &registry,
+            &mut ctx.diagnostics,
+        );
     }
     // Walk every non-root module in the program's module graph. A supervisor
     // spawn with args inside a function/actor/impl/machine body in an imported
@@ -32630,15 +33444,21 @@ fn check_supervisor_spawn_gate(ctx: &mut LowerCtx, program: &Program) {
     // module's `Foo` is something else entirely (false-positive). Both
     // failure modes are documented in the rev2 independent review finding.
     if let Some(mg) = &program.module_graph {
+        let span_indices = mg.file_span_indices();
         for (mod_id, module) in &mg.modules {
             if *mod_id == mg.root {
                 continue;
             }
             let module_owner = mod_id.path.join(".");
-            for (item, _) in &module.items {
+            for (item_idx, (item, _)) in module.items.iter().enumerate() {
                 scan_item_for_supervisor_spawn(
                     item,
-                    Some(&module_owner),
+                    SupervisorScanScope {
+                        module: Some(&module_owner),
+                        file: span_indices
+                            .item_index(mod_id, item_idx)
+                            .unwrap_or_default(),
+                    },
                     &registry,
                     &mut ctx.diagnostics,
                 );
@@ -33917,7 +34737,7 @@ fn scan_block_for_call_shape(
 /// `Item::Machine`'s four positions (per A242) are handled in one place.
 fn scan_item_for_supervisor_spawn(
     item: &Item,
-    current_module: Option<&str>,
+    current_module: SupervisorScanScope<'_>,
     registry: &SupervisorRegistry,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -33995,7 +34815,7 @@ fn scan_item_for_supervisor_spawn(
 
 fn scan_block_for_supervisor_spawn(
     block: &hew_parser::ast::Block,
-    current_module: Option<&str>,
+    current_module: SupervisorScanScope<'_>,
     registry: &SupervisorRegistry,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -34045,13 +34865,18 @@ fn scan_expr_for_call_shape(
                 match resolved {
                     ResolvedRef::Item(_) => {
                         if !callable.contains(name) {
-                            let message = if name == "LambdaActorHandle::new" {
-                                "`LambdaActorHandle::new` is not a public constructor; use \
+                            let message = if hew_types::has_builtin_associated_item_identity(
+                                name,
+                                BuiltinType::LambdaActorHandle,
+                                "new",
+                            ) {
+                                "`LambdaActorHandle.new` is not a public constructor; use \
                                  `actor |params| { body }` to create a lambda actor"
                                     .to_string()
                             } else {
+                                let source_name = name.replace("::", ".");
                                 format!(
-                                    "call to `{name}` has no MIR body or runtime-ABI lowering; \
+                                    "call to `{source_name}` has no MIR body or runtime-ABI lowering; \
                                      only module functions, extern fns, monomorphisation \
                                      instantiations, and recognised runtime symbols are \
                                      callable here"
@@ -34388,7 +35213,7 @@ fn scan_expr_for_call_shape(
 )]
 fn scan_stmt_for_supervisor_spawn(
     stmt: &hew_parser::ast::Stmt,
-    current_module: Option<&str>,
+    current_module: SupervisorScanScope<'_>,
     registry: &SupervisorRegistry,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -34469,7 +35294,7 @@ fn scan_stmt_for_supervisor_spawn(
 
 fn scan_else_block_for_supervisor_spawn(
     eb: &hew_parser::ast::ElseBlock,
-    current_module: Option<&str>,
+    current_module: SupervisorScanScope<'_>,
     registry: &SupervisorRegistry,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -34496,7 +35321,7 @@ fn scan_else_block_for_supervisor_spawn(
 )]
 fn scan_expr_for_supervisor_spawn(
     expr: &Expr,
-    current_module: Option<&str>,
+    current_module: SupervisorScanScope<'_>,
     registry: &SupervisorRegistry,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -34526,7 +35351,7 @@ fn scan_expr_for_supervisor_spawn(
             // the rev2 independent review finding on module-context threading.
             let resolved: Option<(&str, bool)> = match &target.0 {
                 Expr::Identifier(name) => {
-                    let set = match current_module {
+                    let set = match current_module.module {
                         Some(m) => registry.by_module.get(m),
                         None => Some(&registry.root),
                     };
@@ -35366,14 +36191,47 @@ mod tests {
     use hew_types::Checker;
 
     #[test]
+    fn builtin_receiver_signature_mismatch_is_a_diagnostic_not_a_panic() {
+        let parsed = hew_parser::parse(
+            r"
+trait Sample {
+    fn value(self) -> i64;
+}
+
+type Broken {}
+
+impl Sample for Broken {
+    fn value(self) -> bool { true }
+}
+",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+
+        let diagnostic = *check_builtin_receiver_impl_program(&parsed.program)
+            .expect_err("the invalid injected impl must fail closed");
+        let HirDiagnosticKind::CheckerBoundaryViolation { name, reason } = diagnostic.kind else {
+            panic!("expected checker-boundary diagnostic, got {diagnostic:?}");
+        };
+        assert_eq!(name, "std/builtins.hew receiver impls");
+        assert!(
+            reason.contains("returns `bool`") && reason.contains("requires `i64`"),
+            "diagnostic must preserve the checker mismatch: {reason}"
+        );
+        assert_eq!(
+            diagnostic.note,
+            "compiler-injected receiver impls were not lowered"
+        );
+    }
+
+    #[test]
     fn flat_file_trait_defaults_use_checker_published_owner() {
         let parsed = hew_parser::parse(
             r#"
-trait Greet {
-    fn simple(self) -> i64 { 42 }
-    fn greeting(self) -> string { "hello" }
-}
-"#,
+    trait Greet {
+        fn simple(self) -> i64 { 42 }
+        fn greeting(self) -> string { "hello" }
+    }
+    "#,
         );
         assert!(
             parsed.errors.is_empty(),
@@ -35385,7 +36243,7 @@ trait Greet {
             .into_iter()
             .map(|method| {
                 (
-                    (None, "Greet".to_string(), method.to_string()),
+                    (None, 7, "Greet".to_string(), method.to_string()),
                     (
                         owner.clone(),
                         hew_types::DefId::new(format!("{}::{method}", owner.full_path())),
@@ -35401,6 +36259,41 @@ trait Greet {
         assert!(defaults.contains_key("support.greeting.Greet"));
         assert!(!defaults.contains_key("Greet"));
         assert_eq!(module_indices.get("support.greeting.Greet"), Some(&7));
+    }
+
+    #[test]
+    fn root_trait_default_owner_uses_unambiguous_flat_file_binding() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        let owner = hew_types::DefId::new("support.greeting.Greet");
+        ctx.trait_method_ids_by_binding.insert(
+            (None, 7, "Greet".to_string(), "greeting".to_string()),
+            (
+                owner.clone(),
+                hew_types::DefId::new("support.greeting.Greet::greeting"),
+            ),
+        );
+
+        assert_eq!(
+            ctx.trait_default_owner_key("Greet"),
+            Some(owner.full_path().to_string())
+        );
+
+        ctx.trait_method_ids_by_binding.insert(
+            (None, 8, "Greet".to_string(), "greeting".to_string()),
+            (
+                hew_types::DefId::new("other.greeting.Greet"),
+                hew_types::DefId::new("other.greeting.Greet::greeting"),
+            ),
+        );
+        assert_eq!(
+            ctx.trait_default_owner_key("Greet"),
+            None,
+            "same-leaf flat-file traits must remain ambiguous"
+        );
     }
 
     #[test]
@@ -35457,6 +36350,7 @@ trait Greet {
             ctx.trait_method_ids_by_binding.insert(
                 (
                     Some("app".to_string()),
+                    0,
                     trait_name.to_string(),
                     method_name.to_string(),
                 ),
@@ -35469,6 +36363,7 @@ trait Greet {
             );
             ctx.trait_method_ids_by_binding.remove(&(
                 Some("app".to_string()),
+                0,
                 trait_name.to_string(),
                 method_name.to_string(),
             ));
@@ -35539,6 +36434,67 @@ fn main() {}
             lowered.into_result().is_err(),
             "a conflicting pre-lowering body plan must remain fatal"
         );
+    }
+
+    #[test]
+    fn two_import_paths_select_one_declaration_owned_impl_body_symbol() {
+        let parsed = hew_parser::parse(
+            r"
+type Widget { value: i64 }
+
+impl Widget {
+    fn run(self) -> i64 { self.value }
+}
+",
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+        let impl_decl = parsed
+            .program
+            .items
+            .iter()
+            .find_map(|(item, _)| match item {
+                Item::Impl(decl) => Some(decl),
+                _ => None,
+            })
+            .expect("fixture impl");
+        let declaration = hew_types::DefId::new(
+            "fixture.owner.Widget::<impl inherent for fixture.owner.Widget>::run",
+        );
+
+        for paths in [
+            ["Widget", "fixture.owner.Widget"],
+            ["fixture.owner.Widget", "Widget"],
+        ] {
+            let mut output = TypeCheckOutput::default();
+            output
+                .impl_method_declaration_ids
+                .insert("Widget::run".to_string(), declaration.clone());
+            output
+                .impl_method_declaration_ids
+                .insert("fixture.owner.Widget::run".to_string(), declaration.clone());
+            let mut ctx = LowerCtx::new(&output, MONOMORPHISATION_REGISTRY_CAP, TargetArch::host());
+            for path in paths {
+                plan_impl_block_symbols(&mut ctx, impl_decl, path, &HashSet::new());
+            }
+
+            assert!(
+                ctx.diagnostics.is_empty(),
+                "two paths to one declaration are aliases, not duplicate bodies: {:#?}",
+                ctx.diagnostics
+            );
+            assert_eq!(
+                ctx.impl_body_plan
+                    .symbols
+                    .get(&declaration)
+                    .map(String::as_str),
+                Some("fixture.owner.Widget::run"),
+                "declaration identity must choose the same emitted symbol in either path order"
+            );
+        }
     }
 
     #[test]
@@ -35641,8 +36597,10 @@ fn main() {}
             );
         }
 
-        ctx.import_type_name_aliases
-            .insert((None, "Receiver".to_string()), "foo.Receiver".to_string());
+        ctx.import_type_name_aliases.insert(
+            (None, 0, "Receiver".to_string()),
+            "foo.Receiver".to_string(),
+        );
         assert_eq!(
             ctx.resolve_named_type_ref("Receiver", Vec::new()),
             ResolvedTy::named_opaque("foo.Receiver".to_string(), Vec::new()),
@@ -35839,7 +36797,7 @@ fn main() {}
         ctx.canonical_std_source_type_identities
             .insert("std.failure.CrashInfo".to_string());
         ctx.import_type_name_aliases.insert(
-            (None, "CrashInfo".to_string()),
+            (None, 0, "CrashInfo".to_string()),
             "std.failure.CrashInfo".to_string(),
         );
         assert_eq!(
@@ -35937,7 +36895,7 @@ fn main() {}
         );
         ctx.current_module_name = Some("std.net.tls".to_string());
         ctx.module_import_bindings.insert(
-            (Some("std.net.tls".to_string()), "net".to_string()),
+            (Some("std.net.tls".to_string()), 0, "net".to_string()),
             "std.net".to_string(),
         );
         ctx.canonical_std_source_type_identities
@@ -35961,7 +36919,7 @@ fn main() {}
             TargetArch::host(),
         );
         ctx.module_import_bindings.insert(
-            (None, "codec".to_string()),
+            (None, 0, "codec".to_string()),
             "std.net.http.codec".to_string(),
         );
 
@@ -36008,7 +36966,7 @@ fn main() {}
 
         ctx.root_visible_source_type_short_names.clear();
         ctx.import_type_name_aliases.insert(
-            (None, "RemotePid".to_string()),
+            (None, 0, "RemotePid".to_string()),
             "peer.RemotePid".to_string(),
         );
         assert_eq!(
@@ -36036,7 +36994,7 @@ fn main() {}
             },
         );
         ctx.import_type_name_aliases.insert(
-            (None, "CrashNotification".to_string()),
+            (None, 0, "CrashNotification".to_string()),
             "failure.CrashNotification".to_string(),
         );
 
@@ -36067,10 +37025,26 @@ fn main() {}
     }
 
     #[test]
+    fn checker_result_type_uses_flat_file_import_identity() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.file_import_root_type_aliases
+            .insert("Box".to_string(), "support.file_render.Box".to_string());
+
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::named_user("Box", Vec::new())),
+            ResolvedTy::named_user("support.file_render.Box", Vec::new())
+        );
+    }
+
+    #[test]
     fn checker_proven_whole_module_lifecycle_alias_canonicalizes_in_hir() {
         let tc_output = TypeCheckOutput {
             import_type_name_aliases: HashMap::from([(
-                (None, "f.CrashNotification".to_string()),
+                (None, 0, "f.CrashNotification".to_string()),
                 "failure.CrashNotification".to_string(),
             )]),
             ..TypeCheckOutput::default()
@@ -36219,10 +37193,10 @@ fn main() {}
     fn named_import_identity_precedes_task_unit_and_cancellation_early_arms() {
         let tc_output = TypeCheckOutput {
             import_type_name_aliases: HashMap::from([
-                ((None, "Task".to_string()), "foo.Task".to_string()),
-                ((None, "Unit".to_string()), "foo.Unit".to_string()),
+                ((None, 0, "Task".to_string()), "foo.Task".to_string()),
+                ((None, 0, "Unit".to_string()), "foo.Unit".to_string()),
                 (
-                    (None, "CancellationToken".to_string()),
+                    (None, 0, "CancellationToken".to_string()),
                     "foo.CancellationToken".to_string(),
                 ),
             ]),
@@ -37726,9 +38700,9 @@ fn main() {}
             lowered.diagnostics.iter().any(|diagnostic| matches!(
                 &diagnostic.kind,
                 HirDiagnosticKind::ImportMissing { module, name }
-                    if module == "std::fs"
+                    if module == "std.fs"
                         && name == "fs.read"
-                        && diagnostic.note == "add 'import std::fs;' at the top of the file"
+                        && diagnostic.note == "add 'import std.fs;' at the top of the file"
             )),
             "expected missing import diagnostic for fs.read, got {:#?}",
             lowered.diagnostics
@@ -37764,9 +38738,9 @@ fn main() {}
             lowered.diagnostics.iter().any(|diagnostic| matches!(
                 &diagnostic.kind,
                 HirDiagnosticKind::ImportMissing { module, name }
-                    if module == "std::fs"
+                    if module == "std.fs"
                         && name == "fs.read"
-                        && diagnostic.note == "add 'import std::fs;' at the top of the file"
+                        && diagnostic.note == "add 'import std.fs;' at the top of the file"
             )),
             "expected missing import diagnostic for fs.read call, got {:#?}",
             lowered.diagnostics
@@ -38276,7 +39250,7 @@ fn main() {}
 
     // ── Enum-layout discovery tests ──────────────────────────────────────────
 
-    /// Lower the §0 probe (`Option<i64>` instantiated at a call site and
+    /// Lower the §0 probe (`Maybe<i64>` instantiated at a call site and
     /// matched) and assert that the HIR enum-layout registry contains exactly
     /// the expected entry. The `Some` variant's payload field must be
     /// `ResolvedTy::I64` (not `ResolvedTy::Named { name: "T", args: [] }` —
@@ -38288,12 +39262,12 @@ fn main() {}
     fn generic_enum_option_i64_registered_in_enum_layouts() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum Option<T> { Some(T); None }
+            enum Maybe<T> { Some(T); None }
             fn main() -> i64 {
-                let x: Option<i64> = Option::Some(42);
+                let x: Maybe<i64> = Maybe.Some(42);
                 match x {
-                    Option::Some(v) => v,
-                    Option::None => 0,
+                    Maybe.Some(v) => v,
+                    Maybe.None => 0,
                 }
             }
             ",
@@ -38303,13 +39277,13 @@ fn main() {}
         assert_eq!(
             layouts.len(),
             1,
-            "exactly one enum-layout entry expected for Option<i64>; got {layouts:#?}"
+            "exactly one enum-layout entry expected for Maybe<i64>; got {layouts:#?}"
         );
 
         let layout = &layouts[0];
         assert_eq!(
-            layout.key.origin_name, "Option",
-            "enum origin name must be 'Option'"
+            layout.key.origin_name, "Maybe",
+            "enum origin name must be 'Maybe'"
         );
         assert_eq!(
             layout.key.type_args,
@@ -38317,12 +39291,12 @@ fn main() {}
             "type_args must be [I64]"
         );
         assert_eq!(
-            layout.mangled_name, "Option$$i64",
+            layout.mangled_name, "Maybe$$i64",
             "mangled name must follow shared scheme"
         );
 
         // Two variants: Some(T→i64) and None.
-        assert_eq!(layout.variants.len(), 2, "Option has two variants");
+        assert_eq!(layout.variants.len(), 2, "Maybe has two variants");
         let some_variant = layout
             .variants
             .iter()
@@ -38348,20 +39322,22 @@ fn main() {}
     fn authored_generic_local_records_shadow_generic_builtin_spellings() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            type Option<T> { value: T }
-            type Sink<T> { value: T }
+            type Container<T> { value: T }
+            type OutputSink<T> { value: T }
 
-            fn keep_option(value: Option<i64>) -> Option<i64> { value }
-            fn keep_sink(value: Sink<i64>) -> Sink<i64> { value }
+            fn keep_container(value: Container<i64>) -> Container<i64> { value }
+            fn keep_sink(value: OutputSink<i64>) -> OutputSink<i64> { value }
             ",
         );
         assert!(
             lowered.diagnostics.is_empty(),
-            "generic local shadows must lower cleanly: {:#?}",
+            "generic local records must lower cleanly: {:#?}",
             lowered.diagnostics
         );
 
-        for (function_name, nominal_name) in [("keep_option", "Option"), ("keep_sink", "Sink")] {
+        for (function_name, nominal_name) in
+            [("keep_container", "Container"), ("keep_sink", "OutputSink")]
+        {
             let function = function_named(&lowered, function_name);
             for ty in [&function.params[0].ty, &function.return_ty] {
                 assert_eq!(
@@ -38447,11 +39423,11 @@ fn main() {}
             r"
             enum Colour { Red; Green; Blue }
             fn main() -> i64 {
-                let c: Colour = Colour::Red;
+                let c: Colour = Colour.Red;
                 match c {
-                    Colour::Red => 1,
-                    Colour::Green => 2,
-                    Colour::Blue => 3,
+                    Colour.Red => 1,
+                    Colour.Green => 2,
+                    Colour.Blue => 3,
                 }
             }
             ",
@@ -38464,9 +39440,9 @@ fn main() {}
         );
     }
 
-    /// Nested generic instantiation: `Option<Option<i64>>` must produce two
-    /// registry entries — one for `Option<Option<i64>>` and one for
-    /// `Option<i64>`. The worklist transitively expands type args so that the
+    /// Nested generic instantiation: `Maybe<Maybe<i64>>` must produce two
+    /// registry entries — one for `Maybe<Maybe<i64>>` and one for
+    /// `Maybe<i64>`. The worklist transitively expands type args so that the
     /// inner instantiation is discovered even though only the outer type
     /// appears at the call site.
     ///
@@ -38475,44 +39451,44 @@ fn main() {}
     fn nested_generic_enum_option_option_i64_registers_both_instantiations() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum Option<T> { Some(T); None }
+            enum Maybe<T> { Some(T); None }
             fn main() -> i64 {
-                let inner: Option<i64> = Option::Some(5);
-                let outer: Option<Option<i64>> = Option::Some(inner);
+                let inner: Maybe<i64> = Maybe.Some(5);
+                let outer: Maybe<Maybe<i64>> = Maybe.Some(inner);
                 match outer {
-                    Option::Some(v) => match v {
-                        Option::Some(n) => n,
-                        Option::None => 0,
+                    Maybe.Some(v) => match v {
+                        Maybe.Some(n) => n,
+                        Maybe.None => 0,
                     },
-                    Option::None => -1,
+                    Maybe.None => -1,
                 }
             }
             ",
         );
 
         let layouts = &lowered.module.enum_layouts;
-        // Both Option<i64> and Option<Option<i64>> must be registered.
+        // Both Maybe<i64> and Maybe<Maybe<i64>> must be registered.
         assert!(
             layouts.len() >= 2,
-            "expected at least two enum-layout entries for Option<i64> and \
-             Option<Option<i64>>; got {layouts:#?}"
+            "expected at least two enum-layout entries for Maybe<i64> and \
+             Maybe<Maybe<i64>>; got {layouts:#?}"
         );
 
         let has_option_i64 = layouts
             .iter()
-            .any(|l| l.key.origin_name == "Option" && l.key.type_args == vec![ResolvedTy::I64]);
+            .any(|l| l.key.origin_name == "Maybe" && l.key.type_args == vec![ResolvedTy::I64]);
         let has_option_option_i64 = layouts.iter().any(|l| {
-            l.key.origin_name == "Option"
-                && l.key.type_args == vec![ResolvedTy::named_user("Option", vec![ResolvedTy::I64])]
+            l.key.origin_name == "Maybe"
+                && l.key.type_args == vec![ResolvedTy::named_user("Maybe", vec![ResolvedTy::I64])]
         });
 
         assert!(
             has_option_i64,
-            "registry must contain Option<i64>; got {layouts:#?}"
+            "registry must contain Maybe<i64>; got {layouts:#?}"
         );
         assert!(
             has_option_option_i64,
-            "registry must contain Option<Option<i64>>; got {layouts:#?}"
+            "registry must contain Maybe<Maybe<i64>>; got {layouts:#?}"
         );
     }
 
@@ -38804,13 +39780,13 @@ fn main() {}
     fn record_shadowing_builtin_result_keeps_actor_ask_lowerable() {
         let (_program, _tco, lowered) = parse_typecheck_and_lower(
             r#"
-            type Result { handle: i64; }
+            type QueryReply { handle: i64; }
 
             actor Db {
                 var n: i64 = 0;
-                receive fn query(sql: string) -> Result {
+                receive fn query(sql: string) -> QueryReply {
                     n = n + 1;
-                    Result { handle: n }
+                    QueryReply { handle: n }
                 }
             }
 
@@ -38844,7 +39820,7 @@ fn main() {}
             .expect("query handler");
         assert_eq!(
             handler.return_ty,
-            ResolvedTy::named_user("Result".to_string(), vec![]),
+            ResolvedTy::named_user("QueryReply".to_string(), vec![]),
             "handler return type must resolve to the user record, not the builtin enum"
         );
         // The ask site registered the builtin `Result<Result, AskError>`
@@ -38857,7 +39833,7 @@ fn main() {}
                 .iter()
                 .any(|layout| layout.key.origin_name == "Result"
                     && layout.key.type_args.first()
-                        == Some(&ResolvedTy::named_user("Result".to_string(), vec![]))),
+                        == Some(&ResolvedTy::named_user("QueryReply".to_string(), vec![]))),
             "ask-site Result<Result, AskError> layout missing from enum_layouts: {:?}",
             lowered
                 .module
@@ -38937,17 +39913,17 @@ fn main() {}
     fn same_leaf_user_enums_keep_user_constructor_identity() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum LinkError { UserLink; }
-            enum LookupError { UserLookup; }
-            enum MonitorError { UserMonitor; }
-            enum CrashAction { UserAction; }
-            enum CrashKind { UserKind; }
+            enum UserLinkError { UserLink; }
+            enum UserLookupError { UserLookup; }
+            enum UserMonitorError { UserMonitor; }
+            enum UserCrashAction { UserAction; }
+            enum UserCrashKind { UserKind; }
 
-            fn user_link() -> LinkError { LinkError::UserLink }
-            fn user_lookup() -> LookupError { LookupError::UserLookup }
-            fn user_monitor() -> MonitorError { MonitorError::UserMonitor }
-            fn user_action() -> CrashAction { CrashAction::UserAction }
-            fn user_kind() -> CrashKind { CrashKind::UserKind }
+            fn user_link() -> UserLinkError { UserLinkError.UserLink }
+            fn user_lookup() -> UserLookupError { UserLookupError.UserLookup }
+            fn user_monitor() -> UserMonitorError { UserMonitorError.UserMonitor }
+            fn user_action() -> UserCrashAction { UserCrashAction.UserAction }
+            fn user_kind() -> UserCrashKind { UserCrashKind.UserKind }
             ",
         );
         assert!(
@@ -38957,11 +39933,11 @@ fn main() {}
         );
 
         for (function_name, expected_type) in [
-            ("user_link", "LinkError"),
-            ("user_lookup", "LookupError"),
-            ("user_monitor", "MonitorError"),
-            ("user_action", "CrashAction"),
-            ("user_kind", "CrashKind"),
+            ("user_link", "UserLinkError"),
+            ("user_lookup", "UserLookupError"),
+            ("user_monitor", "UserMonitorError"),
+            ("user_action", "UserCrashAction"),
+            ("user_kind", "UserCrashKind"),
         ] {
             let function = function_named(&lowered, function_name);
             let tail = function.body.tail.as_deref().expect("constructor tail");
@@ -39039,19 +40015,19 @@ fn main() {}
         );
         let mut root = hew_parser::parse(
             r"
-            import hew::aliassrc::{ Color as Hue };
+            import hew.aliassrc.{ Color as Hue };
 
             fn color_value(h: Hue) -> i64 {
                 match h {
-                    Hue::Red => 1,
-                    Hue::Green => 2,
-                    Hue::Blue(n) => n,
+                    Hue.Red => 1,
+                    Hue.Green => 2,
+                    Hue.Blue(n) => n,
                 }
             }
 
             fn main() {
-                let a: Hue = Hue::Red;
-                let b: Hue = Hue::Blue(42);
+                let a: Hue = Hue.Red;
+                let b: Hue = Hue.Blue(42);
                 println(color_value(a));
                 println(color_value(b));
             }
@@ -39108,7 +40084,7 @@ fn main() {}
         );
         assert_eq!(
             tco.import_type_name_aliases
-                .get(&(None, "Hue".to_string()))
+                .get(&(None, 0, "Hue".to_string()))
                 .map(String::as_str),
             Some("hew.aliassrc.Color"),
             "the root alias must carry the exact enum declaration owner"
@@ -39117,7 +40093,7 @@ fn main() {}
         let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
         assert!(
             lowered.diagnostics.is_empty(),
-            "the `Hue` binding must resolve `Hue::Red` and `Hue::Blue` through \
+            "the `Hue` binding must resolve `Hue.Red` and `Hue.Blue` through \
              `hew.aliassrc.Color`: {:#?}",
             lowered.diagnostics
         );
@@ -39155,35 +40131,35 @@ fn main() {}
             }
         ";
         let root_with_alpha_first = r"
-            import hew::alpha::{ Color as Hue, Switch };
-            import hew::beta::{ Color as Shade };
+            import hew.alpha.{ Color as Hue, Switch };
+            import hew.beta.{ Color as Shade };
 
             fn alpha_value(value: Hue) -> i64 {
-                match value { Hue::AlphaOnly => 2, Hue::Red(v) => v }
+                match value { Hue.AlphaOnly => 2, Hue.Red(v) => v }
             }
             fn beta_value(value: Shade) -> i64 {
-                match value { Shade::Red { value } => value, Shade::BetaOnly => 4 }
+                match value { Shade.Red { value } => value, Shade.BetaOnly => 4 }
             }
             fn main() {
-                println(alpha_value(Hue::Red(11)));
-                println(beta_value(Shade::Red { value: 22 }));
-                let _switch = Switch::Shared;
+                println(alpha_value(Hue.Red(11)));
+                println(beta_value(Shade.Red { value: 22 }));
+                let _switch = Switch.Shared;
             }
         ";
         let root_with_beta_first = r"
-            import hew::beta::{ Color as Shade, Switch };
-            import hew::alpha::{ Color as Hue };
+            import hew.beta.{ Color as Shade, Switch };
+            import hew.alpha.{ Color as Hue };
 
             fn alpha_value(value: Hue) -> i64 {
-                match value { Hue::AlphaOnly => 2, Hue::Red(v) => v }
+                match value { Hue.AlphaOnly => 2, Hue.Red(v) => v }
             }
             fn beta_value(value: Shade) -> i64 {
-                match value { Shade::Red { value } => value, Shade::BetaOnly => 4 }
+                match value { Shade.Red { value } => value, Shade.BetaOnly => 4 }
             }
             fn main() {
-                println(alpha_value(Hue::Red(11)));
-                println(beta_value(Shade::Red { value: 22 }));
-                let _switch = Switch::Shared;
+                println(alpha_value(Hue.Red(11)));
+                println(beta_value(Shade.Red { value: 22 }));
+                let _switch = Switch.Shared;
             }
         ";
 
@@ -39270,13 +40246,13 @@ fn main() {}
             assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
             assert_eq!(
                 tco.import_type_name_aliases
-                    .get(&(None, "Hue".to_string()))
+                    .get(&(None, 0, "Hue".to_string()))
                     .map(String::as_str),
                 Some("hew.alpha.Color")
             );
             assert_eq!(
                 tco.import_type_name_aliases
-                    .get(&(None, "Shade".to_string()))
+                    .get(&(None, 0, "Shade".to_string()))
                     .map(String::as_str),
                 Some("hew.beta.Color")
             );

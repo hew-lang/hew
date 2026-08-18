@@ -1,8 +1,8 @@
 fn use_it(v: Option<i64>) {
-    match v { Some(v_v) => println(f"some {v_v}"), None => println("none"), }
+    match v { Option.Some(v_v) => println(f"some {v_v}"), None => println("none"), }
 }
 
 fn main() {
-    let x: Option<i64> = Some(5);
+    let x: Option<i64> = Option.Some(5);
     use_it(x);
 }

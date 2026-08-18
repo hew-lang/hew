@@ -1154,7 +1154,7 @@ fn push_lifecycle_not_wired_diagnostic(
             reason: format!("{diagnostic_name}: #[on({hook_kind})] is not wired"),
         },
         note: format!(
-            "`#[on({hook_kind})]` hook `{actor_name}::{hook_name}` would silently never run; {reason}"
+            "`#[on({hook_kind})]` hook `{actor_name}.{hook_name}` would silently never run; {reason}"
         ),
     });
 }

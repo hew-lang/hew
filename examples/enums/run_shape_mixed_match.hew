@@ -15,15 +15,15 @@ enum Shape {
 
 fn measure(s: Shape) -> i64 {
     match s {
-        Shape::Point => 0,
-        Shape::Line(x) => x,
-        Shape::Box { w, h } => w * h,
+        Shape.Point => 0,
+        Shape.Line(x) => x,
+        Shape.Box { w, h } => w * h,
     }
 }
 
 fn main() {
-    println(measure(Shape::Point));
-    println(measure(Shape::Line(7)));
-    println(measure(Shape::Box { w: 2, h: 5 }));
+    println(measure(Shape.Point));
+    println(measure(Shape.Line(7)));
+    println(measure(Shape.Box { w: 2, h: 5 }));
     println("done");
 }

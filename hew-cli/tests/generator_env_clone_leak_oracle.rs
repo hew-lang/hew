@@ -116,7 +116,7 @@ fn main() {
     var anonymous: i64 = 0;
     var i: i64 = 0;
     while i < __FRAMES__ {
-        let root = Rc::new(i + 10);
+        let root = Rc.new(i + 10);
         complete(root, i);
         if root.strong_count() != 1 || root.weak_count() != 0 {
             panic("complete release counts");
@@ -251,7 +251,7 @@ fn main() {
     var repeated: i64 = 0;
     var i: i64 = 0;
     while i < __FRAMES__ {
-        let root = Rc::new(i + 20);
+        let root = Rc.new(i + 20);
         closure_complete(root, i);
         if root.strong_count() != 1 || root.weak_count() != 0 {
             panic("closure complete release counts");

@@ -20,13 +20,13 @@ fn add_renamed(members: HashSet<string>, var name: string) {
 
 fn main() {
     // Borrowed-parameter and reassigned-parameter ingress
-    let members: HashSet<string> = HashSet::new();
+    let members: HashSet<string> = HashSet.new();
     add_member(members, "col" + "our");
     add_renamed(members, "flav" + "our");
     println(members.len());
 
     // Vec runtime family
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(2);
     v.push(3);
@@ -37,19 +37,19 @@ fn main() {
     println(last);
 
     // HashMap runtime family
-    let m: HashMap<string, i64> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap.new();
     m.insert("a", 10);
     m.insert("b", 20);
     println(m.len());
     match m.get("a") {
-        Some(val) => println(val),
-        None => println(-1),
+        .Some(val) => println(val),
+        .None => println(-1),
     }
     let had = m.remove("b").is_some();
     println(had);
 
     // HashSet runtime family
-    let s: HashSet<i64> = HashSet::new();
+    let s: HashSet<i64> = HashSet.new();
     s.insert(42);
     s.insert(7);
     println(s.len());

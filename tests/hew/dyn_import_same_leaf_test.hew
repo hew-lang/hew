@@ -4,11 +4,11 @@
 
 import "dyn_import_same_leaf_support/file_render.hew";
 
-import tests::hew::dyn_import_same_leaf_support::package_render::{
+import tests.hew.dyn_import_same_leaf_support.package_render.{
     render_package_box,
 };
 
-import std::testing;
+import std.testing;
 
 fn render_file(value: dyn Render) -> string {
     value.render()

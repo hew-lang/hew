@@ -12,11 +12,11 @@
 //! After the fix the shared file's impl lowers exactly once and every
 //! previously-bodiless accessor is executable.
 
-import std::net::http;
+import std.net.http;
 
-import std::net::http::http_client;
+import std.net.http.http_client;
 
-import std::testing;
+import std.testing;
 
 /// Server-side impl (`impl ServerMethods for Server`) is reachable and
 /// executable in the dual-import unit. `:0` binds an ephemeral port (the
@@ -25,12 +25,12 @@ import std::testing;
 #[test]
 fn test_server_impl_linked_in_dual_import_unit() {
     match http.listen(":0") {
-        Ok(server) => {
+        .Ok(server) => {
             let _prev = server.set_request_timeout_ms(1000);
             server.close();
             testing.assert_true(true);
         },
-        Err(_err) => {
+        .Err(_err) => {
             testing.assert_true(false);
         },
     }

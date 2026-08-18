@@ -1,9 +1,8 @@
 //! Tests for the std::testing assertion library.
 
-import std::testing;
+import std.testing;
 
 // ── assert_eq ──────────────────────────────────────────────────────────
-
 #[test]
 fn test_assert_eq_passes_for_equal_values() {
     testing.assert_eq(42, 42);
@@ -18,7 +17,6 @@ fn test_assert_eq_panics_for_unequal_values() {
 }
 
 // ── assert_eq_str ──────────────────────────────────────────────────────
-
 #[test]
 fn test_assert_eq_str_passes_for_equal_strings() {
     testing.assert_eq_str("hello", "hello");
@@ -32,7 +30,6 @@ fn test_assert_eq_str_panics_for_unequal_strings() {
 }
 
 // ── assert_ne ──────────────────────────────────────────────────────────
-
 #[test]
 fn test_assert_ne_passes_for_unequal_values() {
     testing.assert_ne(1, 2);
@@ -46,7 +43,6 @@ fn test_assert_ne_panics_for_equal_values() {
 }
 
 // ── assert_true / assert_false ─────────────────────────────────────────
-
 #[test]
 fn test_assert_true_passes() {
     testing.assert_true(true);
@@ -73,7 +69,6 @@ fn test_assert_false_panics_for_true() {
 }
 
 // ── assert_gt / assert_lt ──────────────────────────────────────────────
-
 #[test]
 fn test_assert_gt_passes() {
     testing.assert_gt(2, 1);

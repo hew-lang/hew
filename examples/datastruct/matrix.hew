@@ -1,7 +1,7 @@
 // 2D Matrix using flat Vec<i64>
 // Layout: [rows, cols, data...] where data[r*cols + c] = element at (r,c)
 fn mat_create(rows: i64, cols: i64) -> Vec<i64> {
-    let m: Vec<i64> = Vec::new();
+    let m: Vec<i64> = Vec.new();
     m.push(rows);
     m.push(cols);
     let total = rows * cols;

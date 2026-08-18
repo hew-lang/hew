@@ -25,7 +25,7 @@ fn layout_key_hashmap_methods_dual_emit_resolved_calls() {
         record Point { x: i64, y: i64 }
 
         fn main() {
-            let m: HashMap<Point, i64> = HashMap::new();
+            let m: HashMap<Point, i64> = HashMap.new();
             m.insert(Point { x: 1, y: 2 }, 10);
             let _v = m.get(Point { x: 1, y: 2 });
             let _has = m.contains_key(Point { x: 1, y: 2 });

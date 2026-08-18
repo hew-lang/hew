@@ -4,11 +4,11 @@
 //! The user-metric registry is process-global with no per-test reset, so each
 //! test uses a uniquely named metric to stay independent of the others.
 
-import std::metrics;
+import std.metrics;
 
-import std::observe;
+import std.observe;
 
-import std::testing;
+import std.testing;
 
 // ── Counter: exact value renders in the scrape ───────────────────────
 #[test]
@@ -75,12 +75,12 @@ fn test_histogram_count_and_sum_exposition() {
 #[test]
 fn test_try_counter_ok_for_valid_name() {
     match metrics.try_counter("test.try_ok") {
-        Ok(c) => {
+        .Ok(c) => {
             c.inc();
             let scrape = observe.scrape();
             testing.assert_true(scrape.contains("test_try_ok 1"));
         },
-        Err(_) => testing.assert_true(false),
+        .Err(_) => testing.assert_true(false),
     }
 }
 
@@ -88,8 +88,8 @@ fn test_try_counter_ok_for_valid_name() {
 fn test_try_counter_rejects_builtin_collision() {
     // `heap.live_bytes` is a runtime built-in; a user metric may not shadow it.
     match metrics.try_counter("heap.live_bytes") {
-        Ok(_) => testing.assert_true(false),
-        Err(_) => testing.assert_true(true),
+        .Ok(_) => testing.assert_true(false),
+        .Err(_) => testing.assert_true(true),
     }
 }
 
@@ -100,8 +100,8 @@ fn test_try_counter_rejects_rendered_builtin_collision() {
     // registry rejects it so a user metric cannot shadow the built-in's scrape
     // output.
     match metrics.try_counter("heap_live_bytes") {
-        Ok(_) => testing.assert_true(false),
-        Err(_) => testing.assert_true(true),
+        .Ok(_) => testing.assert_true(false),
+        .Err(_) => testing.assert_true(true),
     }
 }
 

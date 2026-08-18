@@ -30,6 +30,69 @@ use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
 use crate::support;
 
+#[test]
+fn imported_associated_paths_lower_through_canonical_impl_owner() {
+    let imported_src = r"
+pub type Box<T> { value: T; }
+impl<T> Box<T> {
+    pub fn make(value: T) -> Box<T> { Box<T> { value: value } }
+}
+";
+    for root_src in [
+        r"
+import m.{ Box };
+fn main() -> i64 {
+    let inferred: Box<i64> = Box.make(41);
+    let explicit: Box<i64> = Box<i64>.make(1);
+    inferred.value + explicit.value
+}
+",
+        r"
+import m;
+fn main() -> i64 {
+    let inferred: m.Box<i64> = m.Box.make(41);
+    let explicit: m.Box<i64> = m.Box<i64>.make(1);
+    inferred.value + explicit.value
+}
+",
+    ] {
+        let program =
+            support::checker_pipeline::program_with_imported_module(imported_src, root_src);
+        let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+        assert!(
+            output.diagnostics.is_empty(),
+            "imported associated paths must lower through the canonical impl: {:#?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn imported_dotted_struct_variants_lower_through_canonical_owner() {
+    let imported_src = r"
+pub enum Choice { Named { value: i64 } }
+";
+    for root_src in [
+        r"
+import m.{ Choice };
+fn main() -> Choice { Choice.Named { value: 7 } }
+",
+        r"
+import m;
+fn main() -> m.Choice { m.Choice.Named { value: 7 } }
+",
+    ] {
+        let program =
+            support::checker_pipeline::program_with_imported_module(imported_src, root_src);
+        let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+        assert!(
+            output.diagnostics.is_empty(),
+            "imported dotted struct variants must lower canonically: {:#?}",
+            output.diagnostics
+        );
+    }
+}
+
 /// Build a `Program` whose non-root `shapes` module contains:
 ///  - `pub type Foo { n: i64; }`
 ///  - `impl Foo { pub fn bar(f: Foo) -> i64 { f.n } }`
@@ -497,7 +560,7 @@ pub type CaptureMatches {
 impl Foo {
     pub fn captures(f: Foo) -> CaptureMatches {
         CaptureMatches {
-            groups: Vec::<string>::new(),
+            groups: Vec<string>.new(),
             group_count: f.n,
         }
     }

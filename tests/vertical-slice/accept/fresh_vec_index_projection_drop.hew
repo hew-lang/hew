@@ -5,7 +5,7 @@ record Holder {
 }
 
 fn frame() -> i64 {
-    let values: Vec<Holder> = Vec::new();
+    let values: Vec<Holder> = Vec.new();
     values.push(Holder { items: ["left", "right"] });
     values[0].items.len()
 }

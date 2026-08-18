@@ -1,5 +1,5 @@
 fn main() {
-    let labels: HashMap<string, string> = HashMap::new();
+    let labels: HashMap<string, string> = HashMap.new();
     labels.insert("primary", "maple");
 
     for value in labels.values() {

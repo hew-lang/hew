@@ -53,6 +53,7 @@ impl Checker {
         self.trait_method_ids_by_binding
             .get(&(
                 self.current_module.clone(),
+                self.current_module_idx,
                 trait_name.to_string(),
                 method_name.to_string(),
             ))
@@ -1197,7 +1198,7 @@ impl Checker {
                     TypeErrorKind::InvalidOperation,
                     span_key.start..span_key.end,
                     format!(
-                        "internal compiler error: builtin {}::{} is missing runtime rewrite metadata",
+                        "internal compiler error: builtin {}.{} is missing runtime rewrite metadata",
                         entry.handle_kind, entry.method
                     ),
                 );
@@ -1216,8 +1217,14 @@ impl Checker {
         span: &Span,
         kind: MethodCallReceiverKind,
     ) {
-        self.method_call_receiver_kinds
-            .insert(SpanKey::in_module(span, self.current_module_idx), kind);
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        if matches!(
+            self.method_call_receiver_kinds.get(&key),
+            Some(MethodCallReceiverKind::LexicalBinding { .. })
+        ) {
+            return;
+        }
+        self.method_call_receiver_kinds.insert(key, kind);
     }
 
     /// Returns whether the qualified method name `Trait::method` is in the
@@ -1334,9 +1341,11 @@ impl Checker {
         // marker derivation keys on the source declaration's full owner. A
         // missing binding is not evidence for a bare reply type — fail closed
         // so a same-name sibling cannot lend it a Send marker.
-        let module_owner = self
-            .module_import_bindings
-            .get(&(self.current_module.clone(), module_short.to_string()))?;
+        let module_owner = self.module_import_bindings.get(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            module_short.to_string(),
+        ))?;
         let qualified = format!("{module_owner}.{name}");
         if self.registry.has_type_markers(&qualified) {
             Some(Ty::Named {
@@ -1991,7 +2000,7 @@ impl Checker {
             TypeErrorKind::InvalidOperation,
             span,
             format!(
-                "internal compiler error: builtin {builtin}::{method} is missing {item} metadata"
+                "internal compiler error: builtin {builtin}.{method} is missing {item} metadata"
             ),
         );
     }
@@ -2050,9 +2059,34 @@ impl Checker {
     /// path segment.
     pub(super) fn canonical_module_import_owner(&self, module_name: &str) -> String {
         self.module_import_bindings
-            .get(&(self.current_module.clone(), module_name.to_string()))
+            .get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                module_name.to_string(),
+            ))
             .cloned()
             .unwrap_or_else(|| module_name.to_string())
+    }
+
+    /// Whether `module_name` is a lexical module binding in the current file.
+    /// The process-wide module registry is deliberately not consulted.
+    pub(super) fn module_binding_in_current_file(&self, module_name: &str) -> bool {
+        self.module_import_bindings.contains_key(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            module_name.to_string(),
+        )) || crate::stdlib_authority::authority()
+            .prelude_exports()
+            .iter()
+            .filter(|export| export.kind == crate::PreludeExportKind::Module)
+            .any(|export| {
+                export.alias.as_deref().unwrap_or_else(|| {
+                    export
+                        .module
+                        .rsplit_once('.')
+                        .map_or(export.module.as_str(), |(_, leaf)| leaf)
+                }) == module_name
+            })
     }
 
     /// Whether this module spelling resolves to a user-source declaration.
@@ -2429,7 +2463,7 @@ impl Checker {
 
     pub(super) fn strip_module_prefix<'a>(&self, name: &'a str) -> Option<&'a str> {
         let dot = name.find('.')?;
-        if self.modules.contains(&name[..dot]) {
+        if self.module_binding_in_current_file(&name[..dot]) {
             Some(&name[dot + 1..])
         } else {
             None
@@ -2438,8 +2472,19 @@ impl Checker {
 
     /// Look up a type definition, handling module-qualified names like `json.Value`.
     pub(super) fn lookup_type_def(&self, name: &str) -> Option<TypeDef> {
+        let current_module_key = if name.contains('.') {
+            None
+        } else {
+            self.current_module_identity()
+                .map(|owner| format!("{owner}.{name}"))
+        };
         self.type_defs
             .get(name)
+            .or_else(|| {
+                current_module_key
+                    .as_ref()
+                    .and_then(|key| self.type_defs.get(key))
+            })
             .or_else(|| {
                 self.strip_module_prefix(name)
                     .and_then(|u| self.type_defs.get(u))
@@ -2451,6 +2496,14 @@ impl Checker {
     pub(super) fn lookup_type_def_mut(&mut self, name: &str) -> Option<&mut TypeDef> {
         if self.type_defs.contains_key(name) {
             return self.type_defs.get_mut(name);
+        }
+        if !name.contains('.') {
+            if let Some(owner) = self.current_module_identity() {
+                let current_module_key = format!("{owner}.{name}");
+                if self.type_defs.contains_key(&current_module_key) {
+                    return self.type_defs.get_mut(&current_module_key);
+                }
+            }
         }
         let unqualified = self.strip_module_prefix(name)?;
         self.type_defs.get_mut(unqualified)
@@ -2469,12 +2522,16 @@ impl Checker {
         module_short: &str,
         type_name: &str,
     ) -> Option<TypeDef> {
-        if !self.modules.contains(module_short) {
+        if !self.module_binding_in_current_file(module_short) {
             return None;
         }
         let resolved_module = self
             .module_import_bindings
-            .get(&(self.current_module.clone(), module_short.to_string()))
+            .get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                module_short.to_string(),
+            ))
             .map(String::as_str)?;
         let exports = self.module_type_exports.get(resolved_module)?;
         if !exports.contains(type_name) {
@@ -2491,12 +2548,14 @@ impl Checker {
         &self,
         module_short: &str,
     ) -> Option<&HashSet<String>> {
-        if !self.modules.contains(module_short) {
+        if !self.module_binding_in_current_file(module_short) {
             return None;
         }
-        let owner = self
-            .module_import_bindings
-            .get(&(self.current_module.clone(), module_short.to_string()))?;
+        let owner = self.module_import_bindings.get(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            module_short.to_string(),
+        ))?;
         self.module_type_exports.get(owner)
     }
 
@@ -2578,10 +2637,11 @@ impl Checker {
         if is_actor(name) {
             return BareActorResolution::Resolved(name.to_string());
         }
-        if let Some(owners) = self
-            .published_bare_type_owners
-            .get(&(self.current_module.clone(), name.to_string()))
-        {
+        if let Some(owners) = self.published_bare_type_owners.get(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            name.to_string(),
+        )) {
             let candidates: Vec<String> = owners
                 .iter()
                 .filter(|identity| is_actor(identity))
@@ -3069,9 +3129,9 @@ impl Checker {
             TypeErrorKind::BoundsNotSatisfied,
             span,
             format!(
-                "generic `Pid::send` on `{type_param_name}` is fail-closed: `{}` must be proven \
+                "generic `Pid.send` on `{type_param_name}` is fail-closed: `{}` must be proven \
                  Serializable, but the current checker cannot express the required \
-                 `P::Msg: Serializable` associated-type projection bound yet (TODO A640)",
+                 `P.Msg: Serializable` associated-type projection bound yet (TODO A640)",
                 ty.user_facing()
             ),
         );
@@ -3147,7 +3207,7 @@ impl Checker {
                             TypeErrorKind::InvalidOperation,
                             span,
                             format!(
-                                "actor ask `{name}::{method_name}` requires `await`; \
+                                "actor ask `{name}.{method_name}` requires `await`; \
                                  write `let v? = await ref.{method_name}(...)` \
                                  or `match await ref.{method_name}(...) {{ Ok(v) => ..., Err(e) => ... }}`",
                             ),
@@ -4047,7 +4107,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::ArityMismatch,
                         span,
-                        "Duplex::send expects one argument (the message)".to_string(),
+                        "Duplex.send expects one argument (the message)".to_string(),
                     );
                 }
                 // Synthesize extra args for recovery diagnostics.
@@ -4079,7 +4139,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::ArityMismatch,
                         span,
-                        "Duplex::try_send expects one argument (the message)".to_string(),
+                        "Duplex.try_send expects one argument (the message)".to_string(),
                     );
                 }
                 for arg in args.iter().skip(1) {
@@ -4226,7 +4286,7 @@ impl Checker {
                         TypeErrorKind::ArityMismatch,
                         span,
                         format!(
-                            "LambdaPid::send expects one argument (the message), but {} were supplied",
+                            "LambdaPid.send expects one argument (the message), but {} were supplied",
                             args.len()
                         ),
                     );
@@ -4270,7 +4330,7 @@ impl Checker {
                         TypeErrorKind::ArityMismatch,
                         span,
                         format!(
-                            "LambdaPid::close expects no arguments, but {} were supplied",
+                            "LambdaPid.close expects no arguments, but {} were supplied",
                             args.len()
                         ),
                     );
@@ -4687,7 +4747,7 @@ impl Checker {
                     span,
                     format!(
                         "`{}` does not satisfy the required bounds for \
-                         `{trait_name}::{method}` ({bound_summary})",
+                         `{trait_name}.{method}` ({bound_summary})",
                         witness_ty.user_facing()
                     ),
                 );
@@ -4703,7 +4763,7 @@ impl Checker {
                     span,
                     format!(
                         "internal compiler error: collection resolver could \
-                         not locate `{trait_name}::{method}` for receiver \
+                         not locate `{trait_name}.{method}` for receiver \
                          `{receiver:?}`"
                     ),
                 );
@@ -4763,7 +4823,7 @@ impl Checker {
                     span,
                     format!(
                         "`{}` does not satisfy the required bounds for \
-                         `Map::{method}` ({bound_summary})",
+                         `Map.{method}` ({bound_summary})",
                         witness_ty.user_facing()
                     ),
                 );
@@ -4774,7 +4834,7 @@ impl Checker {
                     span,
                     format!(
                         "internal compiler error: collection resolver could \
-                         not locate `Map::{method}` for receiver `{receiver:?}`"
+                         not locate `Map.{method}` for receiver `{receiver:?}`"
                     ),
                 );
             }
@@ -4887,14 +4947,14 @@ impl Checker {
     ) {
         let message = match reason {
             crate::vec_authority::VecUnsupported::FunctionGet => {
-                "`Vec::get` on a function/closure element is not supported under \
+                "`Vec.get` on a function/closure element is not supported under \
                  the `Option<T>` accessor model: the element owns a heap-boxed \
                  closure environment that the fresh-owner get choke point does \
                  not yet clone (tracked gap)"
                     .to_string()
             }
             crate::vec_authority::VecUnsupported::FunctionSharedCopy => format!(
-                "`Vec::{}` is not supported for function-valued elements: each element \
+                "`Vec.{}` is not supported for function-valued elements: each element \
                  owns its closure environment, and a shallow buffer copy would create \
                  two owners of one environment",
                 method.name()
@@ -4906,14 +4966,14 @@ impl Checker {
                 if bitcopy_supported {
                     let why = self.vec_element_rejection_reason(elem_ty);
                     format!(
-                        "`{}` cannot be a `Vec` element for `Vec::{}`: {why} \
+                        "`{}` cannot be a `Vec` element for `Vec.{}`: {why} \
                          (runtime symbol `{expected_symbol}`)",
                         elem_ty.user_facing(),
                         method.name()
                     )
                 } else {
                     format!(
-                        "`Vec::{}` on layout-backed element type `{}` is not \
+                        "`Vec.{}` on layout-backed element type `{}` is not \
                          runtime-backed yet (runtime symbol `{expected_symbol}`); supported \
                          layout Vec methods are push/get/set/pop/remove/clone for Copy \
                          record/tuple elements",
@@ -5049,7 +5109,7 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`Vec::{method}` is not supported for trait-object elements: \
+                    "`Vec.{method}` is not supported for trait-object elements: \
                      the source Vec retains each HeapBoxed owner and `dyn Trait` has no \
                      semantic clone operation; consume the Vec with `into_iter()` instead"
                 ),
@@ -5061,7 +5121,7 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`Vec::{method}` is not supported for function-valued elements: \
+                    "`Vec.{method}` is not supported for function-valued elements: \
                      each element owns its closure environment, and reading elements \
                      into a pipeline result would create a second owner of one \
                      environment"
@@ -5313,7 +5373,7 @@ impl Checker {
             return self.collection_method_fallback(kind, cx, method, args, span);
         };
         if let Some(arity) = desc.arity {
-            self.check_arity(args, arity, &format!("`{}::{method}`", kind.name()), span);
+            self.check_arity(args, arity, &format!("`{}.{method}`", kind.name()), span);
         }
         if !self.check_collection_args(kind, desc.arg_templates, cx, args, span) {
             return Ty::Error;
@@ -5361,7 +5421,7 @@ impl Checker {
         // keeps the accessor model uniform with `Vec`, while the trapping
         // `m[k]` read is the sibling `Index::at` (`-> V`).
         if method == "get" {
-            self.check_arity(args, 1, "`HashMap::get`", span);
+            self.check_arity(args, 1, "`HashMap.get`", span);
             if let Some(arg) = args.first() {
                 let (expr, sp) = arg.expr();
                 self.check_against(expr, sp, &key_ty);
@@ -5392,7 +5452,7 @@ impl Checker {
         // MOVE the value out into the `Some` payload; drop-safe — the map keeps
         // no copy, so exactly one owner of V). `remove(absent)` yields `None`.
         if method == "remove" {
-            self.check_arity(args, 1, "`HashMap::remove`", span);
+            self.check_arity(args, 1, "`HashMap.remove`", span);
             if let Some(arg) = args.first() {
                 let (expr, sp) = arg.expr();
                 self.check_against(expr, sp, &key_ty);
@@ -5416,7 +5476,7 @@ impl Checker {
         // HashMap` is intentionally absent — its body would project on an
         // abstract receiver the checker cannot admit (see std/builtins.hew).
         if method == "into_iter" {
-            self.check_arity(args, 0, "`HashMap::into_iter`", span);
+            self.check_arity(args, 0, "`HashMap.into_iter`", span);
             let keys_span = span.start..span.start;
             let values_span = span.end..span.end;
             let mut iter_ty = Ty::Error;
@@ -5496,7 +5556,7 @@ impl Checker {
         match method {
             // rc.clone() increments the reference count and returns a new Rc<T>
             "clone" => {
-                self.check_arity(args, 0, "`Rc::clone`", span);
+                self.check_arity(args, 0, "`Rc.clone`", span);
                 record(self, RcIntrinsicOp::Clone);
                 Ty::rc(inner_ty)
             }
@@ -5505,7 +5565,7 @@ impl Checker {
             // types (no ownership to duplicate).  For non-Copy `T`, callers
             // share access via `rc.clone()` instead.
             "get" => {
-                self.check_arity(args, 0, "`Rc::get`", span);
+                self.check_arity(args, 0, "`Rc.get`", span);
                 if !self
                     .registry
                     .implements_marker(&inner_ty, MarkerTrait::Copy)
@@ -5514,7 +5574,7 @@ impl Checker {
                         TypeErrorKind::BoundsNotSatisfied,
                         span,
                         format!(
-                            "`Rc::get` requires `T: Copy`; `{}` is not `Copy` — \
+                            "`Rc.get` requires `T: Copy`; `{}` is not `Copy` — \
                              use `rc.clone()` to share the reference instead",
                             inner_ty.user_facing()
                         ),
@@ -5525,34 +5585,34 @@ impl Checker {
                 inner_ty
             }
             "set" => {
-                self.check_arity(args, 1, "`Rc::set`", span);
+                self.check_arity(args, 1, "`Rc.set`", span);
                 if let Some(arg) = args.first() {
                     let (expr, arg_span) = arg.expr();
                     let arg_ty = self.synthesize(expr, arg_span);
                     self.expect_type(&inner_ty, &arg_ty, arg_span);
-                    self.reject_borrowed_parameter_consumption(expr, arg_span, "Rc::set");
+                    self.reject_borrowed_parameter_consumption(expr, arg_span, "Rc.set");
                 }
                 record(self, RcIntrinsicOp::Set);
                 Ty::Unit
             }
             "downgrade" => {
-                self.check_arity(args, 0, "`Rc::downgrade`", span);
+                self.check_arity(args, 0, "`Rc.downgrade`", span);
                 record(self, RcIntrinsicOp::Downgrade);
                 Ty::weak(inner_ty)
             }
             // rc.strong_count() returns the current reference count as i64
             "strong_count" => {
-                self.check_arity(args, 0, "`Rc::strong_count`", span);
+                self.check_arity(args, 0, "`Rc.strong_count`", span);
                 record(self, RcIntrinsicOp::StrongCount);
                 Ty::I64
             }
             "weak_count" => {
-                self.check_arity(args, 0, "`Rc::weak_count`", span);
+                self.check_arity(args, 0, "`Rc.weak_count`", span);
                 record(self, RcIntrinsicOp::WeakCount);
                 Ty::I64
             }
             "is_unique" => {
-                self.check_arity(args, 0, "`Rc::is_unique`", span);
+                self.check_arity(args, 0, "`Rc.is_unique`", span);
                 record(self, RcIntrinsicOp::IsUnique);
                 Ty::Bool
             }
@@ -5584,12 +5644,12 @@ impl Checker {
             .unwrap_or(Ty::Var(TypeVar::fresh()));
         match method {
             "clone" => {
-                self.check_arity(args, 0, "`Weak::clone`", span);
+                self.check_arity(args, 0, "`Weak.clone`", span);
                 self.record_rc_intrinsic(span, RcIntrinsicOp::WeakClone, &inner_ty);
                 Ty::weak(inner_ty)
             }
             "upgrade" => {
-                self.check_arity(args, 0, "`Weak::upgrade`", span);
+                self.check_arity(args, 0, "`Weak.upgrade`", span);
                 self.record_rc_intrinsic(span, RcIntrinsicOp::WeakUpgrade, &inner_ty);
                 Ty::option(Ty::rc(inner_ty))
             }
@@ -5636,24 +5696,24 @@ impl Checker {
 
         let reason = match eligibility {
             EqEligibility::Eligible => format!(
-                "`Vec::contains` on layout-backed element type `{}` is equality-eligible, \
+                "`Vec.contains` on layout-backed element type `{}` is equality-eligible, \
                  but layout contains is not yet supported for this element type",
                 elem_ty.user_facing()
             ),
             EqEligibility::IneligibleManaged(managed_ty) => format!(
-                "`Vec::contains` on layout-backed element type `{}` requires aggregate \
+                "`Vec.contains` on layout-backed element type `{}` requires aggregate \
                  equality, but `{}` is layout-managed/non-Copy data",
                 elem_ty.user_facing(),
                 managed_ty.user_facing()
             ),
             EqEligibility::IneligibleOwned(owned_ty) => format!(
-                "`Vec::contains` on layout-backed element type `{}` requires aggregate \
+                "`Vec.contains` on layout-backed element type `{}` requires aggregate \
                  equality, but `{}` is owned or heap-backed data",
                 elem_ty.user_facing(),
                 owned_ty.user_facing()
             ),
             EqEligibility::IneligibleUnknown => format!(
-                "`Vec::contains` on layout-backed element type `{}` requires aggregate \
+                "`Vec.contains` on layout-backed element type `{}` requires aggregate \
                  equality, but equality eligibility is unknown",
                 elem_ty.user_facing()
             ),
@@ -6335,7 +6395,7 @@ impl Checker {
         sig.extern_symbol.as_ref()?;
 
         if matches!(method, "push" | "pop" | "remove" | "clear" | "clone") {
-            self.check_arity(args, sig.params.len(), &format!("`Vec::{method}`"), span);
+            self.check_arity(args, sig.params.len(), &format!("`Vec.{method}`"), span);
         }
 
         for (index, expected) in sig.params.iter().enumerate() {
@@ -6386,11 +6446,11 @@ impl Checker {
             .lookup_builtin_vec_method_sig(type_args, method)
             .is_some();
         if method == "clone" && matches!(self.subst.resolve(&elem_ty), Ty::TraitObject { .. }) {
-            self.check_arity(args, 0, "`Vec::clone`", span);
+            self.check_arity(args, 0, "`Vec.clone`", span);
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
-                "`Vec<dyn Trait>::clone()` is not supported because trait objects have no \
+                "`Vec<dyn Trait>.clone()` is not supported because trait objects have no \
                  semantic clone operation; use `into_iter()` to transfer the existing owners"
                     .to_string(),
             );
@@ -6398,7 +6458,7 @@ impl Checker {
         }
         let result = match method {
             "into_iter" => {
-                self.check_arity(args, 0, "`Vec::into_iter`", span);
+                self.check_arity(args, 0, "`Vec.into_iter`", span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
                 if !self.validate_vec_iter_element_clone_type(&resolved_elem, span) {
                     return Ty::Error;
@@ -6446,13 +6506,13 @@ impl Checker {
                 // uses, including per-monomorphisation re-resolution for an
                 // abstract element). Mirrors how `HashMap::into_iter` pre-records
                 // its `keys()`/`values()` projections.
-                self.check_arity(args, 0, "`Vec::iter`", span);
+                self.check_arity(args, 0, "`Vec.iter`", span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
                 if matches!(resolved_elem, Ty::TraitObject { .. }) {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
-                        "`Vec<dyn Trait>::iter()` is not supported because a borrowed iterator \
+                        "`Vec<dyn Trait>.iter()` is not supported because a borrowed iterator \
                          needs an independent clone of each trait object; use `into_iter()` to \
                          transfer the existing owners"
                             .to_string(),
@@ -6487,7 +6547,7 @@ impl Checker {
                 // explicit arm preserves the index-site widening ergonomic
                 // (i8/i16/i32 → i64) that the strict trait signature would
                 // otherwise reject.
-                self.check_arity(args, 1, "`Vec::get`", span);
+                self.check_arity(args, 1, "`Vec.get`", span);
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     let actual = self.synthesize(expr, sp);
@@ -6504,7 +6564,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
-                        "`Vec<dyn Trait>::get()` is not supported because returning an owned \
+                        "`Vec<dyn Trait>.get()` is not supported because returning an owned \
                          element would require a semantic trait-object clone; use pop/remove or \
                          consuming iteration to move an owner out"
                             .to_string(),
@@ -6560,7 +6620,7 @@ impl Checker {
                             TypeErrorKind::InvalidOperation,
                             span,
                             format!(
-                                "`Vec::contains` on layout-backed element type `{}` requires \
+                                "`Vec.contains` on layout-backed element type `{}` requires \
                                  the element to be `Copy`; layout-managed records require \
                                  clone/drop semantics that are not implemented for \
                                  equality-based contains",
@@ -6580,7 +6640,7 @@ impl Checker {
                 Ty::Bool
             }
             "join" if runtime_method_declared => {
-                self.check_arity(args, 1, "`Vec::join`", span);
+                self.check_arity(args, 1, "`Vec.join`", span);
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &Ty::String);
@@ -6596,7 +6656,7 @@ impl Checker {
                         TypeErrorKind::UndefinedMethod,
                         span,
                         format!(
-                            "`Vec::join` is only available on Vec<string>, not Vec<{}>",
+                            "`Vec.join` is only available on Vec<string>, not Vec<{}>",
                             elem_ty.user_facing()
                         ),
                     );
@@ -6604,7 +6664,7 @@ impl Checker {
                 Ty::String
             }
             "map" => {
-                self.check_arity(args, 1, "`Vec::map`", span);
+                self.check_arity(args, 1, "`Vec.map`", span);
                 let ret_ty = Ty::Var(TypeVar::fresh());
                 let expected_fn = Ty::Function {
                     params: vec![elem_ty.clone()],
@@ -6627,7 +6687,7 @@ impl Checker {
                 self.make_vec_type(resolved_ret, span)
             }
             "filter" => {
-                self.check_arity(args, 1, "`Vec::filter`", span);
+                self.check_arity(args, 1, "`Vec.filter`", span);
                 let expected_fn = Ty::Function {
                     params: vec![elem_ty.clone()],
                     ret: Box::new(Ty::Bool),
@@ -6654,7 +6714,7 @@ impl Checker {
                 // documents this seeded form). A seedless 1-arg `reduce`
                 // is deliberately not provided: it would need an
                 // empty-vector answer, and we refuse to invent one.
-                self.check_arity(args, 2, "`Vec::reduce`", span);
+                self.check_arity(args, 2, "`Vec.reduce`", span);
                 let acc_ty = if let Some(arg) = args.get(1) {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp)
@@ -6682,7 +6742,7 @@ impl Checker {
                 resolved_acc
             }
             "fold" => {
-                self.check_arity(args, 2, "`Vec::fold`", span);
+                self.check_arity(args, 2, "`Vec.fold`", span);
                 let acc_ty = if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp)
@@ -7170,7 +7230,7 @@ impl Checker {
             trailing_args,
             span,
             SignatureArgApplication::PositionalOnly {
-                arity_context: format!("method `{trait_name}::{method_name}`"),
+                arity_context: format!("method `{trait_name}.{method_name}`"),
             },
             true,
         );
@@ -7221,6 +7281,29 @@ impl Checker {
         }
         self.record_resolved_method_call_ownership(receiver, method, args, span, &result);
         result
+    }
+
+    pub(super) fn check_dotted_type_member_call_against_expected(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[CallArg],
+        expected: &Ty,
+        span: &Span,
+    ) -> Option<Ty> {
+        let head = self.resolve_dotted_type_head(receiver, method)?;
+        let result = self.dispatch_dotted_type_member(
+            &head,
+            method,
+            &DottedTypeMemberUse::Call {
+                args,
+                expected: Some(expected),
+                span,
+            },
+        )?;
+        self.mark_resolved_nominal_owner_used(&head.canonical_type);
+        self.record_resolved_method_call_ownership(receiver, method, args, span, &result);
+        Some(result)
     }
 
     #[expect(
@@ -7532,10 +7615,58 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        let dotted_type_head = self.resolve_dotted_type_head(receiver, method);
+        if let Some(head) = dotted_type_head.as_ref() {
+            if let Some(result) = self.dispatch_dotted_type_member(
+                head,
+                method,
+                &DottedTypeMemberUse::Call {
+                    args,
+                    expected: None,
+                    span,
+                },
+            ) {
+                self.mark_resolved_nominal_owner_used(&head.canonical_type);
+                return result;
+            }
+            let source_member = format!("{}.{method}", head.canonical_type);
+            if !self.fn_sigs.contains_key(&source_member) {
+                for arg in args {
+                    let (expr, arg_span) = arg.expr();
+                    self.synthesize(expr, arg_span);
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedFunction,
+                    span,
+                    format!(
+                        "undefined static function `{}.{method}`",
+                        head.canonical_type
+                    ),
+                );
+                return Ty::Error;
+            }
+        }
         // Module-qualified calls: e.g. http.listen(addr) → lookup "http.listen" in fn_sigs
         if let Expr::Identifier(name) = &receiver.0 {
             let receiver_is_binding = self.env.lookup_ref(name).is_some();
-            let receiver_is_known_type = self.type_defs.contains_key(name);
+            // The shared type-head resolver already selected every
+            // declaration-proven nominal above. Preserve that classification
+            // while deciding whether an unresolved head is a module call.
+            let receiver_is_known_type = dotted_type_head.is_some();
+            let receiver_shadows_module = receiver_is_binding
+                && self.module_import_bindings.contains_key(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    name.clone(),
+                ));
+            if receiver_shadows_module {
+                self.record_method_call_receiver_kind(
+                    span,
+                    MethodCallReceiverKind::LexicalBinding {
+                        binding_name: name.clone(),
+                    },
+                );
+            }
             // `name` is a lexical import binding (`string`, or an explicit
             // module alias). Declaration and export registries are keyed by the
             // exact source owner, so resolve the binding before every authority
@@ -7545,14 +7676,22 @@ impl Checker {
             let key = format!("{canonical_owner}.{method}");
             let looks_like_module_call = !receiver_is_binding
                 && !receiver_is_known_type
-                && (self.modules.contains(name)
+                && (self.module_binding_in_current_file(name)
                     || self.module_fn_exports.contains(&key)
                     || self.fn_sigs.contains_key(&key));
             if looks_like_module_call {
-                if self.modules.contains(name) {
-                    self.used_modules
-                        .borrow_mut()
-                        .insert(ImportKey::new(self.current_module.clone(), name.clone()));
+                self.record_method_call_receiver_kind(
+                    span,
+                    MethodCallReceiverKind::ModuleBinding {
+                        module_name: canonical_owner.clone(),
+                    },
+                );
+                if self.module_binding_in_current_file(name) {
+                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        name.clone(),
+                    ));
                 }
                 // Cross-module enum variant construction: e.g. `fs.IoError::TimedOut(0)`.
                 // method contains "::" → treat as a qualified variant constructor rather than a
@@ -7647,8 +7786,13 @@ impl Checker {
                             let (expr, sp) = arg.expr();
                             self.synthesize(expr, sp);
                         }
+                        let kind = if self.resolve_module_type(name, method).is_some() {
+                            TypeErrorKind::PathKindMismatch
+                        } else {
+                            TypeErrorKind::PathMemberNotFound
+                        };
                         self.report_error(
-                            TypeErrorKind::UndefinedMethod,
+                            kind,
                             span,
                             format!("no function `{method}` in module `{name}`"),
                         );
@@ -7707,7 +7851,18 @@ impl Checker {
                     // linked through unification.
                     if canonical_owner == "std.channel" && method == "new" {
                         let t = Ty::Var(TypeVar::fresh());
-                        return Ty::Tuple(vec![Ty::sender(t.clone()), Ty::receiver(t)]);
+                        return Ty::Tuple(vec![
+                            Ty::Named {
+                                name: "std.channel.Sender".to_string(),
+                                args: vec![t.clone()],
+                                builtin: Some(BuiltinType::Sender),
+                            },
+                            Ty::Named {
+                                name: "std.channel.Receiver".to_string(),
+                                args: vec![t],
+                                builtin: Some(BuiltinType::Receiver),
+                            },
+                        ]);
                     }
                     if let Some(op) = self.intrinsic_math_generic_op_for_signature(&key) {
                         self.record_method_call_rewrite(
@@ -7722,7 +7877,7 @@ impl Checker {
                     self.synthesize(expr, sp);
                 }
                 self.report_error(
-                    TypeErrorKind::UndefinedMethod,
+                    TypeErrorKind::PathMemberNotFound,
                     span,
                     format!("no function `{method}` in module `{name}`"),
                 );
@@ -8561,7 +8716,7 @@ impl Checker {
                                 TypeErrorKind::InvalidOperation,
                                 span,
                                 format!(
-                                    "actor ask `{actor_identity}::{method}` requires `await`; \
+                                    "actor ask `{actor_identity}.{method}` requires `await`; \
                                      write `let v? = await ref.{method}(...)` \
                                      or `match await ref.{method}(...) {{ Ok(v) => ..., Err(e) => ... }}`",
                                 ),
@@ -9114,7 +9269,7 @@ impl Checker {
                             return Ty::Error;
                         };
                         if !self.inside_await_expr {
-                            self.warn_if_blocking_in_receive_fn("Receiver::recv", span);
+                            self.warn_if_blocking_in_receive_fn("Receiver.recv", span);
                         }
                         if matches!(resolved_inner, Ty::Var(_)) {
                             // No argument to unify against — the return-type
@@ -9230,9 +9385,9 @@ impl Checker {
                 let elem_ty = range_args.first().cloned().unwrap_or(Ty::I64);
                 let range_ty = Ty::range(elem_ty.clone());
                 if method == "rev" {
-                    self.check_arity(args, 0, "`Range::rev`", span);
+                    self.check_arity(args, 0, "`Range.rev`", span);
                 } else {
-                    self.check_arity(args, 1, "`Range::step_by`", span);
+                    self.check_arity(args, 1, "`Range.step_by`", span);
                     if let Some(arg) = args.first() {
                         let (expr, sp) = arg.expr();
                         // The stride is counted in the range's element type so a
@@ -9395,7 +9550,7 @@ impl Checker {
                                 TypeErrorKind::InvalidOperation,
                                 span,
                                 format!(
-                                    "actor ask `{name}::{method}` requires `await`; \
+                                    "actor ask `{name}.{method}` requires `await`; \
                                      write `let v? = await ref.{method}(...)` \
                                      or `match await ref.{method}(...) {{ Ok(v) => ..., Err(e) => ... }}`",
                                 ),
@@ -9929,7 +10084,7 @@ impl Checker {
                                     TypeErrorKind::MutabilityError,
                                     span,
                                     format!(
-                                        "trait method `{declaring_trait}::{method}` \
+                                        "trait method `{declaring_trait}.{method}` \
                                          (statically dispatched on type parameter `{name}`) \
                                          requires a mutable binding receiver; \
                                          {receiver_label} is not declared with `var`",
@@ -9939,7 +10094,7 @@ impl Checker {
                                 self.env.mark_written(n);
                                 self.reject_private_param_mutable_receiver_call(
                                     n,
-                                    &format!("trait method `{declaring_trait}::{method}`"),
+                                    &format!("trait method `{declaring_trait}.{method}`"),
                                     span,
                                 );
                             }
@@ -9990,7 +10145,7 @@ impl Checker {
                             .map_or_else(
                                 || CallTarget::Unsupported {
                                     reason: format!(
-                                        "trait method `{declaring_trait}::{method}` has no registered declaration identity"
+                                        "trait method `{declaring_trait}.{method}` has no registered declaration identity"
                                     ),
                                 },
                                 |(declaring_trait, method)| CallTarget::StaticTraitMethod {
@@ -10256,7 +10411,7 @@ impl Checker {
                                     .map_or_else(
                                         || CallTarget::Unsupported {
                                             reason: format!(
-                                                "dynamic trait method `{}::{method}` has no registered declaration identity",
+                                                "dynamic trait method `{}.{method}` has no registered declaration identity",
                                                 bound.trait_name
                                             ),
                                         },
@@ -10361,7 +10516,7 @@ impl Checker {
                     } else {
                         format!("no method `{method}` on `{}`", resolved.user_facing())
                     };
-                    self.report_error(TypeErrorKind::UndefinedMethod, span, message);
+                    self.report_missing_method_with_shadow_note(receiver, method, span, message);
                     Ty::Error
                 }
             }
@@ -10456,10 +10611,37 @@ impl Checker {
                 } else {
                     format!("no method `{method}` on `{}`", resolved.user_facing())
                 };
-                self.report_error(TypeErrorKind::UndefinedMethod, span, message);
+                self.report_missing_method_with_shadow_note(receiver, method, span, message);
                 Ty::Error
             }
         }
+    }
+
+    fn report_missing_method_with_shadow_note(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        span: &Span,
+        message: String,
+    ) {
+        let mut error = TypeError::new(TypeErrorKind::UndefinedMethod, span.clone(), message);
+        if let Expr::Identifier(binding) = &receiver.0 {
+            if self.env.lookup_ref(binding).is_some()
+                && self.module_import_bindings.contains_key(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    binding.clone(),
+                ))
+            {
+                error = error.with_note(
+                    receiver.1.clone(),
+                    format!(
+                        "lexical binding `{binding}` shadows the imported module; `{binding}.{method}` was resolved as a value method lookup"
+                    ),
+                );
+            }
+        }
+        self.errors.push(error);
     }
 }
 
@@ -10761,7 +10943,11 @@ mod tests {
         );
         checker
             .published_bare_trait_owners
-            .entry((checker.current_module.clone(), "Render".to_string()))
+            .entry((
+                checker.current_module.clone(),
+                checker.current_module_idx,
+                "Render".to_string(),
+            ))
             .or_default()
             .insert("left.Render".to_string());
 
@@ -10929,7 +11115,7 @@ mod tests {
             .insert("std.fs".to_string());
         checker
             .module_import_bindings
-            .insert((None, "files".to_string()), "std.fs".to_string());
+            .insert((None, 0, "files".to_string()), "std.fs".to_string());
         checker.reject_wasm_native_only_module_function("files", "try_read", &span);
         assert_eq!(checker.errors.len(), 1, "module alias must reject");
 
@@ -10947,7 +11133,7 @@ mod tests {
         checker.enable_wasm_target();
         checker
             .module_import_bindings
-            .insert((None, "lookalike".to_string()), "app.fs".to_string());
+            .insert((None, 0, "lookalike".to_string()), "app.fs".to_string());
         checker.reject_wasm_native_only_module_function("lookalike", "try_read", &span);
         checker.reject_wasm_native_only_function_identity("app.fs.try_read", &span);
         assert!(
@@ -10970,11 +11156,12 @@ mod tests {
                 builtin: Some(BuiltinType::Rc),
             }],
         );
-        checker
-            .module_import_bindings
-            .insert((None, "replysend".to_string()), "hew.replysend".to_string());
         checker.module_import_bindings.insert(
-            (None, "replynonsend".to_string()),
+            (None, 0, "replysend".to_string()),
+            "hew.replysend".to_string(),
+        );
+        checker.module_import_bindings.insert(
+            (None, 0, "replynonsend".to_string()),
             "hew.replynonsend".to_string(),
         );
         let bare_reply = Ty::Named {

@@ -59,7 +59,7 @@ const SLOPE_TOLERANCE: usize = 16;
 /// the fork environment's Rc callback is the sole release site.
 fn generic_fork_source(iters: usize) -> String {
     format!(
-        "import std::string;\n\
+        "import std.string;\n\
          \n\
          fn generic_str_sink<T>(s: string) {{}}\n\
          \n\
@@ -69,7 +69,7 @@ fn generic_fork_source(iters: usize) -> String {
          \x20       while i < n {{\n\
          \x20           let s = string.repeat(\"owned-heap-string-payload\", 20);\n\
          \x20           scope {{\n\
-         \x20               fork {{ generic_str_sink::<i64>(s); }}\n\
+         \x20               fork {{ generic_str_sink<i64>(s); }}\n\
          \x20           }};\n\
          \x20           i = i + 1;\n\
          \x20       }}\n\

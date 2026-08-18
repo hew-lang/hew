@@ -1041,6 +1041,26 @@ pub const fn canonical_std_io_extern_signatures() -> &'static [CanonicalStdlibEx
 }
 
 impl RuntimeCallFamily {
+    /// Canonical checker signature for compiler-registered builtins whose
+    /// source identity differs from their runtime ABI symbol.
+    #[must_use]
+    pub const fn checker_signature_key(self) -> Option<&'static str> {
+        match self {
+            Self::RcNew => Some("Rc::new"),
+            _ => None,
+        }
+    }
+
+    /// Resolve a checker-selected builtin signature to its typed identity.
+    /// Dotted and namespaced syntax have already converged on this key.
+    #[must_use]
+    pub fn from_checker_signature(signature_key: &str) -> Option<Self> {
+        if signature_key == Self::RcNew.checker_signature_key()? {
+            return Some(Self::RcNew);
+        }
+        Self::from_c_symbol(signature_key)
+    }
+
     /// Resolve the C-ABI symbol the family lowers to. Total function;
     /// every variant has exactly one symbol (the bijection guarantee).
     ///

@@ -745,6 +745,14 @@ fn hover_pattern_binding(
     })
 }
 
+fn nominal_path_leaf(path: &hew_parser::ast::Path) -> Option<&str> {
+    path.segments.last().map(String::as_str)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "binding hover traverses every origin-preserving pattern payload shape"
+)]
 fn find_pattern_binding_type(
     pattern: &(Pattern, Span),
     source_ty: &Ty,
@@ -808,6 +816,56 @@ fn find_pattern_binding_type(
                     args: vec![],
                 })
         }
+        Pattern::NominalPath { path, payload } => match payload.as_ref() {
+            None => None,
+            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                let name = nominal_path_leaf(path)?;
+                constructor_payload_tys(source_ty, name, type_defs).and_then(|payload_tys| {
+                    patterns
+                        .iter()
+                        .zip(payload_tys.iter())
+                        .find_map(|(pattern, payload_ty)| {
+                            find_pattern_binding_type(pattern, payload_ty, type_defs, word, offset)
+                        })
+                })
+            }
+            Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                let name = nominal_path_leaf(path)?;
+                fields.iter().find_map(|field| {
+                    let field_ty =
+                        struct_pattern_field_ty(source_ty, name, &field.name, type_defs)?;
+                    field.pattern.as_ref().and_then(|pattern| {
+                        find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
+                    })
+                })
+            }
+        },
+        Pattern::ContextVariant(context) => match context.payload.as_ref() {
+            None => None,
+            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                constructor_payload_tys(source_ty, &context.name, type_defs).and_then(
+                    |payload_tys| {
+                        patterns
+                            .iter()
+                            .zip(payload_tys.iter())
+                            .find_map(|(pattern, payload_ty)| {
+                                find_pattern_binding_type(
+                                    pattern, payload_ty, type_defs, word, offset,
+                                )
+                            })
+                    },
+                )
+            }
+            Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                fields.iter().find_map(|field| {
+                    let field_ty =
+                        struct_pattern_field_ty(source_ty, &context.name, &field.name, type_defs)?;
+                    field.pattern.as_ref().and_then(|pattern| {
+                        find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
+                    })
+                })
+            }
+        },
         Pattern::Wildcard | Pattern::Literal(_) => None,
     }
 }
@@ -833,6 +891,34 @@ fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Op
             find_binding_name(left, word, offset).or_else(|| find_binding_name(right, word, offset))
         }
         Pattern::Regex { captures, .. } => captures.iter().find(|c| c.as_str() == word).map(|_| ()),
+        Pattern::NominalPath { payload, .. } => match payload.as_ref() {
+            None => None,
+            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => patterns
+                .iter()
+                .find_map(|pattern| find_binding_name(pattern, word, offset)),
+            Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                fields.iter().find_map(|field| {
+                    field
+                        .pattern
+                        .as_ref()
+                        .and_then(|pattern| find_binding_name(pattern, word, offset))
+                })
+            }
+        },
+        Pattern::ContextVariant(context) => match context.payload.as_ref() {
+            None => None,
+            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => patterns
+                .iter()
+                .find_map(|pattern| find_binding_name(pattern, word, offset)),
+            Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                fields.iter().find_map(|field| {
+                    field
+                        .pattern
+                        .as_ref()
+                        .and_then(|pattern| find_binding_name(pattern, word, offset))
+                })
+            }
+        },
         Pattern::Wildcard | Pattern::Literal(_) => None,
     }
 }
@@ -945,6 +1031,12 @@ fn is_var_name_span(
 
 fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
     match type_expr {
+        TypeExpr::QualifiedAssocPath(path) => format!(
+            "<{} as {}>.{}",
+            format_type_expr_hover(&path.base.0),
+            path.trait_path.source_spelling(),
+            path.members.join(".")
+        ),
         TypeExpr::Named { name, type_args } => {
             let base =
                 Ty::from_name(name).map_or_else(|| name.clone(), |ty| ty.user_facing().to_string());

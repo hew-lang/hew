@@ -24,8 +24,8 @@ use support::{describe_output, require_codegen};
 fn source(frames: usize) -> String {
     format!(
         r#"
-import std::net;
-import std::net::quic;
+import std.net;
+import std.net.quic;
 
 fn require_ok(result: Result<(), net.NetError>) {{
     match result {{

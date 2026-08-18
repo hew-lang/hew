@@ -37,15 +37,15 @@ enum Shape {
 
 fn area(s: Shape) -> i64 {
     match s {
-        Shape::Circle { radius } => radius * radius,
-        Shape::Rect { w, h } => w * h,
+        Shape.Circle { radius } => radius * radius,
+        Shape.Rect { w, h } => w * h,
     }
 }
 
 fn main() {
     let x: i64 = 42;
     let pt: Point = Point { x: 10, y: 20 };
-    let shape: Shape = Shape::Circle { radius: 7 };
+    let shape: Shape = Shape.Circle { radius: 7 };
     let result: i64 = area(shape);
     print(x);
     print(pt.x);
@@ -279,7 +279,7 @@ indirect enum List {
 }
 
 fn main() {
-    let xs: List = List::Cons { head: 1, tail: List::Nil };
+    let xs: List = List.Cons { head: 1, tail: List.Nil };
     print(1);
 }
 ";

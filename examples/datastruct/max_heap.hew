@@ -113,7 +113,7 @@ fn check_max_heap_property(heap: Vec<i32>) -> bool {
 }
 
 fn test_basic_max_heap() -> i32 {
-    let heap: Vec<i32> = Vec::new();
+    let heap: Vec<i32> = Vec.new();
     let _ = heap_push(heap, 5);
     let _ = heap_push(heap, 3);
     let _ = heap_push(heap, 7);
@@ -131,7 +131,7 @@ fn test_basic_max_heap() -> i32 {
 }
 
 fn test_extract_max_order() -> i32 {
-    let heap: Vec<i32> = Vec::new();
+    let heap: Vec<i32> = Vec.new();
     let _ = heap_push(heap, 5);
     let _ = heap_push(heap, 3);
     let _ = heap_push(heap, 7);
@@ -191,14 +191,14 @@ fn test_extract_max_order() -> i32 {
 }
 
 fn test_build_heap() -> i32 {
-    let arr: Vec<i32> = Vec::new();
+    let arr: Vec<i32> = Vec.new();
     arr.push(3);
     arr.push(1);
     arr.push(6);
     arr.push(5);
     arr.push(2);
     arr.push(4);
-    let heap: Vec<i32> = Vec::new();
+    let heap: Vec<i32> = Vec.new();
     let _ = build_heap(arr, heap);
     let ok = check_max_heap_property(heap);
     if ok {
@@ -212,7 +212,7 @@ fn test_build_heap() -> i32 {
 }
 
 fn test_heap_property_after_ops() -> i32 {
-    let heap: Vec<i32> = Vec::new();
+    let heap: Vec<i32> = Vec.new();
     let _ = heap_push(heap, 10);
     let _ = heap_push(heap, 20);
     let _ = heap_push(heap, 15);
@@ -232,7 +232,7 @@ fn test_heap_property_after_ops() -> i32 {
 }
 
 fn test_heapsort() -> i32 {
-    let heap: Vec<i32> = Vec::new();
+    let heap: Vec<i32> = Vec.new();
     let _ = heap_push(heap, 8);
     let _ = heap_push(heap, 3);
     let _ = heap_push(heap, 10);
@@ -240,7 +240,7 @@ fn test_heapsort() -> i32 {
     let _ = heap_push(heap, 5);
     let _ = heap_push(heap, 7);
     // Extract all to get sorted descending
-    let sorted: Vec<i32> = Vec::new();
+    let sorted: Vec<i32> = Vec.new();
     while heap.len() > 0 {
         sorted.push(heap_pop(heap));
     }

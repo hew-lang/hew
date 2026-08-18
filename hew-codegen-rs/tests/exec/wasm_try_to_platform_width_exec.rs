@@ -48,12 +48,12 @@ use std::time::Duration;
 /// compiler's actual `isize`/`usize` bit width, not hard-coded, so a width
 /// regression changes the printed result instead of leaving it unchanged.
 const HEW_SOURCE: &str = r#"fn main() {
-    // usize::MAX at whatever bit width the compiler assigned usize: all-ones,
+    // usize.MAX at whatever bit width the compiler assigned usize: all-ones,
     // derived (not typed as a literal) via unsigned negation. On wasm32 this
     // is 4294967295; on a 64-bit target it is 18446744073709551615.
     let all_ones: usize = (-1) as usize;
 
-    // isize::MAX at the same bit width: clear the sign bit of all_ones with a
+    // isize.MAX at the same bit width: clear the sign bit of all_ones with a
     // logical (unsigned) shift. On wasm32 this is 2147483647; on a 64-bit
     // target it is 9223372036854775807.
     let smax: isize = (all_ones >> 1) as isize;

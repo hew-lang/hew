@@ -1,4 +1,4 @@
-import std::fs;
+import std.fs;
 
 fn main() {
     println(fs.read("secret.txt"));

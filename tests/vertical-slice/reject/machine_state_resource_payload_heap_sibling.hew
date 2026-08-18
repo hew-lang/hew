@@ -56,9 +56,9 @@ machine Plain {
 }
 
 fn main() {
-    var s = Mixed::Idle;
-    s.step(MixedEvent::Open { fd: 7 });
-    var p = Plain::Idle;
-    p.step(PlainEvent::Open { fd: 8 });
-    p.step(PlainEvent::Shut);
+    var s = Mixed.Idle;
+    s.step(MixedEvent.Open { fd: 7 });
+    var p = Plain.Idle;
+    p.step(PlainEvent.Open { fd: 8 });
+    p.step(PlainEvent.Shut);
 }

@@ -177,8 +177,8 @@ fn generic_free_fn_spawn_uses_monomorphized_task_entry_adapters() {
         actor _Driver {
             receive fn drive() {
                 scope {
-                    fork { worker::<i64>(); }
-                    fork { worker::<string>(); }
+                    fork { worker<i64>(); }
+                    fork { worker<string>(); }
                 };
             }
         }

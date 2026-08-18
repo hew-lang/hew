@@ -10,7 +10,7 @@
 // 40 + 2 = 42.
 
 fn make_iter() -> VecIter<i64> {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(40);
     v.push(2);
     v.iter()

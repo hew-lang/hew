@@ -42,7 +42,7 @@ fn add_member(members: HashSet<string>, name: string) {
 // it. Repeated categories drive the overwrite path; distinct ones the vacant
 // path. Every category is built on the heap by `.trim()`.
 fn tally() -> i64 {
-    let counts: HashMap<string, i64> = HashMap::new();
+    let counts: HashMap<string, i64> = HashMap.new();
     for raw in " coffee , rent , coffee , transit , coffee ".split(",") {
         bump(counts, raw.trim());
     }
@@ -56,7 +56,7 @@ fn tally() -> i64 {
 // Insert alone through a parameter, over many distinct heap keys, plus one
 // overwrite of an already-present key.
 fn fill() -> i64 {
-    let counts: HashMap<string, i64> = HashMap::new();
+    let counts: HashMap<string, i64> = HashMap.new();
     for i in 0..64 {
         insert_only(counts, f"key-{i}".to_upper(), i);
     }
@@ -69,7 +69,7 @@ fn fill() -> i64 {
 // Operand-provenance matrix: a static literal, a local heap variable, and a
 // parameter must each release exactly once at the same ingress.
 fn provenance() -> i64 {
-    let counts: HashMap<string, i64> = HashMap::new();
+    let counts: HashMap<string, i64> = HashMap.new();
     counts.insert("literal", 1);
     let local = "loc" + "al";
     counts.insert(local, 2);
@@ -84,8 +84,8 @@ fn provenance() -> i64 {
 // Siblings: a `HashMap` VALUE and a `HashSet` ELEMENT reaching the same MOVE
 // ingress through a borrowed `string` parameter.
 fn siblings() -> i64 {
-    let labels: HashMap<i64, string> = HashMap::new();
-    let members: HashSet<string> = HashSet::new();
+    let labels: HashMap<i64, string> = HashMap.new();
+    let members: HashSet<string> = HashSet.new();
     for i in 0..32 {
         store_value(labels, i, f"label-{i}".to_upper());
         add_member(members, f"member-{i}".to_upper());

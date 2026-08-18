@@ -7,7 +7,7 @@
 // With the fix, hew_stream_last_error allocates via alloc_cstring_from_str
 // (header-aware), so the drop spine round-trips cleanly. A clean exit is the
 // behavioural proof.
-import std::stream;
+import std.stream;
 
 fn main() {
     // Open a path that cannot exist — this exercises the Err(string) branch of

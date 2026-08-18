@@ -68,8 +68,8 @@ fn option_result_methods_record_structured_generic_markers() {
 #[test]
 fn existing_option_result_module_helpers_still_typecheck() {
     let source = r"
-        import std::option;
-        import std::result;
+        import std.option;
+        import std.result;
 
         fn main() {
             let opt: Option<i64> = Some(42);

@@ -3,8 +3,8 @@ fn main() {
     println(s.slice(1, 3));
     println("aba".replace("a", "x"));
     let idx = match "banana".find("na") {
-        Some(v) => v,
-        None => -1,
+        .Some(v) => v,
+        .None => -1,
     };
     println(idx);
     let parts = "a,b,c".split(",");

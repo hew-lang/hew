@@ -15,8 +15,8 @@
 //
 // Harness verb: hew run
 // Expected: a=7 (the i8 `Gadget` from the opted-in module).
-import hew::widgetpub8::{ Gadget };
-import hew::widgetpub64;
+import hew.widgetpub8.{ Gadget };
+import hew.widgetpub64;
 
 fn main() {
     let a = Gadget { v: 7 };

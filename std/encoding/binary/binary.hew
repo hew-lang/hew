@@ -43,7 +43,7 @@ fn lo_byte(v: i64) -> u8 { // INTERNAL-ABI: masks to low 8 bits; u8 matches byte
 ///
 /// Only the low 16 bits of `v` are written; the upper bits are ignored.
 pub fn put_u16_le(v: i64) -> bytes {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     b.push(lo_byte(v));
     b.push(lo_byte(v >> 8));
     b
@@ -53,7 +53,7 @@ pub fn put_u16_le(v: i64) -> bytes {
 ///
 /// Only the low 32 bits of `v` are written; the upper bits are ignored.
 pub fn put_u32_le(v: i64) -> bytes {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     b.push(lo_byte(v));
     b.push(lo_byte(v >> 8));
     b.push(lo_byte(v >> 16));
@@ -63,7 +63,7 @@ pub fn put_u32_le(v: i64) -> bytes {
 
 /// Encode a 64-bit value `v` as 8 little-endian bytes.
 pub fn put_u64_le(v: i64) -> bytes {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     b.push(lo_byte(v));
     b.push(lo_byte(v >> 8));
     b.push(lo_byte(v >> 16));
@@ -80,7 +80,7 @@ pub fn put_u64_le(v: i64) -> bytes {
 ///
 /// Only the low 16 bits of `v` are written; the upper bits are ignored.
 pub fn put_u16_be(v: i64) -> bytes {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     b.push(lo_byte(v >> 8));
     b.push(lo_byte(v));
     b
@@ -90,7 +90,7 @@ pub fn put_u16_be(v: i64) -> bytes {
 ///
 /// Only the low 32 bits of `v` are written; the upper bits are ignored.
 pub fn put_u32_be(v: i64) -> bytes {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     b.push(lo_byte(v >> 24));
     b.push(lo_byte(v >> 16));
     b.push(lo_byte(v >> 8));
@@ -100,7 +100,7 @@ pub fn put_u32_be(v: i64) -> bytes {
 
 /// Encode a 64-bit value `v` as 8 big-endian bytes.
 pub fn put_u64_be(v: i64) -> bytes {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     b.push(lo_byte(v >> 56));
     b.push(lo_byte(v >> 48));
     b.push(lo_byte(v >> 40));

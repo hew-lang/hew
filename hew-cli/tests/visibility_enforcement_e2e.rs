@@ -240,7 +240,7 @@ fn package_fn_cross_package_rejected() {
     .expect("write helper");
     fs::write(
         dir.path().join("main.hew"),
-        "import subpkg::helper;\nfn main() -> i64 { helper.secret() }\n",
+        "import subpkg.helper;\nfn main() -> i64 { helper.secret() }\n",
     )
     .expect("write main");
 
@@ -318,7 +318,7 @@ fn package_type_cross_package_rejected() {
     .expect("write shapes");
     fs::write(
         dir.path().join("main.hew"),
-        "import subpkg::shapes;\n\
+        "import subpkg.shapes;\n\
          fn locate(p: shapes.Point) -> i64 { 0 }\n\
          fn main() {}\n",
     )

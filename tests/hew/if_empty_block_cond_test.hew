@@ -4,7 +4,7 @@
 //! parsed `flag { }` as an empty struct literal and the real then-block went
 //! missing ("expected `{`, found `else`").
 
-import std::testing;
+import std.testing;
 
 // Empty then-block with a bare-identifier condition: the canonical repro.
 fn pick(flag: bool) -> i64 {

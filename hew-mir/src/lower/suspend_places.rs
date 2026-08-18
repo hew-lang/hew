@@ -967,7 +967,11 @@ pub(super) fn terminator_escape_places(
             ..
         } => {
             // `MonitorRef::id` reads the handle without consuming it.
-            let borrows_owned_handle = callee == "MonitorRef::id";
+            let borrows_owned_handle = hew_types::has_builtin_associated_item_identity(
+                callee,
+                hew_types::BuiltinType::MonitorRef,
+                "id",
+            );
             args.iter()
                 .copied()
                 .filter(|place| {

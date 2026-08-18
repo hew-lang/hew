@@ -7,7 +7,7 @@
 //! `impl Sub for T` in a final importer that provides the inherited `base`
 //! inline must have that `base` checked against `reexbase.Base` (`-> i64`).
 
-import hew::reexbase::{Base};
+import hew.reexbase.{Base};
 
 /// Sub-trait of the re-imported `Base`. The super edge must follow the
 /// re-export chain back to `reexbase.Base`.

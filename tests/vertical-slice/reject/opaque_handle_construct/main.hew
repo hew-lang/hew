@@ -6,7 +6,7 @@
 //
 // Harness verb: hew check
 // Expected: rejected with E_OPAQUE_CONSTRUCT (clean checker error, not MIR NYI).
-import handles::{ Handle };
+import handles.{ Handle };
 
 fn main() -> i64 {
     // Cross-module construction of an opaque handle is forbidden; only the

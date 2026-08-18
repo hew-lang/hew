@@ -52,15 +52,15 @@ fn main() -> i64 {
     let _l2_copy = clone l2;
     let _ = l2.redeem();
 
-    var resources: Vec<ResourceToken> = Vec::new();
+    var resources: Vec<ResourceToken> = Vec.new();
     resources.push(ResourceToken { id: 61 });
     let _resources_copy = resources.clone();
 
-    var tickets: HashMap<string, LinearTicket> = HashMap::new();
+    var tickets: HashMap<string, LinearTicket> = HashMap.new();
     tickets.insert("one", LinearTicket { id: 62 });
     let _tickets_copy = clone tickets;
 
-    var late_resources = Vec::new();
+    var late_resources = Vec.new();
     var i = 0;
     while i < 2 {
         if i == 1 {

@@ -7,7 +7,7 @@
 //! `ResolvedTy::TypeParam` variant `from_ty_with_type_params` actually
 //! produces for a method's own return type.
 
-import std::testing;
+import std.testing;
 
 type Repeat<T> {
     value: T;

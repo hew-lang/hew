@@ -1,4 +1,4 @@
-//! Status: runnable (v0.5 std::text::unicode rune helpers + predicates)
+//! Status: runnable (v0.5 std.text.unicode rune helpers + predicates)
 //! Description: Unicode runes — decode a UTF-8 string into codepoints and classify each one.
 //!
 //! Uses `rune_count` (vs the byte `len()`), `runes` to decode a string into a
@@ -7,7 +7,7 @@
 //! / `is_letter` / `is_punct`) dispatched with `match` guards, and `to_upper`
 //! case folding on a per-rune basis.
 
-import std::text::unicode;
+import std.text.unicode;
 
 fn classify(cp: i64) -> string {
     match cp {

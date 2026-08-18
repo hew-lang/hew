@@ -2085,7 +2085,7 @@ mod tests {
         // A file import shares the root checker declaration namespace, while
         // its emitted HIR body retains the source-file symbol owner. A package
         // import retains a package-qualified owner at both boundaries. The two
-        // sources intentionally declare same-leaf `Result` / `ResultMethods`
+        // sources intentionally declare same-leaf `TestResult` / `TestResultMethods`
         // impls. The checker must select the root declaration for `local.tag()`
         // and the package declaration for `r.rows()`; HIR's direct-call index
         // must then project each declaration to its distinct emitted body.
@@ -2120,9 +2120,10 @@ mod tests {
         )
         .expect("copy mixed-import library");
 
-        let root_tag = hew_types::DefId::new("Result::<impl ResultMethods for Result>::tag");
+        let root_tag =
+            hew_types::DefId::new("TestResult::<impl TestResultMethods for TestResult>::tag");
         let package_rows = hew_types::DefId::new(
-            "hew.testffi.Result::<impl hew.testffi.ResultMethods for hew.testffi.Result>::rows",
+            "hew.testffi.TestResult::<impl hew.testffi.TestResultMethods for hew.testffi.TestResult>::rows",
         );
 
         for fixture in [
@@ -2144,13 +2145,13 @@ mod tests {
                 .expect("type checking was enabled");
 
             assert_eq!(
-                tco.impl_method_declaration_ids.get("Result::tag"),
+                tco.impl_method_declaration_ids.get("TestResult::tag"),
                 Some(&root_tag),
                 "the flattened file-import implementation must retain a root declaration ID"
             );
             assert_eq!(
                 tco.impl_method_declaration_ids
-                    .get("hew.testffi.Result::rows"),
+                    .get("hew.testffi.TestResult::rows"),
                 Some(&package_rows),
                 "the package implementation must retain its package-qualified declaration ID"
             );
@@ -2162,7 +2163,7 @@ mod tests {
                         ..
                     } if declaration == &root_tag
                 )),
-                "local Result.tag() must select the root file-import declaration: {:#?}",
+                "local TestResult.tag() must select the root file-import declaration: {:#?}",
                 tco.method_call_rewrites
             );
             assert!(
@@ -2173,7 +2174,7 @@ mod tests {
                         ..
                     } if declaration == &package_rows
                 )),
-                "package Result.rows() must select the package declaration: {:#?}",
+                "package TestResult.rows() must select the package declaration: {:#?}",
                 tco.method_call_rewrites
             );
 
@@ -2191,11 +2192,11 @@ mod tests {
             let symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
             assert_eq!(
                 symbols.get(&root_tag),
-                Some(&"mixed_import_impl_collision_lib.Result::tag".to_string())
+                Some(&"mixed_import_impl_collision_lib.TestResult::tag".to_string())
             );
             assert_eq!(
                 symbols.get(&package_rows),
-                Some(&"hew.testffi.Result::rows".to_string())
+                Some(&"hew.testffi.TestResult::rows".to_string())
             );
         }
     }

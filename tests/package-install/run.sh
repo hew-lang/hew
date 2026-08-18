@@ -208,7 +208,7 @@ expect_install_failure \
   "invalid package name \`evil::../../../tmp/pwned\`"
 echo "PASS package-install traversal dependency rejection"
 
-broken_registry="${HOME}/.hew/packages/acme/broken/0.1.0"
+broken_registry="${HOME}/.hew/packages/acme.broken/0.1.0"
 mkdir -p "${broken_registry}"
 printf 'not valid {{{\n' >"${broken_registry}/hew.toml"
 broken_consumer="${TMP}/broken-consumer"
@@ -241,7 +241,7 @@ assert_contains "${versioned_consumer}/hew.lock" 'version = "0.2.0"'
 run_in "${versioned_consumer}" check-versioned-v2 "${HEW}" check main.hew
 assert_output "${versioned_consumer}" "202" "run-versioned-v2"
 
-stale_target="${HOME}/.hew/packages/acme/versioned/0.1.0"
+stale_target="${HOME}/.hew/packages/acme.versioned/0.1.0"
 stale_link="${versioned_consumer}/.hew/packages/acme/versioned"
 rm -rf "${stale_link}"
 mkdir -p "$(dirname "${stale_link}")"

@@ -1193,6 +1193,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
     record_layouts: &[crate::model::RecordLayout],
     opaque_handle_names: &[String],
     lifecycle_registry: &hew_hir::LifecycleRegistry,
+    proven_owning_payload_destinations: &HashSet<u32>,
     proven_borrow_call_args: &HashMap<u32, HashSet<usize>>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
@@ -1288,6 +1289,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
         local_tys,
         type_classes,
         lifecycle_registry,
+        proven_owning_payload_destinations,
         &local_is_heap_owning,
     );
 

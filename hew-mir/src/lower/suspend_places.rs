@@ -1137,7 +1137,39 @@ mod f1_suspending_escape_poison {
         };
         assert_eq!(
             terminator_escape_places(&close, None, &local_tys),
-            vec![receiver]
+            vec![receiver],
+            "the wrong runtime family must not borrow a Sink receiver"
+        );
+
+        let wrong_receiver_ty = Terminator::Call {
+            callee: "hew_sink_write_string".to_string(),
+            authority: crate::CallAuthority::Runtime(RuntimeCallFamily::SinkWrite(
+                StreamElementKind::String,
+            )),
+            args: vec![receiver, value],
+            dest: None,
+            next: 1,
+        };
+        let wrong_receiver_tys = vec![ResolvedTy::Unit, ResolvedTy::String, ResolvedTy::String];
+        assert_eq!(
+            terminator_escape_places(&wrong_receiver_ty, None, &wrong_receiver_tys),
+            vec![receiver, value],
+            "a non-Sink argument must not acquire the typed receiver borrow"
+        );
+
+        let wrong_argument_index = Terminator::Call {
+            callee: "hew_sink_write_string".to_string(),
+            authority: crate::CallAuthority::Runtime(RuntimeCallFamily::SinkWrite(
+                StreamElementKind::String,
+            )),
+            args: vec![value, receiver],
+            dest: None,
+            next: 1,
+        };
+        assert_eq!(
+            terminator_escape_places(&wrong_argument_index, None, &local_tys),
+            vec![value, receiver],
+            "a Sink outside argument zero must remain escape-poisoned"
         );
 
         let untyped_write = Terminator::Call {

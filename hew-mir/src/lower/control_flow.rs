@@ -213,6 +213,7 @@ impl Builder {
             self.binding_locals.insert(binding.binding, dest);
             let transferred_sink = self.transfer_contextual_sink_payload(
                 scrutinee_owner.as_ref(),
+                binding.binding,
                 source,
                 dest,
                 &binding_ty,
@@ -654,6 +655,7 @@ impl Builder {
             overwritten_bindings.push((binding.binding, previous));
             let transferred_sink = self.transfer_contextual_sink_payload(
                 scrutinee_owner.as_ref(),
+                binding.binding,
                 source,
                 dest,
                 &binding_ty,
@@ -1526,6 +1528,7 @@ impl Builder {
             overwritten_bindings.push((binding.binding, previous));
             let transferred_sink = self.transfer_contextual_sink_payload(
                 scrutinee_owner.as_ref(),
+                binding.binding,
                 source,
                 dest,
                 &binding_ty,

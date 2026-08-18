@@ -135,17 +135,51 @@ impl Builder {
     pub(crate) fn transfer_contextual_sink_payload(
         &mut self,
         scrutinee_owner: Option<&(BindingId, ResolvedTy)>,
+        binding: BindingId,
         source: Place,
         dest: Place,
         binding_ty: &ResolvedTy,
     ) -> bool {
-        let Some((owner, _)) = scrutinee_owner else {
+        let Some((owner, owner_ty)) = scrutinee_owner else {
             return false;
         };
         let Some(source_root) = base_local(source) else {
             return false;
         };
-        if self.binding_locals.get(owner) != Some(&Place::Local(source_root))
+        let source_is_fresh_owned_result = matches!(
+            (owner_ty, source),
+            (
+                ResolvedTy::Named {
+                    args,
+                    builtin: Some(hew_types::BuiltinType::Result),
+                    ..
+                },
+                Place::MachineVariant {
+                    variant_idx: 0,
+                    field_idx: 0,
+                    ..
+                } | Place::EnumVariant {
+                    variant_idx: 0,
+                    field_idx: 0,
+                    ..
+                }
+            ) if args.first() == Some(binding_ty)
+        ) && self.locals.get(source_root as usize)
+            == Some(owner_ty)
+            && self.binding_locals.get(owner) == Some(&Place::Local(source_root))
+            && self.owned_locals.iter().any(|entry| {
+                entry.binding == *owner
+                    && entry.ty == *owner_ty
+                    && entry.disposition == Disposition::ScopeExit
+            });
+        let dest_is_proven_owner = self.binding_locals.get(&binding) == Some(&dest)
+            && self.owned_locals.iter().any(|entry| {
+                entry.binding == binding
+                    && entry.ty == *binding_ty
+                    && entry.disposition == Disposition::ScopeExit
+            });
+        if !source_is_fresh_owned_result
+            || !dest_is_proven_owner
             || !matches!(
                 super::drop_plan::resource_drop_fn(binding_ty, &self.type_classes),
                 Some(crate::model::DropFnSpec::Runtime(

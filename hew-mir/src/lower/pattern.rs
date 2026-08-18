@@ -4621,8 +4621,10 @@ impl Builder {
                     dest,
                     src: payload_source,
                 });
+                let previous = self.binding_locals.insert(binding.binding, dest);
                 let transferred_sink = self.transfer_contextual_sink_payload(
                     call_scrutinee_owner.as_ref(),
+                    binding.binding,
                     payload_source,
                     dest,
                     &binding_ty,
@@ -4644,7 +4646,6 @@ impl Builder {
                     dest,
                     &binding_ty,
                 );
-                let previous = self.binding_locals.insert(binding.binding, dest);
                 overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
                 // #2523 — record provenance for a heap-owning TOP-LEVEL projected
                 // payload binder so its `Consume`-intent move-out routes through

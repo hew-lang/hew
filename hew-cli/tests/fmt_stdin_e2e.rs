@@ -331,6 +331,107 @@ fn fmt_migrate_root_discovers_nested_hew_sources() {
 }
 
 #[test]
+fn fmt_migrate_root_typechecks_legacy_paths_across_imports() {
+    let dir = support::tempdir();
+    let helper = dir.path().join("helper.hew");
+    let main = dir.path().join("main.hew");
+    std::fs::write(&helper, "pub fn empty() -> Vec<i64> { Vec::new() }\n").unwrap();
+    std::fs::write(
+        &main,
+        "import helper::{empty};\nfn main() { let values = empty(); }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["fmt", "--migrate", "--root"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "root migration failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(std::fs::read_to_string(helper)
+        .unwrap()
+        .contains("Vec.new()"));
+    assert!(std::fs::read_to_string(main)
+        .unwrap()
+        .contains("import helper.{empty};"));
+}
+
+#[test]
+fn fmt_migrate_root_typechecks_legacy_directory_module_peers() {
+    let dir = support::tempdir();
+    let module_dir = dir.path().join("greeting");
+    std::fs::create_dir(&module_dir).unwrap();
+    let entry = module_dir.join("greeting.hew");
+    let peer = module_dir.join("dog.hew");
+    std::fs::write(
+        &entry,
+        concat!(
+            "pub trait Greeter {\n",
+            "    fn name(self) -> string;\n",
+            "    fn greet(self) -> string { self.name() }\n",
+            "}\n",
+            "pub fn empty_labels() -> Vec<string> { Vec::new() }\n",
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &peer,
+        concat!(
+            "pub type Dog { label: string; }\n",
+            "impl Greeter for Dog {\n",
+            "    fn name(self) -> string { self.label }\n",
+            "}\n",
+            "pub fn describe(d: Dog) -> string { d.greet() }\n",
+            "pub fn empty_dogs() -> Vec<Dog> { Vec::new() }\n",
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["fmt", "--migrate", "--root"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "directory-module migration failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(std::fs::read_to_string(entry)
+        .unwrap()
+        .contains("Vec.new()"));
+    assert!(std::fs::read_to_string(peer).unwrap().contains("Vec.new()"));
+}
+
+#[test]
+fn fmt_migrate_root_refuses_nonrewritable_directory_peer_transactionally() {
+    let dir = support::tempdir();
+    let module_dir = dir.path().join("greeting");
+    std::fs::create_dir(&module_dir).unwrap();
+    let entry = module_dir.join("greeting.hew");
+    let peer = module_dir.join("bad.hew");
+    let entry_source = "pub fn empty_labels() -> Vec<string> { Vec::new() }\n";
+    let peer_source = "import std::*;\npub fn broken() {}\n";
+    std::fs::write(&entry, entry_source).unwrap();
+    std::fs::write(&peer, peer_source).unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["fmt", "--migrate", "--root"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "removed glob must remain fatal");
+    assert_eq!(std::fs::read_to_string(entry).unwrap(), entry_source);
+    assert_eq!(std::fs::read_to_string(peer).unwrap(), peer_source);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(stderr.contains("E_IMPORT_GLOB_REMOVED"), "stderr: {stderr}");
+}
+
+#[test]
 fn fmt_migrate_lists_typecheck_failure_sites_instead_of_succeeding() {
     let dir = support::tempdir();
     let path = dir.path().join("invalid.hew");

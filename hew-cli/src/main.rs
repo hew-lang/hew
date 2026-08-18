@@ -2205,7 +2205,7 @@ fn copy_migration_snapshot_tree(source: &Path, destination: &Path) -> Result<(),
 )]
 fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<String, ()> {
     let options = compile::frontend_options_for_check(&compile::CompileOptions::default());
-    let state = match hew_compile::run_file_frontend_to_typecheck(
+    let state = match hew_compile::run_file_frontend_to_typecheck_for_migration(
         &file_path.display().to_string(),
         &options,
     ) {

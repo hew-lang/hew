@@ -716,18 +716,18 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
 
     let result_ty = Ty::Named {
         builtin: None,
-        name: "hew.testffi.Result".to_string(),
+        name: "hew.testffi.TestResult".to_string(),
         args: vec![],
     };
     assert!(
-        checker.registry.has_type_markers("hew.testffi.Result"),
+        checker.registry.has_type_markers("hew.testffi.TestResult"),
         "canonical record marker metadata must be published"
     );
     assert!(
         checker
             .registry
             .implements_marker(&result_ty, crate::traits::MarkerTrait::Send),
-        "canonical i64-only Result must derive Send"
+        "canonical i64-only TestResult must derive Send"
     );
     assert!(
         output.errors.is_empty(),
@@ -750,11 +750,11 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
     );
     assert!(checker
         .type_defs
-        .get("hew.testffi.Result")
+        .get("hew.testffi.TestResult")
         .is_some_and(|result| result.methods.contains_key("echo_len")));
     let echo_id = output
         .impl_method_declaration_ids
-        .get("hew.testffi.Result::echo_len")
+        .get("hew.testffi.TestResult::echo_len")
         .unwrap_or_else(|| {
             panic!(
                 "canonical emitted impl symbol must publish its declaration ID; keys: {:?}",
@@ -766,7 +766,7 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
         });
     assert!(echo_id
         .full_path()
-        .starts_with("hew.testffi.Result::<impl "));
+        .starts_with("hew.testffi.TestResult::<impl "));
 }
 
 #[test]
@@ -801,16 +801,16 @@ fn module_private_extern_call_publishes_exact_executable_target() {
 fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
     let left = hew_parser::parse(
         r"
-        pub type Result { left: i64; }
-        impl Result {
+        pub type CollisionResult { left: i64; }
+        impl CollisionResult {
             fn echo(self) -> i64 { self.left }
         }
         ",
     );
     let right = hew_parser::parse(
         r"
-        pub type Result { right: string; }
-        impl Result {
+        pub type CollisionResult { right: string; }
+        impl CollisionResult {
             fn echo(self) -> string { self.right }
         }
         ",
@@ -845,19 +845,19 @@ fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
     );
     let left_id = output
         .impl_method_declaration_ids
-        .get("left.render.Result::echo")
+        .get("left.render.CollisionResult::echo")
         .expect("left emitted impl symbol");
     let right_id = output
         .impl_method_declaration_ids
-        .get("right.render.Result::echo")
+        .get("right.render.CollisionResult::echo")
         .expect("right emitted impl symbol");
     assert_ne!(left_id, right_id);
     assert!(left_id
         .full_path()
-        .starts_with("left.render.Result::<impl "));
+        .starts_with("left.render.CollisionResult::<impl "));
     assert!(right_id
         .full_path()
-        .starts_with("right.render.Result::<impl "));
+        .starts_with("right.render.CollisionResult::<impl "));
 }
 
 #[test]
@@ -1589,12 +1589,15 @@ fn flat_file_owner_selection_ignores_same_leaf_package_owner() {
     let flat = make_user_import(
         &["pkg", "flat"],
         None,
-        vec![(Item::TypeDecl(make_pub_struct("Result", "local")), 0..0)],
+        vec![(Item::TypeDecl(make_pub_struct("FlatResult", "local")), 0..0)],
     );
     let package = make_user_import(
         &["pkg", "package"],
         None,
-        vec![(Item::TypeDecl(make_pub_struct("Result", "remote")), 0..0)],
+        vec![(
+            Item::TypeDecl(make_pub_struct("FlatResult", "remote")),
+            0..0,
+        )],
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.check_program(&Program {
@@ -1607,8 +1610,8 @@ fn flat_file_owner_selection_ignores_same_leaf_package_owner() {
         .insert("pkg.flat".to_string());
 
     assert_eq!(
-        checker.flat_file_import_type_owner("Result"),
-        Some("pkg.flat.Result".to_string())
+        checker.flat_file_import_type_owner("FlatResult"),
+        Some("pkg.flat.FlatResult".to_string())
     );
 }
 

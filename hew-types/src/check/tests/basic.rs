@@ -185,6 +185,24 @@ fn prelude_declarations_are_protected_before_source_registration() {
 }
 
 #[test]
+fn non_root_prelude_declarations_are_protected_by_their_owner() {
+    let output = check_source_in_module(
+        "type Result { value: i64; }",
+        vec!["hew".to_string(), "fixture".to_string()],
+    );
+    let collisions = output
+        .errors
+        .iter()
+        .filter(|error| error.kind == TypeErrorKind::PreludeDeclCollision)
+        .count();
+    assert_eq!(
+        collisions, 1,
+        "one package declaration must produce one protected-prelude error: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn ordinary_builtin_declarations_remain_shadowable() {
     let output = check_source("type HashMapIter { value: i64; }");
     assert!(

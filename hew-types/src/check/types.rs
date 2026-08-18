@@ -2552,6 +2552,11 @@ pub struct Checker {
     /// is narrower than `canonical_std_module_sources`, which also contains
     /// imported stdlib modules in an ordinary user program.
     pub(super) canonical_std_root_sources: HashSet<String>,
+    /// Protected-prelude declarations already rejected in this check, keyed by
+    /// their declaring module and source name. Module-graph pre-registration
+    /// and later import publication can encounter the same declaration; this
+    /// keeps that one source error from being emitted twice.
+    pub(super) protected_prelude_declaration_collisions: HashSet<(Option<String>, String)>,
     /// Whether the module currently undergoing signature registration came
     /// from a file-path import. Those items are flattened into the root program
     /// before HIR lowering, so their declaration IDs are root-owned even though
@@ -3605,6 +3610,7 @@ impl Checker {
             current_item_source: None,
             file_type_decls: HashMap::new(),
             canonical_std_root_sources: HashSet::new(),
+            protected_prelude_declaration_collisions: HashSet::new(),
             registration_is_flat_file_import: false,
             flat_file_import_module_names: HashSet::new(),
             caller_visible_param_projections: HashSet::new(),

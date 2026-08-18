@@ -4,7 +4,7 @@
 # `hew run --pkg-path`. Exercises, end-to-end:
 #   - imported-actor value asks (i32 / i64 / string / record replies)
 #   - imported-type trait methods (rows/get/total/free on the handle)
-#   - the prelude-shadowing record name (`type Result`)
+#   - imported record handles without shadowing a protected prelude binding
 #   - [native] auto-link: the package's Rust staticlib builds on demand
 #   - local-actor asks coexisting with imported asks (regression guard)
 #   - mixed file-import + package-import impls on distinct same-bare-named
@@ -44,10 +44,8 @@ fixtures=(
   imported_actor_ask_i64
   imported_actor_ask_string
   imported_actor_ask_record
-  # Importing a package that privately declares its own `Result` must not
-  # replace the builtin generic enum used by an unrelated std::string method.
-  # Calling `to_int` and matching Ok/Err proves the builtin identity survives
-  # package registration even though testffi's record has the same bare leaf.
+  # Ordinary package registration must leave the builtin Result enum used by
+  # unrelated stdlib APIs intact.
   imported_result_does_not_shadow_builtin
   imported_trait_method
   local_actor_ask_guard
@@ -420,6 +418,34 @@ for fixture in "${fixtures[@]}"; do
   fi
   echo "PASS ${fixture}"
 done
+
+# A package-owned declaration is governed by the same protected-prelude rule
+# as an identical root declaration. This specifically exercises publication
+# while the importer is the active checker frame: authority must follow the
+# declaring package, and rejection must stop at the checker boundary.
+prelude_decl_reject="imported_prelude_decl_collision_reject"
+prelude_decl_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${prelude_decl_reject}.hew" 2>&1)" && {
+  echo "FAIL ${prelude_decl_reject}: package-owned Result declaration unexpectedly succeeded" >&2
+  echo "${prelude_decl_out}" >&2
+  exit 1
+}
+if ! grep -q "collides with the protected prelude binding" <<<"${prelude_decl_out}"; then
+  echo "FAIL ${prelude_decl_reject}: expected protected-prelude collision diagnostic" >&2
+  echo "${prelude_decl_out}" >&2
+  exit 1
+fi
+prelude_decl_json="$("${HEW}" check --format json --pkg-path "${PKGS}" "${DIR}/${prelude_decl_reject}.hew" 2>&1 || true)"
+if ! grep -q '"code": "E_PRELUDE_DECL_COLLISION"' <<<"${prelude_decl_json}"; then
+  echo "FAIL ${prelude_decl_reject}: missing E_PRELUDE_DECL_COLLISION code" >&2
+  echo "${prelude_decl_json}" >&2
+  exit 1
+fi
+if grep -qE "E_HIR|E_MIR|E_CODEGEN_FRONT|E_NOT_YET_IMPLEMENTED" <<<"${prelude_decl_out}"; then
+  echo "FAIL ${prelude_decl_reject}: collision reached a downstream lowering boundary" >&2
+  echo "${prelude_decl_out}" >&2
+  exit 1
+fi
+echo "PASS ${prelude_decl_reject}"
 
 # Reject fixture: two imported packages (`hew::replysend`, `hew::replynonsend`)
 # both export a type named `Reply` — one Send (`i64`), one non-Send (`Rc<i64>`).

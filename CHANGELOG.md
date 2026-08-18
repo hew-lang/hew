@@ -12,6 +12,11 @@
   spelling now produces a diagnostic that names the migrated form. Run
   `hew fmt --migrate --root .` to mechanically migrate every Hew source file
   in a codebase before reviewing and committing the result.
+- **Always-in-scope prelude declarations are protected in every module.** A
+  root, file-import, or package declaration that reuses a protected prelude
+  name such as `Option`, `Result`, or `Iterator` now fails with
+  `E_PRELUDE_DECL_COLLISION`. Rename the user declaration; importing it under
+  another module does not create a separate authority for the protected name.
 
 ## [0.6.0-rc1] - 2026-07-29
 

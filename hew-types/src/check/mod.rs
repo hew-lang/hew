@@ -521,6 +521,7 @@ impl Checker {
         }
         self.register_builtins();
         self.capture_protected_prelude_bindings();
+        self.reject_non_root_protected_prelude_declarations(program);
         // `register_builtins` parses the compiler-embedded `std/builtins.hew`
         // source outside the module graph.  Record that exact producer so
         // later trait/source identity normalization can relate prelude traits

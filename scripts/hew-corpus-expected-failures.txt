@@ -237,7 +237,6 @@ tests/pkg-import/local_type_shadows_import_alias.hew
 tests/pkg-import/missing_assoc_type_collision_accept.hew
 tests/pkg-import/mixed_collision_reply.hew
 tests/pkg-import/mixed_import_impl_collision.hew
-tests/pkg-import/mixed_import_impl_collision_lib.hew
 tests/pkg-import/nested_qualified_payload.hew
 tests/pkg-import/package_module_type_alias.hew
 tests/pkg-import/private_generic_record_option_element.hew
@@ -270,9 +269,6 @@ tests/pkg-import/pkgs/selfqualtype/selfqualtype.hew
 # imported_trait_resource_param_missing_consume reject oracle. The consume-pinned
 # positive (pkgs/sinkok) checks clean standalone and is intentionally not listed.
 tests/pkg-import/pkgs/sinkres/sinkres.hew
-
-# requires-package-resolver: testffi package source
-tests/pkg-import/pkgs/testffi/testffi.hew
 
 # requires-package-resolver: more accept/trait tests
 tests/pkg-import/postmono_qualified_layout.hew

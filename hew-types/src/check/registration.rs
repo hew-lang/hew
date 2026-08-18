@@ -3401,9 +3401,9 @@ impl Checker {
     /// Reserve a type-name in the given module's namespace and reject a second
     /// declaration of the same name *within the same module*.
     ///
-    /// `module_short` is the defining module (the last import-path segment for
-    /// stdlib / user modules; `None` for the root program and flat file imports,
-    /// which share one namespace). Two distinct modules may each declare a type
+    /// `module_owner` is the defining module (`None` for the root program and
+    /// flat file imports, which share one namespace). Two distinct modules may
+    /// each declare a type
     /// of the same bare name — the durable cross-module identity is the qualified
     /// `{module}.{name}` key inserted by `register_canonical_type_def`. The bare
     /// `type_def_spans` entry is still populated for the span-lookup consumers
@@ -3411,13 +3411,11 @@ impl Checker {
     /// is no longer the uniqueness authority.
     pub(super) fn register_type_namespace_name(
         &mut self,
-        module_short: Option<&str>,
+        module_owner: Option<&str>,
         name: &str,
         span: &Span,
     ) -> bool {
-        if module_short == self.current_module.as_deref()
-            && self.reject_protected_prelude_declaration(name, span)
-        {
+        if self.reject_protected_prelude_declaration_for_owner(module_owner, name, span) {
             return false;
         }
         if crate::ty::is_reserved_type_name(name) {
@@ -3425,7 +3423,7 @@ impl Checker {
                 .push(TypeError::reserved_type_name(span.clone(), name));
             return false;
         }
-        let owner_key = (module_short.map(str::to_string), name.to_string());
+        let owner_key = (module_owner.map(str::to_string), name.to_string());
         if let Some(prev_span) = self.type_namespace_owners.get(&owner_key).cloned() {
             self.report_duplicate_type_namespace_name(name, span, prev_span);
             return false;
@@ -3453,13 +3451,16 @@ impl Checker {
 
     pub(super) fn register_machine_type_namespace_names(
         &mut self,
-        module_short: Option<&str>,
+        module_owner: Option<&str>,
         machine_name: &str,
         span: &Span,
     ) -> bool {
-        if module_short == self.current_module.as_deref()
-            && (self.reject_protected_prelude_declaration(machine_name, span)
-                || self.reject_protected_prelude_declaration(&format!("{machine_name}Event"), span))
+        if self.reject_protected_prelude_declaration_for_owner(module_owner, machine_name, span)
+            || self.reject_protected_prelude_declaration_for_owner(
+                module_owner,
+                &format!("{machine_name}Event"),
+                span,
+            )
         {
             return false;
         }
@@ -3468,14 +3469,14 @@ impl Checker {
                 .push(TypeError::reserved_type_name(span.clone(), machine_name));
             return false;
         }
-        let machine_key = (module_short.map(str::to_string), machine_name.to_string());
+        let machine_key = (module_owner.map(str::to_string), machine_name.to_string());
         if let Some(prev_span) = self.type_namespace_owners.get(&machine_key).cloned() {
             self.report_duplicate_type_namespace_name(machine_name, span, prev_span);
             return false;
         }
 
         let event_type_name = format!("{machine_name}Event");
-        let event_key = (module_short.map(str::to_string), event_type_name.clone());
+        let event_key = (module_owner.map(str::to_string), event_type_name.clone());
         if let Some(prev_span) = self.type_namespace_owners.get(&event_key).cloned() {
             self.report_duplicate_type_namespace_name(&event_type_name, span, prev_span);
             return false;
@@ -10103,6 +10104,7 @@ impl Checker {
     /// replace without changing language semantics.
     pub(super) fn capture_protected_prelude_bindings(&mut self) {
         self.protected_prelude_bindings.clear();
+        self.protected_prelude_declaration_collisions.clear();
 
         let authority = crate::stdlib_authority::authority();
         let prelude_exports = authority.prelude_exports();
@@ -10143,22 +10145,78 @@ impl Checker {
     }
 
     pub(super) fn reject_protected_prelude_declaration(&mut self, name: &str, span: &Span) -> bool {
+        let owner = self.current_module.clone();
+        self.reject_protected_prelude_declaration_for_owner(owner.as_deref(), name, span)
+    }
+
+    /// Reject a user declaration that would replace an always-in-scope prelude
+    /// binding. Authority follows the declaration's owner, not whichever
+    /// importer happens to be active while that declaration is published.
+    fn reject_protected_prelude_declaration_for_owner(
+        &mut self,
+        declaration_owner: Option<&str>,
+        name: &str,
+        span: &Span,
+    ) -> bool {
         let compiling_canonical_stdlib = self.checking_embedded_builtins
             || self.in_stdlib_registration
             || self
-                .current_module
-                .as_ref()
-                .is_some_and(|module| self.canonical_std_module_sources.contains(module))
-            || (self.current_module.is_none() && !self.canonical_std_root_sources.is_empty());
+                .canonical_std_module_sources
+                .contains(declaration_owner.unwrap_or_default())
+            || (declaration_owner.is_none() && !self.canonical_std_root_sources.is_empty());
         if compiling_canonical_stdlib || !self.protected_prelude_bindings.contains_key(name) {
             return false;
         }
-        self.errors.push(TypeError::new(
-            TypeErrorKind::PreludeDeclCollision,
-            span.clone(),
-            format!("declaration `{name}` collides with the protected prelude binding `{name}`"),
-        ));
+        let declaration_key = (declaration_owner.map(str::to_string), name.to_string());
+        if self
+            .protected_prelude_declaration_collisions
+            .insert(declaration_key)
+        {
+            let mut error = TypeError::new(
+                TypeErrorKind::PreludeDeclCollision,
+                span.clone(),
+                format!(
+                    "declaration `{name}` collides with the protected prelude binding `{name}`"
+                ),
+            );
+            error.source_module = declaration_owner.map(str::to_string);
+            self.errors.push(error);
+        }
         true
+    }
+
+    /// Diagnose protected-prelude declarations in every non-root module once,
+    /// including private declarations that are never published by an import.
+    pub(super) fn reject_non_root_protected_prelude_declarations(&mut self, program: &Program) {
+        let Some(module_graph) = &program.module_graph else {
+            return;
+        };
+        for module_id in &module_graph.topo_order {
+            if *module_id == module_graph.root {
+                continue;
+            }
+            let Some(module) = module_graph.modules.get(module_id) else {
+                continue;
+            };
+            let owner = module_id.path.join(".");
+            for (item, span) in &module.items {
+                let name = match item {
+                    Item::Const(item) => Some(item.name.as_str()),
+                    Item::TypeDecl(item) => Some(item.name.as_str()),
+                    Item::TypeAlias(item) => Some(item.name.as_str()),
+                    Item::Trait(item) => Some(item.name.as_str()),
+                    Item::Function(item) => Some(item.name.as_str()),
+                    Item::Actor(item) => Some(item.name.as_str()),
+                    Item::Supervisor(item) => Some(item.name.as_str()),
+                    Item::Machine(item) => Some(item.name.as_str()),
+                    Item::Record(item) => Some(item.name.as_str()),
+                    Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => None,
+                };
+                if let Some(name) = name {
+                    self.reject_protected_prelude_declaration_for_owner(Some(&owner), name, span);
+                }
+            }
+        }
     }
 
     fn import_publication_candidates(decl: &ImportDecl) -> Vec<(String, String)> {

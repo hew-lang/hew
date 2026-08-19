@@ -1682,6 +1682,10 @@ pub(crate) struct CoroState<'ctx> {
     /// were inlined). `None` for a coroutine that carries an explicit final
     /// Suspend (a generator) — its `Return` arm just `ret`s the handle.
     pub(crate) final_suspend_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
+    /// The shared block that emits the coroutine's sole final suspend. Normal
+    /// completion reaches it after depositing a reply; cancellation reaches it
+    /// without a reply so the scheduler resolves the caller as an error.
+    pub(crate) final_suspend_emit_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     /// Whether this coroutine is a GENERATOR body (its MIR carries
     /// `Terminator::Yield`). A generator's value channel is the explicit
     /// out-pointer parameter the body publishes each yield into (NOT the
@@ -33950,6 +33954,11 @@ fn lower_function<'ctx>(
         } else {
             Some(ctx.append_basic_block(llvm_fn, "coro.final.suspend"))
         };
+        let final_suspend_emit_block = if has_explicit_final_suspend {
+            None
+        } else {
+            Some(ctx.append_basic_block(llvm_fn, "coro.final.suspend.emit"))
+        };
         Some(CoroState {
             handle: cc.handle,
             id_token: cc.id_token,
@@ -33958,6 +33967,7 @@ fn lower_function<'ctx>(
             logical_return_ty,
             has_explicit_final_suspend,
             final_suspend_block,
+            final_suspend_emit_block,
             is_generator,
         })
     } else {
@@ -35180,6 +35190,14 @@ fn lower_function<'ctx>(
                     )
                     .llvm_ctx("coro hew_reply call")?;
             }
+            let final_suspend_emit_block = coro.final_suspend_emit_block.ok_or_else(|| {
+                CodegenError::Llvm("coroutine final suspend has no emit block".into())
+            })?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(final_suspend_emit_block)
+                .llvm_ctx("coro final reply -> final suspend")?;
+            fn_ctx.builder.position_at_end(final_suspend_emit_block);
             cc.emit_suspend(
                 coro.cleanup_block,
                 coro.cleanup_block,

@@ -8,10 +8,9 @@
 //
 // Forces a specific task's FIRST FunctionEntry cooperate check to observe
 // cancellation deterministically (via the feature-gated runtime hook, armed
-// through the extern block below), then drives the value through the
-// awaiter's bind edge (suspend.rs's "Null-buffer guard" path) to observe
-// whatever `emit_cancel_trap_or_return`'s composite arm published into
-// `out`. Post-fix, `out` must be the well-defined zero `Point{x:0,y:0}`.
+// through the extern block below), then proves the awaiter reports cancellation
+// without consuming the adapter's ABI-only zero return. A separate successful
+// task returns `Point{x:0,y:0}` to prove payload bytes are not the discriminator.
 //
 // Uses the LEGACY `hew_task_scope_cancel_after_ns` live trigger (empty
 // `after(d) {}` body) rather than the modern `SuspendingScopeDeadline`
@@ -39,36 +38,52 @@ fn compute() -> Point {
     return Point { x: 11, y: 22 };
 }
 
-// Keep the supported heap-string owner on a separate unit task: the current
-// fork surface supports argument-bearing unit tasks only for BitCopy + string,
-// while the Point task below remains the no-argument value-task shape that
-// exercises the TaskEntry composite cancel-return path. Both tasks are paused
-// at their own entry cooperate check and cancelled by one scope deadline.
-fn consume_cancelled(label: string) {
-    if label.len() == -1 {
-        panic("cancelled task unexpectedly entered its body");
-    }
+fn compute_zero() -> Point {
+    return Point { x: 0, y: 0 };
+}
+
+fn compute_owned() -> string {
+    return "cancelled-owned-result".to_upper();
 }
 
 extern "C" {
     fn hew_test_pause_next_task_spawn_until_scope_cancel();
+    fn hew_test_pause_next_task_result_until_scope_cancel();
 }
 
 actor Driver {
-    receive fn run_value() -> Point {
+    receive fn run_cancelled() -> Point {
         var out: Point = Point { x: 0, y: 0 };
         scope {
             unsafe {
                 hew_test_pause_next_task_spawn_until_scope_cancel()
             };
             fork t = compute();
-            unsafe {
-                hew_test_pause_next_task_spawn_until_scope_cancel()
-            };
-            let label = "forced-cancel-owned-string".to_upper();
-            fork cleanup = consume_cancelled(label);
             after(1ms) {};
-            await cleanup;
+            let v = await t;
+            out = v;
+        };
+        return out;
+    }
+
+    receive fn run_cancelled_owned() -> string {
+        var out: string = "unset".to_upper();
+        scope {
+            unsafe {
+                hew_test_pause_next_task_result_until_scope_cancel()
+            };
+            fork owned = compute_owned();
+            after(1ms) {};
+            let owned_value = await owned;
+            out = owned_value;
+        };
+        return out;
+    }
+
+    receive fn run_zero() -> Point {
+        var out: Point = Point { x: 9, y: 9 };
+        scope {
+            fork t = compute_zero();
             let v = await t;
             out = v;
         };
@@ -78,9 +93,19 @@ actor Driver {
 
 fn main() {
     let d = spawn Driver;
-    let r = await d.run_value();
-    match r {
-        Ok(p) => println(f"x={p.x} y={p.y}"),
-        Err(_) => println("failed"),
+    let zero = await d.run_zero();
+    match zero {
+        Ok(p) => println(f"zero x={p.x} y={p.y}"),
+        Err(_) => println("zero failed"),
+    }
+    let cancelled = await d.run_cancelled();
+    match cancelled {
+        Ok(p) => println(f"fabricated x={p.x} y={p.y}"),
+        Err(_) => println("cancelled"),
+    }
+    let owned_cancelled = await d.run_cancelled_owned();
+    match owned_cancelled {
+        Ok(value) => println(f"fabricated owned={value}"),
+        Err(_) => println("owned cancelled"),
     }
 }

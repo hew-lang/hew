@@ -239,8 +239,8 @@ fn actor_field_match_payload_keeps_no_exit_drop() {
             receive fn arm() -> i64 {
                 slot = make();
                 match slot {
-                    Result::Ok(probe) => probe.fd,
-                    Result::Err(_) => 0,
+                    Result.Ok(probe) => probe.fd,
+                    Result.Err(_) => 0,
                 }
             }
         }

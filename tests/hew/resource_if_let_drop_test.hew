@@ -1,8 +1,8 @@
 //! Regression coverage for owned resource payloads bound by conditional patterns.
 
-import std::fs;
-import std::stream;
-import std::testing;
+import std.fs;
+import std.stream;
+import std.testing;
 
 fn cleanup(path: string) {
     if fs.exists(path) {

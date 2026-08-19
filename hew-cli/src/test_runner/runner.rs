@@ -1,6 +1,7 @@
 //! Execute discovered test cases via the native compilation pipeline.
 
 use super::discovery::TestCase;
+#[cfg(target_os = "linux")]
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
@@ -420,67 +421,6 @@ fn summarize(results: Vec<TestResult>) -> TestSummary {
 struct CompiledTestArtifact {
     _emit_dir: tempfile::TempDir,
     binary_path: PathBuf,
-}
-
-fn mirrored_source_path(root: &Path, source: &Path) -> PathBuf {
-    let mut mirrored = root.join("source");
-    for component in source.components() {
-        if let std::path::Component::Normal(component) = component {
-            mirrored.push(component);
-        }
-    }
-    mirrored
-}
-
-fn mirror_file_imports(
-    source: &str,
-    source_dir: &Path,
-    mirror_root: &Path,
-    visited: &mut HashSet<PathBuf>,
-) -> Result<(), String> {
-    let parsed = hew_parser::parse(source);
-    for (item, _) in &parsed.program.items {
-        let hew_parser::ast::Item::Import(import) = item else {
-            continue;
-        };
-        let Some(file_path) = import.file_path.as_deref() else {
-            continue;
-        };
-        let imported_source = source_dir
-            .join(file_path)
-            .canonicalize()
-            .map_err(|error| format!("cannot resolve imported test file `{file_path}`: {error}"))?;
-        if !visited.insert(imported_source.clone()) {
-            continue;
-        }
-        let imported_contents = std::fs::read_to_string(&imported_source).map_err(|error| {
-            format!(
-                "cannot read imported test file `{}`: {error}",
-                imported_source.display()
-            )
-        })?;
-        let mirrored = mirrored_source_path(mirror_root, &imported_source);
-        let mirrored_parent = mirrored
-            .parent()
-            .ok_or_else(|| "mirrored imported source has no parent directory".to_string())?;
-        std::fs::create_dir_all(mirrored_parent).map_err(|error| {
-            format!(
-                "cannot create mirrored import directory `{}`: {error}",
-                mirrored_parent.display()
-            )
-        })?;
-        std::fs::write(&mirrored, &imported_contents).map_err(|error| {
-            format!(
-                "cannot write mirrored imported test file `{}`: {error}",
-                mirrored.display()
-            )
-        })?;
-        let imported_dir = imported_source
-            .parent()
-            .ok_or_else(|| "imported test source has no parent directory".to_string())?;
-        mirror_file_imports(&imported_contents, imported_dir, mirror_root, visited)?;
-    }
-    Ok(())
 }
 
 /// Compile a synthetic test program to a native binary.

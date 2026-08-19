@@ -1,6 +1,6 @@
-import test_project_root.answer.{answer};
+import test_project_root.answer.{value};
 
 #[test]
 fn imports_source_module() {
-    assert(answer() == 42);
+    assert(value() == 42);
 }

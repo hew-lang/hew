@@ -1038,32 +1038,6 @@ fn compile_build_binary_with_hew_lib(
     }
 }
 
-pub(crate) fn compile_test_binary_with_paths(
-    input: &Path,
-    output_path: &Path,
-    paths: &NativeBuildPaths,
-    extra_libs: &[String],
-) -> Result<(), ()> {
-    let target = target::TargetSpec::from_requested(None).map_err(|error| {
-        eprintln!("Error: cannot determine the host target: {error}");
-    })?;
-    let options = compile::CompileOptions {
-        project_dir: Some(paths.project_dir.clone()),
-        module_search_paths: Some(paths.module_search_paths.clone()),
-        ..compile::CompileOptions::default()
-    };
-    compile_build_binary_with_hew_lib(
-        input,
-        output_path,
-        &target,
-        false,
-        hew_codegen_rs::OptLevel::O0,
-        extra_libs,
-        &options,
-        Some(&paths.hew_lib),
-    )
-}
-
 /// Emit a single relocatable object for `hew build --emit-obj`, skipping the
 /// link step entirely. Writes `<cwd>/<stem><.o|.obj>` and exits 0 — even for
 /// foreign-OS targets that cannot be linked on this host (the whole point of

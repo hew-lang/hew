@@ -2821,7 +2821,7 @@ fn warn_named_import_type_unused() {
 // resolution (a record literal, an enum-variant constructor call) still
 // warned "unused import" — the checker's `import_spans` unused-import
 // table keys each import by the MODULE's short name (`fixture` for
-// `import src::fixture::{Widget}`), but the two credit sites below spliced
+// `import src.fixture.{Widget}`), but the two credit sites below spliced
 // the resolved owner-qualified identity apart on the FIRST `.` rather than
 // the LAST, so a multi-segment module path (`src.fixture`) mapped to the
 // wrong lexical key (`src` instead of `fixture`) and the credit never
@@ -2852,7 +2852,7 @@ const D8_FIXTURE_SOURCE: &str = "pub type Widget { label: string; }\n\
 
 #[test]
 fn no_warn_selective_import_used_only_as_record_literal() {
-    let root = "import src::fixture::{Widget};\n\
+    let root = "import src.fixture.{Widget};\n\
                 fn main() { let w = Widget { label: \"hi\" }; println(w.label); }";
     let output = check_resolved_selective_import(D8_FIXTURE_SOURCE, root);
     assert!(output.errors.is_empty(), "errors: {:?}", output.errors);
@@ -2869,9 +2869,9 @@ fn no_warn_selective_import_used_only_as_record_literal() {
 
 #[test]
 fn no_warn_selective_import_used_only_as_enum_variant_constructor() {
-    let root = "import src::fixture::{Status};\n\
-                fn main() { let s = Status::Ok(\"done\"); match s { \
-                Status::Ok(m) => println(m), Status::Err(m) => println(m), } }";
+    let root = "import src.fixture.{Status};\n\
+                fn main() { let s = Status.Ok(\"done\"); match s { \
+                Status.Ok(m) => println(m), Status.Err(m) => println(m), } }";
     let output = check_resolved_selective_import(D8_FIXTURE_SOURCE, root);
     assert!(output.errors.is_empty(), "errors: {:?}", output.errors);
     assert!(
@@ -2889,7 +2889,7 @@ fn no_warn_selective_import_used_only_as_enum_variant_constructor() {
 fn warn_selective_import_genuinely_unused() {
     // Negative control: an import present but never referenced anywhere
     // (no annotation, no construction, no pattern) must still warn.
-    let root = "import src::fixture::{Widget};\nfn main() { println(1); }";
+    let root = "import src.fixture.{Widget};\nfn main() { println(1); }";
     let output = check_resolved_selective_import(D8_FIXTURE_SOURCE, root);
     assert!(output.errors.is_empty(), "errors: {:?}", output.errors);
     assert!(

@@ -19,7 +19,7 @@
 //! }
 //! ```
 
-import std::string;
+import std.string;
 
 /// The result of a glob expansion.
 ///
@@ -290,7 +290,7 @@ pub fn absolute(p: string) -> string {
 /// # Examples
 ///
 /// ```
-/// import std::path;
+/// import std.path;
 ///
 /// path.normalize("/var/www/../../etc/passwd")  // "/etc/passwd"
 /// path.normalize("a/./b/../c")                 // "a/c"

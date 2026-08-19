@@ -1,7 +1,7 @@
 // Two anonymous children each execute a multi-statement body. The second
 // child's middle marker must appear while the first child is sleeping, which
 // proves the bodies overlap instead of running sequentially.
-import std::net;
+import std.net;
 
 actor Driver {
     receive fn run() -> i64 {

@@ -36,7 +36,7 @@ type Holder {
 }
 
 fn cycle() {
-    let values: Vec<i64> = Vec::new();
+    let values: Vec<i64> = Vec.new();
     values.push(7);
     let holder = Holder {
         dq: unsafe { hew_deque_new() },

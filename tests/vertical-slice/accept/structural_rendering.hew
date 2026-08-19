@@ -33,12 +33,12 @@ fn main() {
     let none: Option<i64> = None;
     let ok: Result<i64, string> = Ok(4);
     let err: Result<i64, string> = Err("bad");
-    let values: Vec<i64> = Vec::new();
+    let values: Vec<i64> = Vec.new();
     values.push(5);
     values.push(6);
-    let map: HashMap<string, i64> = HashMap::new();
+    let map: HashMap<string, i64> = HashMap.new();
     map.insert("answer", 42);
-    let named: NamedMap = HashMap::new();
+    let named: NamedMap = HashMap.new();
     let nested = Nested {
         status: Some(Ok(8)),
         pair: (9, true),

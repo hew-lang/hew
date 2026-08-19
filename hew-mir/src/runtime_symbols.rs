@@ -1077,7 +1077,7 @@ mod tests {
     #[test]
     fn callee_ownership_contract_symbols_are_unique_positive_rows() {
         let unique = CONTRACT_SYMBOLS.iter().copied().collect::<BTreeSet<_>>();
-        assert_eq!(CONTRACT_SYMBOLS.len(), 178);
+        assert_eq!(CONTRACT_SYMBOLS.len(), 179);
         assert_eq!(
             unique.len(),
             CONTRACT_SYMBOLS.len(),

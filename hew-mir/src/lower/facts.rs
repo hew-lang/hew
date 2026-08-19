@@ -4341,7 +4341,7 @@ mod runtime_callee_ownership_contract_parity {
 
     #[test]
     fn callee_ownership_contract_matches_literal_projection_sets() {
-        assert_eq!(CLASSIFIER_SYMBOLS.len(), 171);
+        assert_eq!(CLASSIFIER_SYMBOLS.len(), 172);
         let vec_receiver = expected_set(VEC_RECEIVER_SYMBOLS);
         let collection_receiver = expected_set(COLLECTION_RECEIVER_SYMBOLS);
         let copy_in = expected_set(COPY_IN_SYMBOLS);
@@ -4353,11 +4353,11 @@ mod runtime_callee_ownership_contract_parity {
         let interior_alias = expected_set(INTERIOR_ALIAS_SYMBOLS);
         let fresh_bytes = expected_set(FRESH_BYTES_SYMBOLS);
 
-        assert_eq!(vec_receiver.len(), 93);
-        assert_eq!(collection_receiver.len(), 20);
-        assert_eq!(bytes_receiver.len(), 11);
-        assert_eq!(string_use.len(), 38);
-        assert_eq!(fresh_string.len(), 34);
+        assert_eq!(vec_receiver.len(), 94);
+        assert_eq!(collection_receiver.len(), 21);
+        assert_eq!(bytes_receiver.len(), 12);
+        assert_eq!(string_use.len(), 39);
+        assert_eq!(fresh_string.len(), 35);
 
         for symbol in parity_symbols() {
             let contract = callee_ownership_contract(symbol);

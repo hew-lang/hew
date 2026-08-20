@@ -1121,6 +1121,32 @@ fn needless_range_loop_flags_index_access() {
 }
 
 #[test]
+fn needless_range_loop_not_flagged_when_vec_element_lacks_semantic_clone() {
+    let (errors, warnings) = parse_and_check(
+        r"
+        actor Client {
+            receive fn deliver() {}
+        }
+
+        fn broadcast(clients: Vec<LocalPid<Client>>) {
+            for i in 0..clients.len() {
+                clients[i].deliver();
+            }
+        }
+        ",
+    );
+    assert!(
+        errors.is_empty(),
+        "the indexed LocalPid broadcast must type-check: {errors:?}"
+    );
+    assert_eq!(
+        count_needless_range_loop(&warnings),
+        0,
+        "the lint must not suggest direct Vec iteration when VecIter cannot clone the element: {warnings:?}"
+    );
+}
+
+#[test]
 fn needless_range_loop_flags_get_access() {
     let (errors, warnings) =
         parse_and_check("fn scan(xs: Vec<i64>) { for i in 0..xs.len() { let _ = xs.get(i); } }");

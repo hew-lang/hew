@@ -3,7 +3,7 @@
 //! Flags `for i in 0 .. xs.len() { ... }` loops where the index `i` is used
 //! for nothing but indexing `xs` (`xs[i]` or `xs.get(i)`), so the loop is
 //! exactly equivalent to iterating the collection directly
-//! (`for x in xs { ... }`).
+//! (`for x in xs { ... }`) for elements with semantic clone support.
 //!
 //! This is the compiler-side analogue of Clippy's `needless_range_loop`: a
 //! *use* check, not a global dataflow analysis. It runs on the typed AST in
@@ -285,11 +285,13 @@ fn try_flag(
     let Expr::Identifier(coll) = &receiver.0 else {
         return;
     };
-    // `coll` must be a collection where `for x in coll` yields exactly the
-    // elements that `coll[i]` / `coll.get(i)` produce.
-    if !ctx
-        .resolved_type_at(&receiver.1)
-        .is_some_and(|ty| is_lintable_collection(&ty))
+    // `coll` must be a collection where direct iteration is executable and
+    // yields exactly the elements that `coll[i]` / `coll.get(i)` produce.
+    let Some(coll_ty) = ctx.resolved_type_at(&receiver.1) else {
+        return;
+    };
+    if !is_lintable_collection(&coll_ty)
+        || !vec_element_type(&coll_ty).is_some_and(|elem| ctx.supports_direct_vec_iteration(elem))
     {
         return;
     }
@@ -328,6 +330,18 @@ fn is_lintable_collection(ty: &Ty) -> bool {
             ..
         }
     )
+}
+
+fn vec_element_type(ty: &Ty) -> Option<&Ty> {
+    let Ty::Named {
+        builtin: Some(BuiltinType::Vec),
+        args,
+        ..
+    } = ty
+    else {
+        return None;
+    };
+    args.first()
 }
 
 /// A crude singularisation for the suggested element name: `xs` → `x`,

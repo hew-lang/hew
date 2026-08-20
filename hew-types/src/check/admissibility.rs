@@ -1608,6 +1608,22 @@ impl Checker {
         false
     }
 
+    /// Whether a direct `for value in vec` is admitted for this element type.
+    ///
+    /// Direct Vec iteration uses `VecIter::next`, which clones each element into
+    /// an independent owner. Trait objects are the consuming-iterator exception
+    /// and therefore remain excluded here: the direct-loop checker rejects their
+    /// borrowed-snapshot form.
+    pub(super) fn supports_direct_vec_iteration(&self, ty: &Ty) -> bool {
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        if matches!(resolved, Ty::Error | Ty::TraitObject { .. }) {
+            return false;
+        }
+        let mut visiting = HashSet::new();
+        self.vec_iter_clone_blocker(&resolved, &mut visiting)
+            .is_none()
+    }
+
     fn validate_hashmap_value_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
         let mut visiting = HashSet::new();
         if let Some(blocker) = self.hashmap_value_clone_blocker(ty, &mut visiting) {

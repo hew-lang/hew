@@ -309,6 +309,7 @@ impl LintSources {
 /// root unit, N = N-th non-root module) and `source_module` tags emitted
 /// diagnostics so the CLI routes them to the correct source file.
 pub(super) struct LintCtx<'a> {
+    pub checker: &'a super::Checker,
     pub subst: &'a Substitution,
     pub expr_types: &'a HashMap<SpanKey, Ty>,
     pub module_idx: u32,
@@ -328,6 +329,12 @@ impl LintCtx<'_> {
     fn resolved_type_at(&self, span: &Span) -> Option<Ty> {
         let key = SpanKey::in_module(span, self.module_idx);
         self.expr_types.get(&key).map(|ty| self.subst.resolve(ty))
+    }
+
+    /// Whether a direct `for value in collection` rewrite has executable
+    /// iterator semantics for this collection's element type.
+    fn supports_direct_vec_iteration(&self, ty: &Ty) -> bool {
+        self.checker.supports_direct_vec_iteration(ty)
     }
 
     /// Emit one lint diagnostic, honouring suppression and the configured

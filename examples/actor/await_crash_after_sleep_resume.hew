@@ -31,8 +31,8 @@ fn main() {
     let reader = spawn Reader;
     let r = await reader.go(0);
     match r {
-        Ok(v) => println(f"reader-returned: {v}"),
-        Err(_) => println("reader-crash-fallback"),
+        .Ok(v) => println(f"reader-returned: {v}"),
+        .Err(_) => println("reader-crash-fallback"),
     }
     println("main-done");
 }

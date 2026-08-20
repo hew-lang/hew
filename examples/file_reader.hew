@@ -21,7 +21,7 @@ actor FileReader {
     }
 }
 
-import std::fs;
+import std.fs;
 
 fn main() {
     println("=== File Reader via Actors ===");

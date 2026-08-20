@@ -134,7 +134,7 @@ impl Checker {
                     },
                     span,
                     format!(
-                        "could not project associated type `<{} as {trait_name}>::{assoc_name}` while checking `dyn {trait_name}<{assoc_name} = {}>`; ensure the impl for `{}` defines `type {assoc_name} = ...`",
+                        "could not project associated type `<{} as {trait_name}>.{assoc_name}` while checking `dyn {trait_name}<{assoc_name} = {}>`; ensure the impl for `{}` defines `type {assoc_name} = ...`",
                         concrete_type.user_facing(),
                         binding_ty.user_facing(),
                         concrete_type.user_facing()
@@ -150,7 +150,7 @@ impl Checker {
                     },
                     span,
                     format!(
-                        "`dyn {trait_name}<{assoc_name} = {}>` does not match `{}`'s impl binding `{trait_name}::{assoc_name} = {}`",
+                        "`dyn {trait_name}<{assoc_name} = {}>` does not match `{}`'s impl binding `{trait_name}.{assoc_name} = {}`",
                         binding_ty.user_facing(),
                         concrete_type.user_facing(),
                         projected.user_facing()
@@ -636,9 +636,18 @@ impl Checker {
             return None;
         }
 
-        let canonical_type_name = self
-            .canonical_nominal_name(concrete_type_name)
-            .unwrap_or_else(|| concrete_type_name.to_string());
+        let canonical_type_name = match concrete_type {
+            Ty::Named { builtin: None, .. } => self
+                .flat_file_import_type_owner(concrete_type_name)
+                .or_else(|| self.canonical_nominal_name(concrete_type_name))
+                .unwrap_or_else(|| concrete_type_name.to_string()),
+            Ty::Named {
+                builtin: Some(_), ..
+            } => concrete_type_name.to_string(),
+            _ => self
+                .canonical_nominal_name(concrete_type_name)
+                .unwrap_or_else(|| concrete_type_name.to_string()),
+        };
         let mut table: Vec<DynVtableEntry> = Vec::with_capacity(trait_info.methods.len());
         for method in &trait_info.methods {
             let impl_fn_key = format!("{canonical_type_name}::{}", method.name);
@@ -649,7 +658,7 @@ impl Checker {
                 // the checker metadata is internally inconsistent; fabricating
                 // an empty signature would poison the vtable.
                 unreachable!(
-                    "trait method `{trait_name}::{}` is listed in trait_defs but is not resolvable",
+                    "trait method `{trait_name}.{}` is listed in trait_defs but is not resolvable",
                     method.name
                 );
             };
@@ -796,6 +805,7 @@ fn type_expr_mentions_self(expr: &TypeExpr) -> bool {
                 .as_ref()
                 .is_some_and(|args| args.iter().any(|a| type_expr_mentions_self(&a.0)))
         }
+        TypeExpr::QualifiedAssocPath(path) => type_expr_mentions_self(&path.base.0),
         TypeExpr::Result { ok, err } => {
             type_expr_mentions_self(&ok.0) || type_expr_mentions_self(&err.0)
         }

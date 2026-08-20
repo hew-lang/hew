@@ -285,7 +285,7 @@ fn toml_encoding_round_trips_under_wasi() {
     let source = dir.path().join("toml_wasi.hew");
     fs::write(
         &source,
-        "import std::encoding::toml;\n\
+        "import std.encoding.toml;\n\
          \n\
          fn main() {\n\
          \x20   let doc = toml.parse(\"[package]\\nname = \\\"hew\\\"\");\n\
@@ -318,7 +318,7 @@ fn wasm_channel_send_full_traps_instead_of_dropping() {
     let source = dir.path().join("channel_send_full_traps_wasi.hew");
     fs::write(
         &source,
-        r#"import std::channel::channel;
+        r#"import std.channel.channel;
 
 fn main() {
     let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(2);
@@ -373,7 +373,7 @@ const HASHMAP_HASHSET_LAYOUT_SOURCE: &str = r#"record Point {
 }
 
 fn main() {
-    let m: HashMap<Point, i64> = HashMap::new();
+    let m: HashMap<Point, i64> = HashMap.new();
     m.insert(Point { x: 1, y: 2 }, 10);
     m.insert(Point { x: 3, y: 4 }, 20);
     let n = m.len();
@@ -403,7 +403,7 @@ fn main() {
     let n2 = m.len();
     println(f"len_after_remove={n2}");
 
-    let s: HashSet<string> = HashSet::new();
+    let s: HashSet<string> = HashSet.new();
     s.insert("alpha");
     s.insert("beta");
     s.insert("alpha");
@@ -502,7 +502,7 @@ fn native_hashmap_hashset_layout_matches_wasi_output() {
 // double-free / use-after-free of a released string buffer would trap under
 // wasmtime and fail this run. Native and wasm stdout must match byte-for-byte.
 const HASHMAP_HASHSET_OWNERSHIP_SOURCE: &str = r#"fn main() {
-    let m: HashMap<string, string> = HashMap::new();
+    let m: HashMap<string, string> = HashMap.new();
     m.insert("alpha", "first");
     m.insert("beta", "second");
 
@@ -535,7 +535,7 @@ const HASHMAP_HASHSET_OWNERSHIP_SOURCE: &str = r#"fn main() {
     println(f"map_len={n}");
 
     // String set: insert/remove exercise hew_string_drop on the element.
-    let s: HashSet<string> = HashSet::new();
+    let s: HashSet<string> = HashSet.new();
     s.insert("x");
     s.insert("y");
     s.insert("z");
@@ -718,7 +718,7 @@ fn main() {
 // The native probe must synchronize with the first delivery instead of using a
 // wall-clock sleep: under scheduler pressure, main can wake and begin shutdown
 // before the periodic ticker thread runs, cancelling the still-pending first tick.
-const NATIVE_PERIODIC_HANDSHAKE_SOURCE: &str = r#"import std::channel::channel;
+const NATIVE_PERIODIC_HANDSHAKE_SOURCE: &str = r#"import std.channel.channel;
 
 actor Pulse {
     let ready: channel.Sender<i64>;

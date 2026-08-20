@@ -658,6 +658,37 @@ pub enum TypeErrorKind {
     /// `DuplicateDefinition` (two defs in one module): the name resolves to
     /// several valid defs across modules.
     AmbiguousType,
+    /// A bare variant expression remains accepted during the dotted-path
+    /// migration but should use contextual or owner-qualified spelling.
+    BareVariantExpr,
+    /// A bare variant pattern remains accepted during the dotted-path
+    /// migration but should use contextual or owner-qualified spelling.
+    BareVariantPattern,
+    /// A leading-dot variant expression or pattern had no expected nominal
+    /// type from which its owner could be selected.
+    ContextVariantNoType,
+    /// The expected nominal spelling for a leading-dot variant resolves to
+    /// more than one imported declaration owner.
+    ContextVariantAmbiguous,
+    /// One import declaration attempts to publish a binding already claimed
+    /// by another import in the same source file.
+    ImportBindingCollision,
+    /// An explicit import attempts to replace an always-in-scope prelude name.
+    ImportPreludeCollision,
+    /// A source declaration attempts to replace an always-in-scope prelude name.
+    PreludeDeclCollision,
+    /// A module path was used where a runtime value expression was required.
+    ModuleUsedAsValue,
+    /// A type path was used where a runtime value expression was required.
+    TypeUsedAsValue,
+    /// Resolution selected a lexical path root, but the requested member does
+    /// not exist on that root. Resolution does not retry another namespace.
+    PathMemberNotFound,
+    /// A qualified associated value resolves to more than one applicable item.
+    AssocItemAmbiguous,
+    /// A resolved path member exists, but not in the syntactic namespace the
+    /// expression requires.
+    PathKindMismatch,
     /// Two owner-qualified generic types collapse to the same bare
     /// monomorphisation key but require incompatible concrete layouts.
     GenericLayoutCollision,
@@ -1349,6 +1380,10 @@ impl TypeErrorKind {
     /// These keys are part of the LSP/WASM diagnostic protocol and must not
     /// change without a corresponding update to editor integrations.
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the exhaustive diagnostic protocol mapping stays centralized"
+    )]
     pub fn as_kind_str(&self) -> &'static str {
         match self {
             Self::Mismatch { .. } => "Mismatch",
@@ -1359,6 +1394,18 @@ impl TypeErrorKind {
             Self::UndefinedMethod => "UndefinedMethod",
             Self::AmbiguousTraitMethod => "AmbiguousTraitMethod",
             Self::AmbiguousType => "AmbiguousType",
+            Self::BareVariantExpr => "E_BARE_VARIANT_EXPR",
+            Self::BareVariantPattern => "E_BARE_VARIANT_PATTERN",
+            Self::ContextVariantNoType => "E_CONTEXT_VARIANT_NO_TYPE",
+            Self::ContextVariantAmbiguous => "E_CONTEXT_VARIANT_AMBIGUOUS",
+            Self::ImportBindingCollision => "E_IMPORT_BINDING_COLLISION",
+            Self::ImportPreludeCollision => "E_IMPORT_PRELUDE_COLLISION",
+            Self::PreludeDeclCollision => "E_PRELUDE_DECL_COLLISION",
+            Self::ModuleUsedAsValue => "E_MODULE_USED_AS_VALUE",
+            Self::TypeUsedAsValue => "E_TYPE_USED_AS_VALUE",
+            Self::PathMemberNotFound => "E_PATH_MEMBER_NOT_FOUND",
+            Self::AssocItemAmbiguous => "E_ASSOC_ITEM_AMBIGUOUS",
+            Self::PathKindMismatch => "E_PATH_KIND_MISMATCH",
             Self::GenericLayoutCollision => "GenericLayoutCollision",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
@@ -1976,6 +2023,43 @@ mod tests {
             err.to_string(),
             "no field `colour` on type `HashMap<string, i32>`"
         );
+    }
+
+    #[test]
+    fn dot_resolution_diagnostic_codes_are_stable() {
+        let cases = [
+            (TypeErrorKind::BareVariantExpr, "E_BARE_VARIANT_EXPR"),
+            (TypeErrorKind::BareVariantPattern, "E_BARE_VARIANT_PATTERN"),
+            (
+                TypeErrorKind::ContextVariantNoType,
+                "E_CONTEXT_VARIANT_NO_TYPE",
+            ),
+            (
+                TypeErrorKind::ContextVariantAmbiguous,
+                "E_CONTEXT_VARIANT_AMBIGUOUS",
+            ),
+            (
+                TypeErrorKind::ImportBindingCollision,
+                "E_IMPORT_BINDING_COLLISION",
+            ),
+            (
+                TypeErrorKind::ImportPreludeCollision,
+                "E_IMPORT_PRELUDE_COLLISION",
+            ),
+            (
+                TypeErrorKind::PreludeDeclCollision,
+                "E_PRELUDE_DECL_COLLISION",
+            ),
+            (TypeErrorKind::ModuleUsedAsValue, "E_MODULE_USED_AS_VALUE"),
+            (TypeErrorKind::TypeUsedAsValue, "E_TYPE_USED_AS_VALUE"),
+            (TypeErrorKind::PathMemberNotFound, "E_PATH_MEMBER_NOT_FOUND"),
+            (TypeErrorKind::AssocItemAmbiguous, "E_ASSOC_ITEM_AMBIGUOUS"),
+            (TypeErrorKind::PathKindMismatch, "E_PATH_KIND_MISMATCH"),
+        ];
+
+        for (kind, expected) in cases {
+            assert_eq!(kind.as_kind_str(), expected);
+        }
     }
 
     /// Every supervisor subkind must produce a distinct, stable `as_kind_str`

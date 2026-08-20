@@ -16,7 +16,7 @@
 // carve-out is reached through an alias, not only through a bare trait name.
 //
 // Harness verb: hew check (negative — see run.sh).
-import hew::closableerr::{Closable as C};
+import hew.closableerr.{Closable as C};
 
 pub type ClosableHandle {
     id: i64;

@@ -15,9 +15,9 @@ fn fill_bytes(b: bytes) {
 }
 
 fn main() -> i64 {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     fill_vec(v);
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     fill_bytes(b);
     println(f"vec_len={v.len()} bytes_len={b.len()}");
     0

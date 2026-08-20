@@ -14,7 +14,7 @@
 // lowering path without triggering the `Stmt::If` unsupported gate. The runtime
 // crash path is not triggered here — handler-fire observability is covered by
 // hew-runtime/tests/on_crash_invocation.rs.
-import std::failure;
+import std.failure;
 
 actor Crasher {
     #[on(crash)]

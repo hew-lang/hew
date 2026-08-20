@@ -13,7 +13,7 @@
 //! the handler resumes; results consumed via `await` are BitCopy scalars
 //! (i64), so scope exit carries no heap ownership to release here.
 
-import std::testing;
+import std.testing;
 
 // No-arg unit-returning generic callee. The two type args (`i64`, `string`)
 // each generate a separate monomorphized function (`unit_work$$i64`,
@@ -40,8 +40,8 @@ actor TaskRunner {
     // ----------------------------------------------------------------
     receive fn run_value_tasks() -> i64 {
         scope {
-            fork t1 = compute_val::<i64>();
-            fork t2 = compute_val::<string>();
+            fork t1 = compute_val<i64>();
+            fork t2 = compute_val<string>();
             let v1 = await t1;
             let v2 = await t2;
             total = v1 + v2;
@@ -55,8 +55,12 @@ actor TaskRunner {
     // ----------------------------------------------------------------
     receive fn run_unit_fork_block() -> i64 {
         scope {
-            fork { unit_work::<i64>(); }
-            fork { unit_work::<string>(); }
+            fork {
+                unit_work<i64>();
+            };
+            fork {
+                unit_work<string>();
+            };
         };
         return 7;
     }
@@ -68,21 +72,24 @@ actor TaskRunner {
     // ----------------------------------------------------------------
     receive fn run_arg_fork_block() -> i64 {
         scope {
-            fork { side_work::<i64>(20, 22); }
-            fork { side_work::<string>(10, 32); }
+            fork {
+                side_work<i64>(20, 22);
+            };
+            fork {
+                side_work<string>(10, 32);
+            };
         };
         return 55;
     }
 }
 
 // ---- Tests ----
-
 #[test]
 fn test_generic_free_fn_task_spawn_value() {
     let r = spawn TaskRunner(total: 0);
     match await r.run_value_tasks() {
-        Ok(n) => testing.assert_eq(n, 84),
-        Err(_) => testing.assert_true(false),
+        .Ok(n) => testing.assert_eq(n, 84),
+        .Err(_) => testing.assert_true(false),
     }
 }
 
@@ -90,8 +97,8 @@ fn test_generic_free_fn_task_spawn_value() {
 fn test_generic_free_fn_task_spawn_unit_fork_block() {
     let r = spawn TaskRunner(total: 0);
     match await r.run_unit_fork_block() {
-        Ok(n) => testing.assert_eq(n, 7),
-        Err(_) => testing.assert_true(false),
+        .Ok(n) => testing.assert_eq(n, 7),
+        .Err(_) => testing.assert_true(false),
     }
 }
 
@@ -99,8 +106,7 @@ fn test_generic_free_fn_task_spawn_unit_fork_block() {
 fn test_generic_free_fn_task_spawn_arg_fork_block() {
     let r = spawn TaskRunner(total: 0);
     match await r.run_arg_fork_block() {
-        Ok(n) => testing.assert_eq(n, 55),
-        Err(_) => testing.assert_true(false),
+        .Ok(n) => testing.assert_eq(n, 55),
+        .Err(_) => testing.assert_true(false),
     }
 }
-

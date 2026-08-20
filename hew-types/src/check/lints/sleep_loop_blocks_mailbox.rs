@@ -233,6 +233,32 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
                 find_in_expr(ctx, levels, &base.0, out);
             }
         }
+        Expr::ContextVariant(context) => {
+            if let Some(record) = &context.record {
+                for (_, value) in &record.fields {
+                    find_in_expr(ctx, levels, &value.0, out);
+                }
+                if let Some(base) = &record.base {
+                    find_in_expr(ctx, levels, &base.0, out);
+                }
+            }
+        }
+        Expr::GenericApplySuffix { target, .. } => {
+            find_in_expr(ctx, levels, &target.0, out);
+        }
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            find_in_expr(ctx, levels, &target.0, out);
+            for (_, value) in fields {
+                find_in_expr(ctx, levels, &value.0, out);
+            }
+            if let Some(base) = base {
+                find_in_expr(ctx, levels, &base.0, out);
+            }
+        }
         Expr::Select { arms, timeout } => {
             for arm in arms {
                 find_in_expr(ctx, levels, &arm.source.0, out);
@@ -311,6 +337,7 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         | Expr::GenBlock { .. }
         | Expr::Literal(_)
         | Expr::Identifier(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
@@ -324,6 +351,10 @@ enum Candidate {
     Guard(String),
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the exhaustive condition classifier keeps every expression shape visible"
+)]
 fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
     match condition {
         Expr::Literal(Literal::Bool(true)) => Some(Candidate::Unconditional),
@@ -334,6 +365,10 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
         } => match &operand.0 {
             Expr::Identifier(name) => Some(Candidate::Guard(name.clone())),
             Expr::Binary { .. }
+            | Expr::ContextVariant(_)
+            | Expr::GenericApplySuffix { .. }
+            | Expr::RecordInitSuffix { .. }
+            | Expr::QualifiedAssoc(_)
             | Expr::Unary { .. }
             | Expr::Clone(_)
             | Expr::Literal(_)
@@ -378,6 +413,10 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
             | Expr::GenBlock { .. } => None,
         },
         Expr::Binary { .. }
+        | Expr::ContextVariant(_)
+        | Expr::GenericApplySuffix { .. }
+        | Expr::RecordInitSuffix { .. }
+        | Expr::QualifiedAssoc(_)
         | Expr::Unary { .. }
         | Expr::Clone(_)
         | Expr::Literal(_)
@@ -552,10 +591,35 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         | Expr::GenBlock { .. }
         | Expr::Literal(_)
         | Expr::Identifier(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => false,
+        Expr::ContextVariant(context) => context.record.as_ref().is_some_and(|record| {
+            record
+                .fields
+                .iter()
+                .any(|(_, value)| bounded_expr_has_sleep(&value.0))
+                || record
+                    .base
+                    .as_ref()
+                    .is_some_and(|base| bounded_expr_has_sleep(&base.0))
+        }),
+        Expr::GenericApplySuffix { target, .. } => bounded_expr_has_sleep(&target.0),
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            bounded_expr_has_sleep(&target.0)
+                || fields
+                    .iter()
+                    .any(|(_, value)| bounded_expr_has_sleep(&value.0))
+                || base
+                    .as_ref()
+                    .is_some_and(|base| bounded_expr_has_sleep(&base.0))
+        }
         Expr::Block(block) | Expr::Scope { body: block } | Expr::ForkBlock { body: block } => {
             bounded_contains_sleep(block)
         }
@@ -832,6 +896,30 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
                     .as_ref()
                     .is_some_and(|base| expr_assigns_identifier(&base.0, name))
         }
+        Expr::ContextVariant(context) => context.record.as_ref().is_some_and(|record| {
+            record
+                .fields
+                .iter()
+                .any(|(_, value)| expr_assigns_identifier(&value.0, name))
+                || record
+                    .base
+                    .as_ref()
+                    .is_some_and(|base| expr_assigns_identifier(&base.0, name))
+        }),
+        Expr::GenericApplySuffix { target, .. } => expr_assigns_identifier(&target.0, name),
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            expr_assigns_identifier(&target.0, name)
+                || fields
+                    .iter()
+                    .any(|(_, value)| expr_assigns_identifier(&value.0, name))
+                || base
+                    .as_ref()
+                    .is_some_and(|base| expr_assigns_identifier(&base.0, name))
+        }
         Expr::Select { arms, timeout } => {
             arms.iter().any(|arm| {
                 expr_assigns_identifier(&arm.source.0, name)
@@ -888,6 +976,7 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
             .is_some_and(|value| expr_assigns_identifier(&value.0, name)),
         Expr::Literal(_)
         | Expr::Identifier(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)

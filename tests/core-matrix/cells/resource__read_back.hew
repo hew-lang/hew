@@ -11,10 +11,10 @@ impl Tok {
 
 fn main() {
     let x = Tok { id: 1 };
-    let v: Vec<Tok> = Vec::new();
+    let v: Vec<Tok> = Vec.new();
     v.push(x);
     match v.get(0) {
-        Some(e) => {
+        Option.Some(e) => {
             let e_i = e.id;
             println(f"tok {e_i}");
         },

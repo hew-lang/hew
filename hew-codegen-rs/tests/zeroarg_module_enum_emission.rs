@@ -83,11 +83,11 @@ fn import_std_net_empty_main_admits_handle_tuple_with_drop_spine() {
     let (ok, _stdout, stderr) = run_hew_source_raw(
         &repo,
         "net_empty_main",
-        "import std::net;\nfn main() -> i64 { 0 }\n",
+        "import std.net;\nfn main() -> i64 { 0 }\n",
     );
     assert!(
         ok,
-        "`import std::net; fn main() -> i64 {{ 0 }}` must compile and run now \
+        "`import std.net; fn main() -> i64 {{ 0 }}` must compile and run now \
          that the tuple-of-handles return has a drop spine;\nstderr:\n{stderr}"
     );
     assert!(
@@ -111,11 +111,11 @@ fn import_std_fs_empty_main_runs_without_d10() {
     let (ok, _stdout, stderr) = run_hew_source_raw(
         &repo,
         "fs_empty_main",
-        "import std::fs;\nfn main() -> i64 { 0 }\n",
+        "import std.fs;\nfn main() -> i64 { 0 }\n",
     );
     assert!(
         ok,
-        "`import std::fs; fn main() -> i64 {{ 0 }}` must exit 0;\nstderr:\n{stderr}"
+        "`import std.fs; fn main() -> i64 {{ 0 }}` must exit 0;\nstderr:\n{stderr}"
     );
     assert!(
         !stderr.contains("D10 violation"),
@@ -135,7 +135,7 @@ fn import_std_fs_exists_runs_and_returns_bool() {
         &repo,
         "fs_exists",
         r#"
-        import std::fs;
+        import std.fs;
         fn main() -> i64 {
             // Calling fs.exists proves the function compiles and links.
             // The return value is discarded; main returns 0 so hew run exits 0.
@@ -174,15 +174,15 @@ fn construct_and_match_imported_ioerror_variant_round_trips() {
         &repo,
         "ioerror_round_trip",
         r#"
-        import std::fs;
+        import std.fs;
         fn make_err() -> Result<i64, fs.IoError> {
-            Err(IoError::NotFound(111))
+            Err(IoError.NotFound(111))
         }
         fn main() {
             match make_err() {
                 Ok(v) => println(f"ok: {v}"),
                 Err(e) => match e {
-                    IoError::NotFound(code) => println(f"not_found {code}"),
+                    IoError.NotFound(code) => println(f"not_found {code}"),
                     _ => println("other"),
                 },
             }
@@ -213,12 +213,12 @@ fn net_try_connect_error_match_round_trips() {
         &repo,
         "net_try_connect_match",
         r#"
-        import std::net;
+        import std.net;
         fn main() {
             match net.try_connect("127.0.0.1:1") {
                 Ok(_) => println("connected"),
                 Err(e) => match e {
-                    NetError::ConnectionRefused(_) => println("refused"),
+                    NetError.ConnectionRefused(_) => println("refused"),
                     _ => println("other"),
                 },
             }
@@ -250,12 +250,12 @@ fn imported_enum_owned_string_payload_round_trips() {
         &repo,
         "json_parseerror_match",
         r#"
-        import std::encoding::json;
+        import std.encoding.json;
         fn main() {
             match json.try_parse("{ not valid") {
                 Ok(_) => println("parsed"),
                 Err(e) => match e {
-                    ParseError::Invalid(msg) => println(f"invalid: {msg}"),
+                    ParseError.Invalid(msg) => println(f"invalid: {msg}"),
                 },
             }
         }

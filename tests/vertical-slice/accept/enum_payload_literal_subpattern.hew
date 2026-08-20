@@ -7,10 +7,10 @@ enum Shape {
 }
 
 fn main() -> i64 {
-    let s = Shape::Line(2);
+    let s = Shape.Line(2);
     match s {
-        Shape::Line(1) => 999,
-        Shape::Line(x) => x,
-        Shape::Square(_) => 0,
+        Shape.Line(1) => 999,
+        Shape.Line(x) => x,
+        Shape.Square(_) => 0,
     }
 }

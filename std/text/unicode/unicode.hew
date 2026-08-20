@@ -297,8 +297,8 @@ pub fn codepoint_at(s: string, i: i64) -> Option<i64> {
 /// ```
 pub fn try_codepoint_at(s: string, i: i64) -> Result<i64, string> {
     match codepoint_at(s, i) {
-        Some(cp) => Ok(cp),
-        None => Err("unicode.try_codepoint_at: index out of bounds"),
+        .Some(cp) => Ok(cp),
+        .None => Err("unicode.try_codepoint_at: index out of bounds"),
     }
 }
 
@@ -332,8 +332,8 @@ pub fn rune_count(s: string) -> i64 {
 /// ```
 pub fn rune_len(cp: i64) -> i64 {
     match try_rune_len(cp) {
-        Ok(n) => n,
-        Err(_) => -1,
+        .Ok(n) => n,
+        .Err(_) => -1,
     }
 }
 
@@ -375,13 +375,13 @@ pub fn try_rune_len(cp: i64) -> Result<i64, string> {
 /// ```
 pub fn runes(s: string) -> Vec<i64> {
     let n = s.char_count_utf8();
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     for i in 0 .. n {
         // In-bounds loop over the codepoint count: always Some. The
         // unreachable None is skipped rather than pushed as a sentinel.
         match s.codepoint_at_utf8(i) {
-            Some(cp) => result.push(cp),
-            None => {},
+            .Some(cp) => result.push(cp),
+            .None => {},
         }
     }
     result

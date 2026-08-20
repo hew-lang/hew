@@ -50,19 +50,19 @@ fn cron_last_error_message() -> string {
 
 fn cron_error_message(err: CronError) -> string {
     match err {
-        CronError::NoNextOccurrence(message) => message,
-        CronError::InvalidInput(message) => message,
-        CronError::InvalidEpoch(message) => message,
+        CronError.NoNextOccurrence(message) => message,
+        CronError.InvalidInput(message) => message,
+        CronError.InvalidEpoch(message) => message,
     }
 }
 
 fn cron_error_from_result(result: CronNextResult) -> CronError {
     let message = cron_last_error_message();
     match result.status {
-        1 => CronError::NoNextOccurrence(message),
-        2 => CronError::InvalidInput(message),
-        3 => CronError::InvalidEpoch(message),
-        _ => CronError::InvalidInput(message),
+        1 => CronError.NoNextOccurrence(message),
+        2 => CronError.InvalidInput(message),
+        3 => CronError.InvalidEpoch(message),
+        _ => CronError.InvalidInput(message),
     }
 }
 
@@ -168,9 +168,9 @@ extern "C" {
 // (rather than only the one or two arms existing FFI-level tests reach).
 fn cron_error_tag(err: CronError) -> i64 {
     match err {
-        CronError::NoNextOccurrence(_) => 1,
-        CronError::InvalidInput(_) => 2,
-        CronError::InvalidEpoch(_) => 3,
+        CronError.NoNextOccurrence(_) => 1,
+        CronError.InvalidInput(_) => 2,
+        CronError.InvalidEpoch(_) => 3,
     }
 }
 

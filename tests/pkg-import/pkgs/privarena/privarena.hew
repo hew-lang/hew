@@ -22,7 +22,7 @@ pub type Arena<T> {
 }
 
 pub fn new<T>() -> Arena<T> {
-    Arena { slots: Vec::new() }
+    Arena { slots: Vec.new() }
 }
 
 impl<T> Arena<T> {

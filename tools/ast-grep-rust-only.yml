@@ -1,0 +1,3 @@
+# Isolate built-in Rust structural queries from the custom Hew grammar. The
+# full repository scan still uses sgconfig.yml after bootstrap has built Hew.
+ruleDirs: []

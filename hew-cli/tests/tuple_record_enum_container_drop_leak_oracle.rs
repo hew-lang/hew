@@ -46,7 +46,7 @@ fn step(h: Holder, i: i64) -> (Holder, Slot, i64) {
 }
 
 fn run_case(seed: i64, fill: bool, exit_early: bool) -> i64 {
-    var owner = Holder { items: Vec::new(), tag: f"seed-{seed}" };
+    var owner = Holder { items: Vec.new(), tag: f"seed-{seed}" };
     if fill {
         owner.items.push("first");
         owner.items.push("second");
@@ -101,7 +101,7 @@ fn step(h: Holder, i: i64) -> Holder {
 }
 
 fn main() {
-    var owner = Holder { items: Vec::new(), tag: "seed" };
+    var owner = Holder { items: Vec.new(), tag: "seed" };
     owner.items.push("first");
     owner.items.push("second");
     for i in 0..3 {
@@ -113,7 +113,7 @@ fn main() {
 
 const VEC_ONLY_CONTROL_SOURCE: &str = r#"
 fn main() {
-    var items = Vec::new();
+    var items = Vec.new();
     items.push("first");
     items.push("second");
     println(f"len={items.len()}");
@@ -141,7 +141,7 @@ fn step(h: Holder, i: i64) -> (Holder, Slot, i64) {
 }
 
 fn main() {
-    var owner = Holder { items: Vec::new(), tag: "seed" };
+    var owner = Holder { items: Vec.new(), tag: "seed" };
     owner.items.push("first");
     owner.items.push("second");
 

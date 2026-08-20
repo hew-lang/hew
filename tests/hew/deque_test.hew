@@ -4,9 +4,9 @@
 //! Deque is an opaque handle type backed by a ring-buffer; every test
 //! must call free() before returning to avoid leaking the backing storage.
 
-import std::deque;
+import std.deque;
 
-import std::testing;
+import std.testing;
 
 // ── is_empty / len on new deque ───────────────────────────────────────
 #[test]

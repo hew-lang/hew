@@ -1,8 +1,8 @@
 //! S1 compiled proofs for the shipped `std::pipeline` surface.
 
-import std::pipeline;
+import std.pipeline;
 
-import std::testing;
+import std.testing;
 
 fn item(value: i64, label: string, crash_stage: bool) -> pipeline.PipelineItemI64 {
     PipelineItemI64 { value: value, label: label, crash_stage: crash_stage }

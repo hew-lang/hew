@@ -33,7 +33,7 @@ actor TaskQueue {
     }
 
     receive fn remove_front() -> i64 {
-        let new_tasks: Vec<WorkItem> = Vec::new();
+        let new_tasks: Vec<WorkItem> = Vec.new();
         var i = 1;
         while i < tasks.len() {
             new_tasks.push(tasks[i]);
@@ -45,7 +45,7 @@ actor TaskQueue {
 }
 
 fn main() {
-    let t: Vec<WorkItem> = Vec::new();
+    let t: Vec<WorkItem> = Vec.new();
     let q = spawn TaskQueue(tasks: t);
     q.enqueue(WorkItem { name: "only", priority: 1 });
     let r = await q.remove_front();

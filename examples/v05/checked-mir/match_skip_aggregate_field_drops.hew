@@ -60,7 +60,7 @@ fn skip_tuple_field(k: i64) -> i64 {
 }
 
 fn skip_enum_field(k: i64) -> i64 {
-    let t = HoldsEnum { n: k, shade: Shade::Named(string_concat("agg-e-", "payload")) };
+    let t = HoldsEnum { n: k, shade: Shade.Named(string_concat("agg-e-", "payload")) };
     let x = match t {
         HoldsEnum { n: x, shade: _ } => x,
     };

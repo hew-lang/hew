@@ -10,22 +10,22 @@ fn parse_number(s: string) -> Result<i64, string> {
 
 fn is_ok(r: Result<i64, i64>) -> bool {
     match r {
-        Ok(_) => true,
-        Err(_) => false,
+        .Ok(_) => true,
+        .Err(_) => false,
     }
 }
 
 fn is_err(r: Result<i64, i64>) -> bool {
     match r {
-        Ok(_) => false,
-        Err(_) => true,
+        .Ok(_) => false,
+        .Err(_) => true,
     }
 }
 
 fn unwrap_or(r: Result<i64, i64>, fallback: i64) -> i64 {
     match r {
-        Ok(v) => v,
-        Err(_) => fallback,
+        .Ok(v) => v,
+        .Err(_) => fallback,
     }
 }
 
@@ -34,12 +34,12 @@ fn main() {
     let failed = parse_number("oops");
     // match is the clearest way to handle a Result.
     match parsed {
-        Ok(n) => println(n),
-        Err(msg) => println(msg),
+        .Ok(n) => println(n),
+        .Err(msg) => println(msg),
     }
     match failed {
-        Ok(n) => println(n),
-        Err(msg) => println(msg),
+        .Ok(n) => println(n),
+        .Err(msg) => println(msg),
     }
     // Helper functions show common Result<i64, i64> patterns.
     let helper_ok: Result<i64, i64> = Ok(42);

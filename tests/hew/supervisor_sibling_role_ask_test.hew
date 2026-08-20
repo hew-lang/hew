@@ -9,7 +9,7 @@
 //!    `AskError` kind. The refusal paths previously returned their error code
 //!    without writing the ask-error slot, surfacing `Err(AskError::NoError)`.
 
-import std::testing;
+import std.testing;
 
 actor Worker {
     let id: i64;
@@ -41,18 +41,18 @@ actor Dispatcher {
     receive fn siblings_after_crash() -> i64 {
         let r1 = await sup.w1.work(999);
         let crashed = match r1 {
-            Ok(_) => 0,
-            Err(_) => 1,
+            .Ok(_) => 0,
+            .Err(_) => 1,
         };
         let r2 = await sup.w2.whoami();
         let a = match r2 {
-            Ok(v) => v,
-            Err(_) => -1,
+            .Ok(v) => v,
+            .Err(_) => -1,
         };
         let r3 = await sup.w3.whoami();
         let b = match r3 {
-            Ok(v) => v,
-            Err(_) => -1,
+            .Ok(v) => v,
+            .Err(_) => -1,
         };
         crashed * 100 + a * 10 + b
     }
@@ -69,10 +69,10 @@ actor Dispatcher {
         sleep(50ms);
         let refused = await sup.w1.whoami();
         match refused {
-            Ok(_) => -2,
-            Err(AskError::NoError) => 0,
-            Err(AskError::ActorStopped) => 1,
-            Err(_) => -1,
+            .Ok(_) => -2,
+            .Err(AskError.NoError) => 0,
+            .Err(AskError.ActorStopped) => 1,
+            .Err(_) => -1,
         }
     }
 }
@@ -83,8 +83,8 @@ fn sibling_asks_after_crash_reach_named_children() {
     sleep(30ms);
     let d = spawn Dispatcher(sup: sup);
     match await d.siblings_after_crash() {
-        Ok(code) => testing.assert_eq(code, 123),
-        Err(_) => testing.assert_true(false),
+        .Ok(code) => testing.assert_eq(code, 123),
+        .Err(_) => testing.assert_true(false),
     }
 }
 
@@ -94,7 +94,7 @@ fn refused_role_ask_reports_real_error_kind() {
     sleep(30ms);
     let d = spawn Dispatcher(sup: sup);
     match await d.refusal_kind() {
-        Ok(kind) => testing.assert_eq(kind, 1),
-        Err(_) => testing.assert_true(false),
+        .Ok(kind) => testing.assert_eq(kind, 1),
+        .Err(_) => testing.assert_true(false),
     }
 }

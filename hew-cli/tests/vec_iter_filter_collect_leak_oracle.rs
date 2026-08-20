@@ -50,7 +50,7 @@ fn host_can_inspect_process() -> bool {
 
 fn owned_record_filter_collect_source(frames: usize) -> String {
     format!(
-        "import std::iter;\n\
+        "import std.iter;\n\
          \n\
          record Claim {{\n\
          \x20   run_id: string,\n\
@@ -58,13 +58,13 @@ fn owned_record_filter_collect_source(frames: usize) -> String {
          }}\n\
          \n\
          fn retained_total(frame: i64) -> i64 {{\n\
-         \x20   let claims: Vec<Claim> = Vec::new();\n\
+         \x20   let claims: Vec<Claim> = Vec.new();\n\
          \x20   claims.push(Claim {{ run_id: \"discard\", amount: -1 }});\n\
          \x20   claims.push(Claim {{ run_id: \"keep-a\", amount: 20 }});\n\
          \x20   claims.push(Claim {{ run_id: \"keep-b\", amount: 30 }});\n\
          \x20   let cursor = claims.into_iter();\n\
          \x20   let retained = cursor.filter(|claim: Claim| claim.amount >= 20);\n\
-         \x20   let collected = iter::collect(retained);\n\
+         \x20   let collected = iter.collect(retained);\n\
          \x20   var total: i64 = 0;\n\
          \x20   for claim in collected {{\n\
          \x20       total = total + claim.amount;\n\

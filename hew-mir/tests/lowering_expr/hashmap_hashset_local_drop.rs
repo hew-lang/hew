@@ -104,7 +104,7 @@ fn hashmap_hashset_local_drop_admits_local_map_on_return() {
     let pipeline = pipeline_with_tc(
         r"
         fn main() -> i64 {
-            let m: HashMap<i64, i64> = HashMap::new();
+            let m: HashMap<i64, i64> = HashMap.new();
             m.insert(1, 10);
             let _v = m.get(1);
             let _n = m.len();
@@ -128,7 +128,7 @@ fn hashmap_hashset_local_drop_admits_local_set_on_return() {
     let pipeline = pipeline_with_tc(
         r"
         fn main() -> i64 {
-            let s: HashSet<i64> = HashSet::new();
+            let s: HashSet<i64> = HashSet.new();
             s.insert(1);
             let _c = s.contains(1);
             0
@@ -151,9 +151,9 @@ fn hashmap_hashset_local_drop_admits_map_and_set_in_lifo_order() {
     let pipeline = pipeline_with_tc(
         r"
         fn main() -> i64 {
-            let m: HashMap<i64, i64> = HashMap::new();
+            let m: HashMap<i64, i64> = HashMap.new();
             m.insert(1, 10);
-            let s: HashSet<i64> = HashSet::new();
+            let s: HashSet<i64> = HashSet.new();
             s.insert(2);
             0
         }
@@ -194,7 +194,7 @@ fn hashmap_hashset_local_drop_cancel_path_frees_live_map() {
         r"
         fn sink(x: i64) -> i64 { x }
         fn main() -> i64 {
-            let m: HashMap<i64, i64> = HashMap::new();
+            let m: HashMap<i64, i64> = HashMap.new();
             m.insert(1, 10);
             for i in 0 .. 3 {
                 let _ = sink(i);
@@ -236,7 +236,7 @@ fn hashmap_hashset_local_drop_excludes_spawn_escaped_map() {
             receive fn ping() -> i64 { 1 }
         }
         fn main() -> i64 {
-            let counts: HashMap<i64, i64> = HashMap::new();
+            let counts: HashMap<i64, i64> = HashMap.new();
             counts.insert(1, 10);
             let _h = spawn Holder(counts: counts);
             0
@@ -264,7 +264,7 @@ fn hashmap_hashset_local_drop_excludes_spawn_escaped_set() {
             receive fn ping() -> i64 { 1 }
         }
         fn main() -> i64 {
-            let names: HashSet<i64> = HashSet::new();
+            let names: HashSet<i64> = HashSet.new();
             names.insert(1);
             let _h = spawn SetHolder(names: names);
             0
@@ -289,7 +289,7 @@ fn hashmap_hashset_local_drop_excludes_returned_map() {
     let pipeline = pipeline_with_tc(
         r"
         fn make() -> HashMap<i64, i64> {
-            let m: HashMap<i64, i64> = HashMap::new();
+            let m: HashMap<i64, i64> = HashMap.new();
             m.insert(1, 10);
             return m;
         }
@@ -330,7 +330,7 @@ fn hashmap_hashset_local_drop_excludes_alias_then_spawn_escaped_map() {
             receive fn ping() -> i64 { 1 }
         }
         fn main() -> i64 {
-            let counts: HashMap<i64, i64> = HashMap::new();
+            let counts: HashMap<i64, i64> = HashMap.new();
             counts.insert(1, 10);
             let counts2 = counts;
             let _h = spawn Holder(counts: counts2);
@@ -357,7 +357,7 @@ fn hashmap_hashset_local_drop_excludes_alias_then_spawn_escaped_set() {
             receive fn ping() -> i64 { 1 }
         }
         fn main() -> i64 {
-            let names: HashSet<i64> = HashSet::new();
+            let names: HashSet<i64> = HashSet.new();
             names.insert(1);
             let names2 = names;
             let _h = spawn SetHolder(names: names2);
@@ -381,7 +381,7 @@ fn hashmap_hashset_local_drop_excludes_alias_then_returned_map() {
     let pipeline = pipeline_with_tc(
         r"
         fn make() -> HashMap<i64, i64> {
-            let m: HashMap<i64, i64> = HashMap::new();
+            let m: HashMap<i64, i64> = HashMap.new();
             m.insert(1, 10);
             let m2 = m;
             return m2;

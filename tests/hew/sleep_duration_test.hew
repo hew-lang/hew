@@ -9,12 +9,12 @@
 //! The strict `>= 5` after a real sleep is the test with teeth: a path that
 //! ignores the argument and returns immediately fails with `millis() == 0`.
 
-import std::testing;
+import std.testing;
 
 // ── sleep(duration) actually sleeps the requested time ───────────────────
 #[test]
 fn sleep_duration_waits_at_least_the_given_time() {
-    let start = instant::now();
+    let start = instant.now();
     sleep(5ms);
     let waited: duration = start.elapsed();
     testing.assert_true(waited.millis() >= 5);
@@ -23,7 +23,7 @@ fn sleep_duration_waits_at_least_the_given_time() {
 // ── sleep(0ns) is a no-op — does not hang ────────────────────────────────
 #[test]
 fn sleep_zero_duration_returns_immediately() {
-    let start = instant::now();
+    let start = instant.now();
     sleep(0ns);
     let waited: duration = start.elapsed();
     // No observable delay: elapsed should be well under 100ms on any machine.
@@ -33,10 +33,10 @@ fn sleep_zero_duration_returns_immediately() {
 // ── sleep_until past instant returns immediately ──────────────────────────
 #[test]
 fn sleep_until_past_instant_returns_immediately() {
-    let past = instant::now();
+    let past = instant.now();
     // Advance the clock by sleeping; `past` is now in the past.
     sleep(5ms);
-    let start = instant::now();
+    let start = instant.now();
     sleep_until(past);
     let elapsed: duration = start.elapsed();
     // Should return without a meaningful delay.
@@ -46,7 +46,7 @@ fn sleep_until_past_instant_returns_immediately() {
 // ── sleep_until future instant waits until that point ────────────────────
 #[test]
 fn sleep_until_future_instant_waits() {
-    let start = instant::now();
+    let start = instant.now();
     // Construct a future instant 10ms from now using instant + duration.
     let deadline = start + 10ms;
     sleep_until(deadline);
@@ -71,8 +71,8 @@ actor SleepActor {
 fn sleep_in_actor_suspends_and_resumes() {
     let a = spawn SleepActor(woke: 0);
     match await a.sleep_and_count(10ms) {
-        Ok(n) => testing.assert_eq(n, 1),
-        Err(_) => testing.assert_true(false),
+        .Ok(n) => testing.assert_eq(n, 1),
+        .Err(_) => testing.assert_true(false),
     }
 }
 
@@ -80,9 +80,10 @@ fn sleep_in_actor_suspends_and_resumes() {
 actor SleepUntilActor {
     var woke: i64 = 0;
     receive fn sleep_until_and_count() -> i64 {
+
         // Sleep until 10ms in the future.
         sleep(10ms);
-        let deadline = instant::now();
+        let deadline = instant.now();
         sleep_until(deadline);
         woke = woke + 1;
         return woke;
@@ -93,7 +94,7 @@ actor SleepUntilActor {
 fn sleep_until_in_actor_suspends_and_resumes() {
     let a = spawn SleepUntilActor(woke: 0);
     match await a.sleep_until_and_count() {
-        Ok(n) => testing.assert_eq(n, 1),
-        Err(_) => testing.assert_true(false),
+        .Ok(n) => testing.assert_eq(n, 1),
+        .Err(_) => testing.assert_true(false),
     }
 }

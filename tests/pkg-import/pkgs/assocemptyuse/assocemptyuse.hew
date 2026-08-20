@@ -5,7 +5,7 @@
 //! bare `trait_defs["Source"]` is last-write-wins between the two `Source`
 //! traits; this module exists to force that collision in the oracle.
 
-import hew::assocempty::{Source};
+import hew.assocempty.{Source};
 
 pub fn touch() -> i64 {
     0

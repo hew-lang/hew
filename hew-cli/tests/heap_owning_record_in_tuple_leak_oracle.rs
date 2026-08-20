@@ -68,7 +68,7 @@ fn control_vec_in_tuple_source() -> String {
     format!(
         "\
 fn build(n: i64) -> i64 {{
-    let inner: Vec<i64> = Vec::new();
+    let inner: Vec<i64> = Vec.new();
     inner.push(n);
     inner.push(n + 1);
     let pair = (inner, n);
@@ -97,7 +97,7 @@ fn record_in_tuple_source() -> String {
 type Boxed {{ payload: Vec<i64> }}
 
 fn build(n: i64) -> i64 {{
-    let inner: Vec<i64> = Vec::new();
+    let inner: Vec<i64> = Vec.new();
     inner.push(n);
     inner.push(n + 1);
     let pair = (Boxed {{ payload: inner }}, n);
@@ -127,7 +127,7 @@ type Inner {{ payload: Vec<i64> }}
 type Outer {{ inner: Inner }}
 
 fn build(n: i64) -> i64 {{
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(n);
     v.push(n + 1);
     let pair = (Outer {{ inner: Inner {{ payload: v }} }}, n);
@@ -165,7 +165,7 @@ fn generic_record_in_tuple_source() -> String {
 type Holder<T> {{ payload: Vec<T> }}
 
 fn build(n: i64) -> i64 {{
-    let inner: Vec<i64> = Vec::new();
+    let inner: Vec<i64> = Vec.new();
     inner.push(n);
     inner.push(n + 1);
     let pair = (Holder<i64> {{ payload: inner }}, n);
@@ -201,12 +201,12 @@ type Boxed {{ payload: Vec<i64> }}
 enum Wrap {{ A(Boxed) }}
 
 fn build(n: i64) -> i64 {{
-    let inner: Vec<i64> = Vec::new();
+    let inner: Vec<i64> = Vec.new();
     inner.push(n);
     inner.push(n + 1);
-    let w: Wrap = Wrap::A(Boxed {{ payload: inner }});
+    let w: Wrap = Wrap.A(Boxed {{ payload: inner }});
     match w {{
-        Wrap::A(_) => n,
+        Wrap.A(_) => n,
     }}
 }}
 
@@ -231,11 +231,11 @@ const NO_DOUBLE_FREE_SOURCE: &str = "\
 type Boxed { payload: Vec<i64> }
 
 fn main() {
-    let inner: Vec<i64> = Vec::new();
+    let inner: Vec<i64> = Vec.new();
     inner.push(10);
     inner.push(20);
     let pair = (Boxed { payload: inner }, 5);
-    let ns: Vec<i64> = Vec::new();
+    let ns: Vec<i64> = Vec.new();
     ns.push(7);
     let sum = pair.1 + ns[0];
     print(sum);

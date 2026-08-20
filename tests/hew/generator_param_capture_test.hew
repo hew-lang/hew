@@ -13,7 +13,7 @@
 //! coro-ramp `__hew_gen_body_*` entry — safe for BitCopy scalars, which is
 //! all these fixtures exercise.
 
-import std::testing;
+import std.testing;
 
 // A parameterized generator: the body reads the formal parameter `n` in both
 // the loop bound and the yielded value. `n` is a free variable of the body,

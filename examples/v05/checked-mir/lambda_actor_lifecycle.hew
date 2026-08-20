@@ -17,7 +17,7 @@ fn main() {
     };
     let a = scale(3);
     match a {
-        Ok(v) => println(v),
-        Err(_) => println(-1),
+        .Ok(v) => println(v),
+        .Err(_) => println(-1),
     }
 }

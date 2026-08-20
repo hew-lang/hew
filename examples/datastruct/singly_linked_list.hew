@@ -108,14 +108,14 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
 
 // --- Tests ---
 fn test_prepend() -> i64 {
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     var head = -1;
     head = prepend(nodes, head, 30);
     head = prepend(nodes, head, 20);
     head = prepend(nodes, head, 10);
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     traverse(nodes, head, result);
-    let expected: Vec<i64> = Vec::new();
+    let expected: Vec<i64> = Vec.new();
     expected.push(10);
     expected.push(20);
     expected.push(30);
@@ -128,14 +128,14 @@ fn test_prepend() -> i64 {
 }
 
 fn test_append() -> i64 {
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     var head = -1;
     head = append(nodes, head, 10);
     head = append(nodes, head, 20);
     head = append(nodes, head, 30);
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     traverse(nodes, head, result);
-    let expected: Vec<i64> = Vec::new();
+    let expected: Vec<i64> = Vec.new();
     expected.push(10);
     expected.push(20);
     expected.push(30);
@@ -148,15 +148,15 @@ fn test_append() -> i64 {
 }
 
 fn test_delete_middle() -> i64 {
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     var head = -1;
     head = append(nodes, head, 10);
     head = append(nodes, head, 20);
     head = append(nodes, head, 30);
     head = delete_val(nodes, head, 20);
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     traverse(nodes, head, result);
-    let expected: Vec<i64> = Vec::new();
+    let expected: Vec<i64> = Vec.new();
     expected.push(10);
     expected.push(30);
     if vecs_equal(result, expected) == 1 {
@@ -168,12 +168,12 @@ fn test_delete_middle() -> i64 {
 }
 
 fn test_delete_head() -> i64 {
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     var head = -1;
     head = append(nodes, head, 10);
     head = append(nodes, head, 20);
     head = delete_val(nodes, head, 10);
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     traverse(nodes, head, result);
     if result.len() == 1 {
         if result[0] == 20 {
@@ -186,7 +186,7 @@ fn test_delete_head() -> i64 {
 }
 
 fn test_find() -> i64 {
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     var head = -1;
     head = append(nodes, head, 10);
     head = append(nodes, head, 20);
@@ -206,7 +206,7 @@ fn test_find() -> i64 {
 }
 
 fn test_length() -> i64 {
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     var head = -1;
     if list_len(nodes, head) != 0 {
         println("FAIL: length");

@@ -30,7 +30,7 @@ fn show_named(v: dyn Named) {
 fn main() {
     let a: dyn Named = P { n: "p0" };
     let b: dyn Named = P { n: "p1" };
-    let v: Vec<dyn Named> = Vec::new();
+    let v: Vec<dyn Named> = Vec.new();
     v.push(a);
     v.push(b);
     for e in v {

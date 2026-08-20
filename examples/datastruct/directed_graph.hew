@@ -7,12 +7,12 @@ fn has_path_dfs(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64, src:
     if src == dst {
         return true;
     }
-    let visited: Vec<i64> = Vec::new();
+    let visited: Vec<i64> = Vec.new();
     for i in 0 .. num_nodes {
         visited.push(0);
     }
     // Stack-based DFS
-    let stack: Vec<i64> = Vec::new();
+    let stack: Vec<i64> = Vec.new();
     stack.push(src);
     visited.set(src, 1);
     while stack.len() > 0 {
@@ -40,8 +40,8 @@ fn main() {
     var failed = 0;
     let num_nodes = 6;
     // Directed edges: 0->1, 0->2, 1->3, 2->1, 2->4, 3->5, 4->3, 4->5
-    let esrc: Vec<i64> = Vec::new();
-    let edst: Vec<i64> = Vec::new();
+    let esrc: Vec<i64> = Vec.new();
+    let edst: Vec<i64> = Vec.new();
     esrc.push(0);
     edst.push(1);
     esrc.push(0);
@@ -60,7 +60,7 @@ fn main() {
     edst.push(5);
     let num_edges = esrc.len();
     // Build forward graph
-    let degree: Vec<i64> = Vec::new();
+    let degree: Vec<i64> = Vec.new();
     for i in 0 .. num_nodes {
         degree.push(0);
     }
@@ -68,17 +68,17 @@ fn main() {
         let s = esrc[i];
         degree.set(s, degree[s] + 1);
     }
-    let adj_offsets: Vec<i64> = Vec::new();
+    let adj_offsets: Vec<i64> = Vec.new();
     adj_offsets.push(0);
     for i in 0 .. num_nodes {
         adj_offsets.push(adj_offsets[i] + degree[i]);
     }
-    let adj_nodes: Vec<i64> = Vec::new();
+    let adj_nodes: Vec<i64> = Vec.new();
     let total = adj_offsets[num_nodes];
     for i in 0 .. total {
         adj_nodes.push(0);
     }
-    let pos: Vec<i64> = Vec::new();
+    let pos: Vec<i64> = Vec.new();
     for i in 0 .. num_nodes {
         pos.push(adj_offsets[i]);
     }
@@ -89,7 +89,7 @@ fn main() {
         pos.set(s, pos[s] + 1);
     }
     // Compute in-degree
-    let in_deg: Vec<i64> = Vec::new();
+    let in_deg: Vec<i64> = Vec.new();
     for i in 0 .. num_nodes {
         in_deg.push(0);
     }
@@ -146,7 +146,7 @@ fn main() {
         passed = passed + 1;
     }
     // Build transpose graph (reverse all edges)
-    let tdeg: Vec<i64> = Vec::new();
+    let tdeg: Vec<i64> = Vec.new();
     for i in 0 .. num_nodes {
         tdeg.push(0);
     }
@@ -154,16 +154,16 @@ fn main() {
         let d = edst[i];
         tdeg.set(d, tdeg[d] + 1);
     }
-    let t_offsets: Vec<i64> = Vec::new();
+    let t_offsets: Vec<i64> = Vec.new();
     t_offsets.push(0);
     for i in 0 .. num_nodes {
         t_offsets.push(t_offsets[i] + tdeg[i]);
     }
-    let t_nodes: Vec<i64> = Vec::new();
+    let t_nodes: Vec<i64> = Vec.new();
     for i in 0 .. total {
         t_nodes.push(0);
     }
-    let tpos: Vec<i64> = Vec::new();
+    let tpos: Vec<i64> = Vec.new();
     for i in 0 .. num_nodes {
         tpos.push(t_offsets[i]);
     }

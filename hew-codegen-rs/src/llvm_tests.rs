@@ -9475,7 +9475,7 @@ fn make_nested(label: string) -> fn() -> i64 {
 }
 fn main() {
     let nested = make_nested("closure-owner".to_upper());
-    let funcs: Vec<fn() -> i64> = Vec::new();
+    let funcs: Vec<fn() -> i64> = Vec.new();
     funcs.push(nested);
     let recovered = funcs.pop();
     let person = Person { tag: "dyn-owner".to_upper() };
@@ -12829,7 +12829,7 @@ fn helper_trap() -> i64 {
     };
     let witness = Witness { fd: 7 };
     let nested = make_nested("helper-nested".to_upper());
-    let table = HashMap::new<string, i64>();
+    let table = HashMap.new<string, i64>();
     text.len() + data.len() + bundle.text.len() + bundle.data.len()
         + witness.fd + nested() + table["missing"]
 }
@@ -13092,12 +13092,12 @@ extern "C" {
 enum Pair { Both(Witness, string); Nothing; }
 fn consume(p: Pair, trigger: i64) -> i64 {
     match p {
-        Pair::Both(witness, text) => {
+        Pair.Both(witness, text) => {
             witness.close();
             if trigger != 0 { panic("crash after explicit close"); }
             text.len()
         },
-        Pair::Nothing => 0,
+        Pair.Nothing => 0,
     }
 }
 actor Gate { receive fn tick() -> i64 { 1 } }
@@ -13108,7 +13108,7 @@ actor Runner {
             Ok(value) => value,
             Err(_) => 0,
         };
-        let pair = Pair::Both(
+        let pair = Pair.Both(
             Witness {
                 handle: unsafe { hew_xml_parse("<x/>") },
             },
@@ -13313,7 +13313,7 @@ fn push_then_maybe_crash(value: bytes, trigger: i64) {
     }
 }
 fn build_packet(trigger: i64) -> bytes {
-    let value = bytes::new();
+    let value = bytes.new();
     push_then_maybe_crash(value, trigger);
     value
 }

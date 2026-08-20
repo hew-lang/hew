@@ -3,7 +3,7 @@
 //! included in the slice, matching native semantics.
 
 fn main() {
-    let words: Vec<string> = Vec::new();
+    let words: Vec<string> = Vec.new();
     words.push("alpha");
     words.push("beta");
     words.push("gamma");
@@ -16,7 +16,7 @@ fn main() {
     println(f"slice[0]: {slice[0]}");
     println(f"slice[1]: {slice[1]}");
     println(f"slice[2]: {slice[2]}");
-    let nums: Vec<i64> = Vec::new();
+    let nums: Vec<i64> = Vec.new();
     nums.push(10);
     nums.push(20);
     nums.push(30);

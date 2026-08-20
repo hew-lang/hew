@@ -94,7 +94,7 @@ fn control_scalar_vec_source() -> String {
     format!(
         "\
 fn build(n: i64) -> i64 {{
-    let xs: Vec<i64> = Vec::new();
+    let xs: Vec<i64> = Vec.new();
     xs.push(n);
     xs.push(n);
     xs.len()
@@ -122,7 +122,7 @@ fn vec_record_new_push_source() -> String {
 type Point {{ x: i64, y: i64 }}
 
 fn build(n: i64) -> i64 {{
-    let pts: Vec<Point> = Vec::new();
+    let pts: Vec<Point> = Vec.new();
     pts.push(Point {{ x: n, y: n }});
     pts.push(Point {{ x: n, y: n }});
     pts.len()
@@ -212,7 +212,7 @@ fn vec_tuple_new_push_source() -> String {
     format!(
         "\
 fn build(n: i64) -> i64 {{
-    let pairs: Vec<(i64, i64)> = Vec::new();
+    let pairs: Vec<(i64, i64)> = Vec.new();
     pairs.push((n, n));
     pairs.push((n, n));
     pairs.len()
@@ -262,9 +262,9 @@ fn main() -> i64 {{
 /// the tuple Vec) crashes under `MallocScribble` before the sentinel prints.
 const TUPLE_NO_DOUBLE_FREE_SOURCE: &str = "\
 fn main() {
-    let pairs: Vec<(i64, i64)> = Vec::new();
+    let pairs: Vec<(i64, i64)> = Vec.new();
     pairs.push((10, 20));
-    let words: Vec<string> = Vec::new();
+    let words: Vec<string> = Vec.new();
     words.push(\"hello\");
     let sum = pairs.len() + words.len();
     print(sum);
@@ -282,11 +282,11 @@ const NO_DOUBLE_FREE_SOURCE: &str = "\
 type Point { x: i64, y: i64 }
 
 fn main() {
-    let pts: Vec<Point> = Vec::new();
+    let pts: Vec<Point> = Vec.new();
     pts.push(Point { x: 10, y: 20 });
     let p = pts[0];
     let lit = [Point { x: 3, y: 4 }; 2];
-    let words: Vec<string> = Vec::new();
+    let words: Vec<string> = Vec.new();
     words.push(\"alpha\");
     let ns = [7; 3];
     let sum = p.x + p.y + lit.len() + words.len() + ns[0];

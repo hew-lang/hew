@@ -11,18 +11,18 @@
 //! constructor: an all-scalar `W<i64>` rides the plain `_layout` ops, a
 //! heap-owning `W<string>` rides the owned family.
 
-import std::testing;
+import std.testing;
 
 type W<T> {
     v: T;
 }
 
 fn store_and_read<T>(x: T) -> T {
-    let items: Vec<W<T>> = Vec::new();
+    let items: Vec<W<T>> = Vec.new();
     items.push(W { v: x });
     match items.get(0) {
-        Some(w) => w.v,
-        None => x,
+        .Some(w) => w.v,
+        .None => x,
     }
 }
 
@@ -42,11 +42,11 @@ fn test_generic_vec_heap_composite_reads_back() {
 }
 
 fn count_options<T>(x: T) -> i64 {
-    let items: Vec<Option<T>> = Vec::new();
+    let items: Vec<Option<T>> = Vec.new();
     items.push(Some(x));
     items.push(None);
     match items.get(0) {
-        Some(Some(_)) => items.len(),
+        .Some(.Some(_)) => items.len(),
         _ => -1,
     }
 }
@@ -62,11 +62,11 @@ fn test_generic_vec_option_element() {
 // first-class inline layout Vec element.
 #[test]
 fn test_concrete_vec_option_element() {
-    let items: Vec<Option<i64>> = Vec::new();
+    let items: Vec<Option<i64>> = Vec.new();
     items.push(Some(5));
     items.push(None);
     let got = match items.get(0) {
-        Some(Some(v)) => v,
+        .Some(.Some(v)) => v,
         _ => -1,
     };
     testing.assert_eq(got, 5);

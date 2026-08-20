@@ -26,7 +26,7 @@ actor Holder {
 }
 
 fn main() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(40);
     v.push(2);
     let h = spawn Holder(cur: v.iter());

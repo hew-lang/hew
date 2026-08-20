@@ -19,9 +19,9 @@
 // deferred to a downstream `E_CODEGEN_FRONT` / D10 fall-through.
 //
 // Harness verb: hew check (negative — see run.sh).
-import hew::closableerr::{Closable as C};
+import hew.closableerr.{Closable as C};
 
-import hew::closableerr2;
+import hew.closableerr2;
 
 pub type ClosableHandle {
     id: i64;

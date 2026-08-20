@@ -21,8 +21,8 @@ fn main() {
     let calculator = spawn Calculator;
     let r = await calculator.simple_calculation(21);
     match r {
-        Ok(result) => println(result),
-        Err(_) => println(-1),
+        .Ok(result) => println(result),
+        .Err(_) => println(-1),
     }
     // Actor call-and-await with discarded return value.
     let messenger = spawn Messenger;

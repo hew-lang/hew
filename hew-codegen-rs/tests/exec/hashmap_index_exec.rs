@@ -137,7 +137,7 @@ fn string_key_write_then_read_returns_written_value() {
         &repo,
         "string_write_read",
         r#"fn main() -> i64 {
-    var m: HashMap<string, i64> = HashMap::new();
+    var m: HashMap<string, i64> = HashMap.new();
     m["answer"] = 42;
     m["answer"]
 }
@@ -157,7 +157,7 @@ fn string_key_write_overwrites_existing_value() {
         &repo,
         "string_overwrite",
         r#"fn main() -> i64 {
-    var m: HashMap<string, i64> = HashMap::new();
+    var m: HashMap<string, i64> = HashMap.new();
     m["k"] = 10;
     m["k"] = 99;
     m["k"]
@@ -179,7 +179,7 @@ fn read_absent_key_traps() {
         &repo,
         "absent_trap",
         r#"fn main() -> i64 {
-    var m: HashMap<string, i64> = HashMap::new();
+    var m: HashMap<string, i64> = HashMap.new();
     m["present"] = 1;
     let r: i64 = m["missing"];
     r
@@ -205,7 +205,7 @@ fn i64_key_write_then_read() {
         &repo,
         "i64_write_read",
         r"fn main() -> i64 {
-    var m: HashMap<i64, i64> = HashMap::new();
+    var m: HashMap<i64, i64> = HashMap.new();
     m[1] = 11;
     m[2] = 22;
     m[1] + m[2]
@@ -228,7 +228,7 @@ fn index_read_agrees_with_method_insert() {
         &repo,
         "index_get_insert_parity",
         r#"fn main() -> i64 {
-    var m: HashMap<string, i64> = HashMap::new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("v", 55);
     m["v"]
 }
@@ -251,7 +251,7 @@ fn method_get_returns_option_some_and_none() {
         &repo,
         "method_get_option",
         r#"fn main() -> i64 {
-    var m: HashMap<string, i64> = HashMap::new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("k", 40);
     let hit = match m.get("k") {
         Some(v) => v,

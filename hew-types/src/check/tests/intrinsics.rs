@@ -26,7 +26,9 @@ fn intrinsic_in_floor_module_is_accepted() {
 fn intrinsic_in_user_root_module_is_rejected() {
     // A user program declaring `#[intrinsic]` at the root module must be
     // rejected: the root/user module is never a floor module (fail-closed).
-    let output = check_source(r#"#[intrinsic("math.sqrt")] pub fn sqrt(x: f64) -> f64;"#);
+    let output = check_source_allowing_prelude_redeclaration(
+        r#"#[intrinsic("math.sqrt")] pub fn sqrt(x: f64) -> f64;"#,
+    );
     let hit = output.errors.iter().find_map(|e| match &e.kind {
         TypeErrorKind::IntrinsicOutsideFloor {
             intrinsic_key,
@@ -47,7 +49,7 @@ fn intrinsic_in_user_root_module_is_rejected() {
 fn intrinsic_in_non_floor_module_is_rejected() {
     // A non-floor module (here a user `app` module) is likewise rejected,
     // proving the gate is an explicit allowlist, not "any module with a path".
-    let output = check_source_in_module(
+    let output = check_source_in_module_allowing_prelude_redeclaration(
         r#"#[intrinsic("math.sqrt")] pub fn sqrt(x: f64) -> f64;"#,
         vec!["app".to_string()],
     );
@@ -65,7 +67,7 @@ fn intrinsic_in_non_floor_module_is_rejected() {
 
 #[test]
 fn std_math_spelling_without_canonical_source_is_rejected() {
-    let output = check_source_in_module(
+    let output = check_source_in_module_allowing_prelude_redeclaration(
         r#"#[intrinsic("math.sqrt")] pub fn sqrt(x: f64) -> f64;"#,
         vec!["std".to_string(), "math".to_string()],
     );

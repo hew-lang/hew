@@ -4,12 +4,12 @@
 fn main() {
     let n = 4;
     let capacity = 5;
-    let weights: Vec<i32> = Vec::new();
+    let weights: Vec<i32> = Vec.new();
     weights.push(2);
     weights.push(3);
     weights.push(4);
     weights.push(5);
-    let values: Vec<i32> = Vec::new();
+    let values: Vec<i32> = Vec.new();
     values.push(3);
     values.push(4);
     values.push(5);
@@ -18,7 +18,7 @@ fn main() {
     // dp is (n+1) x (capacity+1) flat array
     let rows = n + 1;
     let cols = capacity + 1;
-    let dp: Vec<i32> = Vec::new();
+    let dp: Vec<i32> = Vec.new();
     for i in 0 .. rows * cols {
         dp.push(0);
     }

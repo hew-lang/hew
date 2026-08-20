@@ -1,6 +1,6 @@
 fn spiral_matrix(n: i64) -> i64 {
     let total = n * n;
-    let mat: Vec<i64> = Vec::new();
+    let mat: Vec<i64> = Vec.new();
     for idx in 0 .. total {
         mat.push(0);
     }

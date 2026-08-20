@@ -249,7 +249,7 @@ fn machine_diagram_fails_closed_on_missing_import() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("add 'import std::fs;'"),
+        stderr.contains("add 'import std.fs;'"),
         "stderr must surface the missing-import diagnostic; stderr: {stderr}"
     );
 }
@@ -275,7 +275,7 @@ fn machine_list_fails_closed_on_missing_import() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("add 'import std::fs;'"),
+        stderr.contains("add 'import std.fs;'"),
         "stderr must surface the missing-import diagnostic; stderr: {stderr}"
     );
 }

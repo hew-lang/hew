@@ -3,7 +3,7 @@
 // an operation overflows. This pins the parity fixed in #2341: before the VM
 // applied `asIntN(64)` truncation, an overflowing wrapping op produced a
 // mathematically-unbounded value (e.g. it kept 2^63 instead of wrapping to
-// `i64::MIN`).
+// `i64.MIN`).
 //
 // The overflowing values below are *computed* from safe-range literals via
 // wrapping multiplication, so every literal stays inside the JS safe-integer
@@ -16,7 +16,7 @@ fn main() {
     println(f"wsub: {a &- b}");
     println(f"wmul: {a &* b}");
 
-    // 3037000500^2 = 9223372037000250000 > i64::MAX, so the wrapping multiply
+    // 3037000500^2 = 9223372037000250000 > i64.MAX, so the wrapping multiply
     // overflows and wraps to a two's-complement negative. Non-truncating math
     // would instead keep the unbounded positive product.
     let base = 3037000500;

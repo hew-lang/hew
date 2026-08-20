@@ -18,7 +18,7 @@ fn main() {
     c.increment(32);
     let r = await c.total();
     match r {
-        Ok(v) => println(v),
-        Err(_) => println(-1),
+        .Ok(v) => println(v),
+        .Err(_) => println(-1),
     }
 }

@@ -560,6 +560,7 @@ fn type_expr_contains_borrow(type_expr: &TypeExpr) -> bool {
         TypeExpr::Named { type_args, .. } => type_args
             .as_deref()
             .is_some_and(|args| args.iter().any(|arg| type_expr_contains_borrow(&arg.0))),
+        TypeExpr::QualifiedAssocPath(path) => type_expr_contains_borrow(&path.base.0),
         TypeExpr::Result { ok, err } => {
             type_expr_contains_borrow(&ok.0) || type_expr_contains_borrow(&err.0)
         }
@@ -675,6 +676,25 @@ fn type_expr_to_ty_with_params_and_context(
     context: TypeConversionContext,
 ) -> Ty {
     match texpr {
+        TypeExpr::QualifiedAssocPath(path) => {
+            let base = type_expr_to_ty_with_params_and_context(
+                &path.base.0,
+                module_short,
+                type_params,
+                context,
+            );
+            let Some(assoc_name) = path.members.first() else {
+                return Ty::Error;
+            };
+            if path.members.len() != 1 {
+                return Ty::Error;
+            }
+            Ty::AssocType {
+                base: Box::new(base),
+                trait_name: path.trait_path.source_spelling().into_boxed_str(),
+                assoc_name: assoc_name.clone().into_boxed_str(),
+            }
+        }
         TypeExpr::Named { name, type_args } => {
             // Primitive types never take type args; delegate entirely to the
             // canonical primitive table so names like `string`, `bool`, `char`,

@@ -5,7 +5,7 @@ fn parses_trait_defaults_and_impl_type_aliases() {
     let source = r"
         trait Iterator {
             type Item = int;
-            fn next(iter: Self) -> Self::Item;
+            fn next(iter: Self) -> Self.Item;
         }
 
         type Counter {
@@ -14,7 +14,7 @@ fn parses_trait_defaults_and_impl_type_aliases() {
 
         impl Iterator for Counter {
             type Item = int;
-            fn next(c: Counter) -> Self::Item {
+            fn next(c: Counter) -> Self.Item {
                 c.value
             }
         }

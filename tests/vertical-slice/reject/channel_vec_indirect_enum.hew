@@ -8,7 +8,7 @@
 // recv binding must instead fail closed at the release-verdict consultation
 // (the same refusal `gen_yield_vec_indirect_enum.hew` pins for the
 // generator leg).
-import std::channel::channel;
+import std.channel.channel;
 
 indirect enum Wrapped {
     Val(i64);
@@ -16,9 +16,9 @@ indirect enum Wrapped {
 
 fn main() {
     let (tx, rx): (channel.Sender<Vec<Wrapped>>, channel.Receiver<Vec<Wrapped>>) = channel.new(4);
-    let v: Vec<Wrapped> = Vec::new();
-    v.push(Wrapped::Val(1));
-    v.push(Wrapped::Val(2));
+    let v: Vec<Wrapped> = Vec.new();
+    v.push(Wrapped.Val(1));
+    v.push(Wrapped.Val(2));
     tx.send(v);
     tx.close();
     match rx.try_recv() {

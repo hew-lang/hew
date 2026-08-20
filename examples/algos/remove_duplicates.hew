@@ -1,6 +1,6 @@
 // Remove duplicates from sorted array in-place
 fn main() {
-    let arr: Vec<i32> = Vec::new();
+    let arr: Vec<i32> = Vec.new();
     arr.push(1);
     arr.push(1);
     arr.push(2);
@@ -36,7 +36,7 @@ fn main() {
         println("FAIL [2]");
     }
     // Test 2: [1,1,1] -> [1]
-    let arr2: Vec<i32> = Vec::new();
+    let arr2: Vec<i32> = Vec.new();
     arr2.push(1);
     arr2.push(1);
     arr2.push(1);

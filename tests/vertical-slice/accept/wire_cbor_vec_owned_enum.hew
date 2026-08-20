@@ -10,10 +10,10 @@ enum Payload { Empty; Full(string); }
 type Bag { items: Vec<Payload> @1; n: i64 @2; }
 
 fn main() -> i64 {
-    let xs: Vec<Payload> = Vec::new();
-    xs.push(Payload::Full("first-owned"));
-    xs.push(Payload::Empty);
-    xs.push(Payload::Full("second-owned"));
+    let xs: Vec<Payload> = Vec.new();
+    xs.push(Payload.Full("first-owned"));
+    xs.push(Payload.Empty);
+    xs.push(Payload.Full("second-owned"));
     let b = Bag { items: xs, n: 3 };
     let back = Bag.decode(b.encode());
     if back.items.len() != 3 { return 100; }
@@ -21,8 +21,8 @@ fn main() -> i64 {
     var i: i64 = 0;
     while i < 3 {
         match back.items[i] {
-            Payload::Full(_) => { full = full + 1; }
-            Payload::Empty => {}
+            Payload.Full(_) => { full = full + 1; }
+            Payload.Empty => {}
         }
         i = i + 1;
     }

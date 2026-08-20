@@ -27,6 +27,17 @@ mod wasm_rejects {
     /// Parse `source`, enable the WASM target, run the type checker, and
     /// return the resulting output.
     fn check_wasm(source: &str) -> TypeCheckOutput {
+        check_wasm_with_prelude_policy(source, false)
+    }
+
+    fn check_wasm_allowing_prelude_redeclaration(source: &str) -> TypeCheckOutput {
+        check_wasm_with_prelude_policy(source, true)
+    }
+
+    fn check_wasm_with_prelude_policy(
+        source: &str,
+        allow_prelude_redeclaration: bool,
+    ) -> TypeCheckOutput {
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -35,6 +46,7 @@ mod wasm_rejects {
         );
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         checker.enable_wasm_target();
+        checker.checking_embedded_builtins = allow_prelude_redeclaration;
         checker.check_program(&result.program)
     }
 
@@ -102,7 +114,7 @@ mod wasm_rejects {
 
     #[test]
     fn wasm_warns_sleep_until() {
-        let output = check_wasm("fn main() { let t = instant::now(); sleep_until(t); }");
+        let output = check_wasm("fn main() { let t = instant.now(); sleep_until(t); }");
         assert!(
             has_platform_limitation_warning(&output),
             "sleep_until should emit a PlatformLimitation warning on WASM; got warnings: {:?}",
@@ -135,7 +147,9 @@ mod wasm_rejects {
     /// unrelated body/signature proves this isn't the timer primitive.
     #[test]
     fn wasm_user_defined_sleep_does_not_warn() {
-        let output = check_wasm("fn sleep(x: i64) -> i64 { x + 1 } fn main() { sleep(41); }");
+        let output = check_wasm_allowing_prelude_redeclaration(
+            "fn sleep(x: i64) -> i64 { x + 1 } fn main() { sleep(41); }",
+        );
         assert!(
             !has_platform_limitation_warning(&output),
             "a user-defined `sleep` function must not trigger the Timer PlatformLimitation warning; got warnings: {:?}",
@@ -150,8 +164,9 @@ mod wasm_rejects {
 
     #[test]
     fn wasm_user_defined_sleep_until_does_not_warn() {
-        let output =
-            check_wasm("fn sleep_until(x: i64) -> i64 { x } fn main() { sleep_until(1); }");
+        let output = check_wasm_allowing_prelude_redeclaration(
+            "fn sleep_until(x: i64) -> i64 { x } fn main() { sleep_until(1); }",
+        );
         assert!(
             !has_platform_limitation_warning(&output),
             "a user-defined `sleep_until` function must not trigger the Timer PlatformLimitation warning; got warnings: {:?}",
@@ -222,7 +237,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_allows_bounded_channel_subset() {
         let source = concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "fn main() {\n",
             "    let (tx, rx) = channel.new(1);\n",
             "    tx.send(\"hello\");\n",
@@ -250,7 +265,7 @@ mod wasm_rejects {
     #[test]
     fn native_channel_new_no_platform_error() {
         let source = concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "fn main() {\n",
             "    let pair = channel.new(0);\n",
             "}\n",
@@ -273,7 +288,7 @@ mod wasm_rejects {
     #[test]
     fn receive_fn_await_channel_recv_does_not_warn_blocking() {
         let source = concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "actor Worker {\n",
             "    receive fn run() {\n",
             "        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n",
@@ -314,7 +329,7 @@ mod wasm_rejects {
     #[test]
     fn receive_fn_bare_channel_recv_still_warns_blocking() {
         let source = concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "actor Worker {\n",
             "    receive fn run() {\n",
             "        let (_tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n",
@@ -348,7 +363,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_blocking_channel_recv() {
         let source = concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "fn main() {\n",
             "    let (_tx, rx) = channel.new(1);\n",
             "    let _ = rx.recv();\n",
@@ -378,7 +393,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_for_await_receiver() {
         let source = concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "fn main() {\n",
             "    let (tx, rx) = channel.new(1);\n",
             "    tx.send(\"hello\");\n",
@@ -412,7 +427,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_for_await_stream() {
         let source = concat!(
-            "import std::stream;\n",
+            "import std.stream;\n",
             "fn main() {\n",
             "    let (sink, input) = stream.bytes_pipe(1);\n",
             "    sink.close();\n",
@@ -445,7 +460,7 @@ mod wasm_rejects {
     #[test]
     fn native_for_await_receiver_no_platform_error() {
         let source = concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "fn main() {\n",
             "    let (tx, rx) = channel.new(1);\n",
             "    tx.send(\"hello\");\n",
@@ -473,7 +488,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_allows_non_blocking_semaphore_subset() {
         let source = concat!(
-            "import std::semaphore;\n",
+            "import std.semaphore;\n",
             "fn main() {\n",
             "    let sem = semaphore.new(1);\n",
             "    let _ = sem.count();\n",
@@ -501,7 +516,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_blocking_semaphore_methods() {
         let source = concat!(
-            "import std::semaphore;\n",
+            "import std.semaphore;\n",
             "fn main() {\n",
             "    let sem = semaphore.new(1);\n",
             "    sem.acquire();\n",
@@ -536,7 +551,7 @@ mod wasm_rejects {
     #[test]
     fn native_blocking_semaphore_methods_no_platform_error() {
         let source = concat!(
-            "import std::semaphore;\n",
+            "import std.semaphore;\n",
             "fn main() {\n",
             "    let sem = semaphore.new(1);\n",
             "    sem.acquire();\n",
@@ -567,7 +582,7 @@ mod wasm_rejects {
         // Use a function that accepts a Stream<string> and calls .next().
         // The stream module must be imported to register Stream types.
         let source = concat!(
-            "import std::stream;\n",
+            "import std.stream;\n",
             "fn consume(s: stream.Stream<string>) -> string {\n",
             "    s.next()\n",
             "}\n",
@@ -596,7 +611,7 @@ mod wasm_rejects {
     #[test]
     fn native_stream_method_no_platform_error() {
         let source = concat!(
-            "import std::stream;\n",
+            "import std.stream;\n",
             "fn consume(s: stream.Stream<string>) -> string {\n",
             "    s.next()\n",
             "}\n",
@@ -634,24 +649,24 @@ mod wasm_rejects {
     fn wasm_rejects_native_rc1_resource_modules() {
         let cases = [
             (
-                "std::net::http",
+                "std.net.http",
                 "http.listen(\"127.0.0.1:0\")",
                 "HTTP server operations",
             ),
             (
-                "std::process",
+                "std.process",
                 "process.run(\"echo hew\")",
                 "Process execution operations",
             ),
             (
-                "std::net::smtp",
+                "std.net.smtp",
                 "smtp.connect(\"127.0.0.1\", 25, \"\", \"\")",
-                "std::net::smtp operations",
+                "std.net.smtp operations",
             ),
         ];
 
         for (module, expression, diagnostic_name) in cases {
-            let short_name = module.rsplit("::").next().expect("module short name");
+            let short_name = module.rsplit('.').next().expect("module short name");
             let source =
                 format!("import {module};\nfn main() {{ let _resource = {expression}; }}\n");
             let output = check_wasm_with_registry(&source);
@@ -674,7 +689,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_file_stream_owner_through_alias_call_and_function_value() {
         let source = concat!(
-            "import std::fs as files;\n",
+            "import std.fs as files;\n",
             "fn main() {\n",
             "    let _result = files.try_read(\"/dev/null\");\n",
             "    let _producer = files.try_read;\n",
@@ -699,11 +714,8 @@ mod wasm_rejects {
     #[test]
     fn wasm_named_std_function_imports_preserve_exact_owner_for_calls_and_values() {
         for (binding, import) in [
-            ("try_read", "import std::fs::{ try_read };"),
-            (
-                "read_handle",
-                "import std::fs::{ try_read as read_handle };",
-            ),
+            ("try_read", "import std.fs.{ try_read };"),
+            ("read_handle", "import std.fs.{ try_read as read_handle };"),
         ] {
             let source = format!(
                 "{import}\nfn main() {{ let _result = {binding}(\"/dev/null\"); let _producer = {binding}; }}\n"
@@ -720,7 +732,7 @@ mod wasm_rejects {
             assert_eq!(
                 checker
                     .import_fn_name_aliases
-                    .get(&(None, binding.to_string())),
+                    .get(&(None, 0, binding.to_string())),
                 Some(&"std.fs.try_read".to_string()),
                 "named binding `{binding}` must retain exact source identity; all bindings: {:#?}",
                 checker.import_fn_name_aliases,
@@ -769,7 +781,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_tls_module_call() {
         let source = concat!(
-            "import std::net::tls;\n",
+            "import std.net.tls;\n",
             "fn main() { tls.connect(\"host\", 443); }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -779,7 +791,7 @@ mod wasm_rejects {
             output.errors
         );
         assert!(
-            platform_error_contains(&output, "std::net::tls"),
+            platform_error_contains(&output, "std.net.tls"),
             "error message should mention TLS feature; got: {:?}",
             output.errors
         );
@@ -788,7 +800,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_quic_module_call() {
         let source = concat!(
-            "import std::net::quic;\n",
+            "import std.net.quic;\n",
             "fn main() { quic.new_client(); }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -798,7 +810,7 @@ mod wasm_rejects {
             output.errors
         );
         assert!(
-            platform_error_contains(&output, "std::net::quic"),
+            platform_error_contains(&output, "std.net.quic"),
             "error message should mention QUIC feature; got: {:?}",
             output.errors
         );
@@ -807,7 +819,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_websocket_module_calls_and_values() {
         let source = concat!(
-            "import std::net::websocket;\n",
+            "import std.net.websocket;\n",
             "fn main() {\n",
             "    websocket.connect(\"ws://127.0.0.1:9001/\");\n",
             "    websocket.listen(\"127.0.0.1:9002\");\n",
@@ -821,13 +833,13 @@ mod wasm_rejects {
             "websocket calls and values should fail closed on WASM: {:?}",
             output.errors
         );
-        assert!(platform_error_contains(&output, "std::net::websocket"));
+        assert!(platform_error_contains(&output, "std.net.websocket"));
     }
 
     #[test]
     fn wasm_rejects_aliased_websocket_module_calls_and_values() {
         let source = concat!(
-            "import std::net::websocket as ws;\n",
+            "import std.net.websocket as ws;\n",
             "fn main() {\n",
             "    ws.connect(\"ws://127.0.0.1:9001/\");\n",
             "    let _connect = ws.connect;\n",
@@ -842,7 +854,7 @@ mod wasm_rejects {
             "aliased websocket calls and values should fail closed on WASM: {:?}",
             output.errors
         );
-        assert!(platform_error_contains(&output, "std::net::websocket"));
+        assert!(platform_error_contains(&output, "std.net.websocket"));
     }
 
     #[test]
@@ -850,7 +862,7 @@ mod wasm_rejects {
         let mut checker = Checker::new(test_registry());
         checker
             .module_import_bindings
-            .insert((None, "ws".to_string()), "acme.websocket".to_string());
+            .insert((None, 0, "ws".to_string()), "acme.websocket".to_string());
         assert_eq!(
             checker.wasm_native_only_module_feature("ws"),
             None,
@@ -859,7 +871,7 @@ mod wasm_rejects {
 
         checker
             .module_import_bindings
-            .insert((None, "ws".to_string()), "std.net.websocket".to_string());
+            .insert((None, 0, "ws".to_string()), "std.net.websocket".to_string());
         checker
             .canonical_std_module_sources
             .insert("std.net.websocket".to_string());
@@ -873,7 +885,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_websocket_handle_methods() {
         let source = concat!(
-            "import std::net::websocket;\n",
+            "import std.net.websocket;\n",
             "fn use_conn(conn: websocket.Conn) { conn.send_text(\"payload\"); }\n",
             "fn use_server(server: websocket.Server) { server.port(); }\n",
             "fn use_message(message: websocket.Message) { message.msg_type(); }\n",
@@ -884,13 +896,13 @@ mod wasm_rejects {
             "websocket handle methods should fail closed on WASM: {:?}",
             output.errors
         );
-        assert!(platform_error_contains(&output, "std::net::websocket"));
+        assert!(platform_error_contains(&output, "std.net.websocket"));
     }
 
     #[test]
     fn wasm_rejects_dns_module_call() {
         let source = concat!(
-            "import std::net::dns;\n",
+            "import std.net.dns;\n",
             "fn main() { dns.resolve(\"example.com\"); }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -900,7 +912,7 @@ mod wasm_rejects {
             output.errors
         );
         assert!(
-            platform_error_contains(&output, "std::net::dns"),
+            platform_error_contains(&output, "std.net.dns"),
             "error message should mention DNS feature; got: {:?}",
             output.errors
         );
@@ -908,7 +920,7 @@ mod wasm_rejects {
 
     #[test]
     fn wasm_rejects_os_module_call() {
-        let source = concat!("import std::os;\n", "fn main() { os.env(\"HOME\"); }\n",);
+        let source = concat!("import std.os;\n", "fn main() { os.env(\"HOME\"); }\n",);
         let output = check_wasm_with_registry(source);
         assert!(
             has_platform_limitation_error(&output),
@@ -916,7 +928,7 @@ mod wasm_rejects {
             output.errors
         );
         assert!(
-            platform_error_contains(&output, "std::os"),
+            platform_error_contains(&output, "std.os"),
             "error message should mention OS feature; got: {:?}",
             output.errors
         );
@@ -927,7 +939,7 @@ mod wasm_rejects {
         // The fallible twin draws from the same native-only entropy source, so
         // it must not become a way around the fail-closed wasm32 rejection.
         let source = concat!(
-            "import std::crypto::crypto;\n",
+            "import std.crypto.crypto;\n",
             "fn main() { crypto.try_random_bytes(16); }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -948,7 +960,7 @@ mod wasm_rejects {
         // crypto.random_bytes requires secure entropy. On wasm32, no secure
         // implementation is linked, so the checker must fail closed.
         let source = concat!(
-            "import std::crypto::crypto;\n",
+            "import std.crypto.crypto;\n",
             "fn main() { crypto.random_bytes(16); }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -998,7 +1010,7 @@ mod wasm_rejects {
         // Taking crypto.random_bytes as a first-class function value on wasm32
         // must be rejected with PlatformLimitation, not silently allowed.
         let source = concat!(
-            "import std::crypto::crypto;\n",
+            "import std.crypto.crypto;\n",
             "fn main() { let _f = crypto.random_bytes; }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -1019,7 +1031,7 @@ mod wasm_rejects {
         // The same value-position reference must be accepted on native (non-wasm)
         // targets so the guard does not break native builds.
         let source = concat!(
-            "import std::crypto::crypto;\n",
+            "import std.crypto.crypto;\n",
             "fn main() { let _f = crypto.random_bytes; }\n",
         );
         let result = hew_parser::parse(source);
@@ -1045,10 +1057,7 @@ mod wasm_rejects {
 
     #[test]
     fn wasm_rejects_net_connect_value_position() {
-        let source = concat!(
-            "import std::net;\n",
-            "fn main() { let _f = net.connect; }\n",
-        );
+        let source = concat!("import std.net;\n", "fn main() { let _f = net.connect; }\n",);
         let output = check_wasm_with_registry(source);
         assert!(
             has_platform_limitation_error(&output),
@@ -1060,7 +1069,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_http_client_request_value_position() {
         let source = concat!(
-            "import std::net::http::http_client;\n",
+            "import std.net.http.http_client;\n",
             "fn main() { let _f = http_client.request; }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -1074,7 +1083,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_encrypt_seal_value_position() {
         let source = concat!(
-            "import std::crypto::encrypt;\n",
+            "import std.crypto.encrypt;\n",
             "fn main() { let _f = encrypt.seal; }\n",
         );
         let output = check_wasm_with_registry(source);
@@ -1150,7 +1159,7 @@ fn main() {
     #[test]
     fn native_tls_no_platform_error() {
         let source = concat!(
-            "import std::net::tls;\n",
+            "import std.net.tls;\n",
             "fn main() { tls.connect(\"host\", 443); }\n",
         );
         let result = hew_parser::parse(source);
@@ -1176,7 +1185,7 @@ fn main() {
     #[test]
     fn native_quic_no_platform_error() {
         let source = concat!(
-            "import std::net::quic;\n",
+            "import std.net.quic;\n",
             "fn main() { quic.new_client(); }\n",
         );
         let result = hew_parser::parse(source);
@@ -1202,7 +1211,7 @@ fn main() {
     #[test]
     fn native_dns_no_platform_error() {
         let source = concat!(
-            "import std::net::dns;\n",
+            "import std.net.dns;\n",
             "fn main() { dns.resolve(\"example.com\"); }\n",
         );
         let result = hew_parser::parse(source);
@@ -1227,7 +1236,7 @@ fn main() {
 
     #[test]
     fn native_os_no_platform_error() {
-        let source = concat!("import std::os;\n", "fn main() { os.env(\"HOME\"); }\n",);
+        let source = concat!("import std.os;\n", "fn main() { os.env(\"HOME\"); }\n",);
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -1251,7 +1260,7 @@ fn main() {
     #[test]
     fn native_crypto_random_bytes_no_platform_error() {
         let source = concat!(
-            "import std::crypto::crypto;\n",
+            "import std.crypto.crypto;\n",
             "fn main() { crypto.random_bytes(16); }\n",
         );
         let result = hew_parser::parse(source);
@@ -1487,7 +1496,7 @@ fn main() {
     /// user's own call.
     #[test]
     fn wasm_user_defined_link_and_monitor_do_not_reject() {
-        let output = check_wasm(
+        let output = check_wasm_allowing_prelude_redeclaration(
             "fn link(a: i64, b: i64) -> i64 { a + b } \
              fn monitor(x: i64) -> i64 { x } \
              fn main() { link(1, 2); monitor(3); }",
@@ -1503,7 +1512,7 @@ fn main() {
     /// `"supervisor_child" | "supervisor_stop"` `SupervisionTrees` arm.
     #[test]
     fn wasm_user_defined_supervisor_child_does_not_reject() {
-        let output = check_wasm(
+        let output = check_wasm_allowing_prelude_redeclaration(
             "fn supervisor_child(n: i64) -> i64 { n } fn main() { supervisor_child(0); }",
         );
         assert!(
@@ -1522,12 +1531,12 @@ fn main() {
     fn wasm_rejects_supervisor_with_crash_hook() {
         let output = check_wasm(
             r"
-            import std::failure;
+            import std.failure;
 
             actor Crasher {
                 #[on(crash)]
                 fn on_crash(info: CrashInfo) -> CrashAction {
-                    CrashAction::Restart
+                    CrashAction.Restart
                 }
             }
 
@@ -1559,7 +1568,7 @@ fn main() {
     fn wasm_rejects_link_that_would_fire_exit_hook() {
         let output = check_wasm(
             r"
-            import std::failure;
+            import std.failure;
 
             actor Watcher {
                 #[on(exit)]
@@ -1735,7 +1744,7 @@ fn main() {
 
     #[test]
     fn wasm_rejects_node_start() {
-        let output = check_wasm(r#"fn main() { Node::start("a@127.0.0.1:9000"); }"#);
+        let output = check_wasm(r#"fn main() { Node.start("a@127.0.0.1:9000"); }"#);
         assert!(
             has_platform_limitation_error(&output),
             "Node::start should be a compile-time error on WASM; got errors: {:?}",
@@ -1750,7 +1759,7 @@ fn main() {
 
     #[test]
     fn wasm_rejects_node_connect() {
-        let output = check_wasm(r#"fn main() { Node::connect("b@127.0.0.1:9001"); }"#);
+        let output = check_wasm(r#"fn main() { Node.connect("b@127.0.0.1:9001"); }"#);
         assert!(
             platform_error_contains(&output, "Distributed node"),
             "Node::connect should be a Distributed-node WASM error; got: {:?}",
@@ -1760,7 +1769,7 @@ fn main() {
 
     #[test]
     fn wasm_rejects_node_load_keys() {
-        let output = check_wasm(r#"fn main() { Node::load_keys("/keys/node.pem"); }"#);
+        let output = check_wasm(r#"fn main() { Node.load_keys("/keys/node.pem"); }"#);
         assert!(
             platform_error_contains(&output, "Distributed node"),
             "Node::load_keys should be a Distributed-node WASM error; got: {:?}",
@@ -1776,8 +1785,8 @@ fn main() {
             "actor Worker { receive fn ping() {} }\n",
             "fn main() {\n",
             "    let w = spawn Worker;\n",
-            "    Node::register(\"w\", w);\n",
-            "    let _ = Node::lookup<Worker>(\"w\");\n",
+            "    Node.register(\"w\", w);\n",
+            "    let _ = Node.lookup<Worker>(\"w\");\n",
             "}\n",
         );
         let output = check_wasm(source);
@@ -1800,9 +1809,9 @@ fn main() {
     fn native_node_calls_no_platform_error() {
         let source = concat!(
             "fn main() {\n",
-            "    Node::start(\"a@127.0.0.1:9000\");\n",
-            "    Node::connect(\"b@127.0.0.1:9001\");\n",
-            "    Node::load_keys(\"/keys/node.pem\");\n",
+            "    Node.start(\"a@127.0.0.1:9000\");\n",
+            "    Node.connect(\"b@127.0.0.1:9001\");\n",
+            "    Node.load_keys(\"/keys/node.pem\");\n",
             "}\n",
         );
         let output = check_native(source);

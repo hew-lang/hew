@@ -252,11 +252,11 @@ printf '%s\t%s\t%s\t%s\n' \
 run_manifest_import_miniature_suite() {
     local authority="$1"
 
-    printf '%s\n' 'import std::net::dns;' > "${mini_root}/${mini_fixture}"
+    printf '%s\n' 'import std.net.dns;' > "${mini_root}/${mini_fixture}"
     validate_manifest_import_rows "${mini_manifest}" "${mini_root}" "${authority}" \
         >/dev/null 2>&1 || return 1
 
-    printf '%s\n' '// import std::net::dns;' > "${mini_root}/${mini_fixture}"
+    printf '%s\n' '// import std.net.dns;' > "${mini_root}/${mini_fixture}"
     if validate_manifest_import_rows "${mini_manifest}" "${mini_root}" "${authority}" \
         >/dev/null 2>&1; then
         return 1

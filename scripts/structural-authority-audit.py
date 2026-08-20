@@ -1687,11 +1687,11 @@ def opaque_fact_json(facts: list[OpaqueResourceFact]) -> dict[str, object]:
                 "release_symbol": fact.release_symbol,
                 "close_symbol": f"{fact.carrier_key}::close",
                 "scope_exit_source": (
-                    f"import {fact.module.replace('.', '::')}::{{ {fact.resource} }};\n"
+                    f"import {fact.module}.{{ {fact.resource} }};\n"
                     f"fn scope_exit_case(consume value: {fact.resource}) {{ }}\n"
                 ),
                 "explicit_close_source": (
-                    f"import {fact.module.replace('.', '::')}::{{ {fact.resource} }};\n"
+                    f"import {fact.module}.{{ {fact.resource} }};\n"
                     f"fn explicit_close_case(consume value: {fact.resource}) {{ value.close(); }}\n"
                 ),
             }

@@ -4,6 +4,454 @@
 )]
 pub(super) use super::*;
 
+fn selected_import(names: &[&str]) -> ImportSpec {
+    ImportSpec::Names(
+        names
+            .iter()
+            .map(|name| ImportName {
+                name: (*name).to_string(),
+                alias: None,
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn colliding_import_publishes_none_of_its_other_bindings() {
+    let first = make_user_import(
+        &["left"],
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "first".to_string(),
+            alias: Some("shared".to_string()),
+        }])),
+        vec![(Item::Function(make_pub_fn("first", vec![], None)), 0..5)],
+    );
+    let second = make_user_import(
+        &["right"],
+        Some(ImportSpec::Names(vec![
+            ImportName {
+                name: "second".to_string(),
+                alias: Some("shared".to_string()),
+            },
+            ImportName {
+                name: "only_second".to_string(),
+                alias: None,
+            },
+        ])),
+        vec![
+            (Item::Function(make_pub_fn("second", vec![], None)), 0..6),
+            (
+                Item::Function(make_pub_fn("only_second", vec![], None)),
+                7..18,
+            ),
+        ],
+    );
+    let output = check_items(vec![
+        (Item::Import(first), 0..20),
+        (Item::Import(second), 21..50),
+    ]);
+
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::ImportBindingCollision));
+    assert!(output.fn_sigs.contains_key("shared"));
+    assert!(!output.fn_sigs.contains_key("only_second"));
+}
+
+#[test]
+fn prelude_collision_rejects_the_entire_import() {
+    let import = make_user_import(
+        &["user", "helpers"],
+        Some(ImportSpec::Names(vec![
+            ImportName {
+                name: "custom_print".to_string(),
+                alias: Some("Iterator".to_string()),
+            },
+            ImportName {
+                name: "safe_helper".to_string(),
+                alias: None,
+            },
+        ])),
+        vec![
+            (
+                Item::Function(make_pub_fn("custom_print", vec![], None)),
+                0..12,
+            ),
+            (
+                Item::Function(make_pub_fn("safe_helper", vec![], None)),
+                13..24,
+            ),
+        ],
+    );
+    let output = check_items(vec![(Item::Import(import), 0..40)]);
+
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| error.kind == TypeErrorKind::ImportPreludeCollision));
+    assert!(!output.fn_sigs.contains_key("safe_helper"));
+}
+
+#[test]
+fn peer_files_resolve_same_module_alias_from_their_own_imports() {
+    let alpha = hew_parser::parse("pub fn value() -> i64 { 7 }");
+    let beta = hew_parser::parse("pub fn value() -> bool { true }");
+    let mut left =
+        hew_parser::parse("import alpha as util; pub fn from_left() -> i64 { util.value() }");
+    let mut right =
+        hew_parser::parse("import beta as util; pub fn from_right() -> bool { util.value() }");
+    for parsed in [&alpha, &beta, &left, &right] {
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture parse: {:?}",
+            parsed.errors
+        );
+    }
+    for (program, resolved) in [
+        (&mut left.program, alpha.program.items),
+        (&mut right.program, beta.program.items),
+    ] {
+        let import = program
+            .items
+            .iter_mut()
+            .find_map(|(item, _)| match item {
+                Item::Import(import) => Some(import),
+                _ => None,
+            })
+            .expect("peer import");
+        import.resolved_items = Some(resolved);
+    }
+
+    let root_id = ModuleId::root();
+    let shared_id = ModuleId::new(vec!["shared".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    let mut shared_items = left.program.items;
+    let left_count = shared_items.len();
+    shared_items.extend(right.program.items);
+    graph
+        .add_module(Module {
+            id: shared_id.clone(),
+            items: shared_items,
+            imports: vec![],
+            source_paths: vec!["shared/left.hew".into(), "shared/right.hew".into()],
+            doc: None,
+        })
+        .expect("shared module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("root module");
+    graph.item_sources.insert(
+        "shared".to_string(),
+        std::iter::repeat_n("shared/left.hew".into(), left_count)
+            .chain(std::iter::repeat_n(
+                "shared/right.hew".into(),
+                graph.modules[&shared_id].items.len() - left_count,
+            ))
+            .collect(),
+    );
+    graph.topo_order = vec![shared_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: vec![],
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert!(
+        output.errors.is_empty(),
+        "peer imports must remain file-local: {:#?}",
+        output.errors
+    );
+    let owners: HashSet<_> = output
+        .module_import_bindings
+        .iter()
+        .filter(|((module, _, binding), _)| {
+            module.as_deref() == Some("shared") && binding == "util"
+        })
+        .map(|(_, owner)| owner.as_str())
+        .collect();
+    assert_eq!(owners, HashSet::from(["alpha", "beta"]));
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the regression constructs a multi-file module graph with an early import seed"
+)]
+fn early_lifecycle_seed_uses_the_importing_peer_file_index() {
+    let failure_path: std::path::PathBuf = "std/failure.hew".into();
+    let first_peer: std::path::PathBuf = "consumer/first.hew".into();
+    let second_peer: std::path::PathBuf = "consumer/second.hew".into();
+    let failure = hew_parser::parse("pub enum CrashKind { Crashed; }");
+    let first = hew_parser::parse("pub fn untouched() {}");
+    let mut second = hew_parser::parse(
+        "import std.failure.{ CrashKind as Kind }; pub type Holder { kind: Kind; }",
+    );
+    for parsed in [&failure, &first, &second] {
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture parse: {:?}",
+            parsed.errors
+        );
+    }
+    let import = second
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("peer import");
+    import.resolved_items = Some(failure.program.items.clone());
+    import.resolved_item_source_paths =
+        std::iter::repeat_n(failure_path.clone(), failure.program.items.len()).collect();
+    import.resolved_source_paths = vec![failure_path.clone()];
+
+    let root_id = ModuleId::root();
+    let failure_id = ModuleId::new(vec!["std".to_string(), "failure".to_string()]);
+    let consumer_id = ModuleId::new(vec!["consumer".to_string()]);
+    let mut consumer_items = first.program.items;
+    let first_count = consumer_items.len();
+    consumer_items.extend(second.program.items);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: failure_id.clone(),
+            items: failure.program.items,
+            imports: vec![],
+            source_paths: vec![failure_path],
+            doc: None,
+        })
+        .expect("failure module");
+    graph
+        .add_module(Module {
+            id: consumer_id.clone(),
+            items: consumer_items,
+            imports: vec![hew_parser::module::ModuleImport {
+                target: failure_id.clone(),
+                spec: Some(ImportSpec::Names(vec![ImportName {
+                    name: "CrashKind".to_string(),
+                    alias: Some("Kind".to_string()),
+                }])),
+                span: 0..45,
+            }],
+            source_paths: vec![first_peer.clone(), second_peer.clone()],
+            doc: None,
+        })
+        .expect("consumer module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec!["main.hew".into()],
+            doc: None,
+        })
+        .expect("root module");
+    graph.item_sources.insert(
+        "consumer".to_string(),
+        std::iter::repeat_n(first_peer, first_count)
+            .chain(std::iter::repeat_n(
+                second_peer.clone(),
+                graph.modules[&consumer_id].items.len() - first_count,
+            ))
+            .collect(),
+    );
+    graph.topo_order = vec![failure_id, consumer_id, root_id];
+    let second_file_idx = graph
+        .file_span_indices()
+        .path_index(&second_peer)
+        .expect("second peer index");
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: vec![],
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert_eq!(
+        output.import_type_name_aliases.get(&(
+            Some("consumer".to_string()),
+            second_file_idx,
+            "Kind".to_string(),
+        )),
+        Some(&"std.failure.CrashKind".to_string())
+    );
+    assert!(
+        !output.import_type_name_aliases.contains_key(&(
+            Some("consumer".to_string()),
+            0,
+            "Kind".to_string(),
+        )),
+        "a non-root import must never publish under root file index 0: {:#?}",
+        output.import_type_name_aliases
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the regression constructs a complete three-module graph with source attribution"
+)]
+fn resolved_module_copy_reenters_declaring_file_import_scope() {
+    let color_path: std::path::PathBuf = "pkgs/aliassrc.hew".into();
+    let consumer_path: std::path::PathBuf = "pkgs/deepalias.hew".into();
+    let mut color = hew_parser::parse("pub enum Color { Blue(i64); }");
+    let mut consumer = hew_parser::parse(
+        r"
+        import hew.aliassrc.{ Color as Hue };
+        pub type AliasBox { item: Hue; }
+        pub enum AliasWrap { Has(Hue); }
+        pub fn make() -> Hue { Hue.Blue(7) }
+        pub fn score() -> i64 {
+            let boxed: AliasBox = AliasBox { item: make() };
+            let wrapped: AliasWrap = AliasWrap.Has(boxed.item);
+            match wrapped {
+                AliasWrap.Has(color) => match color {
+                    Hue.Blue(value) => value,
+                    _ => 0,
+                },
+            }
+        }
+        ",
+    );
+    let mut root = hew_parser::parse("import hew.deepalias;");
+    for parsed in [&color, &consumer, &root] {
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture parse: {:?}",
+            parsed.errors
+        );
+    }
+
+    let color_item_count = color.program.items.len();
+    let consumer_import = consumer
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("consumer import");
+    consumer_import.resolved_items = Some(color.program.items.clone());
+    consumer_import.resolved_item_source_paths =
+        std::iter::repeat_n(color_path.clone(), color_item_count).collect();
+    consumer_import.resolved_source_paths = vec![color_path.clone()];
+
+    let consumer_item_count = consumer.program.items.len();
+    let root_import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("root import");
+    root_import.resolved_items = Some(consumer.program.items.clone());
+    root_import.resolved_item_source_paths =
+        std::iter::repeat_n(consumer_path.clone(), consumer_item_count).collect();
+    root_import.resolved_source_paths = vec![consumer_path.clone()];
+
+    let root_id = ModuleId::root();
+    let color_id = ModuleId::new(vec!["hew".to_string(), "aliassrc".to_string()]);
+    let consumer_id = ModuleId::new(vec!["hew".to_string(), "deepalias".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: color_id.clone(),
+            items: std::mem::take(&mut color.program.items),
+            imports: vec![],
+            source_paths: vec![color_path.clone()],
+            doc: None,
+        })
+        .expect("color module");
+    graph
+        .add_module(Module {
+            id: consumer_id.clone(),
+            items: consumer.program.items.clone(),
+            imports: vec![],
+            source_paths: vec![consumer_path.clone()],
+            doc: None,
+        })
+        .expect("consumer module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec!["main.hew".into()],
+            doc: None,
+        })
+        .expect("root module");
+    graph.item_sources.insert(
+        "hew.aliassrc".to_string(),
+        std::iter::repeat_n(color_path, color_item_count).collect(),
+    );
+    graph.item_sources.insert(
+        "hew.deepalias".to_string(),
+        std::iter::repeat_n(consumer_path, consumer_item_count).collect(),
+    );
+    graph.topo_order = vec![color_id, consumer_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: root.program.items,
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert!(
+        output.errors.is_empty(),
+        "resolved module copies must keep their source-file imports: {:#?}",
+        output.errors
+    );
+    assert_eq!(
+        output
+            .fn_sigs
+            .get("hew.deepalias.make")
+            .map(|sig| &sig.return_type),
+        Some(&Ty::named("hew.aliassrc.Color", vec![]))
+    );
+}
+
+#[test]
+fn failed_member_lookup_explains_lexical_module_shadowing() {
+    let mut root =
+        hew_parser::parse("import helper as util; fn probe(util: i64) { util.missing(); }");
+    assert!(root.errors.is_empty(), "fixture parse: {:?}", root.errors);
+    let import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("fixture import");
+    import.resolved_items = Some(vec![]);
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&root.program);
+    let error = output
+        .errors
+        .iter()
+        .find(|error| error.kind == TypeErrorKind::UndefinedMethod)
+        .expect("lexical receiver should fail as an ordinary value method lookup");
+    assert!(error
+        .notes
+        .iter()
+        .any(|(_, note, _)| note.contains("shadows the imported module")));
+}
+
 #[test]
 fn should_import_name_bare_import_returns_false() {
     assert!(!Checker::should_import_name("helper", &None));
@@ -173,7 +621,7 @@ fn selective_trait_import_keeps_module_qualifier_for_exact_sibling_identity() {
     assert_eq!(
         output
             .module_import_bindings
-            .get(&(None, "closableerr".to_string()))
+            .get(&(None, 0, "closableerr".to_string()))
             .map(String::as_str),
         Some("hew.closableerr"),
         "the lexical `closableerr` qualifier must retain the exact owner even \
@@ -247,7 +695,7 @@ fn imported_actor_i32_uses_exact_module_binding_and_owner() {
         output
             .module_import_bindings
             .iter()
-            .find(|((_, binding), _)| binding == "testffi")
+            .find(|((_, _, binding), _)| binding == "testffi")
             .map(|(_, owner)| owner.as_str()),
         Some("hew.testffi"),
     );
@@ -268,18 +716,18 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
 
     let result_ty = Ty::Named {
         builtin: None,
-        name: "hew.testffi.Result".to_string(),
+        name: "hew.testffi.TestResult".to_string(),
         args: vec![],
     };
     assert!(
-        checker.registry.has_type_markers("hew.testffi.Result"),
+        checker.registry.has_type_markers("hew.testffi.TestResult"),
         "canonical record marker metadata must be published"
     );
     assert!(
         checker
             .registry
             .implements_marker(&result_ty, crate::traits::MarkerTrait::Send),
-        "canonical i64-only Result must derive Send"
+        "canonical i64-only TestResult must derive Send"
     );
     assert!(
         output.errors.is_empty(),
@@ -302,11 +750,11 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
     );
     assert!(checker
         .type_defs
-        .get("hew.testffi.Result")
+        .get("hew.testffi.TestResult")
         .is_some_and(|result| result.methods.contains_key("echo_len")));
     let echo_id = output
         .impl_method_declaration_ids
-        .get("hew.testffi.Result::echo_len")
+        .get("hew.testffi.TestResult::echo_len")
         .unwrap_or_else(|| {
             panic!(
                 "canonical emitted impl symbol must publish its declaration ID; keys: {:?}",
@@ -318,7 +766,7 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
         });
     assert!(echo_id
         .full_path()
-        .starts_with("hew.testffi.Result::<impl "));
+        .starts_with("hew.testffi.TestResult::<impl "));
 }
 
 #[test]
@@ -353,16 +801,16 @@ fn module_private_extern_call_publishes_exact_executable_target() {
 fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
     let left = hew_parser::parse(
         r"
-        pub type Result { left: i64; }
-        impl Result {
+        pub type CollisionResult { left: i64; }
+        impl CollisionResult {
             fn echo(self) -> i64 { self.left }
         }
         ",
     );
     let right = hew_parser::parse(
         r"
-        pub type Result { right: string; }
-        impl Result {
+        pub type CollisionResult { right: string; }
+        impl CollisionResult {
             fn echo(self) -> string { self.right }
         }
         ",
@@ -371,8 +819,8 @@ fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
     assert!(right.errors.is_empty());
     let mut root = hew_parser::parse(
         r"
-        import left::render as left_render;
-        import right::render as right_render;
+        import left.render as left_render;
+        import right.render as right_render;
         fn main() {}
         ",
     );
@@ -397,19 +845,19 @@ fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
     );
     let left_id = output
         .impl_method_declaration_ids
-        .get("left.render.Result::echo")
+        .get("left.render.CollisionResult::echo")
         .expect("left emitted impl symbol");
     let right_id = output
         .impl_method_declaration_ids
-        .get("right.render.Result::echo")
+        .get("right.render.CollisionResult::echo")
         .expect("right emitted impl symbol");
     assert_ne!(left_id, right_id);
     assert!(left_id
         .full_path()
-        .starts_with("left.render.Result::<impl "));
+        .starts_with("left.render.CollisionResult::<impl "));
     assert!(right_id
         .full_path()
-        .starts_with("right.render.Result::<impl "));
+        .starts_with("right.render.CollisionResult::<impl "));
 }
 
 #[test]
@@ -428,7 +876,7 @@ fn user_channel_lookalike_retains_nested_sender_and_receiver_identity() {
 
     let mut root = hew_parser::parse(
         r"
-        import std::channel::channel as ch;
+        import std.channel.channel as ch;
         fn probe(tx: ch.Sender, rx: ch.Receiver) {}
         ",
     );
@@ -470,18 +918,6 @@ fn user_channel_lookalike_retains_nested_sender_and_receiver_identity() {
             args,
             builtin: None,
         } if name == "std.channel.channel.Receiver" && args.is_empty()
-    ));
-}
-
-#[test]
-fn should_import_name_glob_returns_true() {
-    assert!(Checker::should_import_name(
-        "helper",
-        &Some(ImportSpec::Glob)
-    ));
-    assert!(Checker::should_import_name(
-        "anything",
-        &Some(ImportSpec::Glob)
     ));
 }
 
@@ -571,8 +1007,8 @@ fn make_pub_struct(name: &str, field: &str) -> TypeDecl {
     }
 }
 
-/// P1 — a bare `import m;` of a `pub type` publishes only the qualified
-/// binding; the importer-scope bare binding is NOT recorded.
+/// P1 — a bare `import m;` of a `pub type` publishes only its full source
+/// owner; the importer-scope bare binding is NOT recorded.
 #[test]
 fn bare_import_type_registers_qualified_only() {
     let reply = make_pub_struct("Reply", "code");
@@ -588,17 +1024,19 @@ fn bare_import_type_registers_qualified_only() {
         module_doc: None,
     });
 
-    // Qualified authority is always published.
+    // Full-owner authority is always published; the lexical module spelling
+    // remains a resolver binding, not a second TypeDef identity.
     assert!(
-        output.type_defs.contains_key("mod_a.Reply"),
-        "bare import should register the qualified type `mod_a.Reply`"
+        output.type_defs.contains_key("myapp.mod_a.Reply"),
+        "bare import should register the canonical type `myapp.mod_a.Reply`"
     );
-    // The source module's own bare def stays (the alias copy reads it); the
-    // importer-scope binding does NOT.
+    assert!(!output.type_defs.contains_key("mod_a.Reply"));
+    assert!(!output.type_defs.contains_key("Reply"));
+    // The importer-scope binding is not published.
     assert!(
         !checker
             .unqualified_to_module
-            .contains_key(&(None, "Reply".to_string())),
+            .contains_key(&(None, 0, "Reply".to_string())),
         "bare import must NOT publish the importer-scope bare binding for `Reply`"
     );
     assert!(
@@ -607,7 +1045,7 @@ fn bare_import_type_registers_qualified_only() {
     );
 }
 
-/// P3 — an explicit `import m::{ Reply };` restores the bare binding.
+/// P3 — an explicit `import m.{ Reply };` restores the bare binding.
 #[test]
 fn named_import_type_publishes_bare_binding() {
     let reply = make_pub_struct("Reply", "code");
@@ -633,7 +1071,7 @@ fn named_import_type_publishes_bare_binding() {
     assert!(
         checker
             .unqualified_to_module
-            .contains_key(&(None, "Reply".to_string())),
+            .contains_key(&(None, 0, "Reply".to_string())),
         "named import must publish the importer-scope bare binding for `Reply`"
     );
     assert!(
@@ -664,18 +1102,18 @@ fn named_import_type_alias_publishes_alias_binding() {
     assert!(
         checker
             .unqualified_to_module
-            .contains_key(&(None, "R".to_string())),
+            .contains_key(&(None, 0, "R".to_string())),
         "aliased named import must publish the alias binding `R`"
     );
     assert!(
         !checker
             .unqualified_to_module
-            .contains_key(&(None, "Reply".to_string())),
+            .contains_key(&(None, 0, "Reply".to_string())),
         "aliased named import must NOT publish the source name `Reply`"
     );
 }
 
-/// P3-alias-identity — an aliased opt-in (`import m::{ Reply as R }`) makes the
+/// P3-alias-identity — an aliased opt-in (`import m.{ Reply as R }`) makes the
 /// bare binding `R` resolve to the SOURCE identity `myapp.mod_a.Reply`, not a
 /// phantom `myapp.mod_a.R`. This is the resolver half of the aliased-import fix: the published-bare
 /// map carries the owner-qualified source name, so `published_bare_type_qualified`
@@ -711,7 +1149,7 @@ fn alias_import_resolves_bare_binding_to_source_identity() {
     );
 }
 
-/// P3-alias-no-conflation — `import m::{ Reply as Other }` where `m` ALSO exports
+/// P3-alias-no-conflation — `import m.{ Reply as Other }` where `m` ALSO exports
 /// a DISTINCT `Other` must bind the alias to the SOURCE `m.Reply`, never the
 /// same-named export `m.Other`. Source-name matching opts in only `Reply`; the
 /// real `Other` is not opted in by the alias, and the published-bare map records
@@ -756,7 +1194,7 @@ fn alias_import_does_not_conflate_with_same_named_export() {
     assert!(
         !checker
             .unqualified_to_module
-            .contains_key(&(None, "Reply".to_string())),
+            .contains_key(&(None, 0, "Reply".to_string())),
         "the source name `Reply` is not published bare (only the alias binding `Other` is)"
     );
 }
@@ -767,7 +1205,7 @@ fn glob_import_type_publishes_bare_binding() {
     let reply = make_pub_struct("Reply", "code");
     let import = make_user_import(
         &["myapp", "mod_a"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["Reply"])),
         vec![(Item::TypeDecl(reply), 0..0)],
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -784,7 +1222,7 @@ fn glob_import_type_publishes_bare_binding() {
     assert!(
         checker
             .unqualified_to_module
-            .contains_key(&(None, "Reply".to_string())),
+            .contains_key(&(None, 0, "Reply".to_string())),
         "glob import must publish the importer-scope bare binding for `Reply`"
     );
 }
@@ -816,9 +1254,11 @@ fn stdlib_plain_import_does_not_publish_bare_type() {
     );
 
     assert!(
-        checker.type_defs.contains_key("websocket.Server"),
-        "plain stdlib import must register the qualified type `websocket.Server`"
+        checker.type_defs.contains_key("std.net.websocket.Server"),
+        "plain stdlib import must register the canonical type `std.net.websocket.Server`"
     );
+    assert!(!checker.type_defs.contains_key("websocket.Server"));
+    assert!(!checker.type_defs.contains_key("Server"));
     assert!(
         checker
             .module_type_exports
@@ -829,7 +1269,7 @@ fn stdlib_plain_import_does_not_publish_bare_type() {
     assert!(
         !checker
             .unqualified_to_module
-            .contains_key(&(None, "Server".to_string())),
+            .contains_key(&(None, 0, "Server".to_string())),
         "plain stdlib import must NOT publish bare `Server` (qualified-by-default)"
     );
 }
@@ -853,7 +1293,7 @@ fn stdlib_named_import_publishes_bare_type() {
     assert!(
         checker
             .unqualified_to_module
-            .contains_key(&(None, "Server".to_string())),
+            .contains_key(&(None, 0, "Server".to_string())),
         "named stdlib opt-in must publish bare `Server`"
     );
 }
@@ -865,7 +1305,7 @@ fn stdlib_const_uses_full_registry_owner() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.modules.insert("codec".to_string());
     checker.module_import_bindings.insert(
-        (None, "codec".to_string()),
+        (None, 0, "codec".to_string()),
         "std.net.http.codec".to_string(),
     );
 
@@ -893,6 +1333,7 @@ fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup(
     let plain_decl = ImportDecl {
         path: vec!["std".to_string(), "net".to_string()],
         spec: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: Some(resolved_items.clone()),
@@ -932,13 +1373,13 @@ fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup(
     assert!(
         checker
             .unqualified_to_module
-            .contains_key(&(None, "Connection".to_string())),
+            .contains_key(&(None, 0, "Connection".to_string())),
         "the root's named import must publish Connection even when a transitive importer registered std::net first"
     );
     assert_eq!(
         checker
             .import_type_name_aliases
-            .get(&(None, "Connection".to_string()))
+            .get(&(None, 0, "Connection".to_string()))
             .map(String::as_str),
         Some("std.net.Connection"),
         "HIR must receive the root import's exact source identity"
@@ -949,7 +1390,7 @@ fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup(
 fn canonical_stdlib_source_signature_replaces_registry_surface_signature() {
     let parsed = hew_parser::parse(
         "pub enum NetError { Failed(i64); }\n\
-         pub fn net_error() -> NetError { NetError::Failed(1) }\n",
+         pub fn net_error() -> NetError { NetError.Failed(1) }\n",
     );
     assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
 
@@ -1004,7 +1445,7 @@ fn stdlib_prelude_publishes_bare_type() {
     assert!(
         checker
             .unqualified_to_module
-            .contains_key(&(None, "CloseError".to_string())),
+            .contains_key(&(None, 0, "CloseError".to_string())),
         "prelude bootstrap surface must publish bare `CloseError` unconditionally"
     );
 }
@@ -1063,8 +1504,8 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
     );
     let holder = checker
         .type_defs
-        .get("tls.Holder")
-        .expect("qualified Holder definition must be registered");
+        .get("std.net.tls.Holder")
+        .expect("canonical Holder definition must be registered");
     match holder.fields.get("wrap") {
         Some(Ty::Named { name, .. }) => assert_eq!(
             name, "std.net.tls.Wrap",
@@ -1074,10 +1515,8 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
     }
 }
 
-/// P2 — the qualified type alias is published for a bare import, and its
-/// definition mirrors the source module's bare def (the alias-copy ordering
-/// canary). If the source module's bare `register_type_decl` is ever dropped,
-/// the qualified def goes empty and this test catches it.
+/// P2 — the canonical definition published for a bare import carries the
+/// source definition's fields after temporary registration keys are retired.
 #[test]
 fn bare_import_type_qualified_alias_has_fields() {
     let reply = make_pub_struct("Reply", "code");
@@ -1090,8 +1529,8 @@ fn bare_import_type_qualified_alias_has_fields() {
 
     let qualified = output
         .type_defs
-        .get("mod_a.Reply")
-        .expect("qualified type `mod_a.Reply` must be registered");
+        .get("myapp.mod_a.Reply")
+        .expect("canonical type `myapp.mod_a.Reply` must be registered");
     assert!(
         qualified.fields.contains_key("code"),
         "qualified alias must carry the source def's fields (alias-copy ordering)"
@@ -1145,6 +1584,157 @@ fn same_leaf_type_defs_keep_distinct_full_owners_right_then_left() {
     assert_same_leaf_canonical_type_defs_keep_distinct_shapes(false);
 }
 
+#[test]
+fn flat_file_owner_selection_ignores_same_leaf_package_owner() {
+    let flat = make_user_import(
+        &["pkg", "flat"],
+        None,
+        vec![(Item::TypeDecl(make_pub_struct("FlatResult", "local")), 0..0)],
+    );
+    let package = make_user_import(
+        &["pkg", "package"],
+        None,
+        vec![(
+            Item::TypeDecl(make_pub_struct("FlatResult", "remote")),
+            0..0,
+        )],
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&Program {
+        module_graph: None,
+        items: vec![(Item::Import(flat), 0..0), (Item::Import(package), 0..0)],
+        module_doc: None,
+    });
+    checker
+        .flat_file_import_module_names
+        .insert("pkg.flat".to_string());
+
+    assert_eq!(
+        checker.flat_file_import_type_owner("FlatResult"),
+        Some("pkg.flat.FlatResult".to_string())
+    );
+}
+
+#[test]
+fn canonical_module_variants_shadow_builtin_variants() {
+    let output = check_source_in_module(
+        r"
+        pub enum AppErr { NotFound(string); Timeout; }
+
+        pub fn payload(msg: string) -> AppErr { NotFound(msg) }
+        pub fn unit() -> AppErr { Timeout }
+        ",
+        vec!["shadow".to_string()],
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "type errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
+    let selected = |alias: &str| {
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Shared".to_string(),
+            alias: Some(alias.to_string()),
+        }]))
+    };
+    let left = make_user_import(
+        &["pkg", "left"],
+        selected("LeftShared"),
+        vec![(Item::TypeDecl(make_pub_struct("Shared", "left_only")), 0..0)],
+    );
+    let right = make_user_import(
+        &["pkg", "right"],
+        selected("RightShared"),
+        vec![(
+            Item::TypeDecl(make_pub_struct("Shared", "right_only")),
+            0..0,
+        )],
+    );
+    let parsed = hew_parser::parse(
+        "fn keep_left(value: LeftShared) -> LeftShared { value }\n\
+         fn keep_right(value: RightShared) -> RightShared { value }",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture parse: {:?}",
+        parsed.errors
+    );
+    let mut items = vec![(Item::Import(left), 0..0), (Item::Import(right), 0..0)];
+    items.extend(parsed.program.items);
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items,
+        module_graph: None,
+        module_doc: None,
+    });
+    assert!(output.errors.is_empty(), "typecheck: {:?}", output.errors);
+
+    for (function, expected) in [
+        ("keep_left", "pkg.left.Shared"),
+        ("keep_right", "pkg.right.Shared"),
+    ] {
+        let signature = output.fn_sigs.get(function).expect("function signature");
+        assert!(matches!(
+            signature.params.as_slice(),
+            [Ty::Named { name, builtin: None, .. }] if name == expected
+        ));
+        assert!(matches!(
+            &signature.return_type,
+            Ty::Named { name, builtin: None, .. } if name == expected
+        ));
+    }
+
+    let resolved_names: HashSet<&str> = output
+        .resolved_expr_types
+        .values()
+        .filter_map(|ty| match ty {
+            ResolvedTy::Named {
+                name,
+                builtin: None,
+                ..
+            } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(resolved_names.contains("pkg.left.Shared"));
+    assert!(resolved_names.contains("pkg.right.Shared"));
+    assert!(resolved_names
+        .iter()
+        .all(|name| !matches!(*name, "Shared" | "LeftShared" | "RightShared")));
+
+    for alias in [
+        "Shared",
+        "LeftShared",
+        "RightShared",
+        "left.Shared",
+        "right.Shared",
+    ] {
+        assert!(
+            !output.type_defs.contains_key(alias),
+            "TypeDef alias survived: {alias}"
+        );
+        assert!(
+            !checker.type_def_spans.contains_key(alias),
+            "declaration-span alias survived: {alias}"
+        );
+        assert!(
+            !checker.registry.has_type_markers(alias),
+            "marker-registry alias survived: {alias}"
+        );
+    }
+    for canonical in ["pkg.left.Shared", "pkg.right.Shared"] {
+        assert!(output.type_defs.contains_key(canonical));
+        assert!(checker.type_def_spans.contains_key(canonical));
+        assert!(checker.registry.has_type_markers(canonical));
+    }
+}
+
 // (The machine arm is structurally identical to the type arm; its gate is
 // proven end-to-end by the `import-qual-c2` probe corpus and the examples
 // cutover ratchet rather than a hand-built `MachineDecl` literal.)
@@ -1171,7 +1761,7 @@ fn glob_import_registers_unqualified_names() {
     );
     let import = make_user_import(
         &["myapp", "utils"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["helper", "other"])),
         vec![
             (Item::Function(helper), 0..0),
             (Item::Function(other), 0..0),
@@ -1258,7 +1848,7 @@ fn non_pub_functions_registered_for_enforcement_but_not_bare() {
     );
     let import = make_user_import(
         &["myapp", "utils"],
-        Some(ImportSpec::Glob), // even glob should not expose private fns unqualified
+        Some(selected_import(&["secret", "visible"])),
         vec![
             (Item::Function(priv_fn), 0..0),
             (Item::Function(pub_fn), 0..0),
@@ -1312,7 +1902,7 @@ fn user_module_registers_pub_consts() {
     };
     let import = make_user_import(
         &["myapp", "config"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["MAX_SIZE", "INTERNAL"])),
         vec![
             (Item::Const(pub_const), 0..0),
             (Item::Const(priv_const), 0..0),
@@ -1412,7 +2002,7 @@ fn module_qualified_const_field_access_resolves() {
     // Parse a function that references the const via qualified access.
     let mut root = hew_parser::parse(
         r"
-import myapp::config;
+import myapp.config;
 
 fn caller() -> i64 {
     config.LIMIT
@@ -1467,7 +2057,7 @@ fn module_qualified_const_undefined_emits_targeted_diagnostic() {
     };
     let mut root = hew_parser::parse(
         r"
-import myapp::config;
+import myapp.config;
 
 fn caller() -> i64 {
     config.NONEXISTENT
@@ -1494,10 +2084,10 @@ fn caller() -> i64 {
     let output = checker.check_program(&root.program);
     assert!(
         output.errors.iter().any(|err| {
-            err.kind == TypeErrorKind::UndefinedField
+            err.kind == TypeErrorKind::PathMemberNotFound
                 && err
                     .message
-                    .contains("module `config` has no exported constant `NONEXISTENT`")
+                    .contains("module `config` has no exported value `NONEXISTENT`")
         }),
         "expected targeted 'no exported constant' diagnostic, got: {:#?}",
         output.errors
@@ -1552,13 +2142,11 @@ fn user_module_registers_types() {
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
     assert!(
-        output.type_defs.contains_key("Config"),
-        "user module type should be registered unqualified"
+        output.type_defs.contains_key("myapp.config.Config"),
+        "user module type should be registered under its full owner"
     );
-    assert!(
-        output.type_defs.contains_key("config.Config"),
-        "user module type should also be registered as qualified"
-    );
+    assert!(!output.type_defs.contains_key("Config"));
+    assert!(!output.type_defs.contains_key("config.Config"));
 }
 
 // -- user_modules set --
@@ -1592,6 +2180,7 @@ fn stdlib_not_in_user_modules() {
     let import = ImportDecl {
         path: vec!["std".to_string(), "fs".to_string()],
         spec: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: None,
@@ -1712,6 +2301,7 @@ fn import_without_resolved_items_emits_unresolved_error() {
     let import = ImportDecl {
         path: vec!["unknown".to_string(), "pkg".to_string()],
         spec: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: None,
@@ -1751,6 +2341,7 @@ fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
     let stream_import = ImportDecl {
         path: vec!["std".to_string(), "stream".to_string()],
         spec: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: None,
@@ -1760,6 +2351,7 @@ fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
     let fs_import = ImportDecl {
         path: vec!["std".to_string(), "fs".to_string()],
         spec: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: None,
@@ -1798,6 +2390,7 @@ fn file_import_without_resolved_items_emits_unresolved_error() {
     let import = ImportDecl {
         path: vec![],
         spec: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: Some("missing.hew".to_string()),
         resolved_items: None,
@@ -1825,7 +2418,7 @@ fn file_import_without_resolved_items_emits_unresolved_error() {
 }
 
 #[test]
-fn merged_file_import_duplicate_pub_name_emits_duplicate_definition() {
+fn merged_file_import_duplicate_pub_name_rejects_the_whole_import() {
     let shared_decl = make_pub_fn(
         "shared",
         vec![],
@@ -1837,6 +2430,7 @@ fn merged_file_import_duplicate_pub_name_emits_duplicate_definition() {
     let import = ImportDecl {
         path: vec![],
         spec: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: Some("pkg.hew".to_string()),
         resolved_items: Some(vec![
@@ -1856,17 +2450,16 @@ fn merged_file_import_duplicate_pub_name_emits_duplicate_definition() {
     let error = output
         .errors
         .iter()
-        .find(|e| e.kind == TypeErrorKind::DuplicateDefinition)
+        .find(|e| e.kind == TypeErrorKind::ImportBindingCollision)
         .expect("merged file import should fail closed on duplicate pub names");
 
     assert!(
         error.message.contains("shared"),
         "duplicate pub name error should mention the colliding binding: {error:?}"
     );
-    assert_eq!(
-        error.notes.first().map(|(span, _, _)| span.clone()),
-        Some(0..5),
-        "duplicate pub name should point back to the first merged definition"
+    assert!(
+        !output.fn_sigs.contains_key("shared"),
+        "an internally-colliding import must publish none of its declarations"
     );
 }
 
@@ -1876,6 +2469,7 @@ fn repeated_flat_file_import_with_same_resolved_source_does_not_reregister_items
     let import = ImportDecl {
         path: vec![],
         spec: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: Some("pkg.hew".to_string()),
         resolved_items: Some(vec![(
@@ -1909,6 +2503,86 @@ fn repeated_flat_file_import_with_same_resolved_source_does_not_reregister_items
 }
 
 #[test]
+fn flat_file_imported_pub_fn_publishes_root_call_target() {
+    let helper_path = std::path::PathBuf::from("helper.hew");
+    let helper = hew_parser::parse("pub fn double(value: i64) -> i64 { value * 2 }");
+    let mut root = hew_parser::parse(
+        r#"
+        import "helper.hew";
+        fn main() -> i64 { double(21) }
+        "#,
+    );
+    assert!(
+        helper.errors.is_empty(),
+        "helper parse: {:?}",
+        helper.errors
+    );
+    assert!(root.errors.is_empty(), "root parse: {:?}", root.errors);
+
+    let import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("root file import");
+    import.resolved_items = Some(helper.program.items.clone());
+    import.resolved_item_source_paths =
+        std::iter::repeat_n(helper_path.clone(), helper.program.items.len()).collect();
+    import.resolved_source_paths = vec![helper_path.clone()];
+
+    let root_id = ModuleId::root();
+    let helper_id = ModuleId::new(vec!["helper".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: helper_id.clone(),
+            items: helper.program.items,
+            imports: vec![],
+            source_paths: vec![helper_path.clone()],
+            doc: None,
+        })
+        .expect("helper module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec!["main.hew".into()],
+            doc: None,
+        })
+        .expect("root module");
+    graph.item_sources.insert(
+        "helper".to_string(),
+        std::iter::repeat_n(helper_path, graph.modules[&helper_id].items.len()).collect(),
+    );
+    graph.topo_order = vec![helper_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: root.program.items,
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert!(
+        output.errors.is_empty(),
+        "flat imported call must typecheck: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.direct_call_targets.values().any(|target| matches!(
+            target,
+            crate::check::dispatch::CallTarget::User(declaration)
+                if declaration.full_path() == "helper.double"
+        )),
+        "flat imported bare call must retain helper.double: {:#?}",
+        output.direct_call_targets
+    );
+}
+
+#[test]
 fn repeated_stdlib_import_does_not_duplicate_hew_items() {
     let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1926,6 +2600,7 @@ fn repeated_stdlib_import_does_not_duplicate_hew_items() {
     let import = ImportDecl {
         path: vec!["std".to_string(), "fs".to_string()],
         spec: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: Some(parsed.program.items),
@@ -1950,9 +2625,10 @@ fn repeated_stdlib_import_does_not_duplicate_hew_items() {
         output.errors
     );
     assert!(
-        output.type_defs.contains_key("IoError"),
+        output.type_defs.contains_key("std.fs.IoError"),
         "expected std::fs Hew items to remain registered"
     );
+    assert!(!output.type_defs.contains_key("IoError"));
 }
 
 // -- Empty module import --
@@ -2283,12 +2959,12 @@ fn aliased_member_matches_qualified_member_type() {
 // -- Trait import from module --
 
 #[test]
-fn import_trait_from_module_glob() {
+fn import_selected_trait_from_module() {
     use hew_parser::ast::{TraitDecl, TraitItem, TraitMethod};
 
     let trait_decl = TraitDecl {
         visibility: Visibility::Pub,
-        name: "Display".to_string(),
+        name: "Renderable".to_string(),
         type_params: None,
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
@@ -2309,7 +2985,7 @@ fn import_trait_from_module_glob() {
     };
     let import = make_user_import(
         &["mylib", "fmt"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["Renderable"])),
         vec![(Item::Trait(trait_decl), 0..0)],
     );
     let output = check_items(vec![(Item::Import(import), 0..0)]);
@@ -2353,7 +3029,7 @@ fn import_private_trait_not_registered() {
     };
     let import = make_user_import(
         &["mylib", "internals"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["Internal"])),
         vec![(Item::Trait(private_trait), 0..0)],
     );
     // Should complete without errors; private trait is simply ignored
@@ -2394,6 +3070,272 @@ fn orphan_impl_emits_warning() {
     assert!(
         has_orphan_warning,
         "expected OrphanImpl warning when neither trait nor type is local, got: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn canonical_builtin_source_owns_intrinsic_impls_for_coherence() {
+    let compiler_root = crate::module_registry::compiler_stdlib_root()
+        .expect("test executable must resolve its compiler-owned development stdlib");
+    let output = check_intrinsic_coherence_source(
+        &compiler_root.join("std/builtins.hew"),
+        ModuleRegistry::new(vec![]),
+    );
+
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == crate::error::TypeErrorKind::OrphanImpl),
+        "the canonical builtin source owns intrinsic type impls: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn noncanonical_builtin_spelling_does_not_own_intrinsic_impls() {
+    use hew_parser::ast::TraitBound;
+
+    let impl_decl = ImplDecl {
+        type_params: None,
+        trait_bound: Some(TraitBound {
+            name: "ExternalTrait".to_string(),
+            type_args: None,
+            assoc_type_bindings: vec![],
+        }),
+        target_type: (
+            TypeExpr::Named {
+                name: "Vec".to_string(),
+                type_args: None,
+            },
+            0..0,
+        ),
+        where_clause: None,
+        type_aliases: vec![],
+        methods: vec![],
+    };
+    let mut checker = Checker {
+        current_module: Some("std.builtins".to_string()),
+        ..Default::default()
+    };
+    checker.check_impl(&impl_decl, &(0..0));
+
+    assert!(
+        checker
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == crate::error::TypeErrorKind::OrphanImpl),
+        "a lookalike module must not gain intrinsic coherence authority"
+    );
+}
+
+struct IntrinsicCoherenceFixture {
+    root: std::path::PathBuf,
+}
+
+impl IntrinsicCoherenceFixture {
+    fn new(name: &str) -> Self {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after the Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("{name}-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create coherence fixture root");
+        Self { root }
+    }
+
+    fn write(&self, relative: &str, source: &str) -> std::path::PathBuf {
+        let path = self.root.join(relative);
+        std::fs::create_dir_all(path.parent().expect("fixture path has a parent"))
+            .expect("create coherence fixture directory");
+        std::fs::write(&path, source).expect("write coherence fixture source");
+        path
+    }
+}
+
+impl Drop for IntrinsicCoherenceFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn check_intrinsic_coherence_source(
+    source_path: &std::path::Path,
+    registry: ModuleRegistry,
+) -> TypeCheckOutput {
+    let source = r"
+        impl ForeignTrait for Vec<i64> {}
+        impl ForeignTrait for i8 {}
+    ";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture parse: {:?}",
+        parsed.errors
+    );
+
+    let root_id = ModuleId::root();
+    let builtins_id = ModuleId::new(vec!["std".to_string(), "builtins".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: builtins_id.clone(),
+            items: parsed.program.items,
+            imports: vec![],
+            source_paths: vec![source_path.to_path_buf()],
+            doc: None,
+        })
+        .expect("add std.builtins module");
+    graph.topo_order = vec![builtins_id, root_id];
+
+    Checker::new(registry).check_program(&Program {
+        module_graph: Some(graph),
+        items: vec![],
+        module_doc: None,
+    })
+}
+
+#[test]
+fn project_local_std_builtins_source_cannot_claim_intrinsic_coherence() {
+    const CHILD_MARKER: &str = "HEW_INTRINSIC_COHERENCE_ATTACK_CHILD";
+
+    if std::env::var_os(CHILD_MARKER).is_some() {
+        let attacker_root = std::env::current_dir().expect("attacker cwd is available");
+        let search_paths = crate::module_registry::build_module_search_paths_for(None);
+        assert_eq!(
+            search_paths
+                .first()
+                .and_then(|path| path.canonicalize().ok()),
+            attacker_root.canonicalize().ok(),
+            "production module discovery must select the attacker's std root"
+        );
+        let compiler_root = crate::module_registry::compiler_stdlib_root()
+            .expect("test executable must resolve its compiler-owned development stdlib");
+        assert_ne!(
+            attacker_root.canonicalize().ok(),
+            Some(compiler_root.clone()),
+            "attacker cwd must be distinct from compiler authority"
+        );
+
+        let attacker_builtins = attacker_root.join("std/builtins.hew");
+        let output =
+            check_intrinsic_coherence_source(&attacker_builtins, ModuleRegistry::new(search_paths));
+        let orphan_warnings = output
+            .warnings
+            .iter()
+            .filter(|warning| warning.kind == TypeErrorKind::OrphanImpl)
+            .count();
+        println!("attack module root: {}", attacker_root.display());
+        println!("compiler authority root: {}", compiler_root.display());
+        println!("attack orphan warnings: {orphan_warnings}");
+        assert_eq!(
+            orphan_warnings, 2,
+            "project-local std/builtins.hew must not own Vec or primitive impls: {:?}",
+            output.warnings
+        );
+        return;
+    }
+
+    let fixture = IntrinsicCoherenceFixture::new("user-std-builtins-coherence");
+    fixture.write(
+        "std/builtins.hew",
+        "// attacker-controlled builtins marker\n",
+    );
+    let child = std::process::Command::new(
+        std::env::current_exe().expect("resolve current hew-types test executable"),
+    )
+    .args([
+        "--exact",
+        "check::tests::imports::project_local_std_builtins_source_cannot_claim_intrinsic_coherence",
+        "--nocapture",
+    ])
+    .current_dir(&fixture.root)
+    .env(CHILD_MARKER, "1")
+    .env_remove("HEWPATH")
+    .env_remove("HEW_STD")
+    .output()
+    .expect("run production-shaped attacker-cwd check_program child");
+    let stdout = String::from_utf8_lossy(&child.stdout);
+    let stderr = String::from_utf8_lossy(&child.stderr);
+    print!("{stdout}");
+    eprint!("{stderr}");
+    assert!(
+        child.status.success(),
+        "attacker-cwd child failed with {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        child.status
+    );
+}
+
+#[test]
+fn imported_foreign_trait_impl_for_intrinsic_type_warns() {
+    let foreign_source = "pub trait ForeignTrait {}";
+    let consumer_source = "import vendor.{ ForeignTrait }; impl ForeignTrait for Vec<i64> {}";
+    let foreign = hew_parser::parse(foreign_source);
+    let mut consumer = hew_parser::parse(consumer_source);
+    assert!(
+        foreign.errors.is_empty(),
+        "foreign parse: {:?}",
+        foreign.errors
+    );
+    assert!(
+        consumer.errors.is_empty(),
+        "consumer parse: {:?}",
+        consumer.errors
+    );
+
+    let fixture = IntrinsicCoherenceFixture::new("foreign-intrinsic-coherence");
+    let foreign_path = fixture.write("vendor.hew", foreign_source);
+    let consumer_path = fixture.write("consumer.hew", consumer_source);
+    let import_span = consumer.program.items[0].1.clone();
+    let Item::Import(import) = &mut consumer.program.items[0].0 else {
+        panic!("consumer starts with an import");
+    };
+    import.resolved_items = Some(foreign.program.items.clone());
+    import.resolved_source_paths = vec![foreign_path.clone()];
+
+    let root_id = ModuleId::root();
+    let foreign_id = ModuleId::new(vec!["vendor".to_string()]);
+    let consumer_id = ModuleId::new(vec!["consumer".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: foreign_id.clone(),
+            items: foreign.program.items,
+            imports: vec![],
+            source_paths: vec![foreign_path],
+            doc: None,
+        })
+        .expect("add foreign trait module");
+    graph
+        .add_module(Module {
+            id: consumer_id.clone(),
+            items: consumer.program.items,
+            imports: vec![hew_parser::module::ModuleImport {
+                target: foreign_id.clone(),
+                spec: Some(ImportSpec::Names(vec![ImportName {
+                    name: "ForeignTrait".to_string(),
+                    alias: None,
+                }])),
+                span: import_span,
+            }],
+            source_paths: vec![consumer_path],
+            doc: None,
+        })
+        .expect("add consumer module");
+    graph.topo_order = vec![foreign_id, consumer_id, root_id];
+
+    let output = Checker::new(test_registry()).check_program(&Program {
+        module_graph: Some(graph),
+        items: vec![],
+        module_doc: None,
+    });
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == TypeErrorKind::OrphanImpl),
+        "a user module implementing a foreign trait for Vec must warn: {:?}",
         output.warnings
     );
 }
@@ -2578,6 +3520,7 @@ fn test_file_import_private_items_not_visible() {
     let import_decl = ImportDecl {
         path: vec![],
         spec: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: Some("private_lib.hew".to_string()),
         resolved_items: Some(resolved),
@@ -2613,7 +3556,7 @@ fn test_file_import_private_items_not_visible() {
 /// reaches `Mode` only through the call's expected parameter type.
 fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     let module = hew_parser::parse(
-        "pub enum Mode {\n    A;\n    B;\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode::A => 1,\n        Mode::B => 2,\n    }\n}\n",
+        "pub enum Mode {\n    A;\n    B;\n    Present(i64);\n    Named { value: i64 }\n}\n\npub type Box<T> {\n    value: T;\n}\n\nimpl<T> Box<T> {\n    pub fn make(value: T) -> Box<T> {\n        Box<T> { value: value }\n    }\n}\n\npub type Factory {\n    marker: i64;\n}\n\nimpl Factory {\n    pub fn make(value: i64) -> i64 {\n        value\n    }\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode.A => 1,\n        Mode.B => 2,\n        Mode.Present(value) => value,\n        Mode.Named { value } => value,\n    }\n}\n\n#[test]\nfn module_local_unit_variant() {\n    assert(Mode.A == Mode.A);\n}\n",
     );
     assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
     let mut root = hew_parser::parse(root_source);
@@ -2655,6 +3598,128 @@ fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     })
 }
 
+/// A selected import publishes a bare type spelling while its declaration is
+/// retained only under the module-owned key. Dotted construction must follow
+/// that exact binding to the canonical enum rather than probing a retired leaf
+/// entry or scanning for a matching final segment.
+#[test]
+fn imported_bare_enum_dotted_constructor_uses_canonical_owner() {
+    let output = check_qualified_variant_root(
+        "import m.{ Mode };\n\nfn main() {\n    let value: Mode = Mode.Present(42);\n    let x = m.pick(value);\n    print(\"{x}\");\n}\n",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "selected imported enum constructor must resolve canonically: {:?}",
+        output.errors
+    );
+}
+
+/// A plain module import keeps both the module and nominal segments in the
+/// expression path. The checker must continue through the export-proven type
+/// identity instead of treating `m.Mode` as a value receiver.
+#[test]
+fn module_qualified_enum_dotted_constructor_uses_canonical_owner() {
+    let output = check_qualified_variant_root(
+        "import m;\n\nfn main() {\n    let value: m.Mode = m.Mode.Present(42);\n    let x = m.pick(value);\n    print(\"{x}\");\n}\n",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "module-qualified enum constructor must resolve canonically: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn imported_dotted_struct_variants_use_canonical_owner() {
+    let selected = check_qualified_variant_root(
+        "import m.{ Mode };\n\nfn main() {\n    let value: Mode = Mode.Named { value: 7 };\n    assert(m.pick(value) == 7);\n}\n",
+    );
+    assert!(
+        selected.errors.is_empty(),
+        "selected imported struct variant must resolve canonically: {:?}",
+        selected.errors
+    );
+
+    let qualified = check_qualified_variant_root(
+        "import m;\n\nfn main() {\n    let value: m.Mode = m.Mode.Named { value: 7 };\n    assert(m.pick(value) == 7);\n}\n",
+    );
+    assert!(
+        qualified.errors.is_empty(),
+        "module-qualified struct variant must resolve canonically: {:?}",
+        qualified.errors
+    );
+}
+
+#[test]
+fn dotted_struct_variant_roots_obey_lexical_value_precedence() {
+    let module_shadow = check_qualified_variant_root(
+        "import m;\n\nfn build(m: i64) -> i64 {\n    let selected: m.Mode = m.Mode.Named { value: 7 };\n    0\n}\n",
+    );
+    assert!(
+        module_shadow.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType && error.message.contains("m.Mode.Named")
+        }),
+        "a parameter named `m` must block module-path struct construction: {:?}",
+        module_shadow.errors
+    );
+
+    let type_shadow = check_qualified_variant_root(
+        "import m.{ Mode };\n\nfn build() -> i64 {\n    let Mode: i64 = 0;\n    let selected: m.Mode = Mode.Named { value: 7 };\n    0\n}\n",
+    );
+    assert!(
+        type_shadow.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType && error.message.contains("Mode.Named")
+        }),
+        "a binding named `Mode` must block selected-type struct construction: {:?}",
+        type_shadow.errors
+    );
+}
+
+#[test]
+fn imported_associated_calls_use_canonical_owner() {
+    let selected = check_qualified_variant_root(
+        "import m.{ Box, Factory };\n\nfn main() {\n    let inferred: Box<i64> = Box.make(42);\n    let explicit: Box<i64> = Box<i64>.make(42);\n    let plain = Factory.make(42);\n    assert(inferred.value == explicit.value);\n    assert(plain == 42);\n}\n",
+    );
+    assert!(
+        selected.errors.is_empty(),
+        "selected imported associated calls must resolve canonically: {:?}",
+        selected.errors
+    );
+    assert!(
+        !selected
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == TypeErrorKind::UnusedImport),
+        "selected generic and non-generic associated calls must credit their imports: {:?}",
+        selected.warnings
+    );
+
+    let qualified = check_qualified_variant_root(
+        "import m;\n\nfn main() {\n    let inferred: m.Box<i64> = m.Box.make(42);\n    let explicit: m.Box<i64> = m.Box<i64>.make(42);\n    assert(inferred.value == explicit.value);\n}\n",
+    );
+    assert!(
+        qualified.errors.is_empty(),
+        "module-qualified associated calls must resolve canonically: {:?}",
+        qualified.errors
+    );
+}
+
+#[test]
+fn explicit_generic_module_path_obeys_lexical_value_precedence() {
+    let output = check_qualified_variant_root(
+        "import m;\n\nfn build(m: i64) -> i64 {\n    let boxed: m.Box<i64> = m.Box<i64>.make(42);\n    boxed.value\n}\n",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "a parameter named `m` must block explicit generic module dispatch"
+    );
+    assert!(
+        output.method_call_rewrites.is_empty(),
+        "a shadowed explicit generic path must publish no executable rewrite: {:?}",
+        output.method_call_rewrites
+    );
+}
+
 /// A qualified unit-variant expression (`Mode::A`) in a position whose
 /// expected type is the module-owned nominal resolves through that expected
 /// identity — mirroring pattern position — without requiring the bare name
@@ -2662,7 +3727,7 @@ fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
 #[test]
 fn qualified_variant_expression_resolves_through_expected_nominal_identity() {
     let output = check_qualified_variant_root(
-        "import m;\n\nfn main() {\n    let x = m.pick(Mode::A);\n    print(\"{x}\");\n}\n",
+        "import m;\n\nfn main() {\n    let x = m.pick(Mode.A);\n    print(\"{x}\");\n}\n",
     );
     assert!(
         output.errors.is_empty(),
@@ -2677,7 +3742,7 @@ fn qualified_variant_expression_resolves_through_expected_nominal_identity() {
 #[test]
 fn local_same_leaf_enum_does_not_merge_with_expected_module_nominal() {
     let output = check_qualified_variant_root(
-        "import m;\n\nenum Mode {\n    A;\n    Z;\n}\n\nfn main() {\n    let x = m.pick(Mode::A);\n    print(\"{x}\");\n}\n",
+        "import m;\n\nenum Mode {\n    A;\n    Z;\n}\n\nfn main() {\n    let x = m.pick(Mode.A);\n    print(\"{x}\");\n}\n",
     );
     assert!(
         output
@@ -2694,7 +3759,7 @@ fn local_same_leaf_enum_does_not_merge_with_expected_module_nominal() {
 #[test]
 fn wrong_owner_variant_prefix_is_rejected_against_expected_nominal() {
     let output = check_qualified_variant_root(
-        "import m;\n\nenum Other {\n    A;\n}\n\nfn main() {\n    let x = m.pick(Other::A);\n    print(\"{x}\");\n}\n",
+        "import m;\n\nenum Other {\n    A;\n}\n\nfn main() {\n    let x = m.pick(Other.A);\n    print(\"{x}\");\n}\n",
     );
     assert!(
         output

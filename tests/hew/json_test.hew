@@ -1,18 +1,18 @@
 //! Behavioural tests for std::encoding::json.
 
-import std::encoding::json;
+import std.encoding.json;
 
-import std::testing;
+import std.testing;
 
 // ── try_parse ─────────────────────────────────────────────────────────
 #[test]
 fn test_try_parse_valid_returns_ok() {
     let r = json.try_parse("{\"x\": 1}");
     match r {
-        Ok(val) => {
+        .Ok(val) => {
             val.free();
         },
-        Err(_) => panic("expected Ok, got Err"),
+        .Err(_) => panic("expected Ok, got Err"),
     }
 }
 
@@ -20,11 +20,11 @@ fn test_try_parse_valid_returns_ok() {
 fn test_try_parse_invalid_returns_err() {
     let r = json.try_parse("{not valid json}");
     match r {
-        Ok(val) => {
+        .Ok(val) => {
             val.free();
             panic("expected Err, got Ok");
         },
-        Err(ParseError::Invalid(_)) => {},
+        .Err(ParseError.Invalid(_)) => {},
     }
 }
 
@@ -71,13 +71,13 @@ fn test_stringify_produces_valid_json() {
     // re-parse the stringified output to confirm validity
     let r = json.try_parse(s);
     match r {
-        Ok(reparsed) => {
+        .Ok(reparsed) => {
             let field = reparsed.get_field("n");
             testing.assert_eq(field.get_int(), 7);
             field.free();
             reparsed.free();
         },
-        Err(_) => panic("stringify produced unparseable JSON"),
+        .Err(_) => panic("stringify produced unparseable JSON"),
     }
     obj.free();
 }
@@ -95,13 +95,13 @@ fn test_try_parse_empty_object_has_zero_keys() {
     // "{}" → empty object; keys() returns a JSON array with length 0.
     let r = json.try_parse("{}");
     match r {
-        Ok(val) => {
+        .Ok(val) => {
             let ks = val.keys();
             testing.assert_eq(ks.array_len(), 0);
             ks.free();
             val.free();
         },
-        Err(_) => panic("expected Ok for empty object"),
+        .Err(_) => panic("expected Ok for empty object"),
     }
 }
 
@@ -110,11 +110,11 @@ fn test_try_parse_empty_array_has_zero_len() {
     // "[]" → empty array; array_len() == 0.
     let r = json.try_parse("[]");
     match r {
-        Ok(val) => {
+        .Ok(val) => {
             testing.assert_eq(val.array_len(), 0);
             val.free();
         },
-        Err(_) => panic("expected Ok for empty array"),
+        .Err(_) => panic("expected Ok for empty array"),
     }
 }
 
@@ -123,11 +123,11 @@ fn test_try_parse_empty_string_value() {
     // "\"\"" → JSON string ""; get_string() returns "".
     let r = json.try_parse("\"\"");
     match r {
-        Ok(val) => {
+        .Ok(val) => {
             testing.assert_eq_str(val.get_string(), "");
             val.free();
         },
-        Err(_) => panic("expected Ok for empty string value"),
+        .Err(_) => panic("expected Ok for empty string value"),
     }
 }
 
@@ -160,7 +160,7 @@ fn test_nested_object_descent_leaf_first_free() {
     // Each get_field call allocates an independent owned handle.
     let r = json.try_parse("{\"a\": {\"b\": {\"c\": 7}}}");
     match r {
-        Ok(root) => {
+        .Ok(root) => {
             let a = root.get_field("a");
             let b = a.get_field("b");
             let c = b.get_field("c");
@@ -171,7 +171,7 @@ fn test_nested_object_descent_leaf_first_free() {
             a.free();
             root.free();
         },
-        Err(_) => panic("expected Ok for nested object"),
+        .Err(_) => panic("expected Ok for nested object"),
     }
 }
 
@@ -182,7 +182,7 @@ fn test_array_of_objects_walk() {
     // free child before parent per item before moving to next index.
     let r = json.try_parse("[{\"k\":1},{\"k\":2},{\"k\":3}]");
     match r {
-        Ok(arr) => {
+        .Ok(arr) => {
             testing.assert_eq(arr.array_len(), 3);
             let item0 = arr.array_get(0);
             let v0 = item0.get_field("k");
@@ -201,7 +201,7 @@ fn test_array_of_objects_walk() {
             item2.free();
             arr.free();
         },
-        Err(_) => panic("expected Ok for array of objects"),
+        .Err(_) => panic("expected Ok for array of objects"),
     }
 }
 
@@ -212,13 +212,13 @@ fn test_missing_field_handle_is_invalid() {
     // handle returns -1 (documented Rust contract). free() is null-safe.
     let r = json.try_parse("{\"a\": 1}");
     match r {
-        Ok(obj) => {
+        .Ok(obj) => {
             let missing = obj.get_field("nope");
             testing.assert_eq(missing.array_len(), -1);
             missing.free(); // null-safe no-op; call to document discipline
             obj.free();
         },
-        Err(_) => panic("expected Ok"),
+        .Err(_) => panic("expected Ok"),
     }
 }
 
@@ -255,7 +255,7 @@ fn test_keys_returns_exact_key_set() {
     // Each array_get result is independently owned and must be freed.
     let r = json.try_parse("{\"a\":1,\"b\":2}");
     match r {
-        Ok(obj) => {
+        .Ok(obj) => {
             let ks = obj.keys();
             testing.assert_eq(ks.array_len(), 2);
             let k0 = ks.array_get(0);
@@ -267,7 +267,7 @@ fn test_keys_returns_exact_key_set() {
             ks.free();
             obj.free();
         },
-        Err(_) => panic("expected Ok"),
+        .Err(_) => panic("expected Ok"),
     }
 }
 
@@ -281,7 +281,7 @@ fn test_nested_builder_stringify_reparse() {
     let s = outer.stringify();
     let r = json.try_parse(s);
     match r {
-        Ok(reparsed) => {
+        .Ok(reparsed) => {
             let outer_f = reparsed.get_field("outer");
             let inner_f = outer_f.get_field("inner");
             testing.assert_eq(inner_f.get_int(), 5);
@@ -289,7 +289,7 @@ fn test_nested_builder_stringify_reparse() {
             outer_f.free();
             reparsed.free();
         },
-        Err(_) => panic("stringify + reparse of nested object failed"),
+        .Err(_) => panic("stringify + reparse of nested object failed"),
     }
     outer.free();
 }
@@ -300,11 +300,11 @@ fn test_try_parse_truncated_array_returns_err() {
     // "[1, 2," is not valid JSON; must return Err.
     let r = json.try_parse("[1, 2,");
     match r {
-        Ok(val) => {
+        .Ok(val) => {
             val.free();
             panic("expected Err for truncated JSON");
         },
-        Err(ParseError::Invalid(_)) => {},
+        .Err(ParseError.Invalid(_)) => {},
     }
 }
 
@@ -317,11 +317,11 @@ fn test_from_float_stringify_parse_round_trip() {
     let s = val.stringify();
     let r = json.try_parse(s);
     match r {
-        Ok(reparsed) => {
+        .Ok(reparsed) => {
             testing.assert_true(reparsed.get_float() == 3.14);
             reparsed.free();
         },
-        Err(_) => panic("expected Ok for stringified float"),
+        .Err(_) => panic("expected Ok for stringified float"),
     }
     val.free();
 }
@@ -344,85 +344,85 @@ fn test_array_get_rejects_index_that_would_wrap_to_zero() {
 #[test]
 fn test_try_get_int_rejects_an_integer_no_i64_can_hold() {
     match json.try_parse("{\"n\": 18446744073709551615}") {
-        Ok(doc) => {
+        .Ok(doc) => {
             let n = doc.get_field("n");
             testing.assert_eq(n.type_of() as i64, 2); // still classified as an integer
             match json.try_get_int(n) {
-                Ok(v) => panic(f"expected an out-of-range integer to be rejected, got {v}"),
-                Err(reason) => testing.assert_eq_str(reason, "json: the value is an integer no i64 can hold"),
+                .Ok(v) => panic(f"expected an out-of-range integer to be rejected, got {v}"),
+                .Err(reason) => testing.assert_eq_str(reason, "json: the value is an integer no i64 can hold"),
             }
             n.free();
             doc.free();
         },
-        Err(_) => panic("expected the document to parse"),
+        .Err(_) => panic("expected the document to parse"),
     }
 }
 
 #[test]
 fn test_try_get_int_preserves_representable_values_including_the_boundary() {
     match json.try_parse("{\"max\": 9223372036854775807, \"min\": -9223372036854775808, \"zero\": 0}") {
-        Ok(doc) => {
+        .Ok(doc) => {
             let max = doc.get_field("max");
             match json.try_get_int(max) {
-                Ok(v) => testing.assert_eq(v, 9223372036854775807),
-                Err(reason) => panic(f"i64::MAX must be readable: {reason}"),
+                .Ok(v) => testing.assert_eq(v, 9223372036854775807),
+                .Err(reason) => panic(f"i64::MAX must be readable: {reason}"),
             }
             max.free();
             let min = doc.get_field("min");
             match json.try_get_int(min) {
-                Ok(v) => testing.assert_eq(v, -9223372036854775808),
-                Err(reason) => panic(f"i64::MIN must be readable: {reason}"),
+                .Ok(v) => testing.assert_eq(v, -9223372036854775808),
+                .Err(reason) => panic(f"i64::MIN must be readable: {reason}"),
             }
             min.free();
             let zero = doc.get_field("zero");
             match json.try_get_int(zero) {
-                Ok(v) => testing.assert_eq(v, 0),
-                Err(reason) => panic(f"a real zero must be readable: {reason}"),
+                .Ok(v) => testing.assert_eq(v, 0),
+                .Err(reason) => panic(f"a real zero must be readable: {reason}"),
             }
             zero.free();
             doc.free();
         },
-        Err(_) => panic("expected the document to parse"),
+        .Err(_) => panic("expected the document to parse"),
     }
 }
 
 #[test]
 fn test_unrepresentable_int_count_finds_a_nested_value() {
     match json.try_parse("{\"a\": [1, {\"b\": 18446744073709551615}], \"c\": 2}") {
-        Ok(doc) => {
+        .Ok(doc) => {
             testing.assert_eq(json.unrepresentable_int_count(doc), 1);
             testing.assert_false(json.ints_are_representable(doc));
             doc.free();
         },
-        Err(_) => panic("expected the document to parse"),
+        .Err(_) => panic("expected the document to parse"),
     }
 }
 
 #[test]
 fn test_unrepresentable_int_count_is_zero_for_a_representable_document() {
     match json.try_parse("{\"a\": [1, {\"b\": 9223372036854775807}], \"c\": -5}") {
-        Ok(doc) => {
+        .Ok(doc) => {
             testing.assert_eq(json.unrepresentable_int_count(doc), 0);
             testing.assert_true(json.ints_are_representable(doc));
             doc.free();
         },
-        Err(_) => panic("expected the document to parse"),
+        .Err(_) => panic("expected the document to parse"),
     }
 }
 
 #[test]
 fn test_try_get_int_rejects_a_non_integer() {
     match json.try_parse("{\"s\": \"text\"}") {
-        Ok(doc) => {
+        .Ok(doc) => {
             let s = doc.get_field("s");
             match json.try_get_int(s) {
-                Ok(v) => panic(f"expected a string to be rejected, got {v}"),
-                Err(reason) => testing.assert_eq_str(reason, "json: the value is not an integer"),
+                .Ok(v) => panic(f"expected a string to be rejected, got {v}"),
+                .Err(reason) => testing.assert_eq_str(reason, "json: the value is not an integer"),
             }
             s.free();
             doc.free();
         },
-        Err(_) => panic("expected the document to parse"),
+        .Err(_) => panic("expected the document to parse"),
     }
 }
 
@@ -430,12 +430,12 @@ fn test_try_get_int_rejects_a_non_integer() {
 #[should_panic]
 fn test_get_int_panics_at_legacy_boundary_on_an_unrepresentable_value() {
     match json.try_parse("{\"n\": 18446744073709551615}") {
-        Ok(doc) => {
+        .Ok(doc) => {
             let n = doc.get_field("n");
             let _ = n.get_int();
             n.free();
             doc.free();
         },
-        Err(_) => panic("expected the document to parse"),
+        .Err(_) => panic("expected the document to parse"),
     }
 }

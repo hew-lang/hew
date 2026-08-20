@@ -11,9 +11,9 @@
 //! `string_pair_drop_thunk`, so the drop spine frees both C-string fields of
 //! every element correctly — no abort, no leak, no double-free.
 
-import std::net::http::http_client;
+import std.net.http.http_client;
 
-import std::testing;
+import std.testing;
 
 /// P0 regression: binding resp.headers() to a local and letting it go out of
 /// scope (without a for-in consume) must not abort.

@@ -113,7 +113,7 @@ fn bytes_drops_for<'a>(
 const FOREIGN_BYTES_PRELUDE: &str = r#"extern "C" {
     fn host_bytes() -> bytes;
 }
-actor Sink {
+actor TestSink {
     receive fn take(data: bytes) { let _ = data.len(); }
 }
 "#;
@@ -130,7 +130,7 @@ fn bare_proven_foreign_bytes_into_an_actor_handler_mailbox_is_refused() {
     let source = format!(
         "{FOREIGN_BYTES_PRELUDE}\
          fn main() -> i64 {{\n    \
-         let sink = spawn Sink();\n    \
+         let sink = spawn TestSink();\n    \
          let b = unsafe {{ host_bytes() }};\n    \
          sink.take(b);\n    \
          0\n}}\n"
@@ -155,11 +155,11 @@ fn bare_proven_foreign_bytes_into_an_actor_ask_mailbox_is_refused() {
 extern "C" {
     fn host_bytes() -> bytes;
 }
-actor Sink {
+actor TestSink {
     receive fn take(data: bytes) -> i64 { data.len() as i64 }
 }
 fn main() -> i64 {
-    let sink = spawn Sink();
+    let sink = spawn TestSink();
     let b = unsafe { host_bytes() };
     let _ = await sink.take(b);
     0
@@ -184,9 +184,9 @@ fn bare_proven_foreign_bytes_into_select_and_join_mailboxes_are_refused() {
     for source in [
         r#"
 extern "C" { fn host_bytes() -> bytes; }
-actor Sink { receive fn take(data: bytes) -> i64 { data.len() as i64 } }
+actor TestSink { receive fn take(data: bytes) -> i64 { data.len() as i64 } }
 fn main() -> i64 {
-    let sink = spawn Sink();
+    let sink = spawn TestSink();
     let b = unsafe { host_bytes() };
     select {
         reply from sink.take(b) => reply,
@@ -196,12 +196,12 @@ fn main() -> i64 {
 "#,
         r#"
 extern "C" { fn host_bytes() -> bytes; }
-actor Sink {
+actor TestSink {
     receive fn take(data: bytes) -> i64 { data.len() as i64 }
     receive fn ping() -> i64 { 1 }
 }
 fn main() -> i64 {
-    let sink = spawn Sink();
+    let sink = spawn TestSink();
     let b = unsafe { host_bytes() };
     let (a, _) = join { sink.take(b), sink.ping() };
     a
@@ -255,11 +255,11 @@ fn record_wrapped_proven_foreign_bytes_into_an_actor_handler_mailbox_is_refused(
 #[test]
 fn domestic_literal_bytes_into_an_actor_handler_mailbox_still_compiles() {
     let source = r#"
-actor Sink {
+actor TestSink {
     receive fn take(data: bytes) { let _ = data.len(); }
 }
 fn main() -> i64 {
-    let sink = spawn Sink();
+    let sink = spawn TestSink();
     let b = b"hello";
     sink.take(b);
     0
@@ -272,7 +272,7 @@ fn main() -> i64 {
         pipeline.diagnostics
     );
     assert!(
-        has_bytes_drop(&pipeline, "Sink__recv__take", "Return"),
+        has_bytes_drop(&pipeline, "TestSink__recv__take", "Return"),
         "and the terminal handler must still mint its scope-exit release"
     );
 }

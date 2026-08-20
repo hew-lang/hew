@@ -2,7 +2,7 @@
 // case (true) AND the absent case (false) -- the absent case is the one that
 // crashed (SIGBUS) through the Vec-backed shim, so it is the test with teeth.
 fn main() -> i64 {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     b.push(7);
     b.push(8);
     b.push(9);

@@ -2,7 +2,7 @@
 //
 // Regression guard for W4.045 (P0 use-after-free / heap corruption).
 //
-// `HashSet::new()` always lowers to `hew_hashset_new_with_layout`, returning
+// `HashSet.new()` always lowers to `hew_hashset_new_with_layout`, returning
 // a layout-keyed `HewLayoutHashSet*`. Before W4.045 the state drop synthesis
 // (`drop_helper_for_kind`) only emitted the matching `hew_hashset_free_layout`
 // when the element type was a user record; scalar/string element sets
@@ -49,7 +49,7 @@ fn main() {
     // Populate both sets so the state-drop path frees NON-EMPTY storage on
     // shutdown — an empty set never iterates occupied slots and so would not
     // exercise the corrupting free.
-    let ints = HashSet::new<i64>();
+    let ints = HashSet.new<i64>();
     ints.insert(1);
     ints.insert(2);
     ints.insert(3);
@@ -58,7 +58,7 @@ fn main() {
     ints.insert(6);
     ints.insert(7);
     ints.insert(8);
-    let names = HashSet::new<string>();
+    let names = HashSet.new<string>();
     names.insert("alpha");
     names.insert("beta");
     names.insert("gamma");
@@ -72,11 +72,11 @@ fn main() {
     // state_drop_fn free of both non-empty sets) runs as the program winds down.
     let r = await holder.ping();
     match r {
-        Ok(acked) => {
+        .Ok(acked) => {
             if acked == 1 {
                 println("ok");
             }
         },
-        Err(_) => {},
+        .Err(_) => {},
     }
 }

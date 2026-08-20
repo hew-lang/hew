@@ -1,7 +1,7 @@
 fn main() {
     let x: i64 = 42;
     let y: i64 = 43;
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(x);
     v.push(y);
     let n = v.len();

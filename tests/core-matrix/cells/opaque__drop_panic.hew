@@ -23,7 +23,7 @@ extern "C" {
 
 fn run() -> i64 {
     let h = Dq { handle: unsafe { hew_deque_new() }, tag: 1 };
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     println("before trap");
     v[3]
 }

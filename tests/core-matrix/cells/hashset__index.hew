@@ -1,5 +1,5 @@
 fn main() {
-    let s: HashSet<i64> = HashSet::new();
+    let s: HashSet<i64> = HashSet.new();
     s.insert(7);
     let h = s.contains(7);
     println(f"{h}");

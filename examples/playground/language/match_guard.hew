@@ -9,18 +9,18 @@ enum Score {
 
 fn classify(s: Score) -> string {
     match s {
-        High(n) if n > 90 => "excellent",
-        High(_) => "good",
-        Low(n) if n < 10 => "very low",
-        Low(_) => "low",
-        Zero => "zero",
+        .High(n) if n > 90 => "excellent",
+        .High(_) => "good",
+        .Low(n) if n < 10 => "very low",
+        .Low(_) => "low",
+        .Zero => "zero",
     }
 }
 
 fn main() {
-    println(classify(High(95)));
-    println(classify(High(70)));
-    println(classify(Low(5)));
-    println(classify(Low(40)));
-    println(classify(Zero));
+    println(classify(.High(95)));
+    println(classify(.High(70)));
+    println(classify(.Low(5)));
+    println(classify(.Low(40)));
+    println(classify(.Zero));
 }

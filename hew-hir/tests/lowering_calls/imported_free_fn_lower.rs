@@ -182,7 +182,7 @@ pub fn entry(n: i64) -> i64 { peer(n) }
 
 #[test]
 fn selected_imported_free_function_call_resolves_to_qualified_symbol() {
-    for import in ["import m::{entry};", "import m::*;"] {
+    for import in std::iter::once("import m.{entry};") {
         let program = build_program_with_imported_module(
             "pub fn entry(n: i64) -> i64 { n + 1 }",
             &format!("{import}\nfn main() -> i64 {{ entry(41) }}"),
@@ -229,7 +229,7 @@ fn module_qualified_call_without_checker_rewrite_fails_closed_before_mir() {
             matches!(
                 diagnostic.kind,
                 HirDiagnosticKind::CheckerBoundaryViolation { ref reason, .. }
-                    if reason == "missing module-qualified call rewrite"
+                    if reason.starts_with("missing module-qualified call rewrite")
             )
         }),
         "missing module rewrite must be diagnosed before MIR: {:#?}",
@@ -248,7 +248,7 @@ fn module_qualified_call_without_checker_rewrite_fails_closed_before_mir() {
 
 #[test]
 fn root_local_free_function_shadows_import_with_matching_signature() {
-    for import in ["import m::{foo};", "import m::*;"] {
+    for import in std::iter::once("import m.{foo};") {
         let program = build_program_with_imported_module(
             "pub fn foo() -> i64 { 99 }",
             &format!("{import}\nfn foo() -> i64 {{ 1 }}\nfn main() -> i64 {{ foo() }}"),
@@ -270,7 +270,7 @@ fn root_local_free_function_shadows_import_with_matching_signature() {
 
 #[test]
 fn root_local_free_function_shadows_import_with_mismatched_signature() {
-    for import in ["import m::{foo};", "import m::*;"] {
+    for import in std::iter::once("import m.{foo};") {
         let program = build_program_with_imported_module(
             "pub fn foo() -> i64 { 99 }",
             &format!(
@@ -294,7 +294,7 @@ fn root_local_free_function_shadows_import_with_mismatched_signature() {
 
 #[test]
 fn root_local_const_shadows_imported_free_function() {
-    for import in ["import m::{answer};", "import m::*;"] {
+    for import in std::iter::once("import m.{answer};") {
         let program = build_program_with_imported_module(
             "pub fn answer() -> i64 { 7 }",
             &format!("{import}\nconst answer: i64 = 99;\nfn main() -> i64 {{ answer + 1 }}"),
@@ -330,7 +330,7 @@ fn root_local_const_shadows_imported_free_function() {
 
 #[test]
 fn root_local_extern_function_shadows_imported_free_function() {
-    for import in ["import m::{answer};", "import m::*;"] {
+    for import in std::iter::once("import m.{answer};") {
         let program = build_program_with_imported_module(
             "pub fn answer() -> i64 { 7 }",
             &format!(

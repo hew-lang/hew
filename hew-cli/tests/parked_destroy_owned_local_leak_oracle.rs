@@ -42,7 +42,7 @@ use support::{describe_output, require_codegen};
 const PARKED_VEC_TEARDOWN: &str = r#"
 actor Sleeper {
     receive fn work() {
-        let xs: Vec<i64> = Vec::new();
+        let xs: Vec<i64> = Vec.new();
         xs.push(1);
         xs.push(2);
         xs.push(3);
@@ -75,7 +75,7 @@ fn main() {
 const PARKED_VEC_ITER_TEARDOWN: &str = r#"
 actor Sleeper {
     receive fn work() {
-        let values: Vec<i64> = Vec::new();
+        let values: Vec<i64> = Vec.new();
         values.push(40);
         values.push(2);
         let cursor = values.iter();
@@ -111,7 +111,7 @@ fn main() {
 const MOVED_OUT_ACROSS_SUSPEND: &str = r#"
 actor Mover {
     receive fn go() {
-        let xs: Vec<i64> = Vec::new();
+        let xs: Vec<i64> = Vec.new();
         xs.push(1);
         xs.push(2);
         xs.push(3);
@@ -146,7 +146,7 @@ fn main() {
 const REMOVED_ELEMENT_ACROSS_SUSPEND: &str = r#"
 actor Sleeper {
     receive fn work() {
-        let v: Vec<string> = Vec::new();
+        let v: Vec<string> = Vec.new();
         v.push("element-alpha-longish-to-force-a-heap-allocation");
         v.push("element-beta-longish-to-force-a-heap-allocation");
         v.push("element-gamma-longish-to-force-a-heap-allocation");
@@ -180,7 +180,7 @@ fn main() {
 const TAKEN_VALUE_ACROSS_SUSPEND: &str = r#"
 actor Sleeper {
     receive fn work() {
-        let m: HashMap<string, string> = HashMap::new();
+        let m: HashMap<string, string> = HashMap.new();
         m.insert("key-alpha-long-enough-to-heap-allocate", "val-alpha-long-enough-to-heap-allocate");
         m.insert("key-beta-long-enough-to-heap-allocate", "val-beta-long-enough-to-heap-allocate");
         let taken = match m.remove("key-beta-long-enough-to-heap-allocate") {
@@ -219,10 +219,10 @@ enum Box {
 
 actor Sleeper {
     receive fn work() {
-        var opt = Box::Full(f"parked-overwritten-payload");
+        var opt = Box.Full(f"parked-overwritten-payload");
         match opt {
             Full(s) => {
-                opt = Box::Empty;
+                opt = Box.Empty;
                 sleep(10s);
                 println(f"{s.len()}");
             },

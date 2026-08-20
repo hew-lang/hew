@@ -160,19 +160,19 @@ fn parse_if_module_qualified_variant_empty_block() {
     // literal (which orphaned the `else` before the fix). The parser does not
     // resolve the module receiver — `m.E::V` reaches the `::`-accumulation
     // postfix branch regardless of whether `m` is declared.
-    let result = hew_parser::parse("fn f() { if m.E::V { } else { } }");
+    let result = hew_parser::parse("fn f() { if m.E.V { } else { } }");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
 
 #[test]
 fn parse_while_module_qualified_variant_empty_block() {
-    let result = hew_parser::parse("fn f() { while m.E::V { } }");
+    let result = hew_parser::parse("fn f() { while m.E.V { } }");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
 
 #[test]
 fn parse_match_module_qualified_variant_empty_arms() {
-    let result = hew_parser::parse("fn f() { match m.E::V { } }");
+    let result = hew_parser::parse("fn f() { match m.E.V { } }");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
 

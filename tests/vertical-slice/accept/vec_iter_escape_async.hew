@@ -15,7 +15,7 @@ actor Echo {
 pub fn main() -> i64 {
     let e = spawn Echo();
     let c = {
-        let v: Vec<i64> = Vec::new();
+        let v: Vec<i64> = Vec.new();
         v.push(40);
         v.push(2);
         v.iter()

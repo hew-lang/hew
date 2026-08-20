@@ -150,7 +150,7 @@ fn vec_string_for_in_emits_clone_getter_with_iteration_drop() {
     // this test is not about.
     let pl = pipeline_with_tc(
         r#"fn main() {
-            let words: Vec<string> = Vec::new();
+            let words: Vec<string> = Vec.new();
             words.push("red");
             words.push("blue");
             var count: i64 = 0;
@@ -293,7 +293,7 @@ fn vec_string_for_in_branched_body_drops_once_at_join() {
             out
         }
         fn main() {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             println(transform(v));
         }"#,
     );
@@ -331,7 +331,7 @@ fn vec_string_for_in_continue_drops_on_edge_and_fallthrough() {
             out
         }
         fn main() {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             println(keep(v));
         }"#,
     );
@@ -361,7 +361,7 @@ fn vec_string_for_in_break_drops_on_edge_and_fallthrough() {
             out
         }
         fn main() {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             println(until(v));
         }"#,
     );
@@ -391,7 +391,7 @@ fn vec_string_for_in_unused_binding_drops_once() {
             n
         }
         fn main() {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             println(f"{count(v)}");
         }"#,
     );
@@ -426,7 +426,7 @@ fn vec_string_for_in_returned_binding_suppresses_drop() {
             "none"
         }
         fn main() {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             println(first_match(v, "x"));
         }"#,
     );
@@ -470,7 +470,7 @@ fn vec_string_scalar_index_bound_lowers_through_retained_getter() {
             y.len()
         }
         fn main() {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             let _ = pick(v, 0);
         }",
     );
@@ -505,7 +505,7 @@ fn vec_string_discarded_scalar_index_emits_balancing_drop() {
             xs[i];
         }
         fn main() {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             touch(v, 0);
         }",
     );
@@ -543,7 +543,7 @@ fn vec_string_discarded_scalar_index_in_loop_emits_one_drop_site() {
             }
         }
         fn main() {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             churn(v, 0);
         }",
     );
@@ -573,7 +573,7 @@ fn vec_string_let_underscore_index_emits_balancing_drop() {
             let _ = xs[i];
         }
         fn main() {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             touch(v, 0);
         }",
     );
@@ -604,7 +604,7 @@ fn vec_scalar_discarded_index_emits_no_string_drop() {
             xs[i];
         }
         fn main() {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             touch(v, 0);
         }",
     );

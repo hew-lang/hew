@@ -6,7 +6,7 @@
 //! to an actor by value; the receive handler reads the collection field:
 //!
 //! ```text
-//! actor Sink { receive fn take(b: Boxed) { for v in b.payload { … } } }
+//! actor ProbeSink { receive fn take(b: Boxed) { for v in b.payload { … } } }
 //! sink.take(Boxed { payload: [i, i + 1, i + 2] });
 //! ```
 //!
@@ -43,7 +43,7 @@ fn mailbox_record_collection_loop_source(frames: usize) -> String {
     format!(
         "type Boxed {{ payload: [i64] }}\n\
          \n\
-         actor Sink {{\n\
+         actor ProbeSink {{\n\
          \x20   var seen: i64;\n\
          \x20   receive fn take(b: Boxed) {{\n\
          \x20       var s: i64 = 0;\n\
@@ -54,7 +54,7 @@ fn mailbox_record_collection_loop_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let sink = spawn Sink(seen: 0);\n\
+         \x20   let sink = spawn ProbeSink(seen: 0);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let b = Boxed {{ payload: [i, i + 1, i + 2] }};\n\
@@ -75,7 +75,7 @@ fn mailbox_record_two_collections_loop_source(frames: usize) -> String {
     format!(
         "type Boxed {{ payload: [i64]; extra: [i64] }}\n\
          \n\
-         actor Sink {{\n\
+         actor ProbeSink {{\n\
          \x20   var seen: i64;\n\
          \x20   receive fn take(b: Boxed) {{\n\
          \x20       var s: i64 = 0;\n\
@@ -87,7 +87,7 @@ fn mailbox_record_two_collections_loop_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let sink = spawn Sink(seen: 0);\n\
+         \x20   let sink = spawn ProbeSink(seen: 0);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let b = Boxed {{ payload: [i, i + 1, i + 2], extra: [i * 2, i * 3] }};\n\
@@ -113,7 +113,7 @@ fn mailbox_record_borrow_only_slice_source(frames: usize) -> String {
     format!(
         "type Boxed {{ payload: [i64] }}\n\
          \n\
-         actor Sink {{\n\
+         actor ProbeSink {{\n\
          \x20   var seen: i64;\n\
          \x20   receive fn take(b: Boxed) {{\n\
          \x20       seen = seen + b.payload.len();\n\
@@ -122,7 +122,7 @@ fn mailbox_record_borrow_only_slice_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let sink = spawn Sink(seen: 0);\n\
+         \x20   let sink = spawn ProbeSink(seen: 0);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let b = Boxed {{ payload: [i, i + 1, i + 2] }};\n\
@@ -145,7 +145,7 @@ fn mailbox_record_borrow_only_vec_source(frames: usize) -> String {
     format!(
         "type Boxed {{ payload: Vec<i64> }}\n\
          \n\
-         actor Sink {{\n\
+         actor ProbeSink {{\n\
          \x20   var seen: i64;\n\
          \x20   receive fn take(b: Boxed) {{\n\
          \x20       seen = seen + b.payload.len();\n\
@@ -154,7 +154,7 @@ fn mailbox_record_borrow_only_vec_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let sink = spawn Sink(seen: 0);\n\
+         \x20   let sink = spawn ProbeSink(seen: 0);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let b = Boxed {{ payload: [i, i + 1, i + 2] }};\n\
@@ -181,7 +181,7 @@ fn mailbox_record_retained_into_state_source(frames: usize) -> String {
     format!(
         "type Boxed {{ payload: Vec<i64> }}\n\
          \n\
-         actor Sink {{\n\
+         actor ProbeSink {{\n\
          \x20   var seen: i64;\n\
          \x20   var store: Vec<i64>;\n\
          \x20   receive fn take(b: Boxed) {{\n\
@@ -192,7 +192,7 @@ fn mailbox_record_retained_into_state_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let sink = spawn Sink(seen: 0, store: []);\n\
+         \x20   let sink = spawn ProbeSink(seen: 0, store: []);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let b = Boxed {{ payload: [i, i + 1, i + 2] }};\n\
@@ -216,7 +216,7 @@ fn mailbox_record_retained_into_state_source(frames: usize) -> String {
 /// returns the exact `60`.
 const MAILBOX_RETAINED_CONTENT_SOURCE: &str = "type Boxed { payload: Vec<i64> }\n\
      \n\
-     actor Sink {\n\
+     actor ProbeSink {\n\
      \x20   var store: Vec<i64>;\n\
      \x20   receive fn take(b: Boxed) {\n\
      \x20       store = b.payload;\n\
@@ -225,7 +225,7 @@ const MAILBOX_RETAINED_CONTENT_SOURCE: &str = "type Boxed { payload: Vec<i64> }\
      }\n\
      \n\
      fn main() -> i64 {\n\
-     \x20   let sink = spawn Sink(store: []);\n\
+     \x20   let sink = spawn ProbeSink(store: []);\n\
      \x20   var i: i64 = 0;\n\
      \x20   while i < 7 {\n\
      \x20       let b = Boxed { payload: [i * 10, i, i] };\n\

@@ -1,8 +1,8 @@
-import std::encoding::json;
+import std.encoding.json;
 
-import std::encoding::toml;
+import std.encoding.toml;
 
-import std::encoding::yaml;
+import std.encoding.yaml;
 
 fn use_json() {
     let value = json.from_int(1);

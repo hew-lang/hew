@@ -16,7 +16,7 @@
 //
 // Harness verb: hew check (negative — see run.sh). Asserts the boundary
 // diagnostic fires at HIR-lowering time on the imported trait signature.
-import hew::sinkres::{Sink};
+import hew.sinkres.{Sink as ImportedSink};
 
 fn main() {
     println("unreachable: check must reject the imported trait boundary");

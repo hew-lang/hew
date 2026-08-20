@@ -36,9 +36,9 @@ machine Session {
 }
 
 fn main() {
-    var s = Session::Idle;
-    s.step(SessionEvent::Open);
+    var s = Session.Idle;
+    s.step(SessionEvent.Open);
     for i in 0 .. 3 {
-        s.step(SessionEvent::UseIt);
+        s.step(SessionEvent.UseIt);
     }
 }

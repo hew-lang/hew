@@ -17,7 +17,7 @@ use support::{describe_output, require_codegen};
 
 fn arena_holder_insert_remove_source(cycles: usize) -> String {
     format!(
-        "import std::arena::{{ Arena, Key }};\n\
+        "import std.arena.{{ Arena, Key }};\n\
          \n\
          type Holder {{ items: Vec<string> }}\n\
          \n\

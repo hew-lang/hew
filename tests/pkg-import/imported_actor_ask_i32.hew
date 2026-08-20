@@ -1,6 +1,6 @@
 // Imported-actor ask replying i32: the ask site must register the
 // Result<i32, AskError> layout in the importing crate.
-import hew::testffi;
+import hew.testffi;
 
 fn main() {
     let db = spawn testffi.Db(seed: 7);

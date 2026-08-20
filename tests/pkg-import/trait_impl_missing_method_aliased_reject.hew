@@ -7,8 +7,8 @@
 // owner-qualified identity (`multitrait.Proc`), read THAT trait's required method
 // set, and REJECT the impl for the missing `close` — never accept it by reading
 // the polluted bare method set or B's neighbour set.
-import hew::multitrait::{ Proc as P, Tally, ProcErr };
-import hew::multitraitb;
+import hew.multitrait.{ Proc as P, Tally, ProcErr };
+import hew.multitraitb;
 
 type W {
     id: i64;

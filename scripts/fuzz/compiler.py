@@ -399,10 +399,10 @@ def fuzz_types(ctx: FuzzContext) -> None:
             "result_nested",
             "fn main() { let x: Result<Result<i32, string>, string> = Ok(Ok(1)); }",
         ),
-        ("vec_of_vec", "fn main() { let x: Vec<Vec<Vec<i32>>> = Vec::new(); }"),
+        ("vec_of_vec", "fn main() { let x: Vec<Vec<Vec<i32>>> = Vec.new(); }"),
         (
             "hashmap_complex",
-            "fn main() { let x: HashMap<string, Vec<i32>> = HashMap::new(); }",
+            "fn main() { let x: HashMap<string, Vec<i32>> = HashMap.new(); }",
         ),
         ("fn_type_mismatch", "fn f(x: i32) -> string { x }\nfn main() { }"),
         ("wrong_arg_count", "fn f(x: i32) -> i32 { x }\nfn main() { f(1, 2, 3); }"),
@@ -446,7 +446,7 @@ def fuzz_syntax(ctx: FuzzContext) -> None:
         ("double_dot", "fn main() { let x = ..; }"),
         ("question_mark", "fn main() { let x = f()?; }"),
         ("fn_no_body", "fn f() -> i32;\nfn main() { }"),
-        ("import_nonexistent", "import std::nonexistent;\nfn main() { }"),
+        ("import_nonexistent", "import std.nonexistent;\nfn main() { }"),
         ("circular_import", "import self;\nfn main() { }"),
     ]
     for label, src in cases:
@@ -587,7 +587,7 @@ def fuzz_deep(ctx: FuzzContext) -> None:
         ),
         (
             "nested_vec_type",
-            "fn main() { let x: " + "Vec<" * 20 + "i32" + ">" * 20 + " = Vec::new(); }",
+            "fn main() { let x: " + "Vec<" * 20 + "i32" + ">" * 20 + " = Vec.new(); }",
         ),
     ]
     for label, src in cases:
@@ -621,7 +621,7 @@ def fuzz_pathological(ctx: FuzzContext) -> None:
         ),
         (
             "chained_push_1000",
-            "fn main() { let v: Vec<i32> = Vec::new(); " + "v.push(1); " * 1000 + "}",
+            "fn main() { let v: Vec<i32> = Vec.new(); " + "v.push(1); " * 1000 + "}",
         ),
         (
             "many_stmts_5000",
@@ -731,7 +731,7 @@ def fuzz_malformed(ctx: FuzzContext) -> None:
         ("missing_type_ann", "fn f(x) -> i32 { x }\nfn main() { }"),
         ("duplicate_param", "fn f(x: i32, x: i32) -> i32 { x }\nfn main() { }"),
         ("duplicate_field", "type Foo { x: i32; x: i32; }\nfn main() { }"),
-        ("import_star", "import std::*;\nfn main() { }"),
+        ("import_empty_selection", "import std.{};\nfn main() { }"),
         ("raw_await", "fn main() { await; }"),
         ("raw_spawn", "fn main() { spawn; }"),
         ("raw_return", "fn main() { return; }"),
@@ -877,7 +877,7 @@ def fuzz_traits(ctx: FuzzContext) -> None:
         ("multiple_bounds", "fn foo<T: Display + Send>(x: T) { }\nfn main() { }"),
         (
             "associated_type",
-            "trait Container { type Item; fn get(self) -> Self::Item; }\nfn main() { }",
+            "trait Container { type Item; fn get(self) -> Self.Item; }\nfn main() { }",
         ),
         (
             "impl_wrong_signature",
@@ -920,11 +920,11 @@ def fuzz_enums(ctx: FuzzContext) -> None:
     cases = [
         (
             "simple_enum",
-            "enum Color { Red, Green, Blue }\nfn main() { let c = Color::Red; }",
+            "enum Color { Red, Green, Blue }\nfn main() { let c = Color.Red; }",
         ),
         (
             "enum_with_data",
-            "enum Shape { Circle(f64), Rect(f64, f64) }\nfn main() { let s = Shape::Circle(3.14); }",
+            "enum Shape { Circle(f64), Rect(f64, f64) }\nfn main() { let s = Shape.Circle(3.14); }",
         ),
         (
             "enum_struct_variant",
@@ -935,8 +935,8 @@ def fuzz_enums(ctx: FuzzContext) -> None:
             (
                 "enum Dir { Up, Down, Left, Right }\n"
                 "fn show(d: Dir) -> string {\n"
-                '  match d { Dir::Up => "up", Dir::Down => "down", Dir::Left => "left", Dir::Right => "right" }\n'
-                "}\nfn main() { println(show(Dir::Up)); }"
+                '  match d { Dir.Up => "up", Dir.Down => "down", Dir.Left => "left", Dir.Right => "right" }\n'
+                "}\nfn main() { println(show(Dir.Up)); }"
             ),
         ),
         (
@@ -944,7 +944,7 @@ def fuzz_enums(ctx: FuzzContext) -> None:
             (
                 "enum Val { Int(i32), Str(string) }\n"
                 "fn show(v: Val) -> string {\n"
-                '  match v { Val::Int(n) => "int", Val::Str(s) => s }\n'
+                '  match v { Val.Int(n) => "int", Val.Str(s) => s }\n'
                 "}\nfn main() { }"
             ),
         ),
@@ -952,7 +952,7 @@ def fuzz_enums(ctx: FuzzContext) -> None:
             "enum_methods",
             (
                 "enum Option2 { Some2(i32), None2 }\n"
-                "impl Option2 { fn is_some(self) -> bool { match self { Option2::Some2(_) => true, _ => false } } }\n"
+                "impl Option2 { fn is_some(self) -> bool { match self { Option2.Some2(_) => true, _ => false } } }\n"
                 "fn main() { }"
             ),
         ),
@@ -1073,7 +1073,7 @@ def fuzz_patterns(ctx: FuzzContext) -> None:
             "constructor_pattern",
             (
                 "enum Shape { Circle(f64), Rect(f64, f64) }\n"
-                "fn area(s: Shape) -> f64 { match s { Shape::Circle(r) => r, Shape::Rect(w, h) => w } }\n"
+                "fn area(s: Shape) -> f64 { match s { Shape.Circle(r) => r, Shape.Rect(w, h) => w } }\n"
                 "fn main() { }"
             ),
         ),
@@ -1097,7 +1097,7 @@ def fuzz_patterns(ctx: FuzzContext) -> None:
             "exhaustiveness_missing",
             (
                 "enum Dir { Up, Down, Left, Right }\n"
-                "fn f(d: Dir) -> i32 { match d { Dir::Up => 1, Dir::Down => 2 } }\n"
+                "fn f(d: Dir) -> i32 { match d { Dir.Up => 1, Dir.Down => 2 } }\n"
                 "fn main() { }"
             ),
         ),
@@ -1368,25 +1368,25 @@ def fuzz_operators(ctx: FuzzContext) -> None:
 def fuzz_imports(ctx: FuzzContext) -> None:
     """Import and module system edge cases."""
     cases = [
-        ("import_std_json", "import std::json;\nfn main() { }"),
-        ("import_std_fs", "import std::fs;\nfn main() { }"),
-        ("import_std_net", "import std::net;\nfn main() { }"),
-        ("import_std_log", "import std::log;\nfn main() { }"),
-        ("import_nonexistent_mod", "import std::nonexistent;\nfn main() { }"),
-        ("import_nonexistent_path", "import foo::bar::baz;\nfn main() { }"),
+        ("import_std_json", "import std.json;\nfn main() { }"),
+        ("import_std_fs", "import std.fs;\nfn main() { }"),
+        ("import_std_net", "import std.net;\nfn main() { }"),
+        ("import_std_log", "import std.log;\nfn main() { }"),
+        ("import_nonexistent_mod", "import std.nonexistent;\nfn main() { }"),
+        ("import_nonexistent_path", "import foo.bar.baz;\nfn main() { }"),
         ("import_self", "import self;\nfn main() { }"),
-        ("import_star", "import std::*;\nfn main() { }"),
-        ("import_selective", "import std::json::{ parse, stringify };\nfn main() { }"),
-        ("double_import", "import std::json;\nimport std::json;\nfn main() { }"),
+        ("import_empty_selection", "import std.{};\nfn main() { }"),
+        ("import_selective", "import std.json.{ parse, stringify };\nfn main() { }"),
+        ("double_import", "import std.json;\nimport std.json;\nfn main() { }"),
         (
             "import_and_use",
-            "import std::json;\nfn main() { let s = json.stringify(42); }",
+            "import std.json;\nfn main() { let s = json.stringify(42); }",
         ),
         (
             "many_imports",
-            "\n".join(f"import std::mod{i};" for i in range(50)) + "\nfn main() { }",
+            "\n".join(f"import std.mod{i};" for i in range(50)) + "\nfn main() { }",
         ),
-        ("import_deep_path", "import a::b::c::d::e::f;\nfn main() { }"),
+        ("import_deep_path", "import a.b.c.d.e.f;\nfn main() { }"),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"import/{label}"))
@@ -1605,7 +1605,7 @@ def fuzz_tuples(ctx: FuzzContext) -> None:
         ),
         ("single_element", "fn main() { let x = (42,); }"),
         ("large_tuple", "fn main() { let x = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10); }"),
-        ("tuple_in_vec", "fn main() { let v: Vec<(i32, i32)> = Vec::new(); }"),
+        ("tuple_in_vec", "fn main() { let v: Vec<(i32, i32)> = Vec.new(); }"),
         ("tuple_mismatch", "fn main() { let (a, b) = (1, 2, 3); }"),
         ("empty_tuple_type", "fn f() -> () { }\nfn main() { f(); }"),
     ]
@@ -1935,7 +1935,7 @@ def fuzz_differential(ctx: FuzzContext) -> None:
             "vec_operations",
             (
                 "fn main() {\n"
-                "  let v: Vec<i32> = Vec::new();\n"
+                "  let v: Vec<i32> = Vec.new();\n"
                 "  v.push(1); v.push(2); v.push(3);\n"
                 "  println(v.len());\n"
                 "}"
@@ -1945,7 +1945,7 @@ def fuzz_differential(ctx: FuzzContext) -> None:
             "hashmap_operations",
             (
                 "fn main() {\n"
-                "  let m: HashMap<string, i32> = HashMap::new();\n"
+                "  let m: HashMap<string, i32> = HashMap.new();\n"
                 '  m.insert("a", 1);\n'
                 '  m.insert("b", 2);\n'
                 "  println(m.len());\n"
@@ -1968,7 +1968,7 @@ def fuzz_differential(ctx: FuzzContext) -> None:
             "for_with_vec",
             (
                 "fn main() {\n"
-                "  let v: Vec<i32> = Vec::new();\n"
+                "  let v: Vec<i32> = Vec.new();\n"
                 "  v.push(10); v.push(20); v.push(30);\n"
                 "  var sum = 0;\n"
                 "  for x in v { sum += x; }\n"
@@ -2057,9 +2057,9 @@ def fuzz_differential(ctx: FuzzContext) -> None:
             (
                 "enum Color { Red, Green, Blue }\n"
                 "fn name(c: Color) -> string {\n"
-                '  match c { Color::Red => "red", Color::Green => "green", Color::Blue => "blue" }\n'
+                '  match c { Color.Red => "red", Color.Green => "green", Color.Blue => "blue" }\n'
                 "}\n"
-                "fn main() { println(name(Color::Red)); }"
+                "fn main() { println(name(Color.Red)); }"
             ),
         ),
         (
@@ -2110,7 +2110,7 @@ def fuzz_cross_feature(ctx: FuzzContext) -> None:
                 "}\n"
                 "fn main() {\n"
                 "  let p = spawn Processor();\n"
-                "  let v: Vec<i32> = Vec::new();\n"
+                "  let v: Vec<i32> = Vec.new();\n"
                 "  v.push(1); v.push(2); v.push(3);\n"
                 "  let result = await p.process(v);\n"
                 "  println(result);\n"
@@ -2125,9 +2125,9 @@ def fuzz_cross_feature(ctx: FuzzContext) -> None:
                 "  val: i32;\n"
                 "  receive fn exec(cmd: Cmd) {\n"
                 "    match cmd {\n"
-                "      Cmd::Inc => { self.val = self.val + 1; },\n"
-                "      Cmd::Dec => { self.val = self.val - 1; },\n"
-                "      Cmd::Reset => { self.val = 0; }\n"
+                "      Cmd.Inc => { self.val = self.val + 1; },\n"
+                "      Cmd.Dec => { self.val = self.val - 1; },\n"
+                "      Cmd.Reset => { self.val = 0; }\n"
                 "    }\n"
                 "  }\n"
                 "  receive fn get() -> i32 { self.val }\n"
@@ -2156,8 +2156,8 @@ def fuzz_cross_feature(ctx: FuzzContext) -> None:
                 "}\n"
                 "fn main() {\n"
                 "  let db = Database {\n"
-                "    tables: Vec::new(),\n"
-                "    metadata: HashMap::new()\n"
+                "    tables: Vec.new(),\n"
+                "    metadata: HashMap.new()\n"
                 "  };\n"
                 '  db.tables.push("users");\n'
                 '  db.metadata.insert("version", "1.0");\n'
@@ -2227,7 +2227,7 @@ def fuzz_cross_feature(ctx: FuzzContext) -> None:
             "string_interp_with_method",
             (
                 "fn main() {\n"
-                "  let v: Vec<i32> = Vec::new();\n"
+                "  let v: Vec<i32> = Vec.new();\n"
                 "  v.push(1); v.push(2); v.push(3);\n"
                 '  let msg = f"vec has {v.len()} items";\n'
                 "  println(msg);\n"
@@ -2255,7 +2255,7 @@ def fuzz_cross_feature(ctx: FuzzContext) -> None:
                 "enum Shape { Circle(f64), Square(f64) }\n"
                 "impl Describable for Shape {\n"
                 "  fn describe(self) -> string {\n"
-                '    match self { Shape::Circle(_) => "circle", Shape::Square(_) => "square" }\n'
+                '    match self { Shape.Circle(_) => "circle", Shape.Square(_) => "square" }\n'
                 "  }\n"
                 "}\n"
                 "fn main() { }"
@@ -2383,7 +2383,7 @@ def fuzz_type_inference(ctx: FuzzContext) -> None:
         ),
         (
             "infer_vec_element",
-            "fn main() { let v: Vec<i32> = Vec::new(); v.push(42); let x = v.get(0); }",
+            "fn main() { let v: Vec<i32> = Vec.new(); v.push(42); let x = v.get(0); }",
         ),
         (
             "infer_closure_return",
@@ -2532,7 +2532,7 @@ def fuzz_semantic_oracle(ctx: FuzzContext) -> None:
             "vec_basics",
             (
                 "fn main() {\n"
-                "  let v: Vec<i32> = Vec::new();\n"
+                "  let v: Vec<i32> = Vec.new();\n"
                 "  v.push(1); v.push(2); v.push(3);\n"
                 "  println(v.len());\n"
                 "  println(v.get(0));\n"
@@ -2694,7 +2694,7 @@ def fuzz_collections_deep(ctx: FuzzContext) -> None:
             "vec_of_strings",
             (
                 "fn main() {\n"
-                "  let v: Vec<string> = Vec::new();\n"
+                "  let v: Vec<string> = Vec.new();\n"
                 '  v.push("hello"); v.push("world");\n'
                 "  for s in v { println(s); }\n"
                 "}"
@@ -2704,7 +2704,7 @@ def fuzz_collections_deep(ctx: FuzzContext) -> None:
             "hashmap_iteration",
             (
                 "fn main() {\n"
-                "  let m: HashMap<string, i32> = HashMap::new();\n"
+                "  let m: HashMap<string, i32> = HashMap.new();\n"
                 '  m.insert("a", 1); m.insert("b", 2);\n'
                 "  println(m.len());\n"
                 "}"
@@ -2714,7 +2714,7 @@ def fuzz_collections_deep(ctx: FuzzContext) -> None:
             "vec_remove",
             (
                 "fn main() {\n"
-                "  let v: Vec<i32> = Vec::new();\n"
+                "  let v: Vec<i32> = Vec.new();\n"
                 "  v.push(1); v.push(2); v.push(3);\n"
                 "  v.remove(1);\n"
                 "  println(v.len());\n"
@@ -2725,7 +2725,7 @@ def fuzz_collections_deep(ctx: FuzzContext) -> None:
             "vec_pop",
             (
                 "fn main() {\n"
-                "  let v: Vec<i32> = Vec::new();\n"
+                "  let v: Vec<i32> = Vec.new();\n"
                 "  v.push(1); v.push(2);\n"
                 "  let last = v.pop();\n"
                 "  println(v.len());\n"
@@ -2736,7 +2736,7 @@ def fuzz_collections_deep(ctx: FuzzContext) -> None:
             "hashmap_contains",
             (
                 "fn main() {\n"
-                "  let m: HashMap<string, i32> = HashMap::new();\n"
+                "  let m: HashMap<string, i32> = HashMap.new();\n"
                 '  m.insert("key", 42);\n'
                 '  println(m.contains_key("key"));\n'
                 '  println(m.contains_key("missing"));\n'
@@ -2747,7 +2747,7 @@ def fuzz_collections_deep(ctx: FuzzContext) -> None:
             "hashmap_remove",
             (
                 "fn main() {\n"
-                "  let m: HashMap<string, i32> = HashMap::new();\n"
+                "  let m: HashMap<string, i32> = HashMap.new();\n"
                 '  m.insert("key", 42);\n'
                 '  m.remove("key");\n'
                 "  println(m.len());\n"
@@ -2758,8 +2758,8 @@ def fuzz_collections_deep(ctx: FuzzContext) -> None:
             "nested_vec",
             (
                 "fn main() {\n"
-                "  let v: Vec<Vec<i32>> = Vec::new();\n"
-                "  let inner: Vec<i32> = Vec::new();\n"
+                "  let v: Vec<Vec<i32>> = Vec.new();\n"
+                "  let inner: Vec<i32> = Vec.new();\n"
                 "  inner.push(1); inner.push(2);\n"
                 "  v.push(inner);\n"
                 "}"
@@ -2769,7 +2769,7 @@ def fuzz_collections_deep(ctx: FuzzContext) -> None:
             "vec_set",
             (
                 "fn main() {\n"
-                "  let v: Vec<i32> = Vec::new();\n"
+                "  let v: Vec<i32> = Vec.new();\n"
                 "  v.push(1); v.push(2); v.push(3);\n"
                 "  v.set(1, 99);\n"
                 "  println(v.get(1));\n"
@@ -2778,13 +2778,13 @@ def fuzz_collections_deep(ctx: FuzzContext) -> None:
         ),
         (
             "empty_vec_operations",
-            ("fn main() {\n  let v: Vec<i32> = Vec::new();\n  println(v.len());\n}"),
+            ("fn main() {\n  let v: Vec<i32> = Vec.new();\n  println(v.len());\n}"),
         ),
         (
             "empty_hashmap_operations",
             (
                 "fn main() {\n"
-                "  let m: HashMap<string, i32> = HashMap::new();\n"
+                "  let m: HashMap<string, i32> = HashMap.new();\n"
                 "  println(m.len());\n"
                 '  println(m.contains_key("x"));\n'
                 "}"
@@ -2862,7 +2862,7 @@ def fuzz_actor_lifecycle(ctx: FuzzContext) -> None:
                 "  receive fn add(item: string) { self.items.push(item); }\n"
                 "  receive fn count() -> i32 { self.items.len() }\n"
                 "}\n"
-                "fn main() { let s = spawn Store(items: Vec::new()); }"
+                "fn main() { let s = spawn Store(items: Vec.new()); }"
             ),
         ),
         (
@@ -2975,7 +2975,7 @@ def fuzz_method_chains(ctx: FuzzContext) -> None:
             "vec_chain",
             (
                 "fn main() {\n"
-                "  let v: Vec<i32> = Vec::new();\n"
+                "  let v: Vec<i32> = Vec.new();\n"
                 "  v.push(3); v.push(1); v.push(2);\n"
                 "  println(v.len());\n"
                 "  println(v.get(0));\n"
@@ -3035,7 +3035,7 @@ def fuzz_random_well_typed(ctx: FuzzContext, n: int = 100) -> None:
             vdecls = "\n".join(f"  {v};" for v in variants)
             parts.append(f"enum {ename} {{\n{vdecls}\n}}")
             chosen = random.choice(variants)
-            main_stmts.append(f"let _ek = {ename}::{chosen};")
+            main_stmts.append(f"let _ek = {ename}.{chosen};")
 
         # --- Actor declarations ---
         if random.random() < 0.35:
@@ -3392,7 +3392,7 @@ def fuzz_oracle_exec(ctx: FuzzContext) -> None:
             "vec_push_len",
             (
                 "fn main() {\n"
-                "  let v: Vec<i32> = Vec::new();\n"
+                "  let v: Vec<i32> = Vec.new();\n"
                 "  v.push(10); v.push(20); v.push(30);\n"
                 "  println(v.len());\n"
                 "}"
@@ -3403,7 +3403,7 @@ def fuzz_oracle_exec(ctx: FuzzContext) -> None:
             "vec_get",
             (
                 "fn main() {\n"
-                "  let v: Vec<i32> = Vec::new();\n"
+                "  let v: Vec<i32> = Vec.new();\n"
                 "  v.push(42);\n"
                 "  println(v.get(0));\n"
                 "}"
@@ -3414,7 +3414,7 @@ def fuzz_oracle_exec(ctx: FuzzContext) -> None:
             "vec_pop",
             (
                 "fn main() {\n"
-                "  let v: Vec<i32> = Vec::new();\n"
+                "  let v: Vec<i32> = Vec.new();\n"
                 "  v.push(1); v.push(2); v.push(3);\n"
                 "  let last = v.pop();\n"
                 "  println(last);\n"
@@ -3540,7 +3540,7 @@ def fuzz_dump_mir(ctx: FuzzContext, n: int = 100) -> None:
             "vec_ops",
             (
                 "fn main() {\n"
-                "  let v: Vec<i32> = Vec::new();\n"
+                "  let v: Vec<i32> = Vec.new();\n"
                 "  v.push(1); v.push(2); v.push(3);\n"
                 "  println(v.len());\n"
                 "}"
@@ -3557,7 +3557,7 @@ def fuzz_dump_mir(ctx: FuzzContext, n: int = 100) -> None:
             "enum_decl",
             (
                 "enum Dir { Up; Down; Left; Right; }\n"
-                "fn main() { let d = Dir::Up; println(0); }"
+                "fn main() { let d = Dir.Up; println(0); }"
             ),
         ),
         (

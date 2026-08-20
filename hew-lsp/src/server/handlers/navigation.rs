@@ -69,20 +69,15 @@ pub(crate) fn goto_definition(
         }
     }
 
-    for separator in [".", "::"] {
-        if let Some(method) = word.rsplit(separator).next() {
-            if method != word {
-                if let Some(range) = find_definition_in_ast(
-                    &doc.source,
-                    &doc.line_offsets,
-                    &doc.parse_result,
-                    method,
-                ) {
-                    return Some(GotoDefinitionResponse::Scalar(Location {
-                        uri: uri.clone(),
-                        range,
-                    }));
-                }
+    if let Some(method) = word.rsplit('.').next() {
+        if method != word {
+            if let Some(range) =
+                find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, method)
+            {
+                return Some(GotoDefinitionResponse::Scalar(Location {
+                    uri: uri.clone(),
+                    range,
+                }));
             }
         }
     }
@@ -115,16 +110,14 @@ pub(crate) fn goto_definition(
         }));
     }
 
-    for separator in [".", "::"] {
-        if let Some((prefix, _)) = word.split_once(separator) {
-            if let Some((target_uri, range)) =
-                find_cross_file_definition(uri, &imports, prefix, &server.documents)
-            {
-                return Some(GotoDefinitionResponse::Scalar(Location {
-                    uri: target_uri,
-                    range,
-                }));
-            }
+    if let Some((prefix, _)) = word.split_once('.') {
+        if let Some((target_uri, range)) =
+            find_cross_file_definition(uri, &imports, prefix, &server.documents)
+        {
+            return Some(GotoDefinitionResponse::Scalar(Location {
+                uri: target_uri,
+                range,
+            }));
         }
     }
 

@@ -12,7 +12,7 @@ use support::{describe_output, require_codegen};
 fn discarded_remove_source(frames: usize) -> String {
     format!(
         "fn one() {{\n\
-         \x20   let m: HashMap<i64, string> = HashMap::new();\n\
+         \x20   let m: HashMap<i64, string> = HashMap.new();\n\
          \x20   m.insert(1, \"discard-remove\".to_upper());\n\
          \x20   m.remove(1);\n\
          }}\n\
@@ -25,7 +25,7 @@ fn discarded_remove_source(frames: usize) -> String {
 fn wildcard_remove_source(frames: usize) -> String {
     format!(
         "fn one() {{\n\
-         \x20   let m: HashMap<i64, string> = HashMap::new();\n\
+         \x20   let m: HashMap<i64, string> = HashMap.new();\n\
          \x20   m.insert(1, \"wildcard-remove\".to_upper());\n\
          \x20   let _ = m.remove(1);\n\
          }}\n\
@@ -38,7 +38,7 @@ fn wildcard_remove_source(frames: usize) -> String {
 fn discarded_get_source(frames: usize) -> String {
     format!(
         "fn one() {{\n\
-         \x20   let m: HashMap<i64, string> = HashMap::new();\n\
+         \x20   let m: HashMap<i64, string> = HashMap.new();\n\
          \x20   m.insert(1, \"discard-get\".to_upper());\n\
          \x20   m.get(1);\n\
          }}\n\
@@ -51,7 +51,7 @@ fn discarded_get_source(frames: usize) -> String {
 fn none_control_source(frames: usize) -> String {
     format!(
         "fn one() {{\n\
-         \x20   let m: HashMap<i64, string> = HashMap::new();\n\
+         \x20   let m: HashMap<i64, string> = HashMap.new();\n\
          \x20   m.remove(1);\n\
          }}\n\
          fn main() {{\n\
@@ -62,7 +62,7 @@ fn none_control_source(frames: usize) -> String {
 
 const SCRIBBLE_SOURCE: &str = "\
 fn main() {\n\
-\x20   let m: HashMap<string, string> = HashMap::new();\n\
+\x20   let m: HashMap<string, string> = HashMap.new();\n\
 \x20   m.insert(\"k\", \"still-owned\".to_upper());\n\
 \x20   m.get(\"k\");\n\
 \x20   print(m[\"k\"]);\n\

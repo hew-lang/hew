@@ -35,7 +35,7 @@ actor WrapperHolder {
     receive fn noop() {}
 }
 
-actor Index {
+actor ProbeIndex {
     var entries: HashMap<string, i64>;
     init(entries: HashMap<string, i64>) {
         entries = entries;
@@ -58,8 +58,8 @@ supervisor App {
     child maybe: MaybeGreeter(name: Some("hello"));
     child pair: PairHolder(pair: ("hello", 1));
     child wrap: WrapperHolder(data: Wrapper { inner: [] });
-    child index: Index(entries: HashMap::<string, i64>::new());
-    child seen: Seen(ids: HashSet::<i64>::new());
+    child index: ProbeIndex(entries: HashMap<string, i64>.new());
+    child seen: Seen(ids: HashSet<i64>.new());
 }
 
 fn main() -> i64 {

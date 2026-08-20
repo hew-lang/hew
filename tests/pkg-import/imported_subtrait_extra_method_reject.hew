@@ -4,7 +4,7 @@
 // method is still flagged. Must REJECT with the "declares method(s) not on the
 // trait" diagnostic — owner-qualifying the super edge must not widen the known
 // set beyond the actual chain.
-import hew::supertraits::{ Sub };
+import hew.supertraits.{ Sub };
 
 type W {
     id: i64;

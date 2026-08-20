@@ -1,4 +1,4 @@
-import std::encoding::protobuf;
+import std.encoding.protobuf;
 
 fn main() -> i64 {
     let message = protobuf.new();

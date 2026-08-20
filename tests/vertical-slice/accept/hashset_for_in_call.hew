@@ -10,7 +10,7 @@
 //
 // Elements 10, 20, 30 sum to 60; a count guard pins the iteration count to 3.
 fn make_set() -> HashSet<i64> {
-    let s: HashSet<i64> = HashSet::new();
+    let s: HashSet<i64> = HashSet.new();
     s.insert(10);
     s.insert(20);
     s.insert(30);

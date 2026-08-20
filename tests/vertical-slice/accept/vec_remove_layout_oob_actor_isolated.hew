@@ -5,7 +5,7 @@ type Point {
 
 actor VecRemoveLayoutCrasher {
     receive fn boom() {
-        let points: Vec<Point> = Vec::new();
+        let points: Vec<Point> = Vec.new();
         points.push(Point { x: 1, y: 2 });
         points.remove(99);
     }

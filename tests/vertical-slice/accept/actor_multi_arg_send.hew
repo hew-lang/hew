@@ -5,9 +5,9 @@
 // the mailbox node, and owned by the handler afterwards; the caller's
 // bindings are consumed at the send boundary.
 //
-// Output is deterministic: all prints run inside Sink in mailbox FIFO
+// Output is deterministic: all prints run inside TestSink in mailbox FIFO
 // order; the trailing ask fences main until every send has dispatched.
-actor Sink {
+actor TestSink {
     var total: i64;
     receive fn process(label: string, count: i64) {
         total = total + count;
@@ -22,7 +22,7 @@ actor Sink {
 }
 
 fn main() {
-    let s = spawn Sink(total: 0);
+    let s = spawn TestSink(total: 0);
     s.process("first", 5);
     s.process("second", 7);
     let left = "alpha";

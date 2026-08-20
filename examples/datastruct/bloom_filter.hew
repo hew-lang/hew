@@ -28,7 +28,7 @@ fn h3(key: i64, m: i64) -> i64 {
 }
 
 fn make_bloom(size: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     for i in 0 .. size {
         v.push(0);
     }

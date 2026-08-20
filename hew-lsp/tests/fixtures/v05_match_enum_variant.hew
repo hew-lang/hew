@@ -8,9 +8,9 @@ fn match_enum_probe() -> i64 {
 }
 
 fn match_enum_variant() -> i64 {
-    let s: Shape = Shape::Circle(match_enum_probe());
+    let s: Shape = Shape.Circle(match_enum_probe());
     match s {
-        Shape::Circle(r) => r,
-        Shape::Square(side) => side,
+        Shape.Circle(r) => r,
+        Shape.Square(side) => side,
     }
 }

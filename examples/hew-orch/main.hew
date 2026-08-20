@@ -15,7 +15,7 @@
 // `PRIMITIVE_ALIASES` (ty.rs:354) currently accepts are baggage scheduled
 // for removal; this file is written so it does not need re-editing when
 // they are dropped.
-import std::fs;
+import std.fs;
 
 // ---------------------------------------------------------------------------
 // Character classification
@@ -108,16 +108,16 @@ fn collect_md_files(dir: string, out: Vec<string>) {
 // `Option<i32>` returned by `get`.
 fn ingest_file(path: string, index: HashMap<string, i32>) {
     let content = fs.read(path);
-    let ids: Vec<string> = Vec::new();
+    let ids: Vec<string> = Vec.new();
     for line in content.lines() {
         extract_ids_in_line(line, ids);
     }
     for id in ids {
         match index.get(id) {
-            Some(prev) => {
+            .Some(prev) => {
                 index.insert(id, prev + 1);
             },
-            None => {
+            .None => {
                 index.insert(id, 1);
             },
         }
@@ -135,10 +135,10 @@ fn ingest_file(path: string, index: HashMap<string, i32>) {
 fn main() {
     let dir = ".tmp/orchestration";
     println(f"hew-orch ingest {dir}");
-    let files: Vec<string> = Vec::new();
+    let files: Vec<string> = Vec.new();
     collect_md_files(dir, files);
     println(f"files found: {files.len()}");
-    let index: HashMap<string, i32> = HashMap::new();
+    let index: HashMap<string, i32> = HashMap.new();
     for file in files {
         ingest_file(file, index);
     }
@@ -160,11 +160,11 @@ fn main() {
     for k in 0 .. limit {
         let id = keys[k];
         match index.get(id) {
-            Some(c) => {
+            .Some(c) => {
                 println(id);
                 println(c);
             },
-            None => {},
+            .None => {},
         }
     }
 }

@@ -20,7 +20,7 @@
 //! `exercised_*` test pins the already-working matched-Option path so the fix
 //! does not perturb it.
 
-import std::testing;
+import std.testing;
 
 // ── SF2-shape: transitively-nested `Option<string>`, never exercised. ──
 type CSlot {
@@ -34,7 +34,7 @@ type CArena {
 }
 
 fn cnew() -> CArena {
-    CArena { slots: Vec::new(), free: Vec::new() }
+    CArena { slots: Vec.new(), free: Vec.new() }
 }
 
 #[test]
@@ -58,7 +58,7 @@ type RBox {
 }
 
 fn rnew() -> RBox {
-    RBox { slots: Vec::new() }
+    RBox { slots: Vec.new() }
 }
 
 #[test]
@@ -84,7 +84,7 @@ type Canvas {
 }
 
 fn canvas_new() -> Canvas {
-    Canvas { pixels: Vec::new() }
+    Canvas { pixels: Vec.new() }
 }
 
 #[test]
@@ -104,7 +104,7 @@ type XArena {
 }
 
 fn xnew() -> XArena {
-    XArena { slots: Vec::new() }
+    XArena { slots: Vec.new() }
 }
 
 #[test]
@@ -112,11 +112,11 @@ fn exercised_nested_option_field_roundtrips_value() {
     let a: XArena = xnew();
     a.slots.push(XSlot { generation: 0, value: Some("hello") });
     let got = match a.slots.get(0) {
-        Some(slot) => match slot.value {
-            Some(v) => v,
-            None => "MISS",
+        .Some(slot) => match slot.value {
+            .Some(v) => v,
+            .None => "MISS",
         },
-        None => "NONE",
+        .None => "NONE",
     };
     testing.assert_eq_str(got, "hello");
 }

@@ -16,7 +16,7 @@ type Tag {
 }
 
 fn main() {
-    let names: Vec<string> = Vec::new();
+    let names: Vec<string> = Vec.new();
     names.push("ada");
     names.push("alan");
     names.push("grace");
@@ -28,12 +28,12 @@ fn main() {
     for n in names {
         println(n);
     }
-    let pts: Vec<Point> = Vec::new();
+    let pts: Vec<Point> = Vec.new();
     pts.push(Point { x: 1, y: 2 });
     pts.push(Point { x: 3, y: 4 });
     let p = pts[1];
     println(p.x);
-    let tags: Vec<Tag> = Vec::new();
+    let tags: Vec<Tag> = Vec.new();
     tags.push(Tag { name: "a", n: 1 });
     tags.push(Tag { name: "b", n: 2 });
     let t = tags[0];

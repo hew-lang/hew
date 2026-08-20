@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn fold_import_group() {
-        let source = "import std::os;\nimport std::fs;\nimport std::net;\nfn main() {}";
+        let source = "import std.os;\nimport std.fs;\nimport std.net;\nfn main() {}";
         let pr = parse(source);
         let ranges = build_folding_ranges(source, &pr);
         let imports = ranges.iter().find(|r| r.kind == FoldingKind::Imports);
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn single_import_no_fold() {
-        let source = "import std::os;\nfn main() {}";
+        let source = "import std.os;\nfn main() {}";
         let pr = parse(source);
         let ranges = build_folding_ranges(source, &pr);
         let imports = ranges

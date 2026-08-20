@@ -10,7 +10,7 @@
 // trait arm is load-bearing without over-rejecting valid signatures.
 //
 // Harness verb: hew check (positive — see run.sh). Asserts the check succeeds.
-import hew::sinkok::{Sink};
+import hew.sinkok.{Sink as ImportedSink};
 
 fn main() {
     println("checked: imported consume-pinned trait boundary accepted");

@@ -75,7 +75,7 @@ assert_output() {
 
 last_segment() {
   local package="$1"
-  printf '%s\n' "${package##*::}"
+  printf '%s\n' "${package##*.}"
 }
 
 write_package() {
@@ -169,14 +169,14 @@ mkdir -p "${HOME}"
 run_in "${TMP}" keygen "${HEW}" key generate
 
 adder_pkg="${TMP}/pkgs/adder-0.1.0"
-write_package "${adder_pkg}" "acme::adder" "0.1.0" "42"
+write_package "${adder_pkg}" "acme.adder" "0.1.0" "42"
 run_in "${adder_pkg}" publish-adder "${HEW}" publish --local
 
 consumer="${TMP}/consumer"
-write_consumer "${consumer}" "acme::adder" "0.1.0"
+write_consumer "${consumer}" "acme.adder" "0.1.0"
 run_in "${consumer}" install-adder "${HEW}" install
 test -f "${consumer}/hew.lock" || fail "hew.lock was not written"
-assert_contains "${consumer}/hew.lock" 'name = "acme::adder"'
+assert_contains "${consumer}/hew.lock" 'name = "acme.adder"'
 assert_contains "${consumer}/hew.lock" 'version = "0.1.0"'
 test -f "${consumer}/.hew/packages/acme/adder/hew.toml" \
   || fail "project-local package manifest was not materialized"
@@ -187,7 +187,7 @@ assert_output "${consumer}" "42" "run-adder"
 echo "PASS package-install minimal consumer"
 
 missing_consumer="${TMP}/missing-consumer"
-write_consumer "${missing_consumer}" "acme::missing" "0.1.0"
+write_consumer "${missing_consumer}" "acme.missing" "0.1.0"
 expect_check_failure "${missing_consumer}" "missing package" "run \`hew install\`"
 echo "PASS package-install missing rejection"
 
@@ -208,40 +208,40 @@ expect_install_failure \
   "invalid package name \`evil::../../../tmp/pwned\`"
 echo "PASS package-install traversal dependency rejection"
 
-broken_registry="${HOME}/.hew/packages/acme/broken/0.1.0"
+broken_registry="${HOME}/.hew/packages/acme.broken/0.1.0"
 mkdir -p "${broken_registry}"
 printf 'not valid {{{\n' >"${broken_registry}/hew.toml"
 broken_consumer="${TMP}/broken-consumer"
-write_consumer "${broken_consumer}" "acme::broken" "0.1.0"
+write_consumer "${broken_consumer}" "acme.broken" "0.1.0"
 expect_install_failure \
   "${broken_consumer}" \
   "malformed package" \
-  "cannot read installed manifest for \`acme::broken@0.1.0\`"
+  "cannot read installed manifest for \`acme.broken@0.1.0\`"
 echo "PASS package-install malformed rejection"
 
 versioned_v1="${TMP}/pkgs/versioned-0.1.0"
 versioned_v2="${TMP}/pkgs/versioned-0.2.0"
-write_package "${versioned_v1}" "acme::versioned" "0.1.0" "101"
-write_package "${versioned_v2}" "acme::versioned" "0.2.0" "202"
+write_package "${versioned_v1}" "acme.versioned" "0.1.0" "101"
+write_package "${versioned_v2}" "acme.versioned" "0.2.0" "202"
 run_in "${versioned_v1}" publish-versioned-v1 "${HEW}" publish --local
 run_in "${versioned_v2}" publish-versioned-v2 "${HEW}" publish --local
 
 versioned_consumer="${TMP}/versioned-consumer"
-write_consumer "${versioned_consumer}" "acme::versioned" "0.1.0"
+write_consumer "${versioned_consumer}" "acme.versioned" "0.1.0"
 run_in "${versioned_consumer}" install-versioned-v1 "${HEW}" install
-assert_contains "${versioned_consumer}/hew.lock" 'name = "acme::versioned"'
+assert_contains "${versioned_consumer}/hew.lock" 'name = "acme.versioned"'
 assert_contains "${versioned_consumer}/hew.lock" 'version = "0.1.0"'
 run_in "${versioned_consumer}" check-versioned-v1 "${HEW}" check main.hew
 assert_output "${versioned_consumer}" "101" "run-versioned-v1"
 
-write_consumer "${versioned_consumer}" "acme::versioned" "0.2.0"
+write_consumer "${versioned_consumer}" "acme.versioned" "0.2.0"
 run_in "${versioned_consumer}" install-versioned-v2 "${HEW}" install
-assert_contains "${versioned_consumer}/hew.lock" 'name = "acme::versioned"'
+assert_contains "${versioned_consumer}/hew.lock" 'name = "acme.versioned"'
 assert_contains "${versioned_consumer}/hew.lock" 'version = "0.2.0"'
 run_in "${versioned_consumer}" check-versioned-v2 "${HEW}" check main.hew
 assert_output "${versioned_consumer}" "202" "run-versioned-v2"
 
-stale_target="${HOME}/.hew/packages/acme/versioned/0.1.0"
+stale_target="${HOME}/.hew/packages/acme.versioned/0.1.0"
 stale_link="${versioned_consumer}/.hew/packages/acme/versioned"
 rm -rf "${stale_link}"
 mkdir -p "$(dirname "${stale_link}")"
@@ -251,5 +251,5 @@ fi
 expect_check_failure \
   "${versioned_consumer}" \
   "stale package materialization" \
-  'does not match hew.lock (expected acme::versioned@0.2.0'
+  'does not match hew.lock (expected acme.versioned@0.2.0'
 echo "PASS package-install version matrix"

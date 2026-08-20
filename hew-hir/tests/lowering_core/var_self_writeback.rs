@@ -7,7 +7,7 @@ fn concrete_var_self_next_lowers_to_writeback_call() {
     let src = r"
 trait Stepper {
     type Item;
-    fn next(var self) -> Option<Self::Item>;
+    fn next(var self) -> Option<Self.Item>;
 }
 
 type Countdown { n: i64; }

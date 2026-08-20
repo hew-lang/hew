@@ -965,10 +965,10 @@ mod tests {
     #[test]
     fn resolve_exact_version() {
         let (_dir, reg) = test_registry();
-        install_fake(&reg, "std::net::http", "1.0.0");
-        install_fake(&reg, "std::net::http", "2.0.0");
+        install_fake(&reg, "std.net.http", "1.0.0");
+        install_fake(&reg, "std.net.http", "2.0.0");
 
-        let version = resolve_version("std::net::http", "1.0.0", &reg).unwrap();
+        let version = resolve_version("std.net.http", "1.0.0", &reg).unwrap();
         assert_eq!(version, "1.0.0");
     }
 
@@ -1038,11 +1038,11 @@ mod tests {
     fn resolve_version_rejects_traversal_package_name() {
         let (_dir, reg) = test_registry();
 
-        let err = resolve_version("evil::../../../tmp/pwned", "1.0.0", &reg).unwrap_err();
+        let err = resolve_version("evil.../../../tmp/pwned", "1.0.0", &reg).unwrap_err();
         assert!(matches!(err, ResolveError::InvalidPackageName { .. }));
         assert!(err
             .to_string()
-            .contains("invalid package name `evil::../../../tmp/pwned`"));
+            .contains("invalid package name `evil.../../../tmp/pwned`"));
     }
 
     #[test]
@@ -1087,27 +1087,27 @@ mod tests {
     #[test]
     fn resolve_all_success() {
         let (_dir, reg) = test_registry();
-        install_fake(&reg, "std::net::http", "1.0.0");
-        install_fake(&reg, "std::net::http", "1.2.0");
-        install_fake(&reg, "ecosystem::db::postgres", "2.0.0");
+        install_fake(&reg, "std.net.http", "1.0.0");
+        install_fake(&reg, "std.net.http", "1.2.0");
+        install_fake(&reg, "ecosystem.db.postgres", "2.0.0");
 
         let manifest = test_manifest(BTreeMap::from([
             (
-                "std::net::http".to_string(),
+                "std.net.http".to_string(),
                 manifest::DepSpec::Version("^1.0".to_string()),
             ),
             (
-                "ecosystem::db::postgres".to_string(),
+                "ecosystem.db.postgres".to_string(),
                 manifest::DepSpec::Version("2.0.0".to_string()),
             ),
         ]));
 
         let resolved = resolve_all(&manifest, &reg).unwrap();
         assert_eq!(resolved.len(), 2);
-        assert_eq!(resolved["std::net::http"].version, "1.2.0");
-        assert_eq!(resolved["ecosystem::db::postgres"].version, "2.0.0");
+        assert_eq!(resolved["std.net.http"].version, "1.2.0");
+        assert_eq!(resolved["ecosystem.db.postgres"].version, "2.0.0");
         assert_eq!(
-            resolved["std::net::http"].direct_requirement.as_deref(),
+            resolved["std.net.http"].direct_requirement.as_deref(),
             Some("^1.0")
         );
     }
@@ -1125,19 +1125,19 @@ mod tests {
     #[test]
     fn resolve_all_collects_failures() {
         let (_dir, reg) = test_registry();
-        install_fake(&reg, "std::net::http", "1.0.0");
+        install_fake(&reg, "std.net.http", "1.0.0");
 
         let manifest = test_manifest(BTreeMap::from([
             (
-                "std::net::http".to_string(),
+                "std.net.http".to_string(),
                 manifest::DepSpec::Version("^1.0".to_string()),
             ),
             (
-                "missing::one".to_string(),
+                "missing.one".to_string(),
                 manifest::DepSpec::Version("1.0".to_string()),
             ),
             (
-                "missing::two".to_string(),
+                "missing.two".to_string(),
                 manifest::DepSpec::Version(">=2.0".to_string()),
             ),
         ]));
@@ -1150,8 +1150,8 @@ mod tests {
                     .iter()
                     .map(|failure| failure.package.as_str())
                     .collect();
-                assert!(names.contains(&"missing::one"));
-                assert!(names.contains(&"missing::two"));
+                assert!(names.contains(&"missing.one"));
+                assert!(names.contains(&"missing.two"));
             }
             other => panic!("expected UnresolvableDeps, got: {other}"),
         }
@@ -1162,10 +1162,10 @@ mod tests {
         let (_dir, reg) = test_registry();
         install_fake_package(
             &reg,
-            "app::alpha",
+            "app.alpha",
             "1.0.0",
             &[FakeDep {
-                name: "shared::leaf",
+                name: "shared.leaf",
                 version: "^1.0",
                 optional: false,
                 features: &[],
@@ -1175,10 +1175,10 @@ mod tests {
         );
         install_fake_package(
             &reg,
-            "app::beta",
+            "app.beta",
             "1.0.0",
             &[FakeDep {
-                name: "shared::leaf",
+                name: "shared.leaf",
                 version: "^1.0",
                 optional: false,
                 features: &[],
@@ -1186,25 +1186,25 @@ mod tests {
             }],
             &[],
         );
-        install_fake(&reg, "shared::leaf", "1.0.0");
-        install_fake(&reg, "shared::leaf", "1.4.0");
+        install_fake(&reg, "shared.leaf", "1.0.0");
+        install_fake(&reg, "shared.leaf", "1.4.0");
 
         let manifest = test_manifest(BTreeMap::from([
             (
-                "app::alpha".to_string(),
+                "app.alpha".to_string(),
                 manifest::DepSpec::Version("^1.0".to_string()),
             ),
             (
-                "app::beta".to_string(),
+                "app.beta".to_string(),
                 manifest::DepSpec::Version("^1.0".to_string()),
             ),
         ]));
 
         let resolved = resolve_all(&manifest, &reg).unwrap();
-        assert_eq!(resolved["app::alpha"].version, "1.0.0");
-        assert_eq!(resolved["app::beta"].version, "1.0.0");
-        assert_eq!(resolved["shared::leaf"].version, "1.4.0");
-        assert!(resolved["shared::leaf"].direct_requirement.is_none());
+        assert_eq!(resolved["app.alpha"].version, "1.0.0");
+        assert_eq!(resolved["app.beta"].version, "1.0.0");
+        assert_eq!(resolved["shared.leaf"].version, "1.4.0");
+        assert!(resolved["shared.leaf"].direct_requirement.is_none());
     }
 
     #[test]
@@ -1212,10 +1212,10 @@ mod tests {
         let (_dir, reg) = test_registry();
         install_fake_package(
             &reg,
-            "acme::innocent",
+            "acme.innocent",
             "1.0.0",
             &[FakeDep {
-                name: "evil::../../../tmp/pwned",
+                name: "evil.../../../tmp/pwned",
                 version: "1.0.0",
                 optional: false,
                 features: &[],
@@ -1225,14 +1225,14 @@ mod tests {
         );
 
         let manifest = test_manifest(BTreeMap::from([(
-            "acme::innocent".to_string(),
+            "acme.innocent".to_string(),
             manifest::DepSpec::Version("1.0.0".to_string()),
         )]));
 
         let err = resolve_all(&manifest, &reg).unwrap_err();
         match err {
             ResolveError::InvalidPackageName { package } => {
-                assert_eq!(package, "evil::../../../tmp/pwned");
+                assert_eq!(package, "evil.../../../tmp/pwned");
             }
             other => panic!("expected InvalidPackageName, got: {other}"),
         }
@@ -1243,10 +1243,10 @@ mod tests {
         let (_dir, reg) = test_registry();
         install_fake_package(
             &reg,
-            "graph::left",
+            "graph.left",
             "1.0.0",
             &[FakeDep {
-                name: "graph::shared",
+                name: "graph.shared",
                 version: "^1.0",
                 optional: false,
                 features: &[],
@@ -1256,10 +1256,10 @@ mod tests {
         );
         install_fake_package(
             &reg,
-            "graph::right",
+            "graph.right",
             "1.0.0",
             &[FakeDep {
-                name: "graph::shared",
+                name: "graph.shared",
                 version: "^1.2",
                 optional: false,
                 features: &[],
@@ -1267,26 +1267,26 @@ mod tests {
             }],
             &[],
         );
-        install_fake(&reg, "graph::shared", "1.0.0");
-        install_fake(&reg, "graph::shared", "1.2.0");
-        install_fake(&reg, "graph::shared", "1.8.0");
-        install_fake(&reg, "graph::shared", "2.0.0");
+        install_fake(&reg, "graph.shared", "1.0.0");
+        install_fake(&reg, "graph.shared", "1.2.0");
+        install_fake(&reg, "graph.shared", "1.8.0");
+        install_fake(&reg, "graph.shared", "2.0.0");
 
         let manifest = test_manifest(BTreeMap::from([
             (
-                "graph::left".to_string(),
+                "graph.left".to_string(),
                 manifest::DepSpec::Version("^1.0".to_string()),
             ),
             (
-                "graph::right".to_string(),
+                "graph.right".to_string(),
                 manifest::DepSpec::Version("^1.0".to_string()),
             ),
         ]));
 
         let resolved = resolve_all(&manifest, &reg).unwrap();
-        assert_eq!(resolved["graph::shared"].version, "1.8.0");
+        assert_eq!(resolved["graph.shared"].version, "1.8.0");
         assert_eq!(
-            resolved["graph::shared"].requirements,
+            resolved["graph.shared"].requirements,
             vec!["^1.0".to_string(), "^1.2".to_string()]
         );
     }
@@ -1296,10 +1296,10 @@ mod tests {
         let (_dir, reg) = test_registry();
         install_fake_package(
             &reg,
-            "lowering::alpha",
+            "lowering.alpha",
             "1.0.0",
             &[FakeDep {
-                name: "lowering::shared",
+                name: "lowering.shared",
                 version: "^1.0",
                 optional: false,
                 features: &[],
@@ -1309,10 +1309,10 @@ mod tests {
         );
         install_fake_package(
             &reg,
-            "lowering::beta",
+            "lowering.beta",
             "1.0.0",
             &[FakeDep {
-                name: "lowering::shared",
+                name: "lowering.shared",
                 version: "<=1.2.0",
                 optional: false,
                 features: &[],
@@ -1320,25 +1320,25 @@ mod tests {
             }],
             &[],
         );
-        install_fake(&reg, "lowering::shared", "1.0.0");
-        install_fake(&reg, "lowering::shared", "1.2.0");
-        install_fake(&reg, "lowering::shared", "1.8.0");
+        install_fake(&reg, "lowering.shared", "1.0.0");
+        install_fake(&reg, "lowering.shared", "1.2.0");
+        install_fake(&reg, "lowering.shared", "1.8.0");
 
         let manifest = test_manifest(BTreeMap::from([
             (
-                "lowering::alpha".to_string(),
+                "lowering.alpha".to_string(),
                 manifest::DepSpec::Version("^1.0".to_string()),
             ),
             (
-                "lowering::beta".to_string(),
+                "lowering.beta".to_string(),
                 manifest::DepSpec::Version("^1.0".to_string()),
             ),
         ]));
 
         let resolved = resolve_all(&manifest, &reg).unwrap();
-        assert_eq!(resolved["lowering::shared"].version, "1.2.0");
+        assert_eq!(resolved["lowering.shared"].version, "1.2.0");
         assert_eq!(
-            resolved["lowering::shared"].requirements,
+            resolved["lowering.shared"].requirements,
             vec!["<=1.2.0".to_string(), "^1.0".to_string()]
         );
     }
@@ -1348,10 +1348,10 @@ mod tests {
         let (_dir, reg) = test_registry();
         install_fake_package(
             &reg,
-            "conflict::left",
+            "conflict.left",
             "1.0.0",
             &[FakeDep {
-                name: "conflict::shared",
+                name: "conflict.shared",
                 version: "1.0.0",
                 optional: false,
                 features: &[],
@@ -1361,10 +1361,10 @@ mod tests {
         );
         install_fake_package(
             &reg,
-            "conflict::right",
+            "conflict.right",
             "1.0.0",
             &[FakeDep {
-                name: "conflict::shared",
+                name: "conflict.shared",
                 version: "2.0.0",
                 optional: false,
                 features: &[],
@@ -1372,16 +1372,16 @@ mod tests {
             }],
             &[],
         );
-        install_fake(&reg, "conflict::shared", "1.0.0");
-        install_fake(&reg, "conflict::shared", "2.0.0");
+        install_fake(&reg, "conflict.shared", "1.0.0");
+        install_fake(&reg, "conflict.shared", "2.0.0");
 
         let manifest = test_manifest(BTreeMap::from([
             (
-                "conflict::left".to_string(),
+                "conflict.left".to_string(),
                 manifest::DepSpec::Version("^1.0".to_string()),
             ),
             (
-                "conflict::right".to_string(),
+                "conflict.right".to_string(),
                 manifest::DepSpec::Version("^1.0".to_string()),
             ),
         ]));
@@ -1390,7 +1390,7 @@ mod tests {
         match err {
             ResolveError::UnresolvableDeps { failures } => {
                 assert_eq!(failures.len(), 1);
-                assert_eq!(failures[0].package, "conflict::shared");
+                assert_eq!(failures[0].package, "conflict.shared");
                 assert_eq!(
                     failures[0].requirements,
                     vec!["1.0.0".to_string(), "2.0.0".to_string()]
@@ -1405,10 +1405,10 @@ mod tests {
         let (_dir, reg) = test_registry();
         install_fake_package(
             &reg,
-            "cycle::a",
+            "cycle.a",
             "1.0.0",
             &[FakeDep {
-                name: "cycle::b",
+                name: "cycle.b",
                 version: "^1.0",
                 optional: false,
                 features: &[],
@@ -1418,10 +1418,10 @@ mod tests {
         );
         install_fake_package(
             &reg,
-            "cycle::b",
+            "cycle.b",
             "1.0.0",
             &[FakeDep {
-                name: "cycle::c",
+                name: "cycle.c",
                 version: "^1.0",
                 optional: false,
                 features: &[],
@@ -1431,10 +1431,10 @@ mod tests {
         );
         install_fake_package(
             &reg,
-            "cycle::c",
+            "cycle.c",
             "1.0.0",
             &[FakeDep {
-                name: "cycle::a",
+                name: "cycle.a",
                 version: "^1.0",
                 optional: false,
                 features: &[],
@@ -1444,7 +1444,7 @@ mod tests {
         );
 
         let manifest = test_manifest(BTreeMap::from([(
-            "cycle::a".to_string(),
+            "cycle.a".to_string(),
             manifest::DepSpec::Version("^1.0".to_string()),
         )]));
 
@@ -1454,10 +1454,10 @@ mod tests {
                 assert_eq!(
                     cycle,
                     vec![
-                        "cycle::a".to_string(),
-                        "cycle::b".to_string(),
-                        "cycle::c".to_string(),
-                        "cycle::a".to_string(),
+                        "cycle.a".to_string(),
+                        "cycle.b".to_string(),
+                        "cycle.c".to_string(),
+                        "cycle.a".to_string(),
                     ]
                 );
             }
@@ -1468,23 +1468,23 @@ mod tests {
     #[test]
     fn resolve_all_unifies_feature_requests_across_graph() {
         let (_dir, reg) = test_registry();
-        install_fake(&reg, "feature::tls", "1.1.0");
+        install_fake(&reg, "feature.tls", "1.1.0");
         install_fake_package(
             &reg,
-            "feature::core",
+            "feature.core",
             "1.0.0",
             &[FakeDep {
-                name: "feature::tls",
+                name: "feature.tls",
                 version: "^1.0",
                 optional: true,
                 features: &[],
                 default_features: true,
             }],
-            &[("default", &["tls"]), ("tls", &["feature::tls"])],
+            &[("default", &["tls"]), ("tls", &["feature.tls"])],
         );
 
         let manifest = test_manifest(BTreeMap::from([(
-            "feature::core".to_string(),
+            "feature.core".to_string(),
             manifest::DepSpec::Table(DepTable {
                 version: "^1.0".to_string(),
                 optional: None,
@@ -1496,8 +1496,8 @@ mod tests {
         )]));
 
         let resolved = resolve_all(&manifest, &reg).unwrap();
-        assert_eq!(resolved["feature::core"].version, "1.0.0");
-        assert_eq!(resolved["feature::tls"].version, "1.1.0");
+        assert_eq!(resolved["feature.core"].version, "1.0.0");
+        assert_eq!(resolved["feature.tls"].version, "1.1.0");
     }
 
     // ── Display / Error impls ───────────────────────────────────────────
@@ -1542,7 +1542,7 @@ mod tests {
         let (_dir, reg) = test_registry();
         let mut dependencies = BTreeMap::new();
         dependencies.insert(
-            "corp::auth".to_string(),
+            "corp.auth".to_string(),
             DepSpec::Table(DepTable {
                 version: "^1.0".to_string(),
                 optional: None,
@@ -1581,7 +1581,7 @@ mod tests {
             panic!("expected unresolved dependency");
         };
         assert_eq!(failures.len(), 1);
-        assert_eq!(failures[0].package, "corp::auth");
+        assert_eq!(failures[0].package, "corp.auth");
         assert_eq!(failures[0].registry.as_deref(), Some("internal"));
     }
 

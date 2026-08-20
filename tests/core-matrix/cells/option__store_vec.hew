@@ -1,7 +1,7 @@
 fn main() {
-    let x: Option<i64> = Some(5);
-    let y: Option<i64> = Some(6);
-    let v: Vec<Option<i64>> = Vec::new();
+    let x: Option<i64> = Option.Some(5);
+    let y: Option<i64> = Option.Some(6);
+    let v: Vec<Option<i64>> = Vec.new();
     v.push(x);
     v.push(y);
     let n = v.len();

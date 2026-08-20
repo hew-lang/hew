@@ -8,28 +8,36 @@
 //! only a nested compound arg (`Boxx<i64>` inside `Wrapper<...>`) exposes a
 //! divergence between the two encoders.
 
-import std::testing;
+import std.testing;
 
 trait Describe {
     fn describe(val: Self) -> i64;
 }
 
-type Boxx<T> { inner: T; }
-type Wrapper<T> { payload: T; }
+type Boxx<T> {
+    inner: T;
+}
+
+type Wrapper<T> {
+    payload: T;
+}
 
 impl Describe for Wrapper<Boxx<i64>> {
-    fn describe(w: Wrapper<Boxx<i64>>) -> i64 { 111 }
+    fn describe(w: Wrapper<Boxx<i64>>) -> i64 {
+        111
+    }
 }
 
 impl Describe for Wrapper<Boxx<string>> {
-    fn describe(w: Wrapper<Boxx<string>>) -> i64 { 222 }
+    fn describe(w: Wrapper<Boxx<string>>) -> i64 {
+        222
+    }
 }
 
 #[test]
 fn test_compound_nested_specialised_impl_dispatches_to_matching_arm() {
     let a = Wrapper<Boxx<i64>> { payload: Boxx { inner: 1 } };
     let b = Wrapper<Boxx<string>> { payload: Boxx { inner: "x" } };
-
     testing.assert_eq(a.describe(), 111);
     testing.assert_eq(b.describe(), 222);
     println("VALUES-OK generic-mangling-compound-nested");

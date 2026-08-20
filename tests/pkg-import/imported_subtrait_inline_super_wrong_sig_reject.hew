@@ -5,7 +5,7 @@
 // its SIGNATURE this is a fail-open. The owner-qualified declaring-trait
 // resolution must find `base` on `supertraits.Base` and reject the mismatch with
 // `TraitImplSignatureMismatch`, NOT silently accept and fall through to codegen.
-import hew::supertraits::{ Sub };
+import hew.supertraits.{ Sub };
 
 type W {
     id: i64;

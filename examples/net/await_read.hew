@@ -11,7 +11,7 @@
 //! The `Connection` is a handler LOCAL (from `net.connect`), not actor state: an
 //! opaque handle in actor state is rejected by the supervisor-restart clone gate.
 
-import std::net;
+import std.net;
 
 actor Reader {
     let port: string;

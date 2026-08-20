@@ -13,7 +13,7 @@ record Person {
 }
 
 fn main() -> i64 {
-    let m: HashMap<Person, i64> = HashMap::new();
+    let m: HashMap<Person, i64> = HashMap.new();
     m.insert(Person { name: "alice", age: 30 }, 1);
     m.insert(Person { name: "bob", age: 25 }, 2);
     // Distinct: same name, different age => a different slot.

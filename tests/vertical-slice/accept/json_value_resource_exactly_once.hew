@@ -1,6 +1,6 @@
 // Fluent calls preserve one JSON root owner, child Values transfer, and
 // navigation results are independent deep owners.
-import std::encoding::json;
+import std.encoding.json;
 
 fn early_exit(flag: bool) {
     let value = json.object();

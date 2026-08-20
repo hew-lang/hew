@@ -2,7 +2,7 @@
 // W3.003-C: HashMap<Point, i64> and HashSet<Point> via alignment-aware layout ABI.
 //
 // All HashMap/HashSet operations are currently commented because the stdlib
-// method-rewrite surface is in flux in v05-integration: HashMap::new resolves
+// method-rewrite surface is in flux in v05-integration: HashMap.new resolves
 // to UnresolvedSymbol and HashMap method calls produce MethodCallNoRewrite at
 // the checker rewrite layer. Active code here only demonstrates the record type
 // that will eventually serve as a layout key.
@@ -36,7 +36,7 @@ fn main() {
 }
 // ── Scalar path (commented — stdlib method-rewrite surface in flux) ────────
 //
-// let scores: HashMap<string, i64> = HashMap::new();
+// let scores: HashMap<string, i64> = HashMap.new();
 // scores.insert("origin", 0);
 // scores.insert("a", 10);
 // scores.insert("b", 20);
@@ -46,14 +46,14 @@ fn main() {
 // let _n = scores.len();
 //
 // // bool, char, duration are admitted on the same scalar ABI path:
-// let flags: HashMap<string, bool>     = HashMap::new();
-// let chars: HashMap<string, char>     = HashMap::new();
-// let times: HashMap<string, duration> = HashMap::new();
+// let flags: HashMap<string, bool>     = HashMap.new();
+// let chars: HashMap<string, char>     = HashMap.new();
+// let times: HashMap<string, duration> = HashMap.new();
 // flags.insert("enabled", true);
 // chars.insert("sep", ',');
 // times.insert("delay", 500ms);
 //
-// let ids: HashSet<i64> = HashSet::new();
+// let ids: HashSet<i64> = HashSet.new();
 // ids.insert(1);
 // ids.insert(2);
 // let _present = ids.contains(1);
@@ -61,7 +61,7 @@ fn main() {
 
 // ── Layout-keyed path (commented — requires C-3 codegen thunks) ──────────
 //
-// let point_scores: HashMap<Point, i64> = HashMap::new();
+// let point_scores: HashMap<Point, i64> = HashMap.new();
 // let p1 = Point { x: 0, y: 0 };
 // let p2 = Point { x: 1, y: 2 };
 // point_scores.insert(p1, 42);
@@ -71,7 +71,7 @@ fn main() {
 // point_scores.remove(p1);
 // let _len = point_scores.len();            // i64
 //
-// let point_set: HashSet<Point> = HashSet::new();
+// let point_set: HashSet<Point> = HashSet.new();
 // point_set.insert(Point { x: 3, y: 4 });
 // let _has_p = point_set.contains(Point { x: 3, y: 4 }); // bool
 // point_set.remove(Point { x: 3, y: 4 });

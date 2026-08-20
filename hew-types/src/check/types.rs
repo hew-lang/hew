@@ -23,18 +23,32 @@ pub(super) struct ImportKey {
     /// The module that owns the `import` declaration, or `None` for
     /// root-level (no-module-graph) programs.
     pub(super) owner_module: Option<String>,
+    /// Stable source-file index within the module graph.
+    pub(super) owner_file: u32,
     /// Short (last-segment) name of the imported module, e.g. `"json"`.
     pub(super) short_name: String,
 }
 
 impl ImportKey {
-    pub(super) fn new(owner_module: Option<String>, short_name: impl Into<String>) -> Self {
+    pub(super) fn in_file(
+        owner_module: Option<String>,
+        owner_file: u32,
+        short_name: impl Into<String>,
+    ) -> Self {
         Self {
             owner_module,
+            owner_file,
             short_name: short_name.into(),
         }
     }
 }
+
+/// A lexical import binding is owned by one source file, even when several
+/// files are assembled into the same directory module.
+pub type ImportBindingKey = (Option<String>, u32, String);
+
+/// Trait method identity exposed through one file-local import binding.
+pub type TraitImportBindingKey = (Option<String>, u32, String, String);
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -160,6 +174,8 @@ pub(super) struct SourceExternDeclaration {
     pub(super) symbol_template: Option<crate::extern_symbol::ExternSymbolTemplate>,
     pub(super) signature_key: String,
     pub(super) declaring_module: Option<String>,
+    /// File-local lexical scope that supplied this declaration's imports.
+    pub(super) declaring_file: u32,
     /// Exact direct module-graph targets imported by the declaring module.
     ///
     /// These are resolved graph identities, not source spellings. They allow
@@ -429,8 +445,7 @@ pub struct TypeCheckOutput {
     /// when an impl names an imported trait bare or through an alias, rather
     /// than inferring an owner from a leaf name. This also records a bare trait
     /// reference resolved unambiguously through a module import.
-    pub trait_method_ids_by_binding:
-        HashMap<(Option<String>, String, String), (crate::DefId, crate::DefId)>,
+    pub trait_method_ids_by_binding: HashMap<TraitImportBindingKey, (crate::DefId, crate::DefId)>,
     /// Checker-allocated impl-method declaration identities keyed by their
     /// linker presentation.  The key is a compatibility projection only;
     /// HIR uses the stored ID directly and never constructs one from it.
@@ -695,14 +710,14 @@ pub struct TypeCheckOutput {
     /// **fallback** for bare bindings (so a local `type U` still wins), while
     /// checker-proven qualified lifecycle spellings are consumed before HIR
     /// classifies them as ordinary user nominals.
-    pub import_type_name_aliases: HashMap<(Option<String>, String), String>,
+    pub import_type_name_aliases: HashMap<ImportBindingKey, String>,
     /// Exact declaring owner for each lexical whole-module import binding.
     ///
     /// Unlike `import_type_name_aliases`, this table covers qualified source
     /// spellings such as `lmonobox.Box`: HIR must translate that lexical prefix
     /// to the checker's canonical owner (`hew.lmonobox.Box`) before a generic
     /// type argument can reach layout registration or unification.
-    pub module_import_bindings: HashMap<(Option<String>, String), String>,
+    pub module_import_bindings: HashMap<ImportBindingKey, String>,
 }
 
 /// Wire layout metadata for a single field, carried from AST through the
@@ -1557,6 +1572,22 @@ impl SpanKey {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MethodCallReceiverKind {
+    /// The receiver spelling resolved to a lexical value binding. This fact
+    /// prevents later lowering from reclassifying the spelling as a module.
+    LexicalBinding {
+        binding_name: String,
+    },
+    /// The receiver spelling resolved to an imported module binding.
+    ModuleBinding {
+        module_name: String,
+    },
+    /// The receiver spelling resolved to an exact enum declaration and the
+    /// dotted member selected one of that declaration's tuple variants. HIR
+    /// consumes this identity to lower `Type.Variant(args)` without treating
+    /// `Type` as a runtime receiver or rediscovering an owner from its leaf.
+    EnumConstructorPath {
+        type_name: String,
+    },
     NamedTypeInstance {
         type_name: String,
     },
@@ -2389,7 +2420,7 @@ pub(super) struct DeferredInferenceHole {
     pub(super) span: Span,
     pub(super) context: String,
     pub(super) hole_vars: Vec<TypeVar>,
-    /// Module path where this hole was recorded (None = root module).
+    /// Diagnostic routing token captured while the source item was active.
     pub(super) source_module: Option<String>,
 }
 
@@ -2399,7 +2430,7 @@ pub(super) struct DeferredCastCheck {
     pub(super) actual: Ty,
     pub(super) target: Ty,
     pub(super) target_hole_vars: Vec<TypeVar>,
-    /// Module path where this cast check was recorded (None = root module).
+    /// Diagnostic routing token captured while the source item was active.
     pub(super) source_module: Option<String>,
 }
 
@@ -2409,7 +2440,7 @@ pub(super) struct DeferredMonomorphicSite {
     pub(super) context: String,
     pub(super) ty: Ty,
     pub(super) more_specific_hole_vars: Vec<TypeVar>,
-    /// Module path where this site was recorded (None = root module).
+    /// Diagnostic routing token captured while the source item was active.
     pub(super) source_module: Option<String>,
 }
 
@@ -2500,9 +2531,14 @@ pub struct Checker {
     /// no file identity, so this table is the sole sound authority for "which
     /// file declared item N of directory module M" (rc1-F1 stage C).
     pub(super) module_item_sources: HashMap<String, Vec<std::path::PathBuf>>,
-    /// Defining source file of the item currently being registered, when the
-    /// enclosing module recorded per-item attribution. `None` for the root
-    /// unit and for hand-built module graphs.
+    /// Checker span-key index assigned to each non-root source file. Resolved
+    /// import copies use this table to re-enter their declaration's file-local
+    /// import scope instead of resolving signatures in the importing file.
+    pub(super) source_file_span_indices: HashMap<std::path::PathBuf, u32>,
+    /// Defining source file of the item currently being registered or checked.
+    /// Per-item attribution wins for directory modules; their primary source
+    /// is the fail-closed fallback when no item table was recorded. `None` for
+    /// root items and source-less hand-built graphs.
     pub(super) current_item_source: Option<std::path::PathBuf>,
     /// Type names declared per source FILE (populated during type
     /// collection from per-item attribution). This is the lexical authority
@@ -2516,6 +2552,11 @@ pub struct Checker {
     /// is narrower than `canonical_std_module_sources`, which also contains
     /// imported stdlib modules in an ordinary user program.
     pub(super) canonical_std_root_sources: HashSet<String>,
+    /// Protected-prelude declarations already rejected in this check, keyed by
+    /// their declaring module and source name. Module-graph pre-registration
+    /// and later import publication can encounter the same declaration; this
+    /// keeps that one source error from being emitted twice.
+    pub(super) protected_prelude_declaration_collisions: HashSet<(Option<String>, String)>,
     /// Whether the module currently undergoing signature registration came
     /// from a file-path import. Those items are flattened into the root program
     /// before HIR lowering, so their declaration IDs are root-owned even though
@@ -2643,15 +2684,15 @@ pub struct Checker {
     /// Exact import bindings for free functions. Values retain the source
     /// declaration identity (`owner.OriginalName`), so an aliased import never
     /// causes the call-target boundary to manufacture `owner.Alias`.
-    pub(super) import_fn_name_aliases: HashMap<(Option<String>, String), String>,
+    pub(super) import_fn_name_aliases: HashMap<ImportBindingKey, String>,
     /// Every source declaration published into a bare free-function binding.
     /// The single-valued signature table is only a compatibility lookup index;
     /// call resolution must reject a binding with more than one exact owner.
-    pub(super) published_bare_function_owners: HashMap<(Option<String>, String), BTreeSet<String>>,
+    pub(super) published_bare_function_owners: HashMap<ImportBindingKey, BTreeSet<String>>,
     /// Every source declaration published into a bare constant binding.  Like
     /// functions, constants share an env slot for legacy lookup, so this exact
     /// owner set is the ambiguity authority at identifier use sites.
-    pub(super) published_bare_const_owners: HashMap<(Option<String>, String), BTreeSet<String>>,
+    pub(super) published_bare_const_owners: HashMap<ImportBindingKey, BTreeSet<String>>,
     /// Per-call target facts for ordinary `Expr::Call` expressions.
     pub(super) direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
     /// Checker-owned canonical declaration ids for trait methods. Keys are
@@ -2662,7 +2703,7 @@ pub struct Checker {
     /// call targets use this full-path table and never mint identities from
     /// those keys.
     pub(super) trait_method_ids_by_binding:
-        HashMap<(Option<String>, String, String), (crate::DefId, crate::DefId)>,
+        HashMap<TraitImportBindingKey, (crate::DefId, crate::DefId)>,
     /// Declaration identities for impl methods, keyed by the checker-selected
     /// dispatch symbol. These are allocated while registering the source impl
     /// and selected at the call site; receiver monomorphisations must not mint
@@ -2947,6 +2988,12 @@ pub struct Checker {
     /// unused-import detection and source attribution.
     /// Key: (`owner_module`, `short_name`), Value: (import span, source module).
     pub(super) import_spans: HashMap<ImportKey, (Span, Option<String>)>,
+    /// Compiler-assumed core of the implicit prelude, captured before user
+    /// declarations or imports are registered. Ordinary prelude bindings are
+    /// intentionally absent so user declarations may shadow them.
+    pub(super) protected_prelude_bindings: HashMap<String, String>,
+    /// First import declaration that reserved each file-local binding.
+    pub(super) import_binding_spans: HashMap<ImportBindingKey, (Span, Option<String>, String)>,
     /// Import keys that have actually been referenced in code.
     pub(super) used_modules: RefCell<HashSet<ImportKey>>,
     /// Module short names for user (non-stdlib) imports.
@@ -2970,7 +3017,7 @@ pub struct Checker {
     /// (`f.CrashNotification`) as a distinct nominal type.  The key is scoped
     /// to the importer, so an alias imported by a sibling cannot authorize the
     /// current module.
-    pub(super) module_import_bindings: HashMap<(Option<String>, String), String>,
+    pub(super) module_import_bindings: HashMap<ImportBindingKey, String>,
     /// Lifecycle identities authorized for one lexical import binding.
     ///
     /// Entries are `(importing_module, binding, canonical_identity)`, for
@@ -3067,7 +3114,7 @@ pub struct Checker {
     /// Single-valued: with two opt-ins of the same bare name it retains only the
     /// last writer. For deciding *whether* a bare reference is ambiguous, use
     /// `published_bare_type_owners` instead, which keeps the full set.
-    pub(super) unqualified_to_module: HashMap<(Option<String>, String), String>,
+    pub(super) unqualified_to_module: HashMap<ImportBindingKey, String>,
     /// Maps (`importer_module`, `bare_type_binding`) to the full set of SOURCE
     /// identities (`owner.OriginalName`) published under that bare binding into
     /// the importer's scope (via a named / glob / aliased opt-in, or a prelude
@@ -3084,7 +3131,7 @@ pub struct Checker {
     /// contribute, so it cannot poison an explicit named import of the same bare
     /// name from another module.
     pub(super) published_bare_type_owners:
-        HashMap<(Option<String>, String), std::collections::BTreeSet<String>>,
+        HashMap<ImportBindingKey, std::collections::BTreeSet<String>>,
     /// Maps (`importer_module`, `trait_binding`) to the full set of SOURCE
     /// trait identities (`owner.OriginalTrait`) published under that binding into
     /// the importer's scope. The trait-namespace analogue of
@@ -3100,7 +3147,7 @@ pub struct Checker {
     /// (`m`), not the alias. A single source identity is the well-formed case;
     /// zero or an ambiguous set falls back to the alias-keyed behaviour.
     pub(super) published_bare_trait_owners:
-        HashMap<(Option<String>, String), std::collections::BTreeSet<String>>,
+        HashMap<ImportBindingKey, std::collections::BTreeSet<String>>,
     /// Call graph: maps caller function name → set of callee function names.
     ///
     /// rc1-F1 stage A classification: CANONICALIZED with `fn_sigs` — caller
@@ -3288,6 +3335,13 @@ pub struct Checker {
     /// user-declared enum in `local_type_defs` has a variant with the same bare
     /// name, body-checking (`check_identifier`) prefers the user's declaration.
     pub(super) in_stdlib_registration: bool,
+    /// Allows declarations from the compiler-embedded builtin source to
+    /// provide names that the prelude protects from user replacement.
+    pub(super) checking_embedded_builtins: bool,
+    /// Whether this checker has completed its first `check_program` entry.
+    /// Caller-seeded configuration remains available to the first program;
+    /// every later program starts from structurally fresh program-owned state.
+    pub(super) has_checked_program: bool,
     /// Tracks (span, feature) pairs we've already warned about for WASM limits.
     pub(super) wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
     /// Tracks (span, feature) pairs we've already rejected as errors for WASM.
@@ -3471,7 +3525,7 @@ pub struct Checker {
     /// (flat-string keying caused last-write-wins cross-module pollution).
     /// Moved into [`TypeCheckOutput::import_type_name_aliases`] at
     /// `check_program` exit.
-    pub(super) import_type_name_aliases: HashMap<(Option<String>, String), String>,
+    pub(super) import_type_name_aliases: HashMap<ImportBindingKey, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3556,9 +3610,11 @@ impl Checker {
             canonical_std_module_sources: HashSet::new(),
             module_source_paths: HashMap::new(),
             module_item_sources: HashMap::new(),
+            source_file_span_indices: HashMap::new(),
             current_item_source: None,
             file_type_decls: HashMap::new(),
             canonical_std_root_sources: HashSet::new(),
+            protected_prelude_declaration_collisions: HashSet::new(),
             registration_is_flat_file_import: false,
             flat_file_import_module_names: HashSet::new(),
             caller_visible_param_projections: HashSet::new(),
@@ -3669,6 +3725,8 @@ impl Checker {
             lambda_captures: Vec::new(),
             lambda_capture_facts: Vec::new(),
             import_spans: HashMap::new(),
+            protected_prelude_bindings: HashMap::new(),
+            import_binding_spans: HashMap::new(),
             used_modules: RefCell::new(HashSet::new()),
             user_modules: HashSet::new(),
             module_fn_exports: HashSet::new(),
@@ -3722,6 +3780,8 @@ impl Checker {
             repl_fragment: false,
             is_stdlib_source: false,
             in_stdlib_registration: false,
+            checking_embedded_builtins: false,
+            has_checked_program: false,
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),
             current_machine_transition: None,

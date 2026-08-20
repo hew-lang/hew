@@ -12,12 +12,12 @@
 //! number. The strict `> 0` after `sleep` is the test with teeth: it would
 //! fail if the call lowered to a garbage path returning 0 / uninitialised.
 
-import std::testing;
+import std.testing;
 
 // ── elapsed since an instant is never negative ───────────────────────
 #[test]
 fn test_instant_elapsed_non_negative() {
-    let t = instant::now();
+    let t = instant.now();
     let e: duration = t.elapsed();
     testing.assert_true(e.nanos() >= 0);
 }
@@ -25,7 +25,7 @@ fn test_instant_elapsed_non_negative() {
 // ── duration_since of the same instant is zero ───────────────────────
 #[test]
 fn test_instant_duration_since_self_is_zero() {
-    let t = instant::now();
+    let t = instant.now();
     let d: duration = t.duration_since(t);
     testing.assert_eq(d.nanos(), 0);
     testing.assert_true(d.is_zero());
@@ -36,9 +36,9 @@ fn test_instant_duration_since_self_is_zero() {
 // call never reached the runtime).
 #[test]
 fn test_instant_duration_since_is_positive_after_sleep() {
-    let earlier = instant::now();
+    let earlier = instant.now();
     sleep(5ms);
-    let later = instant::now();
+    let later = instant.now();
     let span: duration = later.duration_since(earlier);
     testing.assert_true(span.nanos() > 0);
     testing.assert_true(span.millis() >= 5);
@@ -47,7 +47,7 @@ fn test_instant_duration_since_is_positive_after_sleep() {
 // ── elapsed is at least the sleep we waited ──────────────────────────
 #[test]
 fn test_instant_elapsed_advances_after_sleep() {
-    let start = instant::now();
+    let start = instant.now();
     sleep(5ms);
     let waited: duration = start.elapsed();
     testing.assert_true(waited.millis() >= 5);
@@ -57,9 +57,9 @@ fn test_instant_elapsed_advances_after_sleep() {
 //    `duration` method surface (Part 1) ────────────────────────────────
 #[test]
 fn test_instant_result_interops_with_duration_methods() {
-    let earlier = instant::now();
+    let earlier = instant.now();
     sleep(5ms);
-    let later = instant::now();
+    let later = instant.now();
     let span: duration = later.duration_since(earlier);
     // Every `duration` accessor accepts the instant-derived span.
     testing.assert_true(span.nanos() >= span.micros());
@@ -83,14 +83,13 @@ fn test_instant_result_interops_with_duration_methods() {
 // The clock is monotonic so the exact number is not fixed; these assert the
 // load-bearing invariant that all three Display surfaces render the SAME
 // non-empty string for one typed instant, and agree with a param-typed helper.
-
 fn render_typed_instant(t: instant) -> string {
     return to_string(t);
 }
 
 #[test]
 fn test_typed_instant_to_string_is_consistent_across_surfaces() {
-    let a: instant = instant::now();
+    let a: instant = instant.now();
     let alias: instant = a;
     let s1: string = to_string(a);
     // A `let`-aliased typed instant renders identically.

@@ -189,11 +189,11 @@ fn a_heap_env_capture_of_a_domestic_binding_still_owns_it() {
 // U1 — pattern payload binders
 // ---------------------------------------------------------------------------
 
-const MATCH_BODY: &str = "let b = Boxed::Full(mk(i));\n        \
-     match b { Boxed::Full(h) => { let n = h.label.len(); println(f\"x={n}\"); } \
-     Boxed::Empty => {} }";
-const IF_LET_BODY: &str = "let b = Boxed::Full(mk(i));\n        \
-     if let Boxed::Full(h) = b { let n = h.label.len(); println(f\"x={n}\"); }";
+const MATCH_BODY: &str = "let b = Boxed.Full(mk(i));\n        \
+     match b { Boxed.Full(h) => { let n = h.label.len(); println(f\"x={n}\"); } \
+     Boxed.Empty => {} }";
+const IF_LET_BODY: &str = "let b = Boxed.Full(mk(i));\n        \
+     if let Boxed.Full(h) = b { let n = h.label.len(); println(f\"x={n}\"); }";
 
 /// A `match` payload binder over a proven-foreign scrutinee acquires no
 /// scope-exit owner. The binder now presents a warrant built by
@@ -271,9 +271,9 @@ fn transferring_a_proven_foreign_value_into_an_owning_parameter_is_refused() {
     let p = in_loop(
         &format!(
             "{FOREIGN_MK}\nfn takes(b: Boxed) -> Holder {{ \
-             match b {{ Boxed::Full(h) => h, Boxed::Empty => Holder {{ label: \"e\" }} }} }}"
+             match b {{ Boxed.Full(h) => h, Boxed.Empty => Holder {{ label: \"e\" }} }} }}"
         ),
-        "let b = Boxed::Full(mk(i));\n        let h = takes(b);\n        \
+        "let b = Boxed.Full(mk(i));\n        let h = takes(b);\n        \
          let n = h.label.len();\n        println(f\"x={n}\");",
     );
     assert!(
@@ -293,9 +293,9 @@ fn transferring_a_domestic_value_into_an_owning_parameter_still_compiles() {
     let p = in_loop(
         &format!(
             "{DOMESTIC_MK}\nfn takes(b: Boxed) -> Holder {{ \
-             match b {{ Boxed::Full(h) => h, Boxed::Empty => Holder {{ label: \"e\" }} }} }}"
+             match b {{ Boxed.Full(h) => h, Boxed.Empty => Holder {{ label: \"e\" }} }} }}"
         ),
-        "let b = Boxed::Full(mk(i));\n        let h = takes(b);\n        \
+        "let b = Boxed.Full(mk(i));\n        let h = takes(b);\n        \
          let n = h.label.len();\n        println(f\"x={n}\");",
     );
     assert!(

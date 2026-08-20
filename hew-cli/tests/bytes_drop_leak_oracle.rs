@@ -123,7 +123,7 @@ fn overwrite_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let store = spawn ByteStore(buf: bytes::new());\n\
+         \x20   let store = spawn ByteStore(buf: bytes.new());\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let packet = \"overwrite-bytes-payload\".to_bytes();\n\
@@ -162,7 +162,7 @@ fn container_element_read_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let values: Vec<((bytes, i64), bool)> = Vec::new();\n\
+         \x20       let values: Vec<((bytes, i64), bool)> = Vec.new();\n\
          \x20       let source = \"container-read\".to_bytes();\n\
          \x20       values.push(((source, 7), true));\n\
          \x20       let item = values[0];\n\

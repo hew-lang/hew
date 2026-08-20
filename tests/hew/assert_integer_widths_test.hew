@@ -5,39 +5,30 @@ fn assert_eq_preserves_every_integer_width() {
     let i8_actual: i8 = 127;
     let i8_expected: i8 = 127;
     assert_eq(i8_actual, i8_expected);
-
     let i16_actual: i16 = 32767;
     let i16_expected: i16 = 32767;
     assert_eq(i16_actual, i16_expected);
-
     let i32_actual: i32 = 2147483647;
     let i32_expected: i32 = 2147483647;
     assert_eq(i32_actual, i32_expected);
-
     let i64_actual: i64 = 9223372036854775807;
     let i64_expected: i64 = 9223372036854775807;
     assert_eq(i64_actual, i64_expected);
-
     let isize_actual: isize = 2147483647;
     let isize_expected: isize = 2147483647;
     assert_eq(isize_actual, isize_expected);
-
     let u8_actual: u8 = 255;
     let u8_expected: u8 = 255;
     assert_eq(u8_actual, u8_expected);
-
     let u16_actual: u16 = 65535;
     let u16_expected: u16 = 65535;
     assert_eq(u16_actual, u16_expected);
-
     let u32_actual: u32 = 4294967295;
     let u32_expected: u32 = 4294967295;
     assert_eq(u32_actual, u32_expected);
-
     let u64_actual: u64 = 9223372036854775807;
     let u64_expected: u64 = 9223372036854775807;
     assert_eq(u64_actual, u64_expected);
-
     let usize_actual: usize = 4294967295;
     let usize_expected: usize = 4294967295;
     assert_eq(usize_actual, usize_expected);
@@ -47,31 +38,22 @@ fn assert_eq_preserves_every_integer_width() {
 fn assert_ne_observes_each_integer_width() {
     let i8_high: i8 = 127;
     assert_ne(0 as i8, i8_high);
-
     let i16_high: i16 = 256;
     assert_ne(0 as i16, i16_high);
-
     let i32_high: i32 = 65536;
     assert_ne(0 as i32, i32_high);
-
     let i64_high: i64 = 4294967296;
     assert_ne(0 as i64, i64_high);
-
     let isize_high: isize = 65536;
     assert_ne(0 as isize, isize_high);
-
     let u8_high: u8 = 255;
     assert_ne(0 as u8, u8_high);
-
     let u16_high: u16 = 256;
     assert_ne(0 as u16, u16_high);
-
     let u32_high: u32 = 65536;
     assert_ne(0 as u32, u32_high);
-
     let u64_high: u64 = 4294967296;
     assert_ne(0 as u64, u64_high);
-
     let usize_high: usize = 65536;
     assert_ne(0 as usize, usize_high);
 }

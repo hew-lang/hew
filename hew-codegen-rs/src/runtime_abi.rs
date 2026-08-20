@@ -5448,6 +5448,19 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // if Done, null otherwise. Called after hew_task_await_blocking
         // when the producer needs to read the result separately.
         "hew_task_get_result" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_task_take_result" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_task_set_result_drop_fn" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_task_result_publication_checkpoint" => {
+            ctx.void_type().fn_type(&[ptr_ty.into()], false)
+        }
+        "hew_reply_channel_publish_cancelled" => {
+            ctx.void_type().fn_type(&[ptr_ty.into()], false)
+        }
+        "hew_reply_channel_publish_task_failed" => {
+            ctx.void_type().fn_type(&[ptr_ty.into()], false)
+        }
         "hew_task_completion_observe" => i32_ty.fn_type(
             &[ptr_ty.into(), ptr_ty.into(), ptr_ty.into(), ptr_ty.into()],
             false,

@@ -68,7 +68,7 @@ fn set_size(m: Vec<i64>, s: i64) {
 }
 
 fn new_cache(capacity: i64) -> Vec<i64> {
-    let m: Vec<i64> = Vec::new();
+    let m: Vec<i64> = Vec.new();
     m.push(-1);
     m.push(-1);
     m.push(0);
@@ -173,7 +173,7 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
 
 // --- Tests ---
 fn test_put_and_get() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     let m = new_cache(3);
     cache_put(n, m, 1, 100);
     cache_put(n, m, 2, 200);
@@ -194,7 +194,7 @@ fn test_put_and_get() -> i64 {
 }
 
 fn test_eviction() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     let m = new_cache(2);
     cache_put(n, m, 1, 100);
     cache_put(n, m, 2, 200);
@@ -216,7 +216,7 @@ fn test_eviction() -> i64 {
 }
 
 fn test_access_updates_order() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     let m = new_cache(3);
     cache_put(n, m, 1, 100);
     cache_put(n, m, 2, 200);
@@ -238,7 +238,7 @@ fn test_access_updates_order() -> i64 {
 }
 
 fn test_update_value() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     let m = new_cache(3);
     cache_put(n, m, 1, 100);
     cache_put(n, m, 1, 999);
@@ -254,7 +254,7 @@ fn test_update_value() -> i64 {
 }
 
 fn test_order_after_operations() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     let m = new_cache(3);
     cache_put(n, m, 1, 10);
     cache_put(n, m, 2, 20);
@@ -262,9 +262,9 @@ fn test_order_after_operations() -> i64 {
     // Order: 3(front) -> 2 -> 1(back)
     let _v = cache_get(n, m, 1);
     // Order: 1(front) -> 3 -> 2(back)
-    let r: Vec<i64> = Vec::new();
+    let r: Vec<i64> = Vec.new();
     collect_keys(n, m, r);
-    let e: Vec<i64> = Vec::new();
+    let e: Vec<i64> = Vec.new();
     e.push(1);
     e.push(3);
     e.push(2);
@@ -277,7 +277,7 @@ fn test_order_after_operations() -> i64 {
 }
 
 fn test_miss() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     let m = new_cache(2);
     cache_put(n, m, 1, 100);
     let v = cache_get(n, m, 99);

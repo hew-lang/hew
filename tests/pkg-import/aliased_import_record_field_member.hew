@@ -16,7 +16,7 @@
 //
 // Harness verb: hew run
 // Expected: the code stored through the aliased-type field is read back.
-import hew::aliassrc::{ Payload as Tag };
+import hew.aliassrc.{ Payload as Tag };
 
 type Boxed {
     item: Tag;

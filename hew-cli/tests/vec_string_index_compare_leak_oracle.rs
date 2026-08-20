@@ -82,7 +82,7 @@ const FLOOR_TOLERANCE: usize = 1;
 fn control_named_local_source() -> String {
     let mut body = String::new();
     body.push_str("fn main() -> i64 {\n");
-    body.push_str("    let xs: Vec<string> = Vec::new();\n");
+    body.push_str("    let xs: Vec<string> = Vec.new();\n");
     for i in 0..COMPARE_COUNT {
         // Each element is a DISTINCT buffer so a leaked retain would be a
         // DISTINCT `leaks` node (the fixtures rely on the same distinctness).
@@ -108,7 +108,7 @@ fn control_named_local_source() -> String {
 fn index_eq_compare_source() -> String {
     let mut body = String::new();
     body.push_str("fn main() -> i64 {\n");
-    body.push_str("    let xs: Vec<string> = Vec::new();\n");
+    body.push_str("    let xs: Vec<string> = Vec.new();\n");
     for i in 0..COMPARE_COUNT {
         let _ = writeln!(body, "    xs.push(\"elem-{i}\");");
     }
@@ -132,7 +132,7 @@ fn index_eq_compare_source() -> String {
 fn index_mixed_compare_source() -> String {
     let mut body = String::new();
     body.push_str("fn main() -> i64 {\n");
-    body.push_str("    let xs: Vec<string> = Vec::new();\n");
+    body.push_str("    let xs: Vec<string> = Vec.new();\n");
     for i in 0..COMPARE_COUNT {
         let _ = writeln!(body, "    xs.push(\"elem-{i}\");");
     }
@@ -183,7 +183,7 @@ fn array_repeat_string_source() -> String {
 /// `MallocScribble`/`MallocGuardEdges` before the checksum prints.
 const NO_DOUBLE_FREE_SOURCE: &str = "\
 fn main() {\n\
-\x20   let xs: Vec<string> = Vec::new();\n\
+\x20   let xs: Vec<string> = Vec.new();\n\
 \x20   xs.push(\"alpha\");\n\
 \x20   var hits: i64 = 0;\n\
 \x20   if xs[0] == \"alpha\" { hits = hits + 1; }\n\

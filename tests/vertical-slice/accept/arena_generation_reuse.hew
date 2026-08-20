@@ -1,6 +1,6 @@
 // Arena<T>: a removed slot is reused by the next insert, but the reused key
 // receives a fresh generation so the old key stays closed.
-import std::arena::{ Arena, Key };
+import std.arena.{ Arena, Key };
 
 fn main() {
     let store: Arena<string> = arena.new();

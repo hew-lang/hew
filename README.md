@@ -94,8 +94,8 @@ fn main() {
 To use modules beyond the builtins, add an `import` statement at the top of your file:
 
 ```hew
-import std::fs;
-import std::encoding::json;
+import std.fs;
+import std.encoding.json;
 
 fn main() {
     let data = fs.read("config.json");
@@ -205,21 +205,21 @@ impl ActorMsg for Counter {
 }
 
 // server node
-Node::set_transport("quic-mesh");
-Node::load_keys("node.key");     // mints/loads this node's stable identity
-Node::start("127.0.0.1:9000");
+Node.set_transport("quic-mesh");
+Node.load_keys("node.key");     // mints/loads this node's stable identity
+Node.start("127.0.0.1:9000");
 let counter = spawn Counter;
-Node::register("counter", counter);
+Node.register("counter", counter);
 
 // client node (separate process)
-Node::set_transport("quic-mesh");
-Node::load_keys("client.key");
-Node::start("127.0.0.1:9001");
-Node::connect("127.0.0.1:9000");
-let found: Result<RemotePid<Counter>, LookupError> = Node::lookup("counter");
+Node.set_transport("quic-mesh");
+Node.load_keys("client.key");
+Node.start("127.0.0.1:9001");
+Node.connect("127.0.0.1:9000");
+let found: Result<RemotePid<Counter>, LookupError> = Node.lookup("counter");
 match found {
-    Ok(counter) => { let _ = counter.send(CounterMsg::Increment(42)); },  // remote message
-    Err(_) => println("counter actor not found"),
+    .Ok(counter) => { let _ = counter.send(CounterMsg.Increment(42)); },  // remote message
+    .Err(_) => println("counter actor not found"),
 }
 ```
 

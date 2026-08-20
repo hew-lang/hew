@@ -43,8 +43,8 @@ fn ms_size(data: Vec<i64>) -> i64 {
 fn main() {
     var total = 0;
     var passed = 0;
-    let data: Vec<i64> = Vec::new();
-    let maxs: Vec<i64> = Vec::new();
+    let data: Vec<i64> = Vec.new();
+    let maxs: Vec<i64> = Vec.new();
     // Test 1: push single, max is that element
     total = total + 1;
     ms_push(data, maxs, 5);
@@ -119,8 +119,8 @@ fn main() {
 
     // Test 8: many elements
     total = total + 1;
-    let d2: Vec<i64> = Vec::new();
-    let m2: Vec<i64> = Vec::new();
+    let d2: Vec<i64> = Vec.new();
+    let m2: Vec<i64> = Vec.new();
     ms_push(d2, m2, 10);
     ms_push(d2, m2, 30);
     ms_push(d2, m2, 20);

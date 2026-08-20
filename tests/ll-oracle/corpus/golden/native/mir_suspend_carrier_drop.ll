@@ -41,9 +41,25 @@ declare ptr @hew_string_clone(ptr)
 
 declare ptr @hew_string_concat(ptr, ptr)
 
+declare void @hew_assert_eq_i8(i8, i8)
+
+declare void @hew_assert_eq_i16(i16, i16)
+
+declare void @hew_assert_eq_i32(i32, i32)
+
 declare void @hew_assert_eq_i64(i64, i64)
 
+declare void @hew_assert_eq_isize(i64, i64)
+
 declare void @hew_assert_eq_u8(i8, i8)
+
+declare void @hew_assert_eq_u16(i16, i16)
+
+declare void @hew_assert_eq_u32(i32, i32)
+
+declare void @hew_assert_eq_u64(i64, i64)
+
+declare void @hew_assert_eq_usize(i64, i64)
 
 declare void @hew_assert_eq_str(ptr, ptr)
 
@@ -51,9 +67,25 @@ declare void @hew_assert_eq_f64(double, double)
 
 declare void @hew_assert_eq_bool(i8, i8)
 
+declare void @hew_assert_ne_i8(i8, i8)
+
+declare void @hew_assert_ne_i16(i16, i16)
+
+declare void @hew_assert_ne_i32(i32, i32)
+
 declare void @hew_assert_ne_i64(i64, i64)
 
+declare void @hew_assert_ne_isize(i64, i64)
+
 declare void @hew_assert_ne_u8(i8, i8)
+
+declare void @hew_assert_ne_u16(i16, i16)
+
+declare void @hew_assert_ne_u32(i32, i32)
+
+declare void @hew_assert_ne_u64(i64, i64)
+
+declare void @hew_assert_ne_usize(i64, i64)
 
 declare void @hew_assert_ne_str(ptr, ptr)
 
@@ -534,17 +566,20 @@ coro.begin:                                       ; preds = %dyn.alloc, %entry
   %coro.handle = call ptr @llvm.coro.begin(token %coro.id, ptr %coro.mem)
   br label %alloca.prologue
 
-coro.suspend.return:                              ; preds = %coro.dyn.free, %coro.cleanup, %coro.final.suspend, %bb2, %frame_cleanup_registered
+coro.suspend.return:                              ; preds = %coro.dyn.free, %coro.cleanup, %coro.final.suspend.emit, %bb2, %frame_cleanup_registered
   call void @llvm.coro.end(ptr %coro.handle, i1 false, token none)
   call void @hew_cont_frame_handoff(ptr %coro.handle)
   ret ptr %coro.handle
 
-coro.cleanup:                                     ; preds = %coro.final.suspend, %coro.final.suspend, %helper_crash_cleanup_retire_merge8, %helper_crash_cleanup_retire_merge
+coro.cleanup:                                     ; preds = %coro.final.suspend.emit, %coro.final.suspend.emit, %helper_crash_cleanup_retire_merge8, %helper_crash_cleanup_retire_merge
   %coro.freemem = call ptr @llvm.coro.free(token %coro.id, ptr %coro.handle)
   %coro.freemem.isnull = icmp eq ptr %coro.freemem, null
   br i1 %coro.freemem.isnull, label %coro.suspend.return, label %coro.dyn.free
 
 coro.final.suspend:                               ; preds = %helper_crash_cleanup_return_merge_4
+  br label %coro.final.suspend.emit
+
+coro.final.suspend.emit:                          ; preds = %coro.final.suspend
   %coro.final.save = call token @llvm.coro.save(ptr %coro.handle)
   %coro.final.s = call i8 @llvm.coro.suspend(token %coro.final.save, i1 true)
   switch i8 %coro.final.s, label %coro.suspend.return [

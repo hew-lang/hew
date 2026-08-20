@@ -950,9 +950,10 @@ pub(super) fn register_lifecycle_hook_layouts(
 /// tagged-union types; `Builder::is_known_actor_runtime_ty` reads
 /// `machine_layout_names` to classify the type as `BitCopy`.
 ///
-/// Returns the set of exact registered identities so the caller can fold them
-/// into `machine_layout_names`. A same-leaf user enum is a distinct nominal and
-/// therefore coexists with the generated builtin layout.
+/// Returns the set of exact registered identities so the caller can project
+/// them through `machine_layout_key` and fold those canonical classification
+/// keys into `machine_layout_names`. A same-leaf user enum is a distinct
+/// nominal and therefore coexists with the generated builtin layout.
 pub(super) fn register_builtin_monomorphic_enum_layouts(
     enum_layouts: &mut Vec<crate::model::EnumLayout>,
 ) -> Vec<String> {
@@ -1012,7 +1013,7 @@ pub(super) fn unresolved_fn_sig_reason(sig: &hew_types::FnSig) -> Option<String>
                 trait_name,
                 assoc_name,
             } => Some(format!(
-                "unresolved Ty::AssocType `{}::{assoc_name}` on base `{}`",
+                "unresolved Ty::AssocType `{}.{assoc_name}` on base `{}`",
                 trait_name,
                 base.user_facing()
             )),

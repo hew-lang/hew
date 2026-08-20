@@ -1,10 +1,10 @@
 //! Behavioural tests for std::encoding::protobuf.
 
-import std::encoding::protobuf;
+import std.encoding.protobuf;
 
-import std::net::websocket;
+import std.net.websocket;
 
-import std::testing;
+import std.testing;
 
 // ── set_varint / get_varint / has_field ───────────────────────────────
 #[test]

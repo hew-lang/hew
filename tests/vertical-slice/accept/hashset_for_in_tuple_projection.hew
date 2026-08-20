@@ -1,7 +1,7 @@
 // HashSet for-in over a tuple projection. The synthetic projection call must
 // not substitute its Vec result into the receiver's `pair.0` tuple field.
 fn make_pair() -> (HashSet<i64>, i64) {
-    let s: HashSet<i64> = HashSet::new();
+    let s: HashSet<i64> = HashSet.new();
     s.insert(10);
     s.insert(20);
     s.insert(30);

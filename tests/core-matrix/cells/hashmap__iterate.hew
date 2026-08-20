@@ -1,5 +1,5 @@
 fn main() {
-    let m: HashMap<string, i64> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap.new();
     m.insert("a", 1);
     let ks = m.keys();
     let vs = m.values();

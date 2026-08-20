@@ -324,8 +324,8 @@ fn value_context_send_materializes_result_dest() {
             let (a, b) = duplex_pair<i64, ()>(16);
             let r: Result<(), SendError> = a.send(42);
             match r {
-                Result::Ok(_) => 0,
-                Result::Err(_) => 1,
+                Result.Ok(_) => 0,
+                Result.Err(_) => 1,
             }
         }
     ";
@@ -388,8 +388,8 @@ fn value_context_send_does_not_move_or_drop_receiver_early() {
             let (a, b) = duplex_pair<i64, ()>(16);
             let r: Result<(), SendError> = a.send(42);
             match r {
-                Result::Ok(_) => 0,
-                Result::Err(_) => 1,
+                Result.Ok(_) => 0,
+                Result.Err(_) => 1,
             }
         }
     ";

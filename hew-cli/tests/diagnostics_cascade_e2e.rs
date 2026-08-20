@@ -125,7 +125,7 @@ const INDEX_CASCADE: &str = "fn main() {\n    let _z = undefined_var[0];\n}\n";
 // this test goes RED.
 const ENUM_EQ_CASCADE: &str = "enum Colour { Red; Green; }\n\
      fn main() {\n\
-     \x20\x20\x20\x20let _r = undefined_var == Colour::Red;\n\
+     \x20\x20\x20\x20let _r = undefined_var == Colour.Red;\n\
      }\n";
 
 // (d) Destructure cascade.

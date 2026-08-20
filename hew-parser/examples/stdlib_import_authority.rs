@@ -131,26 +131,24 @@ mod tests {
     #[test]
     fn accepts_every_parser_valid_import_tail() {
         for source in [
-            "import std::net::dns;",
-            "import /* a */ std /* b */ :: net::dns /* c */ ;",
-            "import std::net::dns as resolver;",
-            "import std::net::dns::*;",
-            "import std::net::dns::{Resolver};",
-            "import std::net::dns::{Resolver as R, Query,};",
-            "import std::net::dns::{};",
-            "import std::net::dns; fn main() {}",
+            "import std.net.dns;",
+            "import /* a */ std /* b */ . net.dns /* c */ ;",
+            "import std.net.dns as resolver;",
+            "import std.net.dns.{Resolver};",
+            "import std.net.dns.{Resolver as R, Query,};",
+            "import std.net.dns; fn main() {}",
         ] {
             assert_evidence(source, "std::net::dns");
         }
         assert_evidence(
-            "import std::actor::after as event_source;",
+            "import std.actor.after as event_source;",
             "std::actor::after",
         );
     }
 
     #[test]
     fn accepts_exact_import_when_the_parser_reports_only_a_warning() {
-        let source = "import std::net::dns; fn main() { if true { 1 } else { 2 }; }";
+        let source = "import std.net.dns; fn main() { if true { 1 } else { 2 }; }";
         let parsed = parse(source);
         assert!(
             parsed
@@ -174,16 +172,16 @@ mod tests {
     #[test]
     fn ignores_comments_literals_and_nested_text() {
         for source in [
-            "// import std::net::dns;\nfn main() {}",
-            "/// import std::net::dns;\nfn main() {}",
-            "//! import std::net::dns;\nfn main() {}",
-            "/* outer /* import std::net::dns; */ decoy */\nfn main() {}",
-            r#"fn main() { let value = "import std::net::dns;"; }"#,
-            r#"fn main() { let value = r"import std::net::dns;"; }"#,
-            r#"fn main() { let value = b"import std::net::dns;"; }"#,
-            r#"fn main() { let value = re"import std::net::dns;"; }"#,
-            r#"fn main() { let value = f"import std::net::dns;"; }"#,
-            "fn main() { import std::net::dns; }",
+            "// import std.net.dns;\nfn main() {}",
+            "/// import std.net.dns;\nfn main() {}",
+            "//! import std.net.dns;\nfn main() {}",
+            "/* outer /* import std.net.dns; */ decoy */\nfn main() {}",
+            r#"fn main() { let value = "import std.net.dns;"; }"#,
+            r#"fn main() { let value = r"import std.net.dns;"; }"#,
+            r#"fn main() { let value = b"import std.net.dns;"; }"#,
+            r#"fn main() { let value = re"import std.net.dns;"; }"#,
+            r#"fn main() { let value = f"import std.net.dns;"; }"#,
+            "fn main() { import std.net.dns; }",
         ] {
             assert_not_evidence(source, "std::net::dns");
         }
@@ -192,10 +190,10 @@ mod tests {
     #[test]
     fn requires_the_exact_maximal_module_path() {
         for source in [
-            "import prefix::std::net::dns;",
-            "import std::net::dns_suffix;",
-            "import std::net::dns::suffix;",
-            "import std::net;",
+            "import prefix.std.net.dns;",
+            "import std.net.dns_suffix;",
+            "import std.net.dns.suffix;",
+            "import std.net;",
             "import \"std/net/dns.hew\";",
         ] {
             assert_eq!(
@@ -211,18 +209,18 @@ mod tests {
         for source in [
             "import /// doc\nstd::net::dns;",
             "import //! doc\nstd::net::dns;",
-            "const bogus: i32 = (\nimport std::net::dns;\n);",
-            "const bogus: [i32; 1] = [\nimport std::net::dns;\n];",
-            "pub import std::net::dns;",
-            "import std::net::dns::{Resolver,,};",
-            "import std::net::dns::{???};",
-            "import std::net::dns::{Resolver} as alias;",
-            "import std::net::dns as ;",
-            "import std::net::dns; trailing_tokens",
-            "import std::net::dns",
-            "/* unterminated import std::net::dns;",
-            "fn main() { let bogus = 'abc'; }\nimport std::net::dns;",
-            "fn main() { let bogus = \"unterminated; }\nimport std::net::dns;",
+            "const bogus: i32 = (\nimport std.net.dns;\n);",
+            "const bogus: [i32; 1] = [\nimport std.net.dns;\n];",
+            "pub import std.net.dns;",
+            "import std.net.dns.{Resolver,,};",
+            "import std.net.dns.{???};",
+            "import std.net.dns.{Resolver} as alias;",
+            "import std.net.dns as ;",
+            "import std.net.dns; trailing_tokens",
+            "import std.net.dns",
+            "/* unterminated import std.net.dns;",
+            "fn main() { let bogus = 'abc'; }\nimport std.net.dns;",
+            "fn main() { let bogus = \"unterminated; }\nimport std.net.dns;",
         ] {
             assert_invalid(source, "std::net::dns");
         }
@@ -231,9 +229,9 @@ mod tests {
     #[test]
     fn validates_a_batch_in_one_pass() {
         let sources = HashMap::from([
-            ("one.hew", "import std::one;"),
-            ("two.hew", "import std::two::{Value};"),
-            ("decoy.hew", "// import std::three;\nfn main() {}"),
+            ("one.hew", "import std.one;"),
+            ("two.hew", "import std.two.{Value};"),
+            ("decoy.hew", "// import std.three;\nfn main() {}"),
         ]);
         let failures = validate_pairs(
             "std::one\tone.hew\nstd::two\ttwo.hew\nstd::three\tdecoy.hew\n",
@@ -245,7 +243,7 @@ mod tests {
             },
         );
         assert_eq!(failures.len(), 1, "{failures:?}");
-        assert!(failures[0].contains("decoy.hew: does not import std::three"));
+        assert!(failures[0].contains("decoy.hew: does not import std.three"));
     }
 
     #[test]

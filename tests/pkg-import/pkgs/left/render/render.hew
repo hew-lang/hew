@@ -40,14 +40,14 @@ pub fn generic_box() -> Box<bool> {
 }
 
 pub fn make_parcel() -> Parcel<string> {
-    Parcel::Filled("left-parcel")
+    Parcel.Filled("left-parcel")
 }
 
 pub fn clone_and_consume_parcel(value: Parcel<string>) -> string {
     let cloned = value.clone();
     match cloned {
-        Parcel::Filled(label) => label,
-        Parcel::Empty => "left-empty",
+        Parcel.Filled(label) => label,
+        Parcel.Empty => "left-empty",
     }
 }
 

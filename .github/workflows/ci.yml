@@ -556,7 +556,45 @@ jobs:
         if: env.RUN_CODE_PATH != 'true'
         run: echo "No code changes detected; there are no compiled Hew shards to aggregate."
 
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        if: always() && env.RUN_CODE_PATH == 'true'
+
+      - name: Download compiled Hew bundle
+        if: >-
+          always() && env.RUN_CODE_PATH == 'true' &&
+          needs.compiled-hew-linux.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: compiled-hew-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/compiled-hew-download
+
+      - name: Verify compiled Hew bundle
+        if: >-
+          always() && env.RUN_CODE_PATH == 'true' &&
+          needs.compiled-hew-linux.result == 'success'
+        run: >-
+          python3 scripts/compiled-hew-artifact.py unpack
+          --input "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
+          --destination "${{ runner.temp }}/compiled-hew-artifact"
+          --expected-revision "$GITHUB_SHA"
+
+      - name: Download every shard report
+        if: always() && env.RUN_CODE_PATH == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: compiled-hew-shard-*-${{ github.sha }}
+          path: ${{ runner.temp }}/compiled-hew-reports
+          merge-multiple: true
+
+      - name: Report compiled Hew shard failures
+        if: always() && env.RUN_CODE_PATH == 'true'
+        run: >-
+          python3 scripts/compiled-hew-shards.py report
+          --reports-dir "${{ runner.temp }}/compiled-hew-reports"
+          --shard-count 4
+
       - name: Require every shard to complete
+        if: always()
         env:
           CHANGE_RESULT: ${{ needs.changes.result }}
           BUILD_RESULT: ${{ needs.compiled-hew-linux.result }}
@@ -565,32 +603,6 @@ jobs:
           test "$CHANGE_RESULT" = success
           test "$BUILD_RESULT" = success
           test "$SHARD_RESULT" = success
-
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        if: env.RUN_CODE_PATH == 'true'
-
-      - name: Download compiled Hew bundle
-        if: env.RUN_CODE_PATH == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: compiled-hew-linux-${{ github.sha }}
-          path: ${{ runner.temp }}/compiled-hew-download
-
-      - name: Verify compiled Hew bundle
-        if: env.RUN_CODE_PATH == 'true'
-        run: >-
-          python3 scripts/compiled-hew-artifact.py unpack
-          --input "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
-          --destination "${{ runner.temp }}/compiled-hew-artifact"
-          --expected-revision "$GITHUB_SHA"
-
-      - name: Download every shard report
-        if: env.RUN_CODE_PATH == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          pattern: compiled-hew-shard-*-${{ github.sha }}
-          path: ${{ runner.temp }}/compiled-hew-reports
-          merge-multiple: true
 
       - name: List the independent full suite inventory
         if: env.RUN_CODE_PATH == 'true'

@@ -45,7 +45,10 @@ def write_junit(
         classname, name = value.rsplit("::", 1)
         testcase = ET.SubElement(suite, "testcase", classname=classname, name=name)
         if value in failed:
-            ET.SubElement(testcase, "failure", message="forced")
+            failure = ET.SubElement(testcase, "failure", message="forced assertion")
+            failure.text = "forced diagnostic text"
+            system_out = ET.SubElement(testcase, "system-out")
+            system_out.text = "forced fixture output"
     ET.ElementTree(root).write(path, encoding="unicode", xml_declaration=True)
 
 
@@ -96,6 +99,25 @@ class CompiledHewShardTests(unittest.TestCase):
         self.assertEqual(result.returncode, expect, result.stdout + result.stderr)
         return result
 
+    def report(self) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "report",
+                "--reports-dir",
+                str(self.reports),
+                "--shard-count",
+                str(SHARDS),
+            ],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
     def test_complete_disjoint_union_passes_both_gates(self) -> None:
         self.assertIn("ratchet passed", self.aggregate("ratchet").stdout)
         self.assertIn("differential passed", self.aggregate("differential").stdout)
@@ -130,6 +152,16 @@ class CompiledHewShardTests(unittest.TestCase):
         write_junit(self.reports / "hew-o0-shard-1.xml", values, failed={values[0]})
         result = self.aggregate("ratchet", expect=1)
         self.assertIn("failure set differs", result.stderr)
+
+    def test_report_names_the_failed_shard_test_and_diagnostic(self) -> None:
+        values = self.full[0::SHARDS]
+        write_junit(self.reports / "hew-o0-shard-1.xml", values, failed={values[0]})
+        result = self.report()
+        self.assertIn("COMPILED_HEW_FAILURE shard=1 suite=O0", result.stdout)
+        self.assertIn(f"test={values[0]}", result.stdout)
+        self.assertIn("forced assertion", result.stdout)
+        self.assertIn("forced diagnostic text", result.stdout)
+        self.assertIn("forced fixture output", result.stdout)
 
 
 class CompiledHewWorkflowContractTests(unittest.TestCase):
@@ -174,6 +206,14 @@ class CompiledHewWorkflowContractTests(unittest.TestCase):
         self.assertIn("make test-hew-ratchet", self.workflow)
         self.assertIn("make test-o2-differential", self.workflow)
         self.assertEqual(self.workflow.count("HEW_SHARD_COUNT=4"), 2)
+
+    def test_failure_reporter_runs_before_the_aggregate_gates(self) -> None:
+        report = self.workflow.index("Report compiled Hew shard failures")
+        gate = self.workflow.index("Require every shard to complete")
+        ratchet = self.workflow.index("Assert shard union and Hew ratchet")
+        self.assertLess(report, gate)
+        self.assertLess(gate, ratchet)
+        self.assertIn("scripts/compiled-hew-shards.py report", self.workflow)
 
     def test_established_required_check_requires_both_parallel_branches(self) -> None:
         required = self.workflow.split("  linux-required:\n", 1)[1].split(

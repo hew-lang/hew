@@ -50,6 +50,110 @@ fn main() {
 }
 
 #[test]
+fn parse_machine_transition_with_contextual_target_state() {
+    let source = r"
+machine Light {
+    events {
+        Toggle;
+    }
+
+    state Off;
+    state On;
+
+    on Toggle: Off => .On;
+    on Toggle: On => Off;
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "a contextual transition target must parse: {:?}",
+        result.errors
+    );
+
+    let hew_parser::ast::Item::Machine(machine) = &result.program.items[0].0 else {
+        panic!("expected Machine item");
+    };
+    assert_eq!(machine.transitions[0].source_state, "Off");
+    assert_eq!(machine.transitions[0].target_state, "On");
+    assert!(
+        machine.transitions[0].target_is_contextual,
+        "the authored `.On` spelling must reach the AST"
+    );
+    assert!(matches!(
+        machine.transitions[0].body.0,
+        hew_parser::ast::Expr::ContextVariant(ref context)
+            if context.name == "On" && context.record.is_none()
+    ));
+    assert_eq!(machine.transitions[1].target_state, "Off");
+    assert!(
+        !machine.transitions[1].target_is_contextual,
+        "a bare target must not be recorded as contextual"
+    );
+}
+
+#[test]
+fn parse_machine_implicit_body_spans_the_target_token() {
+    // The synthesized implicit body must be spanned on the target state, not
+    // on the token after the `;` — diagnostics on it (the bare-variant fix-it)
+    // are only appliable if they point at the target text.
+    let source = "machine Light {\n    events { Toggle; }\n    state Off;\n    state On;\n    on Toggle: Off => On;\n}\n";
+    let result = hew_parser::parse(source);
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    let hew_parser::ast::Item::Machine(machine) = &result.program.items[0].0 else {
+        panic!("expected Machine item");
+    };
+    let span = machine.transitions[0].body.1.clone();
+    assert_eq!(
+        &source[span.clone()],
+        "On",
+        "implicit transition body span must cover the target state token"
+    );
+}
+
+#[test]
+fn reject_machine_transition_with_contextual_source_state() {
+    let result = hew_parser::parse(
+        r"
+machine Light {
+    events { Toggle; }
+    state Off;
+    state On;
+    on Toggle: .Off => .On;
+}
+",
+    );
+    let messages: Vec<&str> = result
+        .errors
+        .iter()
+        .map(|error| error.message.as_str())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("source state is a pattern")),
+        "a leading `.` on the source state must be rejected: {messages:?}"
+    );
+}
+
+#[test]
+fn reject_machine_transition_with_dangling_contextual_state_pattern() {
+    let result = hew_parser::parse(
+        r"
+machine Light {
+    events { Toggle; }
+    state Off;
+    on Toggle: Off => .;
+}
+",
+    );
+    assert!(
+        !result.errors.is_empty(),
+        "a contextual state pattern must include a state identifier"
+    );
+}
+
+#[test]
 fn parse_machine_with_fields() {
     let source = r"
 machine Counter {

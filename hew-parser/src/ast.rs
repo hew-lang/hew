@@ -1676,6 +1676,19 @@ pub struct MachineTransition {
     pub event_name: String,
     pub source_state: String,
     pub target_state: String,
+    /// True when the target state was authored in the contextual form
+    /// (`=> .Variant`) rather than bare (`=> Variant`). `target_state` holds
+    /// the flat leaf name either way, so the authored spelling would otherwise
+    /// be lost and the formatter would have to guess it from the body
+    /// expression — which is not the authority for it and is wrong for every
+    /// non-implicit body form. Source states have no contextual form (see
+    /// `StatePatternPosition`), so one flag covers the head.
+    ///
+    /// Additive and serde-defaulted, like `body_form` / `reenter` /
+    /// `composite_prelude_len`: bare targets keep the field out of the wire
+    /// form entirely.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub target_is_contextual: bool,
     /// Event-payload field names bound in the transition head
     /// (`on E(a, b): …`). These alias the event's fields so the body can use
     /// the bare names instead of `event.field`. The parser splices a

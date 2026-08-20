@@ -502,7 +502,7 @@ fn scope_fork_after_lowers_to_executable_task_and_deadline_abi() {
         instructions
             .iter()
             .any(|instr| matches!(instr, Instr::SpawnTaskDirect { callee_symbol, .. } if callee_symbol == "__hew_task_entry_long_op")),
-        "scope fork must lower to SpawnTaskDirect; instructions: {instructions:#?}"
+        "single-call scope fork must retain its direct task path; instructions: {instructions:#?}"
     );
     assert!(
         instructions.iter().any(|instr| matches!(

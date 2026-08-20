@@ -123,3 +123,64 @@ fn fork_env_rc_callback_drops_only_moved_string_argument() {
         "hew_rc_new must receive the generated payload callback: {ll}"
     );
 }
+
+#[test]
+fn fork_env_rc_callback_closes_moved_resource_once() {
+    let ll = emit_ll(
+        r#"
+        #[resource]
+        type Probe {
+            id: i64
+        }
+
+        impl Probe {
+            fn close(probe: Probe) {}
+        }
+
+        actor Driver {
+            receive fn drive() {
+                let probe = Probe { id: 7 };
+                scope {
+                    fork {
+                        println(f"probe-{probe.id}");
+                        println("child-done");
+                    }
+                };
+            }
+        }
+
+        fn main() {
+            let driver = spawn Driver;
+            driver.drive();
+        }
+        "#,
+    );
+    let prefix = "__hew_spawn_env_rc_drop_";
+    let thunk_name = ll
+        .lines()
+        .find_map(|line| {
+            if !line.starts_with("define") {
+                return None;
+            }
+            let start = line.find(&format!("@{prefix}"))? + 1;
+            line[start..].split('(').next().map(str::to_owned)
+        })
+        .expect("moved resource capture must emit an Rc payload callback");
+    let thunk = function_body(&ll, &thunk_name);
+    let record_drop_name = "__hew_record_drop_inplace_Probe";
+    assert_eq!(
+        thunk.matches(record_drop_name).count(),
+        1,
+        "the task environment must dispatch one typed resource drop: {thunk}"
+    );
+    let record_drop = function_body(&ll, record_drop_name);
+    assert_eq!(
+        record_drop.matches("call i8 @\"Probe::close\"(").count(),
+        1,
+        "the typed resource drop must call Probe::close exactly once: {record_drop}"
+    );
+    assert!(
+        ll.contains(&format!("ptr @{thunk_name}")),
+        "hew_rc_new must receive the resource-closing payload callback: {ll}"
+    );
+}

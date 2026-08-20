@@ -4850,7 +4850,9 @@ impl Builder {
                 bound,
                 source_anchor: _,
             } => self.lower_spawned_call_task(callee, args, task_ty, *bound, expr.site),
-            HirExprKind::ForkBlock { body, .. } => self.lower_fork_block_task(body, expr.site),
+            HirExprKind::ForkBlock { body, captures, .. } => {
+                self.lower_fork_block_task(body, captures, expr.site)
+            }
             HirExprKind::ScopeDeadline { duration, body } => {
                 self.lower_scope_deadline(duration, body, expr.site)
             }

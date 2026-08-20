@@ -63,13 +63,7 @@ def normalized_identity(classname: str, name: str) -> str:
 
 def parse_junit(path: Path) -> dict[str, str]:
     try:
-        try:
-            root = ET.fromstring(path.read_text(encoding="utf-8"))
-        except ET.ParseError as error:
-            die(
-                f"malformed JUnit report for shard {shard} {label.upper()}: "
-                f"{path}: {error}"
-            )
+        root = ET.fromstring(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         die(f"JUnit report is missing: {path}")
     except ET.ParseError as error:

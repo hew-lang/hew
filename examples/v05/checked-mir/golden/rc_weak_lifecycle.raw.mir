@@ -52,15 +52,16 @@ fn live() -> i64 [conv=default]
     _49: i64
     _50: i64
   bb0:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=Rc<i64>
     stmt: bind BindingId(0) rc site=SiteId(0) ty=Rc<i64>
     stmt: use BindingId(0) rc site=SiteId(3) ty=Rc<i64> intent=Read
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(2) ty=Rc<i64>
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(2) ty=Rc<i64>
     stmt: bind BindingId(1) alias site=SiteId(2) ty=Rc<i64>
     stmt: use BindingId(0) rc site=SiteId(5) ty=Rc<i64> intent=Read
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(4) ty=Weak<i64>
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(4) ty=Weak<i64>
     stmt: bind BindingId(2) weak site=SiteId(4) ty=Weak<i64>
     stmt: use BindingId(2) weak site=SiteId(7) ty=Weak<i64> intent=Read
-    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(6) ty=Weak<i64>
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(6) ty=Weak<i64>
     stmt: bind BindingId(3) _weak_alias site=SiteId(6) ty=Weak<i64>
     stmt: use BindingId(0) rc site=SiteId(11) ty=Rc<i64> intent=Read
     _0 = const.i64 7
@@ -108,7 +109,7 @@ fn live() -> i64 [conv=default]
   bb7:
     stmt: bind BindingId(5) uniqueness site=SiteId(15) ty=i64
     stmt: use BindingId(2) weak site=SiteId(24) ty=Weak<i64> intent=Read
-    stmt: bind BindingId(4294967228) __hew_call_scrutinee site=SiteId(23) ty=Option<Rc<i64>>
+    stmt: bind BindingId(4294967227) __hew_call_scrutinee site=SiteId(23) ty=Option<Rc<i64>>
     _27 = move _21
     _29 = rc_intrinsic.WeakUpgrade payload_ty=i64 receiver=_8 value=none result_ty=Option<Rc<i64>>
     _30 = move etag29
@@ -176,9 +177,10 @@ fn expired() -> Weak<i64> [conv=default]
     _3: i64
     _4: Weak<i64>
   bb0:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(41) ty=Rc<i64>
     stmt: bind BindingId(7) rc site=SiteId(41) ty=Rc<i64>
     stmt: use BindingId(7) rc site=SiteId(44) ty=Rc<i64> intent=Read
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(43) ty=Weak<i64>
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(43) ty=Weak<i64>
     stmt: return site=Some(SiteId(43)) ty=Weak<i64>
     _0 = const.i64 1
     _1 = rc_intrinsic.New payload_ty=i64 receiver=none value=_0 result_ty=Rc<i64>

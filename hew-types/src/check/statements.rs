@@ -29,8 +29,14 @@ impl Checker {
         if matches!(actual, Ty::Error) {
             return actual;
         }
-        if matches!(self.subst.resolve(expected), Ty::TraitObject { .. }) {
-            return self.subst.resolve(expected);
+        let resolved_expected = self.subst.resolve(expected);
+        if matches!(resolved_expected, Ty::TraitObject { .. })
+            || matches!(
+                &resolved_expected,
+                Ty::Named { name, .. } if self.type_aliases.contains_key(name)
+            )
+        {
+            return resolved_expected;
         }
         actual
     }
@@ -980,10 +986,15 @@ impl Checker {
                                             // because `Other` and `Point` share a field
                                             // shape — the written `Other` constructor would
                                             // otherwise never be enforced (see PR #2003).
-                                            let pat_td = self.lookup_type_def(pat_name);
-                                            let matches_rhs = pat_td
-                                                .as_ref()
-                                                .is_some_and(|pt| pt.name == td.name);
+                                            let pat_key = self
+                                                .canonical_nominal_name(pat_name)
+                                                .unwrap_or_else(|| pat_name.clone());
+                                            let rhs_key = self
+                                                .canonical_nominal_name(tn)
+                                                .unwrap_or_else(|| tn.to_string());
+                                            let pat_td = self.lookup_type_def(&pat_key);
+                                            let matches_rhs =
+                                                pat_td.as_ref().is_some_and(|_| pat_key == rhs_key);
                                             if !matches_rhs {
                                                 // Report a mismatch and still return `None`
                                                 // (no *additional* refutable-let error): the
@@ -1019,6 +1030,11 @@ impl Checker {
                         }
                         // Enum-variant constructor (e.g. `Some(x)`) — always refutable.
                         Pattern::Constructor { .. } => Some("enum variant"),
+                        // Qualified and contextual nominal paths retain their source
+                        // spelling in the AST, but remain refutable variant patterns.
+                        Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
+                            Some("enum variant")
+                        }
                         // Unit variant written as a bare/qualified identifier
                         // (e.g. `None`, `E::A`) — refutable; binds nothing.
                         Pattern::Identifier(_) if identifier_is_unit_variant => {
@@ -1043,6 +1059,11 @@ impl Checker {
                         // not visible inside it (they are bound only on the
                         // success path).
                         (Some(_), Some(else_blk)) => {
+                            // Record-pattern plans carry the exact payload
+                            // binding indices consumed by HIR. Prepare the
+                            // plan without binding names so the failure block
+                            // still cannot observe success-path bindings.
+                            self.prepare_record_pattern_plan(&pattern.0, &val_ty, &pattern.1);
                             // Record the success-path pattern resolution so HIR
                             // lowering can consume the same `pattern_resolutions`
                             // side-table that powers `if let` / `match` /
@@ -1682,7 +1703,18 @@ impl Checker {
                             );
                         }
                         if let Some(elem) = args.first().cloned() {
-                            if self.validate_vec_iter_element_clone_type(&elem, &iterable.1) {
+                            if matches!(self.subst.resolve(&elem), Ty::TraitObject { .. }) {
+                                self.report_error(
+                                    TypeErrorKind::InvalidOperation,
+                                    &iterable.1,
+                                    "direct `for` over `Vec<dyn Trait>` would require a cloneable \
+                                     borrowed snapshot; use `for value in values.into_iter()` to \
+                                     consume and move each trait object instead"
+                                        .to_string(),
+                                );
+                                Ty::Error
+                            } else if self.validate_vec_iter_element_clone_type(&elem, &iterable.1)
+                            {
                                 elem
                             } else {
                                 Ty::Error

@@ -1,7 +1,7 @@
 //! Ratchets generic Display coverage for canonical numeric primitives through
 //! `println`, `to_string`, and f-string interpolation.
 
-import std::testing;
+import std.testing;
 
 fn print_generic<T: Display>(x: T) {
     println(x);
@@ -30,7 +30,6 @@ fn test_generic_println_accepts_canonical_numeric_primitives() {
     let usizev: usize = 4000000000;
     let f32v: f32 = 1.5;
     let f64v: f64 = -2.25;
-
     print_generic(i8v);
     print_generic(i16v);
     print_generic(i32v);
@@ -61,7 +60,6 @@ fn test_generic_to_string_formats_canonical_numeric_primitives() {
     let usizev: usize = 4000000000;
     let f32v: f32 = 1.5;
     let f64v: f64 = -2.25;
-
     testing.assert_eq_str(render_generic(i8v), "-7");
     testing.assert_eq_str(render_generic(i16v), "-1234");
     testing.assert_eq_str(render_generic(i32v), "-123456");
@@ -92,7 +90,6 @@ fn test_generic_fstring_formats_canonical_numeric_primitives() {
     let usizev: usize = 4000000000;
     let f32v: f32 = 1.5;
     let f64v: f64 = -2.25;
-
     testing.assert_eq_str(interpolate_generic(i8v), "-7");
     testing.assert_eq_str(interpolate_generic(i16v), "-1234");
     testing.assert_eq_str(interpolate_generic(i32v), "-123456");

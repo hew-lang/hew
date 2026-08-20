@@ -19,7 +19,7 @@
 //! }
 //! ```
 
-import std::string;
+import std.string;
 
 /// A parsed URL.
 ///
@@ -208,7 +208,7 @@ fn decode_impl(s: string) -> string {
     if !valid_percent_utf8(data) {
         return "";
     }
-    let out: bytes = bytes::new();
+    let out: bytes = bytes.new();
     var i = 0;
     while i < data.len() {
         let b = data[i];
@@ -251,7 +251,7 @@ pub fn decode_query(params: string) -> Vec<(string, string)> {
 }
 
 fn decode_query_impl(params: string) -> Vec<(string, string)> {
-    let decoded: Vec<(string, string)> = Vec::new();
+    let decoded: Vec<(string, string)> = Vec.new();
     if string.is_empty(params) {
         return decoded;
     }
@@ -275,7 +275,7 @@ fn decode_form_component(s: string) -> string {
     if !valid_percent_utf8(data) {
         return "";
     }
-    let out: bytes = bytes::new();
+    let out: bytes = bytes.new();
     var i = 0;
     while i < data.len() {
         let b = data[i];
@@ -385,7 +385,7 @@ pub fn encode_query(params: string) -> string {
 }
 
 fn encode_query_impl(params: string) -> string {
-    let encoded: Vec<string> = Vec::new();
+    let encoded: Vec<string> = Vec.new();
     let lines = string.lines(params);
     for i in 0 .. lines.len() {
         let line = lines[i];

@@ -160,15 +160,15 @@ fn gen_body_enum_payload_overwrite_and_abandonment_keep_release_authority() {
         enum Box { Full(string); Empty; }
 
         fn control() {
-            var value: Box = Box::Full(string_concat("control-", "payload"));
-            value = Box::Empty;
+            var value: Box = Box.Full(string_concat("control-", "payload"));
+            value = Box.Empty;
         }
 
         fn main() {
             let g = gen {
-                var value: Box = Box::Full(string_concat("generator-", "payload"));
+                var value: Box = Box.Full(string_concat("generator-", "payload"));
                 yield 1;
-                value = Box::Empty;
+                value = Box.Empty;
             };
             for n in g { let _seen = n; }
             control();

@@ -1,6 +1,6 @@
 //! Generic Vec<T>::iter is tracked as the Hew-level iterator follow-on.
 
-import std::testing;
+import std.testing;
 
 fn generic_iter_count<T>(xs: Vec<T>) -> i64 {
     let it = xs.iter();
@@ -13,7 +13,7 @@ fn generic_iter_count<T>(xs: Vec<T>) -> i64 {
 
 #[test]
 fn test_generic_vec_iter_i64() {
-    let values: Vec<i64> = Vec::new();
+    let values: Vec<i64> = Vec.new();
     values.push(1);
     values.push(2);
     testing.assert_eq(generic_iter_count(values), 2);
@@ -30,11 +30,14 @@ fn test_generic_vec_iter_i64() {
 // re-resolves `clone` per-monomorphisation through the same
 // `is_owned_vec_element` authority `push`/`get`/etc. already use, routing an
 // owned element to `hew_vec_clone_owned` instead.
-type IterOwnedItem { name: string; n: i64; }
+type IterOwnedItem {
+    name: string;
+    n: i64;
+}
 
 #[test]
 fn test_generic_vec_iter_owned_record() {
-    let xs: Vec<IterOwnedItem> = Vec::new();
+    let xs: Vec<IterOwnedItem> = Vec.new();
     xs.push(IterOwnedItem { name: "alpha", n: 10 });
     xs.push(IterOwnedItem { name: "beta", n: 20 });
     xs.push(IterOwnedItem { name: "gamma", n: 30 });

@@ -141,13 +141,13 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     //    string (`builtin: None`), so the `BytesGet` family is a descriptor
     //    row only and never renders as `family: BytesGet` in the corpus.
     "hew_bytes_get",
-    // -- Constructor callee identity intercepted by codegen. The checked-MIR
-    //    corpus records the lowered runtime call, not the `bytes::new` catalog
-    //    identity itself.
-    "bytes::new",
+    // `bytes::new` and `hew_string_char_count` are now covered: the
+    // `vec_dyn_iter` fixture imports `std::string`, whose module dump
+    // carries the `bytes::new` constructor authority row and the
+    // `char_count_utf8` body's `hew_string_char_count` calls.
     // -- No user-facing surface lowers to the catalogued symbol today
     //    (probed: `bytes.len()` routes through `hew_vec_len`; no
-    //    `char_count` string method; no Instant/Duration value surface;
+    //    Instant/Duration value surface;
     //    `std::text::regex` rides module externs, the match-arm regex
     //    path emits only `hew_regex_is_match`/`hew_regex_capture_width`).
     "hew_bytes_len",
@@ -178,7 +178,6 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     //    vertical-slice `regex_literal_value` fixture, not the golden
     //    checked-mir corpus, so it pins as uncovered here.
     "hew_regex_handle",
-    "hew_string_char_count",
     // -- `string.get` lowers to a `Terminator::Call` whose callee codegen
     //    intercepts to build `Option<char>`; the call carries the callee as a
     //    string (`builtin: None`), so the `StringGet` family is a descriptor

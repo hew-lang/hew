@@ -5,10 +5,11 @@
 //! schemas — a shared bare layout/signature key would reject one of them or
 //! silently serialize it through the other's schema.
 
-import tests::hew::imported_wire_support::env_a::{Env, label_a};
-import tests::hew::imported_wire_support::env_b::{Env as BEnv, label_b};
+import tests.hew.imported_wire_support.env_a.{Env, label_a};
 
-import std::testing;
+import tests.hew.imported_wire_support.env_b.{Env as BEnv, label_b};
+
+import std.testing;
 
 #[test]
 fn same_leaf_wire_types_round_trip_independently() {
@@ -17,18 +18,18 @@ fn same_leaf_wire_types_round_trip_independently() {
     testing.assert_eq_str(a.to_json(), "{\"name\":\"svc\",\"port\":8080}");
     testing.assert_eq_str(b.to_json(), "{\"label\":\"edge\",\"port\":9}");
     match Env.from_json(a.to_json()) {
-        Ok(back) => {
+        .Ok(back) => {
             testing.assert_eq_str(back.name, "svc");
             testing.assert_eq(back.port, 8080);
         },
-        Err(msg) => panic(f"env_a from_json failed: {msg}"),
+        .Err(msg) => panic(f"env_a from_json failed: {msg}"),
     }
     match BEnv.from_json(b.to_json()) {
-        Ok(back) => {
+        .Ok(back) => {
             testing.assert_eq_str(back.label, "edge");
             testing.assert_eq(back.port, 9);
         },
-        Err(msg) => panic(f"env_b from_json failed: {msg}"),
+        .Err(msg) => panic(f"env_b from_json failed: {msg}"),
     }
 }
 

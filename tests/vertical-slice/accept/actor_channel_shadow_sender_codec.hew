@@ -13,7 +13,7 @@ record Receiver {
     y: i64,
 }
 
-actor Sink {
+actor TestSink {
     var total: i64;
 
     receive fn accept_sender(msg: Sender) {
@@ -32,7 +32,7 @@ actor Sink {
 }
 
 fn main() {
-    let sink = spawn Sink(total: 0);
+    let sink = spawn TestSink(total: 0);
     sink.accept_sender(Sender { x: 20 });
     sink.accept_receiver(Receiver { y: 22 });
     let sum = await sink.sum();

@@ -1,4 +1,4 @@
 fn main() {
-    let x: Option<i64> = Some(5);
-    match x { Some(x_v) => println(f"some {x_v}"), None => println("none"), }
+    let x: Option<i64> = Option.Some(5);
+    match x { Option.Some(x_v) => println(f"some {x_v}"), None => println("none"), }
 }

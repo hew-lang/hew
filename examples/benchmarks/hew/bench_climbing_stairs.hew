@@ -1,5 +1,5 @@
 fn climbing_stairs(n: i64) -> i64 {
-    let dp: Vec<i64> = Vec::new();
+    let dp: Vec<i64> = Vec.new();
     for idx in 0 .. n + 1 {
         dp.push(0);
     }

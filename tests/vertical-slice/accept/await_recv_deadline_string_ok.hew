@@ -4,7 +4,7 @@
 // Ok(Some(v)) before the deadline fires.
 //
 // Exit-code contract: Ok(Some("hello")) → 3.
-import std::channel::channel;
+import std.channel.channel;
 
 actor Worker {
     receive fn run() -> i64 {

@@ -16,7 +16,7 @@
 
 use crate::common;
 
-use common::{typecheck, typecheck_isolated};
+use common::{typecheck, typecheck_embedded_builtins_isolated, typecheck_isolated};
 use hew_types::error::TypeErrorKind;
 use hew_types::DynCoercion;
 use hew_types::Ty;
@@ -221,11 +221,11 @@ fn self_return_breaks_object_safety_in_dyn_position() {
 
 #[test]
 fn dyn_iterator_with_item_binding_object_safe() {
-    let output = typecheck_isolated(
+    let output = typecheck_embedded_builtins_isolated(
         r"
         trait Iterator {
             type Item;
-            fn next(iter: Self) -> Option<Self::Item>;
+            fn next(iter: Self) -> Option<Self.Item>;
         }
 
         type Counter { value: i32; }
@@ -273,11 +273,11 @@ fn dyn_iterator_with_item_binding_object_safe() {
 
 #[test]
 fn dyn_iterator_without_binding_rejected() {
-    let output = typecheck_isolated(
+    let output = typecheck_embedded_builtins_isolated(
         r"
         trait Iterator {
             type Item;
-            fn next(iter: Self) -> Option<Self::Item>;
+            fn next(iter: Self) -> Option<Self.Item>;
         }
 
         type Counter { value: i32; }
@@ -323,11 +323,11 @@ fn dyn_iterator_without_binding_rejected() {
 
 #[test]
 fn dyn_iterator_failed_projection_is_diagnostic() {
-    let output = typecheck_isolated(
+    let output = typecheck_embedded_builtins_isolated(
         r"
         trait Iterator {
             type Item;
-            fn next(iter: Self) -> Option<Self::Item>;
+            fn next(iter: Self) -> Option<Self.Item>;
         }
 
         type Counter { value: i32; }
@@ -353,7 +353,7 @@ fn dyn_iterator_failed_projection_is_diagnostic() {
                 trait_name,
                 assoc_name,
             } if type_name == "Counter" && trait_name == "Iterator" && assoc_name == "Item"
-        ) && e.message.contains("<Counter as Iterator>::Item")),
+        ) && e.message.contains("<Counter as Iterator>.Item")),
         "expected failed projection diagnostic for Counter/Iterator/Item, got: {:#?}",
         output.errors
     );
@@ -362,11 +362,11 @@ fn dyn_iterator_failed_projection_is_diagnostic() {
 
 #[test]
 fn dyn_distinct_bindings_get_distinct_vtables() {
-    let output = typecheck_isolated(
+    let output = typecheck_embedded_builtins_isolated(
         r#"
         trait Iterator {
             type Item;
-            fn next(iter: Self) -> Option<Self::Item>;
+            fn next(iter: Self) -> Option<Self.Item>;
         }
 
         type IntCounter { value: i32; }
@@ -415,11 +415,11 @@ fn dyn_distinct_bindings_get_distinct_vtables() {
 
 #[test]
 fn dyn_trait_method_signature_substituted() {
-    let output = typecheck_isolated(
+    let output = typecheck_embedded_builtins_isolated(
         r"
         trait Iterator {
             type Item;
-            fn next(iter: Self) -> Option<Self::Item>;
+            fn next(iter: Self) -> Option<Self.Item>;
         }
 
         type Counter { value: i32; }
@@ -661,5 +661,90 @@ fn clone_on_a_trait_object_is_rejected_with_a_named_limit() {
                 .contains("clone the concrete value before erasing it"),
         "rejection must name the limit and the supported alternative; got: {}",
         err.message
+    );
+}
+
+#[test]
+fn dyn_return_joins_record_each_concrete_arm_coercion() {
+    let output = typecheck_isolated(
+        r#"
+        trait Named { fn name(val: Self) -> string; }
+
+        type Dog { tag: string; }
+        impl Dog { fn name(val: Dog) -> string { val.tag } }
+
+        type Cat { tag: string; lives: i64; }
+        impl Cat { fn name(val: Cat) -> string { val.tag } }
+
+        fn choose_if(kind: i64) -> dyn Named {
+            if kind == 0 {
+                Dog { tag: "rex" }
+            } else {
+                Cat { tag: "tom", lives: 9 }
+            }
+        }
+
+        fn choose_match(kind: i64) -> dyn Named {
+            match kind {
+                0 => Dog { tag: "spot" },
+                1 => Cat { tag: "milo", lives: 8 },
+                _ => Dog { tag: "luna" },
+            }
+        }
+        "#,
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "dyn-return joins must check without an ownership-graph error: {:#?}",
+        output.errors
+    );
+    let dog_sites = output
+        .dyn_trait_coercions
+        .values()
+        .filter(
+            |coercion| matches!(&coercion.concrete_type, Ty::Named { name, .. } if name == "Dog"),
+        )
+        .count();
+    let cat_sites = output
+        .dyn_trait_coercions
+        .values()
+        .filter(
+            |coercion| matches!(&coercion.concrete_type, Ty::Named { name, .. } if name == "Cat"),
+        )
+        .count();
+    assert!(dog_sites >= 3, "every Dog arm must record a coercion site");
+    assert!(cat_sites >= 2, "every Cat arm must record a coercion site");
+}
+
+#[test]
+fn nested_and_early_dyn_return_paths_never_reach_graph_errors() {
+    let output = typecheck_isolated(
+        r#"
+        trait Named { fn name(val: Self) -> string; }
+        type Dog { tag: string; }
+        impl Dog { fn name(val: Dog) -> string { val.tag } }
+        type Cat { tag: string; lives: i64; }
+        impl Cat { fn name(val: Cat) -> string { val.tag } }
+
+        fn nested(a: bool, b: bool) -> dyn Named {
+            if a {
+                if b { Dog { tag: "rex" } } else { Cat { tag: "tom", lives: 9 } }
+            } else {
+                Dog { tag: "spot" }
+            }
+        }
+
+        fn early(cat: bool) -> dyn Named {
+            if cat { return Cat { tag: "milo", lives: 8 }; }
+            Dog { tag: "luna" }
+        }
+        "#,
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "nested and early dyn returns must check cleanly: {:#?}",
+        output.errors
     );
 }

@@ -8,11 +8,11 @@
 //! mutates the source, and asserts the slice still reads the pre-mutation
 //! bytes -- the exact-value form, not a smoke check.
 
-import std::testing;
+import std.testing;
 
 #[test]
 fn test_push_cow_leaves_slice_intact() {
-    let source: bytes = bytes::new();
+    let source: bytes = bytes.new();
     source.push(1);
     source.push(2);
     source.push(3);
@@ -30,7 +30,7 @@ fn test_push_cow_leaves_slice_intact() {
 
 #[test]
 fn test_set_cow_leaves_slice_intact() {
-    let source: bytes = bytes::new();
+    let source: bytes = bytes.new();
     source.push(10);
     source.push(20);
     source.push(30);
@@ -46,7 +46,7 @@ fn test_set_cow_leaves_slice_intact() {
 
 #[test]
 fn test_pop_cow_leaves_slice_intact() {
-    let source: bytes = bytes::new();
+    let source: bytes = bytes.new();
     source.push(5);
     source.push(6);
     source.push(7);
@@ -63,7 +63,7 @@ fn test_pop_cow_leaves_slice_intact() {
 fn test_clear_on_owner_leaves_slice_alive() {
     // clear releases only the source's reference; the shared backing buffer
     // survives for the slice co-owner (R4: no premature free).
-    let source: bytes = bytes::new();
+    let source: bytes = bytes.new();
     source.push(1);
     source.push(2);
     source.push(3);
@@ -79,11 +79,11 @@ fn test_clear_on_owner_leaves_slice_alive() {
 
 #[test]
 fn test_append_cow_leaves_slice_intact() {
-    let source: bytes = bytes::new();
+    let source: bytes = bytes.new();
     source.push(1);
     source.push(2);
     let view: bytes = source[0..2];
-    let extra: bytes = bytes::new();
+    let extra: bytes = bytes.new();
     extra.push(3);
     extra.push(4);
     source.append(extra);

@@ -3,7 +3,7 @@
 // An empty separator splits the string into its Unicode codepoints, each
 // as a one-character string. For ASCII input the codepoint count equals the
 // byte count, so this also validates the length gate.
-import std::string;
+import std.string;
 
 fn main() {
     let parts = string.split("abc", "");

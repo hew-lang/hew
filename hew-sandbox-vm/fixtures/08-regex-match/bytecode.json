@@ -19,7 +19,7 @@
       ]
     }
   ],
-  "compiler_version": "hew-sandbox-wasm-0.6.0-rc1",
+  "compiler_version": "hew-sandbox-wasm-0.6.0-rc2",
   "functions": [
     {
       "blocks": [
@@ -35,7 +35,7 @@
               ],
               "dst": "local:main.0",
               "op": "const.string",
-              "span": "span:61-69"
+              "span": "span:59-67"
             },
             {
               "args": [
@@ -46,7 +46,7 @@
               ],
               "dst": "local:main.1",
               "op": "regex.compile",
-              "span": "span:51-70"
+              "span": "span:49-68"
             },
             {
               "args": [
@@ -61,7 +61,7 @@
               ],
               "dst": null,
               "op": "local.set",
-              "span": "span:46-49"
+              "span": "span:44-47"
             },
             {
               "args": [
@@ -72,7 +72,7 @@
               ],
               "dst": "local:main.3",
               "op": "local.get",
-              "span": "span:84-86"
+              "span": "span:82-84"
             },
             {
               "args": [
@@ -83,7 +83,7 @@
               ],
               "dst": "local:main.4",
               "op": "const.string",
-              "span": "span:92-100"
+              "span": "span:90-98"
             },
             {
               "args": [
@@ -98,7 +98,7 @@
               ],
               "dst": "local:main.5",
               "op": "regex.find",
-              "span": "span:84-101"
+              "span": "span:82-99"
             },
             {
               "args": [
@@ -113,13 +113,13 @@
               ],
               "dst": null,
               "op": "call.stdlib",
-              "span": "span:76-102"
+              "span": "span:74-100"
             },
             {
               "args": [],
               "dst": "local:main.6",
               "op": "const.unit",
-              "span": "span:76-102"
+              "span": "span:74-100"
             },
             {
               "args": [
@@ -130,7 +130,7 @@
               ],
               "dst": "local:main.7",
               "op": "local.get",
-              "span": "span:108-110"
+              "span": "span:106-108"
             },
             {
               "args": [
@@ -141,19 +141,19 @@
               ],
               "dst": null,
               "op": "regex.free",
-              "span": "span:108-118"
+              "span": "span:106-116"
             },
             {
               "args": [],
               "dst": "local:main.8",
               "op": "const.unit",
-              "span": "span:108-118"
+              "span": "span:106-116"
             },
             {
               "args": [],
               "dst": "local:main.9",
               "op": "const.unit",
-              "span": "span:26-121"
+              "span": "span:24-119"
             }
           ],
           "params": [],
@@ -166,7 +166,7 @@
               }
             ],
             "op": "return",
-            "span": "span:26-121"
+            "span": "span:24-119"
           }
         }
       ],
@@ -176,70 +176,70 @@
           "id": "local:main.0",
           "mutable": false,
           "name": null,
-          "span": "span:61-69",
+          "span": "span:59-67",
           "type": "type:string"
         },
         {
           "id": "local:main.1",
           "mutable": false,
           "name": null,
-          "span": "span:51-70",
+          "span": "span:49-68",
           "type": "type:std.text.regex.Pattern"
         },
         {
           "id": "local:main.2",
           "mutable": false,
           "name": "re",
-          "span": "span:46-49",
+          "span": "span:44-47",
           "type": "type:std.text.regex.Pattern"
         },
         {
           "id": "local:main.3",
           "mutable": false,
           "name": null,
-          "span": "span:84-86",
+          "span": "span:82-84",
           "type": "type:std.text.regex.Pattern"
         },
         {
           "id": "local:main.4",
           "mutable": false,
           "name": null,
-          "span": "span:92-100",
+          "span": "span:90-98",
           "type": "type:string"
         },
         {
           "id": "local:main.5",
           "mutable": false,
           "name": null,
-          "span": "span:84-101",
+          "span": "span:82-99",
           "type": "type:string"
         },
         {
           "id": "local:main.6",
           "mutable": false,
           "name": null,
-          "span": "span:76-102",
+          "span": "span:74-100",
           "type": "type:unit"
         },
         {
           "id": "local:main.7",
           "mutable": false,
           "name": null,
-          "span": "span:108-110",
+          "span": "span:106-108",
           "type": "type:std.text.regex.Pattern"
         },
         {
           "id": "local:main.8",
           "mutable": false,
           "name": null,
-          "span": "span:108-118",
+          "span": "span:106-116",
           "type": "type:unit"
         },
         {
           "id": "local:main.9",
           "mutable": false,
           "name": null,
-          "span": "span:26-121",
+          "span": "span:24-119",
           "type": "type:unit"
         }
       ],
@@ -247,10 +247,10 @@
       "name": "main",
       "params": [],
       "result": "type:unit",
-      "span": "span:26-121"
+      "span": "span:24-119"
     }
   ],
-  "hew_version": "0.6.0-rc1",
+  "hew_version": "0.6.0-rc2",
   "layouts": {
     "actors": [],
     "enums": [],
@@ -262,16 +262,6 @@
         "id": "type:AskError",
         "kind": "enum",
         "name": "AskError"
-      },
-      {
-        "id": "type:CrashInfo",
-        "kind": "record",
-        "name": "CrashInfo"
-      },
-      {
-        "id": "type:CrashNotification",
-        "kind": "record",
-        "name": "CrashNotification"
       },
       {
         "id": "type:HashMapIter",
@@ -327,26 +317,6 @@
         "id": "type:f64",
         "kind": "float",
         "name": "f64"
-      },
-      {
-        "id": "type:failure.CrashAction",
-        "kind": "enum",
-        "name": "failure.CrashAction"
-      },
-      {
-        "id": "type:failure.CrashInfo",
-        "kind": "record",
-        "name": "failure.CrashInfo"
-      },
-      {
-        "id": "type:failure.CrashKind",
-        "kind": "enum",
-        "name": "failure.CrashKind"
-      },
-      {
-        "id": "type:failure.CrashNotification",
-        "kind": "record",
-        "name": "failure.CrashNotification"
       },
       {
         "id": "type:i64",
@@ -484,13 +454,13 @@
       }
     ]
   },
-  "package_id": "pkg:cca95b81c5e00908",
+  "package_id": "pkg:66067b1f6659142b",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {
     "sources": [
       {
-        "content_sha256": "7a9d3acaf42e2da7316f52c45e2c5f707f5085968564a3559ba5a25194653f6a",
+        "content_sha256": "36ca58c52bca6352837c9faaccf5056d6f1a1078de44852edca1406a9478008d",
         "id": "src:main",
         "path": "main.hew"
       }
@@ -498,140 +468,140 @@
     "spans": [
       {
         "end": {
-          "byte_offset": 121,
+          "byte_offset": 119,
           "column": 2,
           "line": 7
         },
-        "id": "span:26-121",
+        "id": "span:24-119",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 26,
+          "byte_offset": 24,
           "column": 1,
           "line": 3
         }
       },
       {
         "end": {
-          "byte_offset": 49,
+          "byte_offset": 47,
           "column": 12,
           "line": 4
         },
-        "id": "span:46-49",
+        "id": "span:44-47",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 46,
+          "byte_offset": 44,
           "column": 9,
           "line": 4
         }
       },
       {
         "end": {
-          "byte_offset": 70,
+          "byte_offset": 68,
           "column": 33,
           "line": 4
         },
-        "id": "span:51-70",
+        "id": "span:49-68",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 51,
+          "byte_offset": 49,
           "column": 14,
           "line": 4
         }
       },
       {
         "end": {
-          "byte_offset": 69,
+          "byte_offset": 67,
           "column": 32,
           "line": 4
         },
-        "id": "span:61-69",
+        "id": "span:59-67",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 61,
+          "byte_offset": 59,
           "column": 24,
           "line": 4
         }
       },
       {
         "end": {
-          "byte_offset": 102,
+          "byte_offset": 100,
           "column": 31,
           "line": 5
         },
-        "id": "span:76-102",
+        "id": "span:74-100",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 76,
+          "byte_offset": 74,
           "column": 5,
           "line": 5
         }
       },
       {
         "end": {
-          "byte_offset": 86,
+          "byte_offset": 84,
           "column": 15,
           "line": 5
         },
-        "id": "span:84-86",
+        "id": "span:82-84",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 84,
+          "byte_offset": 82,
           "column": 13,
           "line": 5
         }
       },
       {
         "end": {
-          "byte_offset": 101,
+          "byte_offset": 99,
           "column": 30,
           "line": 5
         },
-        "id": "span:84-101",
+        "id": "span:82-99",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 84,
+          "byte_offset": 82,
           "column": 13,
           "line": 5
         }
       },
       {
         "end": {
-          "byte_offset": 100,
+          "byte_offset": 98,
           "column": 29,
           "line": 5
         },
-        "id": "span:92-100",
+        "id": "span:90-98",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 92,
+          "byte_offset": 90,
           "column": 21,
           "line": 5
         }
       },
       {
         "end": {
-          "byte_offset": 110,
+          "byte_offset": 108,
           "column": 7,
           "line": 6
         },
-        "id": "span:108-110",
+        "id": "span:106-108",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 108,
+          "byte_offset": 106,
           "column": 5,
           "line": 6
         }
       },
       {
         "end": {
-          "byte_offset": 118,
+          "byte_offset": 116,
           "column": 15,
           "line": 6
         },
-        "id": "span:108-118",
+        "id": "span:106-116",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 108,
+          "byte_offset": 106,
           "column": 5,
           "line": 6
         }

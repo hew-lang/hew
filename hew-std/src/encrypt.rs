@@ -764,11 +764,11 @@ mod tests {
     /// `hew_encrypt_last_open_error_code` returns a raw i32 that the Hew-side
     /// `crypto_error_from_i32` (in `encrypt.hew`) decodes into a
     /// `CryptoError`. That catch-all arm is already fail-closed in
-    /// direction (`_ => CryptoError::AuthFailed`, not `_ => CryptoError::None`)
+    /// direction (`_ => CryptoError.AuthFailed`, not `_ => CryptoError.None`)
     /// — unlike the original JWT bug — but had no regression test pinning
     /// it. This test parses the `crypto_error_from_i32` match block via
     /// `include_str!` and asserts the catch-all arm never decodes to
-    /// `CryptoError::None`, and that the explicit `CryptoError::None` arm
+    /// `CryptoError.None`, and that the explicit `CryptoError.None` arm
     /// stays pinned to status `0` rather than becoming the catch-all.
     #[test]
     fn hew_binding_pins_encrypt_poisoned_code_never_decodes_to_none() {
@@ -785,20 +785,20 @@ mod tests {
             .find(|line| line.starts_with("_ =>"))
             .expect("crypto_error_from_i32 must have a catch-all `_` arm");
         assert!(
-            !catch_all.contains("CryptoError::None"),
+            !catch_all.contains("CryptoError.None"),
             "encrypt.hew's crypto_error_from_i32 catch-all arm must NOT \
-             decode an out-of-range/poisoned code to CryptoError::None \
+             decode an out-of-range/poisoned code to CryptoError.None \
              (fail-open); found: {catch_all:?}"
         );
 
         let none_arm = match_block
             .lines()
             .map(str::trim)
-            .find(|line| line.contains("=> CryptoError::None"))
+            .find(|line| line.contains("=> CryptoError.None"))
             .expect("crypto_error_from_i32 must have an explicit None arm");
         assert!(
             none_arm.starts_with("0 =>"),
-            "encrypt.hew's crypto_error_from_i32 CryptoError::None arm must \
+            "encrypt.hew's crypto_error_from_i32 CryptoError.None arm must \
              be pinned to status 0, not the catch-all; found: {none_arm:?}"
         );
     }

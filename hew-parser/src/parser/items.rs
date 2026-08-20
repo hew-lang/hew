@@ -755,13 +755,35 @@ impl Parser<'_> {
     }
 
     pub(crate) fn is_type_alias_lookahead(&self) -> bool {
-        // Check for "type Name =" pattern (Name can be a contextual keyword)
-        matches!(self.tokens.get(self.pos), Some((Token::Type, _)))
-            && self
+        // Check for `type Name =` or `type Name<...> =` (Name can be a
+        // contextual keyword). A body declaration starts with `{` instead.
+        if !matches!(self.tokens.get(self.pos), Some((Token::Type, _)))
+            || !self
                 .tokens
                 .get(self.pos + 1)
                 .is_some_and(|(tok, _)| Self::is_ident_token(tok))
-            && matches!(self.tokens.get(self.pos + 2), Some((Token::Equal, _)))
+        {
+            return false;
+        }
+        if matches!(self.tokens.get(self.pos + 2), Some((Token::Equal, _))) {
+            return true;
+        }
+        if !matches!(self.tokens.get(self.pos + 2), Some((Token::Less, _))) {
+            return false;
+        }
+        let mut depth = 0usize;
+        for (index, (token, _)) in self.tokens.iter().enumerate().skip(self.pos + 2) {
+            match token {
+                Token::Less => depth += 1,
+                Token::Greater => depth = depth.saturating_sub(1),
+                Token::GreaterGreater => depth = depth.saturating_sub(2),
+                _ => {}
+            }
+            if depth == 0 {
+                return matches!(self.tokens.get(index + 1), Some((Token::Equal, _)));
+            }
+        }
+        false
     }
 
     pub(crate) fn parse_type_alias(
@@ -771,12 +793,14 @@ impl Parser<'_> {
     ) -> Option<TypeAliasDecl> {
         self.expect(&Token::Type)?;
         let name = self.expect_ident()?;
+        let type_params = self.parse_opt_type_params()?;
         self.expect(&Token::Equal)?;
         let ty = self.parse_type()?;
         self.expect(&Token::Semicolon)?;
         Some(TypeAliasDecl {
             visibility,
             name,
+            type_params,
             ty,
             doc_comment,
         })
@@ -1007,8 +1031,8 @@ impl Parser<'_> {
     ///
     /// The attribute is not consumed from the slice; callers that render
     /// attributes should filter `resource` / `linear` out themselves if they
-    /// want to suppress them in output.  For now the checker is the only
-    /// consumer, so we leave the slice untouched.
+    /// want to suppress them in output. The checker is the only consumer, so
+    /// we leave the slice untouched.
     ///
     /// Valid type-decl attributes: `resource`, `linear`, `wire`, `json`,
     /// `yaml`, `deprecated`, `opaque`.  Anything else triggers `E_UNKNOWN_TYPE_MARKER`.
@@ -1565,6 +1589,10 @@ impl Parser<'_> {
         Some(ExternBlock { abi, functions })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the import production preserves path and selection separator origin in one parse"
+    )]
     pub(crate) fn parse_import(&mut self) -> Option<ImportDecl> {
         // File-path import: import "path/to/file.hew";
         if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
@@ -1575,6 +1603,7 @@ impl Parser<'_> {
             return Some(ImportDecl {
                 path: Vec::new(),
                 spec: None,
+                selection_trailing_comma: false,
                 module_alias: None,
                 file_path: Some(file_path),
                 resolved_items: None,
@@ -1584,15 +1613,14 @@ impl Parser<'_> {
         }
 
         let mut path = Vec::new();
-
         loop {
             path.push(self.expect_import_path_segment()?);
-            // Only continue path if :: is followed by an identifier
-            if self.peek() == Some(&Token::DoubleColon) {
+            // Consume a dot as a path separator only when another path segment follows;
+            // `.{` belongs to the explicit-selection parser.
+            if self.peek() == Some(&Token::Dot) {
                 let saved = self.save_pos();
-                self.advance(); // consume ::
+                self.advance();
                 if !self.peek().is_some_and(Self::is_import_path_segment_token) {
-                    // :: followed by *, {, etc. — restore and let spec parsing handle it
                     self.restore_pos(saved);
                     break;
                 }
@@ -1601,10 +1629,34 @@ impl Parser<'_> {
             }
         }
 
-        let spec = if self.eat(&Token::DoubleColon) {
+        let mut selection_trailing_comma = false;
+        let spec = if self.eat(&Token::Dot) {
             if self.eat(&Token::Star) {
-                Some(ImportSpec::Glob)
+                if !self
+                    .errors
+                    .iter()
+                    .any(|error| matches!(error.kind, ParseDiagnosticKind::ImportGlobRemoved))
+                {
+                    self.errors.push(ParseError {
+                        message: "E_IMPORT_GLOB_REMOVED: glob imports have been removed; import explicit names with `import path.{ Name };`".to_string(),
+                        span: self.peek_span(),
+                        hint: Some(
+                            "replace the glob with an explicit selection such as `import path.{ Name };`"
+                                .to_string(),
+                        ),
+                        severity: Severity::Error,
+                        kind: ParseDiagnosticKind::ImportGlobRemoved,
+                    });
+                }
+                // Never materialise a removed glob AST node.
+                None
             } else if self.eat(&Token::LeftBrace) {
+                if self.peek() == Some(&Token::RightBrace) {
+                    self.error(
+                        "dotted import selections must contain at least one binding".to_string(),
+                    );
+                    return None;
+                }
                 let mut names = Vec::new();
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                     let name = self.expect_ident()?;
@@ -1617,6 +1669,10 @@ impl Parser<'_> {
                     if !self.eat(&Token::Comma) {
                         break;
                     }
+                    if self.peek() == Some(&Token::RightBrace) {
+                        selection_trailing_comma = true;
+                        break;
+                    }
                 }
                 self.expect(&Token::RightBrace)?;
                 Some(ImportSpec::Names(names))
@@ -1624,21 +1680,21 @@ impl Parser<'_> {
                 let found = self
                     .peek()
                     .map_or_else(|| "end of input".to_string(), |t| format!("{t}"));
-                self.error(format!("expected `*` or `{{` after `::`, found {found}"));
+                self.error(format!("expected `{{` after `.`, found {found}"));
                 return None;
             }
         } else {
             None
         };
 
-        // Whole-module alias: `import path::to::mod as alias;`. Legal only for
-        // the whole-module form; `import m::{ A } as f` and `import m::* as f`
+        // Whole-module alias: `import path.to.mod as alias;`. Legal only for
+        // the whole-module form; `import m.{ A } as f`
         // have no meaning and are rejected, so `as` is only consumed when no
         // brace/glob spec was parsed.
         let module_alias = if self.eat(&Token::As) {
             if spec.is_some() {
                 self.error(
-                    "`as` cannot alias a `::{ }` or `::*` import; alias the whole module \
+                    "`as` cannot alias a `.{ }` import; alias the whole module \
                      instead (`import path as alias;`)"
                         .to_string(),
                 );
@@ -1649,17 +1705,55 @@ impl Parser<'_> {
             None
         };
 
+        if self.diagnose_hyphenated_import_package(&path) {
+            return None;
+        }
+
         self.expect(&Token::Semicolon)?;
 
         Some(ImportDecl {
             path,
             spec,
+            selection_trailing_comma,
             module_alias,
             file_path: None,
             resolved_items: None,
             resolved_item_source_paths: Vec::new(),
             resolved_source_paths: Vec::new(),
         })
+    }
+
+    fn diagnose_hyphenated_import_package(&mut self, path: &[String]) -> bool {
+        if path.len() != 1 || self.peek() != Some(&Token::Minus) {
+            return false;
+        }
+
+        let mut invalid_name = path[0].clone();
+        let mut lookahead = 0;
+        while self.peek_at(self.pos + lookahead) == Some(&Token::Minus) {
+            let Some(segment) = self
+                .peek_at(self.pos + lookahead + 1)
+                .and_then(Self::import_path_segment_text)
+            else {
+                break;
+            };
+            invalid_name.push('-');
+            invalid_name.push_str(&segment);
+            lookahead += 2;
+        }
+        if lookahead == 0 {
+            return false;
+        }
+
+        let suggested_name = invalid_name.replace('-', "_");
+        self.error_at_with_hint(
+            format!("package name `{invalid_name}` cannot be used in an import"),
+            self.peek_span(),
+            format!(
+                "set `name = \"{suggested_name}\"` in `hew.toml` and import `{suggested_name}`"
+            ),
+        );
+        true
     }
 
     pub(crate) fn parse_const_decl(

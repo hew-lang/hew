@@ -48,9 +48,25 @@ declare ptr @hew_string_clone(ptr)
 
 declare ptr @hew_string_concat(ptr, ptr)
 
+declare void @hew_assert_eq_i8(i8, i8)
+
+declare void @hew_assert_eq_i16(i16, i16)
+
+declare void @hew_assert_eq_i32(i32, i32)
+
 declare void @hew_assert_eq_i64(i64, i64)
 
+declare void @hew_assert_eq_isize(i64, i64)
+
 declare void @hew_assert_eq_u8(i8, i8)
+
+declare void @hew_assert_eq_u16(i16, i16)
+
+declare void @hew_assert_eq_u32(i32, i32)
+
+declare void @hew_assert_eq_u64(i64, i64)
+
+declare void @hew_assert_eq_usize(i64, i64)
 
 declare void @hew_assert_eq_str(ptr, ptr)
 
@@ -58,9 +74,25 @@ declare void @hew_assert_eq_f64(double, double)
 
 declare void @hew_assert_eq_bool(i8, i8)
 
+declare void @hew_assert_ne_i8(i8, i8)
+
+declare void @hew_assert_ne_i16(i16, i16)
+
+declare void @hew_assert_ne_i32(i32, i32)
+
 declare void @hew_assert_ne_i64(i64, i64)
 
+declare void @hew_assert_ne_isize(i64, i64)
+
 declare void @hew_assert_ne_u8(i8, i8)
+
+declare void @hew_assert_ne_u16(i16, i16)
+
+declare void @hew_assert_ne_u32(i32, i32)
+
+declare void @hew_assert_ne_u64(i64, i64)
+
+declare void @hew_assert_ne_usize(i64, i64)
 
 declare void @hew_assert_ne_str(ptr, ptr)
 
@@ -489,9 +521,12 @@ bb3:                                              ; preds = %after_cooperate20, 
   store i8 %move_load6, ptr %return_slot, align 1
   call void @hew_shutdown_initiate_implicit(i64 0)
   %hew_shutdown_wait_call = call i32 @hew_shutdown_wait()
-  %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
+  %hew_shutdown_failed = icmp ne i32 %hew_shutdown_wait_call, 0
   call void @hew_runtime_cleanup_after_main()
-  ret i8 0
+  %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
+  %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
+  %hew_shutdown_any_failed = or i1 %hew_shutdown_failed, %hew_lambda_drain_failed
+  br i1 %hew_shutdown_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 bb4:                                              ; preds = %bb2
   %machine_payload_ptr7 = getelementptr inbounds nuw %"Result$$i64$std$mbuiltins$mAskError", ptr %local_8, i32 0, i32 1
@@ -563,6 +598,13 @@ actor_ask_reply_err:                              ; preds = %bb1
   %emit_result_err_v1_f0_src = load %std.builtins.AskError, ptr %local_7, align 1
   store %std.builtins.AskError %emit_result_err_v1_f0_src, ptr %machine_variant_field_ptr4, align 1
   br label %bb2
+
+hew_shutdown_exit_failed:                         ; preds = %bb3
+  call void @hew_exit(i64 1)
+  br label %hew_shutdown_exit_continue
+
+hew_shutdown_exit_continue:                       ; preds = %hew_shutdown_exit_failed, %bb3
+  ret i8 0
 
 cancel_exit:                                      ; preds = %bb8
   ret i8 0
@@ -1429,9 +1471,9 @@ declare void @hew_shutdown_initiate_implicit(i64)
 
 declare i32 @hew_shutdown_wait()
 
-declare i32 @hew_lambda_drain_all(i64)
-
 declare void @hew_runtime_cleanup_after_main()
+
+declare i32 @hew_lambda_drain_all(i64)
 
 declare i32 @hew_actor_cooperate()
 

@@ -1,11 +1,11 @@
 fn main() {
-    let a: bytes = bytes::new();
+    let a: bytes = bytes.new();
     a.push(65);
     a.push(66);
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     b.push(65);
     b.push(66);
-    let c: bytes = bytes::new();
+    let c: bytes = bytes.new();
     c.push(65);
     c.push(66);
     c.push(67);

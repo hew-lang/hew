@@ -17,12 +17,12 @@
 // `Probe` actor still answers a fresh `ask`, proving the scheduler stayed
 // healthy through the escalation — not just that the process happened to
 // exit before the abort landed.
-import std::failure;
+import std.failure;
 
 actor Worker {
     #[on(crash)]
     fn on_crash(info: CrashInfo) -> CrashAction {
-        CrashAction::Escalate
+        CrashAction.Escalate
     }
 
     receive fn boom() {

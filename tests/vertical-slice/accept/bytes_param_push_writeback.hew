@@ -20,7 +20,7 @@ fn forward(b: bytes) {
 }
 
 fn main() -> i64 {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     fill(b);
     forward(b);
     let s: string = b.to_string();

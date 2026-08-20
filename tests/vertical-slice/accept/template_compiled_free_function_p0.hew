@@ -1,4 +1,4 @@
-import std::text::template;
+import std.text.template;
 
 fn main() {
     let ctx = template.new_ctx();

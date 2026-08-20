@@ -13,13 +13,13 @@ indirect enum Expr {
 
 fn eval(e: Expr) -> i64 {
     match e {
-        Lit(n) => n,
-        Neg(inner) => 0 - eval(inner),
+        .Lit(n) => n,
+        .Neg(inner) => 0 - eval(inner),
     }
 }
 
 fn main() {
-    println(eval(Neg(Lit(5))));
-    println(eval(Neg(Neg(Lit(3)))));
+    println(eval(.Neg(.Lit(5))));
+    println(eval(.Neg(.Neg(.Lit(3)))));
     println("done");
 }

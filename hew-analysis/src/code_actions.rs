@@ -184,14 +184,14 @@ fn extract_suggestion_name(suggestion: &str) -> String {
 /// For an `UndefinedFunction` diagnostic whose span covers the full call
 /// expression, return a span covering only the callee path token.
 ///
-/// Walks identifier bytes (`[A-Za-z0-9_]`) and `::` path separators, stopping
-/// at the first byte that is neither part of an identifier nor a `::` prefix.
+/// Walks identifier bytes (`[A-Za-z0-9_]`) and dotted path separators, stopping
+/// at the first byte that is neither part of an identifier nor a dotted prefix.
 /// This correctly handles all call forms:
 /// - plain calls:                 `fooo()`              → `fooo`
-/// - qualified paths:             `Vec::neww()`         → `Vec::neww`
+/// - qualified paths:             `Vec.neww()`          → `Vec.neww`
 /// - generic calls:               `fooo<T>()`           → `fooo`
 /// - trivia before type args:     `fooo /*c*/ <T>()`    → `fooo`
-/// - qualified generic calls:     `Vec::neww<T>()`      → `Vec::neww`
+/// - qualified generic calls:     `Vec.neww<T>()`       → `Vec.neww`
 fn trim_to_callee_name(source: &str, span: OffsetSpan) -> OffsetSpan {
     let region = source.get(span.start..span.end).unwrap_or("").as_bytes();
     let mut pos = 0;
@@ -200,15 +200,13 @@ fn trim_to_callee_name(source: &str, span: OffsetSpan) -> OffsetSpan {
         while pos < region.len() && (region[pos].is_ascii_alphanumeric() || region[pos] == b'_') {
             pos += 1;
         }
-        // Continue through `::` only when the next byte after `::` is also a
-        // valid identifier start — this prevents walking into `::` trailing
-        // separators or `::=` and similar tokens.
-        if pos + 2 < region.len()
-            && region[pos] == b':'
-            && region[pos + 1] == b':'
-            && (region[pos + 2].is_ascii_alphanumeric() || region[pos + 2] == b'_')
+        // Continue through a dot only when the next byte is also a valid
+        // identifier start, so a trailing dot never widens the edit.
+        if pos + 1 < region.len()
+            && region[pos] == b'.'
+            && (region[pos + 1].is_ascii_alphanumeric() || region[pos + 1] == b'_')
         {
-            pos += 2;
+            pos += 1;
             continue;
         }
         break;
@@ -505,30 +503,30 @@ mod tests {
 
     #[test]
     fn undefined_function_qualified_path_replaces_full_callee_path() {
-        // `Vec::neww()`: the callee is the qualified path `Vec::neww`.
-        // Trimming at the first `::` separator would leave only `Vec`; replacing
-        // `Vec` with the suggestion `Vec::new` would produce `Vec::new::neww()`.
-        // The correct edit span must cover the entire path `Vec::neww` (bytes 20–29).
-        let source = "fn main() { let _ = Vec::neww(); }";
+        // `Vec.neww()`: the callee is the qualified path `Vec.neww`.
+        // Trimming at the first dot would leave only `Vec`; replacing `Vec`
+        // with the suggestion `Vec.new` would produce `Vec.new.neww()`.
+        // The correct edit span must cover the entire path `Vec.neww` (bytes 20–28).
+        let source = "fn main() { let _ = Vec.neww(); }";
         //                                   ^       ^
         //                                  20      29 = start of '('
         let d = diag_with_suggestions(
             "UndefinedFunction",
-            "undefined function `Vec::neww`",
-            20, // start of `Vec::neww()`
-            31, // end past ')'
-            vec!["Vec::new"],
+            "undefined function `Vec.neww`",
+            20, // start of `Vec.neww()`
+            30, // end past ')'
+            vec!["Vec.new"],
         );
         let actions = build_code_actions(source, &[d]);
         assert_eq!(actions.len(), 1);
-        assert_eq!(actions[0].title, "Replace with `Vec::new`");
+        assert_eq!(actions[0].title, "Replace with `Vec.new`");
         let edit = &actions[0].edits[0];
-        assert_eq!(edit.new_text, "Vec::new");
+        assert_eq!(edit.new_text, "Vec.new");
         // Edit span must cover the full callee path, not just the first segment.
-        assert_eq!(edit.span, OffsetSpan { start: 20, end: 29 });
+        assert_eq!(edit.span, OffsetSpan { start: 20, end: 28 });
         // Applying the edit must yield the corrected call.
-        let corrected = format!("{}{}{}", &source[..20], "Vec::new", &source[29..]);
-        assert_eq!(corrected, "fn main() { let _ = Vec::new(); }");
+        let corrected = format!("{}{}{}", &source[..20], "Vec.new", &source[28..]);
+        assert_eq!(corrected, "fn main() { let _ = Vec.new(); }");
     }
 
     // ── UndefinedType / UndefinedField / UndefinedMethod ─────────────
@@ -761,8 +759,8 @@ mod tests {
 
     #[test]
     fn unused_import_action() {
-        let source = "import std::os;\nfn main() {}";
-        let d = diag("UnusedImport", "unused import `std::os`", 0, 15);
+        let source = "import std.os;\nfn main() {}";
+        let d = diag("UnusedImport", "unused import `std.os`", 0, 15);
         let actions = build_code_actions(source, &[d]);
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].title, "Remove unused import");

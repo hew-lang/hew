@@ -8,6 +8,6 @@ import imported_shadow_errmod;
 fn main() {
     let e = imported_shadow_errmod.make_error("gone");
     match e {
-        AppErr::NotFound(msg) => println(msg)
+        AppErr.NotFound(msg) => println(msg)
     }
 }

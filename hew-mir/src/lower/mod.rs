@@ -897,6 +897,12 @@ struct Builder {
     /// though its value moves; this exact-site stack distinguishes that result
     /// transfer from unrelated cursor reads nested in a composite expression.
     pub(crate) vec_iter_direct_move_sites: Vec<hew_hir::SiteId>,
+    /// Direct projected user-resource binding sites currently crossing an
+    /// ownership boundary. Match-arm tails retain HIR `Read` intent even when
+    /// the selected value becomes the owning result of the match. This stack
+    /// lets binding lowering record that exact handoff as `Consume`, which
+    /// disarms the arm binder and neutralizes its source payload slot.
+    pub(crate) projected_resource_direct_move_sites: Vec<hew_hir::SiteId>,
     /// Ownership sidecar produced for each lowered `VecIter<T>` expression.
     /// Let/var and assignment destinations copy this bit after moving the value
     /// bytes, preserving both owning and borrowing topologies through composite
@@ -1179,10 +1185,12 @@ struct Builder {
     /// builders (closure shims, lambda-actor bodies, task-entry adapters)
     /// inherit it via `child_builder_tables`.
     pub(crate) supervisor_layout_map: HashMap<String, crate::model::SupervisorLayout>,
-    /// Set of recognised tagged-union type names — every machine type plus
-    /// the synthesised `<Machine>Event` companion enum for each. Used by
+    /// Set of recognised tagged-union canonical classification keys — every
+    /// machine type plus the synthesised `<Machine>Event` companion enum for
+    /// each, and every ordinary enum, all projected through
+    /// `machine_layout_key`. Used by
     /// `push_unknown_type_diagnostics` to silence `UnknownType` on these
-    /// names and by `is_known_actor_runtime_ty` to classify their values
+    /// types and by `is_known_actor_runtime_ty` to classify their values
     /// as `BitCopy` so the decision-map check accepts the site. Populated
     /// from `module.machine_layouts` in `lower_hir_module` and threaded
     /// through every Builder construction site.
@@ -1576,9 +1584,9 @@ struct Builder {
     /// `drops_for_exit` dataflow filter narrows the drop per control-flow
     /// path and codegen gates the surviving close on `flag == 0` — exactly
     /// once on a `MaybeConsumed` join. A user resource absent here (no flag
-    /// allocated) falls back to the legacy path-insensitive
+    /// allocated) falls back to the path-insensitive
     /// `mark_binding_moved` removal: fail-closed to no-double-close (it may
-    /// leak on a not-consumed branch, the pre-#1933 posture, but never
+    /// leak on a not-consumed branch, but never
     /// double-frees the non-idempotent close).
     pub(crate) affine_release_flags: HashMap<BindingId, Place>,
     /// #2301 (extends #53): runtime drop-flags for an owned
@@ -1630,7 +1638,7 @@ struct Builder {
     /// #2418: runtime drop-flags for an owned collection local (owned-element
     /// `Vec`, plain `Vec`, `HashMap`/`HashSet` handle) that the pre-pass saw
     /// genuinely consumed (`intent=Consume`, a move-out such as `let ys = xs`)
-    /// somewhere in the body. The legacy path-insensitive `mark_binding_moved`
+    /// somewhere in the body. The path-insensitive `mark_binding_moved`
     /// retraction at the consume site removed the binding from the scope-exit
     /// set entirely, so a binding moved out on only SOME control-flow paths
     /// (`MaybeConsumed` at the converging join) leaked on the not-moved path —
@@ -1971,6 +1979,13 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     let mut supervisor_layouts: Vec<crate::model::SupervisorLayout> = Vec::new();
     let mut machine_layouts: Vec<crate::model::MachineLayout> = Vec::new();
     let mut enum_layouts: Vec<crate::model::EnumLayout> = Vec::new();
+    // Canonical classification keys for ordinary enums.  The Builder's
+    // `machine_layout_names` registry uses the machine class-tagged projection
+    // for every tagged union, regardless of which layout vector owns its
+    // physical descriptor.  Keeping this set beside enum construction avoids
+    // trying to reverse a generic enum's emitted symbol back into its nominal
+    // owner and type-argument spine later.
+    let mut enum_classification_keys: HashSet<String> = HashSet::new();
     // Named-fn invoke shims are synthesised per-use-site inside each
     // `lower_function` builder, so the same shim can appear in
     // `lowered.generated` for every function that references the same
@@ -2105,6 +2120,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     // Enum-shaped pub types collide the same way (R6): a
                     // same-bare-name enum from two packages keys by its
                     // qualified identity, a unique one stays bare.
+                    enum_classification_keys.insert(hew_hir::machine_layout_key(&layout_key, &[]));
                     enum_layouts.push(crate::model::EnumLayout {
                         name: layout_key,
                         tag_width,
@@ -2222,7 +2238,11 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // instantiations like `Result<RemotePid<T>, LookupError>` reference the
     // canonical `Named { name: "std.builtins.LookupError" }` in their Err
     // variant — that exact layout must be registered first.
-    register_builtin_monomorphic_enum_layouts(&mut enum_layouts);
+    enum_classification_keys.extend(
+        register_builtin_monomorphic_enum_layouts(&mut enum_layouts)
+            .into_iter()
+            .map(|name| hew_hir::machine_layout_key(&name, &[])),
+    );
 
     for hir_layout in &module.enum_layouts {
         let variant_count = u32::try_from(hir_layout.variants.len().max(1)).unwrap_or(u32::MAX);
@@ -2239,6 +2259,10 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                 field_names: Vec::new(),
             })
             .collect();
+        enum_classification_keys.insert(hew_hir::machine_layout_key(
+            &hir_layout.key.origin_name,
+            &hir_layout.key.type_args,
+        ));
         enum_layouts.push(crate::model::EnumLayout {
             name: hir_layout.mangled_name.clone(),
             tag_width,
@@ -2289,10 +2313,16 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // module-graph-loaded stdlib TypeDecl is present; this fills only missing
     // substrate records needed by synthetic MIR construction.
     register_builtin_record_layouts(&mut record_layouts, &mut record_field_orders);
+    let lifecycle_enum_start = enum_layouts.len();
     register_lifecycle_hook_layouts(
         &mut record_layouts,
         &mut record_field_orders,
         &mut enum_layouts,
+    );
+    enum_classification_keys.extend(
+        enum_layouts[lifecycle_enum_start..]
+            .iter()
+            .map(|layout| hew_hir::machine_layout_key(&layout.name, &[])),
     );
 
     // Pre-compute the opaque handle names and resource-close registry before the
@@ -3215,11 +3245,14 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     let machine_layout_names: HashSet<String> = machine_layouts
         .iter()
         .flat_map(|layout| [layout.name.clone(), layout.event_name.clone()])
-        // The completed MIR enum registry is the authority here: unlike the
-        // HIR instantiation registry it also contains monomorphic user enums
-        // and the out-of-band monomorphic builtins registered above.
-        .chain(enum_layouts.iter().map(|layout| layout.name.clone()))
+        // Ordinary enums use the same class-tagged key family for readiness
+        // classification even though their physical descriptors remain in
+        // `enum_layouts` under codegen's enum-layout symbols.
+        .chain(enum_classification_keys)
         .collect();
+    debug_assert!(machine_layout_names
+        .iter()
+        .all(|key| key.starts_with("mc$$")));
 
     // Collect the names every user-defined function will use as its
     // emitted MIR symbol. For non-generic functions this is the
@@ -3481,6 +3514,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     &module.type_classes,
                     &record_field_orders,
                     &actor_layout_map,
+                    &supervisor_layout_map,
                     &machine_layout_names,
                     &classification_enum_layouts,
                     &opaque_handle_names,
@@ -4713,6 +4747,7 @@ fn resolve_outbound_actor_modes(
                         | SnapshotFieldKind::ChannelSender
                         | SnapshotFieldKind::OpaqueHandle { .. }
                         | SnapshotFieldKind::ClosurePair
+                        | SnapshotFieldKind::TraitObject
                         | SnapshotFieldKind::Resource { .. } => {
                             if transferable {
                                 SendAliasMode::TransferLastUse

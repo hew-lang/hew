@@ -77,7 +77,7 @@ pub enum Resolution {
         visible_name: String,
         import_span: OffsetSpan,
     },
-    /// A module-qualified identifier like `mod::Item` or `mod.item`. The
+    /// A module-qualified identifier like `mod.Item`. The
     /// resolver records both halves so downstream callers can either chase
     /// the module prefix or jump to the trailing segment.
     ModuleQualified {
@@ -125,7 +125,7 @@ impl Resolution {
 ///
 /// Intra-file definitions produce fully-resolved variants. Identifiers that
 /// only resolve via an import statement produce [`Resolution::ImportedItem`]
-/// with the import span; the caller (LSP handler, for now) chases the import
+/// with the import span; the caller (LSP handler) chases the import
 /// across files. Unresolved identifiers return [`Resolution::Unknown`]
 /// carrying the identifier text, so the caller can still attempt any
 /// fallbacks it owns.
@@ -181,20 +181,17 @@ pub fn resolve_symbol_at_raw(
     }
 
     // ── Module-qualified identifier ──────────────────────────────────
-    for separator in [".", "::"] {
-        if let Some((prefix, tail)) = word.split_once(separator) {
-            if !prefix.is_empty() && !tail.is_empty() {
-                // The exact character at the cursor relative to the
-                // separator tells us which side to prefer when the caller
-                // asks for a definition.
-                let cursor_on_tail = offset_is_on_tail(source, offset, &word, separator);
-                return Some(Resolution::ModuleQualified {
-                    uri: uri.to_string(),
-                    prefix: prefix.to_string(),
-                    tail: tail.to_string(),
-                    cursor_on_tail,
-                });
-            }
+    if let Some((prefix, tail)) = word.split_once('.') {
+        if !prefix.is_empty() && !tail.is_empty() {
+            // The exact character at the cursor relative to the dot tells us
+            // which side to prefer when the caller asks for a definition.
+            let cursor_on_tail = offset_is_on_tail(source, offset, &word, ".");
+            return Some(Resolution::ModuleQualified {
+                uri: uri.to_string(),
+                prefix: prefix.to_string(),
+                tail: tail.to_string(),
+                cursor_on_tail,
+            });
         }
     }
 
@@ -375,9 +372,7 @@ pub fn find_matching_import(
                     }
                 }
             }
-            // Glob imports cannot be matched by visible name alone; leave
-            // cross-file resolution to the LSP layer.
-            Some(hew_parser::ast::ImportSpec::Glob) | None => {}
+            None => {}
         }
     }
     None
@@ -385,7 +380,7 @@ pub fn find_matching_import(
 
 /// Compute whether `offset` lies within the tail identifier of a
 /// module-qualified word. Used by `Resolution::ModuleQualified` so callers
-/// can prefer the tail when the cursor is on it (e.g. `mod::Item|` with
+/// can prefer the tail when the cursor is on it (e.g. `mod.Item|` with
 /// cursor after `Item`) versus the prefix.
 fn offset_is_on_tail(source: &str, offset: usize, word: &str, separator: &str) -> bool {
     // Locate `word` starting at a position near `offset`. The search is
@@ -556,11 +551,11 @@ mod tests {
 
     #[test]
     fn module_qualified_exposes_prefix_and_tail() {
-        // `Counter::new` is a module-qualified name. The resolver may not
+        // `Counter.new` is a module-qualified name. The resolver may not
         // find a local definition for the whole word, so it surfaces
         // ModuleQualified with both halves.
-        let source = "fn main() { Counter::new() }\n";
-        let offset = source.find("Counter::new").unwrap() + "Counter::".len();
+        let source = "fn main() { Counter.new() }\n";
+        let offset = source.find("Counter.new").unwrap() + "Counter.".len();
         let resolution = resolve(source, offset).unwrap();
         match resolution {
             Resolution::ModuleQualified {
@@ -573,7 +568,7 @@ mod tests {
                 assert_eq!(tail, "new");
                 assert!(
                     cursor_on_tail,
-                    "cursor placed after :: should be flagged on tail"
+                    "cursor placed after the dot should be flagged on tail"
                 );
             }
             other => panic!("expected ModuleQualified, got {other:?}"),

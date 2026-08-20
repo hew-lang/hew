@@ -6,7 +6,7 @@
 // `Base` was never imported — and the inline `base`'s signature is checked
 // against `supertraits.Base` (`-> i64`). Run e2e so both the inherited `base`
 // and the sub's own `tag` are dispatched through receiver calls.
-import hew::supertraits::{ Sub };
+import hew.supertraits.{ Sub };
 
 type W {
     id: i64;

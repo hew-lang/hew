@@ -1,12 +1,12 @@
 //! Smoke tests for the bounded std::net::http::http_client slice.
 
-import std::net::http::http_client;
+import std.net.http.http_client;
 
-import std::testing;
+import std.testing;
 
 #[test]
 fn test_request_surface_is_importable_from_http_client() {
-    let headers: Vec<(string, string)> = Vec::new();
+    let headers: Vec<(string, string)> = Vec.new();
     http_client.set_timeout(250);
     let resp = http_client.request("TRACE", "http://example.com", "", headers);
     testing.assert_true(resp.status() == -1);
@@ -15,20 +15,20 @@ fn test_request_surface_is_importable_from_http_client() {
 
 #[test]
 fn test_request_string_surface_is_importable_from_http_client() {
-    let headers: Vec<(string, string)> = Vec::new();
+    let headers: Vec<(string, string)> = Vec.new();
     http_client.set_timeout(250);
 
     // TRACE is unsupported — returns None (transport/validation failure).
     let result = http_client.request_string("TRACE", "http://example.com", "", headers);
     match result {
-        Some(_) => testing.assert_true(true),
-        None => testing.assert_true(true),
+        .Some(_) => testing.assert_true(true),
+        .None => testing.assert_true(true),
     }
 }
 
 #[test]
 fn test_request_with_header_pairs() {
-    let headers: Vec<(string, string)> = Vec::new();
+    let headers: Vec<(string, string)> = Vec.new();
     headers.push(("Accept", "application/json"));
     headers.push(("X-Custom-Header", "hew-test"));
     http_client.set_timeout(250);

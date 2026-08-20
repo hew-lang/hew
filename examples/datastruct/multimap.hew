@@ -11,7 +11,7 @@ fn hash(key: i64, capacity: i64) -> i64 {
 
 // Hash table: maps key -> index into node arrays (head of linked list)
 fn make_ht_keys(capacity: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     let EMPTY = 0 - 1;
     for i in 0 .. capacity {
         v.push(EMPTY);
@@ -20,7 +20,7 @@ fn make_ht_keys(capacity: i64) -> Vec<i64> {
 }
 
 fn make_ht_vals(capacity: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     let NONE = 0 - 1;
     for i in 0 .. capacity {
         v.push(NONE);
@@ -169,8 +169,8 @@ fn main() {
     let cap = 32;
     let ht_keys = make_ht_keys(cap);
     let ht_heads = make_ht_vals(cap);
-    let node_vals: Vec<i64> = Vec::new();
-    let node_next: Vec<i64> = Vec::new();
+    let node_vals: Vec<i64> = Vec.new();
+    let node_next: Vec<i64> = Vec.new();
     // Test 1: Insert multiple values for same key
     mm_insert(ht_keys, ht_heads, node_vals, node_next, 1, 10);
     mm_insert(ht_keys, ht_heads, node_vals, node_next, 1, 20);
@@ -184,7 +184,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 2: Get all values for a key
-    let r1: Vec<i64> = Vec::new();
+    let r1: Vec<i64> = Vec.new();
     let gc1 = mm_get_all(ht_keys, ht_heads, node_vals, node_next, 1, r1);
     if gc1 == 3 {
         if vec_contains(r1, 10) {
@@ -242,7 +242,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 5: Removed value no longer in list
-    let r2: Vec<i64> = Vec::new();
+    let r2: Vec<i64> = Vec.new();
     let _ = mm_get_all(ht_keys, ht_heads, node_vals, node_next, 1, r2);
     if vec_contains(r2, 20) {
         println("FAIL: removed value still present");

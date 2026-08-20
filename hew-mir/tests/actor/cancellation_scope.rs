@@ -328,7 +328,7 @@ fn fork_vec_arg_fails_closed() {
 
         actor _Driver {
             receive fn drive() {
-                let v: Vec<i64> = Vec::new();
+                let v: Vec<i64> = Vec.new();
                 scope {
                     fork t = consume_vec(v);
                     await t;

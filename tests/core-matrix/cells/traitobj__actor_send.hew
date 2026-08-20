@@ -41,7 +41,7 @@ fn main() {
     let x: dyn Named = P { n: "p0" };
     let s = spawn Sink(hits: 0);
     match await s.take(x) {
-        Ok(n) => println(f"hits {n}"),
+        Result.Ok(n) => println(f"hits {n}"),
         Err(_) => println("err"),
     }
 }

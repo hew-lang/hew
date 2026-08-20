@@ -48,7 +48,7 @@ fn sum(v: Vec<i64>) -> i64 {
 
 fn main() {
     let c = Counter { n: 5 };
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     println(sum(v) + c.get());
 }
 ";

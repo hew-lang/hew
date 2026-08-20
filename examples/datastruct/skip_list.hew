@@ -176,7 +176,7 @@ fn bot_list_len(bot: Vec<i64>, head: i64) -> i64 {
 
 // --- Tests ---
 fn test_sorted_insert() -> i64 {
-    let bot: Vec<i64> = Vec::new();
+    let bot: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_bottom(bot, head, 30);
     head = insert_bottom(bot, head, 10);
@@ -206,8 +206,8 @@ fn test_sorted_insert() -> i64 {
 }
 
 fn test_skip_search() -> i64 {
-    let bot: Vec<i64> = Vec::new();
-    let top: Vec<i64> = Vec::new();
+    let bot: Vec<i64> = Vec.new();
+    let top: Vec<i64> = Vec.new();
     var head = -1;
     var i = 1;
     while i <= 10 {
@@ -215,7 +215,7 @@ fn test_skip_search() -> i64 {
         i = i + 1;
     }
     let top_head = rebuild_top(bot, top, head);
-    let comps: Vec<i64> = Vec::new();
+    let comps: Vec<i64> = Vec.new();
     let idx = search_skip(bot, top, top_head, 70, comps);
     if idx >= 0 {
         if bot_val(bot, idx) == 70 {
@@ -228,8 +228,8 @@ fn test_skip_search() -> i64 {
 }
 
 fn test_skip_not_found() -> i64 {
-    let bot: Vec<i64> = Vec::new();
-    let top: Vec<i64> = Vec::new();
+    let bot: Vec<i64> = Vec.new();
+    let top: Vec<i64> = Vec.new();
     var head = -1;
     var i = 1;
     while i <= 5 {
@@ -237,7 +237,7 @@ fn test_skip_not_found() -> i64 {
         i = i + 1;
     }
     let top_head = rebuild_top(bot, top, head);
-    let comps: Vec<i64> = Vec::new();
+    let comps: Vec<i64> = Vec.new();
     let idx = search_skip(bot, top, top_head, 35, comps);
     if idx == -1 {
         println("PASS: skip search not found");
@@ -248,8 +248,8 @@ fn test_skip_not_found() -> i64 {
 }
 
 fn test_fewer_comparisons() -> i64 {
-    let bot: Vec<i64> = Vec::new();
-    let top: Vec<i64> = Vec::new();
+    let bot: Vec<i64> = Vec.new();
+    let top: Vec<i64> = Vec.new();
     var head = -1;
     var i = 1;
     while i <= 20 {
@@ -257,9 +257,9 @@ fn test_fewer_comparisons() -> i64 {
         i = i + 1;
     }
     let top_head = rebuild_top(bot, top, head);
-    let skip_c: Vec<i64> = Vec::new();
+    let skip_c: Vec<i64> = Vec.new();
     let _skip_idx = search_skip(bot, top, top_head, 190, skip_c);
-    let lin_c: Vec<i64> = Vec::new();
+    let lin_c: Vec<i64> = Vec.new();
     let _lin_idx = search_linear(bot, head, 190, lin_c);
     let skip_comps = skip_c[0];
     let lin_comps = lin_c[0];
@@ -276,8 +276,8 @@ fn test_fewer_comparisons() -> i64 {
 }
 
 fn test_rebuild_top() -> i64 {
-    let bot: Vec<i64> = Vec::new();
-    let top: Vec<i64> = Vec::new();
+    let bot: Vec<i64> = Vec.new();
+    let top: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_bottom(bot, head, 10);
     head = insert_bottom(bot, head, 20);
@@ -300,9 +300,9 @@ fn test_rebuild_top() -> i64 {
 }
 
 fn test_empty_search() -> i64 {
-    let bot: Vec<i64> = Vec::new();
-    let top: Vec<i64> = Vec::new();
-    let comps: Vec<i64> = Vec::new();
+    let bot: Vec<i64> = Vec.new();
+    let top: Vec<i64> = Vec.new();
+    let comps: Vec<i64> = Vec.new();
     let idx = search_skip(bot, top, -1, 42, comps);
     if idx == -1 {
         println("PASS: empty search");

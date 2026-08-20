@@ -6,8 +6,8 @@
 // The edge is owner-qualified (`supertraits.Base`), so `base` is checked against
 // the i64 signature of `Sub`'s OWN supertrait and the impl is REJECTED with
 // `TraitImplSignatureMismatch`. Guards the collision-unsafe fail-open.
-import hew::supertraits::{ Sub };
-import hew::supertraitsb::{ Base };
+import hew.supertraits.{ Sub };
+import hew.supertraitsb.{ Base };
 
 type W {
     id: i64;

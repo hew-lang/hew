@@ -12,13 +12,15 @@
 //! Was a tracked NYI; promoted to a positive guard when generic record-literal
 //! inference for contained type parameters landed.
 
-import std::testing;
+import std.testing;
 
-type Bag<T> { items: Vec<T>; }
+type Bag<T> {
+    items: Vec<T>;
+}
 
 #[test]
 fn test_generic_record_of_vec_clone() {
-    let b = Bag { items: Vec::new() };
+    let b = Bag { items: Vec.new() };
     b.items.push(7);
     b.items.push(8);
     let c = clone b;
@@ -34,11 +36,10 @@ fn test_generic_record_of_vec_clone_owned_payload() {
     // Owned-heap element type (`string`): the clone retains INDEPENDENT element
     // buffers. Both the source and the clone drop their strings at scope exit;
     // an aliased buffer would double-free under a strict allocator.
-    let b = Bag { items: Vec::new() };
+    let b = Bag { items: Vec.new() };
     b.items.push("a heap allocated payload string xxxxxxxx");
     let c = clone b;
     b.items.push("second element yyyyyyyyyyyyyyyyyyyy");
     testing.assert_eq(c.items.len(), 1);
     testing.assert_eq(b.items.len(), 2);
 }
-

@@ -1,8 +1,8 @@
 // Native canonical-identity oracle: two distinct nested module paths share
 // their final component and every exported declaration leaf. Distinct module
 // aliases must retain the source owner through checker, HIR, MIR, and codegen.
-import left::render as left_render;
-import right::render as right_render;
+import left.render as left_render;
+import right.render as right_render;
 
 fn main() {
     println(left_render.identity());

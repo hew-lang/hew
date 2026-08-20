@@ -8,7 +8,7 @@
 // counts.
 //
 // Countdown{4} yields [4,3,2,1]; map adds bump=10 to each; count returns 4.
-import std::iter;
+import std.iter;
 
 type Countdown {
     n: i64;
@@ -29,6 +29,6 @@ impl Iterator for Countdown {
 
 pub fn main() -> i64 {
     let bump = 10;
-    let mapped = iter::map(Countdown { n: 4 }, |x: i64| x + bump);
-    iter::count(mapped)
+    let mapped = iter.map(Countdown { n: 4 }, |x: i64| x + bump);
+    iter.count(mapped)
 }

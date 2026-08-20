@@ -13,7 +13,7 @@
 // Harness verb: hew run
 // Expected: 11 — the callee-frame `Widget` flows through the qualified-typed
 // parameter unchanged.
-import hew::framealias;
+import hew.framealias;
 
 fn read(w: framealias.Widget) -> i64 {
     w.tag

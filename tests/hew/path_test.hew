@@ -1,14 +1,14 @@
 //! Tests for the std::path pure helper functions.
 
-import std::fs;
+import std.fs;
 
-import std::path;
+import std.path;
 
-import std::process;
+import std.process;
 
-import std::testing;
+import std.testing;
 
-import std::time::datetime;
+import std.time.datetime;
 
 // ── combine ─────────────────────────────────────────────────────────────
 #[test]
@@ -187,7 +187,7 @@ fn glob_scratch_dir(name: string) -> string {
 }
 
 fn chmod_dir(mode: string, dir: string) -> i64 {
-    let args: Vec<string> = Vec::new();
+    let args: Vec<string> = Vec.new();
     args.push(mode);
     args.push(dir);
     process.run_argv("chmod", args).exit_code
@@ -196,22 +196,22 @@ fn chmod_dir(mode: string, dir: string) -> i64 {
 #[test]
 fn test_try_glob_reports_matches_for_a_completed_walk() {
     match path.try_glob("std/*.hew") {
-        Ok(matches) => {
+        .Ok(matches) => {
             testing.assert_true(matches.len() > 0);
             match matches.try_get(0) {
-                Some(first) => testing.assert_true(first.starts_with("std/")),
-                None => panic("expected a first match"),
+                .Some(first) => testing.assert_true(first.starts_with("std/")),
+                .None => panic("expected a first match"),
             }
         },
-        Err(_) => panic("expected std/*.hew to expand"),
+        .Err(_) => panic("expected std/*.hew to expand"),
     }
 }
 
 #[test]
 fn test_try_glob_reports_no_match_as_an_empty_success() {
     match path.try_glob("std/hew-no-such-glob-subject-*.hew") {
-        Ok(matches) => testing.assert_true(matches.len() == 0),
-        Err(_) => panic("a completed walk that matched nothing is not a failure"),
+        .Ok(matches) => testing.assert_true(matches.len() == 0),
+        .Err(_) => panic("a completed walk that matched nothing is not a failure"),
     }
 }
 
@@ -224,8 +224,8 @@ fn test_try_glob_reports_an_unreadable_directory_as_a_failure() {
     fs.write(f"{inner}/present.txt", "x");
     testing.assert_true(chmod_dir("000", inner) == 0);
     let observed = match path.try_glob(f"{inner}/*") {
-        Ok(_) => "fabricated-empty-success",
-        Err(err) => path.path_error_message(err),
+        .Ok(_) => "fabricated-empty-success",
+        .Err(err) => path.path_error_message(err),
     };
     chmod_dir("755", inner);
     fs.delete(f"{inner}/present.txt");
@@ -234,7 +234,7 @@ fn test_try_glob_reports_an_unreadable_directory_as_a_failure() {
 }
 
 fn rm_rf_args(dir: string) -> Vec<string> {
-    let args: Vec<string> = Vec::new();
+    let args: Vec<string> = Vec.new();
     args.push("-rf");
     args.push(dir);
     args
@@ -246,25 +246,25 @@ fn test_glob_try_get_rejects_a_wrapped_index() {
     testing.assert_true(matches.len() > 0);
     // 2^32 narrows to 0 under `index as i32`.
     testing.assert_true(match matches.try_get(4294967296) {
-        Some(_) => false,
-        None => true,
+        .Some(_) => false,
+        .None => true,
     });
     // 2^32 - 1 narrows to -1.
     testing.assert_true(match matches.try_get(4294967295) {
-        Some(_) => false,
-        None => true,
+        .Some(_) => false,
+        .None => true,
     });
     testing.assert_true(match matches.try_get(-1) {
-        Some(_) => false,
-        None => true,
+        .Some(_) => false,
+        .None => true,
     });
     testing.assert_true(match matches.try_get(matches.len()) {
-        Some(_) => false,
-        None => true,
+        .Some(_) => false,
+        .None => true,
     });
     testing.assert_true(match matches.try_get(0) {
-        Some(_) => true,
-        None => false,
+        .Some(_) => true,
+        .None => false,
     });
     matches.close();
 }

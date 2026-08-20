@@ -278,7 +278,7 @@ fn hew_bodied_record_producer_keeps_its_mint_and_drops_once() {
 fn record_wrapper_result_pushed_into_a_vec_stays_copy_in() {
     let p = main_with(
         "fn wrapRecord() -> Holder { unsafe { host_record() } }",
-        "var v: Vec<Holder> = Vec::new();\n    v.push(wrapRecord());",
+        "var v: Vec<Holder> = Vec.new();\n    v.push(wrapRecord());",
     );
     assert_eq!(
         call_count(&p, "main", "hew_vec_push_owned_move"),
@@ -301,7 +301,7 @@ fn record_wrapper_result_pushed_into_a_vec_stays_copy_in() {
 fn hew_bodied_record_producer_pushed_into_a_vec_still_moves() {
     let p = main_with(
         "fn mkRecord(i: i64) -> Holder { Holder { label: f\"tok{i}\" } }",
-        "var v: Vec<Holder> = Vec::new();\n    v.push(mkRecord(1));",
+        "var v: Vec<Holder> = Vec.new();\n    v.push(mkRecord(1));",
     );
     assert_eq!(
         call_count(&p, "main", "hew_vec_push_owned_move"),
@@ -319,7 +319,7 @@ fn hew_bodied_record_producer_pushed_into_a_vec_still_moves() {
 fn direct_extern_result_pushed_into_a_vec_stays_copy_in() {
     let p = main_with(
         "",
-        "var v: Vec<Holder> = Vec::new();\n    unsafe { v.push(host_record()); }",
+        "var v: Vec<Holder> = Vec.new();\n    unsafe { v.push(host_record()); }",
     );
     assert_eq!(
         call_count(&p, "main", "hew_vec_push_owned_move"),
@@ -396,7 +396,7 @@ fn record_literal_of_a_domestic_field_keeps_its_mint_and_drops_once() {
 fn tuple_embedding_a_direct_extern_pushed_into_a_vec_stays_copy_in() {
     let p = main_with(
         "",
-        "var v: Vec<(Holder, i64)> = Vec::new();\n    unsafe { v.push((host_record(), 1)); }",
+        "var v: Vec<(Holder, i64)> = Vec.new();\n    unsafe { v.push((host_record(), 1)); }",
     );
     assert_eq!(
         call_count(&p, "main", "hew_vec_push_owned_move"),
@@ -412,7 +412,7 @@ fn tuple_embedding_a_direct_extern_pushed_into_a_vec_stays_copy_in() {
 fn tuple_of_a_domestic_value_pushed_into_a_vec_still_moves() {
     let p = main_with(
         "fn mkRecord(i: i64) -> Holder { Holder { label: f\"tok{i}\" } }",
-        "var v: Vec<(Holder, i64)> = Vec::new();\n    v.push((mkRecord(1), 1));",
+        "var v: Vec<(Holder, i64)> = Vec.new();\n    v.push((mkRecord(1), 1));",
     );
     assert_eq!(call_count(&p, "main", "hew_vec_push_owned_move"), 1);
     assert_eq!(call_count(&p, "main", "hew_vec_push_owned"), 0);
@@ -452,7 +452,7 @@ fn not_yet_implemented_count(p: &IrPipeline, needle: &str) -> usize {
 fn hashmap_insert_of_a_wrapped_extern_record_fails_closed() {
     let p = main_with(
         "fn wrapRecord() -> Holder { unsafe { host_record() } }",
-        "var m: HashMap<i64, Holder> = HashMap::new();\n    m.insert(1, wrapRecord());",
+        "var m: HashMap<i64, Holder> = HashMap.new();\n    m.insert(1, wrapRecord());",
     );
     assert_eq!(
         not_yet_implemented_count(&p, "ownership-opaque provenance"),
@@ -468,7 +468,7 @@ fn hashmap_insert_of_a_wrapped_extern_record_fails_closed() {
 fn hashmap_insert_of_a_direct_extern_record_fails_closed() {
     let p = main_with(
         "",
-        "var m: HashMap<i64, Holder> = HashMap::new();\n    unsafe { m.insert(1, host_record()); }",
+        "var m: HashMap<i64, Holder> = HashMap.new();\n    unsafe { m.insert(1, host_record()); }",
     );
     assert_eq!(
         not_yet_implemented_count(&p, "ownership-opaque provenance"),
@@ -486,7 +486,7 @@ fn hashmap_insert_of_a_direct_extern_record_fails_closed() {
 fn hashmap_insert_of_a_domestic_record_still_compiles() {
     let p = main_with(
         "fn mkRecord(i: i64) -> Holder { Holder { label: f\"tok{i}\" } }",
-        "var m: HashMap<i64, Holder> = HashMap::new();\n    m.insert(1, mkRecord(1));",
+        "var m: HashMap<i64, Holder> = HashMap.new();\n    m.insert(1, mkRecord(1));",
     );
     assert_eq!(
         not_yet_implemented_count(&p, "ownership-opaque provenance"),
@@ -501,7 +501,7 @@ fn hashmap_insert_of_a_domestic_record_still_compiles() {
 fn hashset_insert_of_a_wrapped_extern_string_fails_closed() {
     let p = main_with(
         "fn wrapper() -> string { unsafe { host_string() } }",
-        "var s: HashSet<string> = HashSet::new();\n    s.insert(wrapper());",
+        "var s: HashSet<string> = HashSet.new();\n    s.insert(wrapper());",
     );
     assert_eq!(
         not_yet_implemented_count(&p, "ownership-opaque provenance"),

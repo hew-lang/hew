@@ -36,7 +36,7 @@ machine ConnSession {
 }
 
 fn main() {
-    var s = ConnSession::Idle;
-    s.step(ConnSessionEvent::Connect { fd: 1 });
-    s.step(ConnSessionEvent::Disconnect);
+    var s = ConnSession.Idle;
+    s.step(ConnSessionEvent.Connect { fd: 1 });
+    s.step(ConnSessionEvent.Disconnect);
 }

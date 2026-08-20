@@ -2,7 +2,7 @@
 // one. The ask-site layout registration must dedup with the local
 // scrutinee-site registration (same EnumMonoKey), leaving local asks
 // untouched.
-import hew::testffi;
+import hew.testffi;
 
 actor Counter {
     var count: i64 = 0;

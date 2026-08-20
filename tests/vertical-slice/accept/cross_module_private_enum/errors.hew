@@ -9,5 +9,5 @@ enum AppErr {
 }
 
 pub fn make_error() -> AppErr {
-    AppErr::NotFound
+    AppErr.NotFound
 }

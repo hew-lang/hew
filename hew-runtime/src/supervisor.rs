@@ -5891,6 +5891,86 @@ mod tests {
         }
     }
 
+    /// Mechanism-2 regression (dogfood F1): a synchronous stable-role refusal
+    /// must classify itself in the TLS ask-error slot, because the suspending
+    /// with-channel caller binds its `Err` kind from
+    /// `hew_actor_ask_take_last_error`. Before the fix the refusal returned
+    /// its `HewError` code with the slot unwritten, so the failure surfaced
+    /// as `Err(AskError::NoError)` — the enum's own "not an error" sentinel.
+    #[test]
+    fn role_ask_refusal_records_actor_stopped_ask_error() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: test owns the tree; nulls the slot to model the restart
+        // window, then restores it for teardown.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+            let supervisor_token = (*sup).local_pid_id;
+            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
+
+            // Drain any stale value so the assertion reads THIS refusal's write.
+            let _ = crate::actor::hew_actor_ask_take_last_error();
+            let ch = crate::reply_channel::hew_reply_channel_new();
+            let status = hew_supervisor_role_ask_with_channel(
+                supervisor_token,
+                0,
+                7,
+                ptr::null_mut(),
+                0,
+                ch.cast(),
+            );
+            assert_eq!(
+                status,
+                crate::internal::types::HewError::ErrActorStopped as i32,
+                "a mid-restart slot must refuse closed"
+            );
+            assert_eq!(
+                crate::actor::hew_actor_ask_take_last_error(),
+                crate::internal::types::AskError::ActorStopped as i32,
+                "the refusal must record a real AskError kind, never leave the \
+                 slot at None (which misreports the failure as no-error)"
+            );
+            crate::reply_channel::hew_reply_channel_free(ch);
+
+            store_child_slot(&raw mut *sup, 0, child);
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    /// A null reply channel is rejected before submission, but must still
+    /// classify the failure for with-channel callers that read the TLS slot.
+    #[test]
+    fn role_ask_null_channel_records_ask_error() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: test owns the supervisor tree and passes a null channel to
+        // exercise the submit guard directly.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            let supervisor_token = (*sup).local_pid_id;
+
+            let _ = crate::actor::hew_actor_ask_take_last_error();
+            let status = hew_supervisor_role_ask_with_channel(
+                supervisor_token,
+                0,
+                7,
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+            );
+            assert_eq!(
+                status,
+                crate::internal::types::HewError::ErrOom as i32,
+                "a null reply channel must be rejected as OOM"
+            );
+            assert_eq!(
+                crate::actor::hew_actor_ask_take_last_error(),
+                crate::internal::types::AskError::ActorStopped as i32,
+                "the null-channel refusal must report a real AskError, not NoError"
+            );
+
+            hew_supervisor_stop(sup);
+        }
+    }
+
     /// Fixture for the lock-order test: a supervised child with a BOUNDED
     /// Block-policy mailbox (capacity 1), so a second enqueue WAITS for space.
     unsafe fn make_supervisor_with_block_mailbox_child(
@@ -8251,6 +8331,11 @@ fn role_ask_refuse(reason: u8, key: u32) -> i32 {
         "stable-role ask refused: child slot {key} is {}",
         child_slot_reason_name(reason)
     ));
+    // Classify the refusal in the TLS ask-error slot: the suspending
+    // with-channel caller binds its Err kind from
+    // `hew_actor_ask_take_last_error`, and an unwritten slot misreports this
+    // genuine refusal as `AskError::NoError` (dogfood F1, mechanism 2).
+    crate::actor::record_ask_error(crate::internal::types::AskError::ActorStopped);
     crate::internal::types::HewError::ErrActorStopped as i32
 }
 
@@ -8357,6 +8442,8 @@ fn role_ask_refuse_retired(key: u32) -> i32 {
     set_last_error(format!(
         "stable-role ask refused: child slot {key} incarnation retired during submission"
     ));
+    // Same TLS classification contract as `role_ask_refuse`.
+    crate::actor::record_ask_error(crate::internal::types::AskError::ActorStopped);
     crate::internal::types::HewError::ErrActorStopped as i32
 }
 
@@ -8471,6 +8558,9 @@ pub extern "C" fn hew_supervisor_role_ask_with_channel(
     _size: usize,
     _ch: *mut c_void,
 ) -> i32 {
+    // Same TLS classification contract as the native refusal paths: the
+    // with-channel caller binds its Err kind from the ask-error slot.
+    crate::actor::record_ask_error(crate::internal::types::AskError::ActorStopped);
     crate::internal::types::HewError::ErrActorStopped as i32
 }
 
@@ -8485,6 +8575,9 @@ pub extern "C" fn hew_supervisor_role_ask(
     _data: *mut c_void,
     _size: usize,
 ) -> *mut c_void {
+    // Null reply + classified error slot, matching the native blocking twin's
+    // `actor_ask_null_actor_stopped` refusal surface.
+    crate::actor::record_ask_error(crate::internal::types::AskError::ActorStopped);
     ptr::null_mut()
 }
 

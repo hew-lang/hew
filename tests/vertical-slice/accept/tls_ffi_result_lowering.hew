@@ -1,4 +1,4 @@
-import std::net::tls;
+import std.net.tls;
 
 extern "C" {
     fn hew_bytes_from_str(s: string) -> bytes;

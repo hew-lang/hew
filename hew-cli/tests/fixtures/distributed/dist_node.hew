@@ -24,18 +24,11 @@
 // Output contract (the harness asserts on these, with teeth):
 //   - "PASS <scenario> <detail>"  on success
 //   - "FAIL <scenario> <detail>"  on any mismatch; main returns non-zero
-import std::os;
+import std.os;
 
-import std::fs;
+import std.fs;
 
-import std::link_monitor::{
-    DownNotification,
-    DownReason,
-    DownTarget,
-    MonitorError,
-    MonitorRef,
-    PartitionPolicy,
-};
+import std.link_monitor.{DownNotification, DownReason, DownTarget, MonitorError, MonitorRef, PartitionPolicy,};
 
 // Self-stop FFI: the cross-node clean-exit scenario drives the remote actor to
 // the Stopped terminal state from within its own handler. `stop(self)` is not a
@@ -65,6 +58,10 @@ enum KvReq {
     // cross-node DOWN with the right reason.
     StopSelf;
     CrashSelf;
+    // scenario_partition_ask phase A: hold the reply past the client's ask
+    // deadline so the pending ask is deterministically resolvable ONLY by the
+    // armed partition probe (no reply, no socket drop — the route stays live).
+    Stall;
 }
 
 enum KvResp {
@@ -108,30 +105,38 @@ actor KeyValue {
     let store: HashMap<string, string>;
     receive fn handle(req: KvReq) -> KvResp {
         match req {
-            KvReq::Put(kv) => {
+            KvReq.Put(kv) => {
                 store.insert(kv.key, kv.val);
-                KvResp::Ack
+                KvResp.Ack
             },
-            KvReq::GetKey(k) => {
+            KvReq.GetKey(k) => {
                 match store.get(k) {
-                    Some(v) => KvResp::Value(v),
-                    None => KvResp::Value(""),
+                    .Some(v) => KvResp.Value(v),
+                    .None => KvResp.Value(""),
                 }
             },
             // Clean exit: the actor stops itself, transitioning to the Stopped
             // terminal state, which the cross-node monitor reports as a DOWN
             // carrying the clean-exit reason.
-            KvReq::StopSelf => {
+            KvReq.StopSelf => {
                 unsafe {
                     hew_actor_self_stop()
                 };
-                KvResp::Ack
+                KvResp.Ack
             },
             // Crash: a deliberate panic transitions the actor to the Crashed
             // terminal state, reported as a DOWN carrying the crash reason.
-            KvReq::CrashSelf => {
+            KvReq.CrashSelf => {
                 panic("crash requested by cross-node monitor scenario");
-                KvResp::Ack
+                KvResp.Ack
+            },
+            // Deterministic pend for scenario_partition_ask phase A: hold the
+            // reply well past the client's ask deadline (3 s) so the armed
+            // partition probe is the only path that can resolve the pending ask
+            // early. The harness SIGKILLs this process before the sleep ends.
+            KvReq.Stall => {
+                sleep(10s);
+                KvResp.Ack
             },
         }
     }
@@ -152,8 +157,8 @@ actor WireProbe {
     let calls: i64;
     receive fn handle(cmd: WireCmd) -> WireResult {
         match cmd {
-            WireCmd::Ping => WireResult { tag: 0, sum: 0 },
-            WireCmd::Move(p) => WireResult { tag: 1, sum: p.x + p.y },
+            WireCmd.Ping => WireResult { tag: 0, sum: 0 },
+            WireCmd.Move(p) => WireResult { tag: 1, sum: p.x + p.y },
         }
     }
 }
@@ -179,12 +184,12 @@ enum IdentityResp {
 
 actor IdentityProbe {
     receive fn handle(_req: IdentityReq) -> IdentityResp {
-        let self_pid: Result<RemotePid<IdentityProbe>, LookupError> = Node::lookup("identity");
+        let self_pid: Result<RemotePid<IdentityProbe>, LookupError> = Node.lookup("identity");
         let identity = match self_pid {
-            Result::Ok(pid) => DistIdentity { node_id: to_string(pid.node_id()), slot: pid.slot(), incarnation: pid.incarnation() },
-            Result::Err(_) => DistIdentity { node_id: "", slot: 0, incarnation: 0 },
+            Result.Ok(pid) => DistIdentity { node_id: to_string(pid.node_id()), slot: pid.slot(), incarnation: pid.incarnation() },
+            Result.Err(_) => DistIdentity { node_id: "", slot: 0, incarnation: 0 },
         };
-        IdentityResp::Value(identity)
+        IdentityResp.Value(identity)
     }
 }
 
@@ -236,6 +241,10 @@ extern "C" {
     // (the same seam the SWIM-DEAD verdict reaches). Returns the count failed (0
     // when none are pending yet). Not user-callable.
     fn hew_dist_partition_pending_remote_asks() -> i64;
+    // Shutdown-phase probe: 1 once main-exit teardown has begun, else 0. Lets
+    // the PartitionInjector's bounded poll stand down instead of holding the
+    // shutdown drain open as outstanding work.
+    fn hew_is_shutting_down() -> i32;
 }
 
 // Deterministic partition seam for `scenario_partition_ask`. A fire-and-forget
@@ -248,8 +257,11 @@ extern "C" {
 //
 // The harness still kills the server (a real teardown), so the route genuinely
 // dies; the injector fixes only WHEN the in-flight ask is failed closed, not
-// WHETHER. Teeth preserved: a broken fan-out leaves the ask pending -> it times
-// out -> scenario_partition_ask still reports FAIL.
+// WHETHER. The fan-out's teeth live in scenario_partition_ask phase A: the
+// stalled ask there is resolvable ONLY by this probe (route live, reply held
+// past the deadline), so a broken/no-op fan-out surfaces as a deadline
+// timeout -> FAIL — it cannot hide behind the kill's routing-failure or
+// socket-drop outcomes, which resolve phase B's ask regardless.
 actor PartitionInjector {
     receive fn arm() {
 
@@ -264,6 +276,17 @@ actor PartitionInjector {
                 hew_dist_partition_pending_remote_asks()
             };
             if failed >= 1 {
+                return;
+            }
+            // Stand down once main-exit teardown begins: the ask this poller
+            // exists to partition has already resolved (or never registered —
+            // the send itself failed), and a poller still sleep-parking here
+            // is outstanding work that would hold the shutdown drain open to
+            // its timeout and turn the client's clean exit into a failure.
+            let shutting_down = unsafe {
+                hew_is_shutting_down()
+            };
+            if shutting_down != 0 {
                 return;
             }
             spins = spins + 1;
@@ -286,13 +309,13 @@ actor Linker {
     // can poll its terminal state.
     receive fn link_go(peer: RemotePid<KeyValue>) -> i64 {
         let status = if policy_sel == 0 {
-            link_remote(peer, PartitionPolicy::CrashLinked)
+            link_remote(peer, PartitionPolicy.CrashLinked)
         } else {
-            link_remote(peer, PartitionPolicy::MonitorLost)
+            link_remote(peer, PartitionPolicy.MonitorLost)
         };
         let ok = match status {
-            Result::Ok(_) => true,
-            Result::Err(_) => false,
+            Result.Ok(_) => true,
+            Result.Err(_) => false,
         };
         // Return this actor's process-local runtime id on success, 0 on failure.
         if ok {
@@ -319,22 +342,22 @@ actor MonitorProbe {
     receive fn arm(peer: RemotePid<KeyValue>, drive: i64) -> i64 {
         active_monitor = monitor(peer);
         expected_monitor_id = match active_monitor {
-            Result::Ok(monitor_ref) => monitor_ref.id().value,
-            Result::Err(_) => 0,
+            Result.Ok(monitor_ref) => monitor_ref.id().value,
+            Result.Err(_) => 0,
         };
         if expected_monitor_id == 0 {
             return 1;
         }
         if drive == 0 {
-            match peer.send(KvReq::StopSelf) {
-                Result::Ok(_) => 0,
-                Result::Err(_) => 2,
+            match peer.send(KvReq.StopSelf) {
+                Result.Ok(_) => 0,
+                Result.Err(_) => 2,
             }
         } else {
             if drive == 1 {
-                match peer.send(KvReq::CrashSelf) {
-                    Result::Ok(_) => 0,
-                    Result::Err(_) => 3,
+                match peer.send(KvReq.CrashSelf) {
+                    Result.Ok(_) => 0,
+                    Result.Err(_) => 3,
                 }
             } else {
                 0
@@ -469,11 +492,20 @@ actor MonitorProbe {
 
     // Scenario: partition_ask
     //
-    // The partition gate. The client looks up the remote actor, signals
-    // READY_DROP so the harness can kill the server (dropping the route to the
-    // peer), then issues a remote ask to the now-unreachable actor. The invariant
-    // under test is: the ask FAILS CLOSED — it resolves to a typed AskError WITHOUT
-    // hanging — rather than blocking to the client ceiling or fabricating a value.
+    // The partition gate, in two phases.
+    //
+    // Phase A (probe proof): with the route still LIVE, the client asks
+    // KvReq::Stall — the server holds the reply past the ask's whole deadline —
+    // so the armed partition probe's fan-out is the ONLY path that can resolve
+    // the pending ask early. Phase A REQUIRES reason=Partition, fast: it proves
+    // the armed probe actually fired. A sabotaged/no-op fan-out times out here
+    // and FAILS; it cannot hide behind the kill's teardown outcomes.
+    //
+    // Phase B (real teardown): the client signals READY_DROP so the harness can
+    // kill the server (dropping the route to the peer), then issues a remote ask
+    // to the now-unreachable actor. The invariant under test is: the ask FAILS
+    // CLOSED — it resolves to a typed AskError WITHOUT hanging — rather than
+    // blocking to the client ceiling or fabricating a value.
     //
     // The EXACT fail-closed cause is timing-dependent: a two-process SIGKILL races
     // three independent fail paths, any of which is a correct fail-closed verdict
@@ -659,17 +691,17 @@ actor MonitorProbe {
             return;
         }
         match note.target {
-            DownTarget::Remote(_) => {},
-            DownTarget::Local(_) => {
+            DownTarget.Remote(_) => {},
+            DownTarget.Local(_) => {
                 down_reason = -97;
                 return;
             },
         }
         down_reason = match note.reason {
-            DownReason::Exited => 6,
-            DownReason::Crashed(_) => 5,
-            DownReason::MonitorLost => -1,
-            DownReason::LocalShutdown => -3,
+            DownReason.Exited => 6,
+            DownReason.Crashed(_) => 5,
+            DownReason.MonitorLost => -1,
+            DownReason.LocalShutdown => -3,
         };
     }
 }
@@ -677,7 +709,6 @@ actor MonitorProbe {
 actor SetupRaceStopper {
     let monitor_target: LocalPid<KeyValue>;
     let link_target: LocalPid<KeyValue>;
-
     receive fn run() {
         var monitor_stopped = false;
         var link_stopped = false;
@@ -686,11 +717,11 @@ actor SetupRaceStopper {
                 hew_dist_setup_race_kind()
             };
             if kind == 1 && !monitor_stopped {
-                let _ = await monitor_target.handle(KvReq::StopSelf);
+                let _ = await monitor_target.handle(KvReq.StopSelf);
                 monitor_stopped = true;
             }
             if kind == 2 && !link_stopped {
-                let _ = await link_target.handle(KvReq::StopSelf);
+                let _ = await link_target.handle(KvReq.StopSelf);
                 link_stopped = true;
             }
             if monitor_stopped && link_stopped {
@@ -706,23 +737,21 @@ actor LinkSetupRaceProbe {
     var expected_monitor_id: u64 = 0;
     var down_count: i64 = 0;
     var down_reason: i64 = 100;
-
     receive fn arm(peer: RemotePid<KeyValue>) -> i64 {
         let linker = spawn Linker(policy_sel: 0);
         active_monitor = monitor(linker);
         expected_monitor_id = match active_monitor {
-            Result::Ok(monitor_ref) => monitor_ref.id().value,
-            Result::Err(_) => 0,
+            Result.Ok(monitor_ref) => monitor_ref.id().value,
+            Result.Err(_) => 0,
         };
         if expected_monitor_id == 0 {
             return 0;
         }
         match await linker.link_go(peer) {
-            Result::Ok(linker_id) => linker_id,
-            Result::Err(_) => 0,
+            Result.Ok(linker_id) => linker_id,
+            Result.Err(_) => 0,
         }
     }
-
     receive fn status() -> i64 {
         if down_count == 0 {
             100
@@ -734,7 +763,6 @@ actor LinkSetupRaceProbe {
             }
         }
     }
-
     #[on(down)]
     fn on_down(note: DownNotification) {
         down_count = down_count + 1;
@@ -743,17 +771,17 @@ actor LinkSetupRaceProbe {
             return;
         }
         match note.target {
-            DownTarget::Local(_) => {},
-            DownTarget::Remote(_) => {
+            DownTarget.Local(_) => {},
+            DownTarget.Remote(_) => {
                 down_reason = -97;
                 return;
             },
         }
         down_reason = match note.reason {
-            DownReason::Crashed(_) => 5,
-            DownReason::Exited => 6,
-            DownReason::MonitorLost => -1,
-            DownReason::LocalShutdown => -3,
+            DownReason.Crashed(_) => 5,
+            DownReason.Exited => 6,
+            DownReason.MonitorLost => -1,
+            DownReason.LocalShutdown => -3,
         };
     }
 }
@@ -764,9 +792,9 @@ actor MonitorSetupProbe {
         loop {
             let setup: Result<MonitorRef, MonitorError> = monitor(peer);
             match setup {
-                Result::Err(MonitorError::Partition) => return 0,
-                Result::Err(_) => return 2,
-                Result::Ok(monitor_ref) => {
+                Result.Err(MonitorError.Partition) => return 0,
+                Result.Err(_) => return 2,
+                Result.Ok(monitor_ref) => {
                     monitor_ref.close();
                     attempts = attempts + 1;
                     if attempts >= 100 {
@@ -783,8 +811,8 @@ actor MonitorCloseProbe {
     receive fn register_and_close(peer: RemotePid<KeyValue>) -> i64 {
         let setup: Result<MonitorRef, MonitorError> = monitor(peer);
         match setup {
-            Result::Err(_) => 1,
-            Result::Ok(monitor_ref) => {
+            Result.Err(_) => 1,
+            Result.Ok(monitor_ref) => {
                 println("READY_CLIENT_WATCHER cross_node_monitor_close_reclaim");
                 sleep(800ms);
                 monitor_ref.close();
@@ -797,15 +825,14 @@ actor MonitorCloseProbe {
 
 actor MonitorLeakProbe {
     var down_count: i64 = 0;
-
     receive fn run(peer: RemotePid<KeyValue>, iterations: i64) -> i64 {
         var completed: i64 = 0;
         var previous_id: u64 = 0;
         while completed < iterations {
             let setup: Result<MonitorRef, MonitorError> = monitor(peer);
             match setup {
-                Result::Err(_) => return -1,
-                Result::Ok(monitor_ref) => {
+                Result.Err(_) => return -1,
+                Result.Ok(monitor_ref) => {
                     let monitor_id = monitor_ref.id().value;
                     if monitor_id == 0 || monitor_id <= previous_id {
                         return -2;
@@ -828,7 +855,6 @@ actor MonitorLeakProbe {
         }
         completed
     }
-
     #[on(down)]
     fn on_down(_note: DownNotification) {
         down_count = down_count + 1;
@@ -859,8 +885,8 @@ fn wait_for_file(path: string) -> string {
 }
 
 fn stage_peer_credentials(kx: string, my_role: string, peer_role: string, peer_route_slot: u16) {
-    Node::load_keys(f"{kx}/{my_role}.key");
-    let me = Node::identity_key();
+    Node.load_keys(f"{kx}/{my_role}.key");
+    let me = Node.identity_key();
     publish_atomic(kx, f"{my_role}.pub", me);
     let peer_key = wait_for_file(f"{kx}/{peer_role}.pub");
     let configured_peer_key = if os.env("HEW_DIST_BAD_PEER_PIN") == "1" {
@@ -868,7 +894,7 @@ fn stage_peer_credentials(kx: string, my_role: string, peer_role: string, peer_r
     } else {
         peer_key
     };
-    Node::allow_peer(peer_route_slot, configured_peer_key);
+    Node.allow_peer(peer_route_slot, configured_peer_key);
 }
 
 fn signal_server_listening(kx: string) {
@@ -888,12 +914,12 @@ fn lookup_with_retry(name: string) -> Result<RemotePid<KeyValue>, LookupError> {
     };
     var attempts: i64 = 0;
     loop {
-        let found: Result<RemotePid<KeyValue>, LookupError> = Node::lookup(name);
+        let found: Result<RemotePid<KeyValue>, LookupError> = Node.lookup(name);
         match found {
-            Result::Ok(pid) => {
+            Result.Ok(pid) => {
                 return Ok(pid);
             },
-            Result::Err(e) => {
+            Result.Err(e) => {
                 attempts = attempts + 1;
                 if attempts >= max_attempts {
                     return Err(e);
@@ -907,12 +933,12 @@ fn lookup_with_retry(name: string) -> Result<RemotePid<KeyValue>, LookupError> {
 fn lookup_wire_with_retry(name: string) -> Result<RemotePid<WireProbe>, LookupError> {
     var attempts: i64 = 0;
     loop {
-        let found: Result<RemotePid<WireProbe>, LookupError> = Node::lookup(name);
+        let found: Result<RemotePid<WireProbe>, LookupError> = Node.lookup(name);
         match found {
-            Result::Ok(pid) => {
+            Result.Ok(pid) => {
                 return Ok(pid);
             },
-            Result::Err(e) => {
+            Result.Err(e) => {
                 attempts = attempts + 1;
                 if attempts >= 50 {
                     return Err(e);
@@ -926,12 +952,12 @@ fn lookup_wire_with_retry(name: string) -> Result<RemotePid<WireProbe>, LookupEr
 fn lookup_identity_with_retry(name: string) -> Result<RemotePid<IdentityProbe>, LookupError> {
     var attempts: i64 = 0;
     loop {
-        let found: Result<RemotePid<IdentityProbe>, LookupError> = Node::lookup(name);
+        let found: Result<RemotePid<IdentityProbe>, LookupError> = Node.lookup(name);
         match found {
-            Result::Ok(pid) => {
+            Result.Ok(pid) => {
                 return Ok(pid);
             },
-            Result::Err(e) => {
+            Result.Err(e) => {
                 attempts = attempts + 1;
                 if attempts >= 50 {
                     return Err(e);
@@ -945,27 +971,24 @@ fn lookup_identity_with_retry(name: string) -> Result<RemotePid<IdentityProbe>, 
 fn run_server(port: string, scenario: string) {
     let addr = f"127.0.0.1:{port}";
     let kx = os.env("HEW_DIST_KX_DIR");
-    Node::set_transport("tcp");
+    Node.set_transport("tcp");
     stage_peer_credentials(kx, "server", "client", 2);
-    Node::start(addr);
-    let s: HashMap<string, string> = HashMap::new();
+    Node.start(addr);
+    let s: HashMap<string, string> = HashMap.new();
     let kv = spawn KeyValue(store: s);
-    Node::register("kv", kv);
+    Node.register("kv", kv);
     let wp = spawn WireProbe(calls: 0);
-    Node::register("wire", wp);
+    Node.register("wire", wp);
     let identity = spawn IdentityProbe;
-    Node::register("identity", identity);
+    Node.register("identity", identity);
     if scenario == "remote_setup_exit_race" {
-        let monitor_store: HashMap<string, string> = HashMap::new();
+        let monitor_store: HashMap<string, string> = HashMap.new();
         let monitor_target = spawn KeyValue(store: monitor_store);
-        Node::register("monitor-race", monitor_target);
-        let link_store: HashMap<string, string> = HashMap::new();
+        Node.register("monitor-race", monitor_target);
+        let link_store: HashMap<string, string> = HashMap.new();
         let link_target = spawn KeyValue(store: link_store);
-        Node::register("link-race", link_target);
-        let stopper = spawn SetupRaceStopper(
-            monitor_target: monitor_target,
-            link_target: link_target
-        );
+        Node.register("link-race", link_target);
+        let stopper = spawn SetupRaceStopper(monitor_target: monitor_target, link_target: link_target);
         stopper.run();
     }
     signal_server_listening(kx);
@@ -988,9 +1011,9 @@ fn run_server(port: string, scenario: string) {
                 let _ = unsafe {
                     hew_node_api_unregister("kv")
                 };
-                let s2: HashMap<string, string> = HashMap::new();
+                let s2: HashMap<string, string> = HashMap.new();
                 let kv2 = spawn KeyValue(store: s2);
-                Node::register("kv", kv2);
+                Node.register("kv", kv2);
                 println("SERVER_REPOINTED repoint_preserves_ref");
                 sleep(2m);
             } else {
@@ -998,36 +1021,36 @@ fn run_server(port: string, scenario: string) {
             }
         }
     }
-    Node::shutdown();
+    Node.shutdown();
 }
 
 fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
-    let send1 = kv.send(KvReq::Put(KvPut { key: "hello", val: "world" }));
+    let send1 = kv.send(KvReq.Put(KvPut { key: "hello", val: "world" }));
     match send1 {
-        Result::Err(_) => {
+        Result.Err(_) => {
             println("FAIL remote_ask put-hello-send-error");
             return 2;
         },
-        Result::Ok(_) => {},
+        Result.Ok(_) => {},
     }
-    let send2 = kv.send(KvReq::Put(KvPut { key: "count", val: "42" }));
+    let send2 = kv.send(KvReq.Put(KvPut { key: "count", val: "42" }));
     match send2 {
-        Result::Err(_) => {
+        Result.Err(_) => {
             println("FAIL remote_ask put-count-send-error");
             return 3;
         },
-        Result::Ok(_) => {},
+        Result.Ok(_) => {},
     }
     sleep(200ms);
-    let ask1 = kv.ask(KvReq::GetKey("hello"), 5000);
+    let ask1 = kv.ask(KvReq.GetKey("hello"), 5000);
     match ask1 {
-        Result::Err(_) => {
+        Result.Err(_) => {
             println("FAIL remote_ask get-hello-ask-error");
             return 4;
         },
-        Result::Ok(resp) => {
+        Result.Ok(resp) => {
             match resp {
-                KvResp::Value(v) => {
+                KvResp.Value(v) => {
                     if v == "world" {
                         println("PASS remote_ask get-hello=world");
                     } else {
@@ -1035,22 +1058,22 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
                         return 5;
                     }
                 },
-                KvResp::Ack => {
+                KvResp.Ack => {
                     println("FAIL remote_ask get-hello-got-ack");
                     return 5;
                 },
             }
         },
     }
-    let ask2 = kv.ask(KvReq::GetKey("count"), 5000);
+    let ask2 = kv.ask(KvReq.GetKey("count"), 5000);
     match ask2 {
-        Result::Err(_) => {
+        Result.Err(_) => {
             println("FAIL remote_ask get-count-ask-error");
             return 6;
         },
-        Result::Ok(resp) => {
+        Result.Ok(resp) => {
             match resp {
-                KvResp::Value(v) => {
+                KvResp.Value(v) => {
                     if v == "42" {
                         println("PASS remote_ask get-count=42");
                     } else {
@@ -1058,7 +1081,7 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
                         return 7;
                     }
                 },
-                KvResp::Ack => {
+                KvResp.Ack => {
                     println("FAIL remote_ask get-count-got-ack");
                     return 7;
                 },
@@ -1069,13 +1092,13 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
 }
 
 fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
-    let ask_move = wp.ask(WireCmd::Move(WirePoint { x: 3, y: 4 }), 5000);
+    let ask_move = wp.ask(WireCmd.Move(WirePoint { x: 3, y: 4 }), 5000);
     match ask_move {
-        Result::Err(_) => {
+        Result.Err(_) => {
             println("FAIL wire_cbor move-ask-error");
             return 2;
         },
-        Result::Ok(res) => {
+        Result.Ok(res) => {
             if res.tag == 1 {
                 println(f"PASS wire_cbor move-tag={res.tag}");
             } else {
@@ -1090,13 +1113,13 @@ fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
             }
         },
     }
-    let ask_ping = wp.ask(WireCmd::Ping, 5000);
+    let ask_ping = wp.ask(WireCmd.Ping, 5000);
     match ask_ping {
-        Result::Err(_) => {
+        Result.Err(_) => {
             println("FAIL wire_cbor ping-ask-error");
             return 5;
         },
-        Result::Ok(res) => {
+        Result.Ok(res) => {
             if res.tag == 0 {
                 println(f"PASS wire_cbor ping-tag={res.tag}");
             } else {
@@ -1115,9 +1138,9 @@ fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
 }
 
 fn scenario_identity_location(identity: RemotePid<IdentityProbe>) -> i64 {
-    let local_node = match Node::id() {
-        Some(id) => id,
-        None => {
+    let local_node = match Node.id() {
+        .Some(id) => id,
+        .None => {
             println("FAIL identity_location local-node-id-missing");
             return 2;
         },
@@ -1133,15 +1156,15 @@ fn scenario_identity_location(identity: RemotePid<IdentityProbe>) -> i64 {
         println("FAIL identity_location slot-zero");
         return 4;
     }
-    let inspected = identity.ask(IdentityReq::Inspect, 5000);
+    let inspected = identity.ask(IdentityReq.Inspect, 5000);
     match inspected {
-        Result::Err(_) => {
+        Result.Err(_) => {
             println("FAIL identity_location inspect-ask-error");
             return 7;
         },
-        Result::Ok(resp) => {
+        Result.Ok(resp) => {
             match resp {
-                IdentityResp::Value(actual) => {
+                IdentityResp.Value(actual) => {
                     if actual.node_id != to_string(remote_node) {
                         println("FAIL identity_location node-mismatch");
                         return 8;
@@ -1197,16 +1220,11 @@ fn scenario_identity_display(identity: RemotePid<IdentityProbe>, scenario: strin
 }
 
 fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, expected: i64, ready_drop: bool) -> i64 {
-    let probe = spawn MonitorProbe(
-        active_monitor: Err(MonitorError::InvalidTarget),
-        expected_monitor_id: 0,
-        down_count: 0,
-        down_reason: 100
-    );
+    let probe = spawn MonitorProbe(active_monitor: Err(MonitorError.InvalidTarget), expected_monitor_id: 0, down_count: 0, down_reason: 100);
     let armed = await probe.arm(kv, drive);
     let arm_status = match armed {
-        Result::Ok(status) => status,
-        Result::Err(_) => {
+        Result.Ok(status) => status,
+        Result.Err(_) => {
             println(f"FAIL {scenario} arm-ask-error");
             return 2;
         },
@@ -1217,8 +1235,8 @@ fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, 
     }
     let id_result = await probe.monitor_id();
     let monitor_id = match id_result {
-        Result::Ok(value) => value,
-        Result::Err(_) => {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
             println(f"FAIL {scenario} monitor-id-ask-error");
             return 9;
         },
@@ -1234,8 +1252,8 @@ fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, 
     loop {
         let status = await probe.status();
         let observed = match status {
-            Result::Ok(value) => value,
-            Result::Err(_) => {
+            Result.Ok(value) => value,
+            Result.Err(_) => {
                 println(f"FAIL {scenario} status-ask-error");
                 return 4;
             },
@@ -1258,13 +1276,13 @@ fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, 
     sleep(1200ms);
     let duplicate_check = await probe.status();
     match duplicate_check {
-        Result::Ok(value) => {
+        Result.Ok(value) => {
             if value != expected {
                 println(f"FAIL {scenario} duplicate-status={value}");
                 return 7;
             }
         },
-        Result::Err(_) => {
+        Result.Err(_) => {
             println(f"FAIL {scenario} duplicate-check-error");
             return 8;
         },
@@ -1290,7 +1308,7 @@ fn scenario_remote_monitor_setup_after_drop(kv: RemotePid<KeyValue>) -> i64 {
     let probe = spawn MonitorSetupProbe;
     println("READY_DROP remote_monitor_setup_after_drop");
     match await probe.wait_for_partition(kv) {
-        Result::Ok(status) => {
+        Result.Ok(status) => {
             if status == 0 {
                 println("PASS remote_monitor_setup_after_drop error=Partition");
                 0
@@ -1304,38 +1322,23 @@ fn scenario_remote_monitor_setup_after_drop(kv: RemotePid<KeyValue>) -> i64 {
                 }
             }
         },
-        Result::Err(_) => {
+        Result.Err(_) => {
             println("FAIL remote_monitor_setup_after_drop probe-error");
             4
         },
     }
 }
 
-fn scenario_remote_setup_exit_race(
-    monitor_target: RemotePid<KeyValue>,
-    link_target: RemotePid<KeyValue>
-) -> i64 {
-    let monitor_status = monitor_hook_scenario(
-        monitor_target,
-        "remote_setup_exit_race_monitor",
-        2,
-        -1,
-        false
-    );
+fn scenario_remote_setup_exit_race(monitor_target: RemotePid<KeyValue>, link_target: RemotePid<KeyValue>) -> i64 {
+    let monitor_status = monitor_hook_scenario(monitor_target, "remote_setup_exit_race_monitor", 2, -1, false);
     if monitor_status != 0 {
         return monitor_status;
     }
-
-    let probe = spawn LinkSetupRaceProbe(
-        active_monitor: Err(MonitorError::InvalidTarget),
-        expected_monitor_id: 0,
-        down_count: 0,
-        down_reason: 100
-    );
+    let probe = spawn LinkSetupRaceProbe(active_monitor: Err(MonitorError.InvalidTarget), expected_monitor_id: 0, down_count: 0, down_reason: 100);
     let armed = await probe.arm(link_target);
     let linker_id = match armed {
-        Result::Ok(value) => value,
-        Result::Err(_) => {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
             println("FAIL remote_setup_exit_race link-arm-error");
             return 20;
         },
@@ -1348,8 +1351,8 @@ fn scenario_remote_setup_exit_race(
     loop {
         let status = await probe.status();
         let observed = match status {
-            Result::Ok(value) => value,
-            Result::Err(_) => {
+            Result.Ok(value) => value,
+            Result.Err(_) => {
                 println("FAIL remote_setup_exit_race link-status-error");
                 return 22;
             },
@@ -1371,13 +1374,13 @@ fn scenario_remote_setup_exit_race(
     println("PASS remote_setup_exit_race link-down=5");
     sleep(1200ms);
     match await probe.status() {
-        Result::Ok(value) => {
+        Result.Ok(value) => {
             if value != 5 {
                 println(f"FAIL remote_setup_exit_race link-duplicate={value}");
                 return 25;
             }
         },
-        Result::Err(_) => {
+        Result.Err(_) => {
             println("FAIL remote_setup_exit_race link-duplicate-check-error");
             return 26;
         },
@@ -1387,18 +1390,55 @@ fn scenario_remote_setup_exit_race(
 }
 
 fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
-    println("READY_DROP partition_ask");
     let injector = spawn PartitionInjector;
     injector.arm();
-    let ask_timeout_ms: u64 = 1000;
     let fast_fail_ceiling_ms: i64 = 900;
+    // Phase A — the armed probe must PROVE it fired. The route is still live
+    // (READY_DROP has not been printed, so the harness has not killed the
+    // server) and KvReq::Stall holds the server-side reply past this ask's
+    // whole 3 s deadline. The only path that can resolve the pending ask
+    // before its deadline is therefore the injector's Partition fan-out: no
+    // reply arrives, no socket drops, no route is torn down. A broken or
+    // no-op probe surfaces here as a deadline timeout -> FAIL, instead of
+    // hiding behind the kill's routing-failure / socket-drop outcomes.
+    let probe_started = instant.now();
+    let probe = kv.ask(KvReq.Stall, 3000);
+    let probe_elapsed = probe_started.elapsed().millis();
+    match probe {
+        Result.Ok(_) => {
+            println("FAIL partition_ask probe-replied");
+            return 4;
+        },
+        Result.Err(e) => {
+            match e {
+                AskError.Partition => {
+                    if probe_elapsed >= fast_fail_ceiling_ms {
+                        println(f"FAIL partition_ask probe-slow ms={probe_elapsed}");
+                        return 5;
+                    }
+                    println(f"PASS partition_ask probe-partition ms={probe_elapsed}");
+                },
+                _ => {
+                    println(f"FAIL partition_ask probe-not-partition ms={probe_elapsed}");
+                    return 6;
+                },
+            }
+        },
+    }
+    // Phase B — the real-teardown no-hang gate: kill the server, then the ask
+    // must fail closed with ANY typed cause without hanging. Re-arm the
+    // injector (phase A consumed its first arm) so the typed verdict again
+    // does not race the socket-teardown / SWIM detector latency.
+    injector.arm();
+    println("READY_DROP partition_ask");
+    let ask_timeout_ms: u64 = 1000;
     var attempts: i64 = 0;
     loop {
-        let started = instant::now();
-        let probe = kv.ask(KvReq::GetKey("hello"), ask_timeout_ms);
+        let started = instant.now();
+        let probe = kv.ask(KvReq.GetKey("hello"), ask_timeout_ms);
         let elapsed_ms = started.elapsed().millis();
         match probe {
-            Result::Ok(_) => {
+            Result.Ok(_) => {
                 attempts = attempts + 1;
                 if attempts >= 20 {
                     println("FAIL partition_ask never-partitioned");
@@ -1406,9 +1446,9 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
                 }
                 sleep(200ms);
             },
-            Result::Err(e) => {
+            Result.Err(e) => {
                 let timed_out = match e {
-                    AskError::Timeout => true,
+                    AskError.Timeout => true,
                     _ => elapsed_ms >= fast_fail_ceiling_ms,
                 };
                 if timed_out {
@@ -1420,12 +1460,12 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
                     sleep(200ms);
                 } else {
                     match e {
-                        AskError::Partition => println(f"PASS partition_ask reason=partition ms={elapsed_ms}"),
-                        AskError::ConnectionDropped => println(f"PASS partition_ask reason=conn-dropped ms={elapsed_ms}"),
-                        AskError::RoutingFailed => println(f"PASS partition_ask reason=routing-failed ms={elapsed_ms}"),
-                        AskError::NodeNotRunning => println(f"PASS partition_ask reason=node-not-running ms={elapsed_ms}"),
-                        AskError::SendFailed => println(f"PASS partition_ask reason=send-failed ms={elapsed_ms}"),
-                        AskError::StaleRef => println(f"PASS partition_ask reason=stale-ref ms={elapsed_ms}"),
+                        AskError.Partition => println(f"PASS partition_ask reason=partition ms={elapsed_ms}"),
+                        AskError.ConnectionDropped => println(f"PASS partition_ask reason=conn-dropped ms={elapsed_ms}"),
+                        AskError.RoutingFailed => println(f"PASS partition_ask reason=routing-failed ms={elapsed_ms}"),
+                        AskError.NodeNotRunning => println(f"PASS partition_ask reason=node-not-running ms={elapsed_ms}"),
+                        AskError.SendFailed => println(f"PASS partition_ask reason=send-failed ms={elapsed_ms}"),
+                        AskError.StaleRef => println(f"PASS partition_ask reason=stale-ref ms={elapsed_ms}"),
                         _ => println(f"PASS partition_ask reason=fail-closed ms={elapsed_ms}"),
                     }
                     return 0;
@@ -1436,19 +1476,19 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
 }
 
 fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>) -> i64 {
-    let seeded = kv.ask(KvReq::Put(KvPut { key: "owner", val: "original" }), 5000);
+    let seeded = kv.ask(KvReq.Put(KvPut { key: "owner", val: "original" }), 5000);
     match seeded {
-        Result::Err(_) => {
+        Result.Err(_) => {
             println("FAIL repoint_preserves_ref seed-error");
             return 2;
         },
-        Result::Ok(_) => {},
+        Result.Ok(_) => {},
     }
     var attempts: i64 = 0;
     loop {
-        let current: Result<RemotePid<KeyValue>, LookupError> = Node::lookup("kv");
+        let current: Result<RemotePid<KeyValue>, LookupError> = Node.lookup("kv");
         match current {
-            Result::Err(_) => {
+            Result.Err(_) => {
                 attempts = attempts + 1;
                 if attempts >= 60 {
                     println("FAIL repoint_preserves_ref lookup-error");
@@ -1456,7 +1496,7 @@ fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>) -> i64 {
                 }
                 sleep(100ms);
             },
-            Result::Ok(replacement) => {
+            Result.Ok(replacement) => {
                 if replacement == kv {
                     attempts = attempts + 1;
                     if attempts >= 60 {
@@ -1465,34 +1505,34 @@ fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>) -> i64 {
                     }
                     sleep(100ms);
                 } else {
-                    let old_value = kv.ask(KvReq::GetKey("owner"), 5000);
+                    let old_value = kv.ask(KvReq.GetKey("owner"), 5000);
                     match old_value {
-                        Result::Err(_) => {
+                        Result.Err(_) => {
                             println("FAIL repoint_preserves_ref captured-ref-error");
                             return 5;
                         },
-                        Result::Ok(KvResp::Ack) => {
+                        Result.Ok(KvResp.Ack) => {
                             println("FAIL repoint_preserves_ref captured-ref-ack");
                             return 6;
                         },
-                        Result::Ok(KvResp::Value(v)) => {
+                        Result.Ok(KvResp.Value(v)) => {
                             if v != "original" {
                                 println("FAIL repoint_preserves_ref captured-ref-wrong-actor");
                                 return 7;
                             }
                         },
                     }
-                    let new_value = replacement.ask(KvReq::GetKey("owner"), 5000);
+                    let new_value = replacement.ask(KvReq.GetKey("owner"), 5000);
                     match new_value {
-                        Result::Err(_) => {
+                        Result.Err(_) => {
                             println("FAIL repoint_preserves_ref replacement-error");
                             return 8;
                         },
-                        Result::Ok(KvResp::Ack) => {
+                        Result.Ok(KvResp.Ack) => {
                             println("FAIL repoint_preserves_ref replacement-ack");
                             return 9;
                         },
-                        Result::Ok(KvResp::Value(v)) => {
+                        Result.Ok(KvResp.Value(v)) => {
                             if v != "" {
                                 println("FAIL repoint_preserves_ref replacement-not-fresh");
                                 return 10;
@@ -1556,18 +1596,13 @@ fn scenario_server_watcher_node_death(_kv_serial: i64) {
 }
 
 fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
-    let probe = spawn MonitorProbe(
-        active_monitor: Err(MonitorError::InvalidTarget),
-        expected_monitor_id: 0,
-        down_count: 0,
-        down_reason: 100
-    );
+    let probe = spawn MonitorProbe(active_monitor: Err(MonitorError.InvalidTarget), expected_monitor_id: 0, down_count: 0, down_reason: 100);
     match await probe.arm(kv, 2) {
-        Result::Err(_) => {
+        Result.Err(_) => {
             println("FAIL monitor_watcher_node_death arm-ask-error");
             2
         },
-        Result::Ok(status) => {
+        Result.Ok(status) => {
             if status != 0 {
                 println(f"FAIL monitor_watcher_node_death arm-status={status}");
                 return 3;
@@ -1583,8 +1618,8 @@ fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string)
     let linker = spawn Linker(policy_sel: 0);
     let linker_id = await linker.link_go(kv);
     let lid = match linker_id {
-        Result::Ok(id) => id,
-        Result::Err(_) => {
+        Result.Ok(id) => id,
+        Result.Err(_) => {
             println(f"FAIL {scenario} link-ask-error");
             return 2;
         },
@@ -1595,35 +1630,35 @@ fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string)
     }
     let live = await linker.ping();
     match live {
-        Result::Ok(value) => {
+        Result.Ok(value) => {
             if value != 7 {
                 println(f"FAIL {scenario} linker-pre-cascade-wrong value={value}");
                 return 7;
             }
         },
-        Result::Err(_) => {
+        Result.Err(_) => {
             println(f"FAIL {scenario} linker-died-during-setup");
             return 7;
         },
     }
     if drive == "stop" {
-        let t = kv.send(KvReq::StopSelf);
+        let t = kv.send(KvReq.StopSelf);
         match t {
-            Result::Err(_) => {
+            Result.Err(_) => {
                 println(f"FAIL {scenario} stop-send-error");
                 return 4;
             },
-            Result::Ok(_) => {},
+            Result.Ok(_) => {},
         }
     } else {
         if drive == "crash" {
-            let t = kv.send(KvReq::CrashSelf);
+            let t = kv.send(KvReq.CrashSelf);
             match t {
-                Result::Err(_) => {
+                Result.Err(_) => {
                     println(f"FAIL {scenario} crash-send-error");
                     return 4;
                 },
-                Result::Ok(_) => {},
+                Result.Ok(_) => {},
             }
         }
     }
@@ -1668,8 +1703,8 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
     let linker = spawn Linker(policy_sel: 1);
     let linker_id = await linker.link_go(kv);
     let lid = match linker_id {
-        Result::Ok(id) => id,
-        Result::Err(_) => {
+        Result.Ok(id) => id,
+        Result.Err(_) => {
             println("FAIL link_remote_non_crashlinked link-ask-error");
             return 2;
         },
@@ -1678,13 +1713,13 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
         println("FAIL link_remote_non_crashlinked link-register-failed");
         return 3;
     }
-    let t = kv.send(KvReq::StopSelf);
+    let t = kv.send(KvReq.StopSelf);
     match t {
-        Result::Err(_) => {
+        Result.Err(_) => {
             println("FAIL link_remote_non_crashlinked stop-send-error");
             return 4;
         },
-        Result::Ok(_) => {},
+        Result.Ok(_) => {},
     }
     sleep(1500ms);
     let st = unsafe {
@@ -1696,11 +1731,11 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
     }
     let ping = await linker.ping();
     match ping {
-        Result::Ok(_) => {
+        Result.Ok(_) => {
             println("PASS link_remote_non_crashlinked linker-survived");
             0
         },
-        Result::Err(_) => {
+        Result.Err(_) => {
             println("FAIL link_remote_non_crashlinked linker-unreachable");
             6
         },
@@ -1764,11 +1799,11 @@ fn scenario_server_monitor_close_reclaim() {
 fn scenario_client_monitor_close_reclaim(kv: RemotePid<KeyValue>) -> i64 {
     let probe = spawn MonitorCloseProbe;
     match await probe.register_and_close(kv) {
-        Result::Err(_) => {
+        Result.Err(_) => {
             println("FAIL cross_node_monitor_close_reclaim probe-error");
             2
         },
-        Result::Ok(status) => {
+        Result.Ok(status) => {
             if status != 0 {
                 println("FAIL cross_node_monitor_close_reclaim setup-error");
                 return 1;
@@ -1839,11 +1874,11 @@ fn scenario_server_monitor_leak(kx: string, scenario: string, expected: i64) {
 fn scenario_client_monitor_leak(kv: RemotePid<KeyValue>, kx: string, scenario: string, iterations: i64) -> i64 {
     let probe = spawn MonitorLeakProbe(down_count: 0);
     match await probe.run(kv, iterations) {
-        Result::Err(_) => {
+        Result.Err(_) => {
             println(f"FAIL {scenario} probe-ask-error");
             2
         },
-        Result::Ok(completed) => {
+        Result.Ok(completed) => {
             if completed != iterations {
                 println(f"FAIL {scenario} completed={completed}");
                 return 3;
@@ -1928,11 +1963,11 @@ fn scenario_quarantine_rejoin() -> i64 {
 
 fn scenario_handshake_reject() -> i64 {
     match lookup_with_retry("kv") {
-        Result::Err(_) => {
+        Result.Err(_) => {
             println("PASS handshake_reject unroutable");
             0
         },
-        Result::Ok(_) => {
+        Result.Ok(_) => {
             println("FAIL handshake_reject unauthorized-peer-routable");
             2
         },
@@ -1944,43 +1979,42 @@ fn scenario_stale_incarnation_restart(old: RemotePid<KeyValue>, kx: string, port
     let old_incarnation = old.incarnation();
     println(f"READY_STALE_CAPTURED node={old_node} incarnation={old_incarnation}");
     let _ = wait_for_file(f"{kx}/server.restarted");
-    Node::connect(f"1@127.0.0.1:{port}");
-
+    Node.connect(f"1@127.0.0.1:{port}");
     var attempts: i64 = 0;
     loop {
-        let candidate: Result<RemotePid<KeyValue>, LookupError> = Node::lookup("kv");
+        let candidate: Result<RemotePid<KeyValue>, LookupError> = Node.lookup("kv");
         match candidate {
-            Result::Ok(fresh) => {
+            Result.Ok(fresh) => {
                 let fresh_incarnation = fresh.incarnation();
                 if fresh.node_id() == old_node && fresh_incarnation > old_incarnation {
-                    match fresh.ask(KvReq::GetKey("restart-proof"), 5000) {
-                        Result::Err(_) => {
+                    match fresh.ask(KvReq.GetKey("restart-proof"), 5000) {
+                        Result.Err(_) => {
                             println("FAIL stale_incarnation_restart fresh-pid-unusable");
                             return 4;
                         },
-                        Result::Ok(KvResp::Ack) => {
+                        Result.Ok(KvResp.Ack) => {
                             println("FAIL stale_incarnation_restart fresh-pid-wrong-reply");
                             return 5;
                         },
-                        Result::Ok(KvResp::Value(_)) => {},
+                        Result.Ok(KvResp.Value(_)) => {},
                     }
-                    match old.ask(KvReq::GetKey("restart-proof"), 5000) {
-                        Result::Err(AskError::StaleRef) => {
+                    match old.ask(KvReq.GetKey("restart-proof"), 5000) {
+                        Result.Err(AskError.StaleRef) => {
                             println(f"PASS stale_incarnation_restart old={old_incarnation} new={fresh_incarnation} error=StaleRef");
                             return 0;
                         },
-                        Result::Err(_) => {
+                        Result.Err(_) => {
                             println("FAIL stale_incarnation_restart old-pid-wrong-error");
                             return 6;
                         },
-                        Result::Ok(_) => {
+                        Result.Ok(_) => {
                             println("FAIL stale_incarnation_restart old-pid-succeeded");
                             return 7;
                         },
                     }
                 }
             },
-            Result::Err(_) => {},
+            Result.Err(_) => {},
         }
         attempts = attempts + 1;
         if attempts >= 200 {
@@ -1993,12 +2027,12 @@ fn scenario_stale_incarnation_restart(old: RemotePid<KeyValue>, kx: string, port
 
 fn run_client(port: string, scenario: string) -> i64 {
     let kx = os.env("HEW_DIST_KX_DIR");
-    Node::set_transport("tcp");
+    Node.set_transport("tcp");
     stage_peer_credentials(kx, "client", "server", 1);
-    Node::start("127.0.0.1:0");
+    Node.start("127.0.0.1:0");
     wait_for_server_listening(kx);
     let remote_addr = f"1@127.0.0.1:{port}";
-    Node::connect(remote_addr);
+    Node.connect(remote_addr);
     let status = if scenario == "handshake_reject" {
         scenario_handshake_reject()
     } else if scenario == "quarantine_rejoin" {
@@ -2006,11 +2040,11 @@ fn run_client(port: string, scenario: string) -> i64 {
     } else if scenario == "identity_location" || scenario == "identity_display_low" || scenario == "identity_display_high" {
         let found_identity = lookup_identity_with_retry("identity");
         match found_identity {
-            Result::Err(_) => {
+            Result.Err(_) => {
                 println(f"FAIL {scenario} lookup-unresolved");
                 1
             },
-            Result::Ok(identity) => {
+            Result.Ok(identity) => {
                 if scenario == "identity_location" {
                     scenario_identity_location(identity)
                 } else {
@@ -2025,29 +2059,29 @@ fn run_client(port: string, scenario: string) -> i64 {
     } else if scenario == "wire_cbor" {
         let found_wire = lookup_wire_with_retry("wire");
         match found_wire {
-            Result::Err(_) => {
+            Result.Err(_) => {
                 println(f"FAIL {scenario} lookup-unresolved");
                 1
             },
-            Result::Ok(wp) => {
+            Result.Ok(wp) => {
                 scenario_wire_cbor(wp)
             },
         }
     } else if scenario == "remote_setup_exit_race" {
         let monitor_found = lookup_with_retry("monitor-race");
         match monitor_found {
-            Result::Err(_) => {
+            Result.Err(_) => {
                 println("FAIL remote_setup_exit_race monitor-lookup-unresolved");
                 1
             },
-            Result::Ok(monitor_target) => {
+            Result.Ok(monitor_target) => {
                 let link_found = lookup_with_retry("link-race");
                 match link_found {
-                    Result::Err(_) => {
+                    Result.Err(_) => {
                         println("FAIL remote_setup_exit_race link-lookup-unresolved");
                         1
                     },
-                    Result::Ok(link_target) => {
+                    Result.Ok(link_target) => {
                         scenario_remote_setup_exit_race(monitor_target, link_target)
                     },
                 }
@@ -2056,11 +2090,11 @@ fn run_client(port: string, scenario: string) -> i64 {
     } else {
         let found = lookup_with_retry("kv");
         match found {
-            Result::Err(_) => {
+            Result.Err(_) => {
                 println(f"FAIL {scenario} lookup-unresolved");
                 1
             },
-            Result::Ok(kv) => {
+            Result.Ok(kv) => {
                 if scenario == "stale_incarnation_restart" {
                     scenario_stale_incarnation_restart(kv, kx, port)
                 } else if scenario == "remote_ask" {
@@ -2128,7 +2162,7 @@ fn run_client(port: string, scenario: string) -> i64 {
             },
         }
     };
-    Node::shutdown();
+    Node.shutdown();
     status
 }
 

@@ -5,7 +5,7 @@
 // (`hew_vec_slice_range_*`), and the scope-exit `hew_vec_free` drop for
 // bit-copy element Vecs.
 fn main() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(10);
     v.push(20);
     v.push(30);
@@ -15,17 +15,17 @@ fn main() {
     println(s.len());
     let last = v.pop();
     println(last);
-    let f: Vec<f64> = Vec::new();
+    let f: Vec<f64> = Vec.new();
     f.push(1.5);
     f.push(2.5);
     println(f[0]);
     let fs = f[0..1];
     println(fs.len());
-    let bs: Vec<bool> = Vec::new();
+    let bs: Vec<bool> = Vec.new();
     bs.push(true);
     let b0 = bs[0];
     println(b0);
-    let ws: Vec<i32> = Vec::new();
+    let ws: Vec<i32> = Vec.new();
     ws.push(1);
     ws.push(2);
     let w0 = ws[0];

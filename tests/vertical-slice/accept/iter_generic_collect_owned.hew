@@ -31,7 +31,7 @@ impl Iterator for Words {
 /// Collect items into a `Vec<A>`; `A` (= `string`) is pinned through the
 /// `Iterator<Item = A>` projection at the call site.
 fn collect_items<I, A>(it: I) -> Vec<A> where I: Iterator<Item = A> {
-    let out: Vec<A> = Vec::new();
+    let out: Vec<A> = Vec.new();
     var cur = it;
     loop {
         match cur.next() {

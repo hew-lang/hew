@@ -125,7 +125,7 @@ fn plain_vec_local_drop_admits_local_i64_vec_on_return() {
     let pipeline = pipeline_with_tc(
         r"
         fn main() -> i64 {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             v.push(1);
             v.push(2);
             let _n = v.len();
@@ -151,7 +151,7 @@ fn plain_vec_local_drop_admits_local_string_vec_on_return() {
     let pipeline = pipeline_with_tc(
         r#"
         fn main() -> i64 {
-            let v: Vec<string> = Vec::new();
+            let v: Vec<string> = Vec.new();
             v.push("alpha");
             v.push("beta");
             v.len()
@@ -209,7 +209,7 @@ fn plain_vec_local_drop_admits_local_bitcopy_record_vec_on_return() {
         r"
         type Point { x: i64, y: i64 }
         fn main() -> i64 {
-            let pts: Vec<Point> = Vec::new();
+            let pts: Vec<Point> = Vec.new();
             pts.push(Point { x: 10, y: 20 });
             pts.len()
         }
@@ -267,7 +267,7 @@ fn owned_vec_push_of_bound_value_keeps_copy_in_route() {
             name: string;
         }
         fn main() -> i64 {
-            let hs: Vec<Header> = Vec::new();
+            let hs: Vec<Header> = Vec.new();
             let header = Header { name: "content-type".to_upper() };
             hs.push(header);
             header.name.len() + hs.len()
@@ -299,7 +299,7 @@ fn plain_vec_local_drop_cancel_path_frees_live_vec() {
         r"
         fn sink(x: i64) -> i64 { x }
         fn main() -> i64 {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             v.push(7);
             for i in 0 .. 3 {
                 let _ = sink(i);
@@ -338,7 +338,7 @@ fn plain_vec_local_drop_does_not_displace_owned_element_vec() {
             name: string;
         }
         fn main() -> i64 {
-            let hs: Vec<Header> = Vec::new();
+            let hs: Vec<Header> = Vec.new();
             hs.push(Header { name: "content-type" });
             hs.len()
         }
@@ -374,7 +374,7 @@ fn owned_vec_get_through_borrowing_helper_keeps_caller_drop() {
             xs.get(0)
         }
         fn main() -> i64 {
-            let hs: Vec<Header> = Vec::new();
+            let hs: Vec<Header> = Vec.new();
             hs.push(Header { name: "content-type" });
             match first(hs) {
                 Some(header) => header.name.len(),
@@ -409,7 +409,7 @@ fn owned_vec_index_uses_fresh_clone_choke() {
             name: string;
         }
         fn main() -> i64 {
-            let hs: Vec<Header> = Vec::new();
+            let hs: Vec<Header> = Vec.new();
             hs.push(Header { name: "content-type".to_upper() });
             let first = hs[0];
             first.name.len() + hs[0].name.len()
@@ -436,7 +436,7 @@ fn plain_vec_local_drop_excludes_returned_vec() {
     let pipeline = pipeline_with_tc(
         r"
         fn make() -> Vec<i64> {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             v.push(1);
             return v;
         }
@@ -465,7 +465,7 @@ fn plain_vec_local_drop_excludes_spawn_escaped_vec() {
             receive fn ping() -> i64 { 1 }
         }
         fn main() -> i64 {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             v.push(1);
             let _h = spawn Holder(items: v);
             0
@@ -593,8 +593,8 @@ fn plain_vec_local_drop_multi_arm_match_returned_converges_and_excludes() {
         enum Action { Move; Left }
         fn codes(a: Action) -> Vec<i64> {
             match a {
-                Action::Move => { let v: Vec<i64> = Vec::new(); v },
-                Action::Left => { let v: Vec<i64> = Vec::new(); v.push(20); v }
+                Action.Move => { let v: Vec<i64> = Vec.new(); v },
+                Action.Left => { let v: Vec<i64> = Vec.new(); v.push(20); v }
             }
         }
         fn main() -> i64 { 0 }
@@ -622,9 +622,9 @@ fn plain_vec_local_drop_multi_arm_match_consumed_locally_converges() {
         r"
         enum Action { Move; Left }
         fn main() -> i64 {
-            let r: Vec<i64> = match Action::Left {
-                Action::Move => { let v: Vec<i64> = Vec::new(); v },
-                Action::Left => { let v: Vec<i64> = Vec::new(); v.push(20); v }
+            let r: Vec<i64> = match Action.Left {
+                Action.Move => { let v: Vec<i64> = Vec.new(); v },
+                Action.Left => { let v: Vec<i64> = Vec.new(); v.push(20); v }
             };
             r.len()
         }
@@ -650,8 +650,8 @@ fn plain_vec_local_drop_single_arm_match_frees_result_exactly_once() {
         r"
         enum Tag { Only }
         fn main() -> i64 {
-            let r: Vec<i64> = match Tag::Only {
-                Tag::Only => { let v: Vec<i64> = Vec::new(); v.push(7); v }
+            let r: Vec<i64> = match Tag.Only {
+                Tag.Only => { let v: Vec<i64> = Vec.new(); v.push(7); v }
             };
             r.len()
         }
@@ -677,7 +677,7 @@ fn plain_vec_local_drop_keeps_vec_across_borrowing_value_call() {
             xs.len()
         }
         fn main() -> i64 {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             v.push(1);
             total(v)
         }
@@ -702,7 +702,7 @@ fn plain_vec_local_drop_excludes_value_call_that_returns_vec() {
             xs
         }
         fn main() -> i64 {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             let out = identity(v);
             out.len()
         }

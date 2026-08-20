@@ -159,7 +159,7 @@ fn round_trip_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let tags: Vec<string> = Vec::new();\n\
+         \x20       let tags: Vec<string> = Vec.new();\n\
          \x20       tags.push(\"alpha-element\");\n\
          \x20       tags.push(\"beta-element\");\n\
          \x20       let p = Packet {{ label: \"payload-label-value\", tags: tags, inner: Inner {{ name: \"inner-owned-name\" }}, seq: i }};\n\
@@ -202,7 +202,7 @@ fn vec_struct_round_trip_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let xs: Vec<Inner> = Vec::new();\n\
+         \x20       let xs: Vec<Inner> = Vec.new();\n\
          \x20       xs.push(Inner {{ v: 10 }});\n\
          \x20       xs.push(Inner {{ v: 20 }});\n\
          \x20       xs.push(Inner {{ v: 12 }});\n\
@@ -349,13 +349,13 @@ fn enum_owned_payload_round_trip_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let tags: Vec<string> = Vec::new();\n\
+         \x20       let tags: Vec<string> = Vec.new();\n\
          \x20       tags.push(\"alpha-element\");\n\
          \x20       tags.push(\"beta-element\");\n\
-         \x20       let p = Payload::Full(\"payload-label-value\", tags, Inner {{ name: \"inner-owned-name\" }});\n\
+         \x20       let p = Payload.Full(\"payload-label-value\", tags, Inner {{ name: \"inner-owned-name\" }});\n\
          \x20       let raw = p.encode();\n\
          \x20       let back = Payload.decode(raw);\n\
-         \x20       let n = match back {{ Payload::Empty => 0, Payload::Full(_, _, _) => 1, }};\n\
+         \x20       let n = match back {{ Payload.Empty => 0, Payload.Full(_, _, _) => 1, }};\n\
          \x20       total = total + n;\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -379,13 +379,13 @@ const ENUM_DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
      enum PayloadBad { Empty; Full(string, i64, Inner); }\n\
      \n\
      fn main() -> i64 {\n\
-     \x20   let tags: Vec<string> = Vec::new();\n\
+     \x20   let tags: Vec<string> = Vec.new();\n\
      \x20   tags.push(\"alpha-element\");\n\
      \x20   tags.push(\"beta-element\");\n\
-     \x20   let p = PayloadGood::Full(\"owned-field-a-value\", tags, Inner { name: \"inner-owned-name\" });\n\
+     \x20   let p = PayloadGood.Full(\"owned-field-a-value\", tags, Inner { name: \"inner-owned-name\" });\n\
      \x20   let raw = p.encode();\n\
      \x20   let bad = PayloadBad.decode(raw);\n\
-     \x20   match bad { PayloadBad::Empty => 0, PayloadBad::Full(_, n, _) => n, }\n\
+     \x20   match bad { PayloadBad.Empty => 0, PayloadBad.Full(_, n, _) => n, }\n\
      }\n";
 
 /// Decode-failure fixture for a `Vec<#[wire] struct>` whose ELEMENT owns heap
@@ -408,7 +408,7 @@ const VEC_OWNED_STRUCT_DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
      type BatchBad { items: Vec<Item> @1; tail: i64 @2; }\n\
      \n\
      fn main() -> i64 {\n\
-     \x20   let xs: Vec<Item> = Vec::new();\n\
+     \x20   let xs: Vec<Item> = Vec.new();\n\
      \x20   xs.push(Item { name: \"alpha-owned-element\" });\n\
      \x20   xs.push(Item { name: \"beta-owned-element\" });\n\
      \x20   let g = BatchGood { items: xs, tail: \"owned-tail-value\" };\n\
@@ -434,10 +434,10 @@ const VEC_OWNED_ENUM_DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
      type BagBad { items: Vec<Payload> @1; tail: i64 @2; }\n\
      \n\
      fn main() -> i64 {\n\
-     \x20   let xs: Vec<Payload> = Vec::new();\n\
-     \x20   xs.push(Payload::Full(\"first-owned-element\"));\n\
-     \x20   xs.push(Payload::Empty);\n\
-     \x20   xs.push(Payload::Full(\"second-owned-element\"));\n\
+     \x20   let xs: Vec<Payload> = Vec.new();\n\
+     \x20   xs.push(Payload.Full(\"first-owned-element\"));\n\
+     \x20   xs.push(Payload.Empty);\n\
+     \x20   xs.push(Payload.Full(\"second-owned-element\"));\n\
      \x20   let g = BagGood { items: xs, tail: \"owned-tail-value\" };\n\
      \x20   let raw = g.encode();\n\
      \x20   let bad = BagBad.decode(raw);\n\
@@ -472,7 +472,7 @@ fn actor_enum_decode_source(frames: usize, message_expr: &str) -> String {
          \x20   let seq: i64;\n\
          \x20   receive fn decode_it(raw: bytes) -> i64 {{\n\
          \x20       let back = Narrow.decode(raw);\n\
-         \x20       match back {{ Narrow::A => 0, Narrow::B(n) => n, }}\n\
+         \x20       match back {{ Narrow.A => 0, Narrow.B(n) => n, }}\n\
          \x20   }}\n\
          }}\n\
          \n\
@@ -495,13 +495,13 @@ fn actor_enum_decode_source(frames: usize, message_expr: &str) -> String {
 /// Out-of-range branch: the actor decodes a `Wide::C` payload (wire tag 2) as a
 /// `Narrow` (no tag 2) — the unknown-tag path under test.
 fn actor_oob_enum_decode_source(frames: usize) -> String {
-    actor_enum_decode_source(frames, "Wide::C(\"oob-enum-owned-payload-string\")")
+    actor_enum_decode_source(frames, "Wide.C(\"oob-enum-owned-payload-string\")")
 }
 
 /// In-range baseline: the same actor/spawn shape decoding a well-formed
 /// `Narrow::B(1)` — isolates the codec-independent per-spawn actor-cell leak.
 fn actor_in_range_enum_decode_source(frames: usize) -> String {
-    actor_enum_decode_source(frames, "Narrow::B(1)")
+    actor_enum_decode_source(frames, "Narrow.B(1)")
 }
 
 // ── under-free (leak) teeth for the decode-failure `fail_bb` ─────────────────
@@ -569,7 +569,7 @@ fn actor_vec_owned_struct_decode_source(frames: usize, mismatch: bool) -> String
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let xs: Vec<Item> = Vec::new();\n\
+         \x20       let xs: Vec<Item> = Vec.new();\n\
          \x20       xs.push(Item {{ name: \"alpha-owned-element\" }});\n\
          \x20       xs.push(Item {{ name: \"beta-owned-element\" }});\n\
          \x20       {build}\n\
@@ -626,10 +626,10 @@ fn actor_vec_owned_enum_decode_source(frames: usize, mismatch: bool) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let xs: Vec<Payload> = Vec::new();\n\
-         \x20       xs.push(Payload::Full(\"first-owned-element\"));\n\
-         \x20       xs.push(Payload::Empty);\n\
-         \x20       xs.push(Payload::Full(\"second-owned-element\"));\n\
+         \x20       let xs: Vec<Payload> = Vec.new();\n\
+         \x20       xs.push(Payload.Full(\"first-owned-element\"));\n\
+         \x20       xs.push(Payload.Empty);\n\
+         \x20       xs.push(Payload.Full(\"second-owned-element\"));\n\
          \x20       {build}\n\
          \x20       let raw = g.encode();\n\
          \x20       let a = spawn Decoder(seq: i);\n\

@@ -328,7 +328,7 @@ fn summarize_import(import: &hew_parser::ast::ImportDecl) -> String {
     if import.path.is_empty() {
         "import <module>".to_string()
     } else {
-        format!("import {}", import.path.join("::"))
+        format!("import {}", import.path.join("."))
     }
 }
 

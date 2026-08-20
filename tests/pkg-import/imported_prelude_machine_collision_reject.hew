@@ -1,0 +1,5 @@
+//! Package machines cannot replace always-in-scope prelude bindings.
+
+import hew.preludemachinecollision_reject;
+
+fn main() {}

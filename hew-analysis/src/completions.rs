@@ -233,7 +233,7 @@ fn module_member_completions(
     let binding = trailing_identifier(source.get(..receiver_end)?)?;
     let owner = tc
         .module_import_bindings
-        .get(&(None, binding.to_string()))?;
+        .get(&(None, 0, binding.to_string()))?;
     let prefix = format!("{owner}.");
     // A member is a DIRECT child of the owner: `std.io.scanner.from_string`
     // belongs to `scanner`, `std.io.scanner.inner.helper` does not.
@@ -351,15 +351,15 @@ fn try_enum_variant_completions(
     offset: usize,
 ) -> Option<Vec<CompletionItem>> {
     let bytes = source.as_bytes();
-    let mut colon_pos = offset;
-    while colon_pos > 0 && bytes[colon_pos - 1].is_ascii_whitespace() {
-        colon_pos -= 1;
+    let mut dot_pos = offset;
+    while dot_pos > 0 && bytes[dot_pos - 1].is_ascii_whitespace() {
+        dot_pos -= 1;
     }
-    if colon_pos < 2 || &bytes[colon_pos - 2..colon_pos] != b"::" {
+    if dot_pos == 0 || bytes[dot_pos - 1] != b'.' {
         return None;
     }
 
-    let type_name = extract_type_name_before(source, colon_pos - 2)?;
+    let type_name = extract_type_name_before(source, dot_pos - 1)?;
     let tc = type_output?;
     let type_def = method_resolution::lookup_type_def(&tc.type_defs, type_name)?;
     if type_def.kind != TypeDefKind::Enum {
@@ -528,8 +528,8 @@ fn imported_actor_spawn_labels(output: &TypeCheckOutput) -> Vec<String> {
         let Some((owner, actor_name)) = identity.rsplit_once('.') else {
             continue;
         };
-        for ((importer, binding), bound_owner) in &output.module_import_bindings {
-            if importer.is_none() && bound_owner == owner {
+        for ((importer, file, binding), bound_owner) in &output.module_import_bindings {
+            if importer.is_none() && *file == 0 && bound_owner == owner {
                 labels.insert(format!("{binding}.{actor_name}"));
             }
         }
@@ -896,6 +896,16 @@ fn collect_pattern_names(pattern: &Pattern, locals: &mut Vec<CompletionItem>) {
                 collect_pattern_names(p, locals);
             }
         }
+        Pattern::NominalPath { payload, .. } => {
+            if let Some(payload) = payload {
+                collect_nominal_payload_names(payload, locals);
+            }
+        }
+        Pattern::ContextVariant(context) => {
+            if let Some(payload) = &context.payload {
+                collect_nominal_payload_names(payload, locals);
+            }
+        }
         Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
             for field in fields {
                 if let Some((pattern, _)) = &field.pattern {
@@ -915,6 +925,28 @@ fn collect_pattern_names(pattern: &Pattern, locals: &mut Vec<CompletionItem>) {
             }
         }
         Pattern::Literal(_) | Pattern::Wildcard => {}
+    }
+}
+
+fn collect_nominal_payload_names(
+    payload: &hew_parser::ast::NominalPatternPayload,
+    locals: &mut Vec<CompletionItem>,
+) {
+    match payload {
+        hew_parser::ast::NominalPatternPayload::Tuple(patterns) => {
+            for (pattern, _) in patterns {
+                collect_pattern_names(pattern, locals);
+            }
+        }
+        hew_parser::ast::NominalPatternPayload::Record { fields, .. } => {
+            for field in fields {
+                if let Some((pattern, _)) = &field.pattern {
+                    collect_pattern_names(pattern, locals);
+                } else {
+                    locals.push(local_completion(&field.name));
+                }
+            }
+        }
     }
 }
 
@@ -1123,6 +1155,7 @@ mod tests {
                     Item::Import(ImportDecl {
                         path: path.iter().map(ToString::to_string).collect(),
                         spec: None,
+                        selection_trailing_comma: false,
                         module_alias: module_alias.map(str::to_string),
                         file_path: None,
                         resolved_items: Some(parsed.program.items),
@@ -1238,7 +1271,7 @@ trait MatcherMethods {
 }
 impl MatcherMethods for Matcher {
     fn captures(m: Matcher, input: string) -> Caps { Caps { count: 0 } }
-    fn find_all(m: Matcher, input: string) -> Vec<string> { Vec::new() }
+    fn find_all(m: Matcher, input: string) -> Vec<string> { Vec.new() }
 }
 fn probe(mat: Matcher, s: string) {
     let c = mat.captures(s);
@@ -1415,7 +1448,7 @@ fn example() {
 }
 
 fn example() {
-    let color = Color::/*cursor*/Blue;
+    let color = Color./*cursor*/Blue;
 }";
         let tc = type_check(&source.replace(CURSOR, ""));
         let labels: Vec<_> = items_at_cursor(source, Some(&tc))
@@ -1436,7 +1469,7 @@ fn example() {
 }
 
 fn example() {
-    let point = Point::/*cursor*/new();
+    let point = Point./*cursor*/new();
 }";
         let tc = type_check(&source.replace(CURSOR, ""));
         let labels: Vec<_> = items_at_cursor(source, Some(&tc))
@@ -1452,7 +1485,7 @@ fn example() {
     #[test]
     fn enum_variant_completions_do_not_fire_for_unknown_type() {
         let source = r"fn example() {
-    let value = Unknown::/*cursor*/Missing;
+    let value = Unknown./*cursor*/Missing;
 }";
         let tc = type_check(&source.replace(CURSOR, ""));
         let labels: Vec<_> = items_at_cursor(source, Some(&tc))
@@ -1460,7 +1493,7 @@ fn example() {
             .map(|item| item.label)
             .collect();
 
-        assert!(labels.iter().any(|label| label == "fn"));
+        assert!(labels.is_empty());
         assert!(!labels.iter().any(|label| label == "Missing"));
     }
 
@@ -1473,7 +1506,7 @@ fn example() {
 }
 
 fn example() {
-    let color = Color::/*cursor*/Blue;
+    let color = Color./*cursor*/Blue;
 }";
         let tc = type_check(&source.replace(CURSOR, ""));
         let items = items_at_cursor(source, Some(&tc));

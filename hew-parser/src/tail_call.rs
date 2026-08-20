@@ -148,6 +148,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         | Expr::Clone(operand) => expr_contains_defer(&operand.0),
         Expr::Literal(_)
         | Expr::Identifier(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
@@ -157,6 +158,16 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         | Expr::Yield(None)
         | Expr::Return(None)
         | Expr::ForkChild { .. } => false,
+        Expr::ContextVariant(context) => context.record.as_ref().is_some_and(|record| {
+            record
+                .fields
+                .iter()
+                .any(|(_, expr)| expr_contains_defer(&expr.0))
+                || record
+                    .base
+                    .as_ref()
+                    .is_some_and(|expr| expr_contains_defer(&expr.0))
+        }),
         Expr::ForkBlock { body } | Expr::GenBlock { body } => block_contains_defer(body),
         Expr::ScopeDeadline { duration, body } => {
             expr_contains_defer(&duration.0) || block_contains_defer(body)
@@ -224,6 +235,17 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         Expr::StructInit { fields, .. } => {
             fields.iter().any(|(_, expr)| expr_contains_defer(&expr.0))
         }
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            expr_contains_defer(&target.0)
+                || fields.iter().any(|(_, expr)| expr_contains_defer(&expr.0))
+                || base
+                    .as_ref()
+                    .is_some_and(|expr| expr_contains_defer(&expr.0))
+        }
         Expr::Select { arms, timeout } => {
             arms.iter()
                 .any(|arm| expr_contains_defer(&arm.source.0) || expr_contains_defer(&arm.body.0))
@@ -237,7 +259,9 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         Expr::Yield(Some(expr)) | Expr::Return(Some(expr)) | Expr::Cast { expr, .. } => {
             expr_contains_defer(&expr.0)
         }
-        Expr::FieldAccess { object, .. } => expr_contains_defer(&object.0),
+        Expr::FieldAccess { object, .. } | Expr::GenericApplySuffix { target: object, .. } => {
+            expr_contains_defer(&object.0)
+        }
         Expr::Index { object, index } => {
             expr_contains_defer(&object.0) || expr_contains_defer(&index.0)
         }
@@ -344,6 +368,7 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         }
         Expr::Literal(_)
         | Expr::Identifier(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
@@ -353,6 +378,16 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         | Expr::Yield(None)
         | Expr::Return(None)
         | Expr::ForkChild { .. } => {}
+        Expr::ContextVariant(context) => {
+            if let Some(record) = &mut context.record {
+                for (_, expr) in &mut record.fields {
+                    mark_expr(&mut expr.0, false);
+                }
+                if let Some(base) = &mut record.base {
+                    mark_expr(&mut base.0, false);
+                }
+            }
+        }
         // Generator blocks are not tail-call candidates; mark the body
         // so any inner call expressions can still be identified.
         Expr::ForkBlock { body } | Expr::GenBlock { body } => {
@@ -453,6 +488,19 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
                 mark_expr(&mut expr.0, false);
             }
         }
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            mark_expr(&mut target.0, false);
+            for (_, expr) in fields {
+                mark_expr(&mut expr.0, false);
+            }
+            if let Some(base) = base {
+                mark_expr(&mut base.0, false);
+            }
+        }
         Expr::Select { arms, timeout } => {
             for arm in arms {
                 mark_expr(&mut arm.source.0, false);
@@ -470,7 +518,9 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         Expr::Yield(Some(expr)) | Expr::Return(Some(expr)) | Expr::Cast { expr, .. } => {
             mark_expr(&mut expr.0, false);
         }
-        Expr::FieldAccess { object, .. } => mark_expr(&mut object.0, false),
+        Expr::FieldAccess { object, .. } | Expr::GenericApplySuffix { target: object, .. } => {
+            mark_expr(&mut object.0, false);
+        }
         Expr::Index { object, index } => {
             mark_expr(&mut object.0, false);
             mark_expr(&mut index.0, false);

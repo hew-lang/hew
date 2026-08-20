@@ -325,7 +325,7 @@ fn make<U>(u: U) -> U { u }
 fn main() {
     let t = T { value: 7 };
     let h: Holder = Active { handle: t };
-    let _ = make::<i64>(1);
+    let _ = make<i64>(1);
 }
 ";
     let output = lower(source);
@@ -776,7 +776,7 @@ fn make<T>(t: T) -> T {
 
 fn main() {
     let t = T { value: 1 };
-    let _ = make::<T>(t);
+    let _ = make<T>(t);
 }
 ";
     let output = lower(source);

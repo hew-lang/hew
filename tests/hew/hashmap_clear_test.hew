@@ -8,7 +8,7 @@ fn assert_eq_i64(actual: i64, expected: i64) {
 
 #[test]
 fn test_clear_drops_len_to_zero() {
-    let m: HashMap<i64, i64> = HashMap::<i64, i64>::new();
+    let m: HashMap<i64, i64> = HashMap<i64, i64>.new();
     m.insert(1, 10);
     m.insert(2, 20);
     m.insert(3, 30);
@@ -19,7 +19,7 @@ fn test_clear_drops_len_to_zero() {
 
 #[test]
 fn test_clear_allows_reinsert() {
-    let m: HashMap<i64, i64> = HashMap::<i64, i64>::new();
+    let m: HashMap<i64, i64> = HashMap<i64, i64>.new();
     m.insert(1, 10);
     m.clear();
     m.insert(1, 99);
@@ -29,7 +29,7 @@ fn test_clear_allows_reinsert() {
 
 #[test]
 fn test_clear_on_string_keyed_map() {
-    let m: HashMap<string, string> = HashMap::<string, string>::new();
+    let m: HashMap<string, string> = HashMap<string, string>.new();
     m.insert("a", "alpha");
     m.insert("b", "beta");
     m.remove("a");

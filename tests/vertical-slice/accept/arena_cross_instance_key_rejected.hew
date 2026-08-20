@@ -1,4 +1,4 @@
-import std::arena;
+import std.arena;
 
 fn main() {
     let left: arena.Arena<string> = arena.new();

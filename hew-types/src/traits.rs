@@ -277,6 +277,27 @@ impl TraitRegistry {
         }
     }
 
+    /// Remove a non-canonical registration key from every marker table.
+    ///
+    /// Imported declarations are assembled under their source leaf while the
+    /// declaring module is checked, then published under their full owner.
+    /// Once publication completes, the source leaf and lexical module spelling
+    /// are lookup aliases rather than identities and must leave all marker
+    /// tables together; retaining only a subset would let derivation disagree
+    /// about which spelling names the declaration.
+    pub(crate) fn remove_type_marker_key(&mut self, name: &str) {
+        self.type_fields.remove(name);
+        self.serializable_members.remove(name);
+        self.negative_impls.remove(name);
+        self.records.remove(name);
+        self.actors.remove(name);
+        self.handle_types.remove(name);
+        self.drop_types.remove(name);
+        self.resource_types.remove(name);
+        self.linear_types.remove(name);
+        self.type_params.remove(name);
+    }
+
     /// Report whether marker derivation has a structural member set registered
     /// for `name` (under `type_fields`). Used by the ask-reply Send gate to
     /// confirm a module-qualified reply identity (`badpkg.Reply`) resolves to a

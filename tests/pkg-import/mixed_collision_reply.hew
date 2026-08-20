@@ -2,7 +2,7 @@
 // `Colliding` collides with a root-declared `Colliding` but `Unique` is unique.
 // Only `Colliding` may be owner-qualified in the checker's reply identity, to
 // match HIR's collision-gated transform and MIR's actor-reply equality.
-import hew::mixreply;
+import hew.mixreply;
 
 type Colliding {
     c: i64;

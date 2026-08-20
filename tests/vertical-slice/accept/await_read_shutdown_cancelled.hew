@@ -6,8 +6,8 @@
 //
 // Exit-code contract: Cancelled -> 43; TimedOut -> 41; Ok -> 2; another error
 // -> 3; no reader outcome -> main fallback 99.
-import std::net::{Listener};
-import std::observe;
+import std.net.{Listener};
+import std.observe;
 
 extern "C" {
     fn hew_sched_metrics_active_workers() -> i64;
@@ -22,8 +22,8 @@ actor Reader {
         let code = match await conn.read() | after 10s {
             Ok(_body) => 2,
             Err(e) => match e {
-                NetError::Cancelled(_c) => 43,
-                NetError::TimedOut(_c) => 41,
+                NetError.Cancelled(_c) => 43,
+                NetError.TimedOut(_c) => 41,
                 _ => 3,
             },
         };

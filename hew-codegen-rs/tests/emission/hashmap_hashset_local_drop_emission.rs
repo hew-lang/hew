@@ -103,7 +103,7 @@ fn hashmap_hashset_local_drop_emission_local_map_frees_in_main() {
     let ll = emit_ll(
         r"
         fn main() -> i64 {
-            let m: HashMap<i64, i64> = HashMap::new();
+            let m: HashMap<i64, i64> = HashMap.new();
             m.insert(1, 10);
             let _n = m.len();
             0
@@ -125,7 +125,7 @@ fn hashmap_hashset_local_drop_emission_local_set_frees_in_main() {
     let ll = emit_ll(
         r"
         fn main() -> i64 {
-            let s: HashSet<i64> = HashSet::new();
+            let s: HashSet<i64> = HashSet.new();
             s.insert(1);
             0
         }
@@ -147,9 +147,9 @@ fn hashmap_hashset_local_drop_emission_map_and_set_both_free_in_main() {
     let ll = emit_ll(
         r"
         fn main() -> i64 {
-            let m: HashMap<i64, i64> = HashMap::new();
+            let m: HashMap<i64, i64> = HashMap.new();
             m.insert(1, 10);
-            let s: HashSet<i64> = HashSet::new();
+            let s: HashSet<i64> = HashSet.new();
             s.insert(2);
             0
         }
@@ -188,7 +188,7 @@ fn hashmap_hashset_local_drop_emission_spawn_escaped_map_not_freed_in_main() {
             receive fn ping() -> i64 { 1 }
         }
         fn main() -> i64 {
-            let counts: HashMap<i64, i64> = HashMap::new();
+            let counts: HashMap<i64, i64> = HashMap.new();
             counts.insert(1, 10);
             let _h = spawn Holder(counts: counts);
             0
@@ -229,7 +229,7 @@ fn hashmap_hashset_local_drop_emission_alias_then_spawn_escaped_map_not_freed_in
             receive fn ping() -> i64 { 1 }
         }
         fn main() -> i64 {
-            let counts: HashMap<i64, i64> = HashMap::new();
+            let counts: HashMap<i64, i64> = HashMap.new();
             counts.insert(1, 10);
             let counts2 = counts;
             let _h = spawn Holder(counts: counts2);

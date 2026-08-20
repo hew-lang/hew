@@ -17,10 +17,10 @@ fn main() {
     // shape a RESP array decode produces. Each `push` deep-clones the reply
     // (the `Array`'s inner `[RedisReply]` and all) into `replies`.
     var replies: [RedisReply] = [];
-    replies.push(RedisReply::Int(1));
-    replies.push(RedisReply::Int(2));
-    replies.push(RedisReply::Array([RedisReply::Int(10), RedisReply::Int(20)]));
-    replies.push(RedisReply::Text("OK"));
+    replies.push(RedisReply.Int(1));
+    replies.push(RedisReply.Int(2));
+    replies.push(RedisReply.Array([RedisReply.Int(10), RedisReply.Int(20)]));
+    replies.push(RedisReply.Text("OK"));
 
     // Read the batch back and classify each reply by its variant — proving the
     // stored tree is intact and matchable after the copy-in clone.
@@ -29,16 +29,16 @@ fn main() {
     var texts: i64 = 0;
     for reply in replies {
         match reply {
-            RedisReply::Int(n) => {
+            RedisReply.Int(n) => {
                 int_sum = int_sum + n;
             },
-            RedisReply::Array(_) => {
+            RedisReply.Array(_) => {
                 arrays = arrays + 1;
             },
-            RedisReply::Text(_) => {
+            RedisReply.Text(_) => {
                 texts = texts + 1;
             },
-            RedisReply::Nil => {},
+            RedisReply.Nil => {},
         }
     }
     println(f"replies={replies.len()}");

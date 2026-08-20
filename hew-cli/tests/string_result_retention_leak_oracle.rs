@@ -22,7 +22,7 @@ type CrashSource = fn(usize) -> String;
 
 fn markdown_wrapper_source(frames: usize) -> String {
     format!(
-        "import std::encoding::markdown;\n\
+        "import std.encoding.markdown;\n\
          fn main() {{\n\
          \x20   for _ in 0..{frames} {{\n\
          \x20       println(markdown.to_html(\"# retained-owner probe\").len());\n\
@@ -113,7 +113,7 @@ fn main() {
 }
 
 const SUSPENDING_CLOSURE_ABANDON_SOURCE: &str = r#"
-import std::channel::channel;
+import std.channel.channel;
 
 extern "C" {
     fn hew_sched_metrics_active_workers() -> i64;
@@ -157,8 +157,8 @@ fn main() {
 "#;
 
 const SUSPENDING_CLOSURE_FRESH_CRASH_SOURCE: &str = r#"
-import std::net::{Listener};
-import std::observe;
+import std.net.{Listener};
+import std.observe;
 
 actor Reader {
     let addr: string;
@@ -210,7 +210,7 @@ fn static_crash_source() -> String {
 /// file descriptor is not a heap node), so peer-side EOF is the behavioural
 /// witness for the close obligation itself.
 const SUSPENDING_CLOSURE_PEER_EOF_SOURCE: &str = r#"
-import std::net::{Listener};
+import std.net.{Listener};
 
 actor Reader {
     let addr: string;
@@ -269,7 +269,7 @@ fn tcp_resource_crash_source(frames: usize, fresh_argument: bool) -> String {
 
     format!(
         r#"
-import std::net::{{Listener}};
+import std.net.{{Listener}};
 
 actor Reader {{
     let addr: string;
@@ -373,7 +373,7 @@ fn helper_normal() -> i64 {
     };
     let witness = Witness { fd: 7 };
     let nested = make_nested("helper-nested".to_upper());
-    let table = HashMap::new<string, i64>();
+    let table = HashMap.new<string, i64>();
     text.len() + data.len() + bundle.text.len() + bundle.data.len()
         + witness.fd + nested() + table.len()
 }
@@ -413,7 +413,7 @@ fn helper_trap() -> i64 {
     };
     let witness = Witness { fd: 7 };
     let nested = make_nested("helper-nested".to_upper());
-    let table = HashMap::new<string, i64>();
+    let table = HashMap.new<string, i64>();
     text.len() + data.len() + bundle.text.len() + bundle.data.len()
         + witness.fd + nested() + table["missing"]
 }
@@ -440,7 +440,7 @@ fn main() {
 }
 
 const SUSPENDING_CLOSURE_FRESH_RESUME_CRASH_SOURCE: &str = r#"
-import std::observe;
+import std.observe;
 
 record RootBundle {
     text: string,
@@ -700,7 +700,7 @@ fn main() {
 /// main coroutine's baseline.
 fn nested_suspending_closure_crash_restart_source(frames: usize) -> String {
     const TEMPLATE: &str = r#"
-import std::observe;
+import std.observe;
 
 actor Gate {
     receive fn tick() -> i64 {

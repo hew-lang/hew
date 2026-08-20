@@ -527,7 +527,7 @@ pub fn bound_diagnostic_strings(error: &LookupError) -> Vec<String> {
             receiver,
             method,
         } => vec![format!(
-            "no impl found for `{trait_name}::{method}` on `{receiver}`"
+            "no impl found for `{trait_name}.{method}` on `{receiver}`"
         )],
         LookupError::UnknownMethod { impl_id, method } => {
             vec![format!("impl {impl_id:?} has no method `{method}`")]

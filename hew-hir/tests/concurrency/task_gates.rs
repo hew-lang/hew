@@ -571,7 +571,7 @@ fn nested_fork_block_detected() {
 
 /// A synthetic module-qualified callee must not recover a same-leaf local
 /// function.  The checker is the sole authority for qualified call targets;
-/// accepting `mod::worker()` here would reintroduce the unsafe `fn_registry`
+/// accepting `mod.worker()` here would reintroduce the unsafe `fn_registry`
 /// leaf-name fallback.
 #[test]
 fn synthetic_mod_qualified_spawn_is_not_leaf_recovered() {
@@ -579,19 +579,24 @@ fn synthetic_mod_qualified_spawn_is_not_leaf_recovered() {
         fn worker() {}
         fn main() {
             scope {
-                mod::worker();
+                mod.worker();
             }
         }
     ";
     let output = lower(source);
 
-    let has_callee_unsupported = output
-        .diagnostics
-        .iter()
-        .any(|d| matches!(d.kind, HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }));
+    let has_callee_unsupported = output.diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.kind,
+            HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }
+        ) || matches!(
+            &diagnostic.kind,
+            HirDiagnosticKind::MethodCallNoRewrite { method } if method == "worker"
+        )
+    });
     assert!(
         has_callee_unsupported,
-        "synthetic `mod::worker()` must not resolve through the local `worker` leaf; got: {:#?}",
+        "synthetic `mod.worker()` must not resolve through the local `worker` leaf; got: {:#?}",
         output.diagnostics
     );
 }

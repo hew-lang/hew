@@ -2,6 +2,7 @@
 //! the final binary from the object file emitted by Hew's Rust codegen-rs
 //! backend and the combined Hew library (`libhew.a`).
 
+use crate::diagnostic::emit_plain_diagnostic_line;
 use crate::target::TargetSpec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,7 +390,7 @@ pub(crate) fn link_executable_with_hew_lib(
     let stderr_text = String::from_utf8_lossy(&output.stderr);
 
     for line in linker_stderr_diagnostics(&stderr_text, output.status.success()) {
-        eprintln!("{line}");
+        emit_plain_diagnostic_line(&line);
     }
 
     if !output.status.success() {

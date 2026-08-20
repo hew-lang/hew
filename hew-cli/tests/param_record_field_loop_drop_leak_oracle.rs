@@ -54,7 +54,7 @@ record ClaimsLedger {
 
 fn without_terminal_claims(ledger: ClaimsLedger) -> ClaimsLedger {
     let terminal_runs = ledger.terminal_runs;
-    var claims: Vec<Claim> = Vec::new();
+    var claims: Vec<Claim> = Vec.new();
     for claim in ledger.claims {
         if !terminal_runs.contains(claim.run_id) {
             claims.push(claim);
@@ -64,11 +64,11 @@ fn without_terminal_claims(ledger: ClaimsLedger) -> ClaimsLedger {
 }
 
 fn run_case(seed: i64) -> i64 {
-    var claims: Vec<Claim> = Vec::new();
+    var claims: Vec<Claim> = Vec.new();
     claims.push(Claim { run_id: "r1", amount: 10 + seed });
     claims.push(Claim { run_id: "r2", amount: 20 + seed });
     claims.push(Claim { run_id: "r3", amount: 30 + seed });
-    var terminal: Vec<string> = Vec::new();
+    var terminal: Vec<string> = Vec.new();
     terminal.push("r2");
     let ledger = ClaimsLedger { claims: claims, terminal_runs: terminal };
     let pruned = without_terminal_claims(ledger);
@@ -110,7 +110,7 @@ fn count_claims(ledger: ClaimsLedger) -> i64 {
 }
 
 fn main() {
-    var claims: Vec<Claim> = Vec::new();
+    var claims: Vec<Claim> = Vec.new();
     claims.push(Claim { run_id: "r1", amount: 10 });
     claims.push(Claim { run_id: "r2", amount: 20 });
     claims.push(Claim { run_id: "r3", amount: 30 });
@@ -144,10 +144,10 @@ fn first_amount(ledger: ClaimsLedger) -> i64 {
 }
 
 fn main() {
-    var claims: Vec<Claim> = Vec::new();
+    var claims: Vec<Claim> = Vec.new();
     claims.push(Claim { run_id: "r1", amount: 10 });
     claims.push(Claim { run_id: "r2", amount: 20 });
-    var terminal: Vec<string> = Vec::new();
+    var terminal: Vec<string> = Vec.new();
     terminal.push("r2");
     let ledger = ClaimsLedger { claims: claims, terminal_runs: terminal };
     println(f"v={first_amount(ledger)}");
@@ -178,7 +178,7 @@ fn sum_twice(ledger: ClaimsLedger) -> i64 {
 }
 
 fn main() {
-    var claims: Vec<Claim> = Vec::new();
+    var claims: Vec<Claim> = Vec.new();
     claims.push(Claim { run_id: "r1", amount: 10 });
     claims.push(Claim { run_id: "r2", amount: 20 });
     let ledger = ClaimsLedger { claims: claims };
@@ -201,10 +201,10 @@ record ClaimsLedger {
 }
 
 fn main() {
-    var claims: Vec<Claim> = Vec::new();
+    var claims: Vec<Claim> = Vec.new();
     claims.push(Claim { run_id: "r1", amount: 10 });
     claims.push(Claim { run_id: "r2", amount: 20 });
-    var terminal: Vec<string> = Vec::new();
+    var terminal: Vec<string> = Vec.new();
     terminal.push("r2");
     let ledger = ClaimsLedger { claims: claims, terminal_runs: terminal };
     var n: i64 = 0;
@@ -229,7 +229,7 @@ record ClaimsLedger {
 }
 
 fn make_ledger() -> ClaimsLedger {
-    var claims: Vec<Claim> = Vec::new();
+    var claims: Vec<Claim> = Vec.new();
     claims.push(Claim { run_id: "r1", amount: 10 });
     claims.push(Claim { run_id: "r2", amount: 20 });
     ClaimsLedger { claims: claims }
@@ -256,13 +256,13 @@ record Holder {
 }
 
 fn main() {
-    var items: Vec<i64> = Vec::new();
+    var items: Vec<i64> = Vec.new();
     items.push(40);
     items.push(2);
     var holder = Holder { items: items };
     for value in holder.items {
         println(f"{value}");
-        holder.items = Vec::new();
+        holder.items = Vec.new();
     }
 }
 "#;
@@ -278,7 +278,7 @@ record Holder {
 }
 
 fn main() {
-    var items: Vec<i64> = Vec::new();
+    var items: Vec<i64> = Vec.new();
     items.push(40);
     items.push(2);
     var holder = Holder { items: items };
@@ -308,7 +308,7 @@ record Holder {
 }
 
 fn main() {
-    var items: Vec<i64> = Vec::new();
+    var items: Vec<i64> = Vec.new();
     items.push(40);
     items.push(2);
     var holder = Holder { items: items };

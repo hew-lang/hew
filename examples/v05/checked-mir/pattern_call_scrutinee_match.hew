@@ -10,16 +10,16 @@ enum Packet {
 
 fn make(good: bool) -> Packet {
     if good {
-        Packet::Data { a: "match-cs-a".to_upper(), b: "match-cs-b".to_upper() }
+        Packet.Data { a: "match-cs-a".to_upper(), b: "match-cs-b".to_upper() }
     } else {
-        Packet::Empty
+        Packet.Empty
     }
 }
 
 fn probe(good: bool) -> i64 {
     match make(good) {
-        Packet::Data { a, b } => a.len() + b.len(),
-        Packet::Empty => 0,
+        Packet.Data { a, b } => a.len() + b.len(),
+        Packet.Empty => 0,
     }
 }
 

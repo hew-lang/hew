@@ -2,6 +2,9 @@
 # This prevents CRLF issues when comparing test output on Windows
 *.expected text eol=lf
 *.hew text eol=lf
+/hew-cli/tests/fixtures/test_ffi_package/Cargo.toml text eol=lf
+/hew-cli/tests/fixtures/test_ffi_package/hew.toml text eol=lf
+/hew-cli/tests/fixtures/test_ffi_package/src/*.rs text eol=lf
 *.md text eol=lf
 # MIR goldens (checked-in `--dump-mir` baselines, e.g.
 # tests/mir-baselines/**/*.mir) preserve the compiler's byte-exact dump,

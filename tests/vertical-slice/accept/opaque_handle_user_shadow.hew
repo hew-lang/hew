@@ -3,7 +3,7 @@
 // `net.listen`: the returned value is the runtime pointer handle, not the
 // actor's aggregate layout.  Closing it exercises the real ownership path.
 
-import std::net::{Connection};
+import std.net.{Connection};
 
 actor Listener {
     receive fn register_client(cid: string) {

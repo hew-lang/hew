@@ -15,7 +15,7 @@ fn two_sum(arr: Vec<i64>, target: i64) -> i64 {
 const ITERS: i64 = 10000;
 
 fn main() {
-    let arr: Vec<i64> = Vec::new();
+    let arr: Vec<i64> = Vec.new();
     for k in 0 .. 1000 {
         arr.push(k);
     }

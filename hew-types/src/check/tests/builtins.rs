@@ -511,8 +511,8 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
 #[test]
 fn test_qualified_builtin_type_names_retain_presentation_and_builtin_identity() {
     let source = concat!(
-        "import std::stream;\n",
-        "import std::channel::channel as channel_api;\n",
+        "import std.stream;\n",
+        "import std.channel.channel as channel_api;\n",
         "\n",
         "fn stream_id(s: stream.Stream<i64>) -> stream.Stream<i64> { s }\n",
         "fn close_sender(tx: channel_api.Sender) {\n",

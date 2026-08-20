@@ -1,6 +1,6 @@
 // Arena<T>: three distinct inserts round-trip to their exact values. Forged
 // keys with the right arena identity but out-of-range indices fail closed.
-import std::arena::{ Arena, Key };
+import std.arena.{ Arena, Key };
 
 fn main() {
     let store: Arena<string> = arena.new();

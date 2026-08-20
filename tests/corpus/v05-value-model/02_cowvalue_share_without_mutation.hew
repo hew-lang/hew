@@ -19,10 +19,8 @@
 //   - passing a Value to an immutable-read callee → borrow_read (no refcount)
 //   - cow_share when the value survives past the call
 //   - actor send of a CowValue → share mode (safe: COW guarantees isolation)
-
 actor Logger {
-    receive fn log(msg: string) {
-    }
+    receive fn log(msg: string) {}
 }
 
 fn print_greeting(s: string) {
@@ -35,10 +33,10 @@ fn measure_len(s: string) -> i64 {
 }
 
 fn main() {
-    let greeting = "hello, world";   // string is CowValue
-    print_greeting(greeting);        // read-only callee; cow_share
-    let n = measure_len(greeting);   // read-only callee; borrow_read (len)
+    let greeting = "hello, world"; // string is CowValue
+    print_greeting(greeting); // read-only callee; cow_share
+    let n = measure_len(greeting); // read-only callee; borrow_read (len)
     let logger = spawn Logger;
-    logger.log(greeting);            // actor send; share mode (CowValue safe)
+    logger.log(greeting); // actor send; share mode (CowValue safe)
     let _ = n;
 }

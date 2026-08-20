@@ -189,7 +189,7 @@ fn extern_symbol_consuming_release_keeps_consume_mark_without_descriptor() {
 
     let (_, output) = parse_and_typecheck_inline(
         r"
-        import std::concurrency::lambda_actor;
+        import std.concurrency.lambda_actor;
 
         fn exercise(handle: lambda_actor.LambdaActorHandle) {
             handle.release();
@@ -237,7 +237,7 @@ fn extern_symbol_consuming_release_keeps_consume_mark_without_descriptor() {
 
     let (_, reused_output) = parse_and_typecheck_inline(
         r"
-        import std::concurrency::lambda_actor;
+        import std.concurrency.lambda_actor;
 
         fn exercise(handle: lambda_actor.LambdaActorHandle) {
             handle.release();

@@ -30,22 +30,22 @@ extern \"C\" {{\n\
 }}\n\
 enum Outcome {{ Loaded(Handle); Failed(string); }}\n\
 fn make(ok: bool) -> Outcome {{\n\
-    if ok {{ Outcome::Loaded(Handle {{ raw: unsafe {{ hew_deque_new() }} }}) }}\n\
-    else {{ Outcome::Failed(\"bad\".to_upper()) }}\n\
+    if ok {{ Outcome.Loaded(Handle {{ raw: unsafe {{ hew_deque_new() }} }}) }}\n\
+    else {{ Outcome.Failed(\"bad\".to_upper()) }}\n\
 }}\n\
 fn main() {{\n\
     for _ in 0..{frames} {{\n\
         match make(true) {{\n\
-            Outcome::Loaded(handle) => print(handle.value()),\n\
-            Outcome::Failed(message) => print(message + \"!\"),\n\
+            Outcome.Loaded(handle) => print(handle.value()),\n\
+            Outcome.Failed(message) => print(message + \"!\"),\n\
         }}\n\
         match make(false) {{\n\
-            Outcome::Loaded(handle) => print(handle.value()),\n\
-            Outcome::Failed(message) => print(message + \"!\"),\n\
+            Outcome.Loaded(handle) => print(handle.value()),\n\
+            Outcome.Failed(message) => print(message + \"!\"),\n\
         }}\n\
         match make(true) {{\n\
-            Outcome::Loaded(handle) => handle.sink(),\n\
-            Outcome::Failed(message) => print(message + \"!\"),\n\
+            Outcome.Loaded(handle) => handle.sink(),\n\
+            Outcome.Failed(message) => print(message + \"!\"),\n\
         }}\n\
     }}\n\
 }}\n"
@@ -53,7 +53,7 @@ fn main() {{\n\
 }
 
 const XML_STRING_TEMP_SOURCE: &str = "\
-import std::encoding::xml;\n\
+import std.encoding.xml;\n\
 fn parse_result(s: string) -> Result<xml.Node, string> {\n\
     if xml.is_wellformed(s) { Ok(xml.parse(s)) } else { Err(\"not well-formed\") }\n\
 }\n\
@@ -65,7 +65,7 @@ fn main() {\n\
 }\n";
 
 const XML_PROJECTED_HELPER_CRASH_SOURCE: &str = r#"
-import std::encoding::xml;
+import std.encoding.xml;
 
 enum Pair {
     Both(xml.Node, string);
@@ -74,14 +74,14 @@ enum Pair {
 
 fn consume(pair: Pair, trigger: i64) -> i64 {
     match pair {
-        Pair::Both(node, text) => {
+        Pair.Both(node, text) => {
             node.close();
             if trigger != 0 {
                 panic("crash after explicit close");
             }
             text.len()
         },
-        Pair::Nothing => 0,
+        Pair.Nothing => 0,
     }
 }
 
@@ -99,7 +99,7 @@ actor Crasher {
             Ok(value) => value,
             Err(_) => 0,
         };
-        let pair = Pair::Both(xml.parse("<x/>"), "hi");
+        let pair = Pair.Both(xml.parse("<x/>"), "hi");
         consume(pair, trigger) + seed
     }
 }
@@ -171,7 +171,7 @@ fn push_then_maybe_crash(value: bytes, trigger: i64) {
 }
 
 fn build_packet(trigger: i64) -> bytes {
-    let value = bytes::new();
+    let value = bytes.new();
     push_then_maybe_crash(value, trigger);
     value
 }

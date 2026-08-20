@@ -8,7 +8,7 @@ actor Echo {
 }
 
 fn use_it(v: LocalPid<Echo>) {
-    match await v.take(1) { Ok(v_v) => println(f"echo {v_v}"), Err(_) => println("err"), }
+    match await v.take(1) { Result.Ok(v_v) => println(f"echo {v_v}"), Err(_) => println("err"), }
 }
 
 fn main() {

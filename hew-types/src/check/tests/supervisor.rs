@@ -565,7 +565,7 @@ fn supervisor_init_arg_hashmap_rejects() {
         }
 
         supervisor App {
-            child i: Index(entries: HashMap::<string, i64>::new());
+            child i: Index(entries: HashMap<string, i64>.new());
         }
         ",
         "HashMap<string, i64>",
@@ -585,7 +585,7 @@ fn supervisor_init_arg_hashset_rejects() {
         }
 
         supervisor App {
-            child s: Seen(ids: HashSet::<i64>::new());
+            child s: Seen(ids: HashSet<i64>.new());
         }
         ",
         "HashSet<i64>",

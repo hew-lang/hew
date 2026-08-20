@@ -3,9 +3,9 @@
 //! `to_hex`, `to_binary`, `to_octal`, `pad_left`, `pad_right`, and `repeat`
 //! are all pure, allocation-only functions with no I/O or handles.
 
-import std::fmt;
+import std.fmt;
 
-import std::testing;
+import std.testing;
 
 // ── to_hex ────────────────────────────────────────────────────────────
 #[test]

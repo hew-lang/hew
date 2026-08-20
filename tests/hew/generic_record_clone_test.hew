@@ -12,9 +12,12 @@
 //! mutates the original after cloning and asserts the clone is unaffected,
 //! proving value-semantics (the clone is a copy, not an alias).
 
-import std::testing;
+import std.testing;
 
-type Pair<A, B> { a: A; b: B; }
+type Pair<A, B> {
+    a: A;
+    b: B;
+}
 
 // Generic record clone over scalar leaves; mutate the original and assert
 // the clone is independent (deep copy, not alias).

@@ -11,11 +11,11 @@ enum Shape {
 }
 
 fn main() -> i64 {
-    let s = Shape::Rect(40, 2);
+    let s = Shape.Rect(40, 2);
     let back = Shape.decode(s.encode());
     match back {
-        Shape::Dot => 0,
-        Shape::Circle(r) => r,
-        Shape::Rect(w, h) => w + h,
+        Shape.Dot => 0,
+        Shape.Circle(r) => r,
+        Shape.Rect(w, h) => w + h,
     }
 }

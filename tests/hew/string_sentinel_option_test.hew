@@ -4,7 +4,7 @@
 //! misses assert `None`; the index-0 hit pins that `Some(0)` is distinct
 //! from `None` (the old `-1` sentinel's footgun neighbourhood).
 
-import std::testing;
+import std.testing;
 
 // ── find ────────────────────────────────────────────────────────────────────
 #[test]

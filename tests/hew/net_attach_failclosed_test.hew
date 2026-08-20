@@ -5,9 +5,9 @@
 //! `on_close` protocol IDs: a stale numeric index would hit the actor dispatch
 //! trap on the background reader thread.
 
-import std::net;
+import std.net;
 
-import std::net::websocket;
+import std.net.websocket;
 
 actor WebSocketHandlerProbe {
     receive fn on_message(text: string) {}
@@ -20,11 +20,11 @@ actor WebSocketPeer {
 
     receive fn connect_and_hold() {
         match websocket.connect(url) {
-            Ok(conn) => {
+            .Ok(conn) => {
                 sleep(500ms);
                 conn.close();
             },
-            Err(err) => {
+            .Err(err) => {
                 panic(f"loopback WebSocket connect failed: {net.net_error_message(err)}");
             },
         }
@@ -34,7 +34,7 @@ actor WebSocketPeer {
 #[test]
 fn test_websocket_typed_attach_dispatches_protocol_ids() {
     match websocket.listen("127.0.0.1:0") {
-        Ok(server) => {
+        .Ok(server) => {
             let peer = spawn WebSocketPeer(url: f"ws://127.0.0.1:{server.port()}/");
             peer.connect_and_hold();
             let conn = server.accept();
@@ -44,7 +44,7 @@ fn test_websocket_typed_attach_dispatches_protocol_ids() {
             conn.close();
             server.close();
         },
-        Err(err) => {
+        .Err(err) => {
             panic(f"loopback WebSocket listen failed: {net.net_error_message(err)}");
         },
     }

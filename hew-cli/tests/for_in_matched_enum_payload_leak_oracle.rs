@@ -64,11 +64,11 @@ fn for_in_matched_payload_loop_source(frames: usize) -> String {
         "enum Msg {{ Empty; Batch([i64]) }}\n\
          \n\
          fn frame(n: i64) -> i64 {{\n\
-         \x20   let m: Msg = if n % 2 == 0 {{ Msg::Batch([n, n + 1, n + 2]) }} else {{ Msg::Empty }};\n\
+         \x20   let m: Msg = if n % 2 == 0 {{ Msg.Batch([n, n + 1, n + 2]) }} else {{ Msg.Empty }};\n\
          \x20   var sum: i64 = 0;\n\
          \x20   match m {{\n\
-         \x20       Msg::Batch(items) => {{ for it in items {{ sum = sum + it; }} }},\n\
-         \x20       Msg::Empty => {{ sum = sum + 1; }},\n\
+         \x20       Msg.Batch(items) => {{ for it in items {{ sum = sum + it; }} }},\n\
+         \x20       Msg.Empty => {{ sum = sum + 1; }},\n\
          \x20   }}\n\
          \x20   sum\n\
          }}\n\
@@ -93,11 +93,11 @@ fn index_read_matched_payload_loop_source(frames: usize) -> String {
         "enum Msg {{ Empty; Batch([i64]) }}\n\
          \n\
          fn frame(n: i64) -> i64 {{\n\
-         \x20   let m: Msg = if n % 2 == 0 {{ Msg::Batch([n, n + 1, n + 2]) }} else {{ Msg::Empty }};\n\
+         \x20   let m: Msg = if n % 2 == 0 {{ Msg.Batch([n, n + 1, n + 2]) }} else {{ Msg.Empty }};\n\
          \x20   var sum: i64 = 0;\n\
          \x20   match m {{\n\
-         \x20       Msg::Batch(items) => {{ sum = sum + items[0] + items.len(); }},\n\
-         \x20       Msg::Empty => {{ sum = sum + 1; }},\n\
+         \x20       Msg.Batch(items) => {{ sum = sum + items[0] + items.len(); }},\n\
+         \x20       Msg.Empty => {{ sum = sum + 1; }},\n\
          \x20   }}\n\
          \x20   sum\n\
          }}\n\
@@ -120,11 +120,11 @@ fn index_read_matched_payload_loop_source(frames: usize) -> String {
 const FOR_IN_PAYLOAD_EXACT_SOURCE: &str = "enum Msg { Empty; Batch([i64]) }\n\
      \n\
      fn main() {\n\
-     \x20   let m: Msg = Msg::Batch([10, 20, 30]);\n\
+     \x20   let m: Msg = Msg.Batch([10, 20, 30]);\n\
      \x20   var sum: i64 = 0;\n\
      \x20   match m {\n\
-     \x20       Msg::Batch(items) => { for it in items { sum = sum + it; } },\n\
-     \x20       Msg::Empty => {},\n\
+     \x20       Msg.Batch(items) => { for it in items { sum = sum + it; } },\n\
+     \x20       Msg.Empty => {},\n\
      \x20   }\n\
      \x20   println(f\"{sum}\");\n\
      }\n";

@@ -10,9 +10,9 @@
 // transitions-after-subscribe; the owner sends the current state as a
 // self-transition at attach so a watcher joining an already-started
 // machine fires immediately.
-import std::concurrency::lifecycle;
+import std.concurrency.lifecycle.{Lifecycle, LifecycleEvent};
 
-import std::channel::channel;
+import std.channel.channel;
 
 /// One observed transition. Field names carry the `_state` suffix
 /// because `from` is a hard keyword (the select arm binder).
@@ -22,19 +22,19 @@ record Transition {
 }
 
 actor Owner {
-    var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle::Created;
+    var lc: Lifecycle<i64> = .Created;
     receive fn drive(tx: channel.Sender<Transition>) {
 
         // Attach snapshot: a self-transition naming the current state.
         let current = lc.state_name();
         tx.send(Transition { from_state: current, to_state: lc.state_name() });
         let before_init = lc.state_name();
-        lc.step(Initialise);
+        lc.step(LifecycleEvent.Initialise);
         if before_init != lc.state_name() {
             tx.send(Transition { from_state: before_init, to_state: lc.state_name() });
         }
         let before_start = lc.state_name();
-        lc.step(lifecycle.LifecycleEvent::Started { handle: 7 });
+        lc.step(LifecycleEvent.Started { handle: 7 });
         if before_start != lc.state_name() {
             tx.send(Transition { from_state: before_start, to_state: lc.state_name() });
         }
@@ -49,7 +49,7 @@ actor Observer {
             select {
                 t from rx.recv() => {
                     match t {
-                        Some(tr) => {
+                        .Some(tr) => {
                             println(f"{tr.from_state} -> {tr.to_state}");
                             match tr.to_state {
                                 "Running" => println("observer: child is up"),
@@ -57,7 +57,7 @@ actor Observer {
                                 _ => {},
                             }
                         },
-                        None => {
+                        .None => {
                             println("watch closed");
                             waiting = false;
                         },

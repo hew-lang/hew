@@ -49,6 +49,22 @@ mod wire;
 /// Build a single-module program whose one module has the given dotted path
 /// (e.g. `["std", "math"]`) and contains `source`'s items.
 pub(super) fn check_source_in_module(source: &str, module_path: Vec<String>) -> TypeCheckOutput {
+    check_source_in_module_with_prelude_policy(source, module_path, false)
+}
+
+/// Exercise identity defenses below the public prelude-collision gate.
+pub(super) fn check_source_in_module_allowing_prelude_redeclaration(
+    source: &str,
+    module_path: Vec<String>,
+) -> TypeCheckOutput {
+    check_source_in_module_with_prelude_policy(source, module_path, true)
+}
+
+fn check_source_in_module_with_prelude_policy(
+    source: &str,
+    module_path: Vec<String>,
+    allow_prelude_redeclaration: bool,
+) -> TypeCheckOutput {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -73,6 +89,7 @@ pub(super) fn check_source_in_module(source: &str, module_path: Vec<String>) -> 
         module_doc: None,
     };
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.checking_embedded_builtins = allow_prelude_redeclaration;
     checker.check_program(&program)
 }
 
@@ -219,6 +236,7 @@ pub(super) fn make_user_import(
     ImportDecl {
         path: path.iter().map(ToString::to_string).collect(),
         spec,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: Some(items),
@@ -383,6 +401,19 @@ pub(super) fn check_source(source: &str) -> TypeCheckOutput {
         parse_result.errors
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&parse_result.program)
+}
+
+/// Exercise identity defenses below the public prelude-collision gate.
+pub(super) fn check_source_allowing_prelude_redeclaration(source: &str) -> TypeCheckOutput {
+    let parse_result = hew_parser::parse(source);
+    assert!(
+        parse_result.errors.is_empty(),
+        "test source should parse cleanly, got: {:#?}",
+        parse_result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.checking_embedded_builtins = true;
     checker.check_program(&parse_result.program)
 }
 

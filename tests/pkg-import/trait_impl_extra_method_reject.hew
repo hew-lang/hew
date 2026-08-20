@@ -6,8 +6,8 @@
 // resolve `P` to its owner-qualified identity, read THAT trait's known method
 // set, and REJECT the extraneous method — never accept it by reading the
 // polluted bare/neighbour method set.
-import hew::multitrait::{ Proc as P, Tally, ProcErr };
-import hew::multitraitb;
+import hew.multitrait.{ Proc as P, Tally, ProcErr };
+import hew.multitraitb;
 
 type W {
     id: i64;

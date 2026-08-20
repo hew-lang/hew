@@ -17,7 +17,7 @@
 //! }
 //! ```
 
-import std::string;
+import std.string;
 
 /// A parsed semantic version.
 type Version {

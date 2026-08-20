@@ -12,8 +12,8 @@ enum Left { Same; Other }
 enum Right { Same; Other }
 fn inspect(value: Left) -> i64 {
     match value {
-        Right::Same => 1,
-        Left::Other => 0,
+        Right.Same => 1,
+        Left.Other => 0,
     }
 }
 ",
@@ -22,12 +22,12 @@ fn inspect(value: Left) -> i64 {
         errors
             .iter()
             .any(|error| matches!(error.kind, TypeErrorKind::NonExhaustiveMatch)),
-        "the foreign same-leaf unit variant must not cover Left::Same: {errors:#?}"
+        "the foreign same-leaf unit variant must not cover Left.Same: {errors:#?}"
     );
     assert!(
         errors.iter().any(|error| {
             matches!(error.kind, TypeErrorKind::Mismatch { .. })
-                && error.message.contains("Right::Same")
+                && error.message.contains("Right.Same")
         }),
         "the foreign unit variant must be rejected by exact owner: {errors:#?}"
     );
@@ -41,8 +41,8 @@ enum Left { Same(i64); Other }
 enum Right { Same(i64); Other }
 fn inspect(value: Left) -> i64 {
     match value {
-        Right::Same(v) => v,
-        Left::Other => 0,
+        Right.Same(v) => v,
+        Left.Other => 0,
     }
 }
 ",
@@ -51,12 +51,12 @@ fn inspect(value: Left) -> i64 {
         errors
             .iter()
             .any(|error| matches!(error.kind, TypeErrorKind::NonExhaustiveMatch)),
-        "the foreign same-leaf tuple variant must not cover Left::Same: {errors:#?}"
+        "the foreign same-leaf tuple variant must not cover Left.Same: {errors:#?}"
     );
     assert!(
         errors.iter().any(|error| {
             matches!(error.kind, TypeErrorKind::Mismatch { .. })
-                && error.message.contains("Right::Same")
+                && error.message.contains("Right.Same")
         }),
         "the foreign tuple variant must be rejected by exact owner: {errors:#?}"
     );
@@ -70,8 +70,8 @@ enum Left { Same { value: i64 }; Other }
 enum Right { Same { value: i64 }; Other }
 fn inspect(value: Left) -> i64 {
     match value {
-        Right::Same { value } => value,
-        Left::Other => 0,
+        Right.Same { value } => value,
+        Left.Other => 0,
     }
 }
 ",
@@ -80,12 +80,12 @@ fn inspect(value: Left) -> i64 {
         pattern_errors
             .iter()
             .any(|error| matches!(error.kind, TypeErrorKind::NonExhaustiveMatch)),
-        "the foreign same-leaf struct variant must not cover Left::Same: {pattern_errors:#?}"
+        "the foreign same-leaf struct variant must not cover Left.Same: {pattern_errors:#?}"
     );
     assert!(
         pattern_errors.iter().any(|error| {
             matches!(error.kind, TypeErrorKind::Mismatch { .. })
-                && error.message.contains("Right::Same")
+                && error.message.contains("Right.Same")
         }),
         "the foreign struct pattern must be rejected by exact owner: {pattern_errors:#?}"
     );
@@ -95,7 +95,7 @@ fn inspect(value: Left) -> i64 {
 enum Left { Same { value: i64 }; Other }
 enum Right { Same { value: i64 }; Other }
 fn make() -> Left {
-    Right::Same { value: 1 }
+    Right.Same { value: 1 }
 }
 ",
     );
@@ -228,6 +228,45 @@ fn foo(opt: Option<i64>) -> i64 {
     }
 
     #[test]
+    fn contextual_option_arms_preserve_constructor_origin() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(opt: Option<i64>) -> i64 {
+    match opt {
+        .Some(value) => value,
+        .None => 0,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 2, "expected two contextual arms");
+
+        let some_arm = resolutions
+            .values()
+            .find(|resolution| {
+                resolution
+                    .variant_match
+                    .as_ref()
+                    .is_some_and(|variant| variant.variant_name == "Some")
+            })
+            .expect("expected a contextual Some arm");
+        assert_eq!(some_arm.pattern_kind, PatternKind::VariantCtor);
+        assert_eq!(some_arm.payload_bindings.len(), 1);
+        assert_eq!(some_arm.payload_bindings[0].binding_name, "value");
+
+        let none_arm = resolutions
+            .values()
+            .find(|resolution| {
+                resolution
+                    .variant_match
+                    .as_ref()
+                    .is_some_and(|variant| variant.variant_name == "None")
+            })
+            .expect("expected a contextual None arm");
+        assert_eq!(none_arm.pattern_kind, PatternKind::VariantCtor);
+        assert!(none_arm.payload_bindings.is_empty());
+    }
+
+    #[test]
     fn option_some_wildcard_payload_emits_no_binding() {
         let resolutions = pattern_resolutions(
             r"
@@ -347,6 +386,34 @@ fn foo(s: Shape) -> i64 {
         assert_eq!(circle_arm.payload_bindings[0].ty, Ty::I64);
     }
 
+    #[test]
+    fn dotted_tuple_variant_resolves_from_path_segments() {
+        let resolutions = pattern_resolutions(
+            r"
+enum Shape { Circle(i64); Square(i64) }
+fn foo(s: Shape) -> i64 {
+    match s {
+        Shape.Circle(radius) => radius,
+        Shape.Square(side) => side,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 2);
+        let circle = resolutions
+            .values()
+            .find(|resolution| {
+                resolution
+                    .variant_match
+                    .as_ref()
+                    .is_some_and(|variant| variant.variant_name == "Circle")
+            })
+            .expect("expected a dotted Circle arm");
+        assert_eq!(circle.pattern_kind, PatternKind::VariantCtor);
+        assert_eq!(circle.payload_bindings.len(), 1);
+        assert_eq!(circle.payload_bindings[0].binding_name, "radius");
+        assert_eq!(circle.payload_bindings[0].ty, Ty::I64);
+    }
+
     // ── match expression (not statement) ────────────────────────────────────
 
     #[test]
@@ -422,6 +489,38 @@ fn foo(w: Weird) -> i64 {
     }
 
     #[test]
+    fn let_else_record_variant_records_payload_bindings() {
+        let resolutions = pattern_resolutions(
+            r"
+enum Packet {
+    Data { a: string, b: string };
+    Empty;
+}
+
+fn probe(packet: Packet) -> i64 {
+    let Packet.Data { a, b: _ } = packet else {
+        return 0;
+    };
+    a.len()
+}
+",
+        );
+        let arm = resolutions
+            .values()
+            .find(|resolution| {
+                resolution
+                    .variant_match
+                    .as_ref()
+                    .is_some_and(|variant| variant.variant_name == "Data")
+            })
+            .expect("let-else record variant must publish its resolution");
+        assert_eq!(arm.payload_bindings.len(), 1);
+        assert_eq!(arm.payload_bindings[0].binding_name, "a");
+        assert_eq!(arm.payload_bindings[0].field_idx, 0);
+        assert_eq!(arm.payload_bindings[0].ty, Ty::String);
+    }
+
+    #[test]
     fn record_match_omitted_field_without_rest_fails_closed() {
         let output = check_source(
             r"
@@ -481,6 +580,35 @@ fn foo(p: Point) -> i64 {
         assert_eq!(plan.fields[1].sub, PlanSub::Wildcard);
         let rest_start = source.find("..").unwrap();
         assert_eq!(plan.fields[1].span, rest_start..rest_start + 2);
+    }
+
+    #[test]
+    fn qualified_record_variant_builds_pattern_plan() {
+        let output = check_source(
+            r#"
+enum State {
+    Loaded { label: string };
+    Empty;
+}
+
+fn label(state: State) -> string {
+    match state {
+        State.Loaded { label } => label,
+        State.Empty => "empty",
+    }
+}
+"#,
+        );
+        assert!(
+            output.errors.is_empty(),
+            "qualified record variant should check cleanly: {:#?}",
+            output.errors
+        );
+        assert_eq!(output.pattern_plans.len(), 1);
+        let plan = output.pattern_plans.values().next().unwrap();
+        assert_eq!(plan.fields.len(), 1);
+        assert_eq!(plan.fields[0].name, "label");
+        assert_eq!(plan.fields[0].sub, PlanSub::Binding("label".to_string()));
     }
 
     #[test]
@@ -672,7 +800,7 @@ fn foo(opt: Option<i64>) -> i64 {
 enum Tri { Bar { c: i64; a: i64; b: i64 } }
 fn foo(t: Tri) -> i64 {
     match t {
-        Tri::Bar { a } => a,
+        Tri.Bar { a } => a,
     }
 }",
         );
@@ -846,7 +974,7 @@ fn record_case(p: Point) -> i64 {
 enum Packet { Data { value: i64 }; Empty }
 fn f(p: Packet) -> i64 {
     match p {
-        Packet::Data { value: MAX } => MAX,
+        Packet.Data { value: MAX } => MAX,
         Empty => 0,
     }
 }",
@@ -870,8 +998,8 @@ enum Color { Red; Blue }
 enum Packet { Data { value: Color }; Empty }
 fn f(p: Packet) -> i64 {
     match p {
-        Packet::Data { value: Red } => 1,
-        Packet::Data { value: _ } => 2,
+        Packet.Data { value: Red } => 1,
+        Packet.Data { value: _ } => 2,
         Empty => 0,
     }
 }",
@@ -902,7 +1030,7 @@ fn f(p: Packet) -> i64 {
 enum Packet { Data { value: i64 }; Empty }
 fn f(p: Packet) -> i64 {
     match p {
-        Packet::Data { value: Packet::Empty } => 0,
+        Packet.Data { value: Packet.Empty } => 0,
         _ => 1,
     }
 }",
@@ -970,7 +1098,7 @@ fn f(pair: (i64, i64)) -> i64 {
 enum Packet { Data { value: i64 }; Empty }
 fn f(p: Packet) -> i64 {
     match p {
-        Packet::Data { value: MAX } => MAX,
+        Packet.Data { value: MAX } => MAX,
         // Empty arm intentionally omitted
     }
 }",
@@ -1001,11 +1129,11 @@ fn constructor_payload_literal_is_accepted() {
         r"
 enum Shape { Line(i64); Square(i64) }
 fn main() -> i64 {
-    let s = Shape::Line(2);
+    let s = Shape.Line(2);
     match s {
-        Shape::Line(1) => 999,
-        Shape::Line(x) => x,
-        Shape::Square(_) => 0,
+        Shape.Line(1) => 999,
+        Shape.Line(x) => x,
+        Shape.Square(_) => 0,
     }
 }",
     );
@@ -1031,11 +1159,11 @@ fn constructor_payload_nested_ctor_is_accepted_and_recorded() {
 enum Color { Red; Green }
 enum Shape { Line(Color); Square(i64) }
 fn main() -> i64 {
-    let s = Shape::Line(Color::Red);
+    let s = Shape.Line(Color.Red);
     match s {
-        Shape::Line(Color::Red) => 1,
-        Shape::Line(_) => 0,
-        Shape::Square(_) => 0,
+        Shape.Line(Color.Red) => 1,
+        Shape.Line(_) => 0,
+        Shape.Square(_) => 0,
     }
 }",
     );
@@ -1102,10 +1230,10 @@ fn constructor_payload_tuple_destructure_is_accepted() {
         r"
 enum Pair { Both((i64, i64)); None }
 fn main() -> i64 {
-    let p = Pair::Both((1, 2));
+    let p = Pair.Both((1, 2));
     match p {
-        Pair::Both((a, b)) => a,
-        Pair::None => 0,
+        Pair.Both((a, b)) => a,
+        Pair.None => 0,
     }
 }",
     );
@@ -1126,8 +1254,8 @@ fn constructor_payload_binding_and_wildcard_are_accepted() {
 enum Shape { Line(i64); Square(i64) }
 fn foo(s: Shape) -> i64 {
     match s {
-        Shape::Line(x) => x,
-        Shape::Square(_) => 0,
+        Shape.Line(x) => x,
+        Shape.Square(_) => 0,
     }
 }",
     );
@@ -1194,7 +1322,7 @@ fn generic_machine_struct_state_qualified_constructor_infers() {
 
 
             on Crash: Running => Faulted {
-                Work::Faulted { code: event.code }
+                Work.Faulted { code: event.code }
             }
             on Crash: Faulted => Faulted {
                 state
@@ -1228,7 +1356,7 @@ fn non_generic_machine_struct_state_constructor_regression_free() {
 
 
             on OpenDoor: Closed => Opened {
-                Door::Opened { handle: event.id }
+                Door.Opened { handle: event.id }
             }
             on CloseDoor: Opened => Closed {
                 Closed

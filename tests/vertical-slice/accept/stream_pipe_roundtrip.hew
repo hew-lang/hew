@@ -4,7 +4,7 @@
 // The body sums each chunk's length, proving the bytes arrive intact and EOF
 // fires only after the buffered items drain (sink.close() => graceful EOF).
 // Exit code carries the summed length: b"hi"(2) + b"abc"(3) = 5.
-import std::stream;
+import std.stream;
 
 fn main() -> i64 {
     let (sink, source) = stream.bytes_pipe(16);

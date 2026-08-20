@@ -1,8 +1,9 @@
-//! A package-private `Result` record must not replace the builtin enum.
+//! Registering an ordinary package record must not disturb the builtin Result
+//! enum used by unrelated stdlib APIs.
 
-import hew::testffi;
+import hew.testffi;
 
-import std::string;
+import std.string;
 
 fn main() {
     match string.try_to_int("42") {

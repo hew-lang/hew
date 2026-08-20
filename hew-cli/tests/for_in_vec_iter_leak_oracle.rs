@@ -119,7 +119,7 @@ const SLOPE_TOLERANCE: usize = 5;
 fn rvalue_source_loop_source(frames: usize) -> String {
     format!(
         "fn make_vec(n: i64) -> Vec<i64> {{\n\
-         \x20   let v: Vec<i64> = Vec::new();\n\
+         \x20   let v: Vec<i64> = Vec.new();\n\
          \x20   v.push(n);\n\
          \x20   v.push(n * 2);\n\
          \x20   return v;\n\
@@ -150,7 +150,7 @@ fn place_source_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let v: Vec<i64> = Vec::new();\n\
+         \x20       let v: Vec<i64> = Vec.new();\n\
          \x20       v.push(i);\n\
          \x20       v.push(i * 2);\n\
          \x20       for x in v {{\n\
@@ -171,7 +171,7 @@ fn hashset_owned_field_loop_source(frames: usize) -> String {
         "type SetBox {{ words: HashSet<string> }}\n\
          \n\
          fn make_box() -> SetBox {{\n\
-         \x20   let words: HashSet<string> = HashSet::new();\n\
+         \x20   let words: HashSet<string> = HashSet.new();\n\
          \x20   words.insert(\"field\" + \"-alpha-padding-padding\");\n\
          \x20   words.insert(\"field\" + \"-beta-padding-padding\");\n\
          \x20   words.insert(\"field\" + \"-gamma-padding-padding\");\n\
@@ -203,7 +203,7 @@ fn hashset_owned_field_loop_source(frames: usize) -> String {
 fn bool_rvalue_source_loop_source(frames: usize) -> String {
     format!(
         "fn make_vec(n: i64) -> Vec<bool> {{\n\
-         \x20   let v: Vec<bool> = Vec::new();\n\
+         \x20   let v: Vec<bool> = Vec.new();\n\
          \x20   v.push(true);\n\
          \x20   v.push(false);\n\
          \x20   return v;\n\
@@ -241,7 +241,7 @@ fn owned_record_iter_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let v: Vec<Item> = Vec::new();\n\
+         \x20       let v: Vec<Item> = Vec.new();\n\
          \x20       v.push(Item {{ name: \"iter-owned-name\", tag: \"iter-owned-tag\" }});\n\
          \x20       v.push(Item {{ name: \"iter-owned-two\", tag: \"iter-owned-2t\" }});\n\
          \x20       for it in v.iter() {{\n\
@@ -265,7 +265,7 @@ fn string_iter_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let v: Vec<string> = Vec::new();\n\
+         \x20       let v: Vec<string> = Vec.new();\n\
          \x20       v.push(\"iter-string-alpha\");\n\
          \x20       v.push(\"iter-string-beta\");\n\
          \x20       for s in v.iter() {{\n\
@@ -286,7 +286,7 @@ fn empty_nested_vec_iter_loop_source(frames: usize) -> String {
         "fn main() -> i64 {{\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let rows: Vec<Vec<string>> = Vec::new();\n\
+         \x20       let rows: Vec<Vec<string>> = Vec.new();\n\
          \x20       for row in rows.iter() {{\n\
          \x20           let _ = row.len();\n\
          \x20       }}\n\
@@ -306,10 +306,10 @@ fn nested_vec_full_drain_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let rows: Vec<Vec<string>> = Vec::new();\n\
+         \x20       let rows: Vec<Vec<string>> = Vec.new();\n\
          \x20       var r: i64 = 0;\n\
          \x20       while r < 8 {{\n\
-         \x20           let row: Vec<string> = Vec::new();\n\
+         \x20           let row: Vec<string> = Vec.new();\n\
          \x20           row.push(\"nested\" + \"-value\");\n\
          \x20           rows.push(row);\n\
          \x20           r = r + 1;\n\
@@ -330,8 +330,8 @@ fn nested_hashmap_full_drain_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let maps: Vec<HashMap<string, i64>> = Vec::new();\n\
-         \x20       let map: HashMap<string, i64> = HashMap::new();\n\
+         \x20       let maps: Vec<HashMap<string, i64>> = Vec.new();\n\
+         \x20       let map: HashMap<string, i64> = HashMap.new();\n\
          \x20       map.insert(\"nested\" + \"-key\", 7);\n\
          \x20       maps.push(map);\n\
          \x20       for yielded in maps.iter() {{\n\
@@ -350,8 +350,8 @@ fn nested_hashset_full_drain_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let sets: Vec<HashSet<string>> = Vec::new();\n\
-         \x20       let set: HashSet<string> = HashSet::new();\n\
+         \x20       let sets: Vec<HashSet<string>> = Vec.new();\n\
+         \x20       let set: HashSet<string> = HashSet.new();\n\
          \x20       set.insert(\"nested\" + \"-member\");\n\
          \x20       sets.push(set);\n\
          \x20       for yielded in sets.iter() {{\n\
@@ -372,10 +372,10 @@ fn nested_vec_break_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let rows: Vec<Vec<string>> = Vec::new();\n\
+         \x20       let rows: Vec<Vec<string>> = Vec.new();\n\
          \x20       var r: i64 = 0;\n\
          \x20       while r < 3 {{\n\
-         \x20           let row: Vec<string> = Vec::new();\n\
+         \x20           let row: Vec<string> = Vec.new();\n\
          \x20           row.push(\"partial\" + \"-value\");\n\
          \x20           rows.push(row);\n\
          \x20           r = r + 1;\n\
@@ -400,7 +400,7 @@ fn tuple_string_full_drain_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let pairs: Vec<(string, string)> = Vec::new();\n\
+         \x20       let pairs: Vec<(string, string)> = Vec.new();\n\
          \x20       pairs.push((\"tuple\" + \"-left\", \"tuple\" + \"-right\"));\n\
          \x20       pairs.push((\"second\" + \"-left\", \"second\" + \"-right\"));\n\
          \x20       for pair in pairs.iter() {{\n\
@@ -419,8 +419,8 @@ fn tuple_string_full_drain_loop_source(frames: usize) -> String {
 fn manual_cursor_ignored_next_source(frames: usize) -> String {
     format!(
         "fn frame() -> i64 {{\n\
-         \x20   let rows: Vec<Vec<string>> = Vec::new();\n\
-         \x20   let row: Vec<string> = Vec::new();\n\
+         \x20   let rows: Vec<Vec<string>> = Vec.new();\n\
+         \x20   let row: Vec<string> = Vec.new();\n\
          \x20   row.push(\"manual\" + \"-payload\");\n\
          \x20   rows.push(row);\n\
          \x20   var cursor = rows.iter();\n\
@@ -447,8 +447,8 @@ fn manual_cursor_ignored_next_source(frames: usize) -> String {
 fn cursor_transfer_and_reassign_source(frames: usize) -> String {
     format!(
         "fn conditional_frame(take: bool) {{\n\
-         \x20   let rows: Vec<Vec<string>> = Vec::new();\n\
-         \x20   let row: Vec<string> = Vec::new();\n\
+         \x20   let rows: Vec<Vec<string>> = Vec.new();\n\
+         \x20   let row: Vec<string> = Vec.new();\n\
          \x20   row.push(\"branch\" + \"-payload\");\n\
          \x20   rows.push(row);\n\
          \x20   var cursor = rows.iter();\n\
@@ -459,8 +459,8 @@ fn cursor_transfer_and_reassign_source(frames: usize) -> String {
          }}\n\
          \n\
          fn reassign_frame() {{\n\
-         \x20   let rows: Vec<Vec<string>> = Vec::new();\n\
-         \x20   let row: Vec<string> = Vec::new();\n\
+         \x20   let rows: Vec<Vec<string>> = Vec.new();\n\
+         \x20   let row: Vec<string> = Vec.new();\n\
          \x20   row.push(\"overwrite\" + \"-payload\");\n\
          \x20   rows.push(row);\n\
          \x20   var cursor = rows.iter();\n\
@@ -487,12 +487,12 @@ fn cursor_transfer_and_reassign_source(frames: usize) -> String {
 /// the original source element, so all three trees can be released safely.
 const NESTED_VEC_ESCAPE_SOURCE: &str = "\
 fn main() {\n\
-\x20   let vv: Vec<Vec<string>> = Vec::new();\n\
-\x20   let row: Vec<string> = Vec::new();\n\
+\x20   let vv: Vec<Vec<string>> = Vec.new();\n\
+\x20   let row: Vec<string> = Vec.new();\n\
 \x20   row.push(\"escape\" + \"-alpha\");\n\
 \x20   row.push(\"escape\" + \"-beta\");\n\
 \x20   vv.push(row);\n\
-\x20   let sink: HashMap<i64, Vec<string>> = HashMap::new();\n\
+\x20   let sink: HashMap<i64, Vec<string>> = HashMap.new();\n\
 \x20   var k: i64 = 0;\n\
 \x20   for inner in vv.iter() {\n\
 \x20       sink.insert(k, inner);\n\
@@ -505,11 +505,11 @@ fn main() {\n\
 /// The `Vec<HashMap<..>>` twin of [`NESTED_VEC_ESCAPE_SOURCE`].
 const NESTED_HASHMAP_ESCAPE_SOURCE: &str = "\
 fn main() {\n\
-\x20   let vm: Vec<HashMap<string, i64>> = Vec::new();\n\
-\x20   let m: HashMap<string, i64> = HashMap::new();\n\
+\x20   let vm: Vec<HashMap<string, i64>> = Vec.new();\n\
+\x20   let m: HashMap<string, i64> = HashMap.new();\n\
 \x20   m.insert(\"escape\" + \"-key\", 7);\n\
 \x20   vm.push(m);\n\
-\x20   let sink: HashMap<i64, HashMap<string, i64>> = HashMap::new();\n\
+\x20   let sink: HashMap<i64, HashMap<string, i64>> = HashMap.new();\n\
 \x20   var k: i64 = 0;\n\
 \x20   for inner in vm.iter() {\n\
 \x20       sink.insert(k, inner);\n\
@@ -522,11 +522,11 @@ fn main() {\n\
 /// The `Vec<HashSet<..>>` twin.
 const NESTED_HASHSET_ESCAPE_SOURCE: &str = "\
 fn main() {\n\
-\x20   let vs: Vec<HashSet<string>> = Vec::new();\n\
-\x20   let s: HashSet<string> = HashSet::new();\n\
+\x20   let vs: Vec<HashSet<string>> = Vec.new();\n\
+\x20   let s: HashSet<string> = HashSet.new();\n\
 \x20   s.insert(\"escape\" + \"-member\");\n\
 \x20   vs.push(s);\n\
-\x20   let sink: HashMap<i64, HashSet<string>> = HashMap::new();\n\
+\x20   let sink: HashMap<i64, HashSet<string>> = HashMap.new();\n\
 \x20   var k: i64 = 0;\n\
 \x20   for inner in vs.iter() {\n\
 \x20       sink.insert(k, inner);\n\
@@ -542,16 +542,16 @@ fn main() {\n\
 /// program prints `1OK`.
 const NESTED_VEC_ESCAPE_BREAK_SOURCE: &str = "\
 fn main() {\n\
-\x20   let vv: Vec<Vec<string>> = Vec::new();\n\
+\x20   let vv: Vec<Vec<string>> = Vec.new();\n\
 \x20   var r: i64 = 0;\n\
 \x20   while r < 3 {\n\
-\x20       let row: Vec<string> = Vec::new();\n\
+\x20       let row: Vec<string> = Vec.new();\n\
 \x20       row.push(\"brk\" + \"-alpha\");\n\
 \x20       row.push(\"brk\" + \"-beta\");\n\
 \x20       vv.push(row);\n\
 \x20       r = r + 1;\n\
 \x20   }\n\
-\x20   let sink: HashMap<i64, Vec<string>> = HashMap::new();\n\
+\x20   let sink: HashMap<i64, Vec<string>> = HashMap.new();\n\
 \x20   for inner in vv.iter() {\n\
 \x20       sink.insert(0, inner);\n\
 \x20       break;\n\
@@ -572,10 +572,10 @@ fn main() {\n\
 /// ends with 2 entries.
 const OWNED_PLACE_CONSUME_SOURCE: &str = "\
 fn main() {\n\
-\x20   let words: Vec<string> = Vec::new();\n\
+\x20   let words: Vec<string> = Vec.new();\n\
 \x20   words.push(\"a\" + \"1\");\n\
 \x20   words.push(\"b\" + \"2\");\n\
-\x20   let counts: HashMap<string, i64> = HashMap::new();\n\
+\x20   let counts: HashMap<string, i64> = HashMap.new();\n\
 \x20   for w in words {\n\
 \x20       counts.insert(w, 1);\n\
 \x20   }\n\
@@ -585,14 +585,14 @@ fn main() {\n\
 
 const OWNED_RVALUE_CONSUME_SOURCE: &str = "\
 fn mk() -> Vec<string> {\n\
-\x20   let v: Vec<string> = Vec::new();\n\
+\x20   let v: Vec<string> = Vec.new();\n\
 \x20   v.push(\"a\" + \"1\");\n\
 \x20   v.push(\"b\" + \"2\");\n\
 \x20   return v;\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let counts: HashMap<string, i64> = HashMap::new();\n\
+\x20   let counts: HashMap<string, i64> = HashMap.new();\n\
 \x20   for w in mk() {\n\
 \x20       counts.insert(w, 1);\n\
 \x20   }\n\
@@ -612,11 +612,11 @@ fn main() {\n\
 const OWNED_ITER_MOVE_SOURCE: &str = "\
 type Item { name: string, tag: string }\n\
 fn main() {\n\
-\x20   let v: Vec<Item> = Vec::new();\n\
+\x20   let v: Vec<Item> = Vec.new();\n\
 \x20   v.push(Item { name: \"move-a\", tag: \"move-a-tag\" });\n\
 \x20   v.push(Item { name: \"move-b\", tag: \"move-b-tag\" });\n\
 \x20   v.push(Item { name: \"move-c\", tag: \"move-c-tag\" });\n\
-\x20   let collected: Vec<Item> = Vec::new();\n\
+\x20   let collected: Vec<Item> = Vec.new();\n\
 \x20   for it in v.iter() {\n\
 \x20       collected.push(it);\n\
 \x20   }\n\
@@ -633,10 +633,10 @@ fn main() {\n\
 const OWNED_ITER_MOVE_NONCOPY_SINK_SOURCE: &str = "\
 type Item { name: string, tag: string }\n\
 fn main() {\n\
-\x20   let v: Vec<Item> = Vec::new();\n\
+\x20   let v: Vec<Item> = Vec.new();\n\
 \x20   v.push(Item { name: \"sink\" + \"-a\", tag: \"sink\" + \"-a-tag\" });\n\
 \x20   v.push(Item { name: \"sink\" + \"-b\", tag: \"sink\" + \"-b-tag\" });\n\
-\x20   let sink: HashMap<i64, Item> = HashMap::new();\n\
+\x20   let sink: HashMap<i64, Item> = HashMap.new();\n\
 \x20   var k: i64 = 0;\n\
 \x20   for it in v.iter() {\n\
 \x20       sink.insert(k, it);\n\
@@ -653,7 +653,7 @@ fn main() {\n\
 /// (post-loop element reads) + 2 (len) = 86.
 const REUSE_SHAPE_SOURCE: &str = "\
 fn main() {\n\
-\x20   let v: Vec<i64> = Vec::new();\n\
+\x20   let v: Vec<i64> = Vec.new();\n\
 \x20   v.push(40);\n\
 \x20   v.push(2);\n\
 \x20   var sum: i64 = 0;\n\
@@ -672,7 +672,7 @@ const HASHSET_OWNED_FIELD_SOURCE: &str = "\
 type SetBox { words: HashSet<string> }\n\
 \n\
 fn main() {\n\
-\x20   let words: HashSet<string> = HashSet::new();\n\
+\x20   let words: HashSet<string> = HashSet.new();\n\
 \x20   words.insert(\"field\" + \"-alpha\");\n\
 \x20   words.insert(\"field\" + \"-beta\");\n\
 \x20   words.insert(\"field\" + \"-gamma\");\n\
@@ -702,7 +702,7 @@ const EARLY_EXIT_CALLS: usize = 50;
 /// distinct heap allocation that `leaks` reports individually.
 const EARLY_EXIT_PRODUCER: &str = "\
 fn make_vec() -> Vec<string> {\n\
-\x20   let v: Vec<string> = Vec::new();\n\
+\x20   let v: Vec<string> = Vec.new();\n\
 \x20   v.push(\"early\" + \"-alpha-padding-padding-padding\");\n\
 \x20   v.push(\"early\" + \"-beta-padding-padding-padding\");\n\
 \x20   v.push(\"early\" + \"-gamma-padding-padding-padding\");\n\
@@ -827,7 +827,7 @@ fn labelled_continue_source() -> String {
 /// with nothing. Prints `1` (map length) then `1OK`.
 const ADMITTED_RETURN_SINK_SOURCE: &str = "\
 fn mk() -> Vec<string> {\n\
-\x20   let v: Vec<string> = Vec::new();\n\
+\x20   let v: Vec<string> = Vec.new();\n\
 \x20   v.push(\"ret\" + \"-alpha\");\n\
 \x20   v.push(\"ret\" + \"-beta\");\n\
 \x20   v.push(\"ret\" + \"-gamma\");\n\
@@ -843,7 +843,7 @@ fn frame(sink: HashMap<i64, string>) -> i64 {\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let sink: HashMap<i64, string> = HashMap::new();\n\
+\x20   let sink: HashMap<i64, string> = HashMap.new();\n\
 \x20   print(frame(sink));\n\
 \x20   print(sink.len());\n\
 \x20   print(\"OK\");\n\
@@ -854,7 +854,7 @@ fn main() {\n\
 /// `1OK`.
 const ADMITTED_LABELLED_BREAK_SINK_SOURCE: &str = "\
 fn mk() -> Vec<string> {\n\
-\x20   let v: Vec<string> = Vec::new();\n\
+\x20   let v: Vec<string> = Vec.new();\n\
 \x20   v.push(\"brk\" + \"-alpha\");\n\
 \x20   v.push(\"brk\" + \"-beta\");\n\
 \x20   v.push(\"brk\" + \"-gamma\");\n\
@@ -862,7 +862,7 @@ fn mk() -> Vec<string> {\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let sink: HashMap<i64, string> = HashMap::new();\n\
+\x20   let sink: HashMap<i64, string> = HashMap.new();\n\
 \x20   @outer: for i in 0 .. 3 {\n\
 \x20       for w in mk() {\n\
 \x20           sink.insert(i, w);\n\
@@ -880,7 +880,7 @@ fn main() {\n\
 /// a second release would be caught by the poisoned allocator.
 const ADMITTED_OWN_BREAK_SINK_SOURCE: &str = "\
 fn mk() -> Vec<string> {\n\
-\x20   let v: Vec<string> = Vec::new();\n\
+\x20   let v: Vec<string> = Vec.new();\n\
 \x20   v.push(\"own\" + \"-alpha\");\n\
 \x20   v.push(\"own\" + \"-beta\");\n\
 \x20   v.push(\"own\" + \"-gamma\");\n\
@@ -888,7 +888,7 @@ fn mk() -> Vec<string> {\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let sink: HashMap<i64, string> = HashMap::new();\n\
+\x20   let sink: HashMap<i64, string> = HashMap.new();\n\
 \x20   for w in mk() {\n\
 \x20       sink.insert(1, w);\n\
 \x20       break;\n\
@@ -903,15 +903,15 @@ fn main() {\n\
 /// double-free-free. Prints `1OK`.
 const NESTED_YIELD_EARLY_RETURN_SOURCE: &str = "\
 fn frame() -> i64 {\n\
-\x20   let vv: Vec<Vec<string>> = Vec::new();\n\
-\x20   let row: Vec<string> = Vec::new();\n\
+\x20   let vv: Vec<Vec<string>> = Vec.new();\n\
+\x20   let row: Vec<string> = Vec.new();\n\
 \x20   row.push(\"alias\" + \"-alpha\");\n\
 \x20   row.push(\"alias\" + \"-beta\");\n\
 \x20   vv.push(row);\n\
-\x20   let row2: Vec<string> = Vec::new();\n\
+\x20   let row2: Vec<string> = Vec.new();\n\
 \x20   row2.push(\"alias\" + \"-gamma\");\n\
 \x20   vv.push(row2);\n\
-\x20   let sink: HashMap<i64, Vec<string>> = HashMap::new();\n\
+\x20   let sink: HashMap<i64, Vec<string>> = HashMap.new();\n\
 \x20   for inner in vv.iter() {\n\
 \x20       sink.insert(0, inner);\n\
 \x20       return sink.len();\n\
@@ -964,7 +964,7 @@ fn match_arm_return_source() -> String {
 /// inner and outer snapshots are separate allocations in the `leaks` report.
 const NESTED_INNER_PRODUCER: &str = "\
 fn make_inner() -> Vec<string> {\n\
-\x20   let v: Vec<string> = Vec::new();\n\
+\x20   let v: Vec<string> = Vec.new();\n\
 \x20   v.push(\"inner\" + \"-alpha-padding-padding-padding\");\n\
 \x20   v.push(\"inner\" + \"-beta-padding-padding-padding\");\n\
 \x20   v.push(\"inner\" + \"-gamma-padding-padding-padding\");\n\
@@ -1010,14 +1010,14 @@ fn nested_cursors_return_source() -> String {
 /// — aborts here under the poisoned allocator. Prints `2OK`.
 const NESTED_CURSORS_RETURN_SINK_SOURCE: &str = "\
 fn mk_a() -> Vec<string> {\n\
-\x20   let v: Vec<string> = Vec::new();\n\
+\x20   let v: Vec<string> = Vec.new();\n\
 \x20   v.push(\"na\" + \"-alpha\");\n\
 \x20   v.push(\"na\" + \"-beta\");\n\
 \x20   return v;\n\
 }\n\
 \n\
 fn mk_b() -> Vec<string> {\n\
-\x20   let v: Vec<string> = Vec::new();\n\
+\x20   let v: Vec<string> = Vec.new();\n\
 \x20   v.push(\"nb\" + \"-alpha\");\n\
 \x20   v.push(\"nb\" + \"-beta\");\n\
 \x20   return v;\n\
@@ -1035,7 +1035,7 @@ fn frame(sink: HashMap<i64, string>) -> i64 {\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let sink: HashMap<i64, string> = HashMap::new();\n\
+\x20   let sink: HashMap<i64, string> = HashMap.new();\n\
 \x20   let n = frame(sink);\n\
 \x20   print(sink.len());\n\
 \x20   print(\"OK\");\n\
@@ -1054,7 +1054,7 @@ fn main() {\n\
 /// the assertion is read.
 const RETURN_YIELDED_VALUE_SOURCE: &str = "\
 fn mk() -> Vec<string> {\n\
-\x20   let v: Vec<string> = Vec::new();\n\
+\x20   let v: Vec<string> = Vec.new();\n\
 \x20   v.push(\"yield\" + \"-returned-value\");\n\
 \x20   v.push(\"yield\" + \"-second\");\n\
 \x20   return v;\n\

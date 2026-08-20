@@ -18,12 +18,12 @@
 // `info.message`, returns Restart, clean restart) is exercised by
 // on_crash_action_restart_real_crash; runtime honouring of each variant
 // (Restart/Escalate/Kill) is covered by hew-runtime/tests/on_crash_invocation.rs.
-import std::failure;
+import std.failure;
 
 actor Worker {
     #[on(crash)]
     fn on_crash(info: CrashInfo) -> CrashAction {
-        CrashAction::Restart
+        CrashAction.Restart
     }
 }
 

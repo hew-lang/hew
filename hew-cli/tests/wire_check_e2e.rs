@@ -364,7 +364,7 @@ fn wire_check_rejects_wire_enum_variant_addition() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("added variant `Status::Pending`"),
+        stderr.contains("added variant `Status.Pending`"),
         "{stderr}",
     );
 }
@@ -380,7 +380,7 @@ fn wire_check_rejects_wire_enum_variant_removal() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("removed variant `Status::Inactive`"),
+        stderr.contains("removed variant `Status.Inactive`"),
         "{stderr}",
     );
 }
@@ -396,7 +396,7 @@ fn wire_check_rejects_wire_enum_variant_payload_shape_change() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("changed payload shape for `Cmd::Start`"),
+        stderr.contains("changed payload shape for `Cmd.Start`"),
         "{stderr}",
     );
 }
@@ -412,7 +412,7 @@ fn wire_check_rejects_wire_enum_tuple_payload_type_change() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("changed payload type for `Cmd::Data` item 1: `String` -> `i32`"),
+        stderr.contains("changed payload type for `Cmd.Data` item 1: `String` -> `i32`"),
         "{stderr}",
     );
 }
@@ -428,7 +428,7 @@ fn wire_check_rejects_wire_enum_struct_variant_field_type_change() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("changed payload type for `Cmd::Data` item 1: `String` -> `i32`"),
+        stderr.contains("changed payload type for `Cmd.Data` item 1: `String` -> `i32`"),
         "{stderr}",
     );
 }
@@ -503,7 +503,7 @@ fn wire_check_rejects_wire_enum_payload_changes() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("changed payload arity for `Command::Data`: 2 -> 1"),
+        stderr.contains("changed payload arity for `Command.Data`: 2 -> 1"),
         "{stderr}",
     );
 }
@@ -519,7 +519,7 @@ fn wire_check_rejects_wire_enum_struct_variant_field_renames() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(
-            "changed payload field name for `Command::Data` item 1: `value` -> `new_value`"
+            "changed payload field name for `Command.Data` item 1: `value` -> `new_value`"
         ),
         "{stderr}",
     );

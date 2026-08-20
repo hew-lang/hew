@@ -10,16 +10,14 @@
 //! 500ms window asserts only >= 3 ticks (nominal ~10), so scheduler jitter
 //! cannot flake the test.
 
-import std::testing;
+import std.testing;
 
 actor Pulse {
     var count: i64 = 0;
-
     #[every(50ms)]
     receive fn tick() {
         count += 1;
     }
-
     receive fn total() -> i64 {
         count
     }
@@ -31,8 +29,8 @@ fn periodic_handler_ticks_after_spawn() {
     sleep(500ms);
     let r = await p.total();
     match r {
-        Ok(n) => testing.assert_true(n >= 3),
-        Err(_) => testing.assert_true(false),
+        .Ok(n) => testing.assert_true(n >= 3),
+        .Err(_) => testing.assert_true(false),
     }
 }
 
@@ -48,14 +46,14 @@ fn two_instances_tick_independently() {
     let ra = await a.total();
     let rb = await b.total();
     match ra {
-        Ok(na) => match rb {
-            Ok(nb) => {
+        .Ok(na) => match rb {
+            .Ok(nb) => {
                 testing.assert_true(na >= 3);
                 testing.assert_true(nb >= 1);
                 testing.assert_true(na > nb);
             },
-            Err(_) => testing.assert_true(false),
+            .Err(_) => testing.assert_true(false),
         },
-        Err(_) => testing.assert_true(false),
+        .Err(_) => testing.assert_true(false),
     }
 }

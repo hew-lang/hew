@@ -1,6 +1,6 @@
 {
   "capabilities": [],
-  "compiler_version": "hew-sandbox-wasm-0.6.0-rc1",
+  "compiler_version": "hew-sandbox-wasm-0.6.0-rc2",
   "functions": [
     {
       "blocks": [
@@ -87,7 +87,7 @@
       "span": "span:0-41"
     }
   ],
-  "hew_version": "0.6.0-rc1",
+  "hew_version": "0.6.0-rc2",
   "layouts": {
     "actors": [],
     "enums": [],
@@ -99,16 +99,6 @@
         "id": "type:AskError",
         "kind": "enum",
         "name": "AskError"
-      },
-      {
-        "id": "type:CrashInfo",
-        "kind": "record",
-        "name": "CrashInfo"
-      },
-      {
-        "id": "type:CrashNotification",
-        "kind": "record",
-        "name": "CrashNotification"
       },
       {
         "id": "type:HashMapIter",
@@ -164,26 +154,6 @@
         "id": "type:f64",
         "kind": "float",
         "name": "f64"
-      },
-      {
-        "id": "type:failure.CrashAction",
-        "kind": "enum",
-        "name": "failure.CrashAction"
-      },
-      {
-        "id": "type:failure.CrashInfo",
-        "kind": "record",
-        "name": "failure.CrashInfo"
-      },
-      {
-        "id": "type:failure.CrashKind",
-        "kind": "enum",
-        "name": "failure.CrashKind"
-      },
-      {
-        "id": "type:failure.CrashNotification",
-        "kind": "record",
-        "name": "failure.CrashNotification"
       },
       {
         "id": "type:i64",
@@ -311,7 +281,7 @@
       }
     ]
   },
-  "package_id": "pkg:166038d635e8e3d9",
+  "package_id": "pkg:5b81ae862701f94b",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

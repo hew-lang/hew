@@ -48,9 +48,9 @@
 //! }
 //! ```
 
-import std::string;
+import std.string;
 
-import std::stream;
+import std.stream;
 
 // ── Network error type ────────────────────────────────────────────────
 /// Structured error type for network operations.
@@ -107,36 +107,36 @@ pub enum AttachError {
 pub fn net_error_from_errno(errno: i64) -> NetError {
     // ECONNREFUSED: Linux=111, macOS=61, Windows=10061
     if errno == 111 || errno == 61 || errno == 10061 {
-        NetError::ConnectionRefused(errno)
+        NetError.ConnectionRefused(errno)
     // EADDRINUSE: Linux=98, macOS=48, Windows=10048
     } else if errno == 98 || errno == 48 || errno == 10048 {
-        NetError::AddressInUse(errno)
+        NetError.AddressInUse(errno)
     // ETIMEDOUT: Linux=110, macOS=60, Windows=10060
     } else if errno == 110 || errno == 60 || errno == 10060 {
-        NetError::TimedOut(errno)
+        NetError.TimedOut(errno)
     // ECANCELED: Linux=125, macOS=89. Windows has no WSABASEERR-offset
     // ECANCELED; a cancelled/aborted overlapped net op surfaces as
     // ERROR_OPERATION_ABORTED (995) or WSAECANCELLED (10103) instead.
     } else if errno == 125 || errno == 89 || errno == 995 || errno == 10103 {
-        NetError::Cancelled(errno)
+        NetError.Cancelled(errno)
     // EADDRNOTAVAIL: Linux=99, macOS=49, Windows=10049
     } else if errno == 99 || errno == 49 || errno == 10049 {
-        NetError::AddressNotAvailable(errno)
+        NetError.AddressNotAvailable(errno)
     } else {
-        NetError::Other(errno)
+        NetError.Other(errno)
     }
 }
 
 /// Return a human-readable description of a `NetError`.
 pub fn net_error_message(e: NetError) -> string {
     match e {
-        NetError::ConnectionRefused(code) => f"ConnectionRefused({code})",
-        NetError::AddressInUse(code) => f"AddressInUse({code})",
-        NetError::AddressNotAvailable(code) => f"AddressNotAvailable({code})",
-        NetError::TimedOut(code) => f"TimedOut({code})",
-        NetError::Cancelled(code) => f"Cancelled({code})",
-        NetError::InvalidArgument(detail) => f"InvalidArgument({detail})",
-        NetError::Other(code) => f"Other({code})",
+        NetError.ConnectionRefused(code) => f"ConnectionRefused({code})",
+        NetError.AddressInUse(code) => f"AddressInUse({code})",
+        NetError.AddressNotAvailable(code) => f"AddressNotAvailable({code})",
+        NetError.TimedOut(code) => f"TimedOut({code})",
+        NetError.Cancelled(code) => f"Cancelled({code})",
+        NetError.InvalidArgument(detail) => f"InvalidArgument({detail})",
+        NetError.Other(code) => f"Other({code})",
     }
 }
 
@@ -158,10 +158,10 @@ pub fn abi_i32_max() -> i64 {
 /// `context` names the calling API so the rejection identifies its origin.
 pub fn try_duration_ms(context: string, ms: i64) -> Result<i64, NetError> {
     if ms < 0 {
-        return Err(NetError::InvalidArgument(f"{context}: invalid duration {ms} ms (must be >= 0)"));
+        return Err(NetError.InvalidArgument(f"{context}: invalid duration {ms} ms (must be >= 0)"));
     }
     if ms > abi_i32_max() {
-        return Err(NetError::InvalidArgument(f"{context}: invalid duration {ms} ms (must be <= {abi_i32_max()})"));
+        return Err(NetError.InvalidArgument(f"{context}: invalid duration {ms} ms (must be <= {abi_i32_max()})"));
     }
     Ok(ms)
 }
@@ -181,10 +181,10 @@ fn try_connection_timeout_ms(context: string, ms: i64) -> Result<i64, NetError> 
 /// Validate a byte count that the C ABI carries as an `i32`.
 pub fn try_size_arg(context: string, size: i64) -> Result<i64, NetError> {
     if size < 0 {
-        return Err(NetError::InvalidArgument(f"{context}: invalid size {size} (must be >= 0)"));
+        return Err(NetError.InvalidArgument(f"{context}: invalid size {size} (must be >= 0)"));
     }
     if size > abi_i32_max() {
-        return Err(NetError::InvalidArgument(f"{context}: invalid size {size} (must be <= {abi_i32_max()})"));
+        return Err(NetError.InvalidArgument(f"{context}: invalid size {size} (must be <= {abi_i32_max()})"));
     }
     Ok(size)
 }
@@ -192,7 +192,7 @@ pub fn try_size_arg(context: string, size: i64) -> Result<i64, NetError> {
 /// Validate a TCP/UDP port number.
 pub fn try_port_arg(context: string, port: i64) -> Result<i64, NetError> {
     if port < 0 || port > 65535 {
-        return Err(NetError::InvalidArgument(f"{context}: invalid port {port} (must be 0..=65535)"));
+        return Err(NetError.InvalidArgument(f"{context}: invalid port {port} (must be 0..=65535)"));
     }
     Ok(port)
 }
@@ -216,7 +216,7 @@ fn max_endpoint_len() -> i64 {
 }
 
 fn endpoint_reject(context: string, addr: string, reason: string) -> NetError {
-    NetError::InvalidArgument(f"{context}: invalid endpoint '{addr}' ({reason})")
+    NetError.InvalidArgument(f"{context}: invalid endpoint '{addr}' ({reason})")
 }
 
 fn try_endpoint_port(context: string, addr: string, text: string) -> Result<i64, NetError> {
@@ -224,8 +224,8 @@ fn try_endpoint_port(context: string, addr: string, text: string) -> Result<i64,
         return Err(endpoint_reject(context, addr, "empty port"));
     }
     match string.to_int(text) {
-        Some(port) => try_port_arg(context, port),
-        None => Err(endpoint_reject(context, addr, f"port '{text}' is not a number")),
+        .Some(port) => try_port_arg(context, port),
+        .None => Err(endpoint_reject(context, addr, f"port '{text}' is not a number")),
     }
 }
 
@@ -260,7 +260,7 @@ pub fn try_parse_endpoint(context: string, addr: string) -> Result<Endpoint, Net
     }
     let colon = addr.find(":");
     match colon {
-        Some(i) => {
+        .Some(i) => {
             let host = addr.slice(0, i);
             let port_text = addr.slice(i + 1, addr.len());
             // A second colon outside brackets is an unbracketed IPv6 literal:
@@ -276,14 +276,14 @@ pub fn try_parse_endpoint(context: string, addr: string) -> Result<Endpoint, Net
                 Ok(Endpoint { host: host, port: port })
             }
         },
-        None => Err(endpoint_reject(context, addr, "missing ':port'")),
+        .None => Err(endpoint_reject(context, addr, "missing ':port'")),
     }
 }
 
 fn try_parse_bracketed_endpoint(context: string, addr: string) -> Result<Endpoint, NetError> {
     let close = addr.find("]");
     match close {
-        Some(end) => {
+        .Some(end) => {
             let host = addr.slice(1, end);
             if host == "" {
                 return Err(endpoint_reject(context, addr, "empty bracketed host"));
@@ -298,7 +298,7 @@ fn try_parse_bracketed_endpoint(context: string, addr: string) -> Result<Endpoin
             let port = try_endpoint_port(context, addr, rest.slice(1, rest.len()))?;
             Ok(Endpoint { host: host, port: port })
         },
-        None => Err(endpoint_reject(context, addr, "unterminated '[' in IPv6 literal")),
+        .None => Err(endpoint_reject(context, addr, "unterminated '[' in IPv6 literal")),
     }
 }
 
@@ -306,14 +306,14 @@ fn try_parse_bracketed_endpoint(context: string, addr: string) -> Result<Endpoin
 /// errno. Useful for in-process deadline expiry where there is no OS error
 /// to map.
 pub fn net_error_timed_out() -> NetError {
-    NetError::TimedOut(0)
+    NetError.TimedOut(0)
 }
 
 /// Construct a `NetError::Cancelled(0)` value without a platform-specific
 /// errno. Useful for in-process cancellation where there is no OS error
 /// to map.
 pub fn net_error_cancelled() -> NetError {
-    NetError::Cancelled(0)
+    NetError.Cancelled(0)
 }
 
 // ── Write error type ──────────────────────────────────────────────────
@@ -361,27 +361,27 @@ pub enum WriteError {
 pub fn write_error_from_errno(errno: i64) -> WriteError {
     // EAGAIN / EWOULDBLOCK: Linux=11, macOS=35 (EWOULDBLOCK==EAGAIN on both).
     if errno == 11 || errno == 35 {
-        WriteError::BackpressureExceeded(errno)
+        WriteError.BackpressureExceeded(errno)
     // ETIMEDOUT: Linux=110, macOS=60. A write that times out with the send
     // buffer full is backpressure, not a connection failure. Windows surfaces
     // a blocked write past the deadline as WSAETIMEDOUT (10060), mapped here.
     } else if errno == 110 || errno == 60 || errno == 10060 {
-        WriteError::BackpressureExceeded(errno)
+        WriteError.BackpressureExceeded(errno)
     // ECONNRESET: Linux=104, macOS=54. EPIPE: Linux=32, macOS=32.
     // ENOTCONN: Linux=107, macOS=57.
     } else if errno == 104 || errno == 54 || errno == 32 || errno == 107 || errno == 57 {
-        WriteError::Disconnected(errno)
+        WriteError.Disconnected(errno)
     } else {
-        WriteError::Other(errno)
+        WriteError.Other(errno)
     }
 }
 
 /// Return a human-readable description of a `WriteError`.
 pub fn write_error_message(e: WriteError) -> string {
     match e {
-        WriteError::BackpressureExceeded(code) => f"BackpressureExceeded({code})",
-        WriteError::Disconnected(code) => f"Disconnected({code})",
-        WriteError::Other(code) => f"Other({code})",
+        WriteError.BackpressureExceeded(code) => f"BackpressureExceeded({code})",
+        WriteError.Disconnected(code) => f"Disconnected({code})",
+        WriteError.Other(code) => f"Other({code})",
     }
 }
 
@@ -621,10 +621,10 @@ impl ConnectionMethods for Connection {
     /// Read a UTF-8 string, reporting a read failure separately from EOF.
     fn try_read_string(conn: Connection) -> Result<string, NetError> {
         match conn.try_read() {
-            Ok(data) => Ok(unsafe {
+            .Ok(data) => Ok(unsafe {
                 hew_bytes_to_string(data)
             }),
-            Err(err) => Err(err),
+            .Err(err) => Err(err),
         }
     }
     /// Write raw bytes to the connection.
@@ -690,7 +690,7 @@ impl Connection {
     /// `Err(AttachError::Refused)`. Every call site is rewritten to
     /// `hew_tcp_attach_local` by the checker/codegen.
     fn attach(consuming self, handler: LocalPid<ConnectionHandler>) -> Result<(), AttachError> {
-        Err(AttachError::Refused)
+        Err(AttachError.Refused)
     }
     /// Consume the connection and produce a `(Stream<bytes>, Sink<bytes>)` pair.
     fn into_stream_sink(consuming self) -> (Stream<bytes>, stream.Sink<bytes>) {
@@ -800,15 +800,15 @@ pub fn try_connect(addr: string) -> Result<Connection, NetError> {
 /// `try_connect_timeout` to observe those rejections instead.
 pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Connection {
     let Endpoint { host, port } = match try_parse_endpoint("net.connect_timeout", addr) {
-        Ok(endpoint) => endpoint,
-        Err(err) => {
+        .Ok(endpoint) => endpoint,
+        .Err(err) => {
             panic(f"net.connect_timeout failed: {net_error_message(err)}");
             Endpoint { host: "", port: 0 }
         },
     };
     let timeout_ms = match try_connect_timeout_ms(timeout_sec, timeout_usec) {
-        Ok(ms) => ms,
-        Err(err) => {
+        .Ok(ms) => ms,
+        .Err(err) => {
             panic(f"net.connect_timeout failed: {net_error_message(err)}");
             0
         },
@@ -847,20 +847,20 @@ fn try_connect_timeout_ms(timeout_sec: i64, timeout_usec: i64) -> Result<i64, Ne
     let millis_per_second: i64 = 1000;
     let micros_per_millisecond: i64 = 1000;
     if timeout_sec < 0 {
-        return Err(NetError::InvalidArgument(f"net.connect_timeout: invalid timeout_sec {timeout_sec} (must be >= 0)"));
+        return Err(NetError.InvalidArgument(f"net.connect_timeout: invalid timeout_sec {timeout_sec} (must be >= 0)"));
     }
     if timeout_usec < 0 {
-        return Err(NetError::InvalidArgument(f"net.connect_timeout: invalid timeout_usec {timeout_usec} (must be >= 0)"));
+        return Err(NetError.InvalidArgument(f"net.connect_timeout: invalid timeout_usec {timeout_usec} (must be >= 0)"));
     }
     // Bound each term against the ABI ceiling before multiplying or adding, so
     // the accumulation itself can never wrap.
     if timeout_sec > abi_i32_max() / millis_per_second {
-        return Err(NetError::InvalidArgument(f"net.connect_timeout: invalid timeout_sec {timeout_sec} (deadline exceeds {abi_i32_max()} ms)"));
+        return Err(NetError.InvalidArgument(f"net.connect_timeout: invalid timeout_sec {timeout_sec} (deadline exceeds {abi_i32_max()} ms)"));
     }
     let seconds_ms = timeout_sec * millis_per_second;
     let micros_ms = timeout_usec / micros_per_millisecond;
     if micros_ms > abi_i32_max() - seconds_ms {
-        return Err(NetError::InvalidArgument(f"net.connect_timeout: invalid deadline (timeout_sec {timeout_sec} + timeout_usec {timeout_usec} exceeds {abi_i32_max()} ms)"));
+        return Err(NetError.InvalidArgument(f"net.connect_timeout: invalid deadline (timeout_sec {timeout_sec} + timeout_usec {timeout_usec} exceeds {abi_i32_max()} ms)"));
     }
     try_duration_ms("net.connect_timeout", seconds_ms + micros_ms)
 }

@@ -1,11 +1,11 @@
 fn main() {
-    let k: Vec<i64> = Vec::new();
+    let k: Vec<i64> = Vec.new();
     k.push(10);
     k.push(20);
-    let m: HashMap<Vec<i64>, i64> = HashMap::new();
+    let m: HashMap<Vec<i64>, i64> = HashMap.new();
     m.insert(k, 9);
     match m.get(k) {
-        Some(v) => println(f"got {v}"),
+        Option.Some(v) => println(f"got {v}"),
         None => println("missing"),
     }
 }

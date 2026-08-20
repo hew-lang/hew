@@ -160,7 +160,7 @@ fn stdlib_vec_typechecks_with_iterator_traits_registered() {
     let src = read_stdlib_builtins();
     let program = parse_program(&src);
     let mut checker = checker();
-    let output = checker.check_program(&program);
+    let output = checker.check_embedded_builtins(&program);
     // We only assert that no diagnostic mentions VecIter or our new impls —
     // any other pre-existing red is out of scope for this stage.
     let veciter_red = output.errors.iter().find(|e| e.message.contains("VecIter"));
@@ -178,7 +178,7 @@ fn vec_i32_into_iter_resolves_through_trait_surface() {
     // contract ("works for at least Vec<i32> and Vec<i64>"; worker task).
     let src = r"
         fn main() {
-            let v: Vec<i32> = Vec::new();
+            let v: Vec<i32> = Vec.new();
             let _it = v.into_iter();
         }
     ";
@@ -202,7 +202,7 @@ fn vec_i64_into_iter_resolves_through_trait_surface() {
     // catalog speaks (`hew_vec_get_i64`).
     let src = r"
         fn main() {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             let _it = v.into_iter();
         }
     ";

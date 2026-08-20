@@ -7,15 +7,15 @@ fn main() {
     let (a, b) = duplex_pair<i64, i64>(4);
     let tx = a.send_half();
     match tx.send(55) {
-        Ok(_) => {},
-        Err(_) => {},
+        .Ok(_) => {},
+        .Err(_) => {},
     }
     match b.recv() {
-        Ok(_) => {},
-        Err(_) => {},
+        .Ok(_) => {},
+        .Err(_) => {},
     }
     match b.try_recv() {
-        Ok(_) => {},
-        Err(_) => {},
+        .Ok(_) => {},
+        .Err(_) => {},
     }
 }

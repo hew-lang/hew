@@ -22,7 +22,7 @@
 //! automatically when it leaves scope. Any error from the implicit
 //! release is silently discarded.
 
-import std::fs;
+import std.fs;
 
 /// A type that can be explicitly closed before it leaves scope.
 ///

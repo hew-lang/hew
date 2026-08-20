@@ -52,6 +52,15 @@ fn own_moved_env_fields(p: &IrPipeline) -> usize {
         .count()
 }
 
+/// Retained-share closure-env capture fields (`own_cloned_or_retained`): the
+/// env destructor releases the env's OWN share while the source binding keeps
+/// its scope-exit owner — the checker-`Borrow` capture manifest.
+fn retained_share_env_fields(p: &IrPipeline) -> usize {
+    hew_mir::dump_mir(p, DumpStage::Raw)
+        .matches("own=own_cloned_or_retained")
+        .count()
+}
+
 fn record_in_place_drops(p: &IrPipeline, fn_name: &str) -> usize {
     p.elaborated_mir
         .iter()
@@ -149,16 +158,30 @@ fn a_heap_env_capture_of_a_proven_foreign_binding_takes_no_ownership() {
 
 /// The counterfactual, and it is the whole reason the assertion above cannot be
 /// satisfied by deleting the mint: the identically shaped DOMESTIC capture
-/// still moves into the env and the env destructor is still its release
-/// authority. Exact count: **1**.
+/// still makes the env destructor a release authority. Since the checker
+/// classifies this read-only capture as `Borrow`, the env now owns a RETAINED
+/// SHARE (`own_cloned_or_retained`) rather than consuming the source: the env
+/// destructor releases the env's share and the source binding keeps its own
+/// scope-exit owner. Exact counts: **1** retained env field, **0** moved, and
+/// the source's `RecordInPlace` scope-exit releases survive in `main`.
 #[test]
 fn a_heap_env_capture_of_a_domestic_binding_still_owns_it() {
     let p = in_loop(&format!("{RUN}{DOMESTIC_MK}"), CAPTURE_BODY);
     assert_eq!(
-        own_moved_env_fields(&p),
+        retained_share_env_fields(&p),
         1,
-        "the withhold is provenance-directed: a domestic capture keeps its \
-         ownership transfer into the closure env"
+        "the withhold is provenance-directed: a domestic read-only capture \
+         mints a retained share into the closure env"
+    );
+    assert_eq!(
+        own_moved_env_fields(&p),
+        0,
+        "a Borrow-mode capture of a retainable shape must not consume the source"
+    );
+    assert!(
+        record_in_place_drops(&p, "main") > 0,
+        "the source binding keeps its own scope-exit release alongside the \
+         env's retained share"
     );
 }
 
@@ -166,11 +189,11 @@ fn a_heap_env_capture_of_a_domestic_binding_still_owns_it() {
 // U1 — pattern payload binders
 // ---------------------------------------------------------------------------
 
-const MATCH_BODY: &str = "let b = Boxed::Full(mk(i));\n        \
-     match b { Boxed::Full(h) => { let n = h.label.len(); println(f\"x={n}\"); } \
-     Boxed::Empty => {} }";
-const IF_LET_BODY: &str = "let b = Boxed::Full(mk(i));\n        \
-     if let Boxed::Full(h) = b { let n = h.label.len(); println(f\"x={n}\"); }";
+const MATCH_BODY: &str = "let b = Boxed.Full(mk(i));\n        \
+     match b { Boxed.Full(h) => { let n = h.label.len(); println(f\"x={n}\"); } \
+     Boxed.Empty => {} }";
+const IF_LET_BODY: &str = "let b = Boxed.Full(mk(i));\n        \
+     if let Boxed.Full(h) = b { let n = h.label.len(); println(f\"x={n}\"); }";
 
 /// A `match` payload binder over a proven-foreign scrutinee acquires no
 /// scope-exit owner. The binder now presents a warrant built by
@@ -248,9 +271,9 @@ fn transferring_a_proven_foreign_value_into_an_owning_parameter_is_refused() {
     let p = in_loop(
         &format!(
             "{FOREIGN_MK}\nfn takes(b: Boxed) -> Holder {{ \
-             match b {{ Boxed::Full(h) => h, Boxed::Empty => Holder {{ label: \"e\" }} }} }}"
+             match b {{ Boxed.Full(h) => h, Boxed.Empty => Holder {{ label: \"e\" }} }} }}"
         ),
-        "let b = Boxed::Full(mk(i));\n        let h = takes(b);\n        \
+        "let b = Boxed.Full(mk(i));\n        let h = takes(b);\n        \
          let n = h.label.len();\n        println(f\"x={n}\");",
     );
     assert!(
@@ -270,9 +293,9 @@ fn transferring_a_domestic_value_into_an_owning_parameter_still_compiles() {
     let p = in_loop(
         &format!(
             "{DOMESTIC_MK}\nfn takes(b: Boxed) -> Holder {{ \
-             match b {{ Boxed::Full(h) => h, Boxed::Empty => Holder {{ label: \"e\" }} }} }}"
+             match b {{ Boxed.Full(h) => h, Boxed.Empty => Holder {{ label: \"e\" }} }} }}"
         ),
-        "let b = Boxed::Full(mk(i));\n        let h = takes(b);\n        \
+        "let b = Boxed.Full(mk(i));\n        let h = takes(b);\n        \
          let n = h.label.len();\n        println(f\"x={n}\");",
     );
     assert!(

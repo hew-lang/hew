@@ -1,9 +1,9 @@
 fn main() {
     let x: (i64, string) = (1, "x0");
-    let m: HashMap<string, (i64, string)> = HashMap::new();
+    let m: HashMap<string, (i64, string)> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
+        Option.Some(e) => {
             let (e_a, e_b) = e;
             println(f"{e_a} {e_b}");
         },

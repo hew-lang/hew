@@ -16,17 +16,17 @@ actor Logger {
     // Simulate temperature with variation
 
     // ── In distributed mode, each of these would be on a different node:
-    // Node::start("0.0.0.0:9000");  // logger node
+    // Node.start("0.0.0.0:9000");  // logger node
 
-    // Node::register("logger", logger);
+    // Node.register("logger", logger);
 
-    // Node::start("0.0.0.0:9001");  // monitor node
-    // let logger = Node::lookup("logger");
+    // Node.start("0.0.0.0:9001");  // monitor node
+    // let logger = Node.lookup("logger");
 
-    // Node::register("monitor", monitor);
+    // Node.register("monitor", monitor);
 
-    // Node::start("0.0.0.0:9002");  // sensor node
-    // let monitor = Node::lookup("monitor");
+    // Node.start("0.0.0.0:9002");  // sensor node
+    // let monitor = Node.lookup("monitor");
 
     // Simulate 6 ticks
     var count: i32;
@@ -69,7 +69,7 @@ actor Sensor {
 fn main() {
     println("=== Sensor Mesh Demo ===");
     let logger = spawn Logger(count: 0);
-    let empty: Vec<i32> = Vec::new();
+    let empty: Vec<i32> = Vec.new();
     let monitor = spawn Monitor(readings: empty, logger: logger, threshold: 30);
     let s1 = spawn Sensor(sensor_id: "sensor-A", monitor: monitor, base_temp: 25);
     let s2 = spawn Sensor(sensor_id: "sensor-B", monitor: monitor, base_temp: 31);

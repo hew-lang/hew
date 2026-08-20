@@ -20,9 +20,11 @@
 //! not implement trait Clone required by T`), identically to a `T: Send` bound;
 //! that is an orthogonal generic-marker-satisfaction gap, not a clone gap.
 
-import std::testing;
+import std.testing;
 
-fn dup<T: Clone>(x: T) -> T { x.clone() }
+fn dup<T: Clone>(x: T) -> T {
+    x.clone()
+}
 
 // Scalar `T = i64`: clone is a `BitCopy` duplicate. Mutate the source after
 // cloning and assert the clone keeps its own value (a copy, not an alias).

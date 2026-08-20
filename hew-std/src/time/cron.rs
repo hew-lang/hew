@@ -741,7 +741,7 @@ mod tests {
             let arm = match_block
                 .lines()
                 .map(str::trim)
-                .find(|line| line.contains(&format!("=> CronError::{variant}(")))
+                .find(|line| line.contains(&format!("=> CronError.{variant}(")))
                 .unwrap_or_else(|| {
                     panic!("cron.hew `cron_error_from_result` must have an arm for {variant}")
                 });

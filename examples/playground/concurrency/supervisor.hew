@@ -23,12 +23,12 @@ fn main() {
     let w1 = workers.w1;
     let w2 = workers.w2;
     let a = match await w1.work(10) {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     };
     let b = match await w2.work(20) {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     };
     println(f"w1 -> {a}");
     println(f"w2 -> {b}");

@@ -2,8 +2,8 @@
 //! Description: Benchmark harness demo
 
 // Benchmark harness demo
-// Shows how to use std::bench to measure function performance.
-import std::bench;
+// Shows how to use std.bench to measure function performance.
+import std.bench;
 
 fn fibonacci(n: i32) -> i64 {
     if n <= 1 {

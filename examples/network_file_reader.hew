@@ -17,7 +17,7 @@ fn fibonacci(n: i64) -> i64 {
     }
 }
 
-import std::fs;
+import std.fs;
 
 fn main() {
     println("=== File Reader + Actor Pipeline ===");

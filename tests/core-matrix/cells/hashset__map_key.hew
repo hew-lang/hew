@@ -1,11 +1,11 @@
 fn main() {
-    let k: HashSet<i64> = HashSet::new();
+    let k: HashSet<i64> = HashSet.new();
     k.insert(1);
     k.insert(2);
-    let m: HashMap<HashSet<i64>, i64> = HashMap::new();
+    let m: HashMap<HashSet<i64>, i64> = HashMap.new();
     m.insert(k, 9);
     match m.get(k) {
-        Some(v) => println(f"got {v}"),
+        Option.Some(v) => println(f"got {v}"),
         None => println("missing"),
     }
 }

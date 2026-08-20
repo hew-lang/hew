@@ -3,7 +3,7 @@
 // call" NYI at the same MIR site (the lambda body wraps the same call
 // expression). Same root cause, same fix — the monomorphisation recording
 // walks the lambda body's call sites the same way.
-import hew::genhelpers;
+import hew.genhelpers;
 
 fn main() {
     let f = || genhelpers.first([1, 2, 3]);

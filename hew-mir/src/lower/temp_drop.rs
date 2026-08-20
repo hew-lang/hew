@@ -1846,6 +1846,37 @@ pub(super) fn derive_cow_sole_owner(
             }
 
             if let Instr::ClosureEnvInit { fields, .. } = instr {
+                // A retained-share capture (`OwnsClonedOrRetained`) makes the
+                // heap env a genuine CO-OWNER: the env free thunk releases the
+                // field unconditionally while the source binding keeps its own
+                // scope-exit owner, so the mint here is UNCONDITIONAL — there
+                // is no hand-off arm for this ownership class (used-after
+                // inference decides retain-vs-transfer for `OwnsMoved`
+                // ingress; a retained field's release is fixed at the thunk,
+                // so skipping the mint when the source looks dead
+                // double-frees at the source's still-present scope-exit
+                // drop). This loop is the single retain authority for these
+                // fields; the generic share-sink walk below skips them.
+                for field in fields.iter().filter(|field| {
+                    field.ownership == ClosureEnvFieldOwnership::OwnsClonedOrRetained
+                }) {
+                    let condition = if string_place_is_typed(field.src, locals) {
+                        StringRetainCondition::Always
+                    } else {
+                        // Aggregate source: recursive leaf retain. The
+                        // capture classifier admits only
+                        // `string_or_bitcopy_tree` shapes, the exact class
+                        // this condition fully co-owns.
+                        StringRetainCondition::AggregateBorrowedIngress
+                    };
+                    aggregate_ingress_share_sites.push(StringRetainSite {
+                        block: block.id,
+                        instr_index,
+                        value: field.src,
+                        condition,
+                        required_bindings: Vec::new(),
+                    });
+                }
                 for field in fields
                     .iter()
                     .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
@@ -1887,10 +1918,27 @@ pub(super) fn derive_cow_sole_owner(
             } else {
                 string_share_sink_places(instr)
             };
+            // Retained-share env fields already received their unconditional
+            // mint in the `ClosureEnvInit` loop above; running them through
+            // the used-after inference here would add a second retain (leak)
+            // or classify a dead-looking source as a hand-off (double-free).
+            let retained_env_field_srcs: HashSet<Place> = match instr {
+                Instr::ClosureEnvInit { fields, .. } => fields
+                    .iter()
+                    .filter(|field| {
+                        field.ownership == ClosureEnvFieldOwnership::OwnsClonedOrRetained
+                    })
+                    .map(|field| field.src)
+                    .collect(),
+                _ => HashSet::new(),
+            };
             if !share_places.is_empty() {
                 let mut candidate_groups: HashMap<u32, Vec<Place>> = HashMap::new();
                 let mut external_groups: HashMap<u32, (bool, Vec<Place>)> = HashMap::new();
                 for place in share_places {
+                    if retained_env_field_srcs.contains(&place) {
+                        continue;
+                    }
                     let Some(local) = base_local(place) else {
                         continue;
                     };

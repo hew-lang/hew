@@ -331,17 +331,17 @@ fn multi_param_turbofish_records_all_call_type_args() {
 /// after `check_against` unifies the annotation in — is what makes the entry
 /// concrete. Without it, HIR/MIR find no monomorphisation data and MIR falls
 /// through to the "function call NYI" diagnostic. Covers both the inherent-impl
-/// associated fn (`Stack::new()`) and the free fn (`new_stack()`).
+/// associated fn (`Stack.new()`) and the free fn (`new_stack()`).
 #[test]
 fn return_type_polymorphic_call_records_call_type_args() {
     let source = r"
         type Stack<T> { items: Vec<T>; }
         impl<T> Stack<T> {
-            fn new() -> Stack<T> { Stack { items: Vec::new() } }
+            fn new() -> Stack<T> { Stack { items: Vec.new() } }
         }
-        fn new_stack<T>() -> Stack<T> { Stack { items: Vec::new() } }
+        fn new_stack<T>() -> Stack<T> { Stack { items: Vec.new() } }
         fn main() {
-            let a: Stack<i64> = Stack::new();
+            let a: Stack<i64> = Stack.new();
             let b: Stack<string> = new_stack();
         }
     ";
@@ -365,7 +365,7 @@ fn return_type_polymorphic_call_records_call_type_args() {
                     .iter()
                     .filter_map(|(stmt, _)| match stmt {
                         Stmt::Let {
-                            value: Some((Expr::Call { .. }, span)),
+                            value: Some((Expr::Call { .. } | Expr::MethodCall { .. }, span)),
                             ..
                         } => Some(span.clone()),
                         _ => None,
@@ -385,11 +385,11 @@ fn return_type_polymorphic_call_records_call_type_args() {
         output.errors
     );
 
-    // assoc-fn `Stack::new()` records T=i64 from the `let` annotation.
+    // assoc-fn `Stack.new()` records T=i64 from the `let` annotation.
     assert_eq!(
         output.call_type_args.get(&SpanKey::from(&call_spans[0])),
         Some(&vec![Ty::I64]),
-        "return-type-polymorphic `Stack::new()` must record T=i64; got {:?}",
+        "return-type-polymorphic `Stack.new()` must record T=i64; got {:?}",
         output.call_type_args
     );
     // free-fn `new_stack()` records T=string from the `let` annotation.
@@ -417,7 +417,7 @@ fn call_type_arg_recorder_defers_inference_var_then_reresolves() {
 
     // An unresolved var arg is snapshotted (deferred), not dropped: the
     // return-type-polymorphic constructor pattern (`let s: Stack<i64> =
-    // Stack::new()`) depends on this entry surviving until the expected type
+    // Stack.new()`) depends on this entry surviving until the expected type
     // pins `T` at the output boundary.
     checker.record_concrete_call_type_args(&span, &[Ty::Var(var)]);
     assert_eq!(
@@ -1418,7 +1418,7 @@ fn bool_does_not_coerce_to_i32() {
 #[test]
 fn handle_type_does_not_coerce_to_string() {
     let (errors, _warnings) = parse_and_check_with_stdlib(
-        "import std::encoding::json;\nfn foo(value: json.Value) -> string { value }",
+        "import std.encoding.json;\nfn foo(value: json.Value) -> string { value }",
     );
     assert!(
         errors
@@ -1431,7 +1431,7 @@ fn handle_type_does_not_coerce_to_string() {
 #[test]
 fn string_does_not_coerce_to_handle_type() {
     let (errors, _warnings) = parse_and_check_with_stdlib(
-        "import std::encoding::json;\nfn foo(text: string) -> json.Value { text }",
+        "import std.encoding.json;\nfn foo(text: string) -> json.Value { text }",
     );
     assert!(
         errors
@@ -3274,7 +3274,7 @@ fn record_init_type_args_enum_struct_variant_fully_bound() {
             Right { err: E };
         }
         fn main() {
-            let _x: Either<i64, string> = Either::Left { value: 1 };
+            let _x: Either<i64, string> = Either.Left { value: 1 };
         }
     ";
     let tco = check_source(source);
@@ -3295,7 +3295,7 @@ fn record_init_type_args_enum_struct_variant_partial_inference_pruned() {
             Left { value: T };
             Right { err: E };
         }
-        fn main() { let _x = Either::Left { value: 42 }; }
+        fn main() { let _x = Either.Left { value: 42 }; }
     ";
     let tco = check_source(source);
     // The source emits an InferenceFailed error for `_x` (E unresolved) — we
@@ -3413,7 +3413,7 @@ fn generic_decl_bound_rejects_return_type_site() {
 fn generic_decl_bound_rejects_imported_type_annotation_site() {
     let mut root = hew_parser::parse(
         r"
-        import hew::boxes::{ Box };
+        import hew.boxes.{ Box };
         type NoDisplay { n: i64 }
         fn take(boxed: Box<NoDisplay>) -> i64 {
             0
@@ -3482,7 +3482,7 @@ fn generic_decl_bound_rejects_enum_tuple_variant_constructor_site() {
             None;
         }
         fn main() {
-            let _maybe = Maybe::Some(NoDisplay { n: 1 });
+            let _maybe = Maybe.Some(NoDisplay { n: 1 });
         }
         ",
     );
@@ -3498,7 +3498,7 @@ fn generic_decl_bound_rejects_enum_struct_variant_constructor_site() {
             None;
         }
         fn main() {
-            let _maybe = Maybe::Some { value: NoDisplay { n: 1 } };
+            let _maybe = Maybe.Some { value: NoDisplay { n: 1 } };
         }
         ",
     );

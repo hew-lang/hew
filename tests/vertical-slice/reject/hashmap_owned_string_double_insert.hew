@@ -6,7 +6,7 @@
 
 fn main() {
     let s = "dup" + "-key";
-    var m: HashMap<string, i64> = HashMap::new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert(s, 1);
     m.insert(s, 2);
     println(f"n={m.len()}");

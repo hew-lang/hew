@@ -87,7 +87,7 @@ fn run_test(name: string, passed: i64) -> i64 {
 fn main() {
     var total = 0;
     var passed = 0;
-    let arr: Vec<i64> = Vec::new();
+    let arr: Vec<i64> = Vec.new();
     // Test 1: insert maintains sorted order
     total = total + 1;
     sa_insert(arr, 30);
@@ -175,7 +175,7 @@ fn main() {
 
     // Test 8: many elements
     total = total + 1;
-    let arr2: Vec<i64> = Vec::new();
+    let arr2: Vec<i64> = Vec.new();
     // Insert in reverse order
     var j = 50;
     while j > 0 {

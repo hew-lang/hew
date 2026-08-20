@@ -1,6 +1,6 @@
-import std::net::websocket;
+import std.net.websocket;
 
-import std::encoding::protobuf;
+import std.encoding.protobuf;
 
 fn close_websocket(value: websocket.Message) {
     value.close();

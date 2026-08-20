@@ -16,7 +16,7 @@ fn field_load_share() -> i64 {
 }
 
 fn container_element_read() -> i64 {
-    let values: Vec<((bytes, i64), bool)> = Vec::new();
+    let values: Vec<((bytes, i64), bool)> = Vec.new();
     let source = "container-read".to_bytes();
     values.push(((source, 7), true));
     let item = values[0];

@@ -9,7 +9,7 @@
       ]
     }
   ],
-  "compiler_version": "hew-sandbox-wasm-0.6.0-rc1",
+  "compiler_version": "hew-sandbox-wasm-0.6.0-rc2",
   "functions": [
     {
       "blocks": [
@@ -25,7 +25,7 @@
               ],
               "dst": "local:main.0",
               "op": "vector.new",
-              "span": "span:39-49"
+              "span": "span:29-43"
             },
             {
               "args": [
@@ -40,7 +40,7 @@
               ],
               "dst": null,
               "op": "local.set",
-              "span": "span:20-26"
+              "span": "span:20-27"
             },
             {
               "args": [
@@ -51,7 +51,7 @@
               ],
               "dst": "local:main.2",
               "op": "local.get",
-              "span": "span:55-61"
+              "span": "span:49-55"
             },
             {
               "args": [
@@ -62,7 +62,7 @@
               ],
               "dst": "local:main.3",
               "op": "const.i64",
-              "span": "span:67-69"
+              "span": "span:61-63"
             },
             {
               "args": [
@@ -77,13 +77,13 @@
               ],
               "dst": null,
               "op": "vector.push",
-              "span": "span:55-70"
+              "span": "span:49-64"
             },
             {
               "args": [],
               "dst": "local:main.4",
               "op": "const.unit",
-              "span": "span:55-70"
+              "span": "span:49-64"
             },
             {
               "args": [
@@ -94,7 +94,7 @@
               ],
               "dst": "local:main.5",
               "op": "local.get",
-              "span": "span:76-82"
+              "span": "span:70-76"
             },
             {
               "args": [
@@ -105,7 +105,7 @@
               ],
               "dst": "local:main.6",
               "op": "const.i64",
-              "span": "span:88-90"
+              "span": "span:82-84"
             },
             {
               "args": [
@@ -120,13 +120,13 @@
               ],
               "dst": null,
               "op": "vector.push",
-              "span": "span:76-91"
+              "span": "span:70-85"
             },
             {
               "args": [],
               "dst": "local:main.7",
               "op": "const.unit",
-              "span": "span:76-91"
+              "span": "span:70-85"
             },
             {
               "args": [
@@ -137,7 +137,7 @@
               ],
               "dst": "local:main.8",
               "op": "local.get",
-              "span": "span:105-111"
+              "span": "span:99-105"
             },
             {
               "args": [
@@ -148,7 +148,7 @@
               ],
               "dst": "local:main.9",
               "op": "vector.len",
-              "span": "span:105-117"
+              "span": "span:99-111"
             },
             {
               "args": [
@@ -163,13 +163,13 @@
               ],
               "dst": null,
               "op": "call.stdlib",
-              "span": "span:97-118"
+              "span": "span:91-112"
             },
             {
               "args": [],
               "dst": "local:main.10",
               "op": "const.unit",
-              "span": "span:97-118"
+              "span": "span:91-112"
             },
             {
               "args": [
@@ -180,7 +180,7 @@
               ],
               "dst": "local:main.11",
               "op": "local.get",
-              "span": "span:130-136"
+              "span": "span:124-130"
             },
             {
               "args": [
@@ -191,7 +191,7 @@
               ],
               "dst": "local:main.12",
               "op": "const.i64",
-              "span": "span:141-142"
+              "span": "span:135-136"
             },
             {
               "args": [
@@ -206,7 +206,7 @@
               ],
               "dst": "local:main.13",
               "op": "vector.get",
-              "span": "span:130-144"
+              "span": "span:124-138"
             },
             {
               "args": [
@@ -217,7 +217,7 @@
               ],
               "dst": "local:main.15",
               "op": "enum.tag",
-              "span": "span:130-144"
+              "span": "span:124-138"
             }
           ],
           "params": [],
@@ -225,7 +225,7 @@
           "terminator": {
             "args": [],
             "op": "br",
-            "span": "span:124-212",
+            "span": "span:118-206",
             "target": "block:main.match_check_0.2"
           }
         },
@@ -233,7 +233,7 @@
           "id": "block:main.match_exit.1",
           "instructions": [],
           "params": [],
-          "span": "span:124-212",
+          "span": "span:118-206",
           "terminator": {
             "args": [
               {
@@ -242,7 +242,7 @@
               }
             ],
             "op": "return",
-            "span": "span:0-213"
+            "span": "span:0-207"
           }
         },
         {
@@ -257,7 +257,7 @@
               ],
               "dst": "local:main.16",
               "op": "const.i64",
-              "span": "span:154-162"
+              "span": "span:148-156"
             },
             {
               "args": [
@@ -272,11 +272,11 @@
               ],
               "dst": "local:main.17",
               "op": "cmp.eq",
-              "span": "span:154-162"
+              "span": "span:148-156"
             }
           ],
           "params": [],
-          "span": "span:154-162",
+          "span": "span:148-156",
           "terminator": {
             "args": [],
             "condition": {
@@ -285,7 +285,7 @@
             },
             "else_target": "block:main.match_check_1.4",
             "op": "br_if",
-            "span": "span:154-162",
+            "span": "span:148-156",
             "target": "block:main.match_arm_0.3"
           }
         },
@@ -305,7 +305,7 @@
               ],
               "dst": "local:main.18",
               "op": "enum.payload",
-              "span": "span:159-160"
+              "span": "span:153-154"
             },
             {
               "args": [
@@ -316,7 +316,7 @@
               ],
               "dst": "local:main.19",
               "op": "local.get",
-              "span": "span:173-174"
+              "span": "span:167-168"
             },
             {
               "args": [
@@ -331,13 +331,13 @@
               ],
               "dst": null,
               "op": "call.stdlib",
-              "span": "span:165-175"
+              "span": "span:159-169"
             },
             {
               "args": [],
               "dst": "local:main.20",
               "op": "const.unit",
-              "span": "span:165-175"
+              "span": "span:159-169"
             },
             {
               "args": [
@@ -352,15 +352,15 @@
               ],
               "dst": null,
               "op": "local.set",
-              "span": "span:165-175"
+              "span": "span:159-169"
             }
           ],
           "params": [],
-          "span": "span:165-175",
+          "span": "span:159-169",
           "terminator": {
             "args": [],
             "op": "br",
-            "span": "span:165-175",
+            "span": "span:159-169",
             "target": "block:main.match_exit.1"
           }
         },
@@ -376,7 +376,7 @@
               ],
               "dst": "local:main.21",
               "op": "const.i64",
-              "span": "span:185-190"
+              "span": "span:179-184"
             },
             {
               "args": [
@@ -391,11 +391,11 @@
               ],
               "dst": "local:main.22",
               "op": "cmp.eq",
-              "span": "span:185-190"
+              "span": "span:179-184"
             }
           ],
           "params": [],
-          "span": "span:185-190",
+          "span": "span:179-184",
           "terminator": {
             "args": [],
             "condition": {
@@ -404,7 +404,7 @@
             },
             "else_target": "block:main.match_arm_1.5",
             "op": "br_if",
-            "span": "span:185-190",
+            "span": "span:179-184",
             "target": "block:main.match_arm_1.5"
           }
         },
@@ -420,7 +420,7 @@
               ],
               "dst": "local:main.23",
               "op": "const.i64",
-              "span": "span:202-203"
+              "span": "span:196-197"
             },
             {
               "args": [
@@ -431,7 +431,7 @@
               ],
               "dst": "local:main.24",
               "op": "i64.neg",
-              "span": "span:201-203"
+              "span": "span:195-197"
             },
             {
               "args": [
@@ -446,13 +446,13 @@
               ],
               "dst": null,
               "op": "call.stdlib",
-              "span": "span:193-204"
+              "span": "span:187-198"
             },
             {
               "args": [],
               "dst": "local:main.25",
               "op": "const.unit",
-              "span": "span:193-204"
+              "span": "span:187-198"
             },
             {
               "args": [
@@ -467,15 +467,15 @@
               ],
               "dst": null,
               "op": "local.set",
-              "span": "span:193-204"
+              "span": "span:187-198"
             }
           ],
           "params": [],
-          "span": "span:193-204",
+          "span": "span:187-198",
           "terminator": {
             "args": [],
             "op": "br",
-            "span": "span:193-204",
+            "span": "span:187-198",
             "target": "block:main.match_exit.1"
           }
         }
@@ -486,182 +486,182 @@
           "id": "local:main.0",
           "mutable": false,
           "name": null,
-          "span": "span:39-49",
+          "span": "span:29-43",
           "type": "type:Vec.type.i64"
         },
         {
           "id": "local:main.1",
           "mutable": false,
           "name": "values",
-          "span": "span:20-26",
+          "span": "span:20-27",
           "type": "type:Vec.type.i64"
         },
         {
           "id": "local:main.2",
           "mutable": false,
           "name": null,
-          "span": "span:55-61",
+          "span": "span:49-55",
           "type": "type:Vec.type.i64"
         },
         {
           "id": "local:main.3",
           "mutable": false,
           "name": null,
-          "span": "span:67-69",
+          "span": "span:61-63",
           "type": "type:i64"
         },
         {
           "id": "local:main.4",
           "mutable": false,
           "name": null,
-          "span": "span:55-70",
+          "span": "span:49-64",
           "type": "type:unit"
         },
         {
           "id": "local:main.5",
           "mutable": false,
           "name": null,
-          "span": "span:76-82",
+          "span": "span:70-76",
           "type": "type:Vec.type.i64"
         },
         {
           "id": "local:main.6",
           "mutable": false,
           "name": null,
-          "span": "span:88-90",
+          "span": "span:82-84",
           "type": "type:i64"
         },
         {
           "id": "local:main.7",
           "mutable": false,
           "name": null,
-          "span": "span:76-91",
+          "span": "span:70-85",
           "type": "type:unit"
         },
         {
           "id": "local:main.8",
           "mutable": false,
           "name": null,
-          "span": "span:105-111",
+          "span": "span:99-105",
           "type": "type:Vec.type.i64"
         },
         {
           "id": "local:main.9",
           "mutable": false,
           "name": null,
-          "span": "span:105-117",
+          "span": "span:99-111",
           "type": "type:i64"
         },
         {
           "id": "local:main.10",
           "mutable": false,
           "name": null,
-          "span": "span:97-118",
+          "span": "span:91-112",
           "type": "type:unit"
         },
         {
           "id": "local:main.11",
           "mutable": false,
           "name": null,
-          "span": "span:130-136",
+          "span": "span:124-130",
           "type": "type:Vec.type.i64"
         },
         {
           "id": "local:main.12",
           "mutable": false,
           "name": null,
-          "span": "span:141-142",
+          "span": "span:135-136",
           "type": "type:i64"
         },
         {
           "id": "local:main.13",
           "mutable": false,
           "name": null,
-          "span": "span:130-144",
+          "span": "span:124-138",
           "type": "type:Option.type.i64"
         },
         {
           "id": "local:main.14",
           "mutable": true,
           "name": null,
-          "span": "span:124-212",
+          "span": "span:118-206",
           "type": "type:unit"
         },
         {
           "id": "local:main.15",
           "mutable": false,
           "name": null,
-          "span": "span:130-144",
+          "span": "span:124-138",
           "type": "type:i64"
         },
         {
           "id": "local:main.16",
           "mutable": false,
           "name": null,
-          "span": "span:154-162",
+          "span": "span:148-156",
           "type": "type:i64"
         },
         {
           "id": "local:main.17",
           "mutable": false,
           "name": null,
-          "span": "span:154-162",
+          "span": "span:148-156",
           "type": "type:bool"
         },
         {
           "id": "local:main.18",
           "mutable": false,
           "name": "v",
-          "span": "span:159-160",
+          "span": "span:153-154",
           "type": "type:i64"
         },
         {
           "id": "local:main.19",
           "mutable": false,
           "name": null,
-          "span": "span:173-174",
+          "span": "span:167-168",
           "type": "type:i64"
         },
         {
           "id": "local:main.20",
           "mutable": false,
           "name": null,
-          "span": "span:165-175",
+          "span": "span:159-169",
           "type": "type:unit"
         },
         {
           "id": "local:main.21",
           "mutable": false,
           "name": null,
-          "span": "span:185-190",
+          "span": "span:179-184",
           "type": "type:i64"
         },
         {
           "id": "local:main.22",
           "mutable": false,
           "name": null,
-          "span": "span:185-190",
+          "span": "span:179-184",
           "type": "type:bool"
         },
         {
           "id": "local:main.23",
           "mutable": false,
           "name": null,
-          "span": "span:202-203",
+          "span": "span:196-197",
           "type": "type:i64"
         },
         {
           "id": "local:main.24",
           "mutable": false,
           "name": null,
-          "span": "span:201-203",
+          "span": "span:195-197",
           "type": "type:i64"
         },
         {
           "id": "local:main.25",
           "mutable": false,
           "name": null,
-          "span": "span:193-204",
+          "span": "span:187-198",
           "type": "type:unit"
         }
       ],
@@ -669,10 +669,10 @@
       "name": "main",
       "params": [],
       "result": "type:unit",
-      "span": "span:0-213"
+      "span": "span:0-207"
     }
   ],
-  "hew_version": "0.6.0-rc1",
+  "hew_version": "0.6.0-rc2",
   "layouts": {
     "actors": [],
     "enums": [
@@ -703,16 +703,6 @@
         "id": "type:AskError",
         "kind": "enum",
         "name": "AskError"
-      },
-      {
-        "id": "type:CrashInfo",
-        "kind": "record",
-        "name": "CrashInfo"
-      },
-      {
-        "id": "type:CrashNotification",
-        "kind": "record",
-        "name": "CrashNotification"
       },
       {
         "id": "type:HashMapIter",
@@ -781,26 +771,6 @@
         "id": "type:f64",
         "kind": "float",
         "name": "f64"
-      },
-      {
-        "id": "type:failure.CrashAction",
-        "kind": "enum",
-        "name": "failure.CrashAction"
-      },
-      {
-        "id": "type:failure.CrashInfo",
-        "kind": "record",
-        "name": "failure.CrashInfo"
-      },
-      {
-        "id": "type:failure.CrashKind",
-        "kind": "enum",
-        "name": "failure.CrashKind"
-      },
-      {
-        "id": "type:failure.CrashNotification",
-        "kind": "record",
-        "name": "failure.CrashNotification"
       },
       {
         "id": "type:i64",
@@ -928,13 +898,13 @@
       }
     ]
   },
-  "package_id": "pkg:0886c86334a6ef7c",
+  "package_id": "pkg:6b3c5373d306752d",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {
     "sources": [
       {
-        "content_sha256": "5b3437fdfc2c9ef3d71c8111cdb3c021a848ff2ad22b4ac5a543d340dc01c278",
+        "content_sha256": "c020c706b4bccfd87c05874effa3e9ad337c1bbfbecda19e44ab81d554c74826",
         "id": "src:main",
         "path": "main.hew"
       }
@@ -942,11 +912,11 @@
     "spans": [
       {
         "end": {
-          "byte_offset": 213,
+          "byte_offset": 207,
           "column": 2,
           "line": 10
         },
-        "id": "span:0-213",
+        "id": "span:0-207",
         "source_id": "src:main",
         "start": {
           "byte_offset": 0,
@@ -956,11 +926,11 @@
       },
       {
         "end": {
-          "byte_offset": 26,
-          "column": 15,
+          "byte_offset": 27,
+          "column": 16,
           "line": 2
         },
-        "id": "span:20-26",
+        "id": "span:20-27",
         "source_id": "src:main",
         "start": {
           "byte_offset": 20,
@@ -970,308 +940,308 @@
       },
       {
         "end": {
+          "byte_offset": 43,
+          "column": 32,
+          "line": 2
+        },
+        "id": "span:29-43",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 29,
+          "column": 18,
+          "line": 2
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 55,
+          "column": 11,
+          "line": 3
+        },
+        "id": "span:49-55",
+        "source_id": "src:main",
+        "start": {
           "byte_offset": 49,
-          "column": 38,
-          "line": 2
-        },
-        "id": "span:39-49",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 39,
-          "column": 28,
-          "line": 2
+          "column": 5,
+          "line": 3
         }
       },
       {
         "end": {
+          "byte_offset": 64,
+          "column": 20,
+          "line": 3
+        },
+        "id": "span:49-64",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 49,
+          "column": 5,
+          "line": 3
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 63,
+          "column": 19,
+          "line": 3
+        },
+        "id": "span:61-63",
+        "source_id": "src:main",
+        "start": {
           "byte_offset": 61,
-          "column": 11,
-          "line": 3
-        },
-        "id": "span:55-61",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 55,
-          "column": 5,
+          "column": 17,
           "line": 3
         }
       },
       {
         "end": {
+          "byte_offset": 76,
+          "column": 11,
+          "line": 4
+        },
+        "id": "span:70-76",
+        "source_id": "src:main",
+        "start": {
           "byte_offset": 70,
-          "column": 20,
-          "line": 3
-        },
-        "id": "span:55-70",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 55,
           "column": 5,
-          "line": 3
+          "line": 4
         }
       },
       {
         "end": {
-          "byte_offset": 69,
-          "column": 19,
-          "line": 3
+          "byte_offset": 85,
+          "column": 20,
+          "line": 4
         },
-        "id": "span:67-69",
+        "id": "span:70-85",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 67,
-          "column": 17,
-          "line": 3
+          "byte_offset": 70,
+          "column": 5,
+          "line": 4
         }
       },
       {
         "end": {
+          "byte_offset": 84,
+          "column": 19,
+          "line": 4
+        },
+        "id": "span:82-84",
+        "source_id": "src:main",
+        "start": {
           "byte_offset": 82,
-          "column": 11,
-          "line": 4
-        },
-        "id": "span:76-82",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 76,
-          "column": 5,
-          "line": 4
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 91,
-          "column": 20,
-          "line": 4
-        },
-        "id": "span:76-91",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 76,
-          "column": 5,
-          "line": 4
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 90,
-          "column": 19,
-          "line": 4
-        },
-        "id": "span:88-90",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 88,
           "column": 17,
           "line": 4
         }
       },
       {
         "end": {
-          "byte_offset": 118,
+          "byte_offset": 112,
           "column": 26,
           "line": 5
         },
-        "id": "span:97-118",
+        "id": "span:91-112",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 97,
+          "byte_offset": 91,
           "column": 5,
+          "line": 5
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 105,
+          "column": 19,
+          "line": 5
+        },
+        "id": "span:99-105",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 99,
+          "column": 13,
           "line": 5
         }
       },
       {
         "end": {
           "byte_offset": 111,
-          "column": 19,
-          "line": 5
-        },
-        "id": "span:105-111",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 105,
-          "column": 13,
-          "line": 5
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 117,
           "column": 25,
           "line": 5
         },
-        "id": "span:105-117",
+        "id": "span:99-111",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 105,
+          "byte_offset": 99,
           "column": 13,
           "line": 5
         }
       },
       {
         "end": {
-          "byte_offset": 212,
+          "byte_offset": 206,
           "column": 1,
           "line": 10
         },
-        "id": "span:124-212",
+        "id": "span:118-206",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 124,
+          "byte_offset": 118,
           "column": 5,
           "line": 6
         }
       },
       {
         "end": {
-          "byte_offset": 136,
+          "byte_offset": 130,
           "column": 17,
           "line": 6
         },
-        "id": "span:130-136",
+        "id": "span:124-130",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 130,
+          "byte_offset": 124,
           "column": 11,
           "line": 6
         }
       },
       {
         "end": {
-          "byte_offset": 144,
+          "byte_offset": 138,
           "column": 25,
           "line": 6
         },
-        "id": "span:130-144",
+        "id": "span:124-138",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 130,
+          "byte_offset": 124,
           "column": 11,
           "line": 6
         }
       },
       {
         "end": {
-          "byte_offset": 142,
+          "byte_offset": 136,
           "column": 23,
           "line": 6
         },
-        "id": "span:141-142",
+        "id": "span:135-136",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 141,
+          "byte_offset": 135,
           "column": 22,
           "line": 6
         }
       },
       {
         "end": {
-          "byte_offset": 162,
+          "byte_offset": 156,
           "column": 17,
           "line": 7
         },
-        "id": "span:154-162",
+        "id": "span:148-156",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 154,
+          "byte_offset": 148,
           "column": 9,
           "line": 7
         }
       },
       {
         "end": {
-          "byte_offset": 160,
+          "byte_offset": 154,
           "column": 15,
           "line": 7
         },
-        "id": "span:159-160",
+        "id": "span:153-154",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 159,
+          "byte_offset": 153,
           "column": 14,
           "line": 7
         }
       },
       {
         "end": {
-          "byte_offset": 175,
+          "byte_offset": 169,
           "column": 30,
           "line": 7
         },
-        "id": "span:165-175",
+        "id": "span:159-169",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 165,
+          "byte_offset": 159,
           "column": 20,
           "line": 7
         }
       },
       {
         "end": {
-          "byte_offset": 174,
+          "byte_offset": 168,
           "column": 29,
           "line": 7
         },
-        "id": "span:173-174",
+        "id": "span:167-168",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 173,
+          "byte_offset": 167,
           "column": 28,
           "line": 7
         }
       },
       {
         "end": {
-          "byte_offset": 190,
+          "byte_offset": 184,
           "column": 14,
           "line": 8
         },
-        "id": "span:185-190",
+        "id": "span:179-184",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 185,
+          "byte_offset": 179,
           "column": 9,
           "line": 8
         }
       },
       {
         "end": {
-          "byte_offset": 204,
+          "byte_offset": 198,
           "column": 28,
           "line": 8
         },
-        "id": "span:193-204",
+        "id": "span:187-198",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 193,
+          "byte_offset": 187,
           "column": 17,
           "line": 8
         }
       },
       {
         "end": {
-          "byte_offset": 203,
+          "byte_offset": 197,
           "column": 27,
           "line": 8
         },
-        "id": "span:201-203",
+        "id": "span:195-197",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 201,
+          "byte_offset": 195,
           "column": 25,
           "line": 8
         }
       },
       {
         "end": {
-          "byte_offset": 203,
+          "byte_offset": 197,
           "column": 27,
           "line": 8
         },
-        "id": "span:202-203",
+        "id": "span:196-197",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 202,
+          "byte_offset": 196,
           "column": 26,
           "line": 8
         }

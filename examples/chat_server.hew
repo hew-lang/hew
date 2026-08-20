@@ -12,9 +12,9 @@
 // TCP I/O is confined to ClientHandler; ChatRoom never touches sockets directly.
 // The ChatRoom broadcasts by calling h.deliver(msg) on each handler actor —
 // pure actor-to-actor communication with no raw socket I/O leaking out.
-import std::net::{Connection};
+import std.net.{Connection};
 
-import std::os;
+import std.os;
 
 actor ChatRoom {
     var handlers: Vec<LocalPid<ClientHandler>>;
@@ -25,8 +25,8 @@ actor ChatRoom {
         println(f"{name} joined the chat");
     }
     receive fn unregister(name: string) {
-        var new_handlers: Vec<LocalPid<ClientHandler>> = Vec::new();
-        var new_names: Vec<string> = Vec::new();
+        var new_handlers: Vec<LocalPid<ClientHandler>> = Vec.new();
+        var new_names: Vec<string> = Vec.new();
         for i in 0 .. names.len() {
             if names[i] != name {
                 new_handlers.push(handlers[i]);
@@ -88,8 +88,8 @@ fn main() {
     let listener = net.listen(addr);
     println("=== Hew TCP Chat Server ===");
     println(f"Listening on {addr}");
-    let handlers: Vec<LocalPid<ClientHandler>> = Vec::new();
-    let names: Vec<string> = Vec::new();
+    let handlers: Vec<LocalPid<ClientHandler>> = Vec.new();
+    let names: Vec<string> = Vec.new();
     let room = spawn ChatRoom(handlers: handlers, names: names);
     var next_id: i32 = 1;
     var accepting = 1;

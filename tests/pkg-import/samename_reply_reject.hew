@@ -14,9 +14,9 @@
 //
 // Harness verb: hew check
 // Expected: rejected; the only error is E_DUPLEX_NON_SEND on the non-Send ask.
-import hew::replysend;
+import hew.replysend;
 
-import hew::replynonsend;
+import hew.replynonsend;
 
 fn main() {
     // Accepted: Send reply.

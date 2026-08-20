@@ -46,6 +46,12 @@ pub fn typecheck_isolated(source: &str) -> TypeCheckOutput {
     checker.check_program(&program)
 }
 
+pub fn typecheck_embedded_builtins_isolated(source: &str) -> TypeCheckOutput {
+    let program = parse_program(source);
+    let mut checker = isolated_checker();
+    checker.check_embedded_builtins(&program)
+}
+
 pub fn parse_and_typecheck_inline(source: &str) -> (hew_parser::ast::Program, TypeCheckOutput) {
     let program = parse_program(source);
     let mut checker = checker();

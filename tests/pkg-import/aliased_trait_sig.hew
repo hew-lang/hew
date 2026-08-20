@@ -15,7 +15,7 @@
 // declaration identity and falsely reject this correct impl.
 //
 // Harness verb: hew check (positive — see run.sh).
-import hew::closableerr::{Closable as C};
+import hew.closableerr.{Closable as C};
 
 pub type ClosableHandle {
     id: i64;

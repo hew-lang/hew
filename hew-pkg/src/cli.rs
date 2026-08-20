@@ -45,6 +45,10 @@ pub enum PkgCommand {
         /// Use a named registry from config
         #[arg(long, short = 'r')]
         registry: Option<String>,
+        /// Install into the local package registry only; never contacts a
+        /// remote registry
+        #[arg(long, conflicts_with = "registry")]
+        local: bool,
     },
     /// List packages in the local registry
     List,
@@ -212,7 +216,10 @@ pub fn dispatch(cmd: &PkgCommand) {
             locked,
             registry: reg,
         } => cmd_install(*locked, &registry, reg.as_deref()),
-        PkgCommand::Publish { registry: reg } => cmd_publish(&registry, reg.as_deref()),
+        PkgCommand::Publish {
+            registry: reg,
+            local,
+        } => cmd_publish(&registry, reg.as_deref(), *local),
         PkgCommand::List => cmd_list(&registry),
         PkgCommand::Search {
             query,
@@ -288,7 +295,8 @@ pub fn run_native_build() {
 }
 
 /// Scaffold a manifest-first Hew project in `dir` — the `hew init` back end.
-/// The package name is the (canonicalized) directory name.
+/// The package name is the (canonicalized) directory name with hyphens
+/// normalized to underscores.
 ///
 /// Never destructive: errors if `hew.toml` already exists, skips any scaffold
 /// source file that already exists, and merges (never replaces) `.gitignore`.
@@ -297,16 +305,26 @@ pub fn run_init(dir: &Path, template: manifest::ManifestTemplate) {
     cmd_init(dir, template, &cfg);
 }
 
+/// Look up a named registry in config, exiting with the standard
+/// unknown-registry diagnostic if `name` is not configured.
+///
+/// Shared by [`make_client`] and the publish token-resolution path so a
+/// typo'd `--registry NAME` always gets this precise message rather than
+/// being misreported by whatever check happens to run first.
+fn resolve_named_registry_or_exit(name: &str) -> config::RemoteRegistry {
+    let cfg = load_config_or_exit();
+    config::get_named_registry(&cfg, name).unwrap_or_else(|| {
+        eprintln!("hew: unknown registry '{name}'");
+        eprintln!("Configure it in ~/.hew/config.toml under [registries.{name}]");
+        std::process::exit(1);
+    })
+}
+
 /// Build a [`RegistryClient`] for the given named registry (or default).
 fn make_client(registry_name: Option<&str>) -> client::RegistryClient {
     match registry_name {
         Some(name) => {
-            let cfg = load_config_or_exit();
-            let remote = config::get_named_registry(&cfg, name).unwrap_or_else(|| {
-                eprintln!("hew: unknown registry '{name}'");
-                eprintln!("Configure it in ~/.hew/config.toml under [registries.{name}]");
-                std::process::exit(1);
-            });
+            let remote = resolve_named_registry_or_exit(name);
             let mut c = client::RegistryClient::with_url(remote.api);
             let cred_path = credentials::credentials_path();
             if let Ok(token) = credentials::get_named_token(&cred_path, name) {
@@ -318,6 +336,26 @@ fn make_client(registry_name: Option<&str>) -> client::RegistryClient {
     }
 }
 
+/// Resolve the API token required for a remote publish.
+///
+/// Injecting `cred_path` keeps this unit-testable without `$HOME` mutation.
+///
+/// # Errors
+///
+/// Returns [`credentials::CredentialError::NotLoggedIn`] when no token is
+/// stored for the target registry (default or named), or
+/// [`credentials::CredentialError::Parse`]/[`credentials::CredentialError::Io`]
+/// when the credentials file exists but cannot be read.
+fn resolve_publish_token(
+    cred_path: &Path,
+    registry_name: Option<&str>,
+) -> Result<String, credentials::CredentialError> {
+    match registry_name {
+        Some(name) => credentials::get_named_token(cred_path, name),
+        None => credentials::get_token(cred_path),
+    }
+}
+
 fn load_config_or_exit() -> config::PkgConfig {
     config::load_config().unwrap_or_else(|error| {
         eprintln!("hew: {error}");
@@ -326,7 +364,7 @@ fn load_config_or_exit() -> config::PkgConfig {
 }
 
 fn cmd_init(dir: &Path, template: manifest::ManifestTemplate, cfg: &config::PkgConfig) {
-    let name = dir
+    let directory_name = dir
         .canonicalize()
         .ok()
         .as_deref()
@@ -335,6 +373,7 @@ fn cmd_init(dir: &Path, template: manifest::ManifestTemplate, cfg: &config::PkgC
         .and_then(|n| n.to_str())
         .unwrap_or("myproject")
         .to_string();
+    let name = directory_name.replace('-', "_");
     let manifest_path = dir.join("hew.toml");
     if manifest_path.exists() {
         eprintln!("hew init: hew.toml already exists");
@@ -872,7 +911,7 @@ fn verify_registry_signature(
     clippy::too_many_lines,
     reason = "CLI command handler requires many steps"
 )]
-fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
+fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>, local: bool) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
     if !manifest_path.exists() {
@@ -900,7 +939,7 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
     // Validate package name format.
     if !is_valid_package_name(&m.package.name) {
         eprintln!(
-            "hew publish: invalid package name `{}`: only alphanumeric, `_`, and `::` (or `/`) allowed",
+            "hew publish: invalid package name `{}`: only lowercase alphanumeric, `_`, and dotted segments allowed",
             m.package.name
         );
         std::process::exit(1);
@@ -928,6 +967,41 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
             eprintln!("hew publish: {e}");
             std::process::exit(1);
         }
+    };
+
+    // Resolve the remote token up front, before packing, so a logged-out
+    // publish never packs a tarball it cannot use. `--local` never reads
+    // credentials at all.
+    let token = if local {
+        None
+    } else {
+        // Validate a named registry before touching credentials at all, so
+        // a typo'd `--registry NAME` gets `make_client`'s precise
+        // unknown-registry diagnostic instead of being misreported as
+        // "not logged in" (no stored token is ever found for a registry
+        // name that doesn't exist).
+        if let Some(name) = registry_name {
+            resolve_named_registry_or_exit(name);
+        }
+        let cred_path = credentials::credentials_path();
+        Some(
+            resolve_publish_token(&cred_path, registry_name).unwrap_or_else(|err| {
+                match err {
+                    credentials::CredentialError::NotLoggedIn => {
+                        eprintln!(
+                            "hew publish: not logged in; run `hew login` to publish to a remote registry"
+                        );
+                        eprintln!(
+                            "Use `hew publish --local` to install this package into the local registry only."
+                        );
+                    }
+                    credentials::CredentialError::Parse(_) | credentials::CredentialError::Io(_) => {
+                        eprintln!("hew publish: {err}");
+                    }
+                }
+                std::process::exit(1);
+            }),
+        )
     };
 
     // Pack tarball.
@@ -970,84 +1044,78 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
         })
         .collect();
 
-    // Try remote publish first if we have credentials.
-    let cred_path = credentials::credentials_path();
-    let has_token = if registry_name.is_some() {
-        // Named registries get their token via make_client
-        true
-    } else {
-        credentials::get_token(&cred_path).is_ok()
-    };
-    if has_token {
-        let api_client = {
-            let mut c = make_client(registry_name);
-            if registry_name.is_none() {
-                if let Ok(token) = credentials::get_token(&cred_path) {
-                    c = c.with_token(token);
-                }
-            }
-            c
-        };
-        let request = client::PublishRequest {
-            metadata: client::PublishMetadata {
-                name: m.package.name.clone(),
-                vers: m.package.version.clone(),
-                description: m.package.description.clone().unwrap_or_default(),
-                license: m.package.license.clone().unwrap_or_default(),
-                authors: m.package.authors.clone().unwrap_or_default(),
-                deps: deps.clone(),
-                features: m.features.clone(),
-                edition: Some(m.package.edition.clone()),
-                hew: m.package.hew.clone(),
-                keywords: m.package.keywords.clone(),
-                categories: m.package.categories.clone(),
-                homepage: m.package.homepage.clone(),
-                repository: m.package.repository.clone(),
-                documentation: m.package.documentation.clone(),
-            },
-            checksum: pack_result.checksum.clone(),
-            signature: signature.clone(),
-            key_fingerprint: fingerprint.clone(),
-        };
+    if local {
+        let dest = registry.package_dir(&m.package.name, &m.package.version);
+        if let Err(e) = copy_dir(&cwd, &dest) {
+            eprintln!("hew publish: {e}");
+            std::process::exit(1);
+        }
+        println!(
+            "Published {}@{} to {} (local registry only — not published to a remote registry)",
+            m.package.name,
+            m.package.version,
+            dest.display()
+        );
+        println!("Checksum: {}", pack_result.checksum);
+        println!("Signature: {signature}");
+        println!("Key: {fingerprint}");
+        return;
+    }
 
-        match api_client.publish(
-            &m.package.name,
-            &m.package.version,
-            &pack_result.data,
-            &request,
-        ) {
-            Ok(()) => {
-                println!(
-                    "Published {}@{} to registry",
-                    m.package.name, m.package.version
-                );
-                println!("Checksum: {}", pack_result.checksum);
-                println!("Signature: {signature}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("hew publish: remote publish failed: {e}");
-                eprintln!("Falling back to local publish.");
+    // `local` is false here, so `token` was resolved above (or the process
+    // already exited). Remote publish either completes or the command exits
+    // nonzero — there is no local-copy fallback.
+    let api_client = {
+        let mut c = make_client(registry_name);
+        if registry_name.is_none() {
+            if let Some(token) = token {
+                c = c.with_token(token);
             }
         }
-    }
+        c
+    };
+    let request = client::PublishRequest {
+        metadata: client::PublishMetadata {
+            name: m.package.name.clone(),
+            vers: m.package.version.clone(),
+            description: m.package.description.clone().unwrap_or_default(),
+            license: m.package.license.clone().unwrap_or_default(),
+            authors: m.package.authors.clone().unwrap_or_default(),
+            deps: deps.clone(),
+            features: m.features.clone(),
+            edition: Some(m.package.edition.clone()),
+            hew: m.package.hew.clone(),
+            keywords: m.package.keywords.clone(),
+            categories: m.package.categories.clone(),
+            homepage: m.package.homepage.clone(),
+            repository: m.package.repository.clone(),
+            documentation: m.package.documentation.clone(),
+        },
+        checksum: pack_result.checksum.clone(),
+        signature: signature.clone(),
+        key_fingerprint: fingerprint.clone(),
+    };
 
-    // Fall back to local publish.
-    let dest = registry.package_dir(&m.package.name, &m.package.version);
-    if let Err(e) = copy_dir(&cwd, &dest) {
-        eprintln!("hew publish: {e}");
-        std::process::exit(1);
+    match api_client.publish(
+        &m.package.name,
+        &m.package.version,
+        &pack_result.data,
+        &request,
+    ) {
+        Ok(()) => {
+            println!(
+                "Published {}@{} to registry",
+                m.package.name, m.package.version
+            );
+            println!("Checksum: {}", pack_result.checksum);
+            println!("Signature: {signature}");
+        }
+        Err(e) => {
+            eprintln!("hew publish: remote publish failed: {e}");
+            eprintln!("Nothing was published; no local copy was written.");
+            std::process::exit(1);
+        }
     }
-
-    println!(
-        "Published {}@{} to {}",
-        m.package.name,
-        m.package.version,
-        dest.display()
-    );
-    println!("Checksum: {}", pack_result.checksum);
-    println!("Signature: {signature}");
-    println!("Key: {fingerprint}");
 }
 
 fn cmd_list(registry: &registry::Registry) {
@@ -1421,7 +1489,7 @@ fn cmd_check(registry: &registry::Registry) {
 
     if !is_valid_package_name(&m.package.name) {
         issues.push(format!(
-            "invalid package name `{}`: only alphanumeric, `_`, and `::` allowed",
+            "invalid package name `{}`: only lowercase alphanumeric, `_`, and dotted segments allowed",
             m.package.name
         ));
     }
@@ -1893,9 +1961,7 @@ fn cmd_index_list(package: &str) {
     }
 
     // Check for deprecation metadata alongside the package index file.
-    let deprecation_path = index_dir
-        .join(index::index_path(package))
-        .with_extension("deprecated");
+    let deprecation_path = index_dir.join(index::deprecation_path(package));
     if let Ok(content) = std::fs::read_to_string(&deprecation_path) {
         if let Ok(info) = serde_json::from_str::<index::DeprecationInfo>(&content) {
             if info.deprecated {
@@ -1948,7 +2014,7 @@ fn local_link_path(base: &Path, package_name: &str) -> Result<PathBuf, String> {
     }
 
     Ok(package_name
-        .split("::")
+        .split('.')
         .fold(base.to_path_buf(), |path, segment| path.join(segment)))
 }
 
@@ -2246,6 +2312,88 @@ mod tests {
         assert!(dest.join("main.hew").exists());
     }
 
+    #[test]
+    fn resolve_publish_token_default_registry_missing_is_not_logged_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let cred_path = dir.path().join("credentials.toml");
+        let result = resolve_publish_token(&cred_path, None);
+        assert!(matches!(
+            result,
+            Err(credentials::CredentialError::NotLoggedIn)
+        ));
+    }
+
+    #[test]
+    fn resolve_publish_token_named_registry_requires_named_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let cred_path = dir.path().join("credentials.toml");
+        credentials::save_credentials(
+            &cred_path,
+            &credentials::CredentialsFile {
+                registry: Some(credentials::Credentials {
+                    token: "tok_default".to_string(),
+                    github_user: None,
+                }),
+                registries: None,
+            },
+        )
+        .unwrap();
+
+        let result = resolve_publish_token(&cred_path, Some("testreg"));
+        assert!(matches!(
+            result,
+            Err(credentials::CredentialError::NotLoggedIn)
+        ));
+    }
+
+    #[test]
+    fn resolve_publish_token_named_registry_returns_named_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let cred_path = dir.path().join("credentials.toml");
+        let mut registries = std::collections::BTreeMap::new();
+        registries.insert(
+            "testreg".to_string(),
+            credentials::Credentials {
+                token: "tok_testreg".to_string(),
+                github_user: None,
+            },
+        );
+        credentials::save_credentials(
+            &cred_path,
+            &credentials::CredentialsFile {
+                registry: None,
+                registries: Some(registries),
+            },
+        )
+        .unwrap();
+
+        let token = resolve_publish_token(&cred_path, Some("testreg")).unwrap();
+        assert_eq!(token, "tok_testreg");
+    }
+
+    /// A corrupt `credentials.toml` must surface as `CredentialError::Parse`,
+    /// not be collapsed into `NotLoggedIn` — the two point a user at
+    /// different remedies (`hew login` cannot fix a parse error, since
+    /// `hew login` also reads through this same file).
+    #[test]
+    fn resolve_publish_token_corrupt_credentials_file_is_parse_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let cred_path = dir.path().join("credentials.toml");
+        std::fs::write(&cred_path, "this is not valid toml {{{").unwrap();
+
+        let result = resolve_publish_token(&cred_path, None);
+        assert!(
+            matches!(result, Err(credentials::CredentialError::Parse(_))),
+            "expected Parse error, got {result:?}"
+        );
+
+        let result = resolve_publish_token(&cred_path, Some("testreg"));
+        assert!(
+            matches!(result, Err(credentials::CredentialError::Parse(_))),
+            "expected Parse error, got {result:?}"
+        );
+    }
+
     // ── search tests ────────────────────────────────────────────────────
 
     fn setup_registry() -> (tempfile::TempDir, registry::Registry) {
@@ -2285,7 +2433,7 @@ mod tests {
     fn is_valid_package_name_accepts_simple() {
         assert!(is_valid_package_name("mypackage"));
         assert!(is_valid_package_name("my_package"));
-        assert!(is_valid_package_name("std::net::http"));
+        assert!(is_valid_package_name("std.net.http"));
     }
 
     #[test]
@@ -2295,8 +2443,8 @@ mod tests {
         assert!(!is_valid_package_name("my@package"));
         assert!(!is_valid_package_name("my:package")); // single colon
         assert!(!is_valid_package_name("my/package"));
-        assert!(!is_valid_package_name("evil::../../../tmp/pwned"));
-        assert!(!is_valid_package_name("evil::/tmp/pwned"));
+        assert!(!is_valid_package_name("evil.../../../tmp/pwned"));
+        assert!(!is_valid_package_name("evil./tmp/pwned"));
     }
 
     #[test]
@@ -2321,9 +2469,9 @@ mod tests {
     #[test]
     fn search_finds_matching_packages() {
         let (_dir, reg) = setup_registry();
-        install_fake(&reg, "std::net::http", "1.0.0");
-        install_fake(&reg, "std::net::websocket", "1.0.0");
-        install_fake(&reg, "ecosystem::db::postgres", "1.0.0");
+        install_fake(&reg, "std.net.http", "1.0.0");
+        install_fake(&reg, "std.net.websocket", "1.0.0");
+        install_fake(&reg, "ecosystem.db.postgres", "1.0.0");
 
         let pkgs = reg.list_packages();
         let query_lower = "net";
@@ -2351,18 +2499,13 @@ mod tests {
     #[test]
     fn tree_dep_resolution() {
         let (_dir, reg) = setup_registry();
-        install_fake_with_deps(
-            &reg,
-            "std::net::http",
-            "1.0.0",
-            &[("hew::net::tcp", "1.0.0")],
-        );
-        install_fake(&reg, "hew::net::tcp", "1.0.0");
+        install_fake_with_deps(&reg, "std.net.http", "1.0.0", &[("hew.net.tcp", "1.0.0")]);
+        install_fake(&reg, "hew.net.tcp", "1.0.0");
 
-        let dep_toml = reg.package_dir("std::net::http", "1.0.0").join("hew.toml");
+        let dep_toml = reg.package_dir("std.net.http", "1.0.0").join("hew.toml");
         let dep_m = manifest::parse_manifest(&dep_toml).unwrap();
         assert_eq!(dep_m.dependencies.len(), 1);
-        assert!(dep_m.dependencies.contains_key("hew::net::tcp"));
+        assert!(dep_m.dependencies.contains_key("hew.net.tcp"));
     }
 
     #[test]
@@ -2370,13 +2513,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hew.toml");
         manifest::write_default_manifest(&path, "myproject").unwrap();
-        manifest::add_dependency(&path, "std::net::http", "1.0", None).unwrap();
+        manifest::add_dependency(&path, "std.net.http", "1.0", None).unwrap();
 
-        let removed = manifest::remove_dependency(&path, "std::net::http").unwrap();
+        let removed = manifest::remove_dependency(&path, "std.net.http").unwrap();
         assert!(removed);
 
         let m = manifest::parse_manifest(&path).unwrap();
-        assert!(!m.dependencies.contains_key("std::net::http"));
+        assert!(!m.dependencies.contains_key("std.net.http"));
     }
 
     #[test]
@@ -2609,24 +2752,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hew.toml");
         manifest::write_default_manifest(&path, "myproject").unwrap();
-        manifest::add_dependency(&path, "std::net::http", "1.0", None).unwrap();
+        manifest::add_dependency(&path, "std.net.http", "1.0", None).unwrap();
 
         // Simulate installed package symlink directory.
         let pkg_dir = dir
             .path()
             .join(".hew")
             .join("packages")
-            .join("std")
-            .join("net")
-            .join("http");
+            .join("std.net.http");
         std::fs::create_dir_all(&pkg_dir).unwrap();
         std::fs::write(pkg_dir.join("marker"), "x").unwrap();
 
         // Remove the dependency from manifest directly.
-        let removed = manifest::remove_dependency(&path, "std::net::http").unwrap();
+        let removed = manifest::remove_dependency(&path, "std.net.http").unwrap();
         assert!(removed);
         let m = manifest::parse_manifest(&path).unwrap();
-        assert!(!m.dependencies.contains_key("std::net::http"));
+        assert!(!m.dependencies.contains_key("std.net.http"));
     }
 
     // ── check command tests ────────────────────────────────────────────

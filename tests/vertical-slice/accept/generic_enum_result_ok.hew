@@ -1,15 +1,15 @@
-// Accept: two-type-parameter generic enum Result<T, E> — end-to-end lowering.
-// Result::Ok(7) must lower through HIR EnumLayoutRegistry → MIR → codegen
+// Accept: two-type-parameter generic enum Outcome<T, E> — end-to-end lowering.
+// Outcome::Ok(7) must lower through HIR EnumLayoutRegistry → MIR → codegen
 // and exit 7.
-enum Result<T, E> {
+enum Outcome<T, E> {
     Ok(T);
     Err(E);
 }
 
 fn main() -> i64 {
-    let x: Result<i64, bool> = Result::Ok(7);
+    let x: Outcome<i64, bool> = Outcome.Ok(7);
     match x {
-        Result::Ok(v) => v,
-        Result::Err(e) => 0,
+        Outcome.Ok(v) => v,
+        Outcome.Err(e) => 0,
     }
 }

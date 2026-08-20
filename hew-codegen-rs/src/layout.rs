@@ -1252,7 +1252,12 @@ pub(crate) fn collection_layout_witness(
         // collection: its drop is the user close-symbol call in
         // `emit_field_drop_step`'s dedicated arm and its clone is the rollback
         // refusal in `emit_field_clone_step`.
-        | StateFieldCloneKind::Resource { .. } => None,
+        | StateFieldCloneKind::Resource { .. }
+        // TraitObject is not a runtime-managed collection: the owned fat
+        // pointer drops through `hew_dyn_trait_drop_boxed_in_place` (the
+        // prepared-carrier and Vec-descriptor drop paths) and its clone is
+        // refused (erased concrete type — ownership moves instead).
+        | StateFieldCloneKind::TraitObject => None,
     })
 }
 
@@ -1438,6 +1443,14 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
     ) {
         return receiver_vec_elem_layout_descriptor_ptr(ctx, llvm_mod, target_data, elem_llvm_ty);
     }
+    if matches!(elem_resolved_ty, ResolvedTy::TraitObject { .. }) {
+        return trait_object_vec_elem_layout_descriptor_ptr(
+            ctx,
+            llvm_mod,
+            target_data,
+            elem_llvm_ty,
+        );
+    }
     let Some((kind, key)) = crate::thunks::owned_elem_thunk_key(regs, elem_resolved_ty) else {
         return Err(CodegenError::FailClosed(format!(
             "owned Vec element `{elem_resolved_ty:?}` has no resolvable record/enum \
@@ -1546,6 +1559,68 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
     g.set_linkage(Linkage::Private);
     g.set_initializer(&init);
     Ok(g.as_pointer_value())
+}
+
+/// Emit the clone-null descriptor shared by every `Vec<dyn Trait>`.
+///
+/// Each slot stores the two-word fat pointer for an independently HeapBoxed
+/// concrete value. Ingress and consuming iteration move those words; teardown
+/// calls the runtime callback that dispatches slot 0 and frees the box.
+fn trait_object_vec_elem_layout_descriptor_ptr<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
+    elem_llvm_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    const LAYOUT_NAME: &str = "__hew_vec_elem_layout_dyn_trait_drop_only";
+    if let Some(layout) = llvm_mod.get_global(LAYOUT_NAME) {
+        return Ok(layout.as_pointer_value());
+    }
+    let BasicTypeEnum::StructType(_) = elem_llvm_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "Vec<dyn Trait> must lower to the fat-pointer struct, got {elem_llvm_ty:?}"
+        )));
+    };
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let drop_fn = llvm_mod
+        .get_function("hew_dyn_trait_drop_boxed_in_place")
+        .unwrap_or_else(|| {
+            llvm_mod.add_function(
+                "hew_dyn_trait_drop_boxed_in_place",
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    let (size, align) = abi_size_align(elem_llvm_ty, Some(target_data))?;
+    let size_ty = ctx.ptr_sized_int_type(target_data, None);
+    let i8_ty = ctx.i8_type();
+    let layout_ty = ctx.struct_type(
+        &[
+            size_ty.into(),
+            size_ty.into(),
+            i8_ty.into(),
+            ptr_ty.into(),
+            ptr_ty.into(),
+        ],
+        false,
+    );
+    let init = layout_ty.const_named_struct(&[
+        size_ty.const_int(size, false).into(),
+        size_ty.const_int(u64::from(align), false).into(),
+        i8_ty
+            .const_int(
+                ownership_kind_byte(HewTypeOwnershipKind::LayoutManaged),
+                false,
+            )
+            .into(),
+        ptr_ty.const_null().into(),
+        drop_fn.as_global_value().as_pointer_value().into(),
+    ]);
+    let layout = llvm_mod.add_global(layout_ty, None, LAYOUT_NAME);
+    layout.set_constant(true);
+    layout.set_linkage(Linkage::Private);
+    layout.set_initializer(&init);
+    Ok(layout.as_pointer_value())
 }
 
 fn opaque_resource_vec_elem_layout_descriptor_ptr<'ctx>(
@@ -2009,6 +2084,9 @@ fn owned_vec_fn_type<'ctx>(
         }
         // ptr hew_vec_clone_owned(ptr vec)
         "hew_vec_clone_owned" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
+        // ptr hew_vec_take_all(ptr vec) — whole-buffer move-out; the source
+        // stays a valid empty vec with its stamped descriptor.
+        "hew_vec_take_all" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // i32 hew_vec_contains_owned(ptr vec, ptr data, ptr eq_fn)
         "hew_vec_contains_owned" => {
             Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false))
@@ -2060,7 +2138,7 @@ pub(crate) fn lower_owned_vec_direct_call(
         "hew_vec_set_owned" | "hew_vec_set_owned_move" => 3,
         "hew_vec_slice_range_owned" => 3,
         "hew_vec_remove_at_owned" => 2,
-        "hew_vec_pop_owned" | "hew_vec_clone_owned" => 1,
+        "hew_vec_pop_owned" | "hew_vec_clone_owned" | "hew_vec_take_all" => 1,
         _ => {
             return Err(CodegenError::FailClosed(format!(
                 "lower_owned_vec_direct_call called with non-owned Vec symbol `{callee}`"
@@ -2208,7 +2286,10 @@ pub(crate) fn lower_owned_vec_direct_call(
                 )
                 .llvm_ctx("hew_vec_remove_at_owned call")?;
         }
-        "hew_vec_clone_owned" => {
+        // Clone deep-copies; take-all MOVES the buffer wholesale and resets
+        // the source to a valid empty vec. Both return a fresh vec handle the
+        // dest place owns, so they share the identical LLVM call shape.
+        "hew_vec_clone_owned" | "hew_vec_take_all" => {
             let dest_place = dest.ok_or_else(|| {
                 CodegenError::FailClosed(
                     "hew_vec_clone_owned returns a Vec; producer must supply a dest".into(),
@@ -5705,6 +5786,7 @@ pub(crate) fn lower_hashmap_index_trap_call(
 /// of this change). On OOB the runtime returns `false` and we build `None`.
 pub(crate) fn lower_vec_get_clone_call(
     fn_ctx: &FnCtx<'_, '_>,
+    callee: &str,
     args: &[Place],
     dest: Option<&Place>,
     next: u32,
@@ -5793,7 +5875,7 @@ pub(crate) fn lower_vec_get_clone_call(
              element type {elem_llvm_ty:?}"
         )));
     }
-    let fv = get_or_declare_vec_get_clone_runtime(fn_ctx.ctx, fn_ctx.llvm_mod);
+    let fv = get_or_declare_vec_get_output_runtime(fn_ctx.ctx, fn_ctx.llvm_mod, callee);
     let is_some = fn_ctx
         .builder
         .build_call(
@@ -6506,18 +6588,19 @@ pub(crate) fn lower_string_sentinel_option_call(
 
 /// Declare (or fetch) the `hew_vec_get_clone(vec, index, out) -> bool` runtime
 /// choke point: `(ptr, i64, ptr) -> i1`.
-fn get_or_declare_vec_get_clone_runtime<'ctx>(
+fn get_or_declare_vec_get_output_runtime<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
+    symbol: &str,
 ) -> FunctionValue<'ctx> {
-    if let Some(fv) = llvm_mod.get_function("hew_vec_get_clone") {
+    if let Some(fv) = llvm_mod.get_function(symbol) {
         return fv;
     }
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i1_ty = ctx.bool_type();
     let i64_ty = ctx.i64_type();
     llvm_mod.add_function(
-        "hew_vec_get_clone",
+        symbol,
         i1_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
         Some(Linkage::External),
     )

@@ -141,16 +141,16 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
 
 // --- Tests ---
 fn test_sorted_insert() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_sorted(n, head, 50);
     head = insert_sorted(n, head, 10);
     head = insert_sorted(n, head, 30);
     head = insert_sorted(n, head, 20);
     head = insert_sorted(n, head, 40);
-    let r: Vec<i64> = Vec::new();
+    let r: Vec<i64> = Vec.new();
     traverse(n, head, r);
-    let e: Vec<i64> = Vec::new();
+    let e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(20);
     e.push(30);
@@ -165,7 +165,7 @@ fn test_sorted_insert() -> i64 {
 }
 
 fn test_duplicates() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_sorted(n, head, 20);
     head = insert_sorted(n, head, 10);
@@ -182,7 +182,7 @@ fn test_duplicates() -> i64 {
 }
 
 fn test_search() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_sorted(n, head, 10);
     head = insert_sorted(n, head, 30);
@@ -202,16 +202,16 @@ fn test_search() -> i64 {
 }
 
 fn test_delete() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_sorted(n, head, 10);
     head = insert_sorted(n, head, 20);
     head = insert_sorted(n, head, 30);
     head = insert_sorted(n, head, 40);
     head = delete_val(n, head, 20);
-    let r: Vec<i64> = Vec::new();
+    let r: Vec<i64> = Vec.new();
     traverse(n, head, r);
-    let e: Vec<i64> = Vec::new();
+    let e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(30);
     e.push(40);
@@ -226,7 +226,7 @@ fn test_delete() -> i64 {
 }
 
 fn test_invariant_after_many() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     // Insert in scrambled order
     head = insert_sorted(n, head, 70);
@@ -250,7 +250,7 @@ fn test_invariant_after_many() -> i64 {
 }
 
 fn test_delete_nonexistent() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = insert_sorted(n, head, 10);
     head = insert_sorted(n, head, 30);

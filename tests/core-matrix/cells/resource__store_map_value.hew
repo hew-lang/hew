@@ -11,10 +11,10 @@ impl Tok {
 
 fn main() {
     let x = Tok { id: 1 };
-    let m: HashMap<string, Tok> = HashMap::new();
+    let m: HashMap<string, Tok> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
+        Option.Some(e) => {
             let e_i = e.id;
             println(f"tok {e_i}");
         },

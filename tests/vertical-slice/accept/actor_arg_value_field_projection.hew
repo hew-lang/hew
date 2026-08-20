@@ -8,7 +8,7 @@ type Holder {
     items: Vec<i64>;
 }
 
-actor Sink {
+actor TestSink {
     receive fn take_scalar(v: i64) -> i64 {
         return v;
     }
@@ -21,7 +21,7 @@ actor Sink {
 }
 
 fn main() {
-    let sink = spawn Sink;
+    let sink = spawn TestSink;
     let items: Vec<i64> = [4, 5];
     let holder = Holder { count: 3, name: "held", items: items };
     match await sink.take_scalar(holder.count) {

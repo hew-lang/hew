@@ -69,7 +69,7 @@ const SLOPE_TOLERANCE: usize = 5;
 const PRELUDE: &str = "\
 record Holder { items: Vec<string> }\n\
 fn mkItems(i: i64) -> Vec<string> {\n\
-\x20   var xs: Vec<string> = Vec::new();\n\
+\x20   var xs: Vec<string> = Vec.new();\n\
 \x20   xs.push(\"deep-elem-a\");\n\
 \x20   xs.push(\"deep-elem-b\");\n\
 \x20   return xs;\n\
@@ -86,7 +86,7 @@ fn index_assign_temp_source(frames: usize) -> String {
     format!(
         "{PRELUDE}\
          fn main() -> i64 {{\n\
-         \x20   var v: Vec<Holder> = Vec::new();\n\
+         \x20   var v: Vec<Holder> = Vec.new();\n\
          \x20   v.push(Holder {{ items: mkItems(0) }});\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
@@ -105,7 +105,7 @@ fn index_assign_consumed_bound_source(frames: usize) -> String {
     format!(
         "{PRELUDE}\
          fn main() -> i64 {{\n\
-         \x20   var v: Vec<Holder> = Vec::new();\n\
+         \x20   var v: Vec<Holder> = Vec.new();\n\
          \x20   v.push(Holder {{ items: mkItems(0) }});\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
@@ -124,13 +124,13 @@ fn index_assign_consumed_bound_source(frames: usize) -> String {
 const CONSUMED_BOUND_SOURCE: &str = "\
 record Holder { items: Vec<string> }\n\
 fn mkItems(i: i64) -> Vec<string> {\n\
-\x20   var xs: Vec<string> = Vec::new();\n\
+\x20   var xs: Vec<string> = Vec.new();\n\
 \x20   xs.push(\"deep-elem-a\");\n\
 \x20   xs.push(\"deep-elem-b\");\n\
 \x20   return xs;\n\
 }\n\
 fn indexAssignBound() -> i64 {\n\
-\x20   var v: Vec<Holder> = Vec::new();\n\
+\x20   var v: Vec<Holder> = Vec.new();\n\
 \x20   v.push(Holder { items: mkItems(0) });\n\
 \x20   let h = Holder { items: mkItems(1) };\n\
 \x20   v[0] = h;\n\
@@ -147,7 +147,7 @@ fn main() {\n\
 const BORROWED_CAPTURE_SOURCE: &str = "\
 record Holder { items: Vec<string> }\n\
 fn mkItems() -> Vec<string> {\n\
-\x20   let xs: Vec<string> = Vec::new();\n\
+\x20   let xs: Vec<string> = Vec.new();\n\
 \x20   xs.push(\"deep-elem-a\");\n\
 \x20   xs.push(\"deep-elem-b\");\n\
 \x20   return xs;\n\
@@ -155,7 +155,7 @@ fn mkItems() -> Vec<string> {\n\
 fn main() {\n\
 \x20   let h = Holder { items: mkItems() };\n\
 \x20   let assign = || {\n\
-\x20       var v: Vec<Holder> = Vec::new();\n\
+\x20       var v: Vec<Holder> = Vec.new();\n\
 \x20       v.push(Holder { items: mkItems() });\n\
 \x20       v[0] = h;\n\
 \x20       v[0].items.len()\n\

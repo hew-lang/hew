@@ -20,8 +20,8 @@ fn main() {
 All other standard library modules require an explicit import at the top of the file:
 
 ```hew
-import std::fs;
-import std::encoding::json;
+import std.fs;
+import std.encoding.json;
 
 fn main() {
     let raw = fs.read("data.json");
@@ -166,4 +166,4 @@ Implementation strategy varies by module:
 - Some modules, such as `std::math`, expose a Hew surface that codegen lowers directly to compiler intrinsics / Rust backend LLVM lowering, again leaving the Rust crate as a placeholder
 - Modules that need native capabilities still use their Rust crates for the final linked implementation
 
-The compiler resolves `import std::*` paths against the `HEW_STD` directory and links any corresponding native static libraries required by the build graph at compile time, whether they provide runtime FFI symbols or act only as placeholders.
+The compiler resolves `import std.*` paths against the `HEW_STD` directory and links any corresponding native static libraries required by the build graph at compile time, whether they provide runtime FFI symbols or act only as placeholders.

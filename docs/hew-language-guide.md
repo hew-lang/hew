@@ -2754,7 +2754,7 @@ The remaining restriction is on the *binding*, not the path — a bare
 `import src.workflow.machine;` binds the module under the name `machine`,
 and writing `machine.Thing` is then a parse error
 (`` unexpected `.` in block ``). The same is true of `actor`. Use the
-selective (`.{ Name }`) form for a keyword-named module, or reach it via the quoted string-path import form above. Wildcard imports are retired.
+selective (`.{Name}`) form for a keyword-named module, or reach it via the quoted string-path import form above. Wildcard imports are retired.
 
 ### `pub const` — module-level constants
 

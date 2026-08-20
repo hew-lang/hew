@@ -3016,17 +3016,42 @@ impl Checker {
             Expr::Block(block) => {
                 let actual = self.check_block(block, Some(expected));
                 let result = if matches!(actual, Ty::Never | Ty::Error) {
-                    actual
+                    actual.clone()
                 } else {
                     let n = self.errors.len();
                     self.expect_type(expected, &actual, span);
                     if self.errors.len() > n {
                         Ty::Error
                     } else {
-                        actual
+                        actual.clone()
                     }
                 };
-                self.publish_checked_expression(expr, span, result)
+                // A block's value IS its trailing expression's value. When that
+                // tail fails to meet the expectation, `check_against` reports
+                // the mismatch on the tail's own span, PUBLISHES the tail's
+                // recovered type, and returns the error placeholder to poison
+                // the caller. Publish the same recovered type for the block so
+                // the two agree: the produced-value graph treats the tail as
+                // the block's identity dependency and rejects a disagreement
+                // ("identity dependency changes type from T to Error"), and
+                // consumers that read published types -- hover -- surface the
+                // placeholder as an unknown type. The placeholder is still what
+                // this call returns, so callers keep their poisoned result.
+                let published = if matches!(result, Ty::Error) {
+                    block
+                        .trailing_expr
+                        .as_ref()
+                        .and_then(|tail| {
+                            self.expr_types
+                                .get(&SpanKey::in_module(&tail.1, self.current_module_idx))
+                                .cloned()
+                        })
+                        .unwrap_or_else(|| result.clone())
+                } else {
+                    result.clone()
+                };
+                self.publish_checked_expression(expr, span, published);
+                result
             }
             _ => self.check_against(expr, span, expected),
         }

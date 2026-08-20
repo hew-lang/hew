@@ -2573,9 +2573,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1456] = {
      "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_json_get_bytes",
-     "{\"native\": \"fn hew_json_get_bytes( *const HewJsonValue) -> *mut "
-     "HewVec\", \"wasm32-wasip1\": \"fn hew_json_get_bytes( *const "
-     "HewJsonValue) -> *mut HewVec\"}",
+     "{\"native\": \"fn hew_json_get_bytes( *const HewJsonValue) -> "
+     "BytesTriple\", \"wasm32-wasip1\": \"fn hew_json_get_bytes( *const "
+     "HewJsonValue) -> BytesTriple\"}",
      "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_json_get_char",
@@ -6970,9 +6970,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1456] = {
      "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_yaml_get_bytes",
-     "{\"native\": \"fn hew_yaml_get_bytes( *const HewYamlValue) -> *mut "
-     "HewVec\", \"wasm32-wasip1\": \"fn hew_yaml_get_bytes( *const "
-     "HewYamlValue) -> *mut HewVec\"}",
+     "{\"native\": \"fn hew_yaml_get_bytes( *const HewYamlValue) -> "
+     "BytesTriple\", \"wasm32-wasip1\": \"fn hew_yaml_get_bytes( *const "
+     "HewYamlValue) -> BytesTriple\"}",
      "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_yaml_get_char",

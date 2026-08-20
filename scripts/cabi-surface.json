@@ -7307,8 +7307,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_json_get_bytes( *const HewJsonValue) -> *mut HewVec",
-        "wasm32-wasip1": "fn hew_json_get_bytes( *const HewJsonValue) -> *mut HewVec"
+        "native": "fn hew_json_get_bytes( *const HewJsonValue) -> BytesTriple",
+        "wasm32-wasip1": "fn hew_json_get_bytes( *const HewJsonValue) -> BytesTriple"
       },
       "symbol": "hew_json_get_bytes"
     },
@@ -19913,8 +19913,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_yaml_get_bytes( *const HewYamlValue) -> *mut HewVec",
-        "wasm32-wasip1": "fn hew_yaml_get_bytes( *const HewYamlValue) -> *mut HewVec"
+        "native": "fn hew_yaml_get_bytes( *const HewYamlValue) -> BytesTriple",
+        "wasm32-wasip1": "fn hew_yaml_get_bytes( *const HewYamlValue) -> BytesTriple"
       },
       "symbol": "hew_yaml_get_bytes"
     },

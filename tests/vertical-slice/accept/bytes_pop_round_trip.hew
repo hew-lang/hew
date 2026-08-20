@@ -2,7 +2,7 @@
 // Pushes 1,2,3 then pops in LIFO order, asserting the exact bytes returned and
 // the length after each pop. Exits 0 only when every step matches.
 fn main() -> i64 {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     b.push(1);
     b.push(2);
     b.push(3);

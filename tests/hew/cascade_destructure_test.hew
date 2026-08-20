@@ -7,7 +7,7 @@
 //! result, confirming that the cascade engine does not over-suppress real
 //! successful destructures.
 
-import std::testing;
+import std.testing;
 
 type Vec2 {
     x: i64;

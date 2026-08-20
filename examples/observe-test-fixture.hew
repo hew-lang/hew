@@ -1,4 +1,4 @@
-import std::observe;
+import std.observe;
 
 actor Counter {
     var count: i64;
@@ -29,12 +29,12 @@ fn main() {
     let counter = spawn Counter(count: 0);
     let pinger = spawn Pinger(target: counter);
     let sent = match await pinger.ping(7) {
-        Ok(value) => value,
-        Err(_) => -1,
+        .Ok(value) => value,
+        .Err(_) => -1,
     };
     let total = match await counter.total() {
-        Ok(value) => value,
-        Err(_) => -1,
+        .Ok(value) => value,
+        .Err(_) => -1,
     };
     println(f"observe fixture sent={sent} total={total}");
     let _barrier = observe.barrier();

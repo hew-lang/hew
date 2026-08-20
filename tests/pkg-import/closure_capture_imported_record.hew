@@ -3,7 +3,7 @@
 // `__hew_record_drop_inplace_Summary` declaration — the closure-capture seed
 // pass must resolve the imported record to the same layout key the env
 // free-thunk site requests.
-import hew::capturestats;
+import hew.capturestats;
 
 fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
     f(x)

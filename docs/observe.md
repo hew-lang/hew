@@ -12,7 +12,7 @@ or telemetry — see the observable-honesty axiom in the
 There are three primary metric APIs in `std::observe`:
 
 ```hew
-import std::observe;
+import std.observe;
 
 observe.read("heap.live_bytes"); // i64
 observe.series();                 // string
@@ -34,7 +34,7 @@ Reads one scalar metric by its canonical dotted name and returns its current
 value as an `i64`.
 
 ```hew
-import std::observe;
+import std.observe;
 
 println(observe.read("heap.live_bytes"));
 println(observe.read("actors.turns_total"));
@@ -53,7 +53,7 @@ Returns the canonical metric names, one per line. It lists the 28 scalar names
 accepted by `observe.read` plus the two labelled actor-attribution series names.
 
 ```hew
-import std::observe;
+import std.observe;
 
 println(observe.series());
 ```
@@ -66,7 +66,7 @@ available.
 Returns Prometheus-style text for the current registry:
 
 ```hew
-import std::observe;
+import std.observe;
 
 println(observe.scrape());
 ```
@@ -90,7 +90,7 @@ actors_attributed_turns_by_handler_total{dispatch="0x...",msg_type="...",handler
 Save this as `observe_demo.hew`:
 
 ```hew
-import std::observe;
+import std.observe;
 
 actor Counter {
     var count: i64;

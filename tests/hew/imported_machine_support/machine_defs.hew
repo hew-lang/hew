@@ -20,7 +20,7 @@ machine RunLifecycle {
 }
 
 pub fn initial() -> RunLifecycle {
-    RunLifecycle::Running
+    RunLifecycle.Running
 }
 
 pub machine PayloadLifecycle {
@@ -40,7 +40,7 @@ pub machine PayloadLifecycle {
 }
 
 pub fn make(label: string) -> PayloadLifecycle {
-    PayloadLifecycle::Loaded { label: label }
+    PayloadLifecycle.Loaded { label: label }
 }
 
 pub fn bounce(value: PayloadLifecycle) -> PayloadLifecycle {

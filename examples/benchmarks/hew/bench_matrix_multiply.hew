@@ -1,5 +1,5 @@
 fn matrix_multiply(a: Vec<i64>, b: Vec<i64>, n: i64) -> i64 {
-    let c: Vec<i64> = Vec::new();
+    let c: Vec<i64> = Vec.new();
     let total = n * n;
     for idx in 0 .. total {
         c.push(0);
@@ -21,8 +21,8 @@ const ITERS: i64 = 10000;
 fn main() {
     let n = 20;
     let total = n * n;
-    let a: Vec<i64> = Vec::new();
-    let b: Vec<i64> = Vec::new();
+    let a: Vec<i64> = Vec.new();
+    let b: Vec<i64> = Vec.new();
     for k in 0 .. total {
         a.push(k % 7 + 1);
         b.push(k % 5 + 1);

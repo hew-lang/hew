@@ -1,5 +1,5 @@
 fn catalan(n: i64) -> i64 {
-    let dp = Vec::new();
+    let dp = Vec.new();
     dp.push(1);
     dp.push(1);
     for i in 2 .. n + 1 {

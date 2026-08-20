@@ -165,7 +165,7 @@ fn bitcopy_control() -> i64 {
 
 fn borrowed_control() -> i64 {
     let v: Vec<HashMap<i64, string>> = [];
-    let m: HashMap<i64, string> = HashMap::new();
+    let m: HashMap<i64, string> = HashMap.new();
     m.insert(1, "value");
     v.push(m);
     let got = v[0];

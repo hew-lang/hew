@@ -17,7 +17,7 @@
 // resolves to `Err` (the empty crash fallback) and the program completes. The
 // `trigger` parameter is a runtime value so the panic is not statically
 // unreachable ahead of the await (the closure still classifies as suspending).
-import std::net::{Listener};
+import std.net.{Listener};
 
 extern "C" {
     fn hew_tcp_listener_local_port(listener: Listener) -> i32;
@@ -49,8 +49,8 @@ fn main() {
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
     let r = await reader.go(0);
     match r {
-        Ok(v) => println(f"reader-returned: {v}"),
-        Err(_) => println("reader-crash-fallback"),
+        .Ok(v) => println(f"reader-returned: {v}"),
+        .Err(_) => println("reader-crash-fallback"),
     }
     println("main-done");
 }

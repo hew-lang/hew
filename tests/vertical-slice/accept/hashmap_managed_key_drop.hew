@@ -7,7 +7,7 @@
 record Person { name: string, age: i64 }
 
 fn churn() -> i64 {
-    let m: HashMap<Person, i64> = HashMap::new();
+    let m: HashMap<Person, i64> = HashMap.new();
     var i = 0;
     while i < 64 {
         m.insert(Person { name: "user", age: i }, i);

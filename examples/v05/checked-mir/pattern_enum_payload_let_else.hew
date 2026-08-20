@@ -11,15 +11,15 @@ enum Packet {
 
 fn make(good: bool) -> Packet {
     if good {
-        Packet::Data { a: "let-else-a".to_upper(), b: "let-else-b".to_upper() }
+        Packet.Data { a: "let-else-a".to_upper(), b: "let-else-b".to_upper() }
     } else {
-        Packet::Empty
+        Packet.Empty
     }
 }
 
 fn probe(good: bool) -> i64 {
     let p = make(good);
-    let Packet::Data { a, b: _ } = p else {
+    let Packet.Data { a, b: _ } = p else {
         return 0;
     };
     a.len()

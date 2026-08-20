@@ -1,0 +1,21 @@
+enum Choice {
+    Present(i64);
+    Named { value: i64 };
+}
+
+fn main() {
+    let values: Vec<i64> = Vec.new();
+    let present: Choice = Choice.Present(42);
+    let present_value = match present {
+        Choice.Present(value) => value,
+        Choice.Named { value } => value,
+    };
+    values.push(present_value);
+    let named: Choice = Choice.Named { value: 7 };
+    let named_value = match named {
+        Choice.Present(value) => value,
+        Choice.Named { value } => value,
+    };
+    println(values[0]);
+    println(named_value);
+}

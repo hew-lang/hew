@@ -1,6 +1,6 @@
 // Stack - LIFO data structure using Vec<i64>
 fn stack_new() -> Vec<i64> {
-    let s: Vec<i64> = Vec::new();
+    let s: Vec<i64> = Vec.new();
     s
 }
 

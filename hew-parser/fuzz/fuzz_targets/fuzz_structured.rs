@@ -173,9 +173,9 @@ fn core_pipeline(seed: i64) -> Result<i64, i64> {{
         None => 0,
     }};
     let r = core_div(picked + seed, 1)?;
-    let mut_sum = match CoreChoice::Num(r) {{
-        CoreChoice::Zero => 0,
-        CoreChoice::Num(v) => v,
+    let mut_sum = match CoreChoice.Num(r) {{
+        CoreChoice.Zero => 0,
+        CoreChoice.Num(v) => v,
     }};
 
     var acc = 0;
@@ -217,9 +217,9 @@ impl HewItem {
 impl ImportChoice {
     fn as_source(self) -> &'static str {
         match self {
-            Self::String => "import std::string;",
-            Self::Time => "import std::time;",
-            Self::Json => "import std::encoding::json;",
+            Self::String => "import std.string;",
+            Self::Time => "import std.time;",
+            Self::Json => "import std.encoding.json;",
         }
     }
 }

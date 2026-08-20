@@ -5,7 +5,7 @@ fn use_it(v: Vec<i64>) {
 }
 
 fn main() {
-    let x: Vec<i64> = Vec::new();
+    let x: Vec<i64> = Vec.new();
     x.push(10);
     x.push(20);
     use_it(x);

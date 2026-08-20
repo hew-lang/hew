@@ -1,7 +1,7 @@
 // Longest Increasing Subsequence (length)
 // Test: [10,9,2,5,3,7,101,18] -> 4
 fn main() {
-    let arr: Vec<i32> = Vec::new();
+    let arr: Vec<i32> = Vec.new();
     arr.push(10);
     arr.push(9);
     arr.push(2);
@@ -11,7 +11,7 @@ fn main() {
     arr.push(101);
     arr.push(18);
     let n = arr.len();
-    let dp: Vec<i32> = Vec::new();
+    let dp: Vec<i32> = Vec.new();
     for i in 0 .. n {
         dp.push(1);
     }

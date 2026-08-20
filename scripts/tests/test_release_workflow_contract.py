@@ -1,5 +1,6 @@
 """Static contract tests for the release workflow's prerelease handoff."""
 
+import json
 import os
 import re
 import shutil
@@ -8,11 +9,15 @@ import subprocess
 import tarfile
 import tempfile
 import textwrap
+import tomllib
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
 HEW_SHA = "0123456789abcdef0123456789abcdef01234567"
+WORKSPACE_MANIFEST = ROOT / "Cargo.toml"
+SANDBOX_VM_MANIFEST = ROOT / "hew-sandbox-vm" / "package.json"
+SANDBOX_VM_LOCKFILE = ROOT / "hew-sandbox-vm" / "package-lock.json"
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 RUST_TOOLCHAIN = ROOT / "rust-toolchain.toml"
 NPM_PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-npm-packages.yml"
@@ -271,6 +276,26 @@ def test_rc_tag_normalization_and_exact_release_body() -> None:
     assert RELEASE_NOTES.exists()
 
 
+def test_release_tag_must_match_cargo_version_before_build() -> None:
+    text = workflow()
+    start = text.index("  validate-release-version:\n")
+    end = text.index(
+        "  # ─────────────────────────────────────────────────────────────────────────\n",
+        start,
+    )
+    job = text[start:end]
+    assert "ref: ${{ env.RELEASE_TAG }}" in job
+    assert "cargo_version=" in job
+    assert 'expected_tag="v${cargo_version}"' in job
+    assert 'if [[ "${RELEASE_TAG}" != "${expected_tag}" ]]' in job
+    assert "refusing to build" in job
+    assert (
+        "needs: validate-release-version"
+        in text[text.index("  build-cross-release-libs:") :]
+    )
+    assert "needs: validate-release-version" in text[text.index("  build-linux:") :]
+
+
 def test_npm_publication_is_pinned_to_a_version_matching_release_tag() -> None:
     text = npm_publish_workflow()
     assert "      release_tag:\n" in text
@@ -307,6 +332,21 @@ def test_npm_publication_is_pinned_to_a_version_matching_release_tag() -> None:
     ]
     assert len(publish_lines) == 3
     assert all('--tag "${NPM_DIST_TAG}"' in line for line in publish_lines)
+
+
+def test_current_sandbox_vm_version_matches_workspace_version() -> None:
+    workspace_version = tomllib.loads(WORKSPACE_MANIFEST.read_text())["workspace"][
+        "package"
+    ]["version"]
+    sandbox_version = json.loads(SANDBOX_VM_MANIFEST.read_text())["version"]
+    lockfile = json.loads(SANDBOX_VM_LOCKFILE.read_text())
+
+    assert sandbox_version == workspace_version, (
+        f"hew-sandbox-vm package version {sandbox_version} does not match "
+        f"workspace version {workspace_version}"
+    )
+    assert lockfile["version"] == workspace_version
+    assert lockfile["packages"][""]["version"] == workspace_version
 
 
 def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
@@ -1032,15 +1072,25 @@ def test_release_record_is_durable_and_tag_ready() -> None:
     notes_words = " ".join(notes.split())
     runbook_words = " ".join(runbook.split())
 
-    current_changelog = changelog.split("### Changed", maxsplit=1)[0]
-    assert "## [0.6.0-rc1] - 2026-07-29" in current_changelog
+    unreleased_start = changelog.index("## [Unreleased]")
+    rc1_start = changelog.index("## [0.6.0-rc1] - 2026-07-29")
+    unreleased = changelog[unreleased_start:rc1_start]
+    assert "### Changed" in unreleased
+    assert "- " in unreleased
+
+    next_release = changelog.find("\n## [", rc1_start + 1)
+    rc1_record = (
+        changelog[rc1_start:]
+        if next_release == -1
+        else changelog[rc1_start:next_release]
+    )
     for provisional in (
         "unreleased",
         "tag is not cut",
         "will be finalized when",
         "in preparation",
     ):
-        assert provisional not in current_changelog.lower()
+        assert provisional not in rc1_record.lower()
 
     assert "v0.6.0-rc1" in notes_words
     assert "first release candidate for v0.6.0" in notes_words
@@ -1804,7 +1854,9 @@ def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:
 
 _TESTS = [
     test_rc_tag_normalization_and_exact_release_body,
+    test_release_tag_must_match_cargo_version_before_build,
     test_npm_publication_is_pinned_to_a_version_matching_release_tag,
+    test_current_sandbox_vm_version_matches_workspace_version,
     test_playground_dispatch_is_purpose_scoped_and_fail_closed,
     test_dispatch_uses_exact_playground_workflow_input_and_ref,
     test_dispatch_correlation_is_unique_and_bounded,

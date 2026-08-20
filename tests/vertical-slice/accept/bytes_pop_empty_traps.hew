@@ -4,7 +4,7 @@
 // recovery frame, so the helper aborts with exit 134, matching the b[i] index
 // OOB trap (bytes_index_oob_traps).
 fn main() -> i64 {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     // Empty buffer: pop must trap before returning.
     let x: u8 = b.pop();
     // Unreachable: the empty-pop trap fires above.

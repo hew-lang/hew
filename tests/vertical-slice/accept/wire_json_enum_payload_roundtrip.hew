@@ -10,14 +10,14 @@ enum Shape {
 }
 
 fn main() -> i64 {
-    let s = Shape::Rect(40, 2);
+    let s = Shape.Rect(40, 2);
     let j = s.to_json();
     if j != "{\"Rect\":[40,2]}" { return 1; }
     match Shape.from_json(j) {
         Ok(back) => match back {
-            Shape::Dot => 2,
-            Shape::Circle(r) => r,
-            Shape::Rect(w, h) => w + h,
+            Shape.Dot => 2,
+            Shape.Circle(r) => r,
+            Shape.Rect(w, h) => w + h,
         },
         Err(_) => 3,
     }

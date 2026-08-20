@@ -16,7 +16,7 @@
 
 use crate::common;
 
-use common::{typecheck, typecheck_isolated};
+use common::{typecheck, typecheck_embedded_builtins_isolated, typecheck_isolated};
 use hew_types::error::TypeErrorKind;
 use hew_types::DynCoercion;
 use hew_types::Ty;
@@ -221,11 +221,11 @@ fn self_return_breaks_object_safety_in_dyn_position() {
 
 #[test]
 fn dyn_iterator_with_item_binding_object_safe() {
-    let output = typecheck_isolated(
+    let output = typecheck_embedded_builtins_isolated(
         r"
         trait Iterator {
             type Item;
-            fn next(iter: Self) -> Option<Self::Item>;
+            fn next(iter: Self) -> Option<Self.Item>;
         }
 
         type Counter { value: i32; }
@@ -273,11 +273,11 @@ fn dyn_iterator_with_item_binding_object_safe() {
 
 #[test]
 fn dyn_iterator_without_binding_rejected() {
-    let output = typecheck_isolated(
+    let output = typecheck_embedded_builtins_isolated(
         r"
         trait Iterator {
             type Item;
-            fn next(iter: Self) -> Option<Self::Item>;
+            fn next(iter: Self) -> Option<Self.Item>;
         }
 
         type Counter { value: i32; }
@@ -323,11 +323,11 @@ fn dyn_iterator_without_binding_rejected() {
 
 #[test]
 fn dyn_iterator_failed_projection_is_diagnostic() {
-    let output = typecheck_isolated(
+    let output = typecheck_embedded_builtins_isolated(
         r"
         trait Iterator {
             type Item;
-            fn next(iter: Self) -> Option<Self::Item>;
+            fn next(iter: Self) -> Option<Self.Item>;
         }
 
         type Counter { value: i32; }
@@ -353,7 +353,7 @@ fn dyn_iterator_failed_projection_is_diagnostic() {
                 trait_name,
                 assoc_name,
             } if type_name == "Counter" && trait_name == "Iterator" && assoc_name == "Item"
-        ) && e.message.contains("<Counter as Iterator>::Item")),
+        ) && e.message.contains("<Counter as Iterator>.Item")),
         "expected failed projection diagnostic for Counter/Iterator/Item, got: {:#?}",
         output.errors
     );
@@ -362,11 +362,11 @@ fn dyn_iterator_failed_projection_is_diagnostic() {
 
 #[test]
 fn dyn_distinct_bindings_get_distinct_vtables() {
-    let output = typecheck_isolated(
+    let output = typecheck_embedded_builtins_isolated(
         r#"
         trait Iterator {
             type Item;
-            fn next(iter: Self) -> Option<Self::Item>;
+            fn next(iter: Self) -> Option<Self.Item>;
         }
 
         type IntCounter { value: i32; }
@@ -415,11 +415,11 @@ fn dyn_distinct_bindings_get_distinct_vtables() {
 
 #[test]
 fn dyn_trait_method_signature_substituted() {
-    let output = typecheck_isolated(
+    let output = typecheck_embedded_builtins_isolated(
         r"
         trait Iterator {
             type Item;
-            fn next(iter: Self) -> Option<Self::Item>;
+            fn next(iter: Self) -> Option<Self.Item>;
         }
 
         type Counter { value: i32; }

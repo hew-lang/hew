@@ -1,0 +1,100 @@
+//! Stable-role asks inside an actor receive fn (the suspending path).
+//!
+//! Two regressions pinned end-to-end:
+//! 1. MISROUTE — after asking one supervised sibling, every later
+//!    `await sup.<child>.<method>()` in the same handler must reach the child
+//!    written in source. Handler lowering previously lost the supervisor
+//!    layout map, collapsing every accessor to slot index 0.
+//! 2. SWALLOW — a refused stable-role ask must classify as a real
+//!    `AskError` kind. The refusal paths previously returned their error code
+//!    without writing the ask-error slot, surfacing `Err(AskError::NoError)`.
+
+import std.testing;
+
+actor Worker {
+    let id: i64;
+    receive fn work(n: i64) -> i64 {
+        if n == 999 {
+            panic("boom");
+        }
+        n
+    }
+    receive fn whoami() -> i64 {
+        id
+    }
+}
+
+supervisor Pool {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+
+    child w1: Worker(id: 1);
+    child w2: Worker(id: 2);
+    child w3: Worker(id: 3);
+}
+
+actor Dispatcher {
+    var sup: LocalPid<Pool>;
+
+    // Crash w1, then ask w2 and w3 by name. Encodes the outcome positionally:
+    // crashed * 100 + w2_id * 10 + w3_id = 123 when each sibling is reached.
+    receive fn siblings_after_crash() -> i64 {
+        let r1 = await sup.w1.work(999);
+        let crashed = match r1 {
+            .Ok(_) => 0,
+            .Err(_) => 1,
+        };
+        let r2 = await sup.w2.whoami();
+        let a = match r2 {
+            .Ok(v) => v,
+            .Err(_) => -1,
+        };
+        let r3 = await sup.w3.whoami();
+        let b = match r3 {
+            .Ok(v) => v,
+            .Err(_) => -1,
+        };
+        crashed * 100 + a * 10 + b
+    }
+
+    // Crash w1 past the restart intensity, then ask the dead slot. The
+    // refusal must carry a real error kind: 1 = ActorStopped (expected),
+    // 0 = the NoError sentinel (the swallow defect), -1 = other kind.
+    receive fn refusal_kind() -> i64 {
+        let c1 = await sup.w1.work(999);
+        let _ = c1;
+        sleep(50ms);
+        let c2 = await sup.w1.work(999);
+        let _ = c2;
+        sleep(50ms);
+        let refused = await sup.w1.whoami();
+        match refused {
+            .Ok(_) => -2,
+            .Err(AskError.NoError) => 0,
+            .Err(AskError.ActorStopped) => 1,
+            .Err(_) => -1,
+        }
+    }
+}
+
+#[test]
+fn sibling_asks_after_crash_reach_named_children() {
+    let sup = spawn Pool;
+    sleep(30ms);
+    let d = spawn Dispatcher(sup: sup);
+    match await d.siblings_after_crash() {
+        .Ok(code) => testing.assert_eq(code, 123),
+        .Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn refused_role_ask_reports_real_error_kind() {
+    let sup = spawn Pool;
+    sleep(30ms);
+    let d = spawn Dispatcher(sup: sup);
+    match await d.refusal_kind() {
+        .Ok(kind) => testing.assert_eq(kind, 1),
+        .Err(_) => testing.assert_true(false),
+    }
+}

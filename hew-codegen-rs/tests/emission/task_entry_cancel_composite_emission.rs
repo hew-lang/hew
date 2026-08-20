@@ -178,3 +178,61 @@ fn task_entry_composite_cancel_exit_never_loads_return_slot() {
          --- cancel_exit block ---\n{cancel_exit_block}"
     );
 }
+
+#[test]
+fn task_wrapper_publishes_only_after_non_cancelled_completion() {
+    let ll = emit_ll_text(
+        &pipeline_from_source(COMPOSITE_FORK_SOURCE),
+        "composite_fork_result_authority",
+    );
+
+    let wrapper_define = ll
+        .lines()
+        .find(|line| {
+            line.trim_start().starts_with("define")
+                && line.contains("__hew_task_wrapper___hew_task_entry_")
+                && line.contains("compute")
+        })
+        .unwrap_or_else(|| panic!("no compute task wrapper definition; IR:\n{ll}"));
+    let wrapper_start = ll.find(wrapper_define).expect("wrapper define offset");
+    let wrapper_end = ll[wrapper_start..]
+        .find("\n}\n")
+        .map_or(ll.len(), |offset| wrapper_start + offset);
+    let wrapper = &ll[wrapper_start..wrapper_end];
+
+    let cooperate = wrapper
+        .find("@hew_actor_cooperate")
+        .expect("task wrapper must re-observe cancellation before publication");
+    let cancellation_branch = wrapper
+        .find("task_result_cancelled")
+        .expect("task wrapper must branch on the cancellation signal");
+    let publish = wrapper
+        .find("@hew_task_set_result(")
+        .expect("task wrapper must publish successful values");
+    assert!(
+        cooperate < cancellation_branch && cancellation_branch < publish,
+        "the cancellation observation and branch must dominate result publication;\n--- wrapper ---\n{wrapper}"
+    );
+    assert!(
+        wrapper.contains("publish_result:") && wrapper.contains("complete_task:"),
+        "publication and terminal completion need distinct control-flow facts;\n--- wrapper ---\n{wrapper}"
+    );
+
+    let await_error = ll
+        .find("@hew_task_get_error(")
+        .expect("task await must read terminal status");
+    let await_take = ll
+        .find("@hew_task_take_result(")
+        .expect("successful task await must consume the published result");
+    assert!(
+        await_error < await_take,
+        "task await must reject cancellation before consuming payload bytes"
+    );
+    assert!(
+        ll.contains("suspending_task_await_cancelled:")
+            && ll.contains("@hew_reply_channel_publish_cancelled(")
+            && ll.contains("suspending_task_await_failed:")
+            && ll.contains("@hew_reply_channel_publish_task_failed("),
+        "task await must keep cancellation and non-cancellation failure distinct"
+    );
+}

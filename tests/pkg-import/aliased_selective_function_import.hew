@@ -1,0 +1,6 @@
+import ambiguity.function_left.{ clash_fn as left_clash_fn };
+import ambiguity.function_right.{ clash_fn as right_clash_fn };
+
+fn main() {
+    println(left_clash_fn() + right_clash_fn());
+}

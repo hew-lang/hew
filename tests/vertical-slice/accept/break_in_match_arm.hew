@@ -24,7 +24,7 @@ fn sum_all(v: Vec<i64>) -> i64 {
 }
 
 fn main() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(10);
     v.push(20);
     v.push(12);

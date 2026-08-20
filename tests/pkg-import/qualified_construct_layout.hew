@@ -22,7 +22,7 @@
 // Harness verb: hew run
 // Expected: the monomorphic point reads back (3, 7); the generic holder reads
 // its tag (5) and unwraps the qualified payload (99).
-import hew::qualshapes;
+import hew.qualshapes;
 
 fn main() {
     let p: qualshapes.Point = Point { x: 3, y: 7 };

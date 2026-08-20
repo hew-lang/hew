@@ -98,8 +98,8 @@ fn main() {
     var failed = 0;
     let ring_size = 10000;
     let replicas = 3;
-    let positions: Vec<i64> = Vec::new();
-    let nodes: Vec<i64> = Vec::new();
+    let positions: Vec<i64> = Vec.new();
+    let nodes: Vec<i64> = Vec.new();
     // Test 1: Add nodes and verify lookup returns valid node
     add_node(positions, nodes, 1, ring_size, replicas);
     add_node(positions, nodes, 2, ring_size, replicas);
@@ -160,7 +160,7 @@ fn main() {
         failed = failed + 1;
     }
     // Record mappings before adding a node
-    let before: Vec<i64> = Vec::new();
+    let before: Vec<i64> = Vec.new();
     var num_keys = 100;
     for k in 0 .. num_keys {
         let key = k * 37;
@@ -263,8 +263,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 8: Empty ring returns -1
-    let ep: Vec<i64> = Vec::new();
-    let en: Vec<i64> = Vec::new();
+    let ep: Vec<i64> = Vec.new();
+    let en: Vec<i64> = Vec.new();
     let empty_result = lookup(ep, en, 42, ring_size);
     if empty_result == 0 - 1 {
         println("PASS: empty ring lookup");

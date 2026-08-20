@@ -61,8 +61,8 @@ actor CircuitBreaker {
             -1
         } else {
             let result = match await backend.call(id) {
-                Ok(value) => value,
-                Err(_) => -1,
+                .Ok(value) => value,
+                .Err(_) => -1,
             };
             if result < 0 {
                 // Backend returned an error — count as failure
@@ -124,13 +124,13 @@ fn main() {
     println("");
     println("--- Breaker is open (fast-fail) ---");
     let rejected = match await breaker.request(7) {
-        Ok(value) => value,
-        Err(_) => -3,
+        .Ok(value) => value,
+        .Err(_) => -3,
     };
     println(f"Result while open: {rejected}");
     let rejected2 = match await breaker.request(8) {
-        Ok(value) => value,
-        Err(_) => -3,
+        .Ok(value) => value,
+        .Err(_) => -3,
     };
     println(f"Result while open: {rejected2}");
 
@@ -144,8 +144,8 @@ fn main() {
     breaker.probe();
     sleep(20ms);
     let probe_result = match await breaker.request(9) {
-        Ok(value) => value,
-        Err(_) => -3,
+        .Ok(value) => value,
+        .Err(_) => -3,
     };
     println(f"Probe request result: {probe_result}");
 
@@ -155,8 +155,8 @@ fn main() {
     let _ = await breaker.request(10);
     let _ = await breaker.request(11);
     let final_state = match await breaker.get_state() {
-        Ok(value) => value,
-        Err(_) => -1,
+        .Ok(value) => value,
+        .Err(_) => -1,
     };
     println(f"Final breaker state: {final_state} (0=Closed)");
     println("");

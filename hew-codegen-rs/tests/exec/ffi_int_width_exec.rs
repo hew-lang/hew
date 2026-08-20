@@ -75,7 +75,7 @@ fn from_char_returns_char_without_crashing() {
         &repo,
         "from_char",
         r#"
-        import std::string;
+        import std.string;
 
         fn main() {
             let h = string.from_char(72);
@@ -100,7 +100,7 @@ fn split_preserves_last_element() {
         &repo,
         "split_last",
         r#"
-        import std::string;
+        import std.string;
 
         fn main() {
             let parts = string.split("a,b,c", ",");
@@ -129,7 +129,7 @@ fn lines_has_no_phantom_empty_and_keeps_last() {
         &repo,
         "lines_no_phantom",
         r#"
-        import std::string;
+        import std.string;
 
         fn main() {
             let ls = string.lines("l1\nl2\nl3");
@@ -159,7 +159,7 @@ fn find_not_found_round_trips_negative_one() {
         &repo,
         "find_sentinel",
         r#"
-        import std::string;
+        import std.string;
 
         fn main() {
             let s = "hello";
@@ -199,7 +199,7 @@ fn unicode_codepoint_at_oob_round_trips_negative_one() {
         &repo,
         "unicode_codepoint_oob",
         r#"
-        import std::text::unicode;
+        import std.text.unicode;
 
         fn main() {
             let s = "café";

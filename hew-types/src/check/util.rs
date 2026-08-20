@@ -81,6 +81,7 @@ pub(super) fn first_infer_span_in_type_expr(type_expr: &Spanned<TypeExpr>) -> Op
         TypeExpr::Named { type_args, .. } => type_args
             .as_ref()
             .and_then(|args| args.iter().find_map(first_infer_span_in_type_expr)),
+        TypeExpr::QualifiedAssocPath(path) => first_infer_span_in_type_expr(&path.base),
         TypeExpr::Result { ok, err } => {
             first_infer_span_in_type_expr(ok).or_else(|| first_infer_span_in_type_expr(err))
         }

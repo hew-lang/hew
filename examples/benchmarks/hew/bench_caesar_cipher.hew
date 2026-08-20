@@ -25,7 +25,7 @@ const ITERS: i64 = 200000;
 fn main() {
     let s = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv";
     let lower = "abcdefghijklmnopqrstuvwxyz";
-    let table: Vec<i64> = Vec::new();
+    let table: Vec<i64> = Vec.new();
     for k in 0 .. 26 {
         let shifted = (k + 13) % 26;
         table.push(shifted + 97);

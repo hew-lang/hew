@@ -6,7 +6,7 @@
 //! owner-qualified required-associated-type check must not over-reject a correct
 //! impl just because an empty same-named `Source` is in the graph.
 
-import hew::assocreq::{Source};
+import hew.assocreq.{Source};
 
 pub type W {
     id: i64;

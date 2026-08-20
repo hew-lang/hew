@@ -3,8 +3,8 @@
 // `hew::closableerr` exports a trait `Closable` whose `close` returns
 // `Result<(), CloseError>` (the error type spelled BARE inside the defining
 // module) and the `CloseError` type itself. The importer opts only the trait
-// into scope (`::{ Closable }`) and leaves the error type qualified-by-default,
-// so its `impl Closable for ClosableHandle` spells the return type
+// into scope under `ForeignClosable` and leaves the error type qualified-by-default,
+// so its impl spells the return type
 // `Result<(), closableerr.CloseError>`.
 //
 // The trait's bare `CloseError` and the impl's lexical
@@ -17,15 +17,15 @@
 //
 // Harness verb: hew run
 // Expected: conformance passes, `close` returns Ok, the match prints `ok`.
-import hew::closableerr::{Closable};
+import hew.closableerr.{Closable as ForeignClosable};
 
-import hew::closableerr;
+import hew.closableerr;
 
 pub type ClosableHandle {
     id: i64;
 }
 
-impl Closable for ClosableHandle {
+impl ForeignClosable for ClosableHandle {
     fn close(handle: ClosableHandle) -> Result<(), closableerr.CloseError> {
         Ok(())
     }

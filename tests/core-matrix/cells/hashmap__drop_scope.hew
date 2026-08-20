@@ -10,7 +10,7 @@ impl Tok {
 }
 
 fn main() {
-    let h: HashMap<string, Tok> = HashMap::new();
+    let h: HashMap<string, Tok> = HashMap.new();
     h.insert("k", Tok { id: 1 });
     println("body");
 }

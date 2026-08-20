@@ -1,0 +1,5 @@
+//! Package declarations cannot replace always-in-scope prelude bindings.
+
+import hew.preludecollision_reject;
+
+fn main() {}

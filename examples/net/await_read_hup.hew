@@ -7,7 +7,7 @@
 //! blocking `hew_tcp_read`). A correct run resolves promptly — `read 0 bytes` —
 //! and exits, never deadlocking.
 
-import std::net;
+import std.net;
 
 actor Reader {
     receive fn go(unused: i64) {

@@ -1,4 +1,4 @@
-import std::net::mime;
+import std.net.mime;
 
 fn main() {
     let path_type = mime.from_path("report.json");

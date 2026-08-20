@@ -9,7 +9,7 @@
 // scrutinee to a pre-built `None` sentinel.
 fn main() {
     var current: Option<i64> = Some(3);
-    while let Some(value) = current {
+    while let .Some(value) = current {
         println(value);
         if value > 0 {
             current = Some(value - 1);

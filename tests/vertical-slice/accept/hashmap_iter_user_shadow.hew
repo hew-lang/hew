@@ -1,7 +1,7 @@
 // A user nominal sharing the synthetic HashMapIter leaf keeps an independent
 // Iterator impl, while a real HashMap pipeline still dispatches through the
 // compiler cursor. User yields 40; builtin map count yields 3. Exit 43.
-import std::iter;
+import std.iter;
 
 type HashMapIter {
     value: i64;
@@ -27,9 +27,9 @@ pub fn main() -> i64 {
         None => 90,
     };
 
-    let map: HashMap<i64, i64> = HashMap::new();
+    let map: HashMap<i64, i64> = HashMap.new();
     map.insert(1, 10);
     map.insert(2, 20);
     map.insert(3, 30);
-    user_value + iter::count(map.into_iter())
+    user_value + iter.count(map.into_iter())
 }

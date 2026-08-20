@@ -16,7 +16,7 @@
 //
 // Proof: construct `U { local: 7 }` and print `local`.  Output "7" proves
 // the local type was used, not the aliassrc.Payload.
-import hew::aliassrc::{ Payload as U };
+import hew.aliassrc.{ Payload as U };
 
 type U {
     local: i64;

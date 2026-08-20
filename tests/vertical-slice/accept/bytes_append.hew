@@ -2,10 +2,10 @@
 // b=[3,4] onto a=[1,2]; asserts a.len()==4 and the exact concatenated bytes,
 // and that the source `other` is unchanged (append copies, never consumes).
 fn main() -> i64 {
-    let a: bytes = bytes::new();
+    let a: bytes = bytes.new();
     a.push(1);
     a.push(2);
-    let other: bytes = bytes::new();
+    let other: bytes = bytes.new();
     other.push(3);
     other.push(4);
     a.append(other);

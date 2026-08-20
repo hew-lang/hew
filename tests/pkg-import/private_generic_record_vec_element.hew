@@ -14,7 +14,7 @@
 //
 // Harness verb: hew run
 // Expected: two generation stamps, one per inserted value (0 then 1).
-import hew::privslot;
+import hew.privslot;
 
 fn main() {
     let store: privslot.Store<string> = privslot.new();

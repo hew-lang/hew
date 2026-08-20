@@ -8,9 +8,9 @@
 //! "no method `to_json`" and the checker fix alone would have moved the
 //! failure to the codegen CBOR layout lookup — both surfaces are pinned here.
 
-import tests::hew::imported_wire_support::wire_defs::{Env, Signal, env_to_json};
+import tests.hew.imported_wire_support.wire_defs.{Env, Signal, env_to_json};
 
-import std::testing;
+import std.testing;
 
 #[test]
 fn imported_wire_struct_json_round_trip() {
@@ -18,11 +18,11 @@ fn imported_wire_struct_json_round_trip() {
     let j = e.to_json();
     testing.assert_eq_str(j, "{\"name\":\"svc\",\"port\":8080}");
     match Env.from_json(j) {
-        Ok(back) => {
+        .Ok(back) => {
             testing.assert_eq_str(back.name, "svc");
             testing.assert_eq(back.port, 8080);
         },
-        Err(msg) => panic(f"from_json failed: {msg}"),
+        .Err(msg) => panic(f"from_json failed: {msg}"),
     }
 }
 
@@ -33,8 +33,8 @@ fn imported_wire_struct_binary_and_yaml_round_trips() {
     testing.assert_eq_str(back.name, "bin");
     testing.assert_eq(back.port, 9);
     match Env.from_yaml(back.to_yaml()) {
-        Ok(again) => testing.assert_eq(again.port, 9),
-        Err(msg) => panic(f"from_yaml failed: {msg}"),
+        .Ok(again) => testing.assert_eq(again.port, 9),
+        .Err(msg) => panic(f"from_yaml failed: {msg}"),
     }
 }
 
@@ -46,15 +46,15 @@ fn defining_module_helper_serializes_when_module_is_imported() {
 
 #[test]
 fn imported_wire_enum_json_round_trip() {
-    let s = Signal::Busy(4);
+    let s = Signal.Busy(4);
     match Signal.from_json(s.to_json()) {
-        Ok(back) => {
+        .Ok(back) => {
             let tag = match back {
-                Signal::Busy(n) => n,
-                Signal::Ready => -1,
+                Signal.Busy(n) => n,
+                Signal.Ready => -1,
             };
             testing.assert_eq(tag, 4);
         },
-        Err(msg) => panic(f"enum from_json failed: {msg}"),
+        .Err(msg) => panic(f"enum from_json failed: {msg}"),
     }
 }

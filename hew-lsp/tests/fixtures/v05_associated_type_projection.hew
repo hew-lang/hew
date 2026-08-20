@@ -1,6 +1,7 @@
 trait Conveyor {
     type Item;
-    fn next(self) -> Self::Item;
+
+    fn next(self) -> Self.Item;
 }
 
 fn associated_projection_probe() -> i32 {

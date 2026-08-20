@@ -8,7 +8,7 @@
 //
 // Elements "aa","bbb","cccc" (lens 2+3+4 = 9): exit 9.
 pub fn main() -> i64 {
-    let s: HashSet<string> = HashSet::new();
+    let s: HashSet<string> = HashSet.new();
     s.insert("aa");
     s.insert("bbb");
     s.insert("cccc");

@@ -3,7 +3,7 @@
 
 // string operations test
 // Exercises string methods and operators
-import std::string;
+import std.string;
 
 fn main() {
     println("=== string Basics ===");

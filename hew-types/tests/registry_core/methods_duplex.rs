@@ -474,7 +474,7 @@ fn duplex_send_non_send_payload_rejected() {
     let source = r"
         fn main() {
             let (d, _) = duplex_pair<Rc<i64>, i64>(16);
-            d.send(Rc::new(1));
+            d.send(Rc.new(1));
         }
     ";
     let output = typecheck(source);

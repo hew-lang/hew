@@ -25,7 +25,7 @@ type Pair {
 }
 
 fn make_pair(n: i64) -> Pair {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(10);
     v.push(20);
     Pair { a: n, b: v }

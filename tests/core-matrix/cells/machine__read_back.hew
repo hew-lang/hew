@@ -11,10 +11,10 @@ machine Counter {
 fn main() {
     var x = Zero;
     x.step(Inc);
-    let v: Vec<Counter> = Vec::new();
+    let v: Vec<Counter> = Vec.new();
     v.push(x);
     match v.get(0) {
-        Some(e) => {
+        Option.Some(e) => {
             match e {
                 Zero => println("zero"),
                 NonZero { value } => println(f"n {value}"),

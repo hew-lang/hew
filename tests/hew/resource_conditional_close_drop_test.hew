@@ -16,11 +16,11 @@
 //! the MIR drop-plan tests in `hew-mir/tests/vertical.rs` and observed
 //! directly by the `CLOSE fd=...` reproducers.
 
-import std::testing;
+import std.testing;
 
 #[resource]
 type Buf {
-    data: Vec<i64>,
+    data: Vec<i64>;
 }
 
 impl Buf {
@@ -32,7 +32,7 @@ impl Buf {
 }
 
 fn make(n: i64) -> Buf {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(n);
     Buf { data: v }
 }
@@ -93,7 +93,7 @@ fn test_close_on_both_branches() {
 // iteration; a stale flag would skip a later iteration's release.
 #[test]
 fn test_close_in_loop_body() {
-    for i in 0..4 {
+    for i in 0 .. 4 {
         let b = make(i);
         b.close();
     }
@@ -107,7 +107,7 @@ fn test_close_in_loop_body() {
 // closed one.
 #[test]
 fn test_loop_conditional_close_reinit() {
-    for i in 0..4 {
+    for i in 0 .. 4 {
         let b = make(i);
         if i == 1 {
             b.close();

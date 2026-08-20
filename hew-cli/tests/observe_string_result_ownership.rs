@@ -17,7 +17,7 @@ use support::require_codegen;
 
 fn observe_result_source(frames: usize) -> String {
     format!(
-        "import std::observe;\n\
+        "import std.observe;\n\
          fn discarded() {{\n\
          \x20   observe.scrape();\n\
          \x20   observe.series();\n\

@@ -6,7 +6,7 @@
 // handle into the env would alias its heap and double-free at actor
 // shutdown. MIR fails closed with `CannotMaterializeClosureCapture`.
 fn main() {
-    let xs: Vec<i64> = Vec::new();
+    let xs: Vec<i64> = Vec.new();
     xs.push(1);
     let bad = actor |n: i64| { println(f"{xs.len() + n}"); };
     bad(1);

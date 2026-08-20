@@ -1,6 +1,7 @@
 //! Execute discovered test cases via the native compilation pipeline.
 
 use super::discovery::TestCase;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::process::Command;
@@ -43,8 +44,6 @@ fn physical_core_count() -> Option<usize> {
 
 #[cfg(target_os = "linux")]
 fn physical_core_count() -> Option<usize> {
-    use std::collections::HashSet;
-
     let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").ok()?;
     let mut physical_id = None;
     let mut core_id = None;
@@ -114,7 +113,7 @@ pub struct TestSummary {
 /// Filesystem inputs needed by the in-process native compiler.
 #[derive(Debug)]
 pub struct TestCompilePaths {
-    paths: crate::NativeCompilePaths,
+    paths: crate::NativeBuildPaths,
 }
 
 impl TestCompilePaths {
@@ -129,10 +128,18 @@ impl TestCompilePaths {
             target.normalized_triple(),
             target.can_run_on_host(),
         )?;
-        Self::from_explicit(module_search_paths, PathBuf::from(hew_lib))
+        Self::from_explicit(
+            project_dir.to_path_buf(),
+            module_search_paths,
+            PathBuf::from(hew_lib),
+        )
     }
 
-    fn from_explicit(module_search_paths: Vec<PathBuf>, hew_lib: PathBuf) -> Result<Self, String> {
+    fn from_explicit(
+        project_dir: PathBuf,
+        module_search_paths: Vec<PathBuf>,
+        hew_lib: PathBuf,
+    ) -> Result<Self, String> {
         let has_stdlib = module_search_paths
             .iter()
             .any(|root| root.join("std/builtins.hew").is_file());
@@ -158,7 +165,8 @@ impl TestCompilePaths {
             ));
         }
         Ok(Self {
-            paths: crate::NativeCompilePaths {
+            paths: crate::NativeBuildPaths {
+                project_dir,
                 module_search_paths,
                 hew_lib,
             },
@@ -411,8 +419,70 @@ fn summarize(results: Vec<TestResult>) -> TestSummary {
 
 struct CompiledTestArtifact {
     _source: tempfile::NamedTempFile,
+    _source_tree: tempfile::TempDir,
     _emit_dir: tempfile::TempDir,
     binary_path: PathBuf,
+}
+
+fn mirrored_source_path(root: &Path, source: &Path) -> PathBuf {
+    let mut mirrored = root.join("source");
+    for component in source.components() {
+        if let std::path::Component::Normal(component) = component {
+            mirrored.push(component);
+        }
+    }
+    mirrored
+}
+
+fn mirror_file_imports(
+    source: &str,
+    source_dir: &Path,
+    mirror_root: &Path,
+    visited: &mut HashSet<PathBuf>,
+) -> Result<(), String> {
+    let parsed = hew_parser::parse(source);
+    for (item, _) in &parsed.program.items {
+        let hew_parser::ast::Item::Import(import) = item else {
+            continue;
+        };
+        let Some(file_path) = import.file_path.as_deref() else {
+            continue;
+        };
+        let imported_source = source_dir
+            .join(file_path)
+            .canonicalize()
+            .map_err(|error| format!("cannot resolve imported test file `{file_path}`: {error}"))?;
+        if !visited.insert(imported_source.clone()) {
+            continue;
+        }
+        let imported_contents = std::fs::read_to_string(&imported_source).map_err(|error| {
+            format!(
+                "cannot read imported test file `{}`: {error}",
+                imported_source.display()
+            )
+        })?;
+        let mirrored = mirrored_source_path(mirror_root, &imported_source);
+        let mirrored_parent = mirrored
+            .parent()
+            .ok_or_else(|| "mirrored imported source has no parent directory".to_string())?;
+        std::fs::create_dir_all(mirrored_parent).map_err(|error| {
+            format!(
+                "cannot create mirrored import directory `{}`: {error}",
+                mirrored_parent.display()
+            )
+        })?;
+        std::fs::write(&mirrored, &imported_contents).map_err(|error| {
+            format!(
+                "cannot write mirrored imported test file `{}`: {error}",
+                mirrored.display()
+            )
+        })?;
+        let imported_dir = imported_source
+            .parent()
+            .ok_or_else(|| "imported test source has no parent directory".to_string())?;
+        mirror_file_imports(&imported_contents, imported_dir, mirror_root, visited)?;
+    }
+    Ok(())
 }
 
 /// Compile a synthetic test program to a native binary.
@@ -422,24 +492,33 @@ fn compile_test(
     ffi_lib: Option<&str>,
     compile_paths: &TestCompilePaths,
 ) -> Result<CompiledTestArtifact, String> {
-    if ffi_lib.is_some() {
-        return Err("hew test FFI libraries are unavailable on the v0.5 compile path".to_string());
-    }
-
     let synthetic = format!(
         "{source}\n\nfn main() {{\n    {name}();\n}}\n",
         name = test.name,
     );
 
-    // Write synthetic source and the emit dir to the system temp directory,
-    // NOT to the test file's own parent.  If the process is killed mid-run,
-    // a leftover hew_test_*.hew inside a tests/ directory would be picked up
-    // by the next discovery scan and cause a spurious "main is defined multiple
-    // times" compile error.  The OS temp dir is outside any scanned tree.
+    // Mirror only the fixture's relative file-import closure into a writable
+    // temporary tree. The synthetic source keeps the original absolute parent
+    // shape inside that tree, so quoted imports resolve identically without
+    // requiring write access to the source checkout.
+    let source_path = Path::new(&test.file)
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve test source `{}`: {error}", test.file))?;
+    let source_dir = source_path
+        .parent()
+        .ok_or_else(|| "test source path has no parent directory".to_string())?;
+    let source_tree = tempfile::Builder::new()
+        .prefix("hew_test_source_")
+        .tempdir_in(std::env::temp_dir())
+        .map_err(|e| format!("cannot create temp source tree: {e}"))?;
+    mirror_file_imports(source, source_dir, source_tree.path(), &mut HashSet::new())?;
+    let mirrored_source_dir = mirrored_source_path(source_tree.path(), source_dir);
+    std::fs::create_dir_all(&mirrored_source_dir)
+        .map_err(|e| format!("cannot create mirrored test source directory: {e}"))?;
     let tmp_source = tempfile::Builder::new()
         .prefix("hew_test_")
         .suffix(".hew")
-        .tempfile_in(std::env::temp_dir())
+        .tempfile_in(mirrored_source_dir)
         .map_err(|e| format!("cannot create temp file: {e}"))?;
 
     std::fs::write(tmp_source.path(), &synthetic)
@@ -455,12 +534,14 @@ fn compile_test(
         .file_stem()
         .ok_or_else(|| "temp source path has no file stem".to_string())?;
     let binary_path = emit_dir.path().join(binary_name);
+    let extra_libs = ffi_lib.into_iter().map(str::to_owned).collect::<Vec<_>>();
 
     crate::diagnostic::start_diagnostic_capture();
-    let compile_result = crate::compile_native_binary_with_paths(
+    let compile_result = crate::compile_test_binary_with_paths(
         tmp_source.path(),
         &binary_path,
-        Some(&compile_paths.paths),
+        &compile_paths.paths,
+        &extra_libs,
     );
     let diagnostics = crate::diagnostic::finish_diagnostic_capture();
     if compile_result.is_err() {
@@ -473,6 +554,7 @@ fn compile_test(
 
     Ok(CompiledTestArtifact {
         _source: tmp_source,
+        _source_tree: source_tree,
         _emit_dir: emit_dir,
         binary_path,
     })
@@ -578,8 +660,6 @@ mod tests {
     use super::*;
     use std::sync::OnceLock;
 
-    /// Skip tests that require the linked native execution substrate while
-    /// `hew test` is still blocked by the v0.5 cutover guard.
     fn require_codegen() -> bool {
         ensure_test_toolchain()
     }
@@ -615,6 +695,7 @@ mod tests {
             let target = crate::target::TargetSpec::from_requested(None)
                 .expect("the test host target should resolve");
             TestCompilePaths::from_explicit(
+                workspace_root.clone(),
                 vec![workspace_root],
                 cargo_profile_dir.join(target.hew_lib_name()),
             )
@@ -628,8 +709,12 @@ mod tests {
         let archive = dir.path().join("libhew.a");
         std::fs::write(&archive, []).expect("create archive fixture");
 
-        let error = TestCompilePaths::from_explicit(vec![dir.path().to_path_buf()], archive)
-            .expect_err("a root without std/builtins.hew must fail");
+        let error = TestCompilePaths::from_explicit(
+            dir.path().to_path_buf(),
+            vec![dir.path().to_path_buf()],
+            archive,
+        )
+        .expect_err("a root without std/builtins.hew must fail");
 
         assert!(error.contains("standard library"), "error: {error}");
         assert!(error.contains("std/builtins.hew"), "error: {error}");
@@ -642,9 +727,12 @@ mod tests {
         std::fs::write(dir.path().join("std/builtins.hew"), []).expect("create builtins fixture");
         let archive = dir.path().join("missing-libhew.a");
 
-        let error =
-            TestCompilePaths::from_explicit(vec![dir.path().to_path_buf()], archive.clone())
-                .expect_err("a missing runtime archive must fail");
+        let error = TestCompilePaths::from_explicit(
+            dir.path().to_path_buf(),
+            vec![dir.path().to_path_buf()],
+            archive.clone(),
+        )
+        .expect_err("a missing runtime archive must fail");
 
         assert!(error.contains("runtime archive"), "error: {error}");
         assert!(
@@ -860,7 +948,8 @@ fn test_timeout() {
         ];
 
         let unused_paths = TestCompilePaths {
-            paths: crate::NativeCompilePaths {
+            paths: crate::NativeBuildPaths {
+                project_dir: PathBuf::new(),
                 module_search_paths: Vec::new(),
                 hew_lib: PathBuf::new(),
             },

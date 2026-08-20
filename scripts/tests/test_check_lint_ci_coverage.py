@@ -23,7 +23,8 @@ def require_failure(makefile: str, workflow: str, message: str) -> None:
 def main() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert MODULE.check(makefile, workflow) == []
+    wrapper = (ROOT / "scripts" / "ast-grep-lint.sh").read_text(encoding="utf-8")
+    assert MODULE.check(makefile, workflow, wrapper) == []
 
     extra = makefile.replace(
         "lint: structural-lint", "lint: future-lint structural-lint", 1
@@ -60,6 +61,26 @@ def main() -> None:
         1,
     )
     require_failure(makefile, narrow_clippy, "does not cover the lint recipe")
+
+    no_keyspace_gate = wrapper.replace(
+        'python3 scripts/canonical-keyspace-lint.py --ast-grep "$AST_GREP"',
+        "true",
+        1,
+    )
+    errors = MODULE.check(makefile, workflow, no_keyspace_gate)
+    assert any("canonical keyspace gate exactly once" in error for error in errors), (
+        errors
+    )
+
+    no_keyspace_test = wrapper.replace(
+        'python3 scripts/tests/test_canonical_keyspace_lint.py "$AST_GREP"',
+        "true",
+        1,
+    )
+    errors = MODULE.check(makefile, workflow, no_keyspace_test)
+    assert any(
+        "canonical keyspace counterfactuals exactly once" in error for error in errors
+    ), errors
 
     print("lint CI coverage counterfactuals: PASS")
 

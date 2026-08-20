@@ -296,22 +296,22 @@ fn missing_enum_struct_plan_fails_closed_in_refutable_positions() {
             "if_let",
             r#"
 enum Packet { Data { a: string, b: string }; Empty; }
-fn make() -> Packet { Packet::Data { a: "a".to_upper(), b: "b".to_upper() } }
+fn make() -> Packet { Packet.Data { a: "a".to_upper(), b: "b".to_upper() } }
 fn main() -> i64 {
     let p = make();
-    if let Packet::Data { a, .. } = p { a.len() } else { 0 }
+    if let Packet.Data { a, .. } = p { a.len() } else { 0 }
 }"#,
         ),
         (
             "while_let",
             r#"
 enum Packet { Data { a: string, b: string }; Empty; }
-fn make() -> Packet { Packet::Data { a: "a".to_upper(), b: "b".to_upper() } }
+fn make() -> Packet { Packet.Data { a: "a".to_upper(), b: "b".to_upper() } }
 fn main() {
     var p = make();
-    while let Packet::Data { a, .. } = p {
+    while let Packet.Data { a, .. } = p {
         let _ = a.len();
-        p = Packet::Empty;
+        p = Packet.Empty;
     }
 }"#,
         ),
@@ -319,9 +319,9 @@ fn main() {
             "let_else",
             r#"
 enum Packet { Data { a: string, b: string }; Empty; }
-fn make() -> Packet { Packet::Data { a: "a".to_upper(), b: "b".to_upper() } }
+fn make() -> Packet { Packet.Data { a: "a".to_upper(), b: "b".to_upper() } }
 fn main() -> i64 {
-    let Packet::Data { a, .. } = make() else { return 0 };
+    let Packet.Data { a, .. } = make() else { return 0 };
     a.len()
 }"#,
         ),

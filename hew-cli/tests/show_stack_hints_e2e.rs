@@ -132,7 +132,7 @@ fn show_stack_hints_check_failure_renders_span_diagnostics() {
     // is unsupported, producing a type error with a source span. The span
     // underline (`^^^`) must appear in stderr when --show-stack-hints is set.
     let source = "fn main() {\n\
-        \x20\x20\x20\x20let v: Vec<[i64; 2]> = Vec::new();\n\
+        \x20\x20\x20\x20let v: Vec<[i64; 2]> = Vec.new();\n\
         \x20\x20\x20\x20println(v.len());\n\
         }\n";
 
@@ -189,7 +189,7 @@ fn show_stack_hints_run_emits_hints_and_executes_program() {
     // A program with a known heap-class binding (`v: Vec<i64>`) that also
     // prints a sentinel value so we can verify execution succeeded.
     let source = "fn main() {\n\
-        \x20\x20\x20\x20let v: Vec<i64> = Vec::new();\n\
+        \x20\x20\x20\x20let v: Vec<i64> = Vec.new();\n\
         \x20\x20\x20\x20println(f\"len={v.len()}\");\n\
         }\n";
 

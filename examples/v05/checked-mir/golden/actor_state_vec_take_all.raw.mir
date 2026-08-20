@@ -1,0 +1,692 @@
+fn Tag::label_size(Tag) -> i64 [conv=default]
+  locals:
+    _0: Tag
+    _1: string
+    _2: i64
+  bb0:
+    stmt: use BindingId(0) val site=SiteId(2) ty=Tag intent=Read
+    _1 = _0.field[0]
+    _2 = call hew_string_length(_1) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(0)) ty=i64
+    drop _1 ty=string fn=release(hew_string_drop)
+    ret = move _2
+    return
+
+fn make_tag(string) -> dyn Labeled [conv=default]
+  locals:
+    _0: string
+    _1: Tag
+    _2: dyn Labeled
+    _3: dyn Labeled
+  bb0:
+    stmt: use BindingId(1) label site=SiteId(5) ty=string intent=Read
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(4) ty=Tag
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(6) ty=dyn Labeled
+    stmt: bind BindingId(2) erased site=SiteId(6) ty=dyn Labeled
+    stmt: use BindingId(2) erased site=SiteId(7) ty=dyn Labeled intent=Read
+    stmt: return site=Some(SiteId(7)) ty=dyn Labeled
+    string.retain _0
+    _1 = record_init Tag { .0=_0 }
+    _2 = coerce_dyn _1 trait=Labeled concrete=Tag methods=[label_size=Tag::label_size]
+    _3 = move _2
+    ret = move _3
+    return
+
+fn Registry__on_start() -> () [conv=actor_handler]
+  locals:
+    _0: Vec<dyn Labeled>
+    _1: string
+    _2: dyn Labeled
+    _3: Vec<dyn Labeled>
+    _4: string
+    _5: dyn Labeled
+  bb0:
+    enter_context
+    _0 = actor_state_load field[0] [borrow]
+    _1 = string_lit "alpha"
+    _2 = call make_tag(_1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(59) ty=dyn Labeled
+    call hew_vec_push_owned_move(_0, _2) [authority=Runtime(VecPushOwnedMove)] -> bb2
+  bb2:
+    stmt: eval site=SiteId(57) ty=()
+    _3 = actor_state_load field[0] [borrow]
+    _4 = string_lit "be"
+    _5 = call make_tag(_4) -> bb3
+  bb3:
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(64) ty=dyn Labeled
+    call hew_vec_push_owned_move(_3, _5) [authority=Runtime(VecPushOwnedMove)] -> bb4
+  bb4:
+    stmt: eval site=SiteId(62) ty=()
+    exit_context
+    return
+
+fn Registry__recv__drain_total() -> i64 [conv=actor_handler]
+  locals:
+    _0: i64
+    _1: i64
+    _2: i64
+    _3: Vec<dyn Labeled>
+    _4: Vec<dyn Labeled>
+    _5: i64
+    _6: VecIter<dyn Labeled>
+    _7: i64
+    _8: VecIter<dyn Labeled>
+    _9: ()
+    _10: Option<dyn Labeled>
+    _11: i64
+    _12: Vec<dyn Labeled>
+    _13: i64
+    _14: bool
+    _15: Option<dyn Labeled>
+    _16: i64
+    _17: Option<dyn Labeled>
+    _18: Vec<dyn Labeled>
+    _19: i64
+    _20: Option<dyn Labeled>
+    _21: Option<dyn Labeled>
+    _22: i64
+    _23: i64
+    _24: i64
+    _25: bool
+    _26: Option<dyn Labeled>
+    _27: Option<dyn Labeled>
+    _28: i64
+    _29: i64
+    _30: bool
+    _31: i64
+    _32: bool
+    _33: dyn Labeled
+    _34: i64
+    _35: i64
+    _36: bool
+    _37: i64
+    _38: bool
+  bb0:
+    stmt: bind BindingId(4) total site=SiteId(10) ty=i64
+    enter_context
+    _0 = const.i64 0
+    _1 = move _0
+    _2 = const.i64 0
+    _3 = actor_state_load field[0] [borrow]
+    _4 = call hew_vec_take_all(_3) [authority=Runtime(VecTakeAll)] -> bb1
+  bb1:
+    stmt: agg_alias BindingId(3) plugins site=SiteId(12) ty=Vec<dyn Labeled>
+    stmt: bind BindingId(6) __hew_for_iter_5 site=SiteId(11) ty=VecIter<dyn Labeled>
+    _5 = const.i64 0
+    _6 = record_init VecIter<dyn Labeled> { .0=_4, .1=_5 }
+    _7 = move _2
+    _8 = move _6
+    goto bb2
+  bb2:
+    stmt: use BindingId(6) __hew_for_iter_5 site=SiteId(16) ty=VecIter<dyn Labeled> intent=Read
+    stmt: use BindingId(6) __hew_for_iter_5 site=SiteId(18) ty=VecIter<dyn Labeled> intent=Read
+    _11 = _8.field[1]
+    _12 = _8.field[0]
+    _13 = call hew_vec_len(_12) [authority=Runtime(VecLen)] -> bb4
+  bb3:
+    stmt: eval site=SiteId(47) ty=()
+    _37 = const.i64 0
+    _38 = icmp.eq _7 _37
+    branch _38 ? bb19 : bb20
+  bb4:
+    _14 = icmp.sge _11 _13
+    branch _14 ? bb5 : bb6
+  bb5:
+    _16 = const.i64 1
+    mtag15 = move _16
+    _17 = move _15
+    _10 = move _17
+    goto bb7
+  bb6:
+    stmt: use BindingId(6) __hew_for_iter_5 site=SiteId(24) ty=VecIter<dyn Labeled> intent=Read
+    stmt: use BindingId(6) __hew_for_iter_5 site=SiteId(26) ty=VecIter<dyn Labeled> intent=Read
+    _18 = _8.field[0]
+    _19 = _8.field[1]
+    _20 = call hew_vec_take_owned(_18, _19) [authority=Runtime(VecGet(Take))] -> bb8
+  bb7:
+    _27 = move _10
+    _28 = move etag27
+    _29 = const.i64 0
+    _30 = icmp.eq _28 _29
+    branch _30 ? bb12 : bb15
+  bb8:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(28) ty=Option<dyn Labeled>
+    stmt: bind BindingId(8) __hew_iter_value_7 site=SiteId(28) ty=Option<dyn Labeled>
+    stmt: use BindingId(6) __hew_for_iter_5 site=SiteId(31) ty=VecIter<dyn Labeled> intent=Read
+    _21 = move _20
+    _22 = _8.field[1]
+    _23 = const.i64 1
+    _24 ovf=_25 = add.checked.s _22 _23
+    branch _25 ? bb9 : bb10
+  bb9:
+    exit_context
+    trap(IntegerOverflow)
+  bb10:
+    stmt: use BindingId(6) __hew_for_iter_5 site=SiteId(29) ty=VecIter<dyn Labeled> intent=Modify
+    stmt: eval site=SiteId(34) ty=()
+    stmt: use BindingId(8) __hew_iter_value_7 site=SiteId(35) ty=Option<dyn Labeled> intent=Consume
+    _8.field[1] = _24
+    _26 = move _21
+    _10 = move _26
+    goto bb7
+  bb11:
+    stmt: eval site=SiteId(46) ty=()
+    goto bb2
+  bb12:
+    stmt: bind BindingId(9) plugin site=SiteId(44) ty=dyn Labeled
+    stmt: use BindingId(4) total site=SiteId(41) ty=i64 intent=Read
+    stmt: use BindingId(9) plugin site=SiteId(43) ty=dyn Labeled intent=Read
+    _33 = move mvar27.0.0
+    _34 = call_trait Labeled::label_size[slot=3] _33 ()
+    _35 ovf=_36 = add.checked.s _1 _34
+    branch _36 ? bb16 : bb17
+  bb13:
+    goto bb3
+  bb14:
+    exit_context
+    trap(ExhaustivenessFallthrough)
+  bb15:
+    _31 = const.i64 1
+    _32 = icmp.eq _28 _31
+    branch _32 ? bb13 : bb14
+  bb16:
+    exit_context
+    trap(IntegerOverflow)
+  bb17:
+    stmt: bind BindingId(4) total site=SiteId(39) ty=i64
+    stmt: eval site=SiteId(40) ty=()
+    _1 = move _35
+    goto bb11
+  bb18:
+    goto bb11
+  bb19:
+    drop_field _8.field[0] ty=Vec<dyn Labeled> fn=Release("hew_vec_free_owned")
+    _7 = const.i64 1
+    goto bb20
+  bb20:
+    stmt: eval site=SiteId(48) ty=()
+    stmt: use BindingId(4) total site=SiteId(49) ty=i64 intent=Read
+    stmt: return site=Some(SiteId(49)) ty=i64
+    ret = move _1
+    exit_context
+    return
+
+fn Registry__recv__refill() -> () [conv=actor_handler]
+  locals:
+    _0: Vec<dyn Labeled>
+    _1: string
+    _2: dyn Labeled
+  bb0:
+    enter_context
+    _0 = actor_state_load field[0] [borrow]
+    _1 = string_lit "gamma"
+    _2 = call make_tag(_1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(52) ty=dyn Labeled
+    call hew_vec_push_owned_move(_0, _2) [authority=Runtime(VecPushOwnedMove)] -> bb2
+  bb2:
+    stmt: eval site=SiteId(50) ty=()
+    exit_context
+    return
+
+fn Registry__recv__plugin_count() -> i64 [conv=actor_handler]
+  locals:
+    _0: Vec<dyn Labeled>
+    _1: i64
+  bb0:
+    enter_context
+    _0 = actor_state_load field[0] [borrow]
+    _1 = call hew_vec_len(_0) [authority=Runtime(VecLen)] -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(55)) ty=i64
+    ret = move _1
+    exit_context
+    return
+
+fn main() -> () [conv=default]
+  locals:
+    _0: Registry
+    _1: Vec<dyn Labeled>
+    _2: LocalPid<Registry>
+    _3: ()
+    _4: Result<i64, std.builtins.AskError>
+    _5: i64
+    _6: std.builtins.AskError
+    _7: Result<i64, std.builtins.AskError>
+    _8: ()
+    _9: i64
+    _10: i64
+    _11: bool
+    _12: i64
+    _13: bool
+    _14: i64
+    _15: i64
+    _16: ()
+    _17: Result<i64, std.builtins.AskError>
+    _18: i64
+    _19: std.builtins.AskError
+    _20: Result<i64, std.builtins.AskError>
+    _21: ()
+    _22: i64
+    _23: i64
+    _24: bool
+    _25: i64
+    _26: bool
+    _27: i64
+    _28: i64
+    _29: ()
+    _30: ()
+    _31: Result<i64, std.builtins.AskError>
+    _32: i64
+    _33: std.builtins.AskError
+    _34: Result<i64, std.builtins.AskError>
+    _35: ()
+    _36: i64
+    _37: i64
+    _38: bool
+    _39: i64
+    _40: bool
+    _41: i64
+    _42: i64
+  bb0:
+    _1 = call Vec::new() [authority=Runtime(VecNew)] -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(8) ty=Vec<dyn Labeled>
+    stmt: bind BindingId(13) registry site=SiteId(67) ty=LocalPid<Registry>
+    stmt: use BindingId(13) registry site=SiteId(70) ty=LocalPid<Registry> intent=Read
+    _0 = record_init Registry { .0=_1 }
+    actor2 = spawn_actor Registry state=_0 cycle_capable=false
+    _4 = ask actor2[msg=-445896702] _3 reply=_5 err=_6 -> bb2
+  bb2:
+    stmt: bind BindingId(14) first site=SiteId(68) ty=Result<i64, std.builtins.AskError>
+    stmt: use BindingId(14) first site=SiteId(71) ty=Result<i64, std.builtins.AskError> intent=Read
+    _7 = move _4
+    _9 = move etag7
+    _10 = const.i64 0
+    _11 = icmp.eq _9 _10
+    branch _11 ? bb4 : bb7
+  bb3:
+    stmt: eval site=SiteId(78) ty=()
+    stmt: use BindingId(13) registry site=SiteId(81) ty=LocalPid<Registry> intent=Read
+    _17 = ask actor2[msg=-445896702] _16 reply=_18 err=_19 -> bb10
+  bb4:
+    stmt: bind BindingId(15) total site=SiteId(72) ty=i64
+    stmt: use BindingId(15) total site=SiteId(73) ty=i64 intent=Read
+    _14 = move mvar7.0.0
+    call println_i64(_14) -> bb8
+  bb5:
+    _15 = const.i64 -1
+    call println_i64(_15) -> bb9
+  bb6:
+    trap(ExhaustivenessFallthrough)
+  bb7:
+    _12 = const.i64 1
+    _13 = icmp.eq _9 _12
+    branch _13 ? bb5 : bb6
+  bb8:
+    goto bb3
+  bb9:
+    goto bb3
+  bb10:
+    stmt: bind BindingId(16) drained site=SiteId(79) ty=Result<i64, std.builtins.AskError>
+    stmt: use BindingId(16) drained site=SiteId(82) ty=Result<i64, std.builtins.AskError> intent=Read
+    _20 = move _17
+    _22 = move etag20
+    _23 = const.i64 0
+    _24 = icmp.eq _22 _23
+    branch _24 ? bb12 : bb15
+  bb11:
+    stmt: eval site=SiteId(89) ty=()
+    stmt: use BindingId(13) registry site=SiteId(91) ty=LocalPid<Registry> intent=Read
+    send actor2[msg=-870026047] _29 alias=Copy -> bb18
+  bb12:
+    stmt: bind BindingId(17) total site=SiteId(83) ty=i64
+    stmt: use BindingId(17) total site=SiteId(84) ty=i64 intent=Read
+    _27 = move mvar20.0.0
+    call println_i64(_27) -> bb16
+  bb13:
+    _28 = const.i64 -1
+    call println_i64(_28) -> bb17
+  bb14:
+    trap(ExhaustivenessFallthrough)
+  bb15:
+    _25 = const.i64 1
+    _26 = icmp.eq _22 _25
+    branch _26 ? bb13 : bb14
+  bb16:
+    goto bb11
+  bb17:
+    goto bb11
+  bb18:
+    stmt: eval site=SiteId(90) ty=()
+    stmt: use BindingId(13) registry site=SiteId(94) ty=LocalPid<Registry> intent=Read
+    _31 = ask actor2[msg=-35413608] _30 reply=_32 err=_33 -> bb19
+  bb19:
+    stmt: bind BindingId(18) count site=SiteId(92) ty=Result<i64, std.builtins.AskError>
+    stmt: use BindingId(18) count site=SiteId(96) ty=Result<i64, std.builtins.AskError> intent=Read
+    _34 = move _31
+    _36 = move etag34
+    _37 = const.i64 0
+    _38 = icmp.eq _36 _37
+    branch _38 ? bb21 : bb24
+  bb20:
+    stmt: return site=Some(SiteId(95)) ty=()
+    ret = move _35
+    return
+  bb21:
+    stmt: bind BindingId(19) n site=SiteId(97) ty=i64
+    stmt: use BindingId(19) n site=SiteId(98) ty=i64 intent=Read
+    _41 = move mvar34.0.0
+    call println_i64(_41) -> bb25
+  bb22:
+    _42 = const.i64 -1
+    call println_i64(_42) -> bb26
+  bb23:
+    trap(ExhaustivenessFallthrough)
+  bb24:
+    _39 = const.i64 1
+    _40 = icmp.eq _36 _39
+    branch _40 ? bb22 : bb23
+  bb25:
+    goto bb20
+  bb26:
+    goto bb20
+
+fn i8::fmt(i8) -> string [conv=default]
+  locals:
+    _0: i8
+    _1: i32
+    _2: string
+  bb0:
+    stmt: use BindingId(28) val site=SiteId(173) ty=i8 intent=Read
+    _1 = cast _0 i8 -> i32
+    _2 = call hew_int_to_string(_1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(171) ty=string
+    stmt: return site=Some(SiteId(171)) ty=string
+    ret = move _2
+    return
+
+fn i16::fmt(i16) -> string [conv=default]
+  locals:
+    _0: i16
+    _1: i32
+    _2: string
+  bb0:
+    stmt: use BindingId(29) val site=SiteId(177) ty=i16 intent=Read
+    _1 = cast _0 i16 -> i32
+    _2 = call hew_int_to_string(_1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(175) ty=string
+    stmt: return site=Some(SiteId(175)) ty=string
+    ret = move _2
+    return
+
+fn i32::fmt(i32) -> string [conv=default]
+  locals:
+    _0: i32
+    _1: string
+  bb0:
+    stmt: use BindingId(30) val site=SiteId(180) ty=i32 intent=Read
+    _1 = call hew_int_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(179) ty=string
+    stmt: return site=Some(SiteId(179)) ty=string
+    ret = move _1
+    return
+
+fn i64::fmt(i64) -> string [conv=default]
+  locals:
+    _0: i64
+    _1: string
+  bb0:
+    stmt: use BindingId(31) val site=SiteId(183) ty=i64 intent=Read
+    _1 = call hew_i64_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(182) ty=string
+    stmt: return site=Some(SiteId(182)) ty=string
+    ret = move _1
+    return
+
+fn u8::fmt(u8) -> string [conv=default]
+  locals:
+    _0: u8
+    _1: string
+  bb0:
+    stmt: use BindingId(32) val site=SiteId(186) ty=u8 intent=Read
+    _1 = call hew_u8_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(185) ty=string
+    stmt: return site=Some(SiteId(185)) ty=string
+    ret = move _1
+    return
+
+fn u16::fmt(u16) -> string [conv=default]
+  locals:
+    _0: u16
+    _1: string
+  bb0:
+    stmt: use BindingId(33) val site=SiteId(189) ty=u16 intent=Read
+    _1 = call hew_uint_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(188) ty=string
+    stmt: return site=Some(SiteId(188)) ty=string
+    ret = move _1
+    return
+
+fn u32::fmt(u32) -> string [conv=default]
+  locals:
+    _0: u32
+    _1: string
+  bb0:
+    stmt: use BindingId(34) val site=SiteId(192) ty=u32 intent=Read
+    _1 = call hew_uint_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(191) ty=string
+    stmt: return site=Some(SiteId(191)) ty=string
+    ret = move _1
+    return
+
+fn u64::fmt(u64) -> string [conv=default]
+  locals:
+    _0: u64
+    _1: string
+  bb0:
+    stmt: use BindingId(35) val site=SiteId(195) ty=u64 intent=Read
+    _1 = call hew_u64_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(194) ty=string
+    stmt: return site=Some(SiteId(194)) ty=string
+    ret = move _1
+    return
+
+fn isize::fmt(isize) -> string [conv=default]
+  locals:
+    _0: isize
+    _1: i64
+    _2: string
+  bb0:
+    stmt: use BindingId(36) val site=SiteId(199) ty=isize intent=Read
+    _1 = cast _0 isize -> i64
+    _2 = call hew_i64_to_string(_1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(197) ty=string
+    stmt: return site=Some(SiteId(197)) ty=string
+    ret = move _2
+    return
+
+fn usize::fmt(usize) -> string [conv=default]
+  locals:
+    _0: usize
+    _1: u64
+    _2: string
+  bb0:
+    stmt: use BindingId(37) val site=SiteId(203) ty=usize intent=Read
+    _1 = cast _0 usize -> u64
+    _2 = call hew_u64_to_string(_1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(201) ty=string
+    stmt: return site=Some(SiteId(201)) ty=string
+    ret = move _2
+    return
+
+fn bool::fmt(bool) -> string [conv=default]
+  locals:
+    _0: bool
+    _1: string
+  bb0:
+    stmt: use BindingId(38) val site=SiteId(206) ty=bool intent=Read
+    _1 = call hew_bool_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(205) ty=string
+    stmt: return site=Some(SiteId(205)) ty=string
+    ret = move _1
+    return
+
+fn char::fmt(char) -> string [conv=default]
+  locals:
+    _0: char
+    _1: string
+  bb0:
+    stmt: use BindingId(39) val site=SiteId(209) ty=char intent=Read
+    _1 = call hew_char_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(208) ty=string
+    stmt: return site=Some(SiteId(208)) ty=string
+    ret = move _1
+    return
+
+fn f64::fmt(f64) -> string [conv=default]
+  locals:
+    _0: f64
+    _1: string
+  bb0:
+    stmt: use BindingId(40) val site=SiteId(212) ty=f64 intent=Read
+    _1 = call hew_float_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(211) ty=string
+    stmt: return site=Some(SiteId(211)) ty=string
+    ret = move _1
+    return
+
+fn f32::fmt(f32) -> string [conv=default]
+  locals:
+    _0: f32
+    _1: f64
+    _2: string
+  bb0:
+    stmt: use BindingId(41) val site=SiteId(216) ty=f32 intent=Read
+    _1 = cast _0 f32 -> f64
+    _2 = call hew_float_to_string(_1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(214) ty=string
+    stmt: return site=Some(SiteId(214)) ty=string
+    ret = move _2
+    return
+
+fn string::fmt(string) -> string [conv=default]
+  locals:
+    _0: string
+  bb0:
+    stmt: use BindingId(42) val site=SiteId(218) ty=string intent=Read
+    stmt: return site=Some(SiteId(218)) ty=string
+    string.retain _0
+    ret = move _0
+    return
+
+fn duration::from_nanos(i64) -> duration [conv=default]
+  locals:
+    _0: i64
+    _1: duration
+    _2: duration
+    _3: bool
+  bb0:
+    stmt: use BindingId(43) n site=SiteId(220) ty=i64 intent=Read
+    _1 = const.duration 1ns
+    _2 ovf=_3 = mul.checked.s _0 _1
+    branch _3 ? bb1 : bb2
+  bb1:
+    trap(IntegerOverflow)
+  bb2:
+    stmt: return site=Some(SiteId(219)) ty=duration
+    ret = move _2
+    return
+
+fn duration::from_micros(i64) -> duration [conv=default]
+  locals:
+    _0: i64
+    _1: duration
+    _2: duration
+    _3: bool
+  bb0:
+    stmt: use BindingId(44) n site=SiteId(223) ty=i64 intent=Read
+    _1 = const.duration 1000ns
+    _2 ovf=_3 = mul.checked.s _0 _1
+    branch _3 ? bb1 : bb2
+  bb1:
+    trap(IntegerOverflow)
+  bb2:
+    stmt: return site=Some(SiteId(222)) ty=duration
+    ret = move _2
+    return
+
+fn duration::from_millis(i64) -> duration [conv=default]
+  locals:
+    _0: i64
+    _1: duration
+    _2: duration
+    _3: bool
+  bb0:
+    stmt: use BindingId(45) n site=SiteId(226) ty=i64 intent=Read
+    _1 = const.duration 1000000ns
+    _2 ovf=_3 = mul.checked.s _0 _1
+    branch _3 ? bb1 : bb2
+  bb1:
+    trap(IntegerOverflow)
+  bb2:
+    stmt: return site=Some(SiteId(225)) ty=duration
+    ret = move _2
+    return
+
+fn duration::from_secs(i64) -> duration [conv=default]
+  locals:
+    _0: i64
+    _1: duration
+    _2: duration
+    _3: bool
+  bb0:
+    stmt: use BindingId(46) n site=SiteId(229) ty=i64 intent=Read
+    _1 = const.duration 1000000000ns
+    _2 ovf=_3 = mul.checked.s _0 _1
+    branch _3 ? bb1 : bb2
+  bb1:
+    trap(IntegerOverflow)
+  bb2:
+    stmt: return site=Some(SiteId(228)) ty=duration
+    ret = move _2
+    return
+
+fn duration::fmt(duration) -> string [conv=default]
+  locals:
+    _0: duration
+    _1: i64
+    _2: string
+    _3: string
+    _4: string
+  bb0:
+    stmt: use BindingId(47) val site=SiteId(234) ty=duration intent=Read
+    _1 = call hew_duration_nanos(_0) -> bb1
+  bb1:
+    _2 = call hew_i64_to_string(_1) -> bb2
+  bb2:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(232) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(231) ty=string
+    stmt: return site=Some(SiteId(231)) ty=string
+    _3 = string_lit "ns"
+    _4 = call_rt hew_string_concat(_2, _3)
+    drop _2 ty=string fn=release(hew_string_drop)
+    ret = move _4
+    return
+

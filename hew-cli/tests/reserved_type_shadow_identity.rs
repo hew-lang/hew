@@ -53,7 +53,7 @@ pub fn shadow_sum(task: Task<i64>, unit: Unit<i64>) -> i64 {
     let path = dir.path().join("main.hew");
     std::fs::write(
         &path,
-        r#"import hew::foo::{ Task, Unit, shadow_sum };
+        r#"import hew.foo.{ Task, Unit, shadow_sum };
 
 fn main() {
     let task = Task<i64> { value: 17 };

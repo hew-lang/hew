@@ -7,8 +7,8 @@ fn takes_slice(xs: [i64]) -> i64 {
 }
 
 fn main() {
-    // Vec<T>::clone() — mutating the original after clone does not affect the copy.
-    let nums = Vec::new();
+    // Vec<T>.clone() — mutating the original after clone does not affect the copy.
+    let nums = Vec.new();
     nums.push(1);
     nums.push(2);
     let nums_copy = nums.clone();

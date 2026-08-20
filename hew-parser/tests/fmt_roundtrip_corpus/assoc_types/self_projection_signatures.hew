@@ -1,7 +1,7 @@
 trait Factory {
     type Product = i32;
 
-    fn make(factory: Self) -> Self::Product;
+    fn make(factory: Self) -> Self.Product;
 }
 
 type WidgetFactory {
@@ -10,7 +10,7 @@ type WidgetFactory {
 impl Factory for WidgetFactory {
     type Product = i32;
 
-    fn make(factory: WidgetFactory) -> Self::Product {
+    fn make(factory: WidgetFactory) -> Self.Product {
         1
     }
 }

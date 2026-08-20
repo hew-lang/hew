@@ -147,7 +147,7 @@ fn vec_record_get_method_reads_correct_field_values() {
         type Point { x: i64; y: i64 }
 
         fn main() {
-            let pts: Vec<Point> = Vec::new();
+            let pts: Vec<Point> = Vec.new();
             pts.push(Point{x:100, y:200});
             pts.push(Point{x:300, y:400});
             let a = pts[0];

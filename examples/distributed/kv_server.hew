@@ -11,7 +11,7 @@
 //
 // Or via the harness:
 //   .tmp/run-node-e2e.sh
-import std::os;
+import std.os;
 
 // `record` is Serializable (required for RemotePid messaging).
 record KvPut {
@@ -33,14 +33,14 @@ actor KeyValue {
     let store: HashMap<string, string>;
     receive fn handle(req: KvReq) -> KvResp {
         match req {
-            KvReq::Put(kv) => {
+            KvReq.Put(kv) => {
                 store.insert(kv.key, kv.val);
-                KvResp::Ack
+                KvResp.Ack
             },
-            KvReq::GetKey(k) => {
+            KvReq.GetKey(k) => {
                 match store.get(k) {
-                    Some(v) => KvResp::Value(v),
-                    None => KvResp::Value(""),
+                    .Some(v) => KvResp.Value(v),
+                    .None => KvResp.Value(""),
                 }
             },
         }
@@ -62,12 +62,12 @@ fn main() {
     }
     let addr = f"0.0.0.0:{port}";
     println(f"[kv-server] starting on {addr}");
-    Node::set_transport("tcp");
-    Node::start(addr);
+    Node.set_transport("tcp");
+    Node.start(addr);
     println("[kv-server] node started");
-    let s: HashMap<string, string> = HashMap::new();
+    let s: HashMap<string, string> = HashMap.new();
     let kv = spawn KeyValue(store: s);
-    Node::register("kv", kv);
+    Node.register("kv", kv);
     println("[kv-server] 'kv' actor registered; waiting for client...");
 
     // Wait for client to connect and run assertions.
@@ -77,9 +77,9 @@ fn main() {
     sleep(2m);
     let n = await kv.count();
     match n {
-        Ok(cnt) => println(f"[kv-server] entries stored: {cnt}"),
-        Err(_) => println("[kv-server] count ask failed"),
+        .Ok(cnt) => println(f"[kv-server] entries stored: {cnt}"),
+        .Err(_) => println("[kv-server] count ask failed"),
     }
-    Node::shutdown();
+    Node.shutdown();
     println("[kv-server] shutdown complete");
 }

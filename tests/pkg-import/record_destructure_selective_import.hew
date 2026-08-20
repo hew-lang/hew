@@ -4,7 +4,7 @@
 //
 // Harness verb: hew run
 // Expected: destructured fields sum to 7.
-import hew::qualshapes::{ Point };
+import hew.qualshapes.{ Point };
 
 fn main() {
     let point = Point { x: 3, y: 4 };

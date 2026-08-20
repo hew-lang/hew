@@ -916,7 +916,7 @@ const MACHINE_FIELD_SOURCE: &str = "
     }
 
     actor Holder {
-        var light: Light = Light::Off;
+        var light: Light = Light.Off;
         receive fn flip() {
             light.step(Flip);
         }
@@ -978,14 +978,14 @@ fn heap_payload_machine_state_field_classifies_as_enum() {
             state Idle;
             state Failed { reason: string; }
             on Connect: _ => _ { state }
-            on Fail: Idle => Failed { Conn::Failed { reason: event.reason } }
+            on Fail: Idle => Failed { Conn.Failed { reason: event.reason } }
             on Fail: _ => _ { state }
         }
 
         actor Holder {
-            var c: Conn = Conn::Idle;
+            var c: Conn = Conn.Idle;
             receive fn poke() {
-                c.step(ConnEvent::Fail { reason: \"boom\" });
+                c.step(ConnEvent.Fail { reason: \"boom\" });
             }
         }
 
@@ -1058,7 +1058,7 @@ fn payload_free_machine_record_field_admits() {
         type P { f: F, x: i64 }
 
         fn main() {
-            let p = P { f: F::S1, x: 0 };
+            let p = P { f: F.S1, x: 0 };
             println(p.x);
         }
     ",
@@ -1092,7 +1092,7 @@ fn i64_payload_machine_record_field_admits() {
         type Q { g: G, x: i64 }
 
         fn main() {
-            let q = Q { g: G::Idle, x: 0 };
+            let q = Q { g: G.Idle, x: 0 };
             println(q.x);
         }
     ",
@@ -1127,7 +1127,7 @@ fn string_payload_machine_record_field_admits() {
         type R { h: H, x: i64 }
 
         fn main() {
-            let r = R { h: H::Empty, x: 0 };
+            let r = R { h: H.Empty, x: 0 };
             println(r.x);
         }
     ",
@@ -1165,7 +1165,7 @@ fn generic_machine_record_field_admits() {
         type Box { m: Lifecycle<i64>, x: i64 }
 
         fn main() {
-            let b = Box { m: Lifecycle::Start, x: 0 };
+            let b = Box { m: Lifecycle.Start, x: 0 };
             println(b.x);
         }
     ",

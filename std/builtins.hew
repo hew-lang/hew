@@ -207,12 +207,12 @@ pub trait ActorMsg {
 pub trait Pid {
     type Msg;
 
-    fn send(pid: Self, msg: Self::Msg) -> Result<(), SendError>;
+    fn send(pid: Self, msg: Self.Msg) -> Result<(), SendError>;
 }
 
 impl<T: ActorMsg> LocalPid<T> {
     /// Send a message to this local actor.
-    fn send(pid: LocalPid<T>, msg: T::Msg) -> Result<(), SendError> {
+    fn send(pid: LocalPid<T>, msg: T.Msg) -> Result<(), SendError> {
         Ok(())
     }
 }
@@ -285,26 +285,26 @@ impl<T: ActorMsg> RemotePid<T> {
     /// and as a fail-closed fallback on targets without the codegen
     /// interception (notably WASM, where remote routing is not wired —
     /// WASM-TODO(distributed): add authenticated remote routing on wasm32).
-    fn send(pid: RemotePid<T>, msg: T::Msg) -> Result<(), SendError> {
-        Err(SendError::NodeRoutingNotWired)
+    fn send(pid: RemotePid<T>, msg: T.Msg) -> Result<(), SendError> {
+        Err(SendError.NodeRoutingNotWired)
     }
     /// Ask this remote actor for a reply, failing with `AskError` if the
     /// caller-supplied timeout elapses or routing/reply delivery fails.
-    fn ask(pid: RemotePid<T>, msg: T::Msg, timeout_ms: u64) -> Result<T::Reply, AskError> {
-        Err(AskError::NodeNotRunning)
+    fn ask(pid: RemotePid<T>, msg: T.Msg, timeout_ms: u64) -> Result<T.Reply, AskError> {
+        Err(AskError.NodeNotRunning)
     }
 }
 
 impl<T: ActorMsg> Pid for LocalPid<T> {
-    type Msg = T::Msg;
-    fn send(pid: LocalPid<T>, msg: Self::Msg) -> Result<(), SendError> {
+    type Msg = T.Msg;
+    fn send(pid: LocalPid<T>, msg: Self.Msg) -> Result<(), SendError> {
         pid.send(msg)
     }
 }
 
 impl<T: ActorMsg> Pid for RemotePid<T> {
-    type Msg = T::Msg;
-    fn send(pid: RemotePid<T>, msg: Self::Msg) -> Result<(), SendError> {
+    type Msg = T.Msg;
+    fn send(pid: RemotePid<T>, msg: Self.Msg) -> Result<(), SendError> {
         pid.send(msg)
     }
 }
@@ -338,7 +338,7 @@ pub trait Iterator {
     type Item;
 
     #[lang_item("iterator.next")]
-    fn next(var self) -> Option<Self::Item>;
+    fn next(var self) -> Option<Self.Item>;
 }
 
 // ---------------------------------------------------------------------------
@@ -359,9 +359,9 @@ pub trait Iterator {
 pub trait IntoIterator {
     type Item;
 
-    type IntoIter: Iterator<Item = Self::Item>;
+    type IntoIter: Iterator<Item = Self.Item>;
 
-    fn into_iter(self) -> Self::IntoIter;
+    fn into_iter(self) -> Self.IntoIter;
 }
 
 // ---------------------------------------------------------------------------
@@ -570,10 +570,10 @@ pub trait Index<Idx> {
     type Output;
 
     #[lang_item(index_get)]
-    fn get(self, index: Idx) -> Option<Self::Output>;
+    fn get(self, index: Idx) -> Option<Self.Output>;
 
     #[lang_item(index_at)]
-    fn at(self, index: Idx) -> Self::Output;
+    fn at(self, index: Idx) -> Self.Output;
 }
 
 impl<T> Index<i64> for Vec<T> {
@@ -769,7 +769,7 @@ impl duration {
 impl instant {
     #[extern_symbol(hew_instant_now)]
     fn now() -> instant {
-        instant::now()
+        instant.now()
     }
     #[extern_symbol(hew_instant_elapsed)]
     fn elapsed(i: instant) -> duration {

@@ -197,7 +197,7 @@ pub(crate) struct SuspendingCallClosureEmit<'a> {
 pub(crate) struct SuspendingTaskAwaitEmit {
     pub(crate) scope: Place,
     pub(crate) task: Place,
-    /// `Some(slot)` reads the task result via `hew_task_get_result` on the bind
+    /// `Some(slot)` takes the task result via `hew_task_take_result` on the bind
     /// edge and copies it into the slot at the `T` element width (value task);
     /// `None` for a unit task (nothing to bind).
     pub(crate) result_dest: Option<Place>,
@@ -3193,12 +3193,15 @@ fn emit_suspending_channel_recv_bind<'ctx>(
 /// abandon:                                          ; parked cont destroyed
 ///   hew_task_detach_await(scope, task, slot); br shared cleanup
 /// bind:                                             ; already-done OR resumed
-///   (value task) result = hew_task_get_result(task); store -> result_dest
+///   error = hew_task_get_error(task)
+///   error == Cancelled -> publish cancellation; final suspend without a value
+///   other error != 0 -> publish task failure; final suspend without a value
+///   (value task) result = hew_task_take_result(task); store -> result_dest
 ///   hew_read_slot_free(slot)                        ; release the creator ref
 ///   br resume_bb
 /// ```
 /// The task is BORROWED across the suspend (the scope-join owns its free). On
-/// resume the task is `Done` and `hew_task_get_result` deep-reads its result —
+/// resume the task is `Done` and `hew_task_take_result` moves its result —
 /// the value channel is the task's own result buffer, NOT the gen out-pointer.
 /// Slot refs mirror the channel-recv ramp: `new` (+1 creator);
 /// `hew_task_await_suspend` takes the observer's in-flight ref only on the park
@@ -3232,7 +3235,7 @@ pub(crate) fn emit_suspending_task_await_terminator<'ctx>(
     // A value-returning task carries `result_dest` — the slot the child's `T`
     // is read into on the bind edge. The task body published its result through
     // `hew_task_set_result` (the codegen task wrapper); on the resume /
-    // immediate-ready edge the task is `Done` and `hew_task_get_result` returns
+    // immediate-ready edge the task is `Done` and `hew_task_take_result` returns
     // the result buffer, which the bind edge copies into `result_dest` at the
     // `T` element width. A unit task carries `None` and binds nothing.
     let actor_self_fn = intern_runtime_decl(
@@ -3346,41 +3349,165 @@ pub(crate) fn emit_suspending_task_await_terminator<'ctx>(
             Ok(())
         },
         || {
-            // Bind: already-done OR resumed. The task is `Done`. For a value
-            // task, read the published result and copy it into `result_dest` at
-            // the `T` element width: `hew_task_get_result` returns the
+            // Bind: already-done OR resumed. The task is `Done`. Its terminal
+            // error is authoritative: cancellation takes the value-free final
+            // suspend, leaving any published owned result for task teardown.
+            let task_error = fn_ctx.call_runtime_int(
+                "hew_task_get_error",
+                &[task_ptr.into()],
+                "suspending_task_await_error",
+                "hew_task_get_error (bind) call",
+            )?;
+            let success_bb = fn_ctx
+                .ctx
+                .append_basic_block(parent, "suspending_task_await_success");
+            let cancelled_bb = fn_ctx
+                .ctx
+                .append_basic_block(parent, "suspending_task_await_cancelled");
+            let failed_bb = fn_ctx
+                .ctx
+                .append_basic_block(parent, "suspending_task_await_failed");
+            let non_success_bb = fn_ctx
+                .ctx
+                .append_basic_block(parent, "suspending_task_await_non_success");
+            let is_success = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    task_error,
+                    task_error.get_type().const_zero(),
+                    "suspending_task_await_is_success",
+                )
+                .llvm_ctx("value-task success compare")?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(is_success, success_bb, non_success_bb)
+                .llvm_ctx("value-task terminal-status branch")?;
+
+            fn_ctx.builder.position_at_end(non_success_bb);
+            let is_cancelled = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    task_error,
+                    task_error.get_type().const_int(1, false),
+                    "suspending_task_await_is_cancelled",
+                )
+                .llvm_ctx("value-task cancellation compare")?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(is_cancelled, cancelled_bb, failed_bb)
+                .llvm_ctx("value-task failure-kind branch")?;
+
+            fn_ctx.builder.position_at_end(cancelled_bb);
+            fn_ctx
+                .builder
+                .build_call(
+                    slot_free,
+                    &[slot.into()],
+                    "suspending_task_await_cancel_free",
+                )
+                .llvm_ctx("hew_read_slot_free (cancel bind) call")?;
+            crate::llvm::emit_elab_drops(
+                fn_ctx,
+                fn_ctx.suspend_abandon_block.get(),
+                fn_ctx.drop_plans,
+            )?;
+            let reply_channel = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_get_reply_channel",
+            )?;
+            let reply_cancel = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_reply_channel_publish_cancelled",
+            )?;
+            let ch = fn_ctx
+                .builder
+                .build_call(reply_channel, &[], "suspending_task_cancel_reply_channel")
+                .llvm_ctx("hew_get_reply_channel (task cancel) call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_get_reply_channel returned void".into())
+                })?
+                .into_pointer_value();
+            fn_ctx
+                .builder
+                .build_call(reply_cancel, &[ch.into()], "suspending_task_cancel_reply")
+                .llvm_ctx("hew_reply_channel_publish_cancelled (task cancel) call")?;
+            let final_suspend_emit = coro.final_suspend_emit_block.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "task-await cancellation requires a shared final suspend".into(),
+                )
+            })?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(final_suspend_emit)
+                .llvm_ctx("task cancellation -> final suspend")?;
+
+            fn_ctx.builder.position_at_end(failed_bb);
+            fn_ctx
+                .builder
+                .build_call(
+                    slot_free,
+                    &[slot.into()],
+                    "suspending_task_await_failure_free",
+                )
+                .llvm_ctx("hew_read_slot_free (failure bind) call")?;
+            crate::llvm::emit_elab_drops(
+                fn_ctx,
+                fn_ctx.suspend_abandon_block.get(),
+                fn_ctx.drop_plans,
+            )?;
+            let ch = fn_ctx
+                .builder
+                .build_call(reply_channel, &[], "suspending_task_failure_reply_channel")
+                .llvm_ctx("hew_get_reply_channel (task failure) call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_get_reply_channel returned void".into())
+                })?
+                .into_pointer_value();
+            let reply_failed = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_reply_channel_publish_task_failed",
+            )?;
+            fn_ctx
+                .builder
+                .build_call(reply_failed, &[ch.into()], "suspending_task_fail_reply")
+                .llvm_ctx("hew_reply_channel_publish_task_failed call")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(final_suspend_emit)
+                .llvm_ctx("task failure -> final suspend")?;
+
+            fn_ctx.builder.position_at_end(success_bb);
+            // For a value task, take the published result and copy it into
+            // `result_dest` at the `T` element width. `hew_task_take_result`
+            // returns the
             // task-owned result buffer (the bytes `hew_task_set_result` deep-
             // copied from the body's return); the load+store MOVES the value
             // representation out of the buffer into the awaiter's binding slot.
             // The task frees the buffer (as raw bytes) at scope join, so a
             // managed handle lives exactly once — in `result_dest`.
             //
-            // Null-buffer guard: `hew_task_get_result` returns `t.result`, which
-            // is NULL whenever the task reached `Done` WITHOUT publishing a result
-            // — i.e. a `Done(Cancelled)` task whose body never ran to
-            // `hew_task_set_result` (the runtime documents this null contract on
-            // `hew_task_await_suspend`). On a null buffer the bind edge copies
-            // nothing rather than dereferencing null: the awaiter is being torn
-            // down by the same scope cancel, so the binding is never observed —
-            // exactly the unit-task discipline. Mirrors the suspending-ask bind
-            // edge, which null-checks `reply_ptr` before the load.
-            //
-            // WHY a guard for a path the current surface cannot reach: no v0.6
-            // user construct cancels a sibling task while another value-awaits in
-            // the same scope (the empty-body `scope … after(d)` deadline arms but
-            // joins the forked task rather than preempting its await — verified),
-            // so this branch is presently unexercised. It honours the runtime's
-            // explicit null-return contract so the value path is correct the day a
-            // cancelling-await surface lands (await-cancel deadline on the task, a
-            // failing-sibling scope-cancel), rather than shipping a latent null
-            // deref behind a future feature. WHEN obsolete: never — the runtime
-            // contract permits a null result buffer regardless of surface.
+            // A successful value task must have a written, unconsumed result.
+            // A null take is therefore an invalid completion fact and routes to
+            // the same payload-free failure edge instead of exposing an
+            // uninitialized destination.
             if let Some(result_dest) = term.result_dest {
                 let result_buf = fn_ctx.call_runtime_ptr(
-                    "hew_task_get_result",
+                    "hew_task_take_result",
                     &[task_ptr.into()],
                     "suspending_task_await_result",
-                    "hew_task_get_result (bind) call",
+                    "hew_task_take_result (bind) call",
                 )?;
                 let copy_bb = fn_ctx
                     .ctx
@@ -3392,10 +3519,10 @@ pub(crate) fn emit_suspending_task_await_terminator<'ctx>(
                     .builder
                     .build_is_null(result_buf, "suspending_task_await_result_is_null")
                     .llvm_ctx("value-task result null compare")?;
-                // null (cancelled / no result) → skip copy; non-null → copy.
+                // null (invalid success) → fail closed; non-null → copy.
                 fn_ctx
                     .builder
-                    .build_conditional_branch(result_is_null, bind_join_bb, copy_bb)
+                    .build_conditional_branch(result_is_null, failed_bb, copy_bb)
                     .llvm_ctx("value-task result null branch")?;
 
                 fn_ctx.builder.position_at_end(copy_bb);

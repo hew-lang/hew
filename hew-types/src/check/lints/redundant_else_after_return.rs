@@ -228,12 +228,30 @@ fn pattern_introduces_binding(pat: &Pattern) -> bool {
         Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
             patterns.iter().any(|(p, _)| pattern_introduces_binding(p))
         }
+        Pattern::NominalPath { payload, .. } => payload
+            .as_ref()
+            .is_some_and(nominal_payload_introduces_binding),
+        Pattern::ContextVariant(context) => context
+            .payload
+            .as_ref()
+            .is_some_and(nominal_payload_introduces_binding),
         Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
             fields.iter().any(struct_field_introduces_binding)
         }
         Pattern::Or(a, b) => pattern_introduces_binding(&a.0) || pattern_introduces_binding(&b.0),
         // Regex captures are named bindings.
         Pattern::Regex { captures, .. } => !captures.is_empty(),
+    }
+}
+
+fn nominal_payload_introduces_binding(payload: &hew_parser::ast::NominalPatternPayload) -> bool {
+    match payload {
+        hew_parser::ast::NominalPatternPayload::Tuple(patterns) => patterns
+            .iter()
+            .any(|(pattern, _)| pattern_introduces_binding(pattern)),
+        hew_parser::ast::NominalPatternPayload::Record { fields, .. } => {
+            fields.iter().any(struct_field_introduces_binding)
+        }
     }
 }
 

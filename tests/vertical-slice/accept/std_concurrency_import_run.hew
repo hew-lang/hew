@@ -1,4 +1,4 @@
-import std::concurrency::{ScopeError};
+import std.concurrency.{ScopeError};
 
 fn main() {
     let failures: Vec<i64> = [8, 9];

@@ -1,7 +1,7 @@
 trait Container {
     type Item;
 
-    fn first(value: Self) -> Self::Item;
+    fn first(value: Self) -> Self.Item;
 }
 
 type Widget {
@@ -11,7 +11,7 @@ type Widget {
 impl Container for Widget {
     type Item = i32;
 
-    fn first(value: Widget) -> Self::Item {
+    fn first(value: Widget) -> Self.Item {
         value.value
     }
 }

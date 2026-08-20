@@ -56,7 +56,7 @@ fn fw_range_query(tree: Vec<i64>, l: i64, r: i64) -> i64 {
 }
 
 fn init_fenwick(n: i64) -> Vec<i64> {
-    let tree: Vec<i64> = Vec::new();
+    let tree: Vec<i64> = Vec.new();
     var i = 0;
     while i <= n {
         tree.push(0);
@@ -171,7 +171,7 @@ fn test_point_update() -> i64 {
 fn test_brute_force_verify() -> i64 {
     let n = 10;
     let tree = init_fenwick(n);
-    let arr: Vec<i64> = Vec::new();
+    let arr: Vec<i64> = Vec.new();
     arr.push(0); // index 0 unused
     // Fill with values
     var i = 1;

@@ -279,12 +279,7 @@ impl RegistryClient {
         use base64::Engine as _;
 
         let token = self.token.as_ref().ok_or(ApiError::NotAuthenticated)?;
-        let url = format!(
-            "{}/packages/{}/{}",
-            self.api_url,
-            encode_name(name),
-            version
-        );
+        let url = format!("{}/packages/{}/{}", self.api_url, name, version);
 
         let metadata_json =
             serde_json::to_string(request).map_err(|e| ApiError::Parse(e.to_string()))?;
@@ -322,12 +317,7 @@ impl RegistryClient {
         reason: Option<&str>,
     ) -> Result<(), ApiError> {
         let token = self.token.as_ref().ok_or(ApiError::NotAuthenticated)?;
-        let url = format!(
-            "{}/packages/{}/{}/yank",
-            self.api_url,
-            encode_name(name),
-            version
-        );
+        let url = format!("{}/packages/{}/{}/yank", self.api_url, name, version);
 
         let mut body = serde_json::json!({ "yanked": yanked });
         if let Some(r) = reason {
@@ -390,7 +380,7 @@ impl RegistryClient {
                 versions: Vec<IndexEntry>,
             }
 
-            let url = format!("{}/packages/{}", base_url, encode_name(name));
+            let url = format!("{base_url}/packages/{name}");
 
             let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
 
@@ -498,7 +488,7 @@ impl RegistryClient {
         successor: Option<&str>,
     ) -> Result<(), ApiError> {
         let token = self.token.as_ref().ok_or(ApiError::NotAuthenticated)?;
-        let url = format!("{}/packages/{}/deprecate", self.api_url, encode_name(name));
+        let url = format!("{}/packages/{name}/deprecate", self.api_url);
 
         let mut body = serde_json::json!({ "deprecated": true });
         if let Some(msg) = message {
@@ -719,13 +709,6 @@ fn build_agent() -> ureq::Agent {
     )
 }
 
-/// Encode a package name for use in URL paths.
-///
-/// Replaces `::` with `/` for the API path format.
-fn encode_name(name: &str) -> String {
-    name.replace("::", "/")
-}
-
 /// Extract the path component from an absolute URL.
 ///
 /// Given `https://host/path/to/file`, returns `/path/to/file`.
@@ -763,10 +746,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encode_name_replaces_colons() {
-        assert_eq!(encode_name("alice::router"), "alice/router");
-        assert_eq!(encode_name("std::net::http"), "std/net/http");
-        assert_eq!(encode_name("simple"), "simple");
+    fn package_urls_preserve_dotted_names() {
+        let client = RegistryClient::with_url("https://registry.example.com".to_string());
+        assert_eq!(
+            format!("{}/packages/{}", client.api_url, "alice.router"),
+            "https://registry.example.com/packages/alice.router"
+        );
     }
 
     #[test]
@@ -912,8 +897,8 @@ mod tests {
     #[test]
     fn extract_url_path_https() {
         assert_eq!(
-            extract_url_path("https://cdn.hewpkg.com/packages/alice/router/0.1.0.tar.gz"),
-            "/packages/alice/router/0.1.0.tar.gz"
+            extract_url_path("https://cdn.hewpkg.com/packages/alice.router/0.1.0.tar.gz"),
+            "/packages/alice.router/0.1.0.tar.gz"
         );
     }
 

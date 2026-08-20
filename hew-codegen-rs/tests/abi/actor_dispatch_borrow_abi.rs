@@ -801,7 +801,7 @@ fn main() -> i64 {
 #[test]
 fn receive_handler_discarded_owned_local_suppresses_drop() {
     let source = r#"
-actor Sink {
+actor TestSink {
     var n: i64;
 
     init() {
@@ -819,7 +819,7 @@ fn main() -> i64 {
 }
 "#;
     let ll = emit_ll_text(&pipeline_from_source(source), "sink_discard_suppress");
-    let body = define_body(&ll, "Sink__recv__discard").join("\n");
+    let body = define_body(&ll, "TestSink__recv__discard").join("\n");
 
     assert!(
         body.contains("borrow_drop_copy_only") && body.contains("borrow_drop_merge"),

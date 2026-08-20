@@ -143,8 +143,8 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("pattern_matching"),
     },
     Construct {
-        id: "Vec::new + push/get/len",
-        probe: "fn main() {\n    var v = Vec::new();\n    v.push(1);\n    v.push(2);\n    println(v.len());\n}\n",
+        id: "Vec.new + push/get/len",
+        probe: "fn main() {\n    var v = Vec<i64>.new();\n    v.push(1);\n    v.push(2);\n    println(v.len());\n}\n",
         coverage: Coverage::Parity("collections"),
     },
     Construct {
@@ -177,7 +177,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "machine new/step/state_name",
-        probe: "machine Light {\n    events { Next; }\n    state Red;\n    state Green;\n    on Next: Red => Green;\n    on Next: Green => Red;\n}\nfn main() {\n    let m = Light::Red;\n    println(m.state_name());\n}\n",
+        probe: "machine Light {\n    events { Next; }\n    state Red;\n    state Green;\n    on Next: Red => Green;\n    on Next: Green => Red;\n}\nfn main() {\n    let m = Light.Red;\n    println(m.state_name());\n}\n",
         coverage: Coverage::Parity("traffic_light"),
     },
     Construct {
@@ -262,7 +262,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "regex compile + is_match",
-        probe: "import std::text::regex;\nfn main() {\n    let r = regex.new(\"a.c\");\n    println(r.is_match(\"abc\"));\n}\n",
+        probe: "import std.text.regex;\nfn main() {\n    let r = regex.new(\"a.c\");\n    println(r.is_match(\"abc\"));\n}\n",
         coverage: Coverage::Parity("wildcard_match"),
     },
     Construct {
@@ -433,7 +433,7 @@ const CONSTRUCTS: &[Construct] = &[
         // `{ type, tag, payload: [] }` JSON; same-tag variants compare equal,
         // different-tag variants compare unequal. Admitted by the checker in
         // #1987 and pinned to the fieldless_enum_eq parity case.
-        probe: "enum Colour { Red; Green; Blue; }\nfn check(c: Colour) {\n    if c == Colour::Red { println(\"red\"); } else { println(\"other\"); }\n    if c != Colour::Blue { println(\"not-blue\"); } else { println(\"blue\"); }\n}\nfn main() {\n    check(Colour::Red);\n    check(Colour::Blue);\n}\n",
+        probe: "enum Colour { Red; Green; Blue; }\nfn check(c: Colour) {\n    if c == Colour.Red { println(\"red\"); } else { println(\"other\"); }\n    if c != Colour.Blue { println(\"not-blue\"); } else { println(\"blue\"); }\n}\nfn main() {\n    check(Colour.Red);\n    check(Colour.Blue);\n}\n",
         coverage: Coverage::Parity("fieldless_enum_eq"),
     },
     Construct {
@@ -659,7 +659,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "native-only stdlib import (`std::fs`)",
-        probe: "import std::fs;\nfn main() {\n    println(\"x\");\n}\n",
+        probe: "import std.fs;\nfn main() {\n    println(\"x\");\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "Unsupported::NATIVE_ONLY",
         },
@@ -673,7 +673,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "module-qualified non-allowlisted call",
-        probe: "import std::fs;\nfn main() {\n    fs.read(\"p.txt\");\n}\n",
+        probe: "import std.fs;\nfn main() {\n    fs.read(\"p.txt\");\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "sandbox_profile_rejected",
         },
@@ -753,7 +753,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "crypto.random_bytes rejected with PlatformLimitation",
-        probe: "import std::crypto::crypto;\nfn main() { let _ = crypto.random_bytes(32); }\n",
+        probe: "import std.crypto.crypto;\nfn main() { let _ = crypto.random_bytes(32); }\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "PlatformLimitation",
         },
@@ -786,13 +786,13 @@ const CONSTRUCTS: &[Construct] = &[
         // Vec<T>::contains: linear equality scan via canonical comparison.
         // Emits `vector.contains` opcode (added in this parity sweep).
         id: "Vec<T>::contains",
-        probe: "fn main() {\n    let v: Vec<i64> = Vec::new();\n    v.push(10);\n    println(v.contains(10));\n}\n",
+        probe: "fn main() {\n    let v = Vec<i64>.new();\n    v.push(10);\n    println(v.contains(10));\n}\n",
         coverage: Coverage::Parity("vec_operations"),
     },
     Construct {
         // v[start..end] exclusive range slice: emits `vector.range_slice` opcode.
         id: "Vec<T> range slice v[start..end]",
-        probe: "fn main() {\n    let v: Vec<i64> = Vec::new();\n    v.push(1);\n    v.push(2);\n    v.push(3);\n    let s = v[0..2];\n    println(s.len());\n}\n",
+        probe: "fn main() {\n    let v = Vec<i64>.new();\n    v.push(1);\n    v.push(2);\n    v.push(3);\n    let s = v[0..2];\n    println(s.len());\n}\n",
         coverage: Coverage::Parity("vec_operations"),
     },
     Construct {
@@ -800,7 +800,7 @@ const CONSTRUCTS: &[Construct] = &[
         // exclusive end (`end + 1`) and delegates to `vector.range_slice`.
         // End element is included in the result slice.
         id: "Vec<T> inclusive range slice v[start..=end]",
-        probe: "fn main() {\n    let v: Vec<i64> = Vec::new();\n    v.push(10);\n    v.push(20);\n    v.push(30);\n    let s = v[0..=1];\n    println(s.len());\n    println(s[1]);\n}\n",
+        probe: "fn main() {\n    let v = Vec<i64>.new();\n    v.push(10);\n    v.push(20);\n    v.push(30);\n    let s = v[0..=1];\n    println(s.len());\n    println(s[1]);\n}\n",
         coverage: Coverage::Parity("vec_inclusive_slice"),
     },
     Construct {
@@ -827,7 +827,7 @@ const CONSTRUCTS: &[Construct] = &[
         // three compared equal (silent wrong-result).  valuesEqual fixes this
         // by routing f64 pairs through JS === (OEQ) instead of canonicalComparable.
         id: "Vec<f64>::contains with NaN / +-Infinity (fcmp-OEQ semantics)",
-        probe: "fn main() {\n    let zero: f64 = 0.0;\n    let nan: f64 = zero / zero;\n    let inf: f64 = 1.0 / zero;\n    let nans: Vec<f64> = Vec::new();\n    nans.push(nan);\n    println(nans.contains(nan));\n    println(nans.contains(inf));\n    let nums: Vec<f64> = Vec::new();\n    nums.push(2.5);\n    println(nums.contains(2.5));\n}\n",
+        probe: "fn main() {\n    let zero: f64 = 0.0;\n    let nan: f64 = zero / zero;\n    let inf: f64 = 1.0 / zero;\n    let nans = Vec<f64>.new();\n    nans.push(nan);\n    println(nans.contains(nan));\n    println(nans.contains(inf));\n    let nums = Vec<f64>.new();\n    nums.push(2.5);\n    println(nums.contains(2.5));\n}\n",
         coverage: Coverage::Parity("vec_f64_nonfinite_contains"),
     },
     Construct {
@@ -839,7 +839,7 @@ const CONSTRUCTS: &[Construct] = &[
         // `Option::clone`/`Result::clone` (checker reports `UndefinedMethod`),
         // so no valid program can reach the emitter with one.
         id: "Vec/String/Array/Slice method `clone()`",
-        probe: "fn takes(xs: [i64]) -> i64 {\n    let ys = xs.clone();\n    ys.len()\n}\nfn main() {\n    let v: Vec<i64> = Vec::new();\n    v.push(1);\n    let vc = v.clone();\n    println(vc.len());\n    let s = \"hi\";\n    let sc = s.clone();\n    println(sc);\n    let xs = [1, 2, 3];\n    let xc = xs.clone();\n    println(xc[0]);\n    println(takes(v));\n}\n",
+        probe: "fn takes(xs: [i64]) -> i64 {\n    let ys = xs.clone();\n    ys.len()\n}\nfn main() {\n    let v = Vec<i64>.new();\n    v.push(1);\n    let vc = v.clone();\n    println(vc.len());\n    let s = \"hi\";\n    let sc = s.clone();\n    println(sc);\n    let xs = [1, 2, 3];\n    let xc = xs.clone();\n    println(xc[0]);\n    println(takes(v));\n}\n",
         coverage: Coverage::Parity("method_clone"),
     },
     Construct {
@@ -848,7 +848,7 @@ const CONSTRUCTS: &[Construct] = &[
         // `std::text::regex` and its fixture (`regex_clone`) lives outside
         // the curated playground manifest scope (see tests/parity.rs).
         id: "regex method `clone()`",
-        probe: "import std::text::regex;\nfn main() {\n    let re = regex.new(\"a+\");\n    let re2 = re.clone();\n    println(re2.is_match(\"aaa\"));\n    re.close();\n    re2.close();\n}\n",
+        probe: "import std.text.regex;\nfn main() {\n    let re = regex.new(\"a+\");\n    let re2 = re.clone();\n    println(re2.is_match(\"aaa\"));\n    re.close();\n    re2.close();\n}\n",
         coverage: Coverage::Parity("regex_clone"),
     },
     Construct {
@@ -873,7 +873,7 @@ const CONSTRUCTS: &[Construct] = &[
         // `[start..]`, and `[..end]` fail-closed at the profile gate rather
         // than admitting bytecode that later traps as unsupported.
         id: "open-ended Vec range slices",
-        probe: "fn main() {\n    let v: Vec<i64> = Vec::new();\n    let all = v[..];\n    let tail = v[1..];\n    let prefix = v[..2];\n    println(all.len() + tail.len() + prefix.len());\n}\n",
+        probe: "fn main() {\n    let v = Vec<i64>.new();\n    let all = v[..];\n    let tail = v[1..];\n    let prefix = v[..2];\n    println(all.len() + tail.len() + prefix.len());\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
         },
@@ -1110,6 +1110,10 @@ mod ast_surface {
         match expr {
             Expr::Literal(_) => Some("literal + println"),
             Expr::Identifier(_) => Some("integer arithmetic + comparison"),
+            Expr::ContextVariant(_) => Some("match with constructor-payload patterns"),
+            Expr::GenericApplySuffix { .. } => Some("generic function call (monomorphised)"),
+            Expr::RecordInitSuffix { .. } => None,
+            Expr::QualifiedAssoc(_) => None,
             Expr::Binary { .. } => Some("integer arithmetic + comparison"),
             Expr::Unary { .. } => Some("unary integer negate (`-a`)"),
             Expr::Clone(_) => Some("`clone` prefix"),
@@ -1203,6 +1207,9 @@ mod ast_surface {
             Pattern::Literal(_) => Some("scalar-literal match (i64 scrutinee)"),
             Pattern::Identifier(_) => Some("match with constructor-payload patterns"),
             Pattern::Constructor { .. } => Some("match with constructor-payload patterns"),
+            Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
+                Some("match with constructor-payload patterns")
+            }
             Pattern::Struct { .. } => Some("struct pattern in match arm"),
             Pattern::RecordShorthand { .. } => Some("record shorthand destructure in let"),
             Pattern::Tuple(_) => Some("tuple value + tuple-let destructure"),
@@ -1218,6 +1225,7 @@ mod ast_surface {
     pub fn classify_type_expr(ty: &TypeExpr) -> Owner {
         match ty {
             TypeExpr::Named { .. } => None,
+            TypeExpr::QualifiedAssocPath(_) => None,
             TypeExpr::Result { .. } => None,
             TypeExpr::Option(_) => None,
             TypeExpr::Tuple(_) => Some("tuple value + tuple-let destructure"),
@@ -1626,6 +1634,16 @@ fn walk_pattern(
                 walk_pattern(pattern, owners);
             }
         }
+        Pattern::NominalPath { payload, .. } => {
+            if let Some(payload) = payload {
+                walk_nominal_pattern_payload(payload, owners);
+            }
+        }
+        Pattern::ContextVariant(context) => {
+            if let Some(payload) = &context.payload {
+                walk_nominal_pattern_payload(payload, owners);
+            }
+        }
         Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
             for field in fields {
                 if let Some(pattern) = &field.pattern {
@@ -1644,10 +1662,31 @@ fn walk_pattern(
     }
 }
 
+fn walk_nominal_pattern_payload(
+    payload: &hew_parser::ast::NominalPatternPayload,
+    owners: &mut Vec<Option<&'static str>>,
+) {
+    match payload {
+        hew_parser::ast::NominalPatternPayload::Tuple(patterns) => {
+            for pattern in patterns {
+                walk_pattern(pattern, owners);
+            }
+        }
+        hew_parser::ast::NominalPatternPayload::Record { fields, .. } => {
+            for field in fields {
+                if let Some(pattern) = &field.pattern {
+                    walk_pattern(pattern, owners);
+                }
+            }
+        }
+    }
+}
+
 fn walk_type_expr(ty: &hew_parser::ast::TypeExpr, owners: &mut Vec<Option<&'static str>>) {
     use hew_parser::ast::TypeExpr;
     owners.push(ast_surface::classify_type_expr(ty));
     match ty {
+        TypeExpr::QualifiedAssocPath(path) => walk_type_expr(&path.base.0, owners),
         TypeExpr::Named { type_args, .. } => {
             if let Some(type_args) = type_args {
                 for (ty, _) in type_args {
@@ -1708,10 +1747,40 @@ fn walk_expr(
         | Expr::AwaitRestart(operand) => walk_expr(operand, owners),
         Expr::Literal(_)
         | Expr::Identifier(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}
+        Expr::ContextVariant(context) => {
+            if let Some(record) = &context.record {
+                for (_, value) in &record.fields {
+                    walk_expr(value, owners);
+                }
+                if let Some(base) = &record.base {
+                    walk_expr(base, owners);
+                }
+            }
+        }
+        Expr::GenericApplySuffix { target, type_args } => {
+            walk_expr(target, owners);
+            for (ty, _) in type_args {
+                walk_type_expr(ty, owners);
+            }
+        }
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            walk_expr(target, owners);
+            for (_, value) in fields {
+                walk_expr(value, owners);
+            }
+            if let Some(base) = base {
+                walk_expr(base, owners);
+            }
+        }
         Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
             for item in items {
                 walk_expr(item, owners);

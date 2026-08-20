@@ -14,9 +14,9 @@ enum Note {
 
 actor Maker {
     receive gen fn notes() -> Note {
-        yield Note::Text("alpha");
-        yield Note::Number(4);
-        yield Note::Text("beta");
+        yield Note.Text("alpha");
+        yield Note.Number(4);
+        yield Note.Text("beta");
     }
 }
 
@@ -24,8 +24,8 @@ fn main() {
     let m = spawn Maker;
     for await n in m.notes() {
         match n {
-            Note::Text(s) => println(f"text {s}"),
-            Note::Number(v) => println(f"number {v}"),
+            Note.Text(s) => println(f"text {s}"),
+            Note.Number(v) => println(f"number {v}"),
         }
     }
 }

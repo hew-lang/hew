@@ -3,7 +3,7 @@
 // the buffer is reusable (clear resets the triple to the canonical empty value
 // rather than corrupting it).
 fn main() -> i64 {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     b.push(1);
     b.push(2);
     b.push(3);

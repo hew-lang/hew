@@ -206,17 +206,17 @@ const ROUTES: &[(&str, &str, &str)] = &[
     (
         "vec_get",
         "",
-        "    let v: Vec<Row> = Vec::new();\n    v.push(ROW);\n    v.get(0)\n",
+        "    let v: Vec<Row> = Vec.new();\n    v.push(ROW);\n    v.get(0)\n",
     ),
     (
         "generic_get",
         "fn first<T>(v: Vec<T>) -> Option<T> { v.get(0) }\n",
-        "    let v: Vec<Row> = Vec::new();\n    v.push(ROW);\n    first(v)\n",
+        "    let v: Vec<Row> = Vec.new();\n    v.push(ROW);\n    first(v)\n",
     ),
     (
         "map_get",
         "",
-        "    let m: HashMap<i64, Row> = HashMap::new();\n    m.insert(0, ROW);\n    m.get(0)\n",
+        "    let m: HashMap<i64, Row> = HashMap.new();\n    m.insert(0, ROW);\n    m.get(0)\n",
     ),
 ];
 
@@ -282,7 +282,7 @@ const CARRIERS: &[Carrier] = &[
         decls: "",
         ret_ty: "Result<Row, Failure>",
         hit_expr: "Ok(ROW)",
-        miss_expr: "Err(Failure::Bad(\"miss\" + \"ed\"))",
+        miss_expr: "Err(Failure.Bad(\"miss\" + \"ed\"))",
         hit_pat: "Ok(r)",
         miss_pat: "Err(_)",
         use_id: "r.id",
@@ -293,7 +293,7 @@ const CARRIERS: &[Carrier] = &[
         name: "result_enum_msg",
         decls: "",
         ret_ty: "Result<i64, Failure>",
-        hit_expr: "Err(Failure::Bad(ROWNAME))",
+        hit_expr: "Err(Failure.Bad(ROWNAME))",
         miss_expr: "Ok(0)",
         hit_pat: "Err(r)",
         miss_pat: "Ok(_)",
@@ -359,7 +359,7 @@ const PREAMBLE: &str = "fn mk() -> string { \"g2429-\" + \"row\" }\n\n\
      type Row {\n    name: string;\n    id: i64;\n}\n\n\
      enum Failure { Bad(string); Worse(string) }\n\n\
      fn failure_msg(f: Failure) -> string { \
-     match f { Failure::Bad(m) => m, Failure::Worse(m) => m } }\n\
+     match f { Failure.Bad(m) => m, Failure.Worse(m) => m } }\n\
      fn failure_len(f: Failure) -> i64 { failure_msg(f).len() }\n\n";
 
 /// Expand a binder template and a route body for one carrier.

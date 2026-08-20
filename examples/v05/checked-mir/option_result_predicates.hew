@@ -27,8 +27,8 @@ fn main() -> i64 {
     }
     let r: Result<i64, string> = Ok(7);
     let w = match r {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     };
     println(w);
     0

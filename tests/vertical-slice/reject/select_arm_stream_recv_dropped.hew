@@ -10,7 +10,7 @@
 //
 // Harness verb: hew check (must fail)
 // Expected diagnostic substring: "select arm source must be actor.method(args)"
-import std::stream;
+import std.stream;
 
 actor Driver {
     #[on(start)]

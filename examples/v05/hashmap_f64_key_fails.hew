@@ -10,6 +10,6 @@
 //! contract).
 
 fn main() {
-    let m: HashMap<f64, i64> = HashMap::new();
+    let m: HashMap<f64, i64> = HashMap.new();
     m.insert(1.0, 42);
 }

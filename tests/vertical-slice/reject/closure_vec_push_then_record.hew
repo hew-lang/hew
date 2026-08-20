@@ -11,7 +11,7 @@ fn make_adder(n: i64) -> fn(i64) -> i64 {
 
 fn main() {
     let f = make_adder(5);
-    let fns: Vec<fn(i64) -> i64> = Vec::new();
+    let fns: Vec<fn(i64) -> i64> = Vec.new();
     fns.push(f);
     let h = Holder { cb: f };
     println(h.cb(10));

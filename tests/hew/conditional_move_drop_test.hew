@@ -12,17 +12,17 @@
 //! in `hew-mir/tests/lowering_expr/conditional_move_drop.rs` and by the
 //! `conditional_move_drop_leak_oracle` measurements.
 
-import std::testing;
+import std.testing;
 
 fn make_vec() -> Vec<i64> {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(40);
     v.push(2);
     return v;
 }
 
 fn make_strs() -> Vec<string> {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     v.push("alpha");
     v.push("beta");
     return v;
@@ -82,7 +82,7 @@ fn test_nested_conditional_move() {
 fn test_loop_conditional_move_with_break() {
     let xs = make_vec();
     var hits: i64 = 0;
-    for i in 0..4 {
+    for i in 0 .. 4 {
         if i == 2 {
             let ys = xs;
             hits = hits + ys.len();
@@ -99,7 +99,7 @@ fn test_loop_conditional_move_with_break() {
 fn test_loop_conditional_move_never_taken() {
     let xs = make_vec();
     var hits: i64 = 0;
-    for i in 0..4 {
+    for i in 0 .. 4 {
         if i == 9 {
             let ys = xs;
             hits = hits + ys.len();
@@ -131,7 +131,7 @@ fn test_array_literal_chain_conditional_move() {
 #[test]
 fn test_hashmap_conditional_move() {
     let take = true;
-    let m: HashMap<string, i64> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap.new();
     m.insert("k", 42);
     var out: i64 = 0;
     if take {
@@ -144,7 +144,7 @@ fn test_hashmap_conditional_move() {
 #[test]
 fn test_hashmap_conditional_move_not_taken() {
     let take = false;
-    let m: HashMap<string, i64> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap.new();
     m.insert("k", 42);
     var out: i64 = 0;
     if take {
@@ -238,7 +238,7 @@ fn test_both_arm_moves_release_once_each() {
 // on the neither path (bounded leak, never a wrong free). Values must stay
 // exact on every path.
 record Crate {
-    items: Vec<i64>,
+    items: Vec<i64>
 }
 
 fn mixed_ingress(a: bool, b: bool) -> i64 {

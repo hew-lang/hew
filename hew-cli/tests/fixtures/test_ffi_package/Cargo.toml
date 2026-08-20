@@ -1,0 +1,17 @@
+[package]
+name = "hew-test-ffi-package"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "hew_test_ffi_package"
+crate-type = ["staticlib"]
+
+[profile.release]
+panic = "abort"
+
+[profile.release-lib]
+inherits = "release"
+lto = "off"
+
+[workspace]

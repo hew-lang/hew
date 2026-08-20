@@ -21,7 +21,7 @@
 //! each asserts the EXACT embedded payload string so a zero-sized or misaligned
 //! payload fails rather than reading back an accidental value.
 
-import std::testing;
+import std.testing;
 
 // ── Order A: container declared FIRST (this failed silently before the fix) ──
 
@@ -71,9 +71,9 @@ fn payload_of_g(o: OuterG) -> string {
 
 #[test]
 fn machine_through_record_container_declared_first() {
-    let o = OuterG::HoldingG {
+    let o = OuterG.HoldingG {
         w: WrapG {
-            inner: InnerG::ReadyG {
+            inner: InnerG.ReadyG {
                 payload: "container-first-through-record",
             },
         },
@@ -129,9 +129,9 @@ fn payload_of_h(o: OuterH) -> string {
 
 #[test]
 fn machine_through_record_embedded_declared_first() {
-    let o = OuterH::HoldingH {
+    let o = OuterH.HoldingH {
         w: WrapH {
-            inner: InnerH::ReadyH {
+            inner: InnerH.ReadyH {
                 payload: "embedded-first-through-record",
             },
         },

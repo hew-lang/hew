@@ -87,19 +87,21 @@ fn catalog_display_call_authority(callee: &str) -> crate::CallAuthority {
 fn compiler_builtin_call_authority(endpoint: &str) -> Option<crate::CallAuthority> {
     use crate::IdentityAggregateKind as Kind;
 
-    let kind = match endpoint {
-        "Node::id" => Kind::NodeId,
-        "hew_node_id_display" => Kind::NodeIdDisplay,
-        "hew_location_node_id" => Kind::LocationNodeId,
-        "hew_location_slot" => Kind::LocationSlot,
-        "hew_location_incarnation" => Kind::LocationIncarnation,
-        "hew_location_display" => Kind::LocationDisplay,
-        "hew_remote_pid_location" => Kind::RemotePidLocation,
-        "hew_remote_pid_node_id" => Kind::RemotePidNodeId,
-        "hew_remote_pid_slot" => Kind::RemotePidSlot,
-        "hew_remote_pid_incarnation" => Kind::RemotePidIncarnation,
-        "hew_remote_pid_display" => Kind::RemotePidDisplay,
-        _ => return None,
+    let kind = match hew_types::runtime_call::RuntimeCallFamily::from_checker_signature(endpoint) {
+        Some(hew_types::runtime_call::RuntimeCallFamily::NodeId) => Kind::NodeId,
+        _ => match endpoint {
+            "hew_node_id_display" => Kind::NodeIdDisplay,
+            "hew_location_node_id" => Kind::LocationNodeId,
+            "hew_location_slot" => Kind::LocationSlot,
+            "hew_location_incarnation" => Kind::LocationIncarnation,
+            "hew_location_display" => Kind::LocationDisplay,
+            "hew_remote_pid_location" => Kind::RemotePidLocation,
+            "hew_remote_pid_node_id" => Kind::RemotePidNodeId,
+            "hew_remote_pid_slot" => Kind::RemotePidSlot,
+            "hew_remote_pid_incarnation" => Kind::RemotePidIncarnation,
+            "hew_remote_pid_display" => Kind::RemotePidDisplay,
+            _ => return None,
+        },
     };
     Some(crate::CallAuthority::Compiler(
         crate::CompilerCallKind::IdentityAggregate(kind),
@@ -224,7 +226,7 @@ impl Builder {
                     site,
                 },
                 note: format!(
-                    "`VecIter::next()` must clone each element into an independent owner, \
+                    "`VecIter.next()` must clone each element into an independent owner, \
                      but {reason}; MIR refuses to lower the generic Iterator dispatch"
                 ),
             });
@@ -238,7 +240,7 @@ impl Builder {
         else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::UnsupportedNode {
-                    reason: "builtin VecIter Iterator::next receiver is not a binding".to_string(),
+                    reason: "builtin VecIter Iterator.next receiver is not a binding".to_string(),
                 },
                 note: "the builtin cursor state machine mutates the receiver's existing local slot"
                     .to_string(),
@@ -252,7 +254,7 @@ impl Builder {
                     name: name.clone(),
                     site: receiver.site,
                 },
-                note: "builtin VecIter Iterator::next receiver has no MIR place".to_string(),
+                note: "builtin VecIter Iterator.next receiver has no MIR place".to_string(),
             });
             return None;
         };
@@ -313,17 +315,12 @@ impl Builder {
         });
 
         self.start_block(none_bb);
-        let none_tag = self.alloc_local(ResolvedTy::I64);
-        self.push_instr(Instr::ConstI64 {
-            dest: none_tag,
-            value: 1,
-        });
         let Place::Local(result_local) = result else {
             unreachable!("alloc_local returns Place::Local");
         };
-        self.push_instr(Instr::Move {
+        self.push_instr(Instr::ConstI64 {
             dest: Place::EnumTag(result_local),
-            src: none_tag,
+            value: 1,
         });
         self.finish_current_block(Terminator::Goto { target: join_bb });
 
@@ -587,13 +584,38 @@ impl Builder {
     /// whose element drop must run `close` — correctly is. Same verdict the
     /// codegen owned-Vec walker reaches, so getter, constructor, and release
     /// agree (`dedup-semantic-boundary`).
-    fn named_elem_carries_drop_obligation(&self, ty: &ResolvedTy) -> bool {
+    pub(super) fn named_elem_carries_drop_obligation(&self, ty: &ResolvedTy) -> bool {
         crate::model::ty_carries_drop_obligation_mir(
             ty,
             &self.record_field_orders,
             &self.enum_layouts,
             self.type_classes.lifecycle_registry(),
         )
+    }
+
+    /// Lower a consuming `VecIter` `vec`-field source that reads a bare actor
+    /// state field: load the field's handle (an alias read — the take-all call
+    /// arg is the load's only use, so the state-load classifier keeps it a
+    /// bare `Borrowed` load), then move the buffer into a fresh vec via
+    /// `hew_vec_take_all`. The returned place owns the taken vec; the state
+    /// slot keeps its handle, now a valid empty vec with the same stamped
+    /// element descriptor (dogfood F3 — see
+    /// [`Builder::vec_field_src_consumes_bare_actor_state_field`]).
+    fn lower_vec_take_all_from_state_field(&mut self, fexpr: &HirExpr) -> Option<Place> {
+        let src = self.lower_value(fexpr)?;
+        let taken = self.alloc_local(self.subst_ty(&fexpr.ty));
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_vec_take_all".to_string(),
+            authority: crate::CallAuthority::Runtime(
+                hew_types::runtime_call::RuntimeCallFamily::VecTakeAll,
+            ),
+            args: vec![src],
+            dest: Some(taken),
+            next,
+        });
+        self.start_block(next);
+        Some(taken)
     }
 
     pub(crate) fn fieldless_enum_layout_key(&self, ty: &ResolvedTy) -> Option<String> {
@@ -4123,8 +4145,23 @@ impl Builder {
                     let borrows_vec_iter_source = is_vec_iter_cursor
                         && fname == "vec"
                         && fexpr.intent == hew_hir::IntentKind::Capture;
+                    // A consuming cursor over a BARE actor state field
+                    // (`plugins.into_iter()`) must neither alias-share the
+                    // handle (the cursor's own free would dangle the
+                    // persistent slot: next dispatch reads freed heap,
+                    // teardown double-frees — dogfood F3) nor deep-clone it
+                    // (drop-only dyn elements have no clone thunk). Route the
+                    // loaded handle through `hew_vec_take_all`: the cursor
+                    // owns the moved buffer, the state slot stays a valid
+                    // empty vec with its stamped element descriptor — later
+                    // pushes and the exactly-once state drop stay sound.
+                    let takes_persistent_state_vec = is_vec_iter_cursor
+                        && fname == "vec"
+                        && self.vec_field_src_consumes_bare_actor_state_field(fexpr);
                     let place = if borrows_vec_iter_source {
                         self.lower_value(fexpr)
+                    } else if takes_persistent_state_vec {
+                        self.lower_vec_take_all_from_state_field(fexpr)
                     } else {
                         self.lower_value_for_move(fexpr)
                     };
@@ -5122,7 +5159,7 @@ impl Builder {
                             reason: reason.clone(),
                         },
                         note: format!(
-                            "dyn-trait method call `{trait_name}::{method_name}` reached MIR with \
+                            "dyn-trait method call `{trait_name}.{method_name}` reached MIR with \
                              an unresolved caller-side FnSig: {reason}. The checker's \
                              trait-object bound substitution at the receiver's coercion site \
                              must produce a fully resolved signature; codegen (W3.031 Stage 7) \
@@ -5284,7 +5321,7 @@ impl Builder {
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
                                 construct: format!(
-                                    "`Vec::{method_name}` on the type-parameter \
+                                    "`Vec.{method_name}` on the type-parameter \
                                      element `{elem}`"
                                 ),
                                 site: expr.site,
@@ -5435,7 +5472,7 @@ impl Builder {
                                 site: expr.site,
                             },
                             note: format!(
-                                "`VecIter::next()` must clone each element into an independent \
+                                "`VecIter.next()` must clone each element into an independent \
                                  owner, but {reason}; the concrete generic instantiation is \
                                  rejected before the runtime clone choke"
                             ),
@@ -5486,7 +5523,7 @@ impl Builder {
                                 site: expr.site,
                             },
                             note: format!(
-                                "`Vec::clone()` / `Vec::iter()` must duplicate every element \
+                                "`Vec.clone()` / `Vec.iter()` must duplicate every element \
                                  into an independent owner, but {reason}; the clone is rejected \
                                  before it reaches the runtime"
                             ),
@@ -5549,19 +5586,19 @@ impl Builder {
                         if let Err(reason) = self.validate_collection_clone_value(part_ty) {
                             let operation = match callee.as_str() {
                                 "hew_hashmap_clone_layout" => {
-                                    "HashMap::clone() must duplicate every key and value"
+                                    "HashMap.clone() must duplicate every key and value"
                                 }
                                 "hew_hashmap_keys_layout" => {
-                                    "HashMap::keys() must clone every key into an independent snapshot"
+                                    "HashMap.keys() must clone every key into an independent snapshot"
                                 }
                                 "hew_hashmap_values_layout" => {
-                                    "HashMap::values() must clone every value into an independent snapshot"
+                                    "HashMap.values() must clone every value into an independent snapshot"
                                 }
                                 "hew_hashmap_entries_layout" => {
-                                    "HashMap::entries() must clone every key and value into an independent snapshot"
+                                    "HashMap.entries() must clone every key and value into an independent snapshot"
                                 }
                                 _ => {
-                                    "HashMap::get() must clone the matched value into an independent owner"
+                                    "HashMap.get() must clone the matched value into an independent owner"
                                 }
                             };
                             self.diagnostics.push(MirDiagnostic {
@@ -5614,9 +5651,9 @@ impl Builder {
                     };
                     if let Err(reason) = self.validate_collection_clone_value(elem_ty) {
                         let operation = if callee == "hew_hashset_clone_layout" {
-                            "HashSet::clone() must duplicate every element"
+                            "HashSet.clone() must duplicate every element"
                         } else {
-                            "HashSet::to_vec() must clone every element into an independent snapshot"
+                            "HashSet.to_vec() must clone every element into an independent snapshot"
                         };
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
@@ -5853,7 +5890,7 @@ impl Builder {
                             site: expr.site,
                         },
                         note: format!(
-                            "static trait dispatch `{declaring_trait}::{method_name}` reached \
+                            "static trait dispatch `{declaring_trait}.{method_name}` reached \
                              MIR in a concrete function body without a substitution for \
                              receiver type parameter `{receiver_type_param}`; this indicates \
                              a missing monomorphization binding (the generic origin should \
@@ -5870,7 +5907,7 @@ impl Builder {
                         kind: MirDiagnosticKind::NotYetImplemented {
                             construct: format!(
                                 "static trait dispatch on receiver shape `{concrete_ty:?}` \
-                                 for `{declaring_trait}::{method_name}`"
+                                 for `{declaring_trait}.{method_name}`"
                             ),
                             site: expr.site,
                         },
@@ -8629,7 +8666,7 @@ impl Builder {
                     site,
                 },
                 note: format!(
-                    "static trait dispatch `{declaring_trait}::{method_name}` reached \
+                    "static trait dispatch `{declaring_trait}.{method_name}` reached \
                      MIR in a concrete function body without a substitution for \
                      receiver type parameter `{receiver_type_param}`; this indicates \
                      a missing monomorphization binding (the generic origin should \
@@ -8645,7 +8682,7 @@ impl Builder {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!(
                         "static trait dispatch on receiver shape `{concrete_ty:?}` \
-                         for `{declaring_trait}::{method_name}`"
+                         for `{declaring_trait}.{method_name}`"
                     ),
                     site,
                 },
@@ -8773,9 +8810,8 @@ impl Builder {
                     ),
                     site,
                 },
-                note:
-                    "MIR will not reconstruct a var-self method endpoint from `Type::method` text"
-                        .to_string(),
+                note: "MIR will not reconstruct a var-self method endpoint from `Type.method` text"
+                    .to_string(),
             });
             return None;
         };

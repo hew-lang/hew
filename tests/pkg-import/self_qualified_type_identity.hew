@@ -10,7 +10,7 @@
 //
 // Harness verb: hew run
 // Expected: 3 — the bare `Meter` flows through the self-qualified parameter.
-import hew::selfqualtype;
+import hew.selfqualtype;
 
 fn main() {
     println(f"{selfqualtype.roundtrip()}");

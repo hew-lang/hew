@@ -1,0 +1,16 @@
+//! Runtime regression for struct-variant aggregate payloads in let-else.
+//! The nested tuple binders must materialize and retain their field values.
+
+enum Packet {
+    Data { pair: (i64, i64) };
+    Empty;
+}
+
+fn sum(value: Packet) -> i64 {
+    let Packet.Data { pair: (a, b) } = value else { return 0 };
+    a + b
+}
+
+fn main() {
+    println(sum(Packet.Data { pair: (19, 23) }));
+}

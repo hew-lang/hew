@@ -19,7 +19,7 @@ fn max_subarray(arr: Vec<i64>) -> i64 {
 const ITERS: i64 = 500000;
 
 fn main() {
-    let arr: Vec<i64> = Vec::new();
+    let arr: Vec<i64> = Vec.new();
     for k in 0 .. 1000 {
         let rem = k % 3;
         if rem == 0 {

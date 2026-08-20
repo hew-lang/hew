@@ -3,17 +3,17 @@ use crate::common;
 use hew_types::{BuiltinType, Ty};
 
 #[test]
-fn user_defined_option_does_not_get_builtin_discriminator() {
+fn user_defined_option_box_does_not_get_builtin_discriminator() {
     let output = common::typecheck_isolated(
         r"
-        pub type Option { value: i64 }
-        pub type Holder { value: Option }
+        pub type OptionBox { value: i64 }
+        pub type Holder { value: OptionBox }
         ",
     );
 
     assert!(
         output.errors.is_empty(),
-        "user-defined Option should typecheck without builtin collision: {:?}",
+        "user-defined nominal should typecheck without builtin identity: {:?}",
         output.errors
     );
     let holder = output.type_defs.get("Holder").expect("Holder type exists");
@@ -23,7 +23,7 @@ fn user_defined_option_does_not_get_builtin_discriminator() {
             name,
             args,
             builtin: None,
-        }) if name == "Option" && args.is_empty()
+        }) if name == "OptionBox" && args.is_empty()
     ));
 }
 

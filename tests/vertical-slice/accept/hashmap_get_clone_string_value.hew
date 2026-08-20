@@ -4,7 +4,7 @@
 // Expected: clean compile + exit 0 after using the returned value post-remove.
 
 fn main() -> i64 {
-    let m: HashMap<string, string> = HashMap::new();
+    let m: HashMap<string, string> = HashMap.new();
     let n: i64 = 123456;
     let heap: string = f"prefix-{n}-suffix-padding-to-force-heap-alloc-zzzzzzzzzzzz";
     m.insert("k", heap);

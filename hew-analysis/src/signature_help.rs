@@ -97,7 +97,7 @@ fn find_module_qualified_fn_sig(callee: &str, tc: &TypeCheckOutput) -> Option<Fn
     }
     let owner = tc
         .module_import_bindings
-        .get(&(None, binding.to_string()))?;
+        .get(&(None, 0, binding.to_string()))?;
     tc.fn_sigs.get(&format!("{owner}.{leaf}")).cloned()
 }
 

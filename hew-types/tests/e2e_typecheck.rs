@@ -408,7 +408,7 @@ fn hashmap_remove_typechecks_as_option() {
     assert_inline_typechecks_cleanly(
         r#"
 fn main() {
-    let m: HashMap<string, i64> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap.new();
     m.insert("a", 1);
     let removed: Option<i64> = m.remove("a");
     let missing: Option<i64> = m.remove("a");
@@ -430,7 +430,7 @@ fn hashmap_remove_no_longer_typechecks_as_bool() {
     let output = typecheck_inline(
         r#"
 fn main() {
-    let m: HashMap<string, i64> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap.new();
     m.insert("a", 1);
     let removed: bool = m.remove("a");
 }
@@ -531,7 +531,7 @@ fn use_greeter(g: dyn Greeter) -> string {
 fn method_call_receiver_kinds_record_handle_dispatch() {
     let output = typecheck_inline(
         r"
-import std::net;
+import std.net;
 
 fn close_conn(conn: net.Connection) {
     conn.close()
@@ -719,7 +719,7 @@ fn consume(s: Stream<bytes>) {
 fn method_call_dispatches_resource_wrapper_through_impl() {
     let output = typecheck_inline(
         r#"
-import std::net::http;
+import std.net.http;
 
 fn respond(req: http.Request) -> i64 {
     req.respond_text(200, "ok")
@@ -742,7 +742,7 @@ fn respond(req: http.Request) -> i64 {
 fn module_qualified_call_rewrites_record_registry_c_symbol_metadata() {
     let output = typecheck_inline(
         r#"
-import std::fs;
+import std.fs;
 
 fn main() {
     let _ = fs.exists("test.txt");
@@ -1031,7 +1031,7 @@ fn stream_dot_sink_annotation_typechecks() {
     // type and its send/close methods are available.
     let output = typecheck_inline(
         r"
-        import std::stream;
+        import std.stream;
 
         fn flush_and_close(s: stream.Sink<string>, msg: string) {
             s.send(msg);
@@ -1052,7 +1052,7 @@ fn stream_dot_stream_int_element_now_admitted() {
     // i64 elements ride the Plain envelope and must typecheck cleanly.
     let output = typecheck_inline(
         r"
-        import std::stream;
+        import std.stream;
 
         fn close_numbers(s: stream.Stream<i64>) {
             s.close();
@@ -1072,7 +1072,7 @@ fn stream_dot_stream_container_element_reports_user_facing_type() {
     // diagnostic must name the user-facing element type.
     let output = typecheck_inline(
         r"
-        import std::stream;
+        import std.stream;
 
         fn close_rows(s: stream.Stream<Vec<i64>>) {
             s.close();
@@ -1093,7 +1093,7 @@ fn stream_dot_stream_container_element_reports_user_facing_type() {
 fn stream_decode_fails_closed_before_codegen() {
     let output = typecheck_inline(
         r"
-        import std::stream;
+        import std.stream;
 
         #[wire]
         type Message {
@@ -1120,7 +1120,7 @@ fn stream_decode_fails_closed_before_codegen() {
 fn sink_encode_fails_closed_before_codegen() {
     let output = typecheck_inline(
         r"
-        import std::stream;
+        import std.stream;
 
         #[wire]
         type Message {
@@ -1150,7 +1150,7 @@ fn channel_dot_receiver_annotation_typechecks() {
     // type and its recv/close methods are available.
     let output = typecheck_inline(
         r"
-        import std::channel;
+        import std.channel;
 
         fn take_one(rx: channel.Receiver<string>) -> Option<string> {
             let v = rx.recv();
@@ -1176,7 +1176,7 @@ fn channel_dot_receiver_annotation_typechecks() {
 fn for_await_receiver_string_ok() {
     let output = typecheck_inline(
         r#"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn main() {
             let (tx, rx) = channel.new(4);
@@ -1200,7 +1200,7 @@ fn for_await_receiver_string_ok() {
 fn for_await_receiver_int_ok() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn main() {
             let (tx, rx) = channel.new(4);
@@ -1225,7 +1225,7 @@ fn for_await_receiver_int_ok() {
 fn for_await_receiver_missing_element_type_errors() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn main() {
             let (tx, rx): (channel.Sender, channel.Receiver) = channel.new(4);
@@ -1252,7 +1252,7 @@ fn for_await_receiver_missing_element_type_errors() {
 fn for_await_receiver_record_element_admitted() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         type Foo { x: i64 }
 
@@ -1279,7 +1279,7 @@ fn for_await_receiver_record_element_admitted() {
 fn for_await_receiver_container_element_errors() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn main() {
             let (tx, rx): (channel.Sender<Vec<i64>>, channel.Receiver<Vec<i64>>) =
@@ -1306,7 +1306,7 @@ fn for_await_receiver_container_element_errors() {
 fn for_await_stream_record_element_admitted() {
     let output = typecheck_inline(
         r#"
-        import std::stream;
+        import std.stream;
 
         type Row { value: i64 }
 
@@ -1335,7 +1335,7 @@ fn for_await_stream_record_element_admitted() {
 fn for_await_stream_container_element_errors() {
     let output = typecheck_inline(
         r#"
-        import std::stream;
+        import std.stream;
 
         extern "C" {
             fn fake_stream() -> Stream<Vec<i64>>;
@@ -1484,7 +1484,7 @@ fn for_await_over_vec_errors() {
     let output = typecheck_inline(
         r"
         fn main() {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             for await item in v {
                 println(item);
             }
@@ -1529,7 +1529,7 @@ fn for_await_over_range_errors() {
 fn for_no_await_over_receiver_no_for_await_error() {
     let output = typecheck_inline(
         r"
-        import std::channel;
+        import std.channel;
 
         fn consume(rx: channel.Receiver<string>) {
             for msg in rx {
@@ -1557,7 +1557,7 @@ fn rc_construction_and_methods_typecheck() {
     let output = typecheck_inline(
         r"
         fn main() {
-            let rc: Rc<i64> = Rc::new(42);
+            let rc: Rc<i64> = Rc.new(42);
             println(rc.get());
             let rc2 = rc.clone();
             println(rc2.get());
@@ -1577,7 +1577,7 @@ fn rc_weak_surface_records_typed_intrinsics() {
     let output = typecheck_inline(
         r"
         fn main() {
-            let rc = Rc::new(42);
+            let rc = Rc.new(42);
             let alias = rc.clone();
             let _value = alias.get();
             rc.set(9);
@@ -1647,14 +1647,14 @@ fn weak_breaks_recursive_value_size_cycle() {
 fn weak_rejected_at_actor_send_boundary() {
     let output = typecheck_inline(
         r"
-        actor Sink {
+        actor BoundarySink {
             let _unused: i64;
             receive fn consume(value: Weak<i64>) {}
         }
         fn main() {
-            let rc = Rc::new(1);
+            let rc = Rc.new(1);
             let weak = rc.downgrade();
-            let sink = spawn Sink(_unused: 0);
+            let sink = spawn BoundarySink(_unused: 0);
             sink.consume(weak);
         }
         ",
@@ -1672,7 +1672,7 @@ fn rc_new_rejects_borrowed_non_copy_parameter_without_clone() {
     let rejected = typecheck_inline(
         r"
         fn wrap(value: string) -> Rc<string> {
-            Rc::new(value)
+            Rc.new(value)
         }
         fn main() {}
         ",
@@ -1691,7 +1691,7 @@ fn rc_new_rejects_borrowed_non_copy_parameter_without_clone() {
     let accepted = typecheck_inline(
         r"
         fn wrap(value: string) -> Rc<string> {
-            Rc::new(value.clone())
+            Rc.new(value.clone())
         }
         fn main() {}
         ",
@@ -1776,13 +1776,13 @@ fn weak_param_return_requires_clone() {
 fn rc_rejected_at_actor_send_boundary() {
     let output = typecheck_inline(
         r"
-        actor Sink {
+        actor BoundarySink {
             let _unused: i64;
             receive fn consume(val: Rc<i64>) {}
         }
         fn main() {
-            let rc: Rc<i64> = Rc::new(1);
-            let a = spawn Sink(_unused: 0);
+            let rc: Rc<i64> = Rc.new(1);
+            let a = spawn BoundarySink(_unused: 0);
             a.consume(rc);
         }
         ",
@@ -1803,13 +1803,13 @@ fn ordinary_actor_send_keeps_sender_binding_readable() {
             payload: Vec<i64>,
         }
 
-        actor Sink {
+        actor BoundarySink {
             let _unused: i64;
             receive fn take(value: Boxed) {}
         }
 
         fn main() {
-            let sink = spawn Sink(_unused: 0);
+            let sink = spawn BoundarySink(_unused: 0);
             let value = Boxed { payload: [1, 2] };
             sink.take(value);
             sink.take(value);
@@ -1829,7 +1829,7 @@ fn ordinary_actor_send_keeps_sender_binding_readable() {
 fn actor_spawn_still_moves_affine_handle_arguments() {
     let output = typecheck_inline(
         r#"
-        import std::stream;
+        import std.stream;
 
         actor Writer {
             let sink: stream.Sink<string>;
@@ -1861,15 +1861,15 @@ fn nested_rc_and_weak_send_rejections_do_not_cascade() {
             value: Rc<i64>,
         }
 
-        actor Sink {
+        actor BoundarySink {
             let _unused: i64;
             receive fn take_box(value: RcBox) {}
             receive fn take_tuple(value: (i64, Weak<i64>)) {}
         }
 
         fn main() {
-            let sink = spawn Sink(_unused: 0);
-            let rc = Rc::new(1);
+            let sink = spawn BoundarySink(_unused: 0);
+            let rc = Rc.new(1);
             let weak = rc.downgrade();
             let boxed = RcBox { value: rc.clone() };
             let pair = (2, weak);
@@ -1897,7 +1897,7 @@ fn lambda_actor_capture_must_be_send() {
     let output = typecheck_inline(
         r"
         fn main() {
-            let rc: Rc<i64> = Rc::new(1);
+            let rc: Rc<i64> = Rc.new(1);
             let worker = actor move |x: i64| {
                 println(rc.strong_count());
                 println(x);
@@ -1926,7 +1926,7 @@ fn lambda_actor_call_rejects_non_send_payload() {
             let worker = actor |msg: i64| {
                 println(msg);
             };
-            let rc: Rc<i64> = Rc::new(1);
+            let rc: Rc<i64> = Rc.new(1);
             worker(rc.strong_count());
         }
         ",
@@ -1987,7 +1987,7 @@ fn actor_ref_send_method_requires_send_payload() {
 
         fn main() {
             let sink = spawn Sink(_unused: 0);
-            let rc: Rc<i64> = Rc::new(1);
+            let rc: Rc<i64> = Rc.new(1);
             sink.send(rc);
         }
         ",
@@ -2020,7 +2020,7 @@ fn actor_receive_fn_option_reply_accepted() {
         }
 
         fn main() {
-            let q = spawn Queue(items: Vec::new());
+            let q = spawn Queue(items: Vec.new());
             let _item = await q.dequeue();
         }
         ",
@@ -2274,7 +2274,7 @@ fn ask_shaped_actor_typechecks() {
 fn rc_non_copy_construction_ok() {
     // string is non-Copy; Rc::new should accept it (codegen will pass a real
     // drop function instead of null).
-    let output = typecheck_inline(r#"fn main() { let _rc: Rc<string> = Rc::new("hello"); }"#);
+    let output = typecheck_inline(r#"fn main() { let _rc: Rc<string> = Rc.new("hello"); }"#);
     assert!(
         output.errors.is_empty(),
         "Rc::new with a non-Copy inner type should succeed; got errors: {:#?}",
@@ -2292,7 +2292,7 @@ fn rc_copy_struct_construction_ok() {
         }
 
         fn main() {
-            let _rc = Rc::new(Point { x: 1, y: 2 });
+            let _rc = Rc.new(Point { x: 1, y: 2 });
         }
         ",
     );
@@ -2306,7 +2306,7 @@ fn rc_copy_struct_construction_ok() {
 #[test]
 fn rc_nested_payload_construction_ok() {
     let output =
-        typecheck_inline(r#"fn main() { let _rc: Rc<Rc<string>> = Rc::new(Rc::new("hello")); }"#);
+        typecheck_inline(r#"fn main() { let _rc: Rc<Rc<string>> = Rc.new(Rc.new("hello")); }"#);
     assert!(
         output.errors.is_empty(),
         "Rc::new with nested supported Rc payloads should succeed; got errors: {:#?}",
@@ -2317,7 +2317,7 @@ fn rc_nested_payload_construction_ok() {
 #[test]
 fn rc_owned_option_payload_supported() {
     assert_inline_typechecks_cleanly(
-        r#"fn main() { let _rc = Rc::new(Some("hello")); }"#,
+        r#"fn main() { let _rc = Rc.new(Some("hello")); }"#,
         "Rc::new with Option<string> should use aggregate clone/drop support",
     );
 }
@@ -2331,7 +2331,7 @@ fn rc_owned_struct_payload_supported() {
         }
 
         fn main() {
-            let _rc = Rc::new(Labelled { name: "hello" });
+            let _rc = Rc.new(Labelled { name: "hello" });
         }
         "#,
         "Rc::new with an owned struct should use aggregate clone/drop support",
@@ -2356,7 +2356,7 @@ fn rc_user_drop_payload_rejected() {
         }
 
         fn main() {
-            let _rc = Rc::new(Token { id: 1 });
+            let _rc = Rc.new(Token { id: 1 });
         }
         ",
     );
@@ -2388,7 +2388,7 @@ fn rc_generic_wrapper_payload_rejected() {
         }
 
         fn wrap<T>(val: T) -> Rc<T> {
-            Rc::new(val)
+            Rc.new(val)
         }
 
         fn main() {
@@ -2417,7 +2417,7 @@ fn rc_generic_lambda_payload_rejected() {
             name: string
         }
 
-        fn wrap<T>(val: T) -> Rc<T> { Rc::new(val) }
+        fn wrap<T>(val: T) -> Rc<T> { Rc.new(val) }
 
         fn main() {
             let _ = wrap(Labelled { name: "hello" });
@@ -2439,7 +2439,7 @@ fn rc_get_non_copy_rejected() {
     // `rc.get()` performs a bitwise copy (LoadOp) which is only sound for
     // Copy types.  Calling it on Rc<string> must be rejected.
     let output = typecheck_inline(
-        r#"fn main() { let rc: Rc<string> = Rc::new("hello"); let _ = rc.get(); }"#,
+        r#"fn main() { let rc: Rc<string> = Rc.new("hello"); let _ = rc.get(); }"#,
     );
     assert!(
         output
@@ -2461,7 +2461,7 @@ fn rc_get_non_copy_rejected() {
 fn http_respond_three_arg_typechecks() {
     let output = typecheck_inline(
         r#"
-        import std::net::http;
+        import std.net.http;
 
         fn main() {
             match http.listen(":8080") {
@@ -2490,7 +2490,7 @@ fn http_respond_three_arg_typechecks() {
 fn http_respond_four_arg_rejected() {
     let output = typecheck_inline(
         r#"
-        import std::net::http;
+        import std.net.http;
 
         fn main() {
             match http.listen(":8080") {
@@ -2515,7 +2515,7 @@ fn http_respond_four_arg_rejected() {
 fn wasm_http_server_surface_rejected_before_codegen() {
     let output = typecheck_inline_wasm(
         r#"
-        import std::net::http;
+        import std.net.http;
 
         fn inspect(server: http.Server, req: http.Request) -> string {
             let _next = server.accept();
@@ -2592,7 +2592,7 @@ fn wasm_scope_with_fork_child_rejected_before_codegen() {
 fn wasm_tcp_networking_surface_rejected_before_codegen() {
     let output = typecheck_inline_wasm(
         r#"
-        import std::net;
+        import std.net;
 
         fn tune(listener: net.Listener, conn: net.Connection) -> i64 {
             let _accepted = listener.accept();
@@ -2618,7 +2618,7 @@ fn wasm_tcp_networking_surface_rejected_before_codegen() {
 fn http_request_body_encoding_arg_checked_via_fallback() {
     let output = typecheck_inline(
         r"
-        import std::net::http;
+        import std.net.http;
 
         fn inspect(req: http.Request) {
             req.body(42);
@@ -2639,7 +2639,7 @@ fn http_request_body_encoding_arg_checked_via_fallback() {
 fn net_resource_close_uses_source_impl_not_raw_fallback() {
     let output = typecheck_inline(
         r"
-        import std::net;
+        import std.net;
 
         fn close_listener(listener: net.Listener) {
             listener.close()
@@ -2670,7 +2670,7 @@ fn net_resource_close_uses_source_impl_not_raw_fallback() {
 fn http_request_close_dispatches_through_resource_impl() {
     let output = typecheck_inline(
         r"
-        import std::net::http;
+        import std.net.http;
 
         fn release(req: http.Request) {
             req.close();
@@ -2693,7 +2693,7 @@ fn http_request_close_dispatches_through_resource_impl() {
 fn registry_loaded_resource_close_moves_receiver() {
     let output = typecheck_inline(
         r"
-        import std::net::http;
+        import std.net.http;
 
         fn release(req: http.Request) {
             req.close();
@@ -2715,7 +2715,7 @@ fn registry_loaded_resource_close_moves_receiver() {
 fn http_request_unknown_method_is_undefined() {
     let output = typecheck_inline(
         r"
-        import std::net::http;
+        import std.net.http;
 
         fn inspect(req: http.Request) {
             req.nonexistent();
@@ -2746,7 +2746,7 @@ fn net_connection_write_arg_type_checked() {
     // slice and the refactored examples validate the real call-site behaviour.
     let output = typecheck_inline(
         r#"
-        import std::net;
+        import std.net;
 
         fn send(conn: net.Connection) {
             conn.write("wrong_type");
@@ -2768,7 +2768,7 @@ fn net_connection_write_arg_type_checked() {
 fn wasm_process_execution_surface_rejected_before_codegen() {
     let output = typecheck_inline_wasm(
         r#"
-        import std::process;
+        import std.process;
 
         fn await_child(child: process.Child) -> i64 {
             child.wait()
@@ -2792,7 +2792,7 @@ fn wasm_process_execution_surface_rejected_before_codegen() {
 fn builtin_string_to_int_typechecks_as_int() {
     let output = typecheck_inline(
         r#"
-        import std::string;
+        import std.string;
 
         fn parse() -> i64 {
             let value: Option<i64> = string.to_int("9223372036854775807");
@@ -2814,7 +2814,7 @@ fn builtin_string_to_int_typechecks_as_int() {
 fn process_child_methods_resolve_as_fielded_resource_trait_methods() {
     let output = typecheck_inline(
         r"
-        import std::process;
+        import std.process;
 
         fn manage(child: process.Child) -> i64 {
             let waited: i64 = child.wait();
@@ -2848,7 +2848,7 @@ fn process_child_methods_resolve_as_fielded_resource_trait_methods() {
 fn smtp_one_shot_helpers_typecheck() {
     let output = typecheck_inline(
         r#"
-        import std::net::smtp;
+        import std.net.smtp;
 
         fn main() {
             smtp.send(
@@ -2885,10 +2885,10 @@ fn smtp_one_shot_helpers_typecheck() {
 fn http_client_module_helpers_typecheck_natively() {
     let output = typecheck_inline(
         r#"
-        import std::net::http::http_client;
+        import std.net.http.http_client;
 
         fn main() {
-            let headers: Vec<(string, string)> = Vec::new();
+            let headers: Vec<(string, string)> = Vec.new();
             http_client.set_timeout(250);
             let _body = http_client.request_string("GET", "https://example.com", "", headers);
         }
@@ -2905,10 +2905,10 @@ fn http_client_module_helpers_typecheck_natively() {
 fn http_client_module_helpers_rejected_on_wasm() {
     let output = typecheck_inline_wasm(
         r#"
-        import std::net::http::http_client;
+        import std.net.http.http_client;
 
         fn main() {
-            let headers: Vec<(string, string)> = Vec::new();
+            let headers: Vec<(string, string)> = Vec.new();
             http_client.set_timeout(250);
             let _body = http_client.request_string("GET", "https://example.com", "", headers);
         }
@@ -2918,7 +2918,7 @@ fn http_client_module_helpers_rejected_on_wasm() {
         output.errors.iter().any(|e| {
             e.kind == TypeErrorKind::PlatformLimitation
                 && e.message
-                    .contains("std::net::http::http_client operations are not supported on WASM32")
+                    .contains("std.net.http.http_client operations are not supported on WASM32")
         }),
         "expected http_client wasm rejection, got: {:#?}",
         output.errors
@@ -2929,7 +2929,7 @@ fn http_client_module_helpers_rejected_on_wasm() {
 fn http_client_response_methods_rejected_on_wasm() {
     let output = typecheck_inline_wasm(
         r#"
-        import std::net::http::http_client;
+        import std.net.http.http_client;
 
         extern "C" {
             fn fake_response() -> http_client.Response;
@@ -2946,7 +2946,7 @@ fn http_client_response_methods_rejected_on_wasm() {
         output.errors.iter().any(|e| {
             e.kind == TypeErrorKind::PlatformLimitation
                 && e.message
-                    .contains("std::net::http::http_client operations are not supported on WASM32")
+                    .contains("std.net.http.http_client operations are not supported on WASM32")
         }),
         "expected http_client.Response wasm rejection, got: {:#?}",
         output.errors
@@ -2957,7 +2957,7 @@ fn http_client_response_methods_rejected_on_wasm() {
 fn smtp_module_helpers_rejected_on_wasm() {
     let output = typecheck_inline_wasm(
         r#"
-        import std::net::smtp;
+        import std.net.smtp;
 
         fn main() {
             smtp.send(
@@ -2977,7 +2977,7 @@ fn smtp_module_helpers_rejected_on_wasm() {
         output.errors.iter().any(|e| {
             e.kind == TypeErrorKind::PlatformLimitation
                 && e.message
-                    .contains("std::net::smtp operations are not supported on WASM32")
+                    .contains("std.net.smtp operations are not supported on WASM32")
         }),
         "expected smtp wasm rejection, got: {:#?}",
         output.errors
@@ -2988,7 +2988,7 @@ fn smtp_module_helpers_rejected_on_wasm() {
 fn smtp_conn_methods_rejected_on_wasm() {
     let output = typecheck_inline_wasm(
         r#"
-        import std::net::smtp;
+        import std.net.smtp;
 
         extern "C" {
             fn fake_conn() -> smtp.Conn;
@@ -3010,7 +3010,7 @@ fn smtp_conn_methods_rejected_on_wasm() {
         output.errors.iter().any(|e| {
             e.kind == TypeErrorKind::PlatformLimitation
                 && e.message
-                    .contains("std::net::smtp operations are not supported on WASM32")
+                    .contains("std.net.smtp operations are not supported on WASM32")
         }),
         "expected smtp.Conn wasm rejection, got: {:#?}",
         output.errors
@@ -3029,39 +3029,39 @@ fn wasm_rejects_all_native_only_handle_methods() {
     // succeeds before `reject_if_wasm_native_only_handle` inspects the receiver.
     let cases: &[(&str, &str, &str, &str, &str)] = &[
         (
-            "std::net::tls",
+            "std.net.tls",
             "tls.TlsStream",
             "fn fake_tls() -> tls.TlsStream",
             "let stream = unsafe { fake_tls() };\n            stream.close();",
-            "std::net::tls",
+            "std.net.tls",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICEndpoint",
             "fn fake_endpoint() -> quic.QUICEndpoint",
             "let ep = unsafe { fake_endpoint() };\n            ep.close();",
-            "std::net::quic",
+            "std.net.quic",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICConnection",
             "fn fake_conn() -> quic.QUICConnection",
             "let conn = unsafe { fake_conn() };\n            let _ = conn.observe();",
-            "std::net::quic",
+            "std.net.quic",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICStream",
             "fn fake_stream() -> quic.QUICStream",
             "let strm = unsafe { fake_stream() };\n            strm.close();",
-            "std::net::quic",
+            "std.net.quic",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICEvent",
             "fn fake_event() -> quic.QUICEvent",
             "let ev = unsafe { fake_event() };\n            ev.close();",
-            "std::net::quic",
+            "std.net.quic",
         ),
     ];
 
@@ -3100,39 +3100,39 @@ fn native_allows_all_native_only_handle_methods_no_platform_error() {
     // (no `enable_wasm_target()` call).
     let cases: &[(&str, &str, &str, &str, &str)] = &[
         (
-            "std::net::tls",
+            "std.net.tls",
             "tls.TlsStream",
             "fn fake_tls() -> tls.TlsStream",
             "let stream = unsafe { fake_tls() };\n            stream.close();",
-            "std::net::tls",
+            "std.net.tls",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICEndpoint",
             "fn fake_endpoint() -> quic.QUICEndpoint",
             "let ep = unsafe { fake_endpoint() };\n            ep.close();",
-            "std::net::quic",
+            "std.net.quic",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICConnection",
             "fn fake_conn() -> quic.QUICConnection",
             "let conn = unsafe { fake_conn() };\n            let _ = conn.observe();",
-            "std::net::quic",
+            "std.net.quic",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICStream",
             "fn fake_stream() -> quic.QUICStream",
             "let strm = unsafe { fake_stream() };\n            strm.close();",
-            "std::net::quic",
+            "std.net.quic",
         ),
         (
-            "std::net::quic",
+            "std.net.quic",
             "quic.QUICEvent",
             "fn fake_event() -> quic.QUICEvent",
             "let ev = unsafe { fake_event() };\n            ev.close();",
-            "std::net::quic",
+            "std.net.quic",
         ),
     ];
 
@@ -3168,7 +3168,7 @@ fn native_allows_all_native_only_handle_methods_no_platform_error() {
 #[test]
 fn regex_literal_no_false_positive_unused_import_warning() {
     let output = typecheck_inline(
-        r#"import std::text::regex;
+        r#"import std.text.regex;
 fn main() {
     let pat = re"[0-9]+";
     if pat.is_match("hello123") {
@@ -3333,7 +3333,7 @@ fn rc_param_explicit_return_errors_borrowed_rc() {
             if flag {
                 return r;
             }
-            Rc::new(0)
+            Rc.new(0)
         }
         fn main() {}
         ",
@@ -3429,7 +3429,7 @@ fn rc_pass_to_fn_borrow_clean() {
             r.get()
         }
         fn main() {
-            let rc = Rc::new(42);
+            let rc = Rc.new(42);
             println(read_rc(rc));
         }
         ",
@@ -3548,7 +3548,7 @@ fn rc_new_in_return_no_error() {
     let output = typecheck_inline(
         r"
         fn fresh(_r: Rc<i64>) -> Rc<i64> {
-            Rc::new(0)
+            Rc.new(0)
         }
         fn main() {}
         ",
@@ -3621,7 +3621,7 @@ fn rc_method_call_store_and_return_errors() {
     let output = typecheck_inline(
         r"
         fn bad(r: Rc<i64>) -> Vec<Rc<i64>> {
-            var v = Vec::new();
+            var v = Vec.new();
             v.push(r);
             v
         }
@@ -3651,7 +3651,7 @@ fn rc_method_call_store_explicit_return_errors() {
     let output = typecheck_inline(
         r"
         fn bad(r: Rc<i64>) -> Vec<Rc<i64>> {
-            var v = Vec::new();
+            var v = Vec.new();
             v.push(r);
             return v;
         }
@@ -3725,7 +3725,7 @@ fn rc_transitive_taint_errors() {
         r"
         fn bad(r: Rc<i64>) -> Vec<Rc<i64>> {
             let a = r;
-            var v = Vec::new();
+            var v = Vec.new();
             v.push(a);
             v
         }
@@ -3751,7 +3751,7 @@ fn rc_method_call_store_no_return_no_error() {
     let output = typecheck_inline(
         r"
         fn not_returned(r: Rc<i64>) -> i64 {
-            var v = Vec::new();
+            var v = Vec.new();
             v.push(r);
             42
         }
@@ -3775,7 +3775,7 @@ fn rc_method_call_store_clone_no_error() {
     let output = typecheck_inline(
         r"
         fn safe(r: Rc<i64>) -> Vec<Rc<i64>> {
-            var v = Vec::new();
+            var v = Vec.new();
             v.push(r.clone());
             v
         }
@@ -3799,7 +3799,7 @@ fn rc_method_call_store_in_branch_errors() {
     let output = typecheck_inline(
         r"
         fn bad(r: Rc<i64>, cond: bool) -> Vec<Rc<i64>> {
-            var v = Vec::new();
+            var v = Vec.new();
             if cond {
                 v.push(r);
             }
@@ -3826,7 +3826,7 @@ fn rc_assignment_taint_return_errors() {
     let output = typecheck_inline(
         r"
         fn bad(r: Rc<i64>) -> Rc<i64> {
-            var v: Rc<i64> = Rc::new(0);
+            var v: Rc<i64> = Rc.new(0);
             v = r;
             v
         }
@@ -3852,7 +3852,7 @@ fn rc_readonly_method_does_not_taint() {
     let output = typecheck_inline(
         r"
         fn ok(r: Rc<i64>) -> Vec<i64> {
-            let v = Vec::new();
+            let v = Vec.new();
             v.contains(r.get());
             v
         }
@@ -3880,7 +3880,7 @@ fn rc_field_assignment_escape_errors() {
             value: Rc<i64>,
         }
         fn bad(r: Rc<i64>) -> Wrapper {
-            var s = Wrapper { value: Rc::new(0) };
+            var s = Wrapper { value: Rc.new(0) };
             s.value = r;
             s
         }
@@ -3925,7 +3925,7 @@ fn vec_array_annotation_rejected() {
     assert_invalid_operation_contains(
         r"
         fn main() {
-            let v: Vec<[i64; 2]> = Vec::new();
+            let v: Vec<[i64; 2]> = Vec.new();
             println(v.len());
         }",
         "`Vec<[i64; 2]>` is not supported",
@@ -3947,7 +3947,7 @@ fn vec_nested_vec_array_annotation_rejected() {
     assert_invalid_operation_contains(
         r"
         fn main() {
-            let v: Vec<Vec<[i64; 2]>> = Vec::new();
+            let v: Vec<Vec<[i64; 2]>> = Vec.new();
             println(v.len());
         }",
         "`Vec<[i64; 2]>` is not supported",
@@ -3964,7 +3964,7 @@ fn vec_generic_wrapper_array_annotation_rejected() {
         }
 
         fn main() {
-            let v: Vec<Box<[i64; 2]>> = Vec::new();
+            let v: Vec<Box<[i64; 2]>> = Vec.new();
             println(v.len());
         }",
         "`Vec<Box<[i64; 2]>>` is not supported",
@@ -3977,7 +3977,7 @@ fn vec_option_wrapper_array_annotation_rejected() {
     assert_invalid_operation_contains(
         r"
         fn main() {
-            let v: Vec<Option<[i64; 2]>> = Vec::new();
+            let v: Vec<Option<[i64; 2]>> = Vec.new();
             println(v.len());
         }",
         "`Vec<Option<[i64; 2]>>` is not supported",
@@ -3990,7 +3990,7 @@ fn vec_result_wrapper_array_annotation_rejected() {
     assert_invalid_operation_contains(
         r"
         fn main() {
-            let v: Vec<Result<[i64; 2], string>> = Vec::new();
+            let v: Vec<Result<[i64; 2], string>> = Vec.new();
             println(v.len());
         }",
         "`Vec<Result<[i64; 2], string>>` is not supported",
@@ -4021,8 +4021,8 @@ fn rc_vec_push_supported() {
     assert_inline_typechecks_cleanly(
         r"
         fn main() {
-            let r = Rc::new(42);
-            var v = Vec::new();
+            let r = Rc.new(42);
+            var v = Vec.new();
             v.push(r);
         }",
         "Vec.push(Rc<i64>)",
@@ -4034,8 +4034,8 @@ fn rc_vec_set_supported() {
     assert_inline_typechecks_cleanly(
         r"
         fn main() {
-            var v: Vec<Rc<i64>> = Vec::new();
-            let r = Rc::new(99);
+            var v: Vec<Rc<i64>> = Vec.new();
+            let r = Rc.new(99);
             v.set(0, r);
         }",
         "Vec.set(_, Rc<i64>)",
@@ -4047,8 +4047,8 @@ fn rc_vec_append_supported() {
     assert_inline_typechecks_cleanly(
         r"
         fn main() {
-            var v: Vec<Rc<i64>> = Vec::new();
-            let w: Vec<Rc<i64>> = Vec::new();
+            var v: Vec<Rc<i64>> = Vec.new();
+            let w: Vec<Rc<i64>> = Vec.new();
             v.append(w);
         }",
         "Vec.append(Vec<Rc<i64>>)",
@@ -4121,7 +4121,7 @@ fn rc_vec_fold_supported() {
         r"
         type Holder { v: Vec<Rc<i64>> }
         fn extract(h: Holder) -> Rc<i64> {
-            h.v.fold(Rc::new(0), |acc: Rc<i64>, x: Rc<i64>| x)
+            h.v.fold(Rc.new(0), |acc: Rc<i64>, x: Rc<i64>| x)
         }",
         "Vec.fold(_, _) on Vec<Rc<i64>>",
     );
@@ -4132,8 +4132,8 @@ fn rc_hashmap_insert_value_supported() {
     assert_inline_typechecks_cleanly(
         r#"
         fn main() {
-            var m = HashMap::new();
-            let r = Rc::new(42);
+            var m = HashMap.new();
+            let r = Rc.new(42);
             m.insert("key", r);
         }"#,
         "HashMap.insert(_, Rc<i64>)",
@@ -4145,8 +4145,8 @@ fn rc_hashmap_insert_key_rejected_without_hash_eq() {
     let output = typecheck_inline(
         r#"
         fn main() {
-            var m = HashMap::new();
-            let r = Rc::new(42);
+            var m = HashMap.new();
+            let r = Rc.new(42);
             m.insert(r, "val");
         }"#,
     );
@@ -4222,8 +4222,8 @@ fn rc_hashset_insert_rejected_without_hash_eq() {
     let output = typecheck_inline(
         r"
         fn main() {
-            var s = HashSet::new();
-            let r = Rc::new(42);
+            var s = HashSet.new();
+            let r = Rc.new(42);
             s.insert(r);
         }",
     );
@@ -4242,8 +4242,8 @@ fn rc_nested_in_vec_element_rejected_without_clone_drop_thunk() {
     assert_invalid_operation_contains(
         r"
         fn main() {
-            var v = Vec::new();
-            let r = Rc::new(42);
+            var v = Vec.new();
+            let r = Rc.new(42);
             v.push(Some(r));
         }",
         "no clone/drop thunk path",
@@ -4256,8 +4256,8 @@ fn rc_tuple_in_vec_element_supported() {
     assert_inline_typechecks_cleanly(
         r"
         fn main() {
-            var v = Vec::new();
-            let r = Rc::new(42);
+            var v = Vec.new();
+            let r = Rc.new(42);
             v.push((r, 0));
         }",
         "Vec.push((Rc<i64>, i64))",
@@ -4271,7 +4271,7 @@ fn vec_int_push_ok() {
     assert_no_unsafe_collection_element(
         r"
         fn main() {
-            var v = Vec::new();
+            var v = Vec.new();
             v.push(42);
         }",
         "Vec<i64> push should be fine",
@@ -4283,7 +4283,7 @@ fn vec_string_push_ok() {
     assert_no_unsafe_collection_element(
         r#"
         fn main() {
-            var v = Vec::new();
+            var v = Vec.new();
             v.push("hello");
         }"#,
         "Vec<string> push should be fine",
@@ -4295,7 +4295,7 @@ fn hashmap_string_string_insert_ok() {
     assert_no_unsafe_collection_element(
         r#"
         fn main() {
-            var m = HashMap::new();
+            var m = HashMap.new();
             m.insert("key", "value");
         }"#,
         "HashMap<string, string> insert should be fine",
@@ -4307,7 +4307,7 @@ fn hashset_int_insert_ok() {
     let output = typecheck_inline(
         r"
         fn main() {
-            var s = HashSet::new();
+            var s = HashSet.new();
             s.insert(42);
         }",
     );
@@ -4323,7 +4323,7 @@ fn hashmap_string_key_index_read_typechecks() {
     let output = typecheck_inline(
         r#"
         fn main() {
-            var m: HashMap<string, string> = HashMap::new();
+            var m: HashMap<string, string> = HashMap.new();
             m.insert("a", "alpha");
             let _x = m["a"];
         }"#,
@@ -4340,7 +4340,7 @@ fn hashmap_string_key_index_write_typechecks() {
     let output = typecheck_inline(
         r#"
         fn main() {
-            var m: HashMap<string, string> = HashMap::new();
+            var m: HashMap<string, string> = HashMap.new();
             m["a"] = "alpha";
         }"#,
     );
@@ -4356,7 +4356,7 @@ fn hashmap_wrong_key_type_index_read_rejected() {
     let output = typecheck_inline(
         r"
         fn main() {
-            var m: HashMap<string, string> = HashMap::new();
+            var m: HashMap<string, string> = HashMap.new();
             let _x = m[5];
         }",
     );
@@ -4375,7 +4375,7 @@ fn hashmap_wrong_value_type_index_write_rejected() {
     let output = typecheck_inline(
         r#"
         fn main() {
-            var m: HashMap<string, string> = HashMap::new();
+            var m: HashMap<string, string> = HashMap.new();
             m["a"] = 5;
         }"#,
     );
@@ -4394,7 +4394,7 @@ fn vec_string_index_still_rejected() {
     let output = typecheck_inline(
         r#"
         fn main() {
-            var v: Vec<i64> = Vec::new();
+            var v: Vec<i64> = Vec.new();
             v.push(1);
             let _x = v["nope"];
         }"#,
@@ -4447,7 +4447,7 @@ fn loader_registered_module_slice_signature_accepted_as_vec_alias() {
     )
     .expect("write module file");
 
-    let parse_result = hew_parser::parse("import std::issue856mod;\n\nfn main() {}\n");
+    let parse_result = hew_parser::parse("import std.issue856mod;\n\nfn main() {}\n");
     assert!(
         parse_result.errors.is_empty(),
         "parse errors: {:#?}",
@@ -4476,7 +4476,7 @@ fn hashmap_string_i64_annotation_typechecks_before_codegen() {
     assert_inline_typechecks_cleanly(
         r#"
         fn main() {
-            let m: HashMap<string, i64> = HashMap::new();
+            let m: HashMap<string, i64> = HashMap.new();
             m.insert("answer", 42);
             println(m.len());
         }"#,
@@ -4501,7 +4501,7 @@ fn vec_clone_method_typechecks_and_returns_vec() {
     assert_inline_typechecks_cleanly(
         r"
         fn main() {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             let c = v.clone();
             c.push(42);
             println(c.len());
@@ -4515,7 +4515,7 @@ fn hashmap_clone_method_typechecks_and_returns_hashmap() {
     assert_inline_typechecks_cleanly(
         r#"
         fn main() {
-            let m: HashMap<string, i64> = HashMap::new();
+            let m: HashMap<string, i64> = HashMap.new();
             let c = m.clone();
             c.insert("key", 7);
             println(c.contains_key("key"));
@@ -4529,7 +4529,7 @@ fn hashset_clone_method_typechecks_and_returns_hashset() {
     assert_inline_typechecks_cleanly(
         r#"
         fn main() {
-            let s: HashSet<string> = HashSet::new();
+            let s: HashSet<string> = HashSet.new();
             let c = s.clone();
             c.insert("value");
             println(c.contains("value"));
@@ -4551,8 +4551,8 @@ fn rc_in_named_struct_field_vec_push_supported() {
             val: Rc<i64>
         }
         fn main() {
-            var v = Vec::new();
-            let h = Holder { val: Rc::new(1) };
+            var v = Vec.new();
+            let h = Holder { val: Rc.new(1) };
             v.push(h);
         }",
         "Vec.push(Holder { val: Rc<i64> }) should carry aggregate Rc drop facts",
@@ -4567,8 +4567,8 @@ fn rc_in_named_struct_field_hashmap_value_supported() {
             val: Rc<i64>
         }
         fn main() {
-            var m = HashMap::new();
-            let h = Holder { val: Rc::new(1) };
+            var m = HashMap.new();
+            let h = Holder { val: Rc.new(1) };
             m.insert("k", h);
         }"#,
         "HashMap.insert(_, Holder { val: Rc<i64> }) should carry aggregate Rc drop facts",
@@ -4586,8 +4586,8 @@ fn rc_in_doubly_nested_named_struct_vec_push_supported() {
             inner: Inner
         }
         fn main() {
-            var v = Vec::new();
-            let o = Outer { inner: Inner { x: Rc::new(1) } };
+            var v = Vec.new();
+            let o = Outer { inner: Inner { x: Rc.new(1) } };
             v.push(o);
         }",
         "Vec.push(Outer wrapping Inner wrapping Rc<i64>) should carry nested Rc drop facts",
@@ -4603,8 +4603,8 @@ fn rc_in_named_enum_variant_vec_push_supported() {
             None;
         }
         fn main() {
-            var v = Vec::new();
-            v.push(MaybeHolder::Some(Rc::new(1)));
+            var v = Vec.new();
+            v.push(MaybeHolder.Some(Rc.new(1)));
         }",
         "Vec.push(MaybeHolder::Some(Rc<i64>)) should carry enum Rc drop facts",
     );
@@ -4619,7 +4619,7 @@ fn plain_named_struct_no_rc_vec_push_ok() {
             y: i64
         }
         fn main() {
-            var v = Vec::new();
+            var v = Vec.new();
             let p = Point { x: 1, y: 2 };
             v.push(p);
         }",
@@ -4639,7 +4639,7 @@ fn rc_param_iflet_body_trailing_expr_errors() {
             if let Some(_v) = opt {
                 r
             } else {
-                Rc::new(0)
+                Rc.new(0)
             }
         }
         fn main() {}
@@ -4663,7 +4663,7 @@ fn rc_param_iflet_else_trailing_expr_errors() {
         r"
         fn escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> {
             if let Some(_v) = opt {
-                Rc::new(0)
+                Rc.new(0)
             } else {
                 r
             }
@@ -4715,7 +4715,7 @@ fn rc_param_shadowing_local_return_is_clean() {
     let output = typecheck_inline(
         r"
         fn shadow(r: Rc<i64>) -> Rc<i64> {
-            let r = Rc::new(99);
+            let r = Rc.new(99);
             r
         }
         fn main() {}
@@ -4740,7 +4740,7 @@ fn rc_param_iflet_shadow_only_suppresses_inner_scope() {
         r"
         fn shadow_then_escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> {
             if let Some(v) = opt {
-                let r = Rc::new(v);
+                let r = Rc.new(v);
                 r
             } else {
                 r
@@ -4791,7 +4791,7 @@ fn hashmap_unresolved_key_type_fails_closed_at_boundary() {
     let output = typecheck_inline(
         r"
         fn main() {
-            var m = HashMap::new();
+            var m = HashMap.new();
             let _ = m.len();
         }",
     );
@@ -4811,7 +4811,7 @@ fn hashmap_unresolved_val_type_fails_closed_at_boundary() {
     let output = typecheck_inline(
         r"
         fn main() {
-            var m = HashMap::new();
+            var m = HashMap.new();
             let _ = m.is_empty();
         }",
     );
@@ -4833,7 +4833,7 @@ fn hashmap_error_key_type_fails_closed_silently() {
         r#"
         fn main() {
             let k = undefined_fn();
-            var m = HashMap::new();
+            var m = HashMap.new();
             m.insert(k, "val");
         }"#,
     );
@@ -4860,7 +4860,7 @@ fn hashmap_valid_string_key_int_val_not_rejected() {
     let output = typecheck_inline(
         r#"
         fn main() {
-            var m = HashMap::new();
+            var m = HashMap.new();
             m.insert("key", 42);
             let _ = m.len();
         }"#,
@@ -4879,7 +4879,7 @@ fn hashmap_annotation_with_infer_hole_key_fails_closed() {
     let output = typecheck_inline(
         r"
         fn main() {
-            let m: HashMap<_, string> = HashMap::new();
+            let m: HashMap<_, string> = HashMap.new();
         }",
     );
     assert!(
@@ -4903,7 +4903,7 @@ fn hashset_unresolved_element_type_fails_closed_at_boundary() {
     let output = typecheck_inline(
         r"
         fn main() {
-            var s = HashSet::new();
+            var s = HashSet.new();
             let _ = s.len();
         }",
     );
@@ -4956,7 +4956,7 @@ fn hashset_error_element_type_fails_closed_silently() {
         r"
         fn main() {
             let e = undefined_fn();
-            var s = HashSet::new();
+            var s = HashSet.new();
             s.insert(e);
         }",
     );
@@ -4983,7 +4983,7 @@ fn hashset_valid_string_element_not_rejected() {
     let output = typecheck_inline(
         r#"
         fn main() {
-            var s = HashSet::new();
+            var s = HashSet.new();
             s.insert("hello");
             let _ = s.len();
         }"#,
@@ -5001,7 +5001,7 @@ fn hashset_valid_i64_element_not_rejected() {
     let output = typecheck_inline(
         r"
         fn main() {
-            var s = HashSet::new();
+            var s = HashSet.new();
             s.insert(42);
             let _ = s.contains(42);
         }",
@@ -5022,7 +5022,7 @@ fn hashset_annotation_with_infer_hole_fails_closed() {
     let output = typecheck_inline(
         r"
         fn main() {
-            let s: HashSet<_> = HashSet::new();
+            let s: HashSet<_> = HashSet.new();
         }",
     );
     assert!(
@@ -5056,7 +5056,7 @@ fn hashset_unresolved_element_multiple_method_calls_no_duplicate_diagnostic() {
     let output = typecheck_inline(
         r"
         fn main() {
-            var s = HashSet::new();
+            var s = HashSet.new();
             let _ = s.len();
             let _ = s.is_empty();
         }",
@@ -5102,7 +5102,7 @@ fn hashset_annotation_only_unresolved_fails_closed_without_lowering_fact() {
     let output = typecheck_inline(
         r"
         fn main() {
-            var s: HashSet<_> = HashSet::new();
+            var s: HashSet<_> = HashSet.new();
         }",
     );
     // Exactly one InferenceFailed total (the binding-level hole).
@@ -5140,7 +5140,7 @@ fn hashmap_annotation_key_hole_no_duplicate_inference_failed() {
     let output = typecheck_inline(
         r"
         fn main() {
-            let m: HashMap<_, string> = HashMap::new();
+            let m: HashMap<_, string> = HashMap.new();
         }",
     );
     assert!(
@@ -5169,7 +5169,7 @@ fn hashmap_annotation_val_hole_no_duplicate_inference_failed() {
     let output = typecheck_inline(
         r"
         fn main() {
-            let m: HashMap<string, _> = HashMap::new();
+            let m: HashMap<string, _> = HashMap.new();
         }",
     );
     assert!(
@@ -5271,7 +5271,7 @@ fn hashmap_unresolved_multiple_method_calls_no_duplicate_diagnostic() {
     let output = typecheck_inline(
         r"
         fn main() {
-            var m = HashMap::new();
+            var m = HashMap.new();
             let _ = m.len();
             let _ = m.is_empty();
         }",
@@ -5531,7 +5531,7 @@ fn call_type_args_failed_generic_call_pruned_at_boundary() {
 fn deferred_channel_recv_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn take_one() -> Option<i64> {
             let (tx, rx) = channel.new(4);
@@ -5573,7 +5573,7 @@ fn deferred_channel_recv_int_constrained_after_call() {
 fn deferred_channel_recv_string_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn take_one() -> Option<string> {
             let (tx, rx) = channel.new(4);
@@ -5605,7 +5605,7 @@ fn deferred_channel_recv_string_constrained_after_call() {
 fn deferred_channel_try_recv_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn try_take() -> Option<i64> {
             let (tx, rx) = channel.new(4);
@@ -5638,7 +5638,7 @@ fn deferred_channel_try_recv_int_constrained_after_call() {
 fn deferred_channel_send_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn relay() {
             let (tx, rx) = channel.new(4);
@@ -5672,7 +5672,7 @@ fn deferred_channel_send_int_constrained_after_call() {
 fn deferred_channel_unresolved_inner_fails_closed() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         fn untyped() {
             let (tx, rx) = channel.new(4);
@@ -5755,7 +5755,7 @@ fn let_propagate_sugar_typed_annotation_accepted() {
 #[test]
 fn await_stream_recv_bytes_typechecks() {
     let output = typecheck_inline(
-        "import std::stream;\n\
+        "import std.stream;\n\
          #[opaque]\n\
          type Pair {}\n\
          extern \"C\" {\n\
@@ -5787,7 +5787,7 @@ fn await_stream_recv_bytes_typechecks() {
 #[test]
 fn await_stream_recv_int_element_admitted() {
     let output = typecheck_inline(
-        "import std::stream;\n\
+        "import std.stream;\n\
          #[opaque]\n\
          type Pair {}\n\
          extern \"C\" {\n\
@@ -5823,13 +5823,13 @@ fn await_stream_recv_int_element_admitted() {
 fn wasm_rejects_crypto_encrypt_module_calls() {
     // The gate fires at the method call level; argument types need not be valid.
     let output = typecheck_inline_wasm(
-        "import std::crypto::encrypt;\n\
+        "import std.crypto.encrypt;\n\
          fn main() { let _ = encrypt.seal(bytes [0x61], bytes [0x62]); }",
     );
     assert!(
         output.errors.iter().any(|e| {
             e.kind == hew_types::error::TypeErrorKind::PlatformLimitation
-                && e.message.contains("std::crypto::encrypt")
+                && e.message.contains("std.crypto.encrypt")
         }),
         "expected PlatformLimitation for encrypt module call on wasm32, got: {:#?}",
         output.errors
@@ -5842,7 +5842,7 @@ fn wasm_rejects_crypto_encrypt_module_calls() {
 fn wasm_rejects_crypto_sign_module_calls() {
     let output = typecheck_inline_wasm(
         r"
-        import std::crypto::sign;
+        import std.crypto.sign;
 
         fn main() {
             let kp = sign.keypair();
@@ -5854,7 +5854,7 @@ fn wasm_rejects_crypto_sign_module_calls() {
     assert!(
         output.errors.iter().any(|e| {
             e.kind == hew_types::error::TypeErrorKind::PlatformLimitation
-                && e.message.contains("std::crypto::sign")
+                && e.message.contains("std.crypto.sign")
         }),
         "expected PlatformLimitation for sign module call on wasm32, got: {:#?}",
         output.errors
@@ -5867,7 +5867,7 @@ fn wasm_rejects_crypto_sign_module_calls() {
 #[test]
 fn wasm_rejects_crypto_random_bytes_module_call() {
     let output = typecheck_inline_wasm(
-        "import std::crypto::crypto;\n\
+        "import std.crypto.crypto;\n\
          fn main() { let _ = crypto.random_bytes(32); }",
     );
     assert!(
@@ -5885,7 +5885,7 @@ fn wasm_rejects_crypto_random_bytes_module_call() {
 #[test]
 fn native_allows_crypto_encrypt_and_sign_module_calls() {
     let encrypt_output = typecheck_inline(
-        "import std::crypto::encrypt;\n\
+        "import std.crypto.encrypt;\n\
          fn main() { let _ = encrypt.seal(bytes [0x61], bytes [0x62]); }",
     );
     assert!(
@@ -5899,7 +5899,7 @@ fn native_allows_crypto_encrypt_and_sign_module_calls() {
 
     let sign_output = typecheck_inline(
         r"
-        import std::crypto::sign;
+        import std.crypto.sign;
 
         fn main() {
             let kp = sign.keypair();
@@ -5931,7 +5931,7 @@ fn native_allows_crypto_encrypt_and_sign_module_calls() {
 fn monomorphic_machine_channel_element_admitted() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         machine Light {
             events {
@@ -5945,7 +5945,7 @@ fn monomorphic_machine_channel_element_admitted() {
 
         fn main() {
             let (tx, rx): (channel.Sender<Light>, channel.Receiver<Light>) = channel.new(2);
-            tx.send(Light::Off);
+            tx.send(Light.Off);
             tx.close();
             let _ = rx.recv();
             rx.close();
@@ -5970,8 +5970,8 @@ fn monomorphic_machine_channel_element_admitted() {
 fn generic_machine_instantiation_channel_element_refused() {
     let output = typecheck_inline(
         r"
-        import std::concurrency::lifecycle;
-        import std::channel::channel;
+        import std.concurrency.lifecycle;
+        import std.channel.channel;
 
         fn main() {
             let (tx, rx): (channel.Sender<lifecycle.Lifecycle<i64>>, channel.Receiver<lifecycle.Lifecycle<i64>>) = channel.new(2);
@@ -5998,7 +5998,7 @@ fn generic_machine_instantiation_channel_element_refused() {
 fn container_bearing_machine_channel_element_refused() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         machine Buffered {
             events {
@@ -6006,13 +6006,13 @@ fn container_bearing_machine_channel_element_refused() {
             }
             state Empty;
             state Loaded { items: Vec<i64>; }
-            on Load: Empty => Loaded { Buffered::Loaded { items: event.items } }
+            on Load: Empty => Loaded { Buffered.Loaded { items: event.items } }
             on Load: _ => _ { state }
         }
 
         fn main() {
             let (tx, rx): (channel.Sender<Buffered>, channel.Receiver<Buffered>) = channel.new(2);
-            tx.send(Buffered::Empty);
+            tx.send(Buffered.Empty);
             tx.close();
             let _ = rx.recv();
             rx.close();
@@ -6039,7 +6039,7 @@ fn container_bearing_machine_channel_element_refused() {
 fn remote_receive_fn_dispatch_with_channel_handle_refused() {
     let output = typecheck_inline(
         r"
-        import std::channel::channel;
+        import std.channel.channel;
 
         actor Observer {
             receive fn watch(rx: channel.Receiver<string>) {

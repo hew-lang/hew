@@ -3,7 +3,7 @@ type HoldsMap {
 }
 
 fn main() {
-    let a = HoldsMap { values: HashMap::new() };
-    let b = HoldsMap { values: HashMap::new() };
+    let a = HoldsMap { values: HashMap.new() };
+    let b = HoldsMap { values: HashMap.new() };
     let _ = a == b;
 }

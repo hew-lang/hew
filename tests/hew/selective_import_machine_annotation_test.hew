@@ -8,9 +8,9 @@
 //! type at the boundary. Inferred locals and module-qualified annotations
 //! were the working controls.
 
-import tests::hew::imported_machine_support::machine_defs::{PayloadLifecycle, make, bounce};
+import tests.hew.imported_machine_support.machine_defs.{PayloadLifecycle, make, bounce};
 
-import std::testing;
+import std.testing;
 
 fn carry(value: PayloadLifecycle) -> PayloadLifecycle {
     value
@@ -18,8 +18,8 @@ fn carry(value: PayloadLifecycle) -> PayloadLifecycle {
 
 fn label_of(value: PayloadLifecycle) -> string {
     match value {
-        PayloadLifecycle::Loaded { label } => label,
-        PayloadLifecycle::Empty => "empty",
+        PayloadLifecycle.Loaded { label } => label,
+        PayloadLifecycle.Empty => "empty",
     }
 }
 
@@ -32,7 +32,7 @@ fn selectively_imported_machine_crosses_bare_annotated_parameter() {
 
 #[test]
 fn selectively_imported_machine_transitions_through_bare_spelling() {
-    var value = PayloadLifecycle::Empty;
+    var value = PayloadLifecycle.Empty;
     value = bounce(value);
     testing.assert_eq_str(label_of(value), "empty");
 }

@@ -47,7 +47,7 @@ fn forwarded_var_reassignment_lowers_without_diagnostics() {
         fn passthru(v: Vec<string>) -> Result<Vec<string>, string> { Ok(v) }
         fn caller(v: Vec<string>) -> Result<i64, string> {
             var left = passthru(v)?;
-            let fresh: Vec<string> = Vec::new();
+            let fresh: Vec<string> = Vec.new();
             left = fresh;
             Ok(left.len())
         }

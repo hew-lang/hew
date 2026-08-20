@@ -16,7 +16,7 @@ extern "C" {
 }
 
 fn main() -> i64 {
-    let m: HashMap<string, WrappedHandle> = HashMap::new();
+    let m: HashMap<string, WrappedHandle> = HashMap.new();
     let h = unsafe { hew_handle_create() };
     m.insert("h", WrappedHandle { h: h });
     let _ = m.get("h");

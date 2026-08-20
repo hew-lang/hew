@@ -72,7 +72,7 @@ fn main() {
 test("runProgram reads two stdin lines from the page input buffer byte-cleanly", () => {
   const result = runProgram(
     `
-import std::io;
+import std.io;
 
 fn main() {
     let first = io.read_line();

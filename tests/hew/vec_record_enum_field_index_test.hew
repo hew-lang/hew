@@ -1,0 +1,57 @@
+//! A record with a direct-enum field is stored INLINE in a Vec buffer at the
+//! full record stride (`hew_vec_push_layout`), so indexing must read through
+//! the layout-descriptor getter at that same stride — never the pointer
+//! getter (F4, dogfood 2026-08-13: `v[0]` panicked with an elem-size abort
+//! while `hew check` accepted the program).
+
+import std.testing;
+
+enum JobKind {
+    Compute(i32);
+    Poison;
+}
+
+type Job {
+    id: i32;
+    kind: JobKind;
+}
+
+fn payload_of(kind: JobKind) -> i64 {
+    match kind {
+        .Compute(n) => n as i64,
+        .Poison => -1,
+    }
+}
+
+#[test]
+fn test_index_reads_record_with_enum_field_at_record_stride() {
+    let v: Vec<Job> = Vec.new();
+    v.push(Job { id: 1, kind: .Compute(5) });
+    v.push(Job { id: 2, kind: .Poison });
+    v.push(Job { id: 3, kind: .Compute(7) });
+    let first = v[0];
+    testing.assert_eq(first.id as i64, 1);
+    testing.assert_eq(payload_of(first.kind), 5);
+
+    // A mis-strided getter reads the WRONG slot bytes for every index > 0.
+    let second = v[1];
+    testing.assert_eq(second.id as i64, 2);
+    testing.assert_eq(payload_of(second.kind), -1);
+    let third = v[2];
+    testing.assert_eq(third.id as i64, 3);
+    testing.assert_eq(payload_of(third.kind), 7);
+}
+
+#[test]
+fn test_index_and_pop_agree_on_stride_for_enum_bearing_record() {
+    let v: Vec<Job> = Vec.new();
+    v.push(Job { id: 10, kind: .Compute(11) });
+    v.push(Job { id: 20, kind: .Compute(21) });
+    let indexed = v[1];
+    testing.assert_eq(indexed.id as i64, 20);
+    testing.assert_eq(payload_of(indexed.kind), 21);
+    let popped = v.pop();
+    testing.assert_eq(popped.id as i64, 20);
+    testing.assert_eq(payload_of(popped.kind), 21);
+    testing.assert_eq(v.len(), 1);
+}

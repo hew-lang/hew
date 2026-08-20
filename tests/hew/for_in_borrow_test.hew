@@ -4,12 +4,12 @@
 //! after the loop — the binding is NOT consumed.  Element values are asserted
 //! exactly so the test fails on uninitialised memory or wrong indices.
 
-import std::testing;
+import std.testing;
 
 // ── Vec<i64> ──────────────────────────────────────────────────────────────────
 #[test]
 fn test_vec_i64_for_in_borrows_collection() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(10);
     v.push(20);
     v.push(30);
@@ -28,7 +28,7 @@ fn test_vec_i64_for_in_borrows_collection() {
 
 #[test]
 fn test_vec_i64_second_loop_after_first() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(2);
     v.push(3);
@@ -49,7 +49,7 @@ fn test_vec_i64_second_loop_after_first() {
 // ── Vec<string> ───────────────────────────────────────────────────────────────
 #[test]
 fn test_vec_string_for_in_borrows_collection() {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     v.push("alpha");
     v.push("beta");
     v.push("gamma");
@@ -69,7 +69,7 @@ fn test_vec_string_for_in_borrows_collection() {
 // ── Vec<f64> ──────────────────────────────────────────────────────────────────
 #[test]
 fn test_vec_f64_for_in_borrows_collection() {
-    let v: Vec<f64> = Vec::new();
+    let v: Vec<f64> = Vec.new();
     v.push(1.5);
     v.push(2.5);
     v.push(3.0);
@@ -105,7 +105,7 @@ fn test_range_for_in_elements_and_count() {
 // ── Empty Vec — loop body does not execute ────────────────────────────────────
 #[test]
 fn test_empty_vec_for_in_borrows_collection() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     var count: i64 = 0;
     for x in v {
         count = count + x;
@@ -119,7 +119,7 @@ fn test_empty_vec_for_in_borrows_collection() {
 // Borrow semantics must allow mutation of the collection after the loop.
 #[test]
 fn test_vec_mutable_after_for_in() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(2);
     for x in v {

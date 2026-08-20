@@ -1,5 +1,5 @@
-import ambiguity::type_left::{ClashType};
-import ambiguity::type_right::{ClashType};
+import ambiguity.type_left.{ClashType};
+import ambiguity.type_right.{ClashType};
 
 fn main() {
     let item: ClashType = ClashType { value: 1 };

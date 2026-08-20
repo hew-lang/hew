@@ -7,7 +7,7 @@ use hew_types::error::TypeErrorKind;
 fn handle_wrapper_accessor_returning_raw_field_is_rejected() {
     let output = typecheck(
         "
-        import std::text::regex;
+        import std.text.regex;
 
         type PatternWrapper {
             pattern: regex.Pattern
@@ -43,7 +43,7 @@ fn handle_wrapper_accessor_returning_raw_field_is_rejected() {
 fn handle_wrapper_methods_can_use_inner_handle_without_exposing_it() {
     let output = typecheck(
         r#"
-        import std::text::regex;
+        import std.text.regex;
 
         type PatternWrapper {
             pattern: regex.Pattern

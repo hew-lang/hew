@@ -23,6 +23,6 @@ machine Lifecycle<T> {
 type Box { m: Lifecycle<i64>, x: i64 }
 
 fn main() {
-    let b = Box { m: Lifecycle::Start, x: 0 };
+    let b = Box { m: Lifecycle.Start, x: 0 };
     println(b.x);
 }

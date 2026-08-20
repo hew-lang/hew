@@ -1,4 +1,4 @@
-import std::encoding::xml;
+import std.encoding.xml;
 
 type ParseError {
     message: string;
@@ -13,15 +13,15 @@ enum ParseOutcome {
 
 fn classify(s: string) -> ParseOutcome {
     match xml.try_parse(s) {
-        Ok(node) => ParseOutcome::Parsed(node),
-        Err(message) => ParseOutcome::Failed(ParseError { message: message, offset: 0 }),
+        Ok(node) => ParseOutcome.Parsed(node),
+        Err(message) => ParseOutcome.Failed(ParseError { message: message, offset: 0 }),
     }
 }
 
 fn main() {
     match classify("<root/>") {
-        ParseOutcome::Parsed(node) => println(node.get_tag()),
-        ParseOutcome::Failed(error) => println(error.message),
-        ParseOutcome::Skipped(message) => println(message),
+        ParseOutcome.Parsed(node) => println(node.get_tag()),
+        ParseOutcome.Failed(error) => println(error.message),
+        ParseOutcome.Skipped(message) => println(message),
     }
 }

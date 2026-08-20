@@ -535,6 +535,51 @@ impl Builder {
     /// function-local AND its `name` resolves in `current_actor_state_fields`)
     /// is the same one the `ActorStateFieldLoad` emitter uses to recognise a
     /// bare state field.
+    /// True when a `VecIter { vec, idx }` cursor's `vec`-field SOURCE expr is a
+    /// consuming read of a BARE actor state field (`plugins.into_iter()` inside
+    /// a receive handler). The fourth member of the projection-borrow family —
+    /// unlike the three borrow siblings, this shape must neither borrow (a
+    /// consuming iteration over drop-only elements MUTATES the shared buffer —
+    /// `hew_vec_take_owned` zeroes each yielded slot, so a later dispatch would
+    /// re-iterate moved-from values) nor move the handle (the cursor's own free
+    /// would leave the persistent state slot dangling: the next dispatch reads
+    /// freed heap and teardown double-frees — dogfood F3, 2026-08-13). The
+    /// lowering instead routes the loaded handle through `hew_vec_take_all`:
+    /// the cursor owns the taken buffer, the state slot stays a valid empty
+    /// vec with its stamped element descriptor.
+    ///
+    /// The `Capture` intent exclusion keeps the direct `for x in field` desugar
+    /// (a genuine borrow cursor over clone-out getters) on its established
+    /// borrow path; `.iter()`'s clone and rvalue sources are not `BindingRef`s
+    /// and never reach here. The root discriminator (`id` is not a
+    /// function-local AND `name` resolves in `current_actor_state_fields`)
+    /// matches the `ActorStateFieldLoad` emitter's, so this predicate fires for
+    /// exactly the loads that alias persistent state.
+    pub(crate) fn vec_field_src_consumes_bare_actor_state_field(&self, src: &HirExpr) -> bool {
+        let mut cur = src;
+        while let HirExprKind::SubsumedValue { source, .. } = &cur.kind {
+            cur = source;
+        }
+        if cur.intent == hew_hir::IntentKind::Capture {
+            return false;
+        }
+        let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(id),
+        } = &cur.kind
+        else {
+            return false;
+        };
+        !self.binding_locals.contains_key(id)
+            && self.current_actor_state_fields.contains_key(name)
+            && matches!(
+                self.subst_ty(&cur.ty),
+                ResolvedTy::Named {
+                    builtin: Some(BuiltinType::Vec),
+                    ..
+                }
+            )
+    }
     pub(crate) fn vec_iter_source_projects_actor_state_field(&self, value: &HirExpr) -> bool {
         let Some(mut cur) = vec_iter_init_vec_source_expr(value) else {
             return false;

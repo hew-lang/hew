@@ -1,19 +1,20 @@
 fn build -> Weak<Node>
   statements:
     bind BindingId(4294967231) __hew_produced_value site=SiteId(1) ty=Node
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(0) ty=Rc<Node>
     bind BindingId(0) root site=SiteId(0) ty=Rc<Node>
     use BindingId(0) root site=SiteId(5) ty=Rc<Node> intent=Read
-    bind BindingId(4294967230) __hew_produced_value site=SiteId(4) ty=Weak<Node>
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(4) ty=Weak<Node>
     bind BindingId(1) weak site=SiteId(4) ty=Weak<Node>
     use BindingId(0) root site=SiteId(7) ty=Rc<Node> intent=Read
     use BindingId(1) weak site=SiteId(12) ty=Weak<Node> intent=Read
-    bind BindingId(4294967229) __hew_produced_value site=SiteId(11) ty=Weak<Node>
-    bind BindingId(4294967228) __hew_produced_value site=SiteId(10) ty=Option<Weak<Node>>
-    bind BindingId(4294967227) __hew_produced_value site=SiteId(8) ty=Node
+    bind BindingId(4294967228) __hew_produced_value site=SiteId(11) ty=Weak<Node>
+    bind BindingId(4294967227) __hew_produced_value site=SiteId(10) ty=Option<Weak<Node>>
+    bind BindingId(4294967226) __hew_produced_value site=SiteId(8) ty=Node
     eval site=SiteId(6) ty=()
     use BindingId(1) weak site=SiteId(13) ty=Weak<Node> intent=Read
     return site=Some(SiteId(13)) ty=Weak<Node>
-    drop BindingId(4294967227) __hew_produced_value ty=Node
+    drop BindingId(4294967226) __hew_produced_value ty=Node
     drop BindingId(0) root ty=Rc<Node>
     drop BindingId(4294967231) __hew_produced_value ty=Node
   drop_plans:

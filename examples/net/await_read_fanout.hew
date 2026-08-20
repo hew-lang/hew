@@ -10,7 +10,7 @@
 //! deposit each socket's bytes into the right parked continuation, not cross
 //! them. A correct run prints `reader-i-got: payload-i` for every i.
 
-import std::net;
+import std.net;
 
 const READER_COUNT: i64 = 4;
 

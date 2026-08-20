@@ -1,12 +1,12 @@
 fn main() {
-    let x: HashMap<string, i64> = HashMap::new();
+    let x: HashMap<string, i64> = HashMap.new();
     x.insert("a", 1);
     x.insert("b", 2);
     let y = clone x;
     let y_l = y.len();
-    let y_a = match y.get("a") { Some(y_g) => y_g, None => -1, };
+    let y_a = match y.get("a") { Option.Some(y_g) => y_g, None => -1, };
     println(f"len={y_l} a={y_a}");
     let x_l = x.len();
-    let x_a = match x.get("a") { Some(x_g) => x_g, None => -1, };
+    let x_a = match x.get("a") { Option.Some(x_g) => x_g, None => -1, };
     println(f"len={x_l} a={x_a}");
 }

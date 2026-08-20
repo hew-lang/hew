@@ -1,8 +1,8 @@
 //! Behavioural tests for std::crypto::sign.
 
-import std::crypto::sign;
+import std.crypto.sign;
 
-import std::testing;
+import std.testing;
 
 #[test]
 fn test_sign_verify_roundtrip_succeeds() {

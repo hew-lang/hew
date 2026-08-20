@@ -8,7 +8,7 @@ pub(super) use super::*;
 fn closable_consume_authority_matches_exact_impl_trait_identity() {
     let parsed = hew_parser::parse(
         r"
-        import std::io::closable;
+        import std.io.closable;
         type Probe { value: i64; }
         impl Closable for Probe {
             fn close(value: Probe) -> Result<(), closable.CloseError> { Ok(()) }
@@ -2871,6 +2871,100 @@ fn async_generator_satisfies_iterator_bound_with_item_resolved_to_concrete_yield
         "AsyncGenerator<i64> should satisfy `Iterator<Item = i64>` through the \
          real impl with a correctly-substituted associated type; got {:?}",
         output.errors
+    );
+}
+
+// ── Top-level type-alias marker-derivation coverage ────────────────────────
+//
+// `TraitRegistry` has no alias table of its own: structural marker derivation
+// (Send/Copy/Frozen/Sync/Eq/Hash/Clone) walks a named type's registered
+// member-type list, and until this fix that list carried an alias field's
+// unexpanded `Ty::Named { Label }` presentation, which the registry treated
+// as an unknown nominal and derived conservatively false for every marker
+// (`cannot send AppConfig to actor: type is not Send` even when the aliased
+// field was `string`). Registration now expands aliases into the
+// registry-facing member list (`expand_for_marker_registration`) while
+// `type_def.fields` keeps the unexpanded alias for identity-preserving sites
+// (field access, impl-on-alias). One test proves both directions for every
+// marker that derives structurally from field types: an alias-of-`i64` field
+// must derive every marker true (matching an unaliased `i64` field), and an
+// alias-of-`Rc<i64>` field must derive every marker false except
+// `Clone`/`Drop` (matching an unaliased `Rc<i64>` field) — `Rc` is the one
+// builtin whose marker set is `Clone | Drop` only (see `implements_marker_guarded`),
+// so it exercises the false branch of every other marker in one repro.
+#[test]
+fn record_field_marker_derivation_expands_top_level_alias() {
+    let source = r"
+        type GoodAlias = i64;
+        type BadAlias = Rc<i64>;
+
+        record Good { v: GoodAlias }
+        record Bad { v: BadAlias }
+
+        fn main() {}
+    ";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "typecheck errors: {:?}",
+        output.errors
+    );
+
+    let good = Ty::Named {
+        builtin: None,
+        name: "Good".to_string(),
+        args: vec![],
+    };
+    let bad = Ty::Named {
+        builtin: None,
+        name: "Bad".to_string(),
+        args: vec![],
+    };
+
+    for marker in [
+        crate::traits::MarkerTrait::Send,
+        crate::traits::MarkerTrait::Copy,
+        crate::traits::MarkerTrait::Frozen,
+        crate::traits::MarkerTrait::Sync,
+        crate::traits::MarkerTrait::Eq,
+        crate::traits::MarkerTrait::Hash,
+        crate::traits::MarkerTrait::Clone,
+    ] {
+        assert!(
+            checker.registry.implements_marker(&good, marker),
+            "`Good {{ v: GoodAlias }}` (GoodAlias = i64) must derive {marker:?} — \
+             alias expansion must reach the marker registry"
+        );
+    }
+    // `Rc<i64>` derives ONLY Clone/Drop; every other marker must stay false
+    // through the SAME alias-expansion path — proves the fix does not launder
+    // a genuinely non-Send/non-Copy/... aliased field into a false accept.
+    for marker in [
+        crate::traits::MarkerTrait::Send,
+        crate::traits::MarkerTrait::Copy,
+        crate::traits::MarkerTrait::Frozen,
+        crate::traits::MarkerTrait::Sync,
+        crate::traits::MarkerTrait::Eq,
+        crate::traits::MarkerTrait::Hash,
+    ] {
+        assert!(
+            !checker.registry.implements_marker(&bad, marker),
+            "`Bad {{ v: BadAlias }}` (BadAlias = Rc<i64>) must NOT derive {marker:?} \
+             — alias expansion must not paper over a genuinely non-{marker:?} field"
+        );
+    }
+    assert!(
+        checker
+            .registry
+            .implements_marker(&bad, crate::traits::MarkerTrait::Clone),
+        "`Bad {{ v: BadAlias }}` must still derive Clone — Rc supports Clone/Drop"
     );
 }
 

@@ -5,7 +5,7 @@
 // `RuntimeCallFamily` carried on the call, and the codegen layout-fact
 // walker classifies them by family.
 fn main() {
-    let m: HashMap<string, i64> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap.new();
     m.insert("alice", 10);
     m.insert("bob", 20);
     let ks = m.keys();

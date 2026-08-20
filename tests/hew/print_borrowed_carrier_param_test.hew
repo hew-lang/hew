@@ -13,7 +13,7 @@
 //! freed, or replaced the borrowed representation fails these assertions rather
 //! than merely compiling.
 
-import std::testing;
+import std.testing;
 
 fn print_direct(k: string) {
     println(k);

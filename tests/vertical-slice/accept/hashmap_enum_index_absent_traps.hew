@@ -10,12 +10,12 @@ enum Shade {
 }
 
 fn main() -> i64 {
-    let m: HashMap<string, Shade> = HashMap::new();
-    m.insert("present", Shade::Dark);
+    let m: HashMap<string, Shade> = HashMap.new();
+    m.insert("present", Shade.Dark);
     // "absent" was never inserted: the read must trap before yielding a variant.
     let s = m["absent"];
     match s {
-        Shade::Dark => 1,
+        Shade.Dark => 1,
         _ => 0,
     }
 }

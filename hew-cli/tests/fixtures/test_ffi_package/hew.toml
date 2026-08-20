@@ -1,0 +1,9 @@
+[package]
+name = "test-ffi-package"
+version = "0.1.0"
+edition = "2026"
+
+[native]
+crate = "."
+lib = "hew_test_ffi_package"
+kind = "staticlib"

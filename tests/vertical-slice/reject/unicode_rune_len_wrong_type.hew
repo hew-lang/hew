@@ -1,4 +1,4 @@
-import std::text::unicode;
+import std.text.unicode;
 
 fn bad() -> i64 {
     unicode.rune_len("A")

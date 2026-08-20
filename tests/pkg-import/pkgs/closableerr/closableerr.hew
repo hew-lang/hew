@@ -17,3 +17,13 @@ pub type CloseError {
 pub trait Closable {
     fn close(val: Self) -> Result<(), CloseError>;
 }
+
+/// Non-prelude error leaf used by the local-shadow conformance oracle.
+pub type LocalShadowError {
+    code: i64;
+}
+
+/// Companion trait whose error leaf can be shadowed legally by an importer.
+pub trait LocalShadowClosable {
+    fn close(val: Self) -> Result<(), LocalShadowError>;
+}

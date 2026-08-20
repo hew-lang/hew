@@ -8,7 +8,7 @@
 //! An `impl SubA for T` that provides the inherited `base` inline must have it
 //! checked against `reexbase.Base` (`-> i64`).
 
-import hew::reexbase::{Base as B};
+import hew.reexbase.{Base as B};
 
 /// Sub-trait of the aliased re-imported `Base`. The super edge `B` resolves to
 /// `reexbase.Base` through this module's aliased import binding.

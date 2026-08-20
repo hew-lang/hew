@@ -107,7 +107,7 @@ fn main() {
     var passed = 0;
     var failed = 0;
     // Data array: [10, 20, 30, 40, 50, 60, 70, 80]
-    let data: Vec<i64> = Vec::new();
+    let data: Vec<i64> = Vec.new();
     data.push(10);
     data.push(20);
     data.push(30);
@@ -116,7 +116,7 @@ fn main() {
     data.push(60);
     data.push(70);
     data.push(80);
-    let nodes: Vec<i64> = Vec::new();
+    let nodes: Vec<i64> = Vec.new();
     // Create leaves: [10,20,30] and [40,50] and [60,70,80]
     let leaf1 = make_leaf(nodes, 0, 3); // data[0..3] = [10,20,30]
     let leaf2 = make_leaf(nodes, 3, 2); // data[3..5] = [40,50]
@@ -217,7 +217,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 7: Collect all elements in order
-    let collected: Vec<i64> = Vec::new();
+    let collected: Vec<i64> = Vec.new();
     rope_collect(nodes, data, abc, collected);
     var col_ok = 1;
     if collected.len() != 8 {
@@ -239,8 +239,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 8: Build rope with different tree shape (right-heavy)
-    let nodes2: Vec<i64> = Vec::new();
-    let data2: Vec<i64> = Vec::new();
+    let nodes2: Vec<i64> = Vec.new();
+    let data2: Vec<i64> = Vec.new();
     data2.push(1);
     data2.push(2);
     data2.push(3);
@@ -277,8 +277,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 9: Single element rope
-    let nodes3: Vec<i64> = Vec::new();
-    let data3: Vec<i64> = Vec::new();
+    let nodes3: Vec<i64> = Vec.new();
+    let data3: Vec<i64> = Vec.new();
     data3.push(99);
     let single = make_leaf(nodes3, 0, 1);
     if rope_length(nodes3, single) == 1 {
@@ -294,8 +294,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 10: Concat single elements
-    let nodes4: Vec<i64> = Vec::new();
-    let data4: Vec<i64> = Vec::new();
+    let nodes4: Vec<i64> = Vec.new();
+    let data4: Vec<i64> = Vec.new();
     data4.push(100);
     data4.push(200);
     data4.push(300);

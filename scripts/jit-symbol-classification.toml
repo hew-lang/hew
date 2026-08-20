@@ -181,14 +181,30 @@ stable = [
   "hew_assert",
   "hew_assert_eq_bool",
   "hew_assert_eq_f64",
+  "hew_assert_eq_i8",
+  "hew_assert_eq_i16",
+  "hew_assert_eq_i32",
   "hew_assert_eq_i64",
+  "hew_assert_eq_isize",
   "hew_assert_eq_str",
+  "hew_assert_eq_u16",
+  "hew_assert_eq_u32",
+  "hew_assert_eq_u64",
+  "hew_assert_eq_u8",
+  "hew_assert_eq_usize",
   "hew_assert_ne_bool",
   "hew_assert_ne_f64",
+  "hew_assert_ne_i8",
+  "hew_assert_ne_i16",
+  "hew_assert_ne_i32",
   "hew_assert_ne_i64",
-  "hew_assert_eq_u8",
+  "hew_assert_ne_isize",
   "hew_assert_ne_str",
+  "hew_assert_ne_u16",
+  "hew_assert_ne_u32",
+  "hew_assert_ne_u64",
   "hew_assert_ne_u8",
+  "hew_assert_ne_usize",
   "hew_blocking_pool_new",
   "hew_blocking_pool_stop",
   "hew_blocking_pool_submit",
@@ -534,6 +550,8 @@ stable = [
   "hew_registry_unregister",
   "hew_reply",
   "hew_reply_channel_cancel",
+  "hew_reply_channel_publish_cancelled",
+  "hew_reply_channel_publish_task_failed",
   "hew_reply_channel_failure_kind",
   "hew_reply_channel_free",
   "hew_reply_channel_is_orphaned",
@@ -692,8 +710,10 @@ stable = [
   "hew_task_get_env",
   "hew_task_get_error",
   "hew_task_get_result",
+  "hew_task_take_result",
   "hew_task_is_cancelled",
   "hew_task_new",
+  "hew_task_result_publication_checkpoint",
   "hew_task_scope_cancel",
   "hew_task_scope_cancel_after_ns",
   "hew_task_scope_cancel_token",
@@ -714,6 +734,7 @@ stable = [
   "hew_task_set_cancel_cleanup_fn",
   "hew_task_set_cancel_token",
   "hew_task_set_env",
+  "hew_task_set_result_drop_fn",
   "hew_task_set_result",
   "hew_task_spawn_thread",
   "hew_task_spawn_thread_with_inherited_context",
@@ -797,6 +818,7 @@ stable = [
   "hew_vec_get_bool",
   "hew_vec_get_clone",
   "hew_vec_take_owned",
+  "hew_vec_take_all",
   "hew_vec_get_f32",
   "hew_vec_get_f64",
   "hew_vec_get_generic",
@@ -1691,6 +1713,7 @@ internal = [
   # Cargo feature — absent from a default build. Not user-callable; not
   # JIT-reachable.
   "hew_test_pause_next_task_spawn_until_scope_cancel",
+  "hew_test_pause_next_task_result_until_scope_cancel",
   "hew_trace_clear",
   "hew_trace_drain",
   "hew_trace_reset",
@@ -2255,6 +2278,16 @@ discharge-depth = "shallow"
 # hew-runtime/src/vec.rs:2964-3009 allocates a deep owned-element clone.
 [[ownership.contracts]]
 symbol = "hew_vec_clone_owned"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free_owned"
+discharge-depth = "deep"
+
+# Moves the whole buffer into a fresh vec; the borrowed source stays a valid
+# empty vec with its stamped descriptor (consuming iteration over a Vec in
+# persistent actor state).
+[[ownership.contracts]]
+symbol = "hew_vec_take_all"
 result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_vec_free_owned"

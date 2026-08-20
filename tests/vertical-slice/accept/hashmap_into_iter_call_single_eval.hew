@@ -7,11 +7,11 @@
 // would run `make_map()` twice (double side effects, two distinct maps). The
 // producer prints "MK" once: stdout MUST be a single line. Three entries →
 // count 3. Exit 3.
-import std::iter;
+import std.iter;
 
 fn make_map() -> HashMap<i64, i64> {
     println("MK");
-    let m: HashMap<i64, i64> = HashMap::new();
+    let m: HashMap<i64, i64> = HashMap.new();
     m.insert(1, 10);
     m.insert(2, 20);
     m.insert(3, 30);
@@ -19,5 +19,5 @@ fn make_map() -> HashMap<i64, i64> {
 }
 
 pub fn main() -> i64 {
-    iter::count(make_map().into_iter())
+    iter.count(make_map().into_iter())
 }

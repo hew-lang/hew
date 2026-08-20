@@ -260,7 +260,7 @@ fn lambda_vec_capture_still_fails_closed() {
     // its heap and double-free at shutdown.
     let source = r"
 fn main() {
-    let xs: Vec<i64> = Vec::new();
+    let xs: Vec<i64> = Vec.new();
     let f = actor |n: i64| -> i64 { xs[0] + n };
 }
 ";

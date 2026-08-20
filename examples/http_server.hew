@@ -7,15 +7,15 @@
 //
 // Usage: http_server [port] [root_dir]
 // Defaults: port=8080, root_dir="."
-import std::net::http::{Request, Server};
+import std.net.http.{Request, Server};
 
-import std::fs;
+import std.fs;
 
-import std::os;
+import std.os;
 
-import std::net::mime;
+import std.net.mime;
 
-import std::net;
+import std.net;
 
 fn serve_forever(root: string, srv: Server) {
     loop {
@@ -65,10 +65,10 @@ fn main() {
     println("=== Hew HTTP Static File Server ===");
     println(f"Listening on http://{addr}  root={root}");
     match http.listen(addr) {
-        Ok(srv) => {
+        .Ok(srv) => {
             serve_forever(root, srv);
         },
-        Err(err) => {
+        .Err(err) => {
             let reason = net.net_error_message(err);
             let detail = http.listen_error();
             println(f"cannot listen on {addr}: {reason} - {detail}");

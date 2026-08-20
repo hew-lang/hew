@@ -139,7 +139,7 @@ fn manifest_undeclared_import_rejected_identically() {
     let main_hew = workspace.path().join("main.hew");
     fs::write(
         &main_hew,
-        "import some::external::lib;\n\nfn main() -> i64 { return 0; }\n",
+        "import some.external.lib;\n\nfn main() -> i64 { return 0; }\n",
     )
     .expect("write main.hew");
 
@@ -176,19 +176,19 @@ fn manifest_undeclared_import_rejected_identically() {
 
     // Belt-and-suspenders: both mention the undeclared module.
     assert!(
-        check_body.contains("some::external::lib"),
+        check_body.contains("some.external.lib"),
         "diagnostic should name the offending module: {check_body}",
     );
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 2: re"..." literal — implicit std::text::regex injection
+// Scenario 2: re"..." literal — implicit std.text.regex injection
 // ---------------------------------------------------------------------------
 
 /// Source using a `re"..."` regex literal triggers implicit injection of
-/// `import std::text::regex;` by `inject_implicit_imports`.  The frontend
+/// `import std.text.regex;` by `inject_implicit_imports`.  The frontend
 /// should accept the source at the frontend layer on both paths (the implicit
-/// import is resolved via `std::`, which is always builtin).
+/// import is resolved via `std.`, which is always builtin).
 ///
 /// Stage 2 routes `hew check` through HIR/MIR too, so both commands may then
 /// fail after the frontend on regex-literal MIR support. The invariant here is
@@ -291,7 +291,7 @@ fn type_error_in_imported_module_reported_identically() {
     let main_hew = workspace.path().join("main.hew");
     fs::write(
         &main_hew,
-        "import siblingpkg::helper;\n\nfn main() -> i64 {\n    return helper.value();\n}\n",
+        "import siblingpkg.helper;\n\nfn main() -> i64 {\n    return helper.value();\n}\n",
     )
     .expect("write main.hew");
 

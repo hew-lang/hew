@@ -8,7 +8,7 @@
 //   Client node: connects, looks up "room", sends messages
 //
 // The actor code is identical whether local or distributed.
-// Node::start/shutdown/register/lookup typecheck today. Node::connect is
+// Node.start/shutdown/register/lookup typecheck today. Node.connect is
 // runtime-only for now (not a typechecker builtin yet).
 actor ChatRoom {
     let users: Vec<string>;
@@ -39,17 +39,17 @@ actor ChatRoom {
 
 fn main() {
     // ── Server side ──────────────────────────────────────────
-    // Node::start("0.0.0.0:9000");
-    let empty_users: Vec<string> = Vec::new();
-    let empty_msgs: Vec<string> = Vec::new();
+    // Node.start("0.0.0.0:9000");
+    let empty_users: Vec<string> = Vec.new();
+    let empty_msgs: Vec<string> = Vec.new();
     let room = spawn ChatRoom(users: empty_users, messages: empty_msgs);
-    // Node::register("room", room);
+    // Node.register("room", room);
 
     // ── Client side (same process for now) ───────────────────
     // In a distributed setup:
-    //   Node::start("0.0.0.0:9001");
-    //   Node::connect("127.0.0.1:9000");  // runtime API, not a typechecker builtin yet
-    //   let room = Node::lookup("room");
+    //   Node.start("0.0.0.0:9001");
+    //   Node.connect("127.0.0.1:9000");  // runtime API, not a typechecker builtin yet
+    //   let room = Node.lookup("room");
 
     // These calls are location-transparent — identical syntax
     // whether room is local or on a remote node:
@@ -60,6 +60,6 @@ fn main() {
     room.say("alice", "how is the weather?");
     room.exit_room("bob");
     let _ = await room.history();
-    // Node::shutdown();
+    // Node.shutdown();
     println("[main] chat demo complete");
 }

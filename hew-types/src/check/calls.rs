@@ -49,7 +49,10 @@ impl Checker {
                 })
                 .unwrap_or(type_prefix);
             let direct = self.type_defs.get(direct_key).and_then(|td| {
-                if td.kind != TypeDefKind::Enum && td.kind != TypeDefKind::Struct {
+                if !matches!(
+                    td.kind,
+                    TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
+                ) {
                     return None;
                 }
                 td.variants.get(variant_name).and_then(|variant| {
@@ -67,11 +70,16 @@ impl Checker {
             // Import-alias fallback: `Geo::Box` where "Geo" was bound as an
             // alias for "shapes.Shape".  Resolve through `import_type_name_aliases`
             // and retry the variant lookup under the canonical qualified name.
-            let canonical = self
-                .import_type_name_aliases
-                .get(&(self.current_module.clone(), type_prefix.to_string()))?;
+            let canonical = self.import_type_name_aliases.get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                type_prefix.to_string(),
+            ))?;
             self.type_defs.get(canonical.as_str()).and_then(|td| {
-                if td.kind != TypeDefKind::Enum && td.kind != TypeDefKind::Struct {
+                if !matches!(
+                    td.kind,
+                    TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
+                ) {
                     return None;
                 }
                 td.variants.get(variant_name).and_then(|variant| {
@@ -97,7 +105,8 @@ impl Checker {
                     .iter()
                     .filter(|(type_name, td)| {
                         let is_local = self.local_type_defs.contains(type_name.as_str())
-                            || self.source_type_defs.contains(type_name.as_str());
+                            || self.source_type_defs.contains(type_name.as_str())
+                            || self.is_current_module_type_def(type_name);
                         let kind_ok =
                             td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct;
                         kind_ok && (is_local == check_local)
@@ -433,7 +442,7 @@ impl Checker {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "expected-type constructor checking shares variant, Option/Result, and Vec::new context"
+        reason = "expected-type constructor checking shares variant, Option/Result, and Vec.new context"
     )]
     pub(super) fn check_call_against_expected_constructor(
         &mut self,
@@ -444,9 +453,21 @@ impl Checker {
         span: &Span,
     ) -> Option<Ty> {
         // Resolve the function name first so we can route turbofish for
-        // `Vec::new` before the blanket early-return for other constructors.
+        // `Vec.new` before the blanket early-return for other constructors.
+        let mut contextual_name = None;
         let func_name = match &func.0 {
             Expr::Identifier(name) => name.clone(),
+            Expr::ContextVariant(context) => {
+                let Some(owner) = self.context_variant_expected_owner(expected, span) else {
+                    for arg in args {
+                        let (expr, arg_span) = arg.expr();
+                        self.synthesize(expr, arg_span);
+                    }
+                    return Some(Ty::Error);
+                };
+                contextual_name = Some(context.name.clone());
+                format!("{owner}::{}", context.name)
+            }
             Expr::FieldAccess { object, field } => {
                 let Expr::Identifier(obj_name) = &object.0 else {
                     return None;
@@ -456,12 +477,18 @@ impl Checker {
             _ => return None,
         };
 
+        let constructor_family =
+            crate::runtime_call::RuntimeCallFamily::from_checker_signature(&func_name);
         // Constructors with explicit type args that are not covered here fall
         // through to the generic call resolver.
         if type_args.is_some()
             && !matches!(
-                func_name.as_str(),
-                "Vec::new" | "HashMap::new" | "HashSet::new"
+                constructor_family,
+                Some(
+                    crate::runtime_call::RuntimeCallFamily::VecNew
+                        | crate::runtime_call::RuntimeCallFamily::HashMapNew
+                        | crate::runtime_call::RuntimeCallFamily::HashSetNew
+                )
             )
         {
             return None;
@@ -469,10 +496,48 @@ impl Checker {
 
         let resolved_expected = self.subst.resolve(expected);
 
+        if let Some(context_name) = contextual_name.as_deref() {
+            let owner = func_name
+                .rsplit_once("::")
+                .map_or(func_name.as_str(), |(owner, _)| owner);
+            match self.context_variant_definition(owner, context_name) {
+                Some(VariantDef::Tuple(_)) => {}
+                Some(_) => {
+                    for arg in args {
+                        let (expr, arg_span) = arg.expr();
+                        self.synthesize(expr, arg_span);
+                    }
+                    self.report_error(
+                        TypeErrorKind::PathKindMismatch,
+                        span,
+                        format!(
+                            "E_PATH_KIND_MISMATCH: variant `{func_name}` is not a tuple constructor"
+                        ),
+                    );
+                    return Some(Ty::Error);
+                }
+                None => {
+                    for arg in args {
+                        let (expr, arg_span) = arg.expr();
+                        self.synthesize(expr, arg_span);
+                    }
+                    self.report_error(
+                        TypeErrorKind::PathMemberNotFound,
+                        span,
+                        format!(
+                            "E_PATH_MEMBER_NOT_FOUND: expected type `{}` has no variant `{context_name}`",
+                            resolved_expected.user_facing()
+                        ),
+                    );
+                    return Some(Ty::Error);
+                }
+            }
+        }
+
         if let Some(targs) = type_args {
-            match func_name.as_str() {
-                "HashMap::new" => {
-                    self.check_arity(args, 0, "`HashMap::new`", span);
+            match constructor_family {
+                Some(crate::runtime_call::RuntimeCallFamily::HashMapNew) => {
+                    self.check_arity(args, 0, "`HashMap.new`", span);
                     let Some(result_ty) = self.lower_turbofish_collection_constructor(
                         "HashMap",
                         crate::BuiltinType::HashMap,
@@ -485,8 +550,8 @@ impl Checker {
                     };
                     return Some(result_ty);
                 }
-                "HashSet::new" => {
-                    self.check_arity(args, 0, "`HashSet::new`", span);
+                Some(crate::runtime_call::RuntimeCallFamily::HashSetNew) => {
+                    self.check_arity(args, 0, "`HashSet.new`", span);
                     let Some(result_ty) = self.lower_turbofish_collection_constructor(
                         "HashSet",
                         crate::BuiltinType::HashSet,
@@ -503,8 +568,8 @@ impl Checker {
             }
         }
 
-        if func_name == "Vec::new" {
-            self.check_arity(args, 0, "`Vec::new`", span);
+        if constructor_family == Some(crate::runtime_call::RuntimeCallFamily::VecNew) {
+            self.check_arity(args, 0, "`Vec.new`", span);
 
             // Determine element type. Turbofish (`Vec::<T>::new()` or
             // `Vec::new::<T>()`) takes priority over the expected-type
@@ -641,6 +706,9 @@ impl Checker {
         if let Some((type_name, expected_params, type_params)) =
             self.lookup_variant_constructor(constructor_name)
         {
+            if contextual_name.is_none() && !func_name.contains("::") {
+                self.warn_bare_variant_expr(&func_name, &format!(".{func_name}"), span);
+            }
             let mut inferred_args = self.expected_constructor_type_args(
                 &resolved_expected,
                 &type_name,
@@ -670,6 +738,22 @@ impl Checker {
                 .expect("constructor expected-type match requires a named nominal");
             self.record_type(span, &result_ty);
             return Some(result_ty);
+        }
+
+        if let Some(context_name) = contextual_name {
+            for arg in args {
+                let (expr, arg_span) = arg.expr();
+                self.synthesize(expr, arg_span);
+            }
+            self.report_error(
+                TypeErrorKind::PathMemberNotFound,
+                span,
+                format!(
+                    "E_PATH_MEMBER_NOT_FOUND: expected type `{}` has no tuple variant `{context_name}`",
+                    resolved_expected.user_facing()
+                ),
+            );
+            return Some(Ty::Error);
         }
 
         match func_name.as_str() {
@@ -853,7 +937,7 @@ impl Checker {
                  promptly; see examples/net/http_await_service.hew"
                 .to_string();
             self.warn_if_blocking_in_receive_fn_with_fix(
-                &format!("{type_name}::{method}"),
+                &format!("{type_name}.{method}"),
                 span,
                 Some((
                     "use the suspending `await` form instead of the blocking call",
@@ -891,7 +975,7 @@ impl Checker {
         if method.contains("::") {
             return None;
         }
-        if !self.modules.contains(module_name) {
+        if !self.module_binding_in_current_file(module_name) {
             return None;
         }
         // The parsed qualifier is only a lexical binding. Resolve it through
@@ -902,9 +986,10 @@ impl Checker {
         if !self.fn_sigs.contains_key(&key) {
             return None;
         }
-        if self.modules.contains(module_name) {
-            self.used_modules.borrow_mut().insert(ImportKey::new(
+        if self.module_binding_in_current_file(module_name) {
+            self.used_modules.borrow_mut().insert(ImportKey::in_file(
                 self.current_module.clone(),
+                self.current_module_idx,
                 module_name.to_string(),
             ));
         }
@@ -1030,16 +1115,20 @@ impl Checker {
             .get(signature_key)
             .or_else(|| {
                 let (surface_module, source_leaf) = signature_key.rsplit_once('.')?;
-                let source_module = self
-                    .module_import_bindings
-                    .get(&(self.current_module.clone(), surface_module.to_string()))?;
+                let source_module = self.module_import_bindings.get(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    surface_module.to_string(),
+                ))?;
                 self.intrinsic_declarations
                     .get(&format!("{source_module}.{source_leaf}"))
             })
             .or_else(|| {
-                let source_key = self
-                    .import_fn_name_aliases
-                    .get(&(self.current_module.clone(), signature_key.to_string()))?;
+                let source_key = self.import_fn_name_aliases.get(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    signature_key.to_string(),
+                ))?;
                 self.intrinsic_declarations.get(source_key)
             })?;
 
@@ -1069,16 +1158,20 @@ impl Checker {
             .get(signature_key)
             .or_else(|| {
                 let (surface_module, source_leaf) = signature_key.rsplit_once('.')?;
-                let source_module = self
-                    .module_import_bindings
-                    .get(&(self.current_module.clone(), surface_module.to_string()))?;
+                let source_module = self.module_import_bindings.get(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    surface_module.to_string(),
+                ))?;
                 self.intrinsic_declarations
                     .get(&format!("{source_module}.{source_leaf}"))
             })
             .or_else(|| {
-                let source_key = self
-                    .import_fn_name_aliases
-                    .get(&(self.current_module.clone(), signature_key.to_string()))?;
+                let source_key = self.import_fn_name_aliases.get(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    signature_key.to_string(),
+                ))?;
                 self.intrinsic_declarations.get(source_key)
             })?;
         match intrinsic_key.as_str() {
@@ -1120,6 +1213,10 @@ impl Checker {
         Some(CallTarget::User(crate::DefId::new(declaration)))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "call-target precedence stays explicit in one resolution ladder"
+    )]
     fn call_target_for_signature(&self, signature_key: &str) -> CallTarget {
         // Extern declarations are source declarations too and may therefore
         // also have an fn_def_spans entry. Classify them first: their exact
@@ -1217,10 +1314,11 @@ impl Checker {
         // by stripping the module leaf: two nested modules can share both the
         // leaf and every exported function name.
         if let Some((surface_module, source_leaf)) = signature_key.rsplit_once('.') {
-            if let Some(source_module) = self
-                .module_import_bindings
-                .get(&(self.current_module.clone(), surface_module.to_string()))
-            {
+            if let Some(source_module) = self.module_import_bindings.get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                surface_module.to_string(),
+            )) {
                 let declaration = format!("{source_module}.{source_leaf}");
                 // Reaching this branch means the checker has already admitted
                 // the signature under `signature_key`; the binding supplies
@@ -1240,10 +1338,11 @@ impl Checker {
         {
             return target;
         }
-        if let Some(source_key) = self
-            .import_fn_name_aliases
-            .get(&(self.current_module.clone(), signature_key.to_string()))
-        {
+        if let Some(source_key) = self.import_fn_name_aliases.get(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            signature_key.to_string(),
+        )) {
             return CallTarget::User(crate::DefId::new(source_key));
         }
         // Compiler-registered builtins have no source declaration span. Their
@@ -1393,6 +1492,21 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        if let Expr::ContextVariant(context) = &func.0 {
+            for arg in args {
+                let (expr, arg_span) = arg.expr();
+                self.synthesize(expr, arg_span);
+            }
+            self.report_error(
+                TypeErrorKind::ContextVariantNoType,
+                span,
+                format!(
+                    "E_CONTEXT_VARIANT_NO_TYPE: contextual variant `.{}` requires an expected enum or machine type",
+                    context.name
+                ),
+            );
+            return Ty::Error;
+        }
         // Get function name from expression
         let func_name = match &func.0 {
             Expr::Identifier(name) => name.clone(),
@@ -1435,7 +1549,11 @@ impl Checker {
         self.reject_if_wasm_incompatible_call(&func_name, span);
         if let Some(source_identity) = self
             .import_fn_name_aliases
-            .get(&(self.current_module.clone(), func_name.clone()))
+            .get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                func_name.clone(),
+            ))
             .cloned()
         {
             self.reject_wasm_native_only_function_identity(&source_identity, span);
@@ -1454,6 +1572,9 @@ impl Checker {
         let constructor_name = canonical_lifecycle.as_deref().unwrap_or(&func_name);
         let constructor_match = self.lookup_variant_constructor(constructor_name);
         if let Some((type_name, expected_params, type_params)) = constructor_match {
+            if !func_name.contains("::") {
+                self.warn_bare_variant_expr(&func_name, &format!("{type_name}.{func_name}"), span);
+            }
             let type_param_count = type_params.len();
             if type_param_count == 0 {
                 if let Some(type_args_provided) = type_args {
@@ -1571,8 +1692,11 @@ impl Checker {
             // Guard: only intercept when type_args are supplied; the no-turbofish
             // path falls through to the `fn_sigs` lookup which returns Vec<TypeVar>
             // and lets the call site unify the element type normally.
-            "Vec::new" if type_args.is_some() => {
-                self.check_arity(args, 0, "`Vec::new`", span);
+            name if type_args.is_some()
+                && crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
+                    == Some(crate::runtime_call::RuntimeCallFamily::VecNew) =>
+            {
+                self.check_arity(args, 0, "`Vec.new`", span);
                 let targs = type_args.expect("guarded by `is_some()` above");
                 let Some(mut lowered) = self.lower_turbofish_elem("Vec", 1, targs, span) else {
                     return Ty::Error;
@@ -1629,8 +1753,11 @@ impl Checker {
                 );
                 return result_ty;
             }
-            "HashMap::new" if type_args.is_some() => {
-                self.check_arity(args, 0, "`HashMap::new`", span);
+            name if type_args.is_some()
+                && crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
+                    == Some(crate::runtime_call::RuntimeCallFamily::HashMapNew) =>
+            {
+                self.check_arity(args, 0, "`HashMap.new`", span);
                 let targs = type_args.expect("guarded by `is_some()` above");
                 let Some(result_ty) = self.lower_turbofish_collection_constructor(
                     "HashMap",
@@ -1643,8 +1770,11 @@ impl Checker {
                 };
                 return result_ty;
             }
-            "HashSet::new" if type_args.is_some() => {
-                self.check_arity(args, 0, "`HashSet::new`", span);
+            name if type_args.is_some()
+                && crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
+                    == Some(crate::runtime_call::RuntimeCallFamily::HashSetNew) =>
+            {
+                self.check_arity(args, 0, "`HashSet.new`", span);
                 let targs = type_args.expect("guarded by `is_some()` above");
                 let Some(result_ty) = self.lower_turbofish_collection_constructor(
                     "HashSet",
@@ -1710,23 +1840,49 @@ impl Checker {
                 return Ty::Error;
             }
             "bytes::from" => {
-                self.check_arity(args, 1, "`bytes::from`", span);
+                self.check_arity(args, 1, "`bytes.from`", span);
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
                 return Ty::Bytes;
             }
-            "Vec::from" => {
-                self.check_arity(args, 1, "`Vec::from`", span);
+            name if crate::has_builtin_associated_item_identity(
+                name,
+                crate::BuiltinType::Vec,
+                "from",
+            ) =>
+            {
+                self.check_arity(args, 1, "`Vec.from`", span);
                 let elem = Ty::Var(TypeVar::fresh());
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     let arr_ty = self.synthesize(expr, sp);
-                    if let Ty::Array(inner, _) = arr_ty {
-                        self.expect_type(&elem, &inner, span);
+                    match self.subst.resolve(&arr_ty) {
+                        // The parser's `[a, b]` surface is represented as a
+                        // temporary Array during some checker paths and as
+                        // the already-desugared `Vec<T>` in others. Both
+                        // forms feed the same HIR identity lowering below.
+                        Ty::Array(inner, _) => self.expect_type(&elem, &inner, span),
+                        Ty::Named {
+                            builtin: Some(crate::BuiltinType::Vec),
+                            args,
+                            ..
+                        } if args.len() == 1 => self.expect_type(&elem, &args[0], span),
+                        other => {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "`Vec.from` accepts an array or Vec source; `{}` is not supported",
+                                    other.user_facing()
+                                ),
+                            );
+                            return Ty::Error;
+                        }
                     }
                 }
+                self.record_method_call_rewrite(span, MethodCallRewrite::VecFrom);
                 return self.make_vec_type(elem, span);
             }
             // `link`/`unlink` of a `RemotePid<T>` → a targeted "use link_remote"
@@ -1910,7 +2066,11 @@ impl Checker {
             // Mark the originating module as used for unqualified imports
             if let Some(module) = self
                 .unqualified_to_module
-                .get(&(self.current_module.clone(), func_name.clone()))
+                .get(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    func_name.clone(),
+                ))
                 .cloned()
             {
                 self.mark_module_owner_bindings_used(&module);
@@ -1943,7 +2103,11 @@ impl Checker {
                 true,
             );
 
-            if resolved_fn_name == "Rc::new" {
+            let target = self.call_target_for_signature(&resolved_fn_name);
+            if matches!(
+                &target,
+                CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::RcNew)
+            ) {
                 if let (Some(payload_ty), Some(arg)) = (applied_sig.params.first(), args.first()) {
                     let (arg_expr, arg_span) = arg.expr();
                     let resolved_payload = self
@@ -1951,7 +2115,7 @@ impl Checker {
                         .resolve(payload_ty)
                         .materialize_literal_defaults();
                     self.validate_rc_payload_type(&resolved_payload, arg_span);
-                    self.reject_borrowed_parameter_consumption(arg_expr, arg_span, "Rc::new");
+                    self.reject_borrowed_parameter_consumption(arg_expr, arg_span, "Rc.new");
                     if let Ok(payload_ty) = ResolvedTy::from_ty(&resolved_payload) {
                         self.method_call_rewrites.insert(
                             SpanKey::in_module(span, self.current_module_idx),
@@ -1986,7 +2150,27 @@ impl Checker {
                 &applied_sig.return_type,
                 span,
             );
-            self.record_direct_call_target(span, self.call_target_for_signature(&resolved_fn_name));
+            // A dotted static call with method-level type arguments (for
+            // example `Node.lookup<Worker>(name)`) parses as an ordinary call
+            // whose callee is a `FieldAccess`, rather than as `MethodCall`.
+            // Publish the same exact checker-selected executable target that
+            // the method-call path carries so HIR never has to reconstruct it
+            // from the dotted spelling.
+            if matches!(
+                &func.0,
+                Expr::FieldAccess { object, .. }
+                    if matches!(object.0, Expr::Identifier(_))
+            ) {
+                self.record_method_call_rewrite(
+                    span,
+                    MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                        target: target.clone(),
+                        c_symbol: resolved_fn_name.clone(),
+                        elem_ty: None,
+                    },
+                );
+            }
+            self.record_direct_call_target(span, target);
             return applied_sig.return_type;
         }
 
@@ -2208,10 +2392,11 @@ impl Checker {
         {
             return false;
         }
-        let Some(owners) = self
-            .published_bare_function_owners
-            .get(&(self.current_module.clone(), name.to_string()))
-        else {
+        let Some(owners) = self.published_bare_function_owners.get(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            name.to_string(),
+        )) else {
             return false;
         };
         if owners.len() < 2 {
@@ -2642,7 +2827,7 @@ mod channel_layout_target_tests {
         );
         checker
             .module_import_bindings
-            .insert((None, "wire".to_string()), "app.transport".to_string());
+            .insert((None, 0, "wire".to_string()), "app.transport".to_string());
 
         assert_eq!(
             checker.call_target_for_signature("wire.duplex_pair"),
@@ -2669,6 +2854,7 @@ mod channel_layout_target_tests {
         );
 
         let mut checker = Checker::new(crate::module_registry::ModuleRegistry::new(vec![]));
+        checker.checking_embedded_builtins = true;
         let output = checker.check_program(&parsed.program);
         assert!(
             output.errors.is_empty(),

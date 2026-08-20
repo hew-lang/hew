@@ -1,5 +1,5 @@
-import std::concurrency::lambda_actor;
+import std.concurrency.lambda_actor;
 
 fn main() {
-    let _ = LambdaActorHandle::new(64, 0);
+    let _ = LambdaActorHandle.new(64, 0);
 }

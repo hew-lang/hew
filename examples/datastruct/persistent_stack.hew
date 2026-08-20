@@ -52,7 +52,7 @@ fn ps_size(store: Vec<i64>, head: i64) -> i64 {
 
 // Collect stack elements into a Vec (top to bottom order)
 fn ps_collect(store: Vec<i64>, head: i64) -> Vec<i64> {
-    let result: Vec<i64> = Vec::new();
+    let result: Vec<i64> = Vec.new();
     var curr = head;
     while curr >= 0 {
         result.push(store[curr * 2]);
@@ -64,7 +64,7 @@ fn ps_collect(store: Vec<i64>, head: i64) -> Vec<i64> {
 fn main() {
     var passed = 0;
     var failed = 0;
-    let store: Vec<i64> = Vec::new();
+    let store: Vec<i64> = Vec.new();
     // v0 = empty stack
     let v0 = ps_new();
     // Test 1: Empty stack

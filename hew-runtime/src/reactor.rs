@@ -293,6 +293,100 @@ static DELIVERING_ACTOR: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 /// add that lands during the wait is still evicted before the actor is freed.
 static PROMOTING_ACTOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Whether listener admission is CLOSED (shutdown's drain has started).
+///
+/// The scheduler-side drain exemption for admission-parked actors and the
+/// `RegMode::Accept` exemption in [`drain_is_idle`] are sound only if no accept
+/// completion can BEGIN behind the drain's mid-sample: an accept that starts
+/// after the reactor probe and enqueues its actor after the final scheduler
+/// probe's queue checks would let the second idle poll terminate shutdown with
+/// a freshly accepted connection abandoned in the queue. Shutdown therefore
+/// closes admission in Phase 1 (the listener twin of
+/// `timer_periodic::quiesce_periodic_timers`, which closes periodic-timer
+/// admission for exactly this enqueue-behind-the-sample category), and
+/// [`handle_ready_accept`] refuses to begin a completion once this is set.
+static LISTENER_ADMISSION_CLOSED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Close listener admission: the reactor stops beginning new accept
+/// completions. Called by shutdown Phase 1, BEFORE any drain idleness sample.
+///
+/// `SeqCst` pairs with the `DELIVERING_ACTOR` publish/probe (see the ordering
+/// argument in [`handle_ready_accept`]): a completion that misses this close is
+/// guaranteed visible to the drain's composite sample.
+pub(crate) fn close_listener_admission() {
+    LISTENER_ADMISSION_CLOSED.store(true, Ordering::SeqCst);
+}
+
+/// Open listener admission for a newly installed runtime generation.
+pub(crate) fn reset_listener_admission() {
+    LISTENER_ADMISSION_CLOSED.store(false, Ordering::SeqCst);
+}
+
+/// Return `true` when the reactor owns no connection or readiness work that can
+/// resume an actor after the scheduler has been observed idle.
+///
+/// Shutdown samples this between two scheduler-idle probes. Registry entries
+/// represent accepted connections still owned by handlers; queued adds and the
+/// promotion/delivery guards cover the hand-off windows where a registration is
+/// temporarily absent from the registry but can still publish actor work.
+///
+/// `RegMode::Accept` registrations are exempt: a parked `await accept()` is a
+/// listener ADMISSION wait for connections that have not arrived, not owned
+/// in-flight work — closing the listener stops new connections but expresses
+/// nothing about outstanding ones. Counting it would stall every server that
+/// leaves its accept parked at main-exit into the drain timeout, regressing the
+/// fast-shutdown floor (`await_accept_shutdown_fast_exit`). Accepted
+/// connections (`AutoSend`, `Resume`) still block. The exemption is sound
+/// because shutdown closes listener admission before its first drain sample
+/// ([`close_listener_admission`]): no accept completion can begin behind this
+/// probe, so an exempted park stays a park for the remainder of the drain.
+pub(crate) fn drain_is_idle() -> bool {
+    fn owns_resumable_work(state: &ReactorState) -> bool {
+        let is_work = |reg: &Registration| !matches!(reg.mode, RegMode::Accept { .. });
+        state.registry.values().any(is_work)
+            || state
+                .pending
+                .iter()
+                .any(|pending| matches!(pending, Pending::Add { reg, .. } if is_work(reg)))
+    }
+
+    if REACTOR_STATE.access(|state| owns_resumable_work(state))
+        || PROMOTING_ACTOR.load(Ordering::SeqCst) != 0
+        || DELIVERING_ACTOR.load(Ordering::SeqCst) != 0
+    {
+        return false;
+    }
+
+    !REACTOR_STATE.access(|state| owns_resumable_work(state))
+}
+
+/// Snapshot the actor keys currently parked on a listener `await accept()`
+/// (registry entries and queued adds in `RegMode::Accept`).
+///
+/// The shutdown drain's suspended-actor scan consults this set so an actor
+/// whose only park is an admission wait does not hold the drain open (the
+/// scheduler-side twin of the `RegMode::Accept` exemption above). Taken as an
+/// owned snapshot under the `REACTOR_STATE` lock and consumed under the
+/// live-actors lock afterwards — never nested, so no lock-order edge. A
+/// registration resolving between snapshot and scan makes the woken actor
+/// visible to the drain's scheduler probes instead (drain requires two
+/// consecutive idle polls).
+pub(crate) fn actors_parked_on_accept() -> std::collections::HashSet<usize> {
+    REACTOR_STATE.access(|state| {
+        state
+            .registry
+            .values()
+            .chain(state.pending.iter().filter_map(|pending| match pending {
+                Pending::Add { reg, .. } => Some(reg),
+                _ => None,
+            }))
+            .filter(|reg| matches!(reg.mode, RegMode::Accept { .. }))
+            .map(|reg| reg.actor_key)
+            .collect()
+    })
+}
+
 /// Ensure the reactor thread is running. Lazily started on first `attach`.
 /// Returns `true` if the reactor is running (or was just started).
 fn ensure_reactor_started() -> bool {
@@ -992,6 +1086,35 @@ fn handle_ready_accept(
     read_slot: *mut crate::read_slot::HewReadSlot,
 ) {
     use crate::read_slot::INVALID_CONNECTION_HANDLE;
+    // Admission gate: once shutdown closes listener admission (Phase 1, before
+    // any drain sample), the reactor must not BEGIN an accept completion — an
+    // accept admitted here could deposit + enqueue its actor between the
+    // drain's reactor probe and the final scheduler probe's blocker scan,
+    // letting the second idle poll terminate shutdown with a freshly accepted
+    // connection abandoned in the queue.
+    //
+    // Ordering (Dekker with the drain's composite sample; all four accesses
+    // SeqCst): this load is sequenced after the caller's `DELIVERING_ACTOR`
+    // publish, and shutdown's close-store is sequenced before its
+    // `DELIVERING_ACTOR` probe. If this load misses the close, the publish
+    // precedes the close — and thus every drain sample — in the SeqCst order,
+    // so the reactor probe either reads the still-set guard (not idle) or
+    // reads the guard clear, which orders the completed deposit + enqueue
+    // before the final scheduler sample (queue seen non-empty). Either way a
+    // completion can never land invisibly inside the drain window.
+    //
+    // The registration is deliberately left in place: an admission-closed
+    // listener park stays a skippable admission wait (`actors_parked_on_accept`
+    // still reports it), and the parked handler is abandoned at terminate
+    // exactly like a listener whose connections never arrived. Only poll
+    // interest is dropped, so a kernel-backlog connection cannot re-fire
+    // readiness for the remainder of the (bounded) drain.
+    if LISTENER_ADMISSION_CLOSED.load(Ordering::SeqCst) {
+        // SAFETY: poller is reactor-owned and valid; unregistering an fd the
+        // poller no longer tracks is a harmless no-op.
+        unsafe { hew_io_poller_unregister(poller, fd) };
+        return;
+    }
     let (deposit_handle, slot_done) = match tcp_listener_accept_nonblocking(snap.conn) {
         AcceptOutcome::Accepted(handle) => {
             // Record the accepted handle for the abandon-race close regression
@@ -1931,11 +2054,51 @@ pub(crate) fn inject_resume_registration_for_test(
     });
 }
 
+/// Inject an ACCEPT-mode registration directly into the registry (test-only),
+/// bypassing the pending queue + OS poller. The reactor ref on `read_slot`
+/// must be taken by the caller (mirrors `reactor_await_accept`'s retain); the
+/// registration's `Drop` releases it on removal. Lets the admission-wait drain
+/// exemption be exercised against a real read slot without a live socket.
+#[cfg(test)]
+pub(crate) fn inject_accept_registration_for_test(
+    fd: c_int,
+    conn: c_int,
+    actor_ref: HewActorRef,
+    actor_key: usize,
+    read_slot: *mut crate::read_slot::HewReadSlot,
+) {
+    REACTOR_STATE.access(|state| {
+        state.conn_to_fd.insert(conn, fd);
+        state.registry.insert(
+            fd,
+            Registration {
+                conn,
+                actor_ref,
+                actor_key,
+                mode: RegMode::Accept { read_slot },
+                closed: false,
+            },
+        );
+    });
+}
+
 /// Drive `handle_ready_fd` against a given poller (test-only) so the
 /// dead-actor-drop path can be exercised deterministically.
 #[cfg(test)]
 pub(crate) fn handle_ready_fd_for_test(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     handle_ready_fd(poller, fd, events);
+}
+
+/// Remove an injected registration (test-only), running `Drop for Registration`
+/// (which releases the registration-owned slot ref) without a poller round
+/// trip. The composite drain test uses this to tear down a registration the
+/// admission-closed refusal path deliberately left in place.
+#[cfg(test)]
+pub(crate) fn remove_registration_for_test(fd: c_int) {
+    REACTOR_STATE.access(|state| {
+        state.registry.remove(&fd);
+        state.conn_to_fd.retain(|_, mapped| *mapped != fd);
+    });
 }
 
 // Test-only thread-local: the most-recently accepted connection handle inside
@@ -2091,15 +2254,19 @@ fn fire_resume_pre_deposit_hook() {
     }
 }
 
+/// Serialises every test touching the process-wide reactor globals. Module
+/// level (not inside `mod tests`) so cross-module tests that drive reactor
+/// state — the scheduler's composite drain test — can take the same lock.
+/// Lock order across modules is scheduler-test lock FIRST, then this mutex
+/// (the order the in-module tests that also install a runtime already use).
+#[cfg(test)]
+pub(crate) static REACTOR_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CStr;
-    use std::sync::Mutex as StdMutex;
     use std::time::{Duration, Instant};
-
-    /// Serialises every test touching the process-wide reactor globals.
-    static REACTOR_TEST_MUTEX: StdMutex<()> = StdMutex::new(());
 
     fn reset_reactor() {
         reactor_shutdown();
@@ -2113,6 +2280,8 @@ mod tests {
         set_delivering_actor_for_test(0);
         set_promoting_actor_for_test(0);
         set_detach_post_evict_hook(None);
+        // Re-open listener admission in case a prior test closed it.
+        reset_listener_admission();
     }
 
     // 4a oracle (unit form): the reactor starts on demand, runs its poll loop,
@@ -2250,6 +2419,75 @@ mod tests {
             pending_count_for_test(),
             0,
             "empty registry must not enqueue a poller-unregister request"
+        );
+    }
+
+    #[test]
+    fn shutdown_drain_idle_tracks_registry_pending_and_handoff_windows() {
+        const KEY: usize = 0xD2A1_0001;
+
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+        assert!(drain_is_idle(), "empty reactor must not delay shutdown");
+
+        let slot = crate::read_slot::hew_read_slot_new();
+        // SAFETY: creator ref remains live through reset below.
+        unsafe { crate::read_slot::read_slot_retain(slot) };
+        inject_resume_registration_for_test(71, 72, dead_actor_ref(), KEY, slot);
+        assert!(
+            !drain_is_idle(),
+            "a registered accepted-connection wait must keep shutdown draining"
+        );
+        reset_reactor();
+        // SAFETY: reset dropped the registration ref; release the creator ref.
+        unsafe { crate::read_slot::hew_read_slot_free(slot) };
+
+        enqueue_pending_add_for_test(73, 74, dead_actor_ref(), KEY);
+        assert!(
+            !drain_is_idle(),
+            "a queued registration must not be invisible before promotion"
+        );
+        reset_reactor();
+
+        set_promoting_actor_for_test(KEY);
+        assert!(
+            !drain_is_idle(),
+            "an in-flight promotion must keep shutdown draining"
+        );
+        set_promoting_actor_for_test(0);
+        set_delivering_actor_for_test(KEY);
+        assert!(
+            !drain_is_idle(),
+            "an in-flight readiness delivery must keep shutdown draining"
+        );
+        set_delivering_actor_for_test(0);
+        assert!(drain_is_idle());
+
+        // Admission exemption: a parked listener `await accept()` is waiting
+        // for connections that have not arrived, not in-flight work, and must
+        // not hold the drain open — but the scheduler-side scan must be able
+        // to identify its actor as admission-parked.
+        let accept_slot = crate::read_slot::hew_read_slot_new();
+        // SAFETY: creator ref remains live through reset below.
+        unsafe { crate::read_slot::read_slot_retain(accept_slot) };
+        inject_accept_registration_for_test(75, 76, dead_actor_ref(), KEY, accept_slot);
+        assert!(
+            drain_is_idle(),
+            "a parked listener accept is admission, not in-flight work, and \
+             must not delay shutdown"
+        );
+        assert!(
+            actors_parked_on_accept().contains(&KEY),
+            "the admission-parked snapshot must expose the accept-parked actor"
+        );
+        reset_reactor();
+        // SAFETY: reset dropped the registration ref; release the creator ref.
+        unsafe { crate::read_slot::hew_read_slot_free(accept_slot) };
+        assert!(
+            actors_parked_on_accept().is_empty(),
+            "clearing the registry must empty the admission-parked snapshot"
         );
     }
 

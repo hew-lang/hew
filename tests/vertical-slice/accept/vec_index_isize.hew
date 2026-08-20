@@ -5,7 +5,7 @@ fn pick(xs: Vec<isize>, i: i64) -> isize {
 }
 
 fn main() -> i64 {
-    let xs: Vec<isize> = Vec::new();
+    let xs: Vec<isize> = Vec.new();
     xs.push(-7);
     xs.push(11);
     pick(xs, 1) as i64

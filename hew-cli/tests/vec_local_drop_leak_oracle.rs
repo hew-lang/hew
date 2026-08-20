@@ -80,7 +80,7 @@ fn i64_vec_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let v: Vec<i64> = Vec::new();\n\
+         \x20       let v: Vec<i64> = Vec.new();\n\
          \x20       v.push(i);\n\
          \x20       v.push(i * 2);\n\
          \x20       total = total + v.len() + v[0];\n\
@@ -101,7 +101,7 @@ fn string_vec_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let v: Vec<string> = Vec::new();\n\
+         \x20       let v: Vec<string> = Vec.new();\n\
          \x20       v.push(\"per-iteration-element-one\");\n\
          \x20       v.push(\"per-iteration-element-two\");\n\
          \x20       total = total + v.len();\n\
@@ -119,7 +119,7 @@ fn string_vec_loop_source(frames: usize) -> String {
 /// that crashes before main can return its checksum.
 const ESCAPE_SHAPES_SOURCE: &str = "\
 fn make() -> Vec<i64> {\n\
-\x20   let v: Vec<i64> = Vec::new();\n\
+\x20   let v: Vec<i64> = Vec.new();\n\
 \x20   v.push(40);\n\
 \x20   v.push(2);\n\
 \x20   return v;\n\
@@ -132,7 +132,7 @@ fn total(xs: Vec<i64>) -> i64 {\n\
 fn main() {\n\
 \x20   let made = make();\n\
 \x20   let a = made[0] + made[1];\n\
-\x20   let v: Vec<i64> = Vec::new();\n\
+\x20   let v: Vec<i64> = Vec.new();\n\
 \x20   v.push(20);\n\
 \x20   v.push(1);\n\
 \x20   let b = total(v);\n\

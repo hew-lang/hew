@@ -348,7 +348,7 @@ fn source_with_sandbox_stdin_helper(source: &str) -> Option<String> {
     }
     let mut body = String::new();
     for line in source.lines() {
-        if line.trim() == "import std::io;" {
+        if line.trim() == "import std.io;" {
             continue;
         }
         body.push_str(line);
@@ -822,7 +822,7 @@ fn main() {
     fn vector_index_expression_emits_bounds_trapping_index_opcode() {
         let source = r"
 fn main() {
-    let values: Vec<i64> = Vec::new();
+    let values = Vec<i64>.new();
     values.push(7);
     println(values[0]);
 }
@@ -1010,7 +1010,7 @@ fn main() {
     fn user_regex_record_and_std_regex_handle_keep_distinct_layout_identities() {
         set_test_hewpath();
         let source = r#"
-import std::text::regex;
+import std.text.regex;
 
 type Regex {
     value: i64;
@@ -1179,7 +1179,7 @@ fn main() {
         // (Expr::MethodCall) emits a PlatformLimitation diagnostic for the call
         // form; the value-position form (FieldAccess) is covered by a separate test.
         set_test_hewpath();
-        let source = "import std::crypto::crypto;\nfn main() { let _ = crypto.random_bytes(32); }";
+        let source = "import std.crypto.crypto;\nfn main() { let _ = crypto.random_bytes(32); }";
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
             .expect("compile should not throw");
         assert!(
@@ -1207,7 +1207,7 @@ fn main() {
         // silently pass through, producing bytecode that the VM cannot execute
         // securely (the entropy source is absent from the wasm32 link set).
         set_test_hewpath();
-        let source = "import std::crypto::crypto;\nfn main() { let f = crypto.random_bytes; }";
+        let source = "import std.crypto.crypto;\nfn main() { let f = crypto.random_bytes; }";
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
             .expect("compile should not throw");
         assert!(
@@ -1233,7 +1233,7 @@ fn main() {
         // matching the wasm32 target guard in the type checker and maintaining
         // native/wasm parity for the full native-only module set.
         set_test_hewpath();
-        let source = "import std::net::net;\nfn main() { let f = net.connect; }";
+        let source = "import std.net.net;\nfn main() { let f = net.connect; }";
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
             .expect("compile should not throw");
         assert!(
@@ -1407,10 +1407,10 @@ fn main() {
         // End-to-end: sample three modules with well-known import paths.
         set_test_hewpath();
         let sample: &[(&str, &str, &str)] = &[
-            ("net", "std::net::net", "connect"),
-            ("tls", "std::net::tls", "connect"),
-            ("dns", "std::net::dns", "resolve"),
-            ("websocket", "std::net::websocket", "connect"),
+            ("net", "std.net.net", "connect"),
+            ("tls", "std.net.tls", "connect"),
+            ("dns", "std.net.dns", "resolve"),
+            ("websocket", "std.net.websocket", "connect"),
         ];
         for (module, import_path, func) in sample {
             let source = format!("import {import_path};\nfn main() {{ let f = {module}.{func}; }}");
@@ -1630,7 +1630,7 @@ fn main() {
         assert_profile_rejection(
             r"
 fn main() {
-    let v: Vec<i64> = Vec::new();
+    let v = Vec<i64>.new();
     let all = v[..];
     let tail = v[1..];
     let prefix = v[..2];
@@ -1942,7 +1942,7 @@ fn main() {
         // The native-only surface is rejected at the profile level.
         assert_profile_rejection(
             r#"
-import std::fs;
+import std.fs;
 
 fn main() {
     fs.read("path.txt");

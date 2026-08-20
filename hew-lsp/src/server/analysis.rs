@@ -183,7 +183,7 @@ pub(super) fn populate_user_module_imports_impl(
                 ambiguities.push(AmbiguousImport {
                     source_path: current_source.to_path_buf(),
                     span: span.clone(),
-                    module: decl.path.join("::"),
+                    module: decl.path.join("."),
                     paths: distinct,
                 });
                 // Leave `resolved_items` as `None` so the import is treated as
@@ -1986,7 +1986,7 @@ mod tests {
         // `captures` returns the stdlib `CaptureMatches` type and lives only in
         // the impl block (NOT the ModuleRegistry handle table), so it is the
         // sharpest regression guard for the inlining fix.
-        let source = "import std::text::regex;\n\
+        let source = "import std.text.regex;\n\
                       fn probe(s: string) {\n\
                       \x20   let one = regex.new(\"a\");\n\
                       \x20   let caps = one.captures(s);\n\
@@ -2034,7 +2034,7 @@ mod tests {
     fn coverage_http_accept_surface() {
         // The HTTP async server's `await listener.accept()` carrier surface
         // (NEW-2): receiver type is the imported `net.Listener`.
-        let source = "import std::net;\n\
+        let source = "import std.net;\n\
                       fn probe(addr: string) {\n\
                       \x20   let ln = net.listen(addr);\n\
                       \x20   let conn = ln.accept();\n\
@@ -2071,7 +2071,7 @@ mod tests {
     fn coverage_tls_ffi_result_surface() {
         // BUG-NET-3 std/net/tls FFI-result surface (free-function form, the
         // shape the accept fixture exercises: `tls.read(stream, n)`).
-        let source = "import std::net::tls;\n\
+        let source = "import std.net.tls;\n\
                       fn probe() {\n\
                       \x20   let stream = tls.connect(\"h\", 443);\n\
                       \x20   let chunk = tls.read(stream, 16);\n\
@@ -2100,7 +2100,7 @@ mod tests {
 
     #[test]
     fn coverage_text_template_surface() {
-        let source = "import std::text::template;\n\
+        let source = "import std.text.template;\n\
                       fn probe(ctx: template.Ctx) {\n\
                       \x20   let out = template.render(\"hi\", ctx);\n\
                       }\n";
@@ -2123,7 +2123,7 @@ mod tests {
 
     #[test]
     fn coverage_text_unicode_surface() {
-        let source = "import std::text::unicode;\n\
+        let source = "import std.text.unicode;\n\
                       fn probe(cp: i64) {\n\
                       \x20   let up = unicode.is_upper(cp);\n\
                       }\n";
@@ -2181,7 +2181,7 @@ mod tests {
 
     #[test]
     fn coverage_channel_recv_await_surface() {
-        let source = "import std::channel::channel;\n\
+        let source = "import std.channel.channel;\n\
                       actor Worker {\n\
                       \x20   receive fn run(unused: i64) {\n\
                       \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);\n\
@@ -2266,10 +2266,10 @@ mod tests {
 
     #[test]
     fn coverage_scanner_surface() {
-        let source = "import std::io::scanner;\n\
+        let source = "import std.io.scanner;\n\
                       fn probe() {\n\
                       \x20   var sc = scanner.from_string(\"one two\");\n\
-                      \x20   sc = scanner.with_split(sc, SplitMode::SplitWords);\n\
+                      \x20   sc = scanner.with_split(sc, SplitMode.SplitWords);\n\
                       \x20   sc = scanner.scan(sc);\n\
                       \x20   let ok = scanner.has_next(sc);\n\
                       \x20   let token = scanner.text(sc);\n\
@@ -2338,7 +2338,7 @@ mod tests {
         root
     }
 
-    /// A dotted import `a::b` that resolves BOTH to the package-directory form
+    /// A dotted import `a.b` that resolves BOTH to the package-directory form
     /// (`a/b/b.hew`) and the flat form (`a/b.hew`) is ambiguous. The compiler's
     /// resolver (`resolve_file_imports_internal`, hew-compile/src/lib.rs:1045-
     /// 1064) fails closed on exactly this shape: it collects every candidate
@@ -2353,7 +2353,7 @@ mod tests {
     #[test]
     fn ambiguous_import_fails_closed_like_compiler() {
         let lib = "pub fn val() -> i64 { 1 }\n";
-        let main_src = "import a::b;\n\nfn main() -> i64 { 0 }\n";
+        let main_src = "import a.b;\n\nfn main() -> i64 { 0 }\n";
         let root = make_temp_workspace_dir(&[
             ("a/b/b.hew", lib),
             ("a/b.hew", lib),
@@ -2372,8 +2372,8 @@ mod tests {
         assert!(
             diags
                 .iter()
-                .any(|d| d.message.contains("is ambiguous") && d.message.contains("a::b")),
-            "expected a fail-closed ambiguity diagnostic for `a::b` matching the compiler, got: {:?}",
+                .any(|d| d.message.contains("is ambiguous") && d.message.contains("a.b")),
+            "expected a fail-closed ambiguity diagnostic for `a.b` matching the compiler, got: {:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
 
@@ -2386,7 +2386,7 @@ mod tests {
             "exactly one ambiguous import expected, got {ambiguities:?}"
         );
         let left_unresolved = program.items.iter().any(|(item, _)| {
-            matches!(item, Item::Import(d) if d.path.join("::") == "a::b" && d.resolved_items.is_none())
+            matches!(item, Item::Import(d) if d.path.join(".") == "a.b" && d.resolved_items.is_none())
         });
         assert!(
             left_unresolved,
@@ -2404,7 +2404,7 @@ mod tests {
     #[test]
     fn unambiguous_import_resolves_without_failing_closed() {
         let lib = "pub fn val() -> i64 { 1 }\n";
-        let main_src = "import a::b;\n\nfn main() -> i64 { 0 }\n";
+        let main_src = "import a.b;\n\nfn main() -> i64 { 0 }\n";
         // Only the flat form exists this time.
         let root = make_temp_workspace_dir(&[("a/b.hew", lib), ("main.hew", main_src)]);
         let main_uri =
@@ -2536,7 +2536,7 @@ mod tests {
     #[test]
     fn extra_pkg_path_resolves_import_from_added_search_root() {
         let pkg_source = "pub fn widget_fn() -> i64 { 42 }\n";
-        let main_src = "import acme::widgets;\nfn main() -> i64 { 0 }\n";
+        let main_src = "import acme.widgets;\nfn main() -> i64 { 0 }\n";
 
         // Package dir has acme/widgets.hew (flat-form candidate).
         let pkg_dir = make_temp_workspace_dir(&[("acme/widgets.hew", pkg_source)]);
@@ -2598,7 +2598,7 @@ mod tests {
     #[test]
     fn extra_pkg_path_resolves_hew_prefixed_import_with_prefix_stripping() {
         let template_src = "pub fn apply() -> i64 { 1 }\n";
-        let main_src = "import hew::template;\nfn main() -> i64 { 0 }\n";
+        let main_src = "import hew.template;\nfn main() -> i64 { 0 }\n";
 
         // Package dir layout: template/template.hew (directory form after
         // hew:: prefix is stripped, matching `hew-compile/src/lib.rs:1104-1105`).
@@ -2639,7 +2639,7 @@ mod tests {
         });
         assert!(
             with_extra,
-            "with --pkg-path, import hew::template must resolve via hew:: prefix stripping \
+            "with --pkg-path, import hew.template must resolve via hew:: prefix stripping \
              (candidate: <pkg_dir>/template/template.hew), matching hew check --pkg-path behaviour"
         );
 

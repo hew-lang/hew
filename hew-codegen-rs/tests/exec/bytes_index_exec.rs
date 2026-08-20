@@ -95,10 +95,10 @@ fn bytes_index_sugar_reads_pushed_bytes() {
         &repo,
         "bytes_index_sugar",
         r#"
-        import std::io;
+        import std.io;
 
         fn main() {
-            var b: bytes = bytes::new();
+            var b: bytes = bytes.new();
             b.push(65);
             b.push(66);
             b.push(67);
@@ -127,7 +127,7 @@ fn bytes_get_method_returns_option() {
         "bytes_get_method",
         r#"
         fn main() {
-            var b: bytes = bytes::new();
+            var b: bytes = bytes.new();
             b.push(200);
             b.push(1);
             match b.get(0) {

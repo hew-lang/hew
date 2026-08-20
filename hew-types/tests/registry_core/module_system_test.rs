@@ -61,12 +61,25 @@ fn make_user_import(
     ImportDecl {
         path: path.iter().map(std::string::ToString::to_string).collect(),
         spec,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: Some(items),
         resolved_item_source_paths: Vec::new(),
         resolved_source_paths: Vec::new(),
     }
+}
+
+fn selected_import(names: &[&str]) -> ImportSpec {
+    ImportSpec::Names(
+        names
+            .iter()
+            .map(|name| ImportName {
+                name: (*name).to_string(),
+                alias: None,
+            })
+            .collect(),
+    )
 }
 
 fn module_node(id: &str, deps: &[&str]) -> Module {
@@ -162,13 +175,13 @@ fn test_qualified_name_resolution() {
 }
 
 #[test]
-fn test_glob_import_resolution() {
-    // `import utils::*;` → both qualified and unqualified should be accessible.
+fn test_selected_import_resolution() {
+    // A selective import makes both named functions accessible unqualified.
     let fn_helper = make_pub_fn("helper");
     let fn_other = make_pub_fn("other");
     let import = make_user_import(
         &["myapp", "utils"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["helper", "other"])),
         vec![
             (Item::Function(fn_helper), 0..0),
             (Item::Function(fn_other), 0..0),
@@ -246,7 +259,7 @@ fn test_named_import_selective_resolution() {
 #[test]
 fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_impl() {
     let root_source = r#"
-        import myapp::widgets::*;
+        import myapp.widgets.{Describable, Label, describe};
 
         fn main() -> string {
             describe(Label { text: "hello" })
@@ -375,7 +388,7 @@ fn test_private_items_not_visible() {
 
     let import = make_user_import(
         &["mod_a"],
-        Some(ImportSpec::Glob), // even glob should not expose private items
+        Some(selected_import(&["private_fn", "public_fn"])),
         vec![
             (Item::Function(private_fn), 0..0),
             (Item::Function(public_fn), 0..0),
@@ -442,13 +455,11 @@ fn test_pub_type_accessible_qualified() {
     let output = checker.check_program(&program);
 
     assert!(
-        output.type_defs.contains_key("Config"),
-        "pub type should be accessible as 'Config'"
+        output.type_defs.contains_key("myapp.config.Config"),
+        "pub type should be published under its full owner"
     );
-    assert!(
-        output.type_defs.contains_key("config.Config"),
-        "pub type should also be accessible as 'config.Config'"
-    );
+    assert!(!output.type_defs.contains_key("Config"));
+    assert!(!output.type_defs.contains_key("config.Config"));
 }
 
 #[test]
@@ -518,9 +529,10 @@ fn test_pub_type_import_coexists_with_local_same_name() {
         "local type must be reachable bare as `Config`"
     );
     assert!(
-        output.type_defs.contains_key("config.Config"),
-        "imported type must be reachable qualified as `config.Config`"
+        output.type_defs.contains_key("myapp.config.Config"),
+        "imported type must retain canonical owner `myapp.config.Config`"
     );
+    assert!(!output.type_defs.contains_key("config.Config"));
 }
 
 // ── per-module type namespacing (R313) ────────────────────────────────────────
@@ -577,12 +589,12 @@ fn two_modules_export_same_type_name_coexist() {
         output.errors
     );
     assert!(
-        output.type_defs.contains_key("alpha.Value"),
-        "alpha.Value must be registered"
+        output.type_defs.contains_key("pkg.alpha.Value"),
+        "pkg.alpha.Value must be registered"
     );
     assert!(
-        output.type_defs.contains_key("beta.Value"),
-        "beta.Value must be registered"
+        output.type_defs.contains_key("pkg.beta.Value"),
+        "pkg.beta.Value must be registered"
     );
 }
 
@@ -643,7 +655,8 @@ fn qualified_same_name_types_resolve_to_own_module_def() {
 
     // Both qualified keys resolve to distinct, present type defs.
     assert!(
-        output.type_defs.contains_key("alpha.Value") && output.type_defs.contains_key("beta.Value"),
+        output.type_defs.contains_key("pkg.alpha.Value")
+            && output.type_defs.contains_key("pkg.beta.Value"),
         "both qualified defs must resolve, got keys: {:?}",
         output.type_defs.keys().collect::<Vec<_>>()
     );
@@ -882,14 +895,14 @@ fn same_bare_name_member_field_binds_to_own_module_identity() {
         };
 
         assert_eq!(
-            field_member("alpha.Holder"),
-            "alpha.Wrap",
-            "alpha.Holder.w must bind to alpha.Wrap in order {order:?}"
+            field_member("pkg.alpha.Holder"),
+            "pkg.alpha.Wrap",
+            "pkg.alpha.Holder.w must bind to pkg.alpha.Wrap in order {order:?}"
         );
         assert_eq!(
-            field_member("beta.Holder"),
-            "beta.Wrap",
-            "beta.Holder.w must bind to beta.Wrap in order {order:?}"
+            field_member("pkg.beta.Holder"),
+            "pkg.beta.Wrap",
+            "pkg.beta.Holder.w must bind to pkg.beta.Wrap in order {order:?}"
         );
     }
 }
@@ -932,12 +945,12 @@ fn same_bare_name_types_register_independent_divergent_field_layouts() {
 
     let narrow = output
         .type_defs
-        .get("widgeti8.Widget")
-        .expect("widgeti8.Widget must register its own qualified def");
+        .get("pkg.widgeti8.Widget")
+        .expect("pkg.widgeti8.Widget must register its own canonical def");
     let wide = output
         .type_defs
-        .get("widgeti64.Widget")
-        .expect("widgeti64.Widget must register its own qualified def");
+        .get("pkg.widgeti64.Widget")
+        .expect("pkg.widgeti64.Widget must register its own canonical def");
 
     assert_eq!(
         narrow.fields.get("v"),
@@ -952,13 +965,10 @@ fn same_bare_name_types_register_independent_divergent_field_layouts() {
 }
 
 #[test]
-fn unqualified_ambiguous_type_is_typed_error() {
-    // VC6: a bare reference to a type PUBLISHED bare by two imported modules
-    // (each via an explicit `::{ Value }` opt-in) must be a typed AmbiguousType
-    // error, not a silent first-wins pick. Ambiguity is decided over published
-    // bare bindings — two plain imports publish nothing and are "not in scope"
-    // instead (asserted separately below); two opt-ins are the genuine
-    // ambiguity.
+fn colliding_unqualified_imports_are_typed_error() {
+    // Publishing the same bare name from two imports is rejected while the
+    // second import is still being preflighted, before a consumer can observe
+    // an ambiguous binding.
     let value_spec = || {
         Some(ImportSpec::Names(vec![ImportName {
             name: "Value".to_string(),
@@ -1023,8 +1033,8 @@ fn unqualified_ambiguous_type_is_typed_error() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::AmbiguousType),
-        "bare `Value` with two exporters must be AmbiguousType, got: {:?}",
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::ImportBindingCollision),
+        "bare `Value` with two exporters must be ImportBindingCollision, got: {:?}",
         output.errors
     );
     assert!(
@@ -1318,14 +1328,14 @@ fn test_actor_bare_import_registers_type_and_methods() {
 }
 
 #[test]
-fn test_actor_glob_import_registers_unqualified() {
-    // `import mymod::*;` → actor should be accessible unqualified
+fn test_actor_selected_import_registers_unqualified() {
+    // A selective actor import makes the actor accessible unqualified.
     let recv_greet = make_receive_fn("greet", &[("name", "string")], Some("string"));
     let actor = make_actor("Greeter", vec![recv_greet]);
 
     let import = make_user_import(
         &["app", "mymod"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["Greeter"])),
         vec![(Item::Actor(actor), 0..0)],
     );
 
@@ -1407,7 +1417,7 @@ fn test_actor_multiple_receive_fns() {
 
     let import = make_user_import(
         &["app", "cache"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["Cache"])),
         vec![(Item::Actor(actor), 0..0)],
     );
 
@@ -1439,7 +1449,7 @@ fn test_actor_and_function_coexist_in_module() {
 
     let import = make_user_import(
         &["app", "workers"],
-        Some(ImportSpec::Glob),
+        Some(selected_import(&["Worker", "create_worker"])),
         vec![(Item::Actor(actor), 0..0), (Item::Function(func), 0..0)],
     );
 
@@ -1512,6 +1522,7 @@ fn test_unresolved_import_fail_closed() {
     let import = ImportDecl {
         path: vec!["no_such_pkg".to_string(), "missing".to_string()],
         spec: None,
+        selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
         resolved_items: None,

@@ -663,7 +663,12 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_vec_slice_range_layout"
         | "hew_vec_slice_range_owned"
         | "hew_vec_slice_range_ptr"
-        | "hew_vec_slice_range_str" => CalleeOwnershipContract::new(
+        | "hew_vec_slice_range_str"
+        // Whole-buffer move-out: borrows the source handle (the vec stays the
+        // caller's live, now-empty owner) and returns a fresh vec the
+        // consuming-iteration cursor owns; cursor drop registration (not a
+        // contract-derived temp drop) frees it, same as `hew_vec_clone_owned`.
+        | "hew_vec_take_all" => CalleeOwnershipContract::new(
             BorrowsReceiver {
                 scans: ReceiverScanSet::VEC,
             },
@@ -902,6 +907,7 @@ mod tests {
         "hew_vec_clone",
         "hew_vec_clone_layout",
         "hew_vec_clone_owned",
+        "hew_vec_take_all",
         "hew_vec_contains_f64",
         "hew_vec_contains_i32",
         "hew_vec_contains_i64",
@@ -1060,7 +1066,7 @@ mod tests {
     #[test]
     fn callee_ownership_contract_symbols_are_unique_positive_rows() {
         let unique = CONTRACT_SYMBOLS.iter().copied().collect::<BTreeSet<_>>();
-        assert_eq!(CONTRACT_SYMBOLS.len(), 177);
+        assert_eq!(CONTRACT_SYMBOLS.len(), 178);
         assert_eq!(
             unique.len(),
             CONTRACT_SYMBOLS.len(),

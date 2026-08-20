@@ -12,7 +12,7 @@ type Item { name: string @1; }
 type Batch { items: Vec<Item> @1; seq: i64 @2; }
 
 fn main() -> i64 {
-    let xs: Vec<Item> = Vec::new();
+    let xs: Vec<Item> = Vec.new();
     xs.push(Item { name: "alpha-owned" });
     xs.push(Item { name: "beta-owned" });
     let b = Batch { items: xs, seq: 7 };

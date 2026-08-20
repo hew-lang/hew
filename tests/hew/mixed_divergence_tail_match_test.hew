@@ -17,9 +17,9 @@
 //! classes here — heap pointer (`string`) and aggregate/struct (record) — are the
 //! ones that tripped the codegen verifier; scalar returns benign-zext the i8.
 
-import std::string;
+import std.string;
 
-import std::testing;
+import std.testing;
 
 enum Action {
     Move;
@@ -36,16 +36,16 @@ type Pt {
 // ── string return: one `return`-diverging arm, three value arms ───────────
 fn action_name(a: Action) -> string {
     match a {
-        Action::Move => {
+        Action.Move => {
             return "MOVE";
         },
-        Action::Left => {
+        Action.Left => {
             "LEFT"
         },
-        Action::Right => {
+        Action.Right => {
             "RIGHT"
         },
-        Action::Wait => {
+        Action.Wait => {
             "WAIT"
         },
     }
@@ -54,26 +54,26 @@ fn action_name(a: Action) -> string {
 #[test]
 fn test_string_return_from_mixed_divergence_tail_match() {
     // The diverging arm returns directly.
-    testing.assert_eq_str(action_name(Action::Move), "MOVE");
+    testing.assert_eq_str(action_name(Action.Move), "MOVE");
     // Each value arm round-trips its OWN distinct value.
-    testing.assert_eq_str(action_name(Action::Left), "LEFT");
-    testing.assert_eq_str(action_name(Action::Right), "RIGHT");
-    testing.assert_eq_str(action_name(Action::Wait), "WAIT");
+    testing.assert_eq_str(action_name(Action.Left), "LEFT");
+    testing.assert_eq_str(action_name(Action.Right), "RIGHT");
+    testing.assert_eq_str(action_name(Action.Wait), "WAIT");
 }
 
 // ── record (aggregate/struct) return: one `return`-diverging arm ──────────
 fn action_point(a: Action) -> Pt {
     match a {
-        Action::Move => {
+        Action.Move => {
             return Pt { x: -1, y: -1 };
         },
-        Action::Left => {
+        Action.Left => {
             Pt { x: 1, y: 0 }
         },
-        Action::Right => {
+        Action.Right => {
             Pt { x: 0, y: 1 }
         },
-        Action::Wait => {
+        Action.Wait => {
             Pt { x: 0, y: 0 }
         },
     }
@@ -81,15 +81,13 @@ fn action_point(a: Action) -> Pt {
 
 #[test]
 fn test_record_return_from_mixed_divergence_tail_match() {
-    let m = action_point(Action::Move);
+    let m = action_point(Action.Move);
     testing.assert_eq(m.x, -1);
     testing.assert_eq(m.y, -1);
-
-    let l = action_point(Action::Left);
+    let l = action_point(Action.Left);
     testing.assert_eq(l.x, 1);
     testing.assert_eq(l.y, 0);
-
-    let r = action_point(Action::Right);
+    let r = action_point(Action.Right);
     testing.assert_eq(r.x, 0);
     testing.assert_eq(r.y, 1);
 }

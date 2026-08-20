@@ -68,8 +68,8 @@ actor ApiWorker {
         scope {
             let allowed_r = await limiter.acquire();
             let allowed = match allowed_r {
-                Ok(v) => v,
-                Err(_) => 0,
+                .Ok(v) => v,
+                .Err(_) => 0,
             };
             if allowed == 1 {
                 accepted = accepted + 1;
@@ -119,16 +119,16 @@ fn main() {
     sleep(100ms);
     let remaining_r = await limiter.available();
     match remaining_r {
-        Ok(n) => println(f"Tokens remaining after burst: {n}"),
-        Err(_) => println("Tokens remaining: err"),
+        .Ok(n) => println(f"Tokens remaining after burst: {n}"),
+        .Err(_) => println("Tokens remaining: err"),
     }
     println("");
     println("--- After refill ---");
     sleep(250ms);
     let after_refill_r = await limiter.available();
     match after_refill_r {
-        Ok(n) => println(f"Tokens after refill: {n}"),
-        Err(_) => println("Tokens after refill: err"),
+        .Ok(n) => println(f"Tokens after refill: {n}"),
+        .Err(_) => println("Tokens after refill: err"),
     }
     w1.handle_request(100);
     w2.handle_request(101);

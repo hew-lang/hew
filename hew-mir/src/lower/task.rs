@@ -1080,7 +1080,24 @@ impl Builder {
             fn_symbol,
             env: env_place,
             env_ty,
-            env_ownership: vec![SpawnEnvFieldOwnership::BorrowsOnly; captures.len()],
+            env_ownership: captures
+                .iter()
+                .map(|capture| {
+                    let ty = self.subst_ty(&capture.ty);
+                    match self.closure_env_capture_ownership(
+                        crate::closure_env::AllocationStrategy::ScopeOwned,
+                        &ty,
+                        Some(capture.binding),
+                        capture.mode,
+                    ) {
+                        ClosureEnvFieldOwnership::OwnsMoved => SpawnEnvFieldOwnership::OwnsMoved,
+                        ClosureEnvFieldOwnership::BorrowsOnly
+                        | ClosureEnvFieldOwnership::OwnsClonedOrRetained => {
+                            SpawnEnvFieldOwnership::BorrowsOnly
+                        }
+                    }
+                })
+                .collect(),
         });
         Some(task_place)
     }

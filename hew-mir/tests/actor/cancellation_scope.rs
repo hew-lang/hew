@@ -278,6 +278,45 @@ fn fork_string_arg_spawn_env_owns_the_moved_field() {
 }
 
 #[test]
+fn spawned_move_closure_env_owns_its_scope_owned_capture() {
+    let mir = lower_clean_to_mir(
+        r#"
+        actor _Driver {
+            receive fn drive() {
+                let greeting = "hello" + " world";
+                scope {
+                    (move || println(greeting))();
+                };
+            }
+        }
+
+        fn main() -> i64 {
+            let d = spawn _Driver;
+            d.drive();
+            0
+        }
+        "#,
+    );
+    let ownership = mir
+        .raw_mir
+        .iter()
+        .flat_map(|func| &func.blocks)
+        .flat_map(|block| block.instructions.iter())
+        .find_map(|instr| match instr {
+            Instr::SpawnTaskClosure { env_ownership, .. } if !env_ownership.is_empty() => {
+                Some(env_ownership)
+            }
+            _ => None,
+        })
+        .expect("spawned move closure must emit a non-empty scope-owned environment manifest");
+    assert_eq!(
+        ownership,
+        &[SpawnEnvFieldOwnership::OwnsMoved],
+        "the task environment must release the moved capture after the parent transfers it"
+    );
+}
+
+#[test]
 fn spawned_closure_env_borrows_its_scope_owned_capture() {
     let mir = lower_clean_to_mir(
         r#"

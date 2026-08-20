@@ -89,6 +89,37 @@ fn main() {
 }
 "#;
 
+const CRASHING_PIPELINE: &str = r#"
+import std.pipeline;
+
+fn item(value: i64, label: string, crash_stage: bool) -> pipeline.PipelineItemI64 {
+    PipelineItemI64 { value: value, label: label, crash_stage: crash_stage }
+}
+
+fn main() {
+    let source = pipeline.run(pipeline.from(1));
+    match await source.push(item(9, "crash-owned", true)) {
+        Ok(admitted) => if admitted {
+            panic("crashing item was admitted")
+        },
+        Err(_) => panic("crashing push did not settle"),
+    }
+    match await source.count() {
+        Ok(value) => if value != 0 {
+            panic("crashing item reached the sink")
+        },
+        Err(_) => panic("pipeline count did not settle"),
+    }
+    match await source.push(item(10, "after-crash", false)) {
+        Ok(admitted) => if admitted {
+            panic("post-crash item was admitted")
+        },
+        Err(_) => panic("post-crash push did not settle"),
+    }
+    println("PIPELINE_CRASH_SETTLED");
+}
+"#;
+
 fn compile_fixture(source: &str, dir: &Path, name: &str) -> PathBuf {
     let source_path = dir.join(format!("{name}.hew"));
     std::fs::write(&source_path, source).expect("write chat-room fixture");
@@ -163,5 +194,30 @@ fn actor_crash_fails_process_without_cascading_to_chat_room() {
     assert!(
         clean_stdout.contains("ROOM_SURVIVED") && clean_stdout.contains("ROOM_FENCE_REPLIED"),
         "the clean room must complete its broadcast:\nstdout:\n{clean_stdout}\nstderr:\n{clean_stderr}",
+    );
+}
+
+#[test]
+fn pipeline_actor_crash_fails_process_after_settling_pending_work() {
+    require_codegen();
+
+    let dir = tempdir();
+    let binary = compile_fixture(CRASHING_PIPELINE, dir.path(), "crashing_pipeline");
+    let output = run_fixture(&binary);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the pipeline actor crash must fail the process:\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        stdout.contains("PIPELINE_CRASH_SETTLED"),
+        "the pipeline must reject pending work before reporting its crash:\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("pipeline S1 stage crash"),
+        "the pipeline stage crash must remain observable:\nstdout:\n{stdout}\nstderr:\n{stderr}",
     );
 }

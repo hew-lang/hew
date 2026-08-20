@@ -67,7 +67,9 @@ fn run_example_binary(
     binary: &std::path::Path,
     name: &str,
     workers: Option<&str>,
+    expected_exit_code: i32,
     expected_stdout: &str,
+    expected_stderr: Option<&str>,
 ) {
     let mut command = Command::new(binary);
     command.current_dir(repo_root());
@@ -83,9 +85,10 @@ fn run_example_binary(
     // test failure instead of an orphaned process.
     let output = support::run_bounded_command(command, label.clone());
 
-    assert!(
-        output.status.success(),
-        "{label} should exit 0; stdout:\n{}\nstderr:\n{}",
+    assert_eq!(
+        output.status.code(),
+        Some(expected_exit_code),
+        "{label} should exit {expected_exit_code}; stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -94,14 +97,46 @@ fn run_example_binary(
         expected_stdout,
         "{label} produced unexpected stdout",
     );
+    if let Some(expected_stderr) = expected_stderr {
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected_stderr),
+            "{label} stderr did not contain {expected_stderr:?}; stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
 }
 
 /// Assert a fixture produces the same output under the default pool AND under a
 /// single worker (the worker-freeing edge).
 fn run_await_example_both_pools(name: &str, expected_stdout: &str) {
     let (_dir, binary) = build_example("actor", name);
-    run_example_binary(&binary, name, None, expected_stdout);
-    run_example_binary(&binary, name, Some("1"), expected_stdout);
+    run_example_binary(&binary, name, None, 0, expected_stdout, None);
+    run_example_binary(&binary, name, Some("1"), 0, expected_stdout, None);
+}
+
+fn run_crashing_example_both_pools(
+    category: &str,
+    name: &str,
+    expected_stdout: &str,
+    expected_stderr: &str,
+) {
+    let (_dir, binary) = build_example(category, name);
+    run_example_binary(
+        &binary,
+        name,
+        None,
+        1,
+        expected_stdout,
+        Some(expected_stderr),
+    );
+    run_example_binary(
+        &binary,
+        name,
+        Some("1"),
+        1,
+        expected_stdout,
+        Some(expected_stderr),
+    );
 }
 
 #[test]
@@ -152,7 +187,8 @@ fn crash_after_sleep_resume_routes_reply_to_outer_under_both_pools() {
     // past the worker frame and downs the whole process instead of crashing only
     // this actor. Post-fix the crash routes to the actor, the outer
     // `await reader.go(0)` resolves to `Err` (the empty crash fallback), and the
-    // program completes under both pools.
+    // program completes under both pools. The crash remains unrecovered, so the
+    // completed program must still report status 1.
     //
     // The two sleeps also pin the frame-reclamation edge: the crash-abandoned
     // coroutine frame (whose `sleep` resume edges already released their
@@ -160,9 +196,11 @@ fn crash_after_sleep_resume_routes_reply_to_outer_under_both_pools() {
     // WITHOUT re-running the `coro.destroy` cleanup outline — re-running it would
     // double-free the already-released registration (surfaced under
     // `MallocGuardEdges`).
-    run_await_example_both_pools(
+    run_crashing_example_both_pools(
+        "actor",
         "await_crash_after_sleep_resume",
         "reader-crash-fallback\nmain-done\n",
+        "reader crashed after sleep resume",
     );
 }
 
@@ -224,8 +262,8 @@ fn scope_deadline_runs_or_skips_the_timeout_body_under_both_pools() {
 
 fn run_net_example_both_pools(name: &str, expected_stdout: &str) {
     let (_dir, binary) = build_example("net", name);
-    run_example_binary(&binary, name, None, expected_stdout);
-    run_example_binary(&binary, name, Some("1"), expected_stdout);
+    run_example_binary(&binary, name, None, 0, expected_stdout, None);
+    run_example_binary(&binary, name, Some("1"), 0, expected_stdout, None);
 }
 
 #[test]
@@ -304,10 +342,13 @@ fn outer_handler_crash_during_child_suspend_routes_reply_to_outer_under_both_poo
     // the outer reply routing and tearing the driver channel down, so the outer
     // ask resolves to `Err` (the empty crash fallback) and the program completes
     // under BOTH pools — proving the orphan/fallback reply routes to the real
-    // outer channel, not the child's.
-    run_net_example_both_pools(
+    // outer channel, not the child's. The recovered reply does not supervise
+    // the actor crash, so both completed runs must still report status 1.
+    run_crashing_example_both_pools(
+        "net",
         "probe_b2_closure_await_outer_crash",
         "reader-crash-fallback\nmain-done\n",
+        "reader crashed mid suspending-closure await",
     );
 }
 

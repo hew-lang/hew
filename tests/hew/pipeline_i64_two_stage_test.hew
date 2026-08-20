@@ -227,6 +227,7 @@ fn cancelled_admission_settles_and_pipeline_continues() {
 }
 
 #[test]
+#[should_panic]
 fn crash_mid_pipeline_settles_without_sink_delivery() {
     let source = pipeline.run(pipeline.from(1));
     match await source.push(item(9, "crash-owned", true)) {

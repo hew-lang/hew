@@ -210,6 +210,32 @@ impl<I, A> Iterator for Skip<I, A> where I: Iterator<Item = A> {
     }
 }
 
+/// Lazy enumerate adapter: pairs each item with its zero-based position.
+///
+/// The index advances only when the inner iterator yields an item, so an
+/// exhausted iterator remains exhausted without manufacturing a final index.
+pub type Enumerate<I, A> {
+    iter: I;
+    index: i64;
+}
+
+impl<I, A> Iterator for Enumerate<I, A> where I: Iterator<Item = A> {
+    type Item = (i64, A);
+    fn next(var self) -> Option<(i64, A)> {
+        var inner = self.iter;
+        let result = match inner.next() {
+            Some(item) => {
+                let index = self.index;
+                self.index = self.index + 1;
+                Some((index, item))
+            },
+            None => None,
+        };
+        self.iter = inner;
+        result
+    }
+}
+
 // ── lazy constructors ────────────────────────────────────────────────────
 /// Construct a lazy `Map` adapter over `it` applying `f` to each item.
 pub fn map<I, A, B>(it: I, f: fn(A) -> B) -> Map<I, A, B> where I: Iterator<Item = A> {
@@ -232,6 +258,11 @@ pub fn take<I, A>(it: I, n: i64) -> Take<I, A> where I: Iterator<Item = A> {
 /// from `it`.
 pub fn skip<I, A>(it: I, n: i64) -> Skip<I, A> where I: Iterator<Item = A> {
     Skip { iter: it, remaining: n }
+}
+
+/// Construct a lazy `Enumerate` adapter over `it`.
+pub fn enumerate<I, A>(it: I) -> Enumerate<I, A> where I: Iterator<Item = A> {
+    Enumerate { iter: it, index: 0 }
 }
 
 // ── terminal helpers ─────────────────────────────────────────────────────
@@ -278,7 +309,7 @@ pub fn count<I, A>(it: I) -> i64 where I: Iterator<Item = A> {
 
 /// Collect every item produced by `it` into a `Vec<A>`.
 pub fn collect<I, A>(it: I) -> Vec<A> where I: Iterator<Item = A> {
-    let out: Vec<A> = Vec::new();
+    let out: Vec<A> = Vec.new();
     var iter = it;
     loop {
         match iter.next() {
@@ -329,6 +360,68 @@ pub fn all<I, A>(it: I, f: fn(A) -> bool) -> bool where I: Iterator<Item = A> {
         }
     }
     true
+}
+
+/// Return the first item for which `pred` returns `true`, or `None`.
+///
+/// Like `any`, this short-circuits as soon as the predicate matches; items
+/// observed before the match are released by their lexical match arms.
+pub fn find<I, A>(it: I, pred: fn(A) -> bool) -> Option<A> where I: Iterator<Item = A> {
+    var iter = it;
+    loop {
+        match iter.next() {
+            Some(item) => {
+                if pred(item) {
+                    return Some(item);
+                }
+            },
+            None => {
+                return None;
+            },
+        }
+    }
+}
+
+// VecIter method surface ---------------------------------------------------
+//
+// These are deliberately thin wrappers. `std::iter` remains the sole place
+// that defines adapter state machines and terminal semantics; spelling an
+// operation as `cursor.map(f)` selects exactly the same implementation as
+// `iter::map(cursor, f)`.
+impl<T> VecIter<T> {
+    pub fn map<U>(self, f: fn(T) -> U) -> Map<VecIter<T>, T, U> {
+        map(self, f)
+    }
+    pub fn filter(self, pred: fn(T) -> bool) -> Filter<VecIter<T>, T> {
+        filter(self, pred)
+    }
+    pub fn fold<U>(self, init: U, f: fn(U, T) -> U) -> U {
+        fold(self, init, f)
+    }
+    pub fn any(self, pred: fn(T) -> bool) -> bool {
+        any(self, pred)
+    }
+    pub fn all(self, pred: fn(T) -> bool) -> bool {
+        all(self, pred)
+    }
+    pub fn find(self, pred: fn(T) -> bool) -> Option<T> {
+        find(self, pred)
+    }
+    pub fn count(self) -> i64 {
+        count(self)
+    }
+    pub fn enumerate(self) -> Enumerate<VecIter<T>, T> {
+        enumerate(self)
+    }
+    pub fn take(self, n: i64) -> Take<VecIter<T>, T> {
+        take(self, n)
+    }
+    pub fn skip(self, n: i64) -> Skip<VecIter<T>, T> {
+        skip(self, n)
+    }
+    pub fn collect(self) -> Vec<T> {
+        collect(self)
+    }
 }
 
 /// Return the sum of every `i64` item produced by `it`.

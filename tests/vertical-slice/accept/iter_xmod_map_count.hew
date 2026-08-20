@@ -8,7 +8,7 @@
 // the static-dispatch chain resolves `Map::next` against the qualified receiver.
 //
 // Countdown{3} yields [3,2,1]; map doubles each; count returns 3.
-import std::iter;
+import std.iter;
 
 type Countdown {
     n: i64;
@@ -28,6 +28,6 @@ impl Iterator for Countdown {
 }
 
 pub fn main() -> i64 {
-    let m = iter::map(Countdown { n: 3 }, |x: i64| x * 2);
-    iter::count(m)
+    let m = iter.map(Countdown { n: 3 }, |x: i64| x * 2);
+    iter.count(m)
 }

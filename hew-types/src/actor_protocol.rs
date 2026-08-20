@@ -1,14 +1,8 @@
 //! Actor protocol descriptor — the stable, centralized authority for
 //! actor-handler message identifiers (`msg_id`s).
 //!
-//! Until Q87 ratification (2026-05-19, registry D-tag) every consumer derived
-//! a handler's `msg_id` from its source-order index inside the actor body
-//! (`for (i, h) in handlers.iter().enumerate() { msg_id = i }`). Reordering
-//! the handler declarations silently re-numbered every existing recipient —
-//! an ABI flip with no syntactic signal. The descriptor replaces that
-//! `enumerate` path with a deterministic hash over the fully-qualified
-//! handler name so source-order changes no longer leak into the wire
-//! protocol.
+//! A handler's `msg_id` is a deterministic hash over its fully-qualified name.
+//! Source-order changes therefore do not alter the wire protocol.
 //!
 //! ## Hash determinism contract
 //!

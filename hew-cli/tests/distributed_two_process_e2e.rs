@@ -835,12 +835,19 @@ fn remote_monitor_and_link_target_exit_during_setup_deliver_once() {
 /// invariant is no-hang + typed-fail-closed, not a specific variant. So the gate
 /// asserts on any `PASS partition_ask` line and forbids any `FAIL`.
 ///
-/// Teeth that keep this meaningful: (a) a `PASS partition_ask reason=<cause>` line
-/// — the fixture only emits one when an `Err` came back BEFORE the ask's own
-/// deadline (a proactive fail-closed verdict), never on a `Result::Ok` (which is
-/// rejected as `never-partitioned`); (b) the run finishes well under the 40 s
-/// client ceiling — `run_conn_drop_scenario`'s drain cap is the no-hang guard,
-/// and a hang-to-deadline would blow it; (c) no `FAIL` line — in particular no
+/// Teeth that keep this meaningful: (a) a `PASS partition_ask probe-partition`
+/// line — the fixture's phase A stalls a reply past the ask deadline while the
+/// route is still LIVE, so the armed probe's fan-out is the only path that can
+/// resolve the pending ask early; requiring `Partition` there proves the probe
+/// FIRED (a sabotaged/no-op `hew_dist_partition_pending_remote_asks` times out
+/// and fails this line — it cannot hide behind the kill's routing-failure /
+/// socket-drop outcomes, which previously masked exactly that sabotage);
+/// (b) a `PASS partition_ask reason=<cause>` line — phase B only emits one when
+/// an `Err` came back BEFORE the ask's own deadline (a proactive fail-closed
+/// verdict), never on a `Result::Ok` (which is rejected as `never-partitioned`);
+/// (c) the run finishes well under the 40 s client ceiling —
+/// `run_conn_drop_scenario`'s drain cap is the no-hang guard, and a
+/// hang-to-deadline would blow it; (d) no `FAIL` line — in particular no
 /// `reason=timeout`, which the fixture emits when the ask waited its WHOLE
 /// deadline because no proactive fail-closed path fired (the hang this gate
 /// exists to catch), and no `never-partitioned`, which would mean the ask
@@ -859,8 +866,17 @@ fn remote_ask_under_partition_fails_closed_not_hang() {
     // deterministic fail-closed seam.
     let stdout = run_conn_drop_scenario_with_env("partition_ask", &[("HEW_DIST_TEST_PROBE", "1")]);
 
-    // Any typed fail-closed cause is correct; the fixture emits this line only for
-    // an `Err` that resolved BEFORE the ask's own deadline (a proactive verdict).
+    // Phase A: the armed probe must PROVE it fired. The stalled ask is
+    // resolvable only by the probe's Partition fan-out, so any other outcome
+    // (timeout, reply, different cause) means the probe did not fire.
+    assert!(
+        stdout.contains("PASS partition_ask probe-partition"),
+        "expected the armed partition probe to resolve the stalled ask with a \
+         typed Partition (proof the fan-out fired); client stdout:\n{stdout}"
+    );
+    // Phase B: any typed fail-closed cause is correct; the fixture emits this
+    // line only for an `Err` that resolved BEFORE the ask's own deadline (a
+    // proactive verdict).
     assert!(
         stdout.contains("PASS partition_ask reason="),
         "expected a typed fail-closed PASS (the ask must resolve to a typed \

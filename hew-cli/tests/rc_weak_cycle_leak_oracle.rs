@@ -18,7 +18,7 @@ type Node {{
 }}
 
 fn build_dead_graph() -> Weak<Node> {{
-    let root = Rc::new(Node {{ label: "r" + "oot", parent: None }});
+    let root = Rc.new(Node {{ label: "r" + "oot", parent: None }});
     if root.strong_count() != 1 {{ panic("initial strong count"); }}
     if root.weak_count() != 0 {{ panic("initial weak count"); }}
 

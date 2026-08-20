@@ -1,0 +1,38 @@
+//! Selectively-imported machine identity regression coverage.
+//!
+//! `import mod::{Machine}` publishes a bare binding whose declaration
+//! identity is the defining module's qualified name. The bare annotation on
+//! a free-function parameter was the failing site: the checker's expression
+//! facts carried the dotted owner while the HIR binding froze the bare
+//! spelling, so MIR failed with the owned-call-carrier NYI and an unknown
+//! type at the boundary. Inferred locals and module-qualified annotations
+//! were the working controls.
+
+import tests.hew.imported_machine_support.machine_defs.{PayloadLifecycle, make, bounce};
+
+import std.testing;
+
+fn carry(value: PayloadLifecycle) -> PayloadLifecycle {
+    value
+}
+
+fn label_of(value: PayloadLifecycle) -> string {
+    match value {
+        PayloadLifecycle.Loaded { label } => label,
+        PayloadLifecycle.Empty => "empty",
+    }
+}
+
+#[test]
+fn selectively_imported_machine_crosses_bare_annotated_parameter() {
+    let made = make("bare-annotation".to_upper());
+    let carried = carry(made);
+    testing.assert_eq_str(label_of(carried), "BARE-ANNOTATION");
+}
+
+#[test]
+fn selectively_imported_machine_transitions_through_bare_spelling() {
+    var value = PayloadLifecycle.Empty;
+    value = bounce(value);
+    testing.assert_eq_str(label_of(value), "empty");
+}

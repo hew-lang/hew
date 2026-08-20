@@ -1,19 +1,19 @@
-// Accept: user function returning Option<i64> with None (unit variant).
+// Accept: user function returning Maybe<i64> with None (unit variant).
 // Exercises Move of tag-only struct to ReturnSlot.
 // Exit 99 proves the None arm matched in the caller.
-enum Option<T> {
+enum Maybe<T> {
     Some(T);
     None;
 }
 
-fn nothing() -> Option<i64> {
-    Option::None
+fn nothing() -> Maybe<i64> {
+    Maybe.None
 }
 
 fn main() -> i64 {
     let r = nothing();
     match r {
-        Option::Some(v) => v,
-        Option::None => 99,
+        Maybe.Some(v) => v,
+        Maybe.None => 99,
     }
 }

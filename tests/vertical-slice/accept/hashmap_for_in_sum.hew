@@ -6,7 +6,7 @@
 // iteration count guard. Exit 66 (6 + 60); 100+count flags a missed/extra
 // iteration. The map is shared (Capture), so it stays live after the loop.
 pub fn main() -> i64 {
-    let m: HashMap<i64, i64> = HashMap::new();
+    let m: HashMap<i64, i64> = HashMap.new();
     m.insert(1, 10);
     m.insert(2, 20);
     m.insert(3, 30);

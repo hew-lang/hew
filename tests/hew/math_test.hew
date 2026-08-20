@@ -1,6 +1,8 @@
 //! Tests for generic std::math helpers.
-import std::math;
-import std::testing;
+
+import std.math;
+
+import std.testing;
 
 #[test]
 fn test_abs_dispatches_by_numeric_type() {

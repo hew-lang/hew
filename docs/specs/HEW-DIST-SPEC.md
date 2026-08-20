@@ -243,24 +243,24 @@ An actor receives monitor termination through one typed hook:
 
 <!-- doctest: skip -->
 ```hew
-import std::link_monitor::{DownNotification, DownReason, DownTarget};
+import std.link_monitor.{DownNotification, DownReason, DownTarget};
 
 actor Watcher {
     #[on(down)]
     fn on_down(note: DownNotification) {
         match note.target {
-            DownTarget::Remote(location) => {
+            DownTarget.Remote(location) => {
                 println(f"remote actor down: {location}");
             },
-            DownTarget::Local(slot) => {
+            DownTarget.Local(slot) => {
                 println(f"local actor {slot} down");
             },
         }
         match note.reason {
-            DownReason::Exited => println("clean exit"),
-            DownReason::Crashed(_) => println("crash"),
-            DownReason::MonitorLost => println("partition"),
-            DownReason::LocalShutdown => println("local shutdown"),
+            DownReason.Exited => println("clean exit"),
+            DownReason.Crashed(_) => println("crash"),
+            DownReason.MonitorLost => println("partition"),
+            DownReason.LocalShutdown => println("local shutdown"),
         }
     }
 }
@@ -315,21 +315,21 @@ assigns the peer any free local route slot:
 
 <!-- doctest: skip -->
 ```hew
-Node::set_transport("tcp");
-Node::load_keys("server.key");
-println(f"pin this credential on peers: {Node::identity_key()}");
+Node.set_transport("tcp");
+Node.load_keys("server.key");
+println(f"pin this credential on peers: {Node.identity_key()}");
 
 // Slot 0 is reserved. Slot 1 is this process's local alias for this peer.
-Node::allow_peer(1, "8f4c...64-hex-digits-total");
-Node::start("0.0.0.0:9000");
+Node.allow_peer(1, "8f4c...64-hex-digits-total");
+Node.start("0.0.0.0:9000");
 ```
 
 A client that pinned the server at local route slot `1` connects with:
 
 <!-- doctest: skip -->
 ```hew
-Node::connect("1@127.0.0.1:9000");
-let found: Result<RemotePid<Counter>, LookupError> = Node::lookup("counter");
+Node.connect("1@127.0.0.1:9000");
+let found: Result<RemotePid<Counter>, LookupError> = Node.lookup("counter");
 ```
 
 The route-slot prefix selects the local credential pin. The authenticated key

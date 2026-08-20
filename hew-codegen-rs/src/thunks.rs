@@ -48,6 +48,7 @@ fn task_closure_wrapper_name(fn_symbol: &str) -> String {
 pub(crate) fn get_or_create_task_wrapper<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     callee_symbol: &str,
+    result_resolved_ty: &ResolvedTy,
 ) -> CodegenResult<FunctionValue<'ctx>> {
     let wrapper_name = task_wrapper_name(callee_symbol);
     if let Some(existing) = fn_ctx.llvm_mod.get_function(&wrapper_name) {
@@ -86,13 +87,29 @@ pub(crate) fn get_or_create_task_wrapper<'ctx>(
     let task_param = wrapper.get_nth_param(1).ok_or_else(|| {
         CodegenError::FailClosed("task wrapper missing HewTask* parameter".into())
     })?;
+    if !callee_returns_unit {
+        let result_drop_fn = ask_reply_drop_thunk_ptr(fn_ctx, result_resolved_ty)?;
+        let set_drop_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_task_set_result_drop_fn",
+        )?;
+        builder
+            .build_call(
+                set_drop_fn,
+                &[task_param.into(), result_drop_fn.into()],
+                "hew_task_set_result_drop_fn_call",
+            )
+            .llvm_ctx("hew_task_set_result_drop_fn call")?;
+    }
     let body_call = builder
         .build_call(callee_value, &[ctx_param.into()], "task_body_call")
         .llvm_ctx("task wrapper body call")?;
 
     // Value-returning task: publish the body's `T` result through the task's
     // own result buffer BEFORE marking the task complete, so the awaiter's
-    // resume edge reads it via `hew_task_get_result`. The adapter
+    // resume edge moves it via `hew_task_take_result`. The adapter
     // (`__hew_task_entry_<fn>`, TaskEntry call-conv) returns its body's `T`; a
     // unit task returns the i8 unit stand-in and publishes nothing.
     //
@@ -120,6 +137,40 @@ pub(crate) fn get_or_create_task_wrapper<'ctx>(
         let (size, _align) = abi_size_align(callee_return_ty, Some(fn_ctx.target_data))?;
         let size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
         let size_val = size_ty.const_int(size, false);
+        // The adapter's cancellation edge must return a type-correct value to
+        // satisfy its LLVM ABI, but that value was not produced by the task
+        // body. Re-observe the monotonic cancellation token before publishing:
+        // only the non-cancelled edge establishes that the result slot was
+        // written. A cancellation racing after this check is ordered against
+        // `hew_task_complete_threaded`; the terminal task status still wins.
+        let cooperate = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_actor_cooperate",
+        )?;
+        let signal = builder
+            .build_call(cooperate, &[], "task_result_cooperate")
+            .llvm_ctx("task result cooperate call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_actor_cooperate returned void".into()))?
+            .into_int_value();
+        let publish_bb = fn_ctx.ctx.append_basic_block(wrapper, "publish_result");
+        let complete_bb = fn_ctx.ctx.append_basic_block(wrapper, "complete_task");
+        let is_cancelled = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                signal,
+                signal.get_type().const_int(2, false),
+                "task_result_cancelled",
+            )
+            .llvm_ctx("task result cancellation compare")?;
+        builder
+            .build_conditional_branch(is_cancelled, complete_bb, publish_bb)
+            .llvm_ctx("task result publication branch")?;
+
+        builder.position_at_end(publish_bb);
         let set_result = intern_runtime_decl(
             fn_ctx.ctx,
             fn_ctx.llvm_mod,
@@ -133,6 +184,23 @@ pub(crate) fn get_or_create_task_wrapper<'ctx>(
                 "hew_task_set_result_call",
             )
             .llvm_ctx("hew_task_set_result call")?;
+        let publication_checkpoint = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_task_result_publication_checkpoint",
+        )?;
+        builder
+            .build_call(
+                publication_checkpoint,
+                &[task_param.into()],
+                "hew_task_result_publication_checkpoint_call",
+            )
+            .llvm_ctx("hew_task_result_publication_checkpoint call")?;
+        builder
+            .build_unconditional_branch(complete_bb)
+            .llvm_ctx("task result publish -> complete")?;
+        builder.position_at_end(complete_bb);
     }
 
     let complete = intern_runtime_decl(
@@ -175,7 +243,15 @@ pub(crate) fn emit_spawn_task_direct(
     // by-value copy). A non-coroutine handler keeps the cheaper spilled param.
     let parent_ctx = live_execution_context_ptr(fn_ctx, spilled_ctx)?;
     let task_ptr = load_duplex_handle(fn_ctx, task, "SpawnTaskDirect task")?;
-    let wrapper = get_or_create_task_wrapper(fn_ctx, callee_symbol)?;
+    let task_result_ty = match place_resolved_ty(fn_ctx, task)? {
+        ResolvedTy::Task(result) => result.as_ref().clone(),
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "SpawnTaskDirect task place has non-task type {other:?}"
+            )));
+        }
+    };
+    let wrapper = get_or_create_task_wrapper(fn_ctx, callee_symbol, &task_result_ty)?;
     let spawn = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,

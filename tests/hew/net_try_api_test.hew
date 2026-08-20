@@ -3,18 +3,18 @@
 //! TCP operations return `net.NetError` so callers handle network failures
 //! independently from file-system errors.
 
-import std::net;
+import std.net;
 
-import std::testing;
+import std.testing;
 
 // ── try_connect ───────────────────────────────────────────────────────
 #[test]
 fn test_try_connect_refused_returns_connection_refused() {
     // Port 1 is never open in test environments (privileged, nothing binds it).
     match net.try_connect("127.0.0.1:1") {
-        Ok(_) => panic("expected connection to fail"),
-        Err(err) => match err {
-            NetError::ConnectionRefused(_) => {},
+        .Ok(_) => panic("expected connection to fail"),
+        .Err(err) => match err {
+            NetError.ConnectionRefused(_) => {},
             _ => panic("expected NetError::ConnectionRefused"),
         },
     }
@@ -23,8 +23,8 @@ fn test_try_connect_refused_returns_connection_refused() {
 #[test]
 fn test_try_connect_bad_address_returns_err() {
     match net.try_connect("256.256.256.256:9999") {
-        Ok(_) => panic("expected invalid address to fail"),
-        Err(_) => {},
+        .Ok(_) => panic("expected invalid address to fail"),
+        .Err(_) => {},
     }
 }
 
@@ -33,8 +33,8 @@ fn test_try_connect_bad_address_returns_err() {
 fn test_try_listen_returns_ok_on_available_port() {
     // Use an ephemeral port unlikely to be in use.
     match net.try_listen(":0") {
-        Ok(_) => {},
-        Err(_) => panic("expected try_listen on :0 to succeed"),
+        .Ok(_) => {},
+        .Err(_) => panic("expected try_listen on :0 to succeed"),
     }
 }
 
@@ -43,16 +43,16 @@ fn test_try_listen_returns_ok_on_available_port() {
 fn test_try_listen_address_in_use_returns_address_in_use() {
     // Bind the same ephemeral address twice; the second bind must fail.
     match net.try_listen(":19731") {
-        Ok(_) => {
+        .Ok(_) => {
             match net.try_listen(":19731") {
-                Ok(_) => panic("expected second bind to fail"),
-                Err(err) => match err {
-                    NetError::AddressInUse(_) => {},
+                .Ok(_) => panic("expected second bind to fail"),
+                .Err(err) => match err {
+                    NetError.AddressInUse(_) => {},
                     _ => panic("expected NetError::AddressInUse"),
                 },
             }
         },
-        Err(_) => {
+        .Err(_) => {
             // Port was already taken by something else; skip gracefully.
         },
     }
@@ -67,24 +67,24 @@ fn test_listener_close_surface_returns_unit() {
 // ── NetError variant coverage for TCP ────────────────────────────────
 #[test]
 fn test_net_error_tcp_variants_are_distinct() {
-    let refused: net.NetError = NetError::ConnectionRefused(111);
-    let in_use: net.NetError = NetError::AddressInUse(98);
-    let timed_out: net.NetError = NetError::TimedOut(110);
-    let other: net.NetError = NetError::Other(1);
+    let refused: net.NetError = NetError.ConnectionRefused(111);
+    let in_use: net.NetError = NetError.AddressInUse(98);
+    let timed_out: net.NetError = NetError.TimedOut(110);
+    let other: net.NetError = NetError.Other(1);
     match refused {
-        NetError::ConnectionRefused(_) => {},
+        NetError.ConnectionRefused(_) => {},
         _ => panic("unexpected variant"),
     }
     match in_use {
-        NetError::AddressInUse(_) => {},
+        NetError.AddressInUse(_) => {},
         _ => panic("unexpected variant"),
     }
     match timed_out {
-        NetError::TimedOut(_) => {},
+        NetError.TimedOut(_) => {},
         _ => panic("unexpected variant"),
     }
     match other {
-        NetError::Other(_) => {},
+        NetError.Other(_) => {},
         _ => panic("unexpected variant"),
     }
 }
@@ -92,19 +92,19 @@ fn test_net_error_tcp_variants_are_distinct() {
 #[test]
 fn test_net_error_windows_wsa_variants() {
     match net.net_error_from_errno(10061) {
-        NetError::ConnectionRefused(_) => {},
+        NetError.ConnectionRefused(_) => {},
         _ => panic("expected NetError::ConnectionRefused"),
     }
     match net.net_error_from_errno(10048) {
-        NetError::AddressInUse(_) => {},
+        NetError.AddressInUse(_) => {},
         _ => panic("expected NetError::AddressInUse"),
     }
     match net.net_error_from_errno(10060) {
-        NetError::TimedOut(_) => {},
+        NetError.TimedOut(_) => {},
         _ => panic("expected NetError::TimedOut"),
     }
     match net.net_error_from_errno(10049) {
-        NetError::AddressNotAvailable(_) => {},
+        NetError.AddressNotAvailable(_) => {},
         _ => panic("expected NetError::AddressNotAvailable"),
     }
 }
@@ -113,7 +113,7 @@ fn test_net_error_windows_wsa_variants() {
 fn test_net_error_windows_cancelled_variants() {
     // ERROR_OPERATION_ABORTED (995): a cancelled overlapped net op on Windows.
     match net.net_error_from_errno(995) {
-        NetError::Cancelled(code) => {
+        NetError.Cancelled(code) => {
             if code != 995 {
                 panic("expected Cancelled payload 995");
             }
@@ -122,7 +122,7 @@ fn test_net_error_windows_cancelled_variants() {
     }
     // WSAECANCELLED (10103).
     match net.net_error_from_errno(10103) {
-        NetError::Cancelled(code) => {
+        NetError.Cancelled(code) => {
             if code != 10103 {
                 panic("expected Cancelled payload 10103");
             }
@@ -147,13 +147,13 @@ fn test_try_read_reports_an_orderly_eof_as_an_empty_success() {
     // Seed a failure in the shared status slot: an orderly EOF must not
     // report an earlier operation's errno as this read's error.
     match net.try_connect("127.0.0.1:1") {
-        Ok(_) => {},
-        Err(_) => {},
+        .Ok(_) => {},
+        .Err(_) => {},
     }
     client.close();
     match server.try_read() {
-        Ok(data) => testing.assert_eq(data.len(), 0),
-        Err(err) => panic(f"expected EOF to be an empty success, got {net.net_error_message(err)}"),
+        .Ok(data) => testing.assert_eq(data.len(), 0),
+        .Err(err) => panic(f"expected EOF to be an empty success, got {net.net_error_message(err)}"),
     }
     server.close();
     listener.close();
@@ -174,7 +174,6 @@ fn test_try_read_reports_an_orderly_eof_as_an_empty_success() {
 // The transport layer's runtime closed-handle check stays in place as defence in depth
 // for FFI callers that bypass the checker. It is unreachable from Hew source now, so it
 // belongs to the runtime's own test surface rather than a `.hew` test.
-
 #[test]
 fn test_try_read_delivers_payload_bytes_unchanged() {
     let listener = net.listen("127.0.0.1:0");
@@ -185,8 +184,8 @@ fn test_try_read_delivers_payload_bytes_unchanged() {
     let server = listener.accept();
     let _ = client.write_string("ping");
     match server.try_read_string() {
-        Ok(text) => testing.assert_eq_str(text, "ping"),
-        Err(err) => panic(f"expected a payload read to succeed: {net.net_error_message(err)}"),
+        .Ok(text) => testing.assert_eq_str(text, "ping"),
+        .Err(err) => panic(f"expected a payload read to succeed: {net.net_error_message(err)}"),
     }
     client.close();
     server.close();
@@ -202,22 +201,22 @@ fn test_connection_timeouts_accept_every_negative_clear_sentinel_without_narrowi
     let client = net.connect(f"127.0.0.1:{port as i64}");
     let server = listener.accept();
     match client.set_read_timeout(-9223372036854775807) {
-        Ok(()) => {},
-        Err(err) => panic(f"negative read-timeout clear failed: {net.net_error_message(err)}"),
+        .Ok(()) => {},
+        .Err(err) => panic(f"negative read-timeout clear failed: {net.net_error_message(err)}"),
     }
     match client.set_write_timeout(-4294967296) {
-        Ok(()) => {},
-        Err(err) => panic(f"negative write-timeout clear failed: {net.net_error_message(err)}"),
+        .Ok(()) => {},
+        .Err(err) => panic(f"negative write-timeout clear failed: {net.net_error_message(err)}"),
     }
     match client.set_read_timeout(2147483648) {
-        Ok(()) => panic("unrepresentable read timeout reached the i32 runtime ABI"),
-        Err(NetError::InvalidArgument(_)) => {},
-        Err(err) => panic(f"unexpected read-timeout error: {net.net_error_message(err)}"),
+        .Ok(()) => panic("unrepresentable read timeout reached the i32 runtime ABI"),
+        .Err(NetError.InvalidArgument(_)) => {},
+        .Err(err) => panic(f"unexpected read-timeout error: {net.net_error_message(err)}"),
     }
     match client.set_write_timeout(4294967796) {
-        Ok(()) => panic("wrapped write timeout reached the i32 runtime ABI"),
-        Err(NetError::InvalidArgument(_)) => {},
-        Err(err) => panic(f"unexpected write-timeout error: {net.net_error_message(err)}"),
+        .Ok(()) => panic("wrapped write timeout reached the i32 runtime ABI"),
+        .Err(NetError.InvalidArgument(_)) => {},
+        .Err(err) => panic(f"unexpected write-timeout error: {net.net_error_message(err)}"),
     }
     client.close();
     server.close();

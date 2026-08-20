@@ -3,20 +3,18 @@
 #
 # What this gate proves
 # ──────────────────────
-# `emit_cancel_trap_or_return`'s composite-return arm (hew-codegen-rs/src/
-# llvm.rs, TaskEntry adapter) must synthesize a well-defined zero value on
-# the cancel-exit edge, never load the unstored `return_slot` alloca. A Rust
-# unit test over the codegen helper in isolation cannot prove this — the
-# defect is only observable through the compiled ABI boundary a real
-# `.hew` program's runtime reads. A plain `cargo nextest` run cannot exercise
-# it either: the trigger requires a task's OWN entry-block cooperate check to
-# observe cancellation before it stores anything, which a normal build cannot
-# force deterministically (see `hew-runtime`'s `forced-cancel-test` feature).
+# A TaskEntry adapter must not turn its ABI-only cancellation return into a
+# published task result. A Rust unit test over the codegen helper in isolation
+# cannot prove this — the defect is only observable through the compiled ABI
+# boundary a real `.hew` program's runtime reads. A plain `cargo nextest` run
+# cannot exercise it either: the trigger requires a task's OWN entry-block
+# cooperate check to observe cancellation before it stores anything, which a
+# normal build cannot force deterministically.
 #
 # This script builds `hew` + `libhew.a` with `--features
 # hew-runtime/forced-cancel-test`, compiles+links the probe fixture against
-# that build, and asserts the fixture observes the FIXED (well-defined zero)
-# value — not the pre-fix uninitialized-stack garbage.
+# that build, and asserts the fixture observes cancellation while a separate
+# genuine all-zero return remains a successful value.
 #
 # Approach
 # ────────
@@ -26,9 +24,9 @@
 # 2. Compile the probe fixture to a relocatable object (`hew build
 #    --emit-obj`), then link with clang against the feature-enabled
 #    `libhew.a` (mirrors `asan-fixture-check.sh`'s manual-link pattern).
-# 3. Run the binary; assert the cancelled value task publishes `x=0 y=0`
-#    (the fixed zero-initialized composite) and the separately paused
-#    heap-string task has a real cancellation release in the emitted IR.
+# 3. Run the binary; assert the cancelled value task reports cancellation, the
+#    genuine zero task reports `x=0 y=0`, and a post-publication cancellation
+#    releases an owned string result exactly once.
 #
 # WHEN OBSOLETE: if a future construct needs a general deterministic
 # actor-cancellation test harness, this narrow gate is superseded by that —
@@ -86,25 +84,24 @@ if [[ ! -f "${PROBE_LL}" ]]; then
   exit 1
 fi
 
-# The unit task's entry cooperate check sees cancellation BEFORE it loads the
-# string out of its fork environment. The actual owner is therefore the
-# task-attached environment Rc destructor, not a normal lexical Drop in the
-# skipped shim body. Prove both halves of that cancellation cleanup contract:
-# the task installs the exact destructor at `hew_rc_new`, and that destructor
-# releases the one string field.
+# The post-publication cancellation case leaves an owned string in the task
+# result buffer. The wrapper must register its exact in-place destructor, and
+# that destructor must release the embedded string. Runtime task teardown calls
+# it only when the awaiter did not consume the buffer; the leak oracle below
+# proves the dynamic leg.
 if ! grep -Eq \
-  'hew_rc_new\(.*ptr @__hew_spawn_env_rc_drop___hew_fork_entry_.*\)' \
+  'call void @hew_task_set_result_drop_fn\(ptr %[^,]+, ptr @__hew_reply_drop_string\)' \
   "${PROBE_LL}"; then
-  echo "FAIL forced-cancel-composite-check: fork environment is not wired to its string cleanup destructor" >&2
+  echo "FAIL forced-cancel-composite-check: owned task result has no typed destructor" >&2
   exit 1
 fi
 if ! awk '
-  /define private void @__hew_spawn_env_rc_drop___hew_fork_entry_/ { in_drop = 1 }
+  /define internal void @__hew_reply_drop_string/ { in_drop = 1 }
   in_drop && /call void @hew_string_drop\(/ { released = 1 }
   in_drop && /^}/ { in_drop = 0 }
   END { exit released ? 0 : 1 }
 ' "${PROBE_LL}"; then
-  echo "FAIL forced-cancel-composite-check: cancelled fork environment destructor does not release its heap string" >&2
+  echo "FAIL forced-cancel-composite-check: owned task-result destructor does not release its string" >&2
   exit 1
 fi
 
@@ -129,9 +126,9 @@ echo "=== forced-cancel-composite-check: running gate ==="
 actual_exit=0
 actual_stdout="$("${PROBE_BIN}")" || actual_exit=$?
 
-# The cancelled TaskEntry adapter must publish a zeroed Point before its body
-# starts. The independently paused string task releases silently.
-expected_stdout='x=0 y=0'
+# Cancellation must surface without a payload; an independently completed zero
+# result must still be delivered. The owned result releases silently.
+expected_stdout=$'zero x=0 y=0\ncancelled\nowned cancelled'
 
 if [[ "${actual_exit}" -ne 0 ]]; then
   echo "FAIL forced-cancel-composite-check: expected exit 0, got ${actual_exit}" >&2
@@ -140,8 +137,7 @@ fi
 
 if [[ "${actual_stdout}" != "${expected_stdout}" ]]; then
   echo "FAIL forced-cancel-composite-check: expected stdout '${expected_stdout}', got '${actual_stdout}'" >&2
-  echo "    (a pre-fix build observes non-deterministic uninitialized-stack" >&2
-  echo "    garbage here instead of the well-defined zero composite)" >&2
+  echo "    (a pre-fix build reports the cancelled task as a successful zero value)" >&2
   exit 1
 fi
 
@@ -152,10 +148,10 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v leaks >/dev/null 2>&1; then
     exit 1
   }
   if ! grep -Eq '0 leaks for 0 total leaked bytes\.' <<<"${leaks_output}"; then
-    echo "FAIL forced-cancel-composite-check: forced cancellation leaked the fork-owned string" >&2
+    echo "FAIL forced-cancel-composite-check: forced cancellation leaked the owned result" >&2
     echo "${leaks_output}" >&2
     exit 1
   fi
 fi
 
-echo "PASS forced-cancel-composite-check: fork-env string cleanup wired; zero composite observed; exit ${actual_exit}"
+echo "PASS forced-cancel-composite-check: cancellation surfaced; genuine zero preserved; owned result cleanup wired; exit ${actual_exit}"

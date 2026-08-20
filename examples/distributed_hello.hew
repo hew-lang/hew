@@ -25,21 +25,21 @@ fn main() {
     // for out-of-band exchange. allow_peer binds a peer credential to this
     // process's receiver-local route slot 2; the numeric slot is not identity.
     // A peer presenting any other credential is rejected before it is routable.
-    Node::set_transport("quic-mesh");
-    Node::load_keys("node.key");
-    let me = Node::identity_key();
+    Node.set_transport("quic-mesh");
+    Node.load_keys("node.key");
+    let me = Node.identity_key();
     println(f"this node's pinnable credential: {me}");
-    Node::allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
-    Node::start("127.0.0.1:0");
-    match Node::id() {
-        Some(id) => println(f"this node's key-derived identity: {id}"),
-        None => println("node identity unavailable"),
+    Node.allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
+    Node.start("127.0.0.1:0");
+    match Node.id() {
+        .Some(id) => println(f"this node's key-derived identity: {id}"),
+        .None => println("node identity unavailable"),
     }
-    Node::register("counter", counter);
+    Node.register("counter", counter);
     // A second node that pinned this credential at its local route slot 2 would
-    // call Node::connect("2@127.0.0.1:9000"), then Node::lookup("counter") and
+    // call Node.connect("2@127.0.0.1:9000"), then Node.lookup("counter") and
     // message the returned RemotePid. The PID carries NodeId, actor slot, and
     // durable session incarnation, so a same-key restart fences the old value.
-    Node::shutdown();
+    Node.shutdown();
     println("Counter node demo complete");
 }

@@ -5,7 +5,7 @@
 // `Mid` must follow `reexchaina`'s import binding to `reexmid.Mid`, so `mid`'s
 // signature is checked against the i64 origin and the impl is REJECTED with
 // `TraitImplSignatureMismatch`. Guards the chain fix one hop down from the apex.
-import hew::reexchaina::{Top};
+import hew.reexchaina.{Top};
 
 type W {
     id: i64;

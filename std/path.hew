@@ -44,8 +44,8 @@ pub enum PathError {
 /// Return the human-readable detail carried by a `PathError`.
 pub fn path_error_message(err: PathError) -> string {
     match err {
-        PathError::GlobFailed(message) => message,
-        PathError::IndexOutOfRange(message) => message,
+        PathError.GlobFailed(message) => message,
+        PathError.IndexOutOfRange(message) => message,
     }
 }
 
@@ -154,7 +154,7 @@ pub fn try_glob(pattern: string) -> Result<GlobResult, PathError> {
             // double-free it.
             let detail = hew_glob_error(handle);
             hew_glob_free(handle);
-            Err(PathError::GlobFailed(detail))
+            Err(PathError.GlobFailed(detail))
         }
     }
 }

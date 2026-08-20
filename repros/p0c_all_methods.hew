@@ -15,19 +15,19 @@ fn result_unwrap_or<T, E>(res: Result<T, E>, fallback: T) -> T {
 }
 
 fn main() {
-    let a = option_unwrap(Some(5));
-    let b = Some(1).is_some();
-    let c: Option<i64> = None;
+    let a = option_unwrap(Option.Some(5));
+    let b = Option.Some(1).is_some();
+    let c: Option<i64> = Option.None;
     let d = c.is_none();
-    let e: Option<i64> = None;
+    let e: Option<i64> = Option.None;
     let f = option_unwrap_or(e, 9);
-    let g: Result<i64, string> = Ok(11);
+    let g: Result<i64, string> = Result.Ok(11);
     let h = result_unwrap(g);
-    let i: Result<i64, string> = Err("no");
+    let i: Result<i64, string> = Result.Err("no");
     let j = i.is_err();
-    let k: Result<i64, string> = Ok(13);
+    let k: Result<i64, string> = Result.Ok(13);
     let l = k.is_ok();
-    let m: Result<i64, string> = Err("fallback");
+    let m: Result<i64, string> = Result.Err("fallback");
     let n = result_unwrap_or(m, 17);
     println(f"{a} / {b} / {d} / {f} / {h} / {j} / {l} / {n}");
 }

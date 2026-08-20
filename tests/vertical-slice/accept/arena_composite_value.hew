@@ -1,6 +1,6 @@
 // Arena<T> over a composite element: Vec<Slot<Point>> nests a record inside a
 // slot inside the backing Vec. Round-trip a record and read its fields back.
-import std::arena::{ Arena, Key };
+import std.arena.{ Arena, Key };
 
 type Point {
     x: i64;

@@ -1,7 +1,7 @@
 fn main() {
-    let a: Result<i64, string> = Ok(6);
-    let b: Result<i64, string> = Ok(6);
-    let c: Result<i64, string> = Ok(7);
+    let a: Result<i64, string> = Result.Ok(6);
+    let b: Result<i64, string> = Result.Ok(6);
+    let c: Result<i64, string> = Result.Ok(7);
     let same = a == b;
     let diff = a == c;
     println(f"{same} {diff}");

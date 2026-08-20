@@ -44,7 +44,7 @@ fn rc_and_weak_intrinsics_keep_typed_operands_and_drop_kinds() {
     let pipeline = pipeline(
         r"
         fn probe() -> i64 {
-            let rc = Rc::new(7);
+            let rc = Rc.new(7);
             let alias = rc.clone();
             let weak = rc.downgrade();
             let weak_alias = weak.clone();
@@ -103,7 +103,7 @@ fn ordinary_rc_move_invalidates_source() {
     let pipeline = pipeline(
         r"
         fn probe() -> i64 {
-            let rc = Rc::new(7);
+            let rc = Rc.new(7);
             let moved = rc;
             rc.get()
         }
@@ -129,7 +129,7 @@ fn branch_move_keeps_guarded_rc_release() {
     let pipeline = pipeline(
         r"
         fn probe(take: bool) {
-            let rc = Rc::new(7);
+            let rc = Rc.new(7);
             if take {
                 let moved = rc;
                 moved.strong_count();

@@ -2,7 +2,7 @@
 // Uses a Vec where index 0 = head pointer, rest is data
 // push_front shifts elements, push_back appends
 fn deque_new() -> Vec<i64> {
-    let d: Vec<i64> = Vec::new();
+    let d: Vec<i64> = Vec.new();
     d.push(0); // head pointer
     d
 }

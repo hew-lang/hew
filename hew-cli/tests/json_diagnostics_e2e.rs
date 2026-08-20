@@ -29,7 +29,7 @@ fn write_fixture(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
 /// is source-attributed at line 6 (the construction expression).
 const MIR_NYI_FIXTURE: &str = "record VHolder { items: Vec<i64>, tag: string }\n\
      fn main() {\n\
-     \x20\x20\x20\x20let init: Vec<i64> = Vec::new();\n\
+     \x20\x20\x20\x20let init: Vec<i64> = Vec.new();\n\
      \x20\x20\x20\x20init.push(7);\n\
      \x20\x20\x20\x20let s = VHolder { items: init, tag: \"base\" };\n\
      \x20\x20\x20\x20let s2 = VHolder { items: s.items, ..s };\n\

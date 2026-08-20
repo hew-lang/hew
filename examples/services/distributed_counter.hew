@@ -17,7 +17,7 @@
 //
 // This example runs all replicas in one process to focus on the replication
 // pattern. A multi-node version would add a #[wire] message envelope and an
-// ActorMsg implementation before using Node::start/register/lookup.
+// ActorMsg implementation before using Node.start/register/lookup.
 
 // Coordinator — merges replica counts into a global total.
 actor Coordinator {
@@ -84,15 +84,15 @@ fn main() {
     println("");
 
     // Create coordinator
-    let empty_names: Vec<string> = Vec::new();
-    let empty_totals: Vec<i64> = Vec::new();
+    let empty_names: Vec<string> = Vec.new();
+    let empty_totals: Vec<i64> = Vec.new();
     let coord = spawn Coordinator(replica_names: empty_names, replica_totals: empty_totals, global_total: 0, sync_count: 0);
     // Create replicas (in production these would be on separate nodes)
-    // Node::start("0.0.0.0:9000");
+    // Node.start("0.0.0.0:9000");
     let r1 = spawn Replica(name: "node-1", coordinator: coord, local_count: 0);
     let r2 = spawn Replica(name: "node-2", coordinator: coord, local_count: 0);
     let r3 = spawn Replica(name: "node-3", coordinator: coord, local_count: 0);
-    // Node::register("counter-1", r1);
+    // Node.register("counter-1", r1);
 
     // Register replicas with coordinator
     coord.register_replica("node-1");
@@ -121,8 +121,8 @@ fn main() {
 
     // ── Read global total ──
     let global = match await coord.get_global() {
-        Ok(value) => value,
-        Err(_) => -1,
+        .Ok(value) => value,
+        .Err(_) => -1,
     };
     println(f"Global counter: {global}");
     // Expected: 5+3 + 10 + 7+2 = 27
@@ -140,8 +140,8 @@ fn main() {
     r3.sync_to_coordinator();
     sleep(30ms);
     let global2 = match await coord.get_global() {
-        Ok(value) => value,
-        Err(_) => -1,
+        .Ok(value) => value,
+        .Err(_) => -1,
     };
     println(f"Global counter after update: {global2}");
     // Expected: 108 + 210 + 9 = 327

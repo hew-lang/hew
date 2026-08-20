@@ -3,7 +3,7 @@
 // () rather than fail closed, while the buffer write-back stays identical to
 // statement position. Returns 0 only when every read-back assertion holds.
 fn main() -> i64 {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     // push from a match arm (3x): the arm yields unit, bound by `let _`.
     for i in 0..3 {
         let _ = match i {
@@ -30,7 +30,7 @@ fn main() -> i64 {
         return 14;
     }
     // append from a match arm: source is copied, not consumed.
-    let other: bytes = bytes::new();
+    let other: bytes = bytes.new();
     other.push(40);
     other.push(50);
     let _ = match true {

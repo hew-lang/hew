@@ -1,7 +1,7 @@
 fn matrix_chain(dims: Vec<i64>, n: i64) -> i64 {
     let INF = 999999;
     let total = n * n;
-    let dp: Vec<i64> = Vec::new();
+    let dp: Vec<i64> = Vec.new();
     for idx in 0 .. total {
         dp.push(0);
     }
@@ -30,7 +30,7 @@ fn main() {
     let num_matrices = 10;
     let n = num_matrices;
     let num_dims = num_matrices + 1;
-    let dims: Vec<i64> = Vec::new();
+    let dims: Vec<i64> = Vec.new();
     for k in 0 .. num_dims {
         dims.push(k % 7 * 5 + 10);
     }

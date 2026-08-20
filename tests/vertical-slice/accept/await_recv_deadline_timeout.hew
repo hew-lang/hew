@@ -6,7 +6,7 @@
 // resumes the actor with a typed `Err`. The process never hangs.
 //
 // Exit-code contract: Err(_) arm → 7.
-import std::channel::channel;
+import std.channel.channel;
 
 actor Worker {
     receive fn run() -> i64 {

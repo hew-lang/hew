@@ -10,7 +10,7 @@ actor Echo {
 fn main() {
     let x = spawn Echo(seen: 0);
     let y = spawn Echo(seen: 1);
-    let v: Vec<LocalPid<Echo>> = Vec::new();
+    let v: Vec<LocalPid<Echo>> = Vec.new();
     v.push(x);
     v.push(y);
     let n = v.len();

@@ -11,7 +11,7 @@
 //! guiding the user toward the correct `\{` syntax.  No cascade errors follow.
 
 use hew_parser::ast::{BinaryOp, Expr, Item, Stmt, StringPart};
-use hew_parser::parse;
+use hew_parser::{parse, ParseDiagnosticKind};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -370,64 +370,24 @@ fn fstring_subparser_error_span_is_absolute() {
     );
 }
 
-// ── regression: eat_closing_angle updates last_token_end ─────────────────────
+// ── legacy turbofish inside interpolation ────────────────────────────────────
 
-/// After `eat_closing_angle()` consumes a `>` in a turbofish
-/// (`Foo::<T>`) inside an f-string interpolation, the EOF-based
-/// `peek_span()` must return the position **after** the `>`, not before it.
-///
-/// Source:
-/// ```text
-/// fn main() { let s = f"{Foo::<T>}"; }
-/// 0         1         2         3
-/// 012345678901234567890123456789012345
-/// ```
-///
-/// Layout:
-/// - f-string token starts at byte 20; `inner_offset` = 22.
-/// - `{` at inner byte 0 (absolute 22); `F` at inner byte 1; `expr_start_byte` = 1.
-/// - `base` = 22 + 1 = 23.
-/// - Sub-parser for `"Foo::<T>"` with offset 23:
-///   - Foo: local 0..3 → absolute 23..26
-///   - :: local 3..5 → absolute 26..28
-///   - < local 5..6 → absolute 28..29
-///   - T: local 6..7 → absolute 29..30
-///   - > local 7..8 → absolute **30..31**
-/// - `eat_closing_angle()` consumes `>` at span 30..31; with the fix it
-///   sets `last_token_end = 31`.  After that there are no tokens, so
-///   `peek_span()` returns `31..31`.
-/// - `self.error("turbofish … must be followed by …")` is called with
-///   that span → diagnostic at byte **31** (not 30).
+/// The final path cutover also rejects Rust-style turbofish syntax inside an
+/// f-string sub-parser and suggests the corresponding Hew generic application.
 #[test]
-fn fstring_eat_closing_angle_updates_last_token_end() {
+fn fstring_legacy_turbofish_reports_exact_cutover_diagnostic() {
     let src = r#"fn main() { let s = f"{Foo::<T>}"; }"#;
-
-    // Verify assumed layout.
-    assert_eq!(&src[20..22], "f\"", "layout: f-string at 20");
-    assert_eq!(&src[29..30], "T", "layout: T at 29");
-    assert_eq!(&src[30..31], ">", "layout: > at 30");
-    assert_eq!(&src[31..32], "}", "layout: closing interp-brace at 31");
-
     let result = parse(src);
-
-    // The parse must emit a turbofish diagnostic.
-    let turbofish_diag = result
+    let diagnostic = result
         .errors
         .iter()
-        .find(|e| e.message.contains("turbofish"))
-        .expect("expected a turbofish diagnostic after `Foo::<T>` without `(...)`");
+        .find(|error| error.kind == ParseDiagnosticKind::LegacyTurbofish)
+        .expect("expected the legacy turbofish cutover diagnostic");
 
-    // peek_span() at EOF after eat_closing_angle consumed `>` (span 30..31)
-    // must return 31..31, so the error is anchored just past the `>`.
+    assert!(diagnostic.message.contains("E_LEGACY_TURBOFISH"));
+    assert_eq!(diagnostic.span, 26..28);
     assert_eq!(
-        turbofish_diag.span.start, 31,
-        "turbofish error span.start should be 31 (byte after `>`), \
-         was {} — eat_closing_angle did not update last_token_end",
-        turbofish_diag.span.start
-    );
-    assert_eq!(
-        turbofish_diag.span.end, 31,
-        "turbofish error span.end should be 31 (zero-width at EOF), was {}",
-        turbofish_diag.span.end
+        diagnostic.hint.as_deref(),
+        Some("use the migrated spelling `Foo<T>`")
     );
 }

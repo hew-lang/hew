@@ -1,7 +1,8 @@
 //! Tests for std::semaphore permit-count validation.
 
-import std::semaphore;
-import std::testing;
+import std.semaphore;
+
+import std.testing;
 
 #[test]
 fn test_new_preserves_valid_permit_count() {

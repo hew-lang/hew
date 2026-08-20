@@ -41,9 +41,25 @@ declare ptr @hew_string_clone(ptr)
 
 declare ptr @hew_string_concat(ptr, ptr)
 
+declare void @hew_assert_eq_i8(i8, i8)
+
+declare void @hew_assert_eq_i16(i16, i16)
+
+declare void @hew_assert_eq_i32(i32, i32)
+
 declare void @hew_assert_eq_i64(i64, i64)
 
+declare void @hew_assert_eq_isize(i64, i64)
+
 declare void @hew_assert_eq_u8(i8, i8)
+
+declare void @hew_assert_eq_u16(i16, i16)
+
+declare void @hew_assert_eq_u32(i32, i32)
+
+declare void @hew_assert_eq_u64(i64, i64)
+
+declare void @hew_assert_eq_usize(i64, i64)
 
 declare void @hew_assert_eq_str(ptr, ptr)
 
@@ -51,9 +67,25 @@ declare void @hew_assert_eq_f64(double, double)
 
 declare void @hew_assert_eq_bool(i8, i8)
 
+declare void @hew_assert_ne_i8(i8, i8)
+
+declare void @hew_assert_ne_i16(i16, i16)
+
+declare void @hew_assert_ne_i32(i32, i32)
+
 declare void @hew_assert_ne_i64(i64, i64)
 
+declare void @hew_assert_ne_isize(i64, i64)
+
 declare void @hew_assert_ne_u8(i8, i8)
+
+declare void @hew_assert_ne_u16(i16, i16)
+
+declare void @hew_assert_ne_u32(i32, i32)
+
+declare void @hew_assert_ne_u64(i64, i64)
+
+declare void @hew_assert_ne_usize(i64, i64)
 
 declare void @hew_assert_ne_str(ptr, ptr)
 
@@ -438,8 +470,8 @@ bb12:                                             ; preds = %bb3
   %move_load32 = load i64, ptr %local_3, align 8
   store i64 %move_load32, ptr %return_slot, align 8
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
-  %ret_val = load i64, ptr %return_slot, align 8
-  ret i64 %ret_val
+  %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
+  br i1 %hew_lambda_drain_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 cancel_exit:                                      ; preds = %entry
   ret i64 0
@@ -507,6 +539,14 @@ cancel_exit30:                                    ; preds = %bb11
 
 after_cooperate31:                                ; preds = %bb11
   br label %bb4
+
+hew_shutdown_exit_failed:                         ; preds = %bb12
+  call void @hew_exit(i64 1)
+  br label %hew_shutdown_exit_continue
+
+hew_shutdown_exit_continue:                       ; preds = %hew_shutdown_exit_failed, %bb12
+  %ret_val = load i64, ptr %return_slot, align 8
+  ret i64 %ret_val
 }
 
 ; Function Attrs: presplitcoroutine
@@ -526,17 +566,20 @@ coro.begin:                                       ; preds = %dyn.alloc, %entry
   %coro.handle = call ptr @llvm.coro.begin(token %coro.id, ptr %coro.mem)
   br label %alloca.prologue
 
-coro.suspend.return:                              ; preds = %coro.dyn.free, %coro.cleanup, %coro.final.suspend, %bb2, %frame_cleanup_registered
+coro.suspend.return:                              ; preds = %coro.dyn.free, %coro.cleanup, %coro.final.suspend.emit, %bb2, %frame_cleanup_registered
   call void @llvm.coro.end(ptr %coro.handle, i1 false, token none)
   call void @hew_cont_frame_handoff(ptr %coro.handle)
   ret ptr %coro.handle
 
-coro.cleanup:                                     ; preds = %coro.final.suspend, %coro.final.suspend, %helper_crash_cleanup_retire_merge8, %helper_crash_cleanup_retire_merge
+coro.cleanup:                                     ; preds = %coro.final.suspend.emit, %coro.final.suspend.emit, %helper_crash_cleanup_retire_merge8, %helper_crash_cleanup_retire_merge
   %coro.freemem = call ptr @llvm.coro.free(token %coro.id, ptr %coro.handle)
   %coro.freemem.isnull = icmp eq ptr %coro.freemem, null
   br i1 %coro.freemem.isnull, label %coro.suspend.return, label %coro.dyn.free
 
 coro.final.suspend:                               ; preds = %helper_crash_cleanup_return_merge_4
+  br label %coro.final.suspend.emit
+
+coro.final.suspend.emit:                          ; preds = %coro.final.suspend
   %coro.final.save = call token @llvm.coro.save(ptr %coro.handle)
   %coro.final.s = call i8 @llvm.coro.suspend(token %coro.final.save, i1 true)
   switch i8 %coro.final.s, label %coro.suspend.return [

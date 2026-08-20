@@ -1,0 +1,272 @@
+//! S1 compiled proofs for the shipped `std::pipeline` surface.
+
+import std.pipeline;
+
+import std.testing;
+
+fn item(value: i64, label: string, crash_stage: bool) -> pipeline.PipelineItemI64 {
+    PipelineItemI64 { value: value, label: label, crash_stage: crash_stage }
+}
+
+actor PushProbe {
+    var completed: bool;
+    var accepted: bool;
+
+    receive fn finish(result: bool) {
+        accepted = result;
+        completed = true;
+    }
+
+    receive fn is_completed() -> bool {
+        completed
+    }
+
+    receive fn was_accepted() -> bool {
+        accepted
+    }
+}
+
+actor PushRunner {
+    let source: LocalPid<pipeline.SourceI64>;
+    let probe: LocalPid<PushProbe>;
+
+    mailbox 1;
+
+    receive fn start(value: i64, label: string) {
+        match await source.push(item(value, label, false)) {
+            Ok(result) => {
+                probe.finish(result);
+            },
+            Err(_) => {
+                probe.finish(false);
+            },
+        }
+    }
+}
+
+fn wait_for_count(source: LocalPid<pipeline.SourceI64>, expected: i64) {
+    var count = -1;
+    var polls = 0;
+    while count != expected && polls < 5000 {
+        match await source.count() {
+            Ok(value) => {
+                count = value;
+            },
+            Err(_) => {
+                count = -1;
+            },
+        }
+        polls = polls + 1;
+        if count != expected {
+            sleep(1ms);
+        }
+    }
+    if count != expected {
+        panic("pipeline count did not settle");
+    }
+}
+
+fn wait_for_attempts(control: LocalPid<pipeline.AdmissionControlI64>, expected: i64) {
+    var attempts = -1;
+    var polls = 0;
+    while attempts != expected && polls < 5000 {
+        match await control.attempts() {
+            Ok(value) => {
+                attempts = value;
+            },
+            Err(_) => {
+                attempts = -1;
+            },
+        }
+        polls = polls + 1;
+        if attempts != expected {
+            sleep(1ms);
+        }
+    }
+    if attempts != expected {
+        panic("pipeline stage attempt did not arrive");
+    }
+}
+
+fn wait_for_probe(probe: LocalPid<PushProbe>) {
+    var completed = false;
+    var polls = 0;
+    while !completed && polls < 5000 {
+        match await probe.is_completed() {
+            Ok(value) => {
+                completed = value;
+            },
+            Err(_) => {
+                completed = false;
+            },
+        }
+        polls = polls + 1;
+        if !completed {
+            sleep(1ms);
+        }
+    }
+    if !completed {
+        panic("pipeline push probe did not complete");
+    }
+}
+
+#[test]
+fn shipped_surface_constructs_wires_and_delivers_owned_items_once() {
+    let source = pipeline.run(pipeline.from(3));
+    match await source.push(item(3, "alpha", false)) {
+        Ok(admitted) => testing.assert_true(admitted),
+        Err(_) => testing.assert_true(false),
+    }
+    match await source.push(item(7, "beta", false)) {
+        Ok(admitted) => testing.assert_true(admitted),
+        Err(_) => testing.assert_true(false),
+    }
+    match await source.push(item(11, "gamma", false)) {
+        Ok(admitted) => testing.assert_true(admitted),
+        Err(_) => testing.assert_true(false),
+    }
+    wait_for_count(source, 3);
+    match await source.item(0) {
+        Ok(value) => testing.assert_eq(value, 6),
+        Err(_) => testing.assert_true(false),
+    }
+    match await source.item(1) {
+        Ok(value) => testing.assert_eq(value, 14),
+        Err(_) => testing.assert_true(false),
+    }
+    match await source.item(2) {
+        Ok(value) => testing.assert_eq(value, 22),
+        Err(_) => testing.assert_true(false),
+    }
+    match await source.sum() {
+        Ok(value) => testing.assert_eq(value, 42),
+        Err(_) => testing.assert_true(false),
+    }
+    match await source.last_label() {
+        Ok(value) => testing.assert_true(value == "gamma:stage"),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn admission_reply_waits_for_downstream_post_send_barrier() {
+    let source = pipeline.run(pipeline.from(0));
+    let control = match await source.control_handle() {
+        Ok(value) => value,
+        Err(_) => panic("pipeline control handle unavailable"),
+    };
+    let probe = spawn PushProbe(completed: false, accepted: false);
+    let runner = spawn PushRunner(source: source, probe: probe);
+    match await source.push(item(1, "held-one", false)) {
+        Ok(admitted) => testing.assert_true(admitted),
+        Err(_) => testing.assert_true(false),
+    }
+    match await source.push(item(2, "held-two", false)) {
+        Ok(admitted) => testing.assert_true(admitted),
+        Err(_) => testing.assert_true(false),
+    }
+    runner.start(3, "blocked-three");
+    wait_for_attempts(control, 3);
+    match await control.post_sends() {
+        Ok(value) => testing.assert_eq(value, 2),
+        Err(_) => testing.assert_true(false),
+    }
+    match await probe.is_completed() {
+        Ok(value) => testing.assert_true(!value),
+        Err(_) => testing.assert_true(false),
+    }
+    control.release();
+    wait_for_probe(probe);
+    match await probe.was_accepted() {
+        Ok(value) => testing.assert_true(value),
+        Err(_) => testing.assert_true(false),
+    }
+    match await control.post_sends() {
+        Ok(value) => testing.assert_eq(value, 3),
+        Err(_) => testing.assert_true(false),
+    }
+    control.release();
+    control.release();
+    wait_for_count(source, 3);
+}
+
+#[test]
+fn cancelled_admission_settles_and_pipeline_continues() {
+    let source = pipeline.run(pipeline.from(0));
+    let control = match await source.control_handle() {
+        Ok(value) => value,
+        Err(_) => panic("pipeline control handle unavailable"),
+    };
+    match await source.push(item(1, "cancel-one", false)) {
+        Ok(admitted) => testing.assert_true(admitted),
+        Err(_) => testing.assert_true(false),
+    }
+    match await source.push(item(2, "cancel-two", false)) {
+        Ok(admitted) => testing.assert_true(admitted),
+        Err(_) => testing.assert_true(false),
+    }
+    let outcome = select {
+        reply from source.push(item(3, "cancel-three", false)) => if reply {
+            1
+        } else {
+            -1
+        },
+        after 5ms => 0,
+    };
+    testing.assert_eq(outcome, 0);
+    control.release();
+    control.release();
+    control.release();
+    wait_for_count(source, 3);
+    control.release();
+    match await source.push(item(4, "after-cancel", false)) {
+        Ok(admitted) => testing.assert_true(admitted),
+        Err(_) => testing.assert_true(false),
+    }
+    wait_for_count(source, 4);
+}
+
+#[test]
+fn crash_mid_pipeline_settles_without_sink_delivery() {
+    let source = pipeline.run(pipeline.from(1));
+    match await source.push(item(9, "crash-owned", true)) {
+        Ok(admitted) => testing.assert_true(!admitted),
+        Err(_) => testing.assert_true(false),
+    }
+    match await source.count() {
+        Ok(value) => testing.assert_eq(value, 0),
+        Err(_) => testing.assert_true(false),
+    }
+    match await source.push(item(10, "after-crash", false)) {
+        Ok(admitted) => testing.assert_true(!admitted),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn graceful_shutdown_drains_queued_owned_items() {
+    let source = pipeline.run(pipeline.from(0));
+    let control = match await source.control_handle() {
+        Ok(value) => value,
+        Err(_) => panic("pipeline control handle unavailable"),
+    };
+    let first_probe = spawn PushProbe(completed: false, accepted: false);
+    let second_probe = spawn PushProbe(completed: false, accepted: false);
+    let third_probe = spawn PushProbe(completed: false, accepted: false);
+    let first = spawn PushRunner(source: source, probe: first_probe);
+    let second = spawn PushRunner(source: source, probe: second_probe);
+    let third = spawn PushRunner(source: source, probe: third_probe);
+    first.start(4, "drain-one");
+    second.start(5, "drain-two");
+    third.start(6, "drain-three");
+    control.release();
+    control.release();
+    control.release();
+    wait_for_probe(first_probe);
+    wait_for_probe(second_probe);
+    wait_for_probe(third_probe);
+    match await source.shutdown(3) {
+        Ok(drained) => testing.assert_true(drained),
+        Err(_) => testing.assert_true(false),
+    }
+}

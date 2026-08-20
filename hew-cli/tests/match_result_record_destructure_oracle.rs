@@ -47,13 +47,13 @@ use support::leak_slope::{
 /// the `net.connect_timeout` shape. `host` is read AFTER the join, so a
 /// release scheduled on the arm's scope-close edge is a use-after-free.
 const DESTRUCTURE_SOURCE: &str = "\
-import std::net;\n\
+import std.net;\n\
 \n\
 fn main() {\n\
 \x20   let addr = \"10.11.12.13:8080\".to_upper();\n\
-\x20   let Endpoint { host, port } = match net::try_parse_endpoint(\"oracle\", addr) {\n\
+\x20   let Endpoint { host, port } = match net.try_parse_endpoint(\"oracle\", addr) {\n\
 \x20       Ok(e) => e,\n\
-\x20       Err(err) => { panic(f\"bad: {net::net_error_message(err)}\"); }\n\
+\x20       Err(err) => { panic(f\"bad: {net.net_error_message(err)}\"); }\n\
 \x20   };\n\
 \x20   println(host);\n\
 \x20   println(f\"{port}\");\n\
@@ -65,13 +65,13 @@ const DESTRUCTURE_EXPECTED: &str = "10.11.12.13\n8080\n";
 /// `host` field is read through a retained field load. Same defect surface,
 /// without the destructure desugar.
 const PLAIN_LET_SOURCE: &str = "\
-import std::net;\n\
+import std.net;\n\
 \n\
 fn main() {\n\
 \x20   let addr = \"10.11.12.13:8080\".to_upper();\n\
-\x20   let e = match net::try_parse_endpoint(\"oracle\", addr) {\n\
+\x20   let e = match net.try_parse_endpoint(\"oracle\", addr) {\n\
 \x20       Ok(x) => x,\n\
-\x20       Err(err) => { panic(f\"bad: {net::net_error_message(err)}\"); }\n\
+\x20       Err(err) => { panic(f\"bad: {net.net_error_message(err)}\"); }\n\
 \x20   };\n\
 \x20   println(e.host);\n\
 }\n";
@@ -84,11 +84,11 @@ const PLAIN_LET_EXPECTED: &str = "10.11.12.13\n";
 /// extraction cannot be elided.
 fn parse_destructure_loop_source(frames: usize) -> String {
     format!(
-        "import std::net;\n\
+        "import std.net;\n\
          \n\
          fn cycle() -> i64 {{\n\
          \x20   let addr = \"10.0.0.1:8080\".to_upper();\n\
-         \x20   let Endpoint {{ host, port }} = match net::try_parse_endpoint(\"oracle\", addr) {{\n\
+         \x20   let Endpoint {{ host, port }} = match net.try_parse_endpoint(\"oracle\", addr) {{\n\
          \x20       Ok(e) => e,\n\
          \x20       Err(err) => {{ panic(\"bad\"); }}\n\
          \x20   }};\n\

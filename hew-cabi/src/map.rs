@@ -235,24 +235,22 @@ pub struct HewMapValueLayout {
 }
 
 // ---------------------------------------------------------------------------
-// Static layout descriptor symbols (W4.001 Stage C0b)
+// Static layout descriptor symbols.
 // ---------------------------------------------------------------------------
 //
 // `hew-runtime/src/layout_intrinsics.rs` defines `#[no_mangle] pub static`
-// instances of `HewMapKeyLayout` / `HewMapValueLayout` for the C0a-scoped
+// instances of `HewMapKeyLayout` / `HewMapValueLayout` for the supported
 // types (`i32, i64, u32, u64, f32, f64, bool, char, string, bytes, unit`).
-// Re-declaring them here as `extern "C"` statics lets codegen-rs (Stage C
-// consumer) and parallel back-ends take the address of the descriptor
+// Re-declaring them here as `extern "C"` statics lets codegen-rs and other
+// back-ends take the address of the descriptor
 // through the cabi surface without depending on hew-runtime directly.
 //
-// **C0b boundary:** these are checker-visible artifacts only. The first
-// production reader is Stage C's `HashMapLoweringFact` materialiser. No
-// consumer in C0b references these symbols at compile time, so a missing
-// link would not surface until Stage C — the `resolved_call_kernel_symbols`
-// integration test in `hew-types/tests/` is the C0b-time linkage gate.
+// These are checker-visible artifacts and are linked by the
+// `resolved_call_kernel_symbols` integration test. Keep the declarations in
+// sync with the runtime definitions so missing symbols fail at link time.
 //
-// **Float K descriptors** ship with `hash_fn = None` / `eq_fn = None`;
-// belt-and-suspenders DI-003 fail-closed-by-absence per plan §4 Stage C0b.
+// Float descriptors ship with `hash_fn = None` / `eq_fn = None`; callers must
+// reject hashing or equality when those operations are unavailable.
 //
 // **WASM parity (#1820):** the layout-backed HashMap/HashSet path is supported
 // on wasm32-wasip1. These descriptors are pure data, and codegen may take their

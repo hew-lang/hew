@@ -12,14 +12,14 @@ enum Colour {
 
 fn describe(c: Colour) {
     match c {
-        Colour::Red => println("red-direct"),
+        Colour.Red => println("red-direct"),
         _ => println("not-red"),
     }
 }
 
 fn main() {
-    describe(Colour::Red);
-    describe(Colour::Green);
-    describe(Colour::Blue);
+    describe(Colour.Red);
+    describe(Colour.Green);
+    describe(Colour.Blue);
     println("done");
 }

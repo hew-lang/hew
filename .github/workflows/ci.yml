@@ -402,6 +402,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
+          targets: wasm32-unknown-unknown
           cache-shared-key: playground-wasm
 
       - name: Install wasm-pack v0.13.1 and Binaryen 117
@@ -704,6 +705,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
+          targets: wasm32-unknown-unknown
           tools: nextest
           cache-shared-key: build-test-linux
 

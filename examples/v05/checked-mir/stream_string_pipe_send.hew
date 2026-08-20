@@ -6,7 +6,7 @@
 // describable element suspends now, not just bytes. Even a NON-awaited send
 // suspends in an execution-context caller (it must not block the scheduler
 // thread); a context-free caller (`fn main`) keeps the blocking call.
-import std::stream;
+import std.stream;
 
 actor Echo {
     receive fn run(unused: i64) {

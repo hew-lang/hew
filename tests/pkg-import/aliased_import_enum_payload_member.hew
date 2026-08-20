@@ -14,7 +14,7 @@
 //
 // Harness verb: hew run
 // Expected: the code carried by the aliased-type variant payload is read back.
-import hew::aliassrc::{ Payload as Tag };
+import hew.aliassrc.{ Payload as Tag };
 
 enum Wrap {
     Has(Tag);
@@ -22,10 +22,10 @@ enum Wrap {
 }
 
 fn main() {
-    let w = Wrap::Has(Tag { code: 42 });
+    let w = Wrap.Has(Tag { code: 42 });
     let code = match w {
-        Wrap::Has(t) => t.code,
-        Wrap::Empty => 0,
+        Wrap.Has(t) => t.code,
+        Wrap.Empty => 0,
     };
     println(code);
 }

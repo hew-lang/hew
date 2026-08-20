@@ -51,7 +51,7 @@ use support::{describe_output, require_codegen};
 fn vec_conditional_not_taken_source(frames: usize) -> String {
     format!(
         "fn make_vec() -> Vec<i64> {{\n\
-         \x20   let v: Vec<i64> = Vec::new();\n\
+         \x20   let v: Vec<i64> = Vec.new();\n\
          \x20   v.push(40);\n\
          \x20   v.push(2);\n\
          \x20   return v;\n\
@@ -84,7 +84,7 @@ fn vec_conditional_not_taken_source(frames: usize) -> String {
 fn vec_string_conditional_not_taken_source(frames: usize) -> String {
     format!(
         "fn make_strs() -> Vec<string> {{\n\
-         \x20   let v: Vec<string> = Vec::new();\n\
+         \x20   let v: Vec<string> = Vec.new();\n\
          \x20   v.push(\"per-call-element-one\");\n\
          \x20   v.push(\"per-call-element-two\");\n\
          \x20   return v;\n\
@@ -117,7 +117,7 @@ fn vec_string_conditional_not_taken_source(frames: usize) -> String {
 fn hashmap_conditional_not_taken_source(frames: usize) -> String {
     format!(
         "fn probe(take: bool) -> i64 {{\n\
-         \x20   let m: HashMap<string, i64> = HashMap::new();\n\
+         \x20   let m: HashMap<string, i64> = HashMap.new();\n\
          \x20   m.insert(\"k\", 42);\n\
          \x20   var out: i64 = 1;\n\
          \x20   if take {{\n\
@@ -147,7 +147,7 @@ fn hashmap_conditional_not_taken_source(frames: usize) -> String {
 fn vec_conditional_taken_source(frames: usize) -> String {
     format!(
         "fn make_vec() -> Vec<i64> {{\n\
-         \x20   let v: Vec<i64> = Vec::new();\n\
+         \x20   let v: Vec<i64> = Vec.new();\n\
          \x20   v.push(40);\n\
          \x20   v.push(2);\n\
          \x20   return v;\n\
@@ -187,7 +187,7 @@ fn vec_conditional_taken_source(frames: usize) -> String {
 fn vec_double_destination_not_taken_source(frames: usize) -> String {
     format!(
         "fn make_vec() -> Vec<i64> {{\n\
-         \x20   let v: Vec<i64> = Vec::new();\n\
+         \x20   let v: Vec<i64> = Vec.new();\n\
          \x20   v.push(40);\n\
          \x20   v.push(2);\n\
          \x20   return v;\n\
@@ -226,14 +226,14 @@ fn vec_double_destination_not_taken_source(frames: usize) -> String {
 /// output is the concatenated per-shape checksums + `OK`.
 const EXACTLY_ONCE_PIN_SOURCE: &str = "\
 fn make_vec() -> Vec<i64> {\n\
-\x20   let v: Vec<i64> = Vec::new();\n\
+\x20   let v: Vec<i64> = Vec.new();\n\
 \x20   v.push(40);\n\
 \x20   v.push(2);\n\
 \x20   return v;\n\
 }\n\
 \n\
 fn make_strs() -> Vec<string> {\n\
-\x20   let v: Vec<string> = Vec::new();\n\
+\x20   let v: Vec<string> = Vec.new();\n\
 \x20   v.push(\"alpha\");\n\
 \x20   v.push(\"beta\");\n\
 \x20   return v;\n\
@@ -287,7 +287,7 @@ fn array_chain(take: bool) -> i64 {\n\
 }\n\
 \n\
 fn map_move(take: bool) -> i64 {\n\
-\x20   let m: HashMap<string, i64> = HashMap::new();\n\
+\x20   let m: HashMap<string, i64> = HashMap.new();\n\
 \x20   m.insert(\"k\", 42);\n\
 \x20   var out: i64 = 2;\n\
 \x20   if take {\n\

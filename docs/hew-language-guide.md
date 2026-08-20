@@ -175,7 +175,7 @@ fn main() {
     }
 
     let clamped: i32 = a.saturating_add(1);
-    println(clamped);          // 2147483647 (clamped to i32::MAX)
+    println(clamped);          // 2147483647 (clamped to i32.MAX)
 }
 ```
 
@@ -241,7 +241,7 @@ fn main() {
 ```hew
 fn main() {
     var total: i64 = 0;
-    let items: Vec<string> = Vec::new();
+    let items: Vec<string> = Vec.new();
     items.push("a");
     items.push("b");
     for s in items { total += s.len() as i64; }
@@ -350,7 +350,7 @@ fn main() {
 
 ```hew
 fn main() {
-    var v: Vec<i64> = Vec::new();
+    var v: Vec<i64> = Vec.new();
     v.push(10); v.push(20); v.push(30);
     var total = 0;
     for x in v { total += x; }
@@ -424,7 +424,7 @@ Use `if let Some(v) = opt` for a one-armed destructure; prefer `match` when you 
 
 ```hew
 fn main() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(10);
     v.push(20);
     v.push(30);
@@ -440,7 +440,7 @@ Annotate the binding type so the element type is inferred. `.len()` returns `i64
 ```hew
 type Point { x: i64; y: i64; }
 fn main() {
-    let v: Vec<Point> = Vec::new();
+    let v: Vec<Point> = Vec.new();
     v.push(Point { x: 1, y: 2 });
     v.push(Point { x: 3, y: 4 });
     let p = v[1];
@@ -450,7 +450,7 @@ fn main() {
 
 ```hew
 fn main() {
-    let names: Vec<string> = Vec::new();
+    let names: Vec<string> = Vec.new();
     names.push("ada");
     names.push("alan");
     let who = names[1];        // fresh owned string (a clone)
@@ -469,7 +469,7 @@ v.len()` already holds). A `Vec<string>` index returns a fresh owned `string`
 
 ```hew
 fn main() {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     v.push("a");
     v.push("b");
     match v.get(0) {
@@ -488,7 +488,7 @@ the trapping read). Use `.get(i)` whenever the index may be invalid.
 
 ```hew
 fn main() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(10); v.push(20); v.push(30); v.push(40);
     let s = v[1..3];
     println(s.len());    // 2
@@ -505,7 +505,7 @@ longer required for that.)
 
 ```hew
 fn main() {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     v.push("alpha");
     v.push("beta");
     for s in v {
@@ -522,14 +522,14 @@ Prefer for-in for read-only traversal of any element type, including
 ```hew
 enum Colour { Red; Green; Blue; }
 fn main() {
-    let v: Vec<Colour> = Vec::new();
-    v.push(Colour::Red);
-    v.push(Colour::Blue);
+    let v: Vec<Colour> = Vec.new();
+    v.push(Colour.Red);
+    v.push(Colour.Blue);
     let c = v[1];
     match c {
-        Colour::Red => println("red"),
-        Colour::Green => println("green"),
-        Colour::Blue => println("blue"),
+        Colour.Red => println("red"),
+        Colour.Green => println("green"),
+        Colour.Blue => println("blue"),
     }
 }
 ```
@@ -543,7 +543,7 @@ v.len()` before a `for i in 0 .. n` loop.
 
 ```hew
 fn main() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(2);
     let last = v.pop();   // i64 — the removed element, returned directly
@@ -559,7 +559,7 @@ check `.len()` before `.pop()`), or use `.get(i)` for the non-trapping read.
 
 ```hew
 fn main() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(10); v.push(20); v.push(30);
     v.set(1, 99);
     println(v[0]);   // 10
@@ -574,12 +574,12 @@ fn main() {
 
 ```hew
 fn main() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(1); v.push(2); v.push(3);
     println(v.contains(2));   // true
     println(v.contains(9));   // false
 
-    let v2: Vec<i64> = Vec::new();
+    let v2: Vec<i64> = Vec.new();
     v2.push(4); v2.push(5);
     v.append(v2);             // v is now [1, 2, 3, 4, 5]
     println(v.len());         // 5
@@ -595,12 +595,12 @@ fn main() {
 
 ```hew
 fn main() {
-    let matrix: Vec<Vec<i64>> = Vec::new();
+    let matrix: Vec<Vec<i64>> = Vec.new();
 
-    let row0: Vec<i64> = Vec::new();
+    let row0: Vec<i64> = Vec.new();
     row0.push(1); row0.push(2); row0.push(3);
 
-    let row1: Vec<i64> = Vec::new();
+    let row1: Vec<i64> = Vec.new();
     row1.push(4); row1.push(5); row1.push(6);
 
     matrix.push(row0);
@@ -620,7 +620,7 @@ fn main() {
 
 ```hew
 fn main() {
-    let m: HashMap<string, i64> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap.new();
     m.insert("alice", 10);
     m.insert("bob", 20);
     println(m.len());   // 2
@@ -633,7 +633,7 @@ Use `let` (not `var`) — these have interior mutability so the binding is never
 
 ```hew
 fn main() {
-    let m: HashMap<string, i64> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap.new();
     m.insert("alice", 10);
     match m.get("alice") {
         Some(v) => println(f"alice={v}"),
@@ -648,7 +648,7 @@ fn main() {
 
 ```hew
 fn main() {
-    let m: HashMap<string, i64> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap.new();
     m.insert("alice", 1);
     m.insert("bob", 2);
     let has_alice = m.contains_key("alice");   // true
@@ -669,24 +669,28 @@ type User { name: string; score: i64; }
 
 fn main() {
     // Scalar values
-    let flags: HashMap<string, bool> = HashMap::new();
+    let flags: HashMap<string, bool> = HashMap.new();
     flags.insert("debug", true);
-    let ratios: HashMap<string, f64> = HashMap::new();
+    let ratios: HashMap<string, f64> = HashMap.new();
     ratios.insert("pi", 3.14);
 
     // User-defined records work as values
-    let users: HashMap<string, User> = HashMap::new();
+    let users: HashMap<string, User> = HashMap.new();
     users.insert("alice", User { name: "Alice", score: 100 });
 
     // Vec<T> also works as a value
-    let tags: HashMap<string, Vec<string>> = HashMap::new();
-    let v: Vec<string> = Vec::new();
+    let tags: HashMap<string, Vec<string>> = HashMap.new();
+    let v: Vec<string> = Vec.new();
     v.push("admin");
     tags.insert("alice", v);
 }
 ```
 
-Keys are `string`. Value types include `i64`, `string`, `bool`, `f64`, user-defined records, and `Vec<T>`.
+Keys can be `string`, any integer type, `f64`, `bool`, or `char`. Value types
+include `i64`, `string`, `bool`, `f64`, user-defined records, and `Vec<T>`.
+Note what indexing returns: `m[k]` yields the bare value `V` and traps with
+`IndexOutOfBounds` when the key is absent, so use `.get(k)` — which returns
+`Option<V>` — whenever the key may be missing.
 
 ### Mutating a HashMap value (copy-rebuild-reinsert)
 
@@ -694,7 +698,7 @@ Keys are `string`. Value types include `i64`, `string`, `bool`, `f64`, user-defi
 
 ```hew
 fn main() {
-    let scores: HashMap<string, i64> = HashMap::new();
+    let scores: HashMap<string, i64> = HashMap.new();
     scores.insert("alice", 10);
     scores.insert("bob", 20);
 
@@ -717,7 +721,7 @@ fn main() {
 
 ```hew
 fn main() {
-    let m: HashMap<string, i64> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap.new();
     m.insert("alice", 10);
     m.insert("bob", 20);
     m.insert("carol", 30);
@@ -740,7 +744,7 @@ fn main() {
 
 ```hew
 fn main() {
-    let s: HashSet<i64> = HashSet::new();
+    let s: HashSet<i64> = HashSet.new();
     s.insert(1);
     s.insert(2);
     s.insert(2);                 // dedups
@@ -751,7 +755,7 @@ fn main() {
 }
 ```
 
-Set membership is `.contains(x)` (note: `.contains_key` is the HashMap spelling). Inserts dedup automatically. Supported element types are `i64` and `string`.
+Set membership is `.contains(x)` (note: `.contains_key` is the HashMap spelling). Inserts dedup automatically. Supported element types are `string` plus the scalar value types — any integer width, `f64`, `bool`, and `char`.
 
 `.to_vec()` returns a `Vec<T>` snapshot of every element (order unspecified) — the same eager-clone pattern `HashMap.keys()`/`.values()` use. `.clear()` removes every element and resets `.len()` to 0, same as `HashMap.clear()`.
 
@@ -792,7 +796,7 @@ fn main() -> i32 {
 ```
 
 ```hew
-import std::os;
+import std.os;
 
 // Pattern 2: check args, exit non-zero on error
 fn main() -> i32 {
@@ -826,7 +830,7 @@ Shell pipelines and `&&` chains read the exit code — write `main() -> i32` for
 ```hew
 fn fill(v: Vec<i64>) { v.push(1); v.push(2); v.push(3); }
 fn main() {
-    let xs: Vec<i64> = Vec::new();
+    let xs: Vec<i64> = Vec.new();
     fill(xs);
     println(xs.len());   // 3
 }
@@ -844,7 +848,7 @@ fn total(v: Vec<i64>) -> i64 {
     sum
 }
 fn main() {
-    let xs: Vec<i64> = Vec::new();
+    let xs: Vec<i64> = Vec.new();
     xs.push(10); xs.push(20);
     println(total(xs));
     println(total(xs));   // still valid; no move within a fn/actor
@@ -862,7 +866,7 @@ you need to keep using the original after such an insert, pass `clone x` (or
 
 ```hew
 fn main() {
-    let a: Vec<i64> = Vec::new();
+    let a: Vec<i64> = Vec.new();
     a.push(1); a.push(2);
     let b = a.clone();
     b.push(99);
@@ -877,7 +881,7 @@ Use `.clone()` only when you need a second independent copy — e.g. keeping the
 
 ```hew
 fn main() {
-    let a: Vec<i64> = Vec::new();
+    let a: Vec<i64> = Vec.new();
     a.push(1); a.push(2);
     let b = clone a;    // independent copy — same effect as `a.clone()`
     b.push(99);
@@ -905,13 +909,13 @@ reference type. Writing `&x` is rejected with a diagnostic pointing you at
 ### Shared ownership inside one actor with Rc and Weak
 
 `Rc<T>` gives multiple bindings ownership of one payload inside a single
-actor. Construct it with `Rc::new(value)` and create another strong owner with
+actor. Construct it with `Rc.new(value)` and create another strong owner with
 `.clone()`. Both handles are affine: assigning one without cloning moves it.
 Neither `Rc<T>` nor `Weak<T>` can be sent to another actor.
 
 ```hew
 fn main() {
-    let value = Rc::new(7);
+    let value = Rc.new(7);
     let alias = value.clone();
     value.set(9);
     println(alias.get());          // 9
@@ -931,20 +935,20 @@ type Node {
 }
 
 fn main() {
-    let root = Rc::new(Node { label: "root", parent: None });
+    let root = Rc.new(Node { label: "root", parent: None });
     let weak = root.downgrade();
     root.set(Node { label: "child", parent: Some(weak.clone()) });
 
     match weak.upgrade() {
-        Some(owner) => println(owner.strong_count()),
-        None => println("payload already released"),
+        .Some(owner) => println(owner.strong_count()),
+        .None => println("payload already released"),
     }
 }
 ```
 
 `upgrade()` returns `Some` only while at least one strong owner exists. There
-is no `Weak::new()`; construction starts with `Option<Weak<T>>::None`, then uses
-`downgrade()` and `set()`. Strong `Rc` cycles leak. `Rc::new_cyclic`, direct
+is no `Weak.new()`; construction starts with `Option<Weak<T>>.None`, then uses
+`downgrade()` and `set()`. Strong `Rc` cycles leak. `Rc.new_cyclic`, direct
 deref/borrow access to the payload, and cross-actor transfer are not supported.
 
 ### Struct value param and returning a struct
@@ -1114,7 +1118,7 @@ fn eval(e: Expr) -> i64 {
     }
 }
 fn main() {
-    let e = Expr::Add(Expr::Lit(10), Expr::Lit(5));
+    let e = Expr.Add(Expr.Lit(10), Expr.Lit(5));
     println(eval(e));   // 15
 }
 ```
@@ -1376,7 +1380,7 @@ Put post-spawn initialization in `#[on(start)]` and teardown in `#[on(stop)]`. B
 ### #[on(crash)] hook
 
 ```hew
-import std::failure::{ CrashInfo, CrashAction };
+import std.failure.{ CrashInfo, CrashAction };
 
 actor Risky {
     var n: i64 = 0;
@@ -1472,7 +1476,7 @@ Returns immediately if `target` is already in the past. Combine with
 
 ```hew
 fn main() {
-    let t0 = instant::now();
+    let t0 = instant.now();
     let deadline = t0 + 50ms;
     // ... do some work ...
     sleep_until(deadline);    // waits only the remaining time
@@ -1529,6 +1533,12 @@ fn main() {
 Periodic handlers preserve the actor's single-threaded state model: a tick never
 runs concurrently with another receive handler on the same actor. It is just a
 separate mailbox dispatch armed by the runtime timer.
+
+When the runtime shuts down, periodic-timer admission closes first. A periodic
+tick becomes live work only when the timer ticker claims it for callback
+delivery. Shutdown waits for callbacks already claimed, then cancels every
+pending periodic entry, including an entry that is already due but has not yet
+been claimed. Such an entry is not delivered during shutdown.
 
 ### Cancellable long-running work in actor handlers
 
@@ -1587,7 +1597,7 @@ connection or data arrives, which is why `hew check` warns
 Inside a receive handler, use the suspending `await` form instead:
 
 ```hew
-import std::net;
+import std.net;
 
 actor Server {
     let addr: string;
@@ -1667,7 +1677,7 @@ machine Log {
     state Empty;
     state Filled { items: Vec<i64>; }
     on Append(item): Empty => Filled {
-        let v: Vec<i64> = Vec::new(); v.push(item); Filled { items: v }
+        let v: Vec<i64> = Vec.new(); v.push(item); Filled { items: v }
     }
     on Append(item): Filled => Filled reenter {
         let v = self.items; v.push(item); Filled { items: v }
@@ -1701,7 +1711,7 @@ machine Acc {
     on Add: Seed => Total { Total { sum: event.n } }
     on Add: Total => Total reenter { Total { sum: self.sum + event.n } }
 }
-fn make_add(n: i64) -> AccEvent { AccEvent::Add { n: n } }
+fn make_add(n: i64) -> AccEvent { AccEvent.Add { n: n } }
 fn main() {
     var a = Seed;
     a.step(make_add(5));
@@ -1756,10 +1766,10 @@ fn drive(d: Door) -> string {
     local.step(Open);
     local.state_name()
 }
-fn main() { println(drive(Door::Shut)); }   // Ajar
+fn main() { println(drive(.Shut)); }   // Ajar
 ```
 
-Pass machines by value into and out of free functions and mutate a local `var`. (Drive machines via local `var`, free-fn params, or the whole actor-message payload — not as an embedded named field of an actor or struct.)
+Pass machines by value into and out of free functions and mutate a local `var`. A machine also works as an actor state field — `var d: Door = Shut;` in an actor body, with `d.step(Open)` inside a `receive fn`, compiles and runs (the field rides the enum clone/drop substrate). What does not work is a machine inside a plain record: `.step()` requires a `var`-bound receiver, and a record field is not one, so `r.d.step(Open)` is rejected with `` `.step()` requires a mutable binding receiver; this expression is not declared with `var` ``. Copy the field into a local `var`, step it, and write it back.
 
 ## Generics
 
@@ -1842,7 +1852,7 @@ A generic record instantiation may carry owned fields (`string`, `Vec<T>`, neste
 ```hew
 fn count<T>(items: Vec<T>) -> i64 { items.len() }
 fn main() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(10); v.push(20); v.push(30);
     println(count(v));   // 3
 }
@@ -1855,9 +1865,9 @@ Accept `Vec<T>` in a generic function and use `.len()`/`v[i]`.
 ```hew
 enum Shape { Circle(f64); Named(string); }
 fn main() {
-    let v: Vec<Shape> = Vec::new();
-    v.push(Shape::Circle(1.5));
-    v.push(Shape::Named("square"));
+    let v: Vec<Shape> = Vec.new();
+    v.push(Shape.Circle(1.5));
+    v.push(Shape.Named("square"));
     println(v.len());   // 2
 }
 ```
@@ -1869,7 +1879,7 @@ A monomorphic enum, even one carrying a string payload, is a valid Vec element. 
 ```hew
 type Point { x: i64; y: i64; }
 fn main() {
-    let v: Vec<Point> = Vec::new();
+    let v: Vec<Point> = Vec.new();
     v.push(Point { x: 1, y: 2 });
     v.push(Point { x: 3, y: 4 });
     let got = v[1];
@@ -1886,10 +1896,10 @@ When a generic function takes no arguments from which the type can be inferred, 
 
 ```hew
 fn make_vec<T>() -> Vec<T> {
-    Vec::new()
+    Vec.new()
 }
 fn main() {
-    let v = make_vec::<i64>();
+    let v = make_vec<i64>();
     v.push(10);
     v.push(20);
     println(v.len());   // 2
@@ -1901,7 +1911,7 @@ fn main() {
 ```hew
 type Stack<T> { items: Vec<T>; }
 
-fn new_empty<T>() -> Stack<T> { Stack { items: Vec::new() } }
+fn new_empty<T>() -> Stack<T> { Stack { items: Vec.new() } }
 
 fn make_i64_stack() -> Stack<i64> {
     new_empty()                    // return-position inference — no turbofish
@@ -1909,7 +1919,7 @@ fn make_i64_stack() -> Stack<i64> {
 
 fn main() {
     let s: Stack<i64> = new_empty();      // let-annotation inference — no turbofish
-    let s2 = new_empty::<i64>();          // turbofish — still supported, use when nothing else pins T
+    let s2 = new_empty<i64>();          // explicit type argument
     let s3 = make_i64_stack();
     println(s.items.len());
     println(s2.items.len());
@@ -1928,9 +1938,8 @@ type Stack<T> { items: Vec<T> }
 
 impl<T> Stack<T> {
     fn push_item(s: Stack<T>, v: T) -> Stack<T> {
-        let items = s.items;
-        items.push(v);
-        Stack { items: items }
+        s.items.push(v);
+        s
     }
     fn len(s: Stack<T>) -> i64 {
         s.items.len()
@@ -1938,25 +1947,23 @@ impl<T> Stack<T> {
 }
 
 fn new_stack<T>() -> Stack<T> {
-    Stack { items: Vec::new() }
+    Stack { items: Vec.new() }
 }
 
 fn main() {
-    let s = new_stack::<i64>();
+    let s = new_stack<i64>();
     let s2 = s.push_item(1);
     let s3 = s2.push_item(2);
     println(s3.len());   // 2
 }
 ```
 
-Construct the empty generic record through the constructor function `new_stack`, either with turbofish (`new_stack::<i64>()`) or a `let` type annotation and no turbofish at all (`let s: Stack<i64> = new_stack();`) — both resolve `T` from the call site and lower identically, the same return-type-driven inference covered in the Turbofish section above. `hew fmt` normalizes an explicit `::<T>` call to `<T>` (`new_stack::<i64>()` becomes `new_stack<i64>()`); every one of these spellings type-checks and runs identically — write whichever you like and let the formatter settle it. A bare `Stack { items: Vec::new() }` construction with no surrounding annotation is still ambiguous and needs one.
+Construct the empty generic record through the constructor function `new_stack`, either with turbofish (`new_stack::<i64>()`) or a `let` type annotation and no turbofish at all (`let s: Stack<i64> = new_stack();`) — both resolve `T` from the call site and lower identically, the same return-type-driven inference covered in the Turbofish section above. `hew fmt` normalizes an explicit `::<T>` call to `<T>` (`new_stack::<i64>()` becomes `new_stack<i64>()`); every one of these spellings type-checks and runs identically — write whichever you like and let the formatter settle it. A bare `Stack { items: Vec::new() }` construction with no surrounding annotation is still ambiguous and needs one. `push_item` mutates the `items` field in place and returns the receiver — this is the pattern to use for a generic record with an owned heap field; extracting the field into a local, pushing, and reconstructing a new `Stack { items: ... }` value is a known crash today (the generic-record drop plan double-releases the extracted field).
 
-### Generic functions as values (cross-module)
+### Monomorphic functions as values (cross-module)
 
-A generic function exported from another module can be passed as a first-class
-value. The concrete type arguments are inferred from the receiving variable's
-declared type or the parameter type at the call site — the context fully
-determines the monomorphisation.
+A monomorphic function exported from another module can be passed as a
+first-class value; its type is recovered from the declared signature.
 
 <!-- doctest: skip -->
 ```hew
@@ -1970,10 +1977,6 @@ fn main() {
     // Monomorphic cross-module function as a value
     let sq: fn(i64) -> i64 = math_utils.square;
     println(apply(sq, 7));                       // 49
-
-    // Generic cross-module function; type inferred from the annotation
-    let id: fn(i64) -> i64 = math_utils.identity;
-    println(apply(id, 5));                        // 5
 
     // Inline: pass a cross-module fn directly to a higher-order function
     println(apply(math_utils.add_one, 10));       // 11
@@ -1989,17 +1992,16 @@ pub fn square(x: i64) -> i64 { x * x }
 pub fn identity<T>(x: T) -> T { x }
 ```
 
-The type annotation on the `let` binding (e.g. `fn(i64) -> i64`) is what
-drives inference for `identity<T>` — without it the checker cannot determine
-`T` and rejects the assignment with a diagnostic asking for an explicit
-annotation. Monomorphic cross-module functions (`square`, `add_one`) do not
-need an annotation; the type is recovered from the function's declared
-signature directly.
-
-> **Scope:** this path fires only for cross-module functions
-> (`module.fn_name`). Capturing a generic function from the *current* module
-> as a value is not supported — split the generic helper into a separate
-> module if you need it as a value.
+> **Generic functions are not usable as values.** Capturing a *generic*
+> function as a value fails in both directions. From another module
+> (`let id: fn(i64) -> i64 = math_utils.identity;`) it is rejected with
+> ``E_NOT_YET_IMPLEMENTED: MIR lowering for named function
+> `math_utils$identity` used as a value (only non-generic named functions are
+> currently supported)``. From the current module it is rejected earlier, as a
+> type mismatch (``expected `fn(i64) -> i64`, found `fn(T) -> T` ``). Calling
+> an imported generic directly (`math_utils.identity(5)`) works normally —
+> only the value position is closed. Write a monomorphic wrapper when you need
+> one as a value.
 
 ### Generic Display and println
 
@@ -2256,7 +2258,7 @@ fn main() {
 ### std::string module functions
 
 ```hew
-import std::string;
+import std.string;
 fn main() {
     println(string.from_int(42));            // 42
     let n = match string.to_int("42") {
@@ -2276,7 +2278,7 @@ Import `std::string` and call via the module name. `from_int`/`to_float` for con
 ### Concatenation, char round-trip, escapes
 
 ```hew
-import std::string;
+import std.string;
 fn main() {
     let g = "Hello" + ", " + "world";
     println(g);
@@ -2356,7 +2358,7 @@ An explicitly-implemented trait method is callable directly with dot-syntax.
 ```hew
 trait Counter {
     type Item;
-    fn next_val(c: Self) -> Self::Item;
+    fn next_val(c: Self) -> Self.Item;
 }
 type Ticker { current: i64 }
 impl Counter for Ticker {
@@ -2433,7 +2435,7 @@ Use `?` to short-circuit Err and propagate it; the enclosing fn must return a Re
 ### std::string helpers
 
 ```hew
-import std::string;
+import std.string;
 fn main() {
     println(string.from_int(42));            // 42
     println(string.to_int("100").unwrap_or(0));  // 100
@@ -2447,7 +2449,7 @@ Import `std::string` and call via the module name. Most case/slice/trim/find ope
 ### std::math helpers
 
 ```hew
-import std::math;
+import std.math;
 fn main() {
     println(math.sqrt(16.0));      // 4
     println(math.abs(-5.0));       // 5
@@ -2461,7 +2463,7 @@ fn main() {
 ### std::iter — lazy iterator combinators
 
 ```hew
-import std::iter;
+import std.iter;
 fn main() {
     let v: Vec<i64> = [1, 2, 3, 4, 5];
     println(iter.sum(iter.map(v.iter(), |x: i64| x * 2)));         // 30
@@ -2472,24 +2474,26 @@ fn main() {
 
 `std::iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (consumes `v`).
 
+When the receiver is a `Vec` field in actor state, `into_iter()` DRAINS the field: the iteration consumes every element and the field is left a valid empty vec. A later message may push new elements into it or iterate it again (yielding nothing). This is the only iteration form for `Vec<dyn Trait>` fields — trait objects cannot be cloned, so there is no non-consuming snapshot to hand out.
+
 ### std::sort — sorting vectors
 
 ```hew
-import std::sort;
+import std.sort;
 fn main() {
-    let nums: Vec<i64> = Vec::new();
+    let nums: Vec<i64> = Vec.new();
     nums.push(3); nums.push(1); nums.push(4); nums.push(1); nums.push(5);
     let sorted   = sort.sort_ints(nums);       // returns new Vec — original unchanged
     let reversed = sort.reverse_ints(sorted);
     println(sorted[0]);    // 1
     println(reversed[0]);  // 5
 
-    let words: Vec<string> = Vec::new();
+    let words: Vec<string> = Vec.new();
     words.push("banana"); words.push("apple"); words.push("cherry");
     let sw = sort.sort_strings(words);
     println(sw[0]);        // apple
 
-    let floats: Vec<f64> = Vec::new();
+    let floats: Vec<f64> = Vec.new();
     floats.push(3.14); floats.push(1.41); floats.push(2.72);
     let sf = sort.sort_floats(floats);
     println(sf[0]);        // 1.41
@@ -2501,14 +2505,14 @@ fn main() {
 ### std::random — pseudo-random number generation
 
 ```hew
-import std::random;
+import std.random;
 fn main() {
     random.seed(42);                   // deterministic sequence
     let r = random.random();           // f64 in [0.0, 1.0)
     let n = random.randint(1, 7);      // i64 in [1, 7)  — like a d6 roll
     let g = random.gauss(0.0, 1.0);   // Gaussian sample
 
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(10); v.push(20); v.push(30);
     random.shuffle(v);                 // in-place Fisher-Yates shuffle
     println(v[0]);                     // non-deterministic (seeded above)
@@ -2520,7 +2524,7 @@ Backed by a CPython-compatible MT19937 Mersenne Twister — the same seed produc
 ### std::time::datetime — timestamps and date arithmetic
 
 ```hew
-import std::time::datetime;
+import std.time.datetime;
 fn main() {
     let now = datetime.now_ms();             // i64 epoch milliseconds
     println(datetime.to_iso8601(now));       // 2026-06-23T18:42:22Z
@@ -2536,19 +2540,19 @@ fn main() {
     let diff = datetime.diff_secs(tomorrow, now);
     println(diff);                  // 86400
 
-    match datetime.try_parse("2026-01-01", "%Y-%m-%d") {
+    match datetime.try_parse("2026-01-01T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ") {
         Ok(ts) => println(datetime.year(ts)),   // 2026
         Err(e) => println(f"parse error: {e}"),
     }
 }
 ```
 
-Timestamps are `i64` epoch milliseconds throughout. `to_iso8601` formats as RFC 3339 UTC; `format(ts, fmt)` uses strftime-style patterns. `year`/`month`/`day`/`hour`/`minute`/`second`/`weekday` extract components. `add_days` / `add_hours` perform arithmetic; `diff_secs` returns the signed difference. Use `try_parse` when the input may be malformed.
+Timestamps are `i64` epoch milliseconds throughout. `to_iso8601` formats as RFC 3339 UTC; `format(ts, fmt)` uses strftime-style patterns. `year`/`month`/`day`/`hour`/`minute`/`second`/`weekday` extract components. `add_days` / `add_hours` perform arithmetic; `diff_secs` returns the signed difference. Use `try_parse` when the input may be malformed; the format string must describe a complete date and time (a date-only pattern such as `"%Y-%m-%d"` fails with "input is not enough for unique date and time").
 
 ### std::deque — double-ended queue
 
 ```hew
-import std::deque;
+import std.deque;
 fn main() {
     let dq = deque.new();
     dq.push_back(1);
@@ -2567,13 +2571,13 @@ fn main() {
 ### Multiple stdlib imports coexisting
 
 ```hew
-import std::string;
-import std::math;
-import std::iter;
+import std.string;
+import std.math;
+import std.iter;
 fn main() {
     println(string.from_int(math.max(2, 9)));   // 9
     let v: Vec<i64> = [1, 2, 3];
-    println(iter.sum(v.into_iter()));            // 6
+    println(iter.sum(v.iter()));                 // 6
 }
 ```
 
@@ -2582,7 +2586,7 @@ fn main() {
 ### std::encoding::json — parsing and building JSON
 
 ```hew
-import std::encoding::json;
+import std.encoding.json;
 
 fn main() {
     // Parse a JSON string
@@ -2601,7 +2605,7 @@ fn main() {
 ```
 
 ```hew
-import std::encoding::json;
+import std.encoding.json;
 
 fn main() {
     // Build a JSON object
@@ -2627,7 +2631,7 @@ fn main() {
 | 6 | object |
 
 ```hew
-import std::encoding::json;
+import std.encoding.json;
 
 fn main() {
     let s = json.string_value("hello");
@@ -2639,7 +2643,7 @@ fn main() {
 **Fallible parsing with `try_parse`** returns `Result<Value, ParseError>`. Match on the module-qualified `ParseError::Invalid(msg)` pattern to recover the native parser's message, or match `Err(_)` to ignore it:
 
 ```hew
-import std::encoding::json;
+import std.encoding.json;
 
 fn main() {
     match json.try_parse("{\"ok\": true}") {
@@ -2647,11 +2651,11 @@ fn main() {
             println("parsed ok");
             v.free();
         },
-        Err(ParseError::Invalid(msg)) => println(f"parse failed: {msg}"),
+        Err(ParseError.Invalid(msg)) => println(f"parse failed: {msg}"),
     }
     match json.try_parse("not valid json {") {
         Ok(v) => { v.free(); },
-        Err(ParseError::Invalid(msg)) => println(f"bad json rejected: {msg}"),
+        Err(ParseError.Invalid(msg)) => println(f"bad json rejected: {msg}"),
     }
 }
 ```
@@ -2661,7 +2665,7 @@ fn main() {
 **Naming the `Value` type** — a plain `import std::encoding::json;` publishes the `json` module alias (`json.parse(...)`, `json.Value` as a qualified type) but does not put the bare `Value` name in scope. Use `Value` unqualified in a function signature (a parameter or return type) by importing it alongside the module in one combined import:
 
 ```hew
-import std::encoding::json::{self, Value};
+import std.encoding.json.{self, Value};
 ```
 
 `self` keeps the `json.parse(...)` / `json.object()` module-call style; `Value` lets you write `fn foo(v: Value) -> ...` instead of `fn foo(v: json.Value) -> ...`. Omitting the named import and using bare `Value` in a signature fails with `type Value is not in scope`.
@@ -2669,7 +2673,7 @@ import std::encoding::json::{self, Value};
 **Nested config with required fields** — `get_field` on a missing key returns a value whose `type_of()` is `-1` (distinct from `0`, the tag for an explicit JSON `null`). Use that to fail closed on a required field instead of silently reading garbage:
 
 ```hew
-import std::encoding::json::{self, Value};
+import std.encoding.json.{self, Value};
 
 fn require_string(config: Value, key: string) -> string {
     let field = config.get_field(key);
@@ -2731,7 +2735,7 @@ segment (`c` here) — call its public items as `c.function_name()` /
 `std::math`, and every other stdlib module:
 
 ```hew
-import std::string;
+import std.string;
 
 fn main() {
     println(string.from_int(42));
@@ -2743,14 +2747,15 @@ names into scope unqualified instead of binding the module name. Both forms
 resolve `pub` items only — a non-`pub` fn, type, `machine`, or `const` is
 invisible outside its defining file.
 
-**Reserved-word module path segments.** A path segment written in `src::`
-dotted form cannot currently be a keyword — `import src::workflow::machine::{Thing};`
-is a parse error (`` expected `*` or `{` after `::`, found `machine` `` at the
-`machine` segment) even though `machine` is a perfectly good file name on disk. `actor` is the one
-keyword carved out as a valid segment today; other type-declaration keywords
-(`machine`, `type`, `trait`, ...) are not. If a module's file name collides
-with a keyword, either rename the file or reach it via the quoted string-path
-import form above, which has no such restriction.
+**Reserved-word module path segments.** A path segment in `::`-dotted form may
+be a keyword: `import src::workflow::machine::{Thing};` (and the bare and
+`::*` forms) parse and resolve normally, as do `type` and `trait` segments.
+The remaining restriction is on the *binding*, not the path — a bare
+`import src::workflow::machine;` binds the module under the name `machine`,
+and writing `machine.Thing` is then a parse error
+(`` unexpected `.` in block ``). The same is true of `actor`. Use the
+selective (`::{Name}`) or wildcard (`::*`) form for a keyword-named module,
+or reach it via the quoted string-path import form above.
 
 ### `pub const` — module-level constants
 
@@ -2835,13 +2840,13 @@ fn main() {
     println(a != c);   // true
 
     // Enum equality — unit variants
-    println(Color::Red == Color::Red);     // true
-    println(Color::Red == Color::Green);   // false
+    println(Color.Red == Color.Red);     // true
+    println(Color.Red == Color.Green);   // false
 
     // Enum equality — payload-bearing variants
-    println(Color::Custom(42) == Color::Custom(42));   // true
-    println(Color::Custom(42) == Color::Custom(99));   // false
-    println(Color::Custom(42) != Color::Red);           // true
+    println(Color.Custom(42) == Color.Custom(42));   // true
+    println(Color.Custom(42) == Color.Custom(99));   // false
+    println(Color.Custom(42) != Color.Red);           // true
 }
 ```
 
@@ -2857,30 +2862,30 @@ enum Tag { A; B(i64); }
 
 fn main() {
     // Primitive and string elements
-    let nums: Vec<i64> = Vec::new();
+    let nums: Vec<i64> = Vec.new();
     nums.push(10); nums.push(20); nums.push(30);
     println(nums.contains(20));   // true
     println(nums.contains(99));   // false
 
-    let words: Vec<string> = Vec::new();
+    let words: Vec<string> = Vec.new();
     words.push("hello"); words.push("world");
     println(words.contains("hello"));   // true
     println(words.contains("bye"));     // false
 
     // Record elements
-    let pts: Vec<Point> = Vec::new();
+    let pts: Vec<Point> = Vec.new();
     pts.push(Point { x: 1, y: 2 });
     pts.push(Point { x: 3, y: 4 });
     println(pts.contains(Point { x: 1, y: 2 }));   // true
     println(pts.contains(Point { x: 5, y: 6 }));   // false
 
     // Payload enum elements
-    let tags: Vec<Tag> = Vec::new();
-    tags.push(Tag::A);
-    tags.push(Tag::B(7));
-    println(tags.contains(Tag::A));      // true
-    println(tags.contains(Tag::B(7)));   // true
-    println(tags.contains(Tag::B(8)));   // false
+    let tags: Vec<Tag> = Vec.new();
+    tags.push(Tag.A);
+    tags.push(Tag.B(7));
+    println(tags.contains(Tag.A));      // true
+    println(tags.contains(Tag.B(7)));   // true
+    println(tags.contains(Tag.B(8)));   // false
 }
 ```
 
@@ -2935,7 +2940,7 @@ implies an equal hash and a float-bearing `record` is a sound `HashMap` key.
 record Coord { x: f64, y: f64 }
 
 fn main() {
-    let m: HashMap<Coord, i64> = HashMap::new();
+    let m: HashMap<Coord, i64> = HashMap.new();
     m.insert(Coord { x: 1.5, y: 2.5 }, 42);
     let v = m.get(Coord { x: 1.5, y: 2.5 });
     match v {
@@ -3026,7 +3031,7 @@ impl Conn {
 fn main() {
     let c: Conn = Conn { fd: 7 };
     println("work");
-    // c drops at scope exit here; Conn::close(c) runs automatically.
+    // c drops at scope exit here; Conn.close(c) runs automatically.
 }
 ```
 
@@ -3053,7 +3058,10 @@ user-defined `impl Drop`.
 
 The `close` method (for `#[resource]`) and any `consuming self` method (for
 `#[linear]`) must be declared in a sibling `impl` block, never inline in the
-type body — an inline declaration is rejected at parse time.
+type body — an inline declaration is rejected at parse time. A factory
+function that constructs and returns a `#[resource]` or `#[linear]` value
+works the same whether it lives in the current module or an imported one —
+close/consume discipline is enforced on the value, not on where it was built.
 
 Full example (`#[linear]`): [`examples/v05/linear/accept/linear_consumed_via_rollback_on_err.hew`](../examples/v05/linear/accept/linear_consumed_via_rollback_on_err.hew). For `#[resource]`, see HEW-SPEC-2026.md §3.7.8.
 
@@ -3079,7 +3087,7 @@ copy for a new opaque type.
 ### Typed streams — `await sink.send(x)` / `await stream.recv()`
 
 ```hew
-import std::stream;
+import std.stream;
 
 actor Echo {
     let n: i64;
@@ -3122,7 +3130,7 @@ yet supported (`OwnedHandleAggregateExtractionUnsupported`). Full example:
 ### Channels — `channel.new`, `await rx.recv()`, and select arms
 
 ```hew
-import std::channel::channel;
+import std.channel.channel;
 
 actor Inbox {
     receive fn run(unused: i64) {
@@ -3163,7 +3171,7 @@ and [`examples/channel/select_recv.hew`](../examples/channel/select_recv.hew).
 ### Regex captures — `capture` / `find_all` / `find_all_submatch`
 
 ```hew
-import std::text::regex;
+import std.text.regex;
 
 fn main() {
     let re = regex.new("(?P<k>[a-z]+)=(?P<v>[0-9]+)");
@@ -3195,12 +3203,12 @@ exit; call `close()` to release it early. Full example:
 ### Templates — `parse` + `render_try`
 
 ```hew
-import std::text::template;
+import std.text.template;
 
 fn main() {
     let ctx = template.new_ctx();
     template.ctx_set_str(ctx, "name", "Hew");
-    let xs: Vec<string> = Vec::new();
+    let xs: Vec<string> = Vec.new();
     xs.push("a");
     xs.push("b");
     template.ctx_set_list(ctx, "xs", xs);
@@ -3218,14 +3226,14 @@ Go-style template — `{{.key}}` substitutes, `{{if .key}}…{{end}}` is conditi
 `{{range .list}}…{{.}}…{{end}}` iterates with `.` bound to each item. Render with
 the free function `template.render_template(t, ctx)` (panics on error) or
 `template.render_try(t, ctx)` (returns `Result`); the method form `t.render(ctx)`
-is deferred in v0.5. `TemplateError` has no `Display`, so handle the `Err` arm
+is not yet implemented. `TemplateError` has no `Display`, so handle the `Err` arm
 with a literal message rather than interpolating it. Full example:
 [`examples/v05/surfaces/template_render.hew`](../examples/v05/surfaces/template_render.hew).
 
 ### Unicode — rune helpers + classification predicates
 
 ```hew
-import std::text::unicode;
+import std.text.unicode;
 
 fn main() {
     let s = "Aé!";
@@ -3250,7 +3258,7 @@ codepoint with the predicates `is_upper` / `is_lower` / `is_digit` / `is_letter`
 ### Scanner — line and word tokenisation
 
 ```hew
-import std::io::scanner;
+import std.io.scanner;
 
 fn main() {
     var sc = scanner.from_string("alpha beta\ncolour");
@@ -3281,7 +3289,7 @@ scanner plus `Option<string>`. Full example:
 
 ### HTTP over `await` — async client + server
 
-The flagship v0.5 networking surface is an `await`-suspended HTTP/1.1 client and
+The flagship networking surface is an `await`-suspended HTTP/1.1 client and
 server built on `net.connect` / `net.listen` plus the pure-Hew codecs in
 `std::net::http::http_async_client` / `http_async_server`. A server handler
 `await`s a connection, drives an `await conn.read_string()` loop until the
@@ -3291,7 +3299,7 @@ serve and fetch on the same thread. The request/response codecs are pure and
 runnable in isolation:
 
 ```hew
-import std::net::http::http_async_client;
+import std.net.http.http_async_client;
 
 fn main() {
     let parts = http_async_client.split_address("http://127.0.0.1:8080/health");
@@ -3363,7 +3371,7 @@ impl ActorMsg for Echo {
 
 actor Client {
     receive fn go(unused: i64) {
-        let found: Result<RemotePid<Echo>, LookupError> = Node::lookup("echo");
+        let found: Result<RemotePid<Echo>, LookupError> = Node.lookup("echo");
         match found {
             Ok(peer) => {
                 let reply = peer.ask(7, 1000);
@@ -3420,13 +3428,13 @@ Call all identity and pinning operations before `Node::start`:
 
 <!-- doctest: skip -->
 ```hew
-Node::set_transport("quic-mesh");
-Node::load_keys("node.key");
-println(f"pin this credential on peers: {Node::identity_key()}");
+Node.set_transport("quic-mesh");
+Node.load_keys("node.key");
+println(f"pin this credential on peers: {Node.identity_key()}");
 
 // This process chooses local route slot 2 for the peer.
-Node::allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
-Node::start("0.0.0.0:9000");
+Node.allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
+Node.start("0.0.0.0:9000");
 ```
 
 On TCP, the pinned credential is the peer's 32-byte Noise public key. On
@@ -3437,7 +3445,7 @@ A client selects its local pin when connecting:
 
 <!-- doctest: skip -->
 ```hew
-Node::connect("2@127.0.0.1:9000");
+Node.connect("2@127.0.0.1:9000");
 ```
 
 The `2@` prefix is the client's route slot for that server. The authenticated
@@ -3464,16 +3472,16 @@ Remote monitors deliver one typed notification through `#[on(down)]`:
 
 <!-- doctest: skip -->
 ```hew
-import std::link_monitor::{DownNotification, DownReason};
+import std.link_monitor.{DownNotification, DownReason};
 
 actor Watcher {
     #[on(down)]
     fn on_down(note: DownNotification) {
         match note.reason {
-            DownReason::Exited => println("peer exited"),
-            DownReason::Crashed(_) => println("peer crashed"),
-            DownReason::MonitorLost => println("peer became unreachable"),
-            DownReason::LocalShutdown => println("local node shut down"),
+            DownReason.Exited => println("peer exited"),
+            DownReason.Crashed(_) => println("peer crashed"),
+            DownReason.MonitorLost => println("peer became unreachable"),
+            DownReason.LocalShutdown => println("local node shut down"),
         }
     }
 }
@@ -3487,10 +3495,10 @@ The complete protocol and identity rules are normative in
 messaging, and link/monitor propagation are native-only; wasm32 rejects these
 surfaces.
 
-### TLS client — free-function surface (with a v0.5 data-plane caveat)
+### TLS client — free-function surface
 
 ```hew
-import std::net::tls;
+import std.net.tls;
 
 fn main() {
     let stream = tls.connect("example.com", 443);
@@ -3506,26 +3514,30 @@ fn main() {
 Use the FREE-FUNCTION surface — `tls.connect(host, port)` (system-root verified),
 `tls.write` / `tls.try_write`, `tls.read`, `tls.close`. Request/response bodies
 are `bytes`: build a payload with the public `string.to_bytes()` surface and decode
-with `bytes.to_string()`. The method form (`stream.read(n)`) is NOT supported yet.
+with `bytes.to_string()`. There is also a method form (`stream.read(n)` /
+`stream.write(payload)`, from `trait TlsStreamMethods`) — it type-checks and
+compiles, and carries the same runtime caveat as the free functions below.
 
 > **Known gap:** `tls.connect` does not record a failed handshake in
 > `last_error()` — a failed connect returns a zero-value `TlsStream` with no
-> way to retrieve why. The encrypted round-trip itself (`tls.write` /
-> `tls.read`) works correctly; the data-plane FFI bridge takes `bytes` by
-> pointer to a `BytesTriple`, matching the runtime's representation.
+> way to retrieve why. `tls.write` sends correctly against a real endpoint,
+> but `tls.read` currently crashes the process with a memory-safety panic
+> (`ptr::copy_nonoverlapping` alignment violation) on a real connection —
+> do not call it yet; the commented-out line above shows the intended shape
+> once the data-plane FFI bridge is fixed.
 
 Full example: [`examples/net/tls_client.hew`](../examples/net/tls_client.hew).
 
 ### `process.run` vs `process.run_argv` — shell vs no-shell
 
 ```hew
-import std::process;
+import std.process;
 
 fn main() {
     let out = process.run("echo shell-form");
     println(out.trim());
 
-    let args: Vec<string> = Vec::new();
+    let args: Vec<string> = Vec.new();
     args.push("no-shell-form");
     let result = process.run_argv("echo", args);
     println(result.stdout.trim());

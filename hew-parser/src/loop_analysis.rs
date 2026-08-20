@@ -352,6 +352,29 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
             }
             false
         }
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            ast_expr_has_break(&target.0, query, depth)
+                || fields
+                    .iter()
+                    .any(|(_, value)| ast_expr_has_break(&value.0, query, depth))
+                || base
+                    .as_ref()
+                    .is_some_and(|base| ast_expr_has_break(&base.0, query, depth))
+        }
+        Expr::ContextVariant(context) => context.record.as_ref().is_some_and(|record| {
+            record
+                .fields
+                .iter()
+                .any(|(_, value)| ast_expr_has_break(&value.0, query, depth))
+                || record
+                    .base
+                    .as_ref()
+                    .is_some_and(|base| ast_expr_has_break(&base.0, query, depth))
+        }),
         Expr::MachineEmit { fields, .. } => fields
             .iter()
             .any(|(_, v)| ast_expr_has_break(&v.0, query, depth)),
@@ -382,7 +405,9 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
             args.iter()
                 .any(|(_, v)| ast_expr_has_break(&v.0, query, depth))
         }
-        Expr::FieldAccess { object, .. } => ast_expr_has_break(&object.0, query, depth),
+        Expr::FieldAccess { object, .. } | Expr::GenericApplySuffix { target: object, .. } => {
+            ast_expr_has_break(&object.0, query, depth)
+        }
         Expr::Index { object, index } => {
             ast_expr_has_break(&object.0, query, depth)
                 || ast_expr_has_break(&index.0, query, depth)
@@ -439,6 +464,7 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
         | Expr::SpawnLambdaActor { .. }
         | Expr::Literal(_)
         | Expr::Identifier(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)

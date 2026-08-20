@@ -1,0 +1,20 @@
+type Label = string;
+
+record AppConfig {
+    label: Label,
+}
+
+actor App {
+    receive fn describe(config: AppConfig) -> i64 {
+        config.label.len()
+    }
+}
+
+fn main() {
+    let app = spawn App();
+    let cfg = AppConfig { label: "hello" };
+    match await app.describe(cfg) {
+        Ok(n) => println(n),
+        Err(_) => println(-1),
+    }
+}

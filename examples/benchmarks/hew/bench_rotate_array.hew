@@ -24,7 +24,7 @@ const ITERS: i64 = 100000;
 fn main() {
     var checksum = 0;
     for i in 0 .. ITERS {
-        let arr: Vec<i64> = Vec::new();
+        let arr: Vec<i64> = Vec.new();
         for k in 0 .. 1000 {
             arr.push(k);
         }

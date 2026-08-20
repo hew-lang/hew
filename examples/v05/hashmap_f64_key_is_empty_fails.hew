@@ -6,6 +6,6 @@
 //! `record_resolved_hashmap_call`.
 
 fn main() {
-    let m: HashMap<f64, i64> = HashMap::new();
+    let m: HashMap<f64, i64> = HashMap.new();
     let _ = m.is_empty();
 }

@@ -9,7 +9,7 @@
 // (dispatched through `impl Base`) and `Redecl`'s own `tag` resolve at call
 // sites. Guards the over-strict "is missing required method(s): base" rejection
 // of a sub-impl whose redeclared supertrait method comes from a separate impl.
-import hew::supertraits::{Base, Redecl};
+import hew.supertraits.{Base, Redecl};
 
 type W {
     id: i64;

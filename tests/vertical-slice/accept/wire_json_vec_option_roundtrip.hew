@@ -8,7 +8,7 @@ type Bag {
 }
 
 fn main() -> i64 {
-    let xs: Vec<i64> = Vec::new();
+    let xs: Vec<i64> = Vec.new();
     xs.push(10);
     xs.push(20);
     xs.push(12);

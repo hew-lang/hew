@@ -344,6 +344,11 @@ pub(crate) fn cancel_all_timers_for_actor(actor: *mut HewActor) {
 
 /// Close periodic-timer admission and cancel every timer already registered.
 ///
+/// A periodic tick becomes live work only when the ticker claims it for
+/// callback delivery. Shutdown closes admission, waits for callbacks already
+/// claimed, and cancels every pending entry, including entries that are due but
+/// not yet claimed.
+///
 /// Shutdown calls this before observing scheduler quiescence. The admission
 /// lock orders a concurrent schedule against the registry drain: a schedule
 /// either publishes its wheel entry and registry reference before the close
@@ -946,6 +951,7 @@ mod tests {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -1357,6 +1363,64 @@ mod tests {
         unsafe { hew_actor_cancel_periodic(restarted) };
         // SAFETY: final serialized cleanup for this test.
         unsafe { hew_periodic_shutdown() };
+    }
+
+    #[test]
+    fn shutdown_cancels_due_but_unclaimed_periodic_entry() {
+        let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // Start from a fresh global wheel and leave the ticker parked on a far
+        // deadline. The test advances only the wheel cursor, so the entry can
+        // be made due without letting the ticker claim it.
+        // SAFETY: this test serializes ownership of the process-wide timer state.
+        unsafe { hew_periodic_shutdown() };
+        reset_periodic_admission();
+
+        let mut actor = create_test_actor(50_403);
+        let actor_ptr = &raw mut actor;
+        // SAFETY: actor_ptr remains live through the serialized shutdown.
+        let handle = unsafe { hew_actor_schedule_periodic(actor_ptr, 7, 60_000) };
+        assert!(!handle.is_null());
+
+        let ctx = ACTOR_TIMERS.access(|lock| {
+            Arc::clone(
+                lock.as_ref()
+                    .and_then(|map| map.get(&(actor_ptr as usize)))
+                    .and_then(|timers| timers.first())
+                    .expect("scheduled timer must be registered"),
+            )
+        });
+        let wheel = ctx.wheel;
+        let first_fire = ctx.next_fire_ms.load(Ordering::SeqCst);
+        // SAFETY: `wheel` is the live wheel owned by the periodic context.
+        let cursor = unsafe { timer_wheel_cursor_ms(wheel) };
+        assert!(first_fire > cursor);
+
+        // Let the ticker settle into its far-deadline park before making the
+        // entry due. No insertion notification occurs for this cursor change.
+        std::thread::sleep(Duration::from_millis(20));
+        // SAFETY: the ticker is parked and the test owns the wheel cursor.
+        unsafe {
+            crate::timer_wheel::timer_wheel_advance_cursor_for_test(
+                wheel,
+                first_fire.saturating_sub(cursor).saturating_add(1),
+            );
+        }
+        // SAFETY: `wheel` remains live until the serialized shutdown below.
+        assert_eq!(unsafe { hew_timer_wheel_next_deadline_ms(wheel) }, 0);
+        assert_eq!(ctx.next_fire_ms.load(Ordering::SeqCst), first_fire);
+
+        // The due entry is still pending and unclaimed. Shutdown must cancel
+        // it rather than silently delivering the callback.
+        // SAFETY: this test owns the process-wide timer state.
+        unsafe { hew_periodic_shutdown() };
+
+        assert_eq!(ctx.next_fire_ms.load(Ordering::SeqCst), first_fire);
+        assert!(ctx.cancelled.load(Ordering::SeqCst));
+        assert_eq!(timer_count_for_actor(actor_ptr), 0);
+        assert_eq!(Arc::strong_count(&ctx), 1, "pending wheel reference leaked");
     }
 
     #[test]

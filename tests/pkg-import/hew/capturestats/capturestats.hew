@@ -13,7 +13,7 @@ pub type Flat {
 }
 
 pub fn summary_new(a: i64, b: i64) -> Summary {
-    let counts: Vec<i64> = Vec::new();
+    let counts: Vec<i64> = Vec.new();
     counts.push(a);
     counts.push(b);
     Summary { counts: counts }

@@ -121,7 +121,7 @@ fn run_inline_scribbled(label: &str, source: &str, expected_stdout: &str) {
 fn select_record_element_cross_block_arm_runs_clean() {
     run_inline_scribbled(
         "select_record_element",
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          record Transition {\n\
          \x20   from_state: string,\n\
@@ -164,7 +164,7 @@ fn select_record_element_cross_block_arm_runs_clean() {
 fn select_enum_element_thunks_resolve_and_run_clean() {
     run_inline_scribbled(
         "select_enum_element",
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          enum Transition {\n\
          \x20   Moved { from_state: string, to_state: string };\n\
@@ -173,14 +173,14 @@ fn select_enum_element_thunks_resolve_and_run_clean() {
          actor Combined {\n\
          \x20   receive fn run() {\n\
          \x20       let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = channel.new(4);\n\
-         \x20       tx.send(Transition::Moved { from_state: \"Created\", to_state: \"Initialising\" });\n\
+         \x20       tx.send(Transition.Moved { from_state: \"Created\", to_state: \"Initialising\" });\n\
          \x20       tx.close();\n\
          \x20       select {\n\
          \x20           t from rx.recv() => {\n\
          \x20               match t {\n\
          \x20                   Some(t2) => {\n\
          \x20                       match t2 {\n\
-         \x20                           Transition::Moved { from_state, to_state } => println(f\"{from_state} -> {to_state}\"),\n\
+         \x20                           Transition.Moved { from_state, to_state } => println(f\"{from_state} -> {to_state}\"),\n\
          \x20                       }\n\
          \x20                   },\n\
          \x20                   None => println(\"closed\"),\n\
@@ -204,7 +204,7 @@ fn select_enum_element_thunks_resolve_and_run_clean() {
 /// A `channel.Receiver<string>` as a receive-fn parameter source. The
 /// cross-actor watch handoff needs this exact shape green.
 fn receiver_param_source() -> &'static str {
-    "import std::channel::channel;\n\
+    "import std.channel.channel;\n\
      \n\
      actor Observer {\n\
      \x20   receive fn watch(rx: channel.Receiver<string>) {\n\
@@ -248,7 +248,7 @@ fn channel_receiver_actor_message_arg_transfers_locally() {
 fn channel_sender_actor_message_arg_transfers_locally() {
     run_inline_scribbled(
         "sender_param_transfer",
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor Worker {\n\
          \x20   receive fn notify(tx: channel.Sender<string>) {\n\
@@ -282,7 +282,7 @@ fn channel_handle_use_after_transfer_refused() {
     let source = dir.path().join("use_after_transfer.hew");
     std::fs::write(
         &source,
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor Observer {\n\
          \x20   receive fn watch(rx: channel.Receiver<string>, label: string) {\n\
@@ -331,8 +331,8 @@ fn channel_handle_use_after_transfer_refused() {
 fn cross_actor_record_transition_watch_runs_clean() {
     run_inline_scribbled(
         "cross_actor_transition_watch",
-        "import std::concurrency::lifecycle;\n\
-         import std::channel::channel;\n\
+        "import std.concurrency.lifecycle;\n\
+         import std.channel.channel;\n\
          \n\
          record Transition {\n\
          \x20   from_state: string,\n\
@@ -341,7 +341,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
          \n\
          actor Service {\n\
          \x20   receive fn drive(tx: channel.Sender<Transition>) {\n\
-         \x20       var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle::Created;\n\
+         \x20       var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle.Created;\n\
          \x20       let before1 = lc.state_name();\n\
          \x20       lc.step(Initialise);\n\
          \x20       let after1 = lc.state_name();\n\
@@ -349,7 +349,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
          \x20           tx.send(Transition { from_state: before1, to_state: after1 });\n\
          \x20       }\n\
          \x20       let before2 = lc.state_name();\n\
-         \x20       lc.step(lifecycle.LifecycleEvent::Crashed { error: Error::Code(7) });\n\
+         \x20       lc.step(lifecycle.LifecycleEvent.Crashed { error: Error.Code(7) });\n\
          \x20       let after2 = lc.state_name();\n\
          \x20       if before2 != after2 {\n\
          \x20           tx.send(Transition { from_state: before2, to_state: after2 });\n\
@@ -414,7 +414,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
 fn select_after_genuine_expiry_takes_after_arm() {
     run_inline_scribbled(
         "select_after_genuine_expiry",
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor Observer {\n\
          \x20   receive fn watch(rx: channel.Receiver<i64>, done: channel.Sender<i64>) {\n\
@@ -467,7 +467,7 @@ fn suspending_select_wake_gate_ir_shape_holds() {
     let source = dir.path().join("gate_shape.hew");
     std::fs::write(
         &source,
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor Observer {\n\
          \x20   receive fn watch(rx: channel.Receiver<i64>) {\n\
@@ -572,7 +572,7 @@ fn heap_payload_machine_actor_field_steps_clean() {
          \x20       Open\n\
          \x20   }\n\
          \x20   on Fail: Open => Failed {\n\
-         \x20       Conn::Failed { reason: event.reason }\n\
+         \x20       Conn.Failed { reason: event.reason }\n\
          \x20   }\n\
          \x20   on Reset: Failed => Idle {\n\
          \x20       Idle\n\
@@ -589,12 +589,12 @@ fn heap_payload_machine_actor_field_steps_clean() {
          }\n\
          \n\
          actor Holder {\n\
-         \x20   var c: Conn = Conn::Idle;\n\
+         \x20   var c: Conn = Conn.Idle;\n\
          \n\
          \x20   receive fn drive() {\n\
          \x20       c.step(Connect);\n\
          \x20       println(c.state_name());\n\
-         \x20       c.step(ConnEvent::Fail { reason: \"boom\" });\n\
+         \x20       c.step(ConnEvent.Fail { reason: \"boom\" });\n\
          \x20       println(c.state_name());\n\
          \x20       c.step(Reset);\n\
          \x20       println(c.state_name());\n\
@@ -634,7 +634,7 @@ fn supervisor_child_with_machine_state_fails_closed() {
          }\n\
          \n\
          actor Worker {\n\
-         \x20   var l: Light = Light::Off;\n\
+         \x20   var l: Light = Light.Off;\n\
          \x20   receive fn ping() {}\n\
          }\n\
          \n\
@@ -682,7 +682,7 @@ fn machine_snapshot_select_watch_matches_state_variants() {
         "\
          // Snapshot watch: machine values as channel elements through the sealed\n\
          // select arm, state-variant pattern matching on the received snapshot.\n\
-         import std::channel::channel;\n\
+         import std.channel.channel;\n\
          \n\
          machine Conn {\n\
          \x20   events {\n\
@@ -698,7 +698,7 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \x20       Open\n\
          \x20   }\n\
          \x20   on Fail: Open => Failed {\n\
-         \x20       Conn::Failed { reason: event.reason }\n\
+         \x20       Conn.Failed { reason: event.reason }\n\
          \x20   }\n\
          \x20   on Connect: _ => _ {\n\
          \x20       state\n\
@@ -711,10 +711,10 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          actor Owner {\n\
          \x20   receive fn run() -> i64 {\n\
          \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = channel.new(4);\n\
-         \x20       var c: Conn = Conn::Idle;\n\
+         \x20       var c: Conn = Conn.Idle;\n\
          \x20       c.step(Connect);\n\
          \x20       tx.send(c);\n\
-         \x20       c.step(ConnEvent::Fail { reason: \"peer reset\" });\n\
+         \x20       c.step(ConnEvent.Fail { reason: \"peer reset\" });\n\
          \x20       tx.send(c);\n\
          \x20       tx.close();\n\
          \x20       var waiting = true;\n\
@@ -724,9 +724,9 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \x20                   match snap {\n\
          \x20                       Some(s) => {\n\
          \x20                           match s {\n\
-         \x20                               Conn::Failed { reason } => println(f\"failed: {reason}\"),\n\
-         \x20                               Conn::Open => println(\"open\"),\n\
-         \x20                               Conn::Idle => println(\"idle\"),\n\
+         \x20                               Conn.Failed { reason } => println(f\"failed: {reason}\"),\n\
+         \x20                               Conn.Open => println(\"open\"),\n\
+         \x20                               Conn.Idle => println(\"idle\"),\n\
          \x20                           }\n\
          \x20                       },\n\
          \x20                       None => {\n\
@@ -782,7 +782,7 @@ fn vec_machine_element_refuses_at_compile_time() {
          \x20   state Open;\n\
          \x20   state Failed { reason: string; }\n\
          \x20   on Connect: Idle => Open { Open }\n\
-         \x20   on Fail: Open => Failed { Conn::Failed { reason: event.reason } }\n\
+         \x20   on Fail: Open => Failed { Conn.Failed { reason: event.reason } }\n\
          \x20   on Connect: _ => _ { state }\n\
          \x20   on Fail: _ => _ { state }\n\
          }\n\
@@ -790,7 +790,7 @@ fn vec_machine_element_refuses_at_compile_time() {
          actor Owner {\n\
          \x20   receive fn run() {\n\
          \x20       var conns: Vec<Conn> = [];\n\
-         \x20       var c: Conn = Conn::Idle;\n\
+         \x20       var c: Conn = Conn.Idle;\n\
          \x20       conns.push(c);\n\
          \x20   }\n\
          }\n\
@@ -832,7 +832,7 @@ fn nested_channel_handle_in_tuple_use_after_send_refused() {
     let source = dir.path().join("nested_handle_tuple.hew");
     std::fs::write(
         &source,
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor Worker {\n\
          \x20   receive fn accept(pair: (channel.Receiver<i64>, i64)) {\n\
@@ -873,7 +873,7 @@ fn nested_channel_handle_in_tuple_use_after_send_refused() {
 fn nested_channel_handle_in_tuple_transfers_correctly() {
     run_inline_scribbled(
         "nested_handle_tuple_transfer",
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor Worker {\n\
          \x20   receive fn deliver(pair: (channel.Receiver<i64>, i64)) {\n\
@@ -929,7 +929,7 @@ fn nested_channel_handle_in_tuple_transfers_correctly() {
 /// stdout — a single corrupted decode anywhere in the batch fails the test.
 #[test]
 fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
-    const SOURCE: &str = "import std::channel::channel;\n\
+    const SOURCE: &str = "import std.channel.channel;\n\
          \n\
          machine Conn {\n\
          \x20   events {\n\
@@ -945,7 +945,7 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \x20       Open\n\
          \x20   }\n\
          \x20   on Fail: Open => Failed {\n\
-         \x20       Conn::Failed { reason: event.reason }\n\
+         \x20       Conn.Failed { reason: event.reason }\n\
          \x20   }\n\
          \x20   on Connect: _ => _ {\n\
          \x20       state\n\
@@ -958,9 +958,9 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          actor Owner {\n\
          \x20   receive fn run() -> i64 {\n\
          \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = channel.new(4);\n\
-         \x20       var c: Conn = Conn::Idle;\n\
+         \x20       var c: Conn = Conn.Idle;\n\
          \x20       c.step(Connect);\n\
-         \x20       c.step(ConnEvent::Fail { reason: \"peer reset\" });\n\
+         \x20       c.step(ConnEvent.Fail { reason: \"peer reset\" });\n\
          \x20       tx.send(c);\n\
          \x20       tx.close();\n\
          \x20       select {\n\
@@ -968,9 +968,9 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \x20               match snap {\n\
          \x20                   Some(s) => {\n\
          \x20                       match s {\n\
-         \x20                           Conn::Failed { reason } => println(f\"failed: {reason}\"),\n\
-         \x20                           Conn::Open => println(\"open\"),\n\
-         \x20                           Conn::Idle => println(\"idle\"),\n\
+         \x20                           Conn.Failed { reason } => println(f\"failed: {reason}\"),\n\
+         \x20                           Conn.Open => println(\"open\"),\n\
+         \x20                           Conn.Idle => println(\"idle\"),\n\
          \x20                       }\n\
          \x20                   },\n\
          \x20                   None => println(\"watch closed\"),\n\

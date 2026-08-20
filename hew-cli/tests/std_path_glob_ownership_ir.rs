@@ -16,7 +16,7 @@ use tempfile::tempdir;
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const SOURCE: &str = r#"
-import std::path;
+import std.path;
 
 fn main() {
     match path.try_glob("std/*.hew") {

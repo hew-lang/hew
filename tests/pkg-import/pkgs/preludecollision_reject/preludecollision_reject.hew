@@ -1,0 +1,6 @@
+//! A package-owned protected-prelude collision must be rejected just like the
+//! same declaration in the root program.
+
+pub type Result {
+    value: i64;
+}

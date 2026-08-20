@@ -1,4 +1,4 @@
-import std::text::unicode;
+import std.text.unicode;
 
 fn main() {
     println(f"upper_A={unicode.is_upper(65)} upper_eacute={unicode.is_upper(201)} lower_A={unicode.is_lower(65)}");

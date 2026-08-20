@@ -1,0 +1,17 @@
+pub trait Render {
+    fn render(value: Self) -> string;
+}
+
+pub type Box {
+    label: string;
+}
+
+impl Render for Box {
+    fn render(value: Box) -> string {
+        f"file:{value.label}"
+    }
+}
+
+pub fn make_file_box() -> Box {
+    Box { label: "left" }
+}

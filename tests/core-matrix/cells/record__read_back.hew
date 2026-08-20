@@ -5,10 +5,10 @@ type Rec {
 
 fn main() {
     let x = Rec { a: 1, b: "x0" };
-    let v: Vec<Rec> = Vec::new();
+    let v: Vec<Rec> = Vec.new();
     v.push(x);
     match v.get(0) {
-        Some(e) => {
+        Option.Some(e) => {
             let e_a = e.a;
             let e_b = e.b;
             println(f"{e_a} {e_b}");

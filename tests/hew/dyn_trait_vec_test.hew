@@ -1,0 +1,73 @@
+//! Trait-object Vec elements are independent HeapBoxed owners. Push transfers
+//! an owner into the descriptor slot; pop/remove and consuming iteration move
+//! it back out; teardown drops every slot that remains live.
+
+import std.string;
+
+import std.testing;
+
+trait Labeled {
+    fn label_size(val: Self) -> i64;
+}
+
+type Person {
+    label: string;
+}
+
+impl Person {
+    fn label_size(val: Person) -> i64 {
+        val.label.len()
+    }
+}
+
+type Parcel {
+    label: string;
+}
+
+impl Parcel {
+    fn label_size(val: Parcel) -> i64 {
+        val.label.len()
+    }
+}
+
+fn make_person(seed: string) -> dyn Labeled {
+    let erased: dyn Labeled = Person { label: string.repeat(seed, 64) };
+    erased
+}
+
+fn make_parcel(seed: string) -> dyn Labeled {
+    let erased: dyn Labeled = Parcel { label: string.repeat(seed, 96) };
+    erased
+}
+
+fn inspect(value: dyn Labeled) -> i64 {
+    value.label_size()
+}
+
+#[test]
+fn test_heterogeneous_dyn_vec_moves_out_and_drops_remainder() {
+    let values: Vec<dyn Labeled> = Vec.new();
+    values.push(make_person("p"));
+    values.push(make_parcel("q"));
+    values.push(make_person("r"));
+    let last = values.pop();
+    testing.assert_eq(inspect(last), 64);
+    let first = values.remove(0);
+    testing.assert_eq(inspect(first), 64);
+    testing.assert_eq(values.len(), 1);
+}
+
+#[test]
+fn test_partial_consuming_iteration_drops_moved_and_remaining_elements() {
+    let values: Vec<dyn Labeled> = Vec.new();
+    values.push(make_person("a"));
+    values.push(make_parcel("b"));
+    values.push(make_person("c"));
+    let iterator = values.into_iter();
+    var seen: i64 = 0;
+    for _value in iterator {
+        seen = seen + 1;
+        break;
+    }
+    testing.assert_eq(seen, 1);
+}

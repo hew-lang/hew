@@ -9,6 +9,171 @@ use super::*;
 
 impl Parser<'_> {
     // ── Expressions (Pratt Precedence) ──
+    /// Decide whether the `<...>` at the cursor is a generic-application
+    /// suffix.  The scan is linear and its interior language is deliberately
+    /// bounded to identifier/primitive type names, `.`, `,`, and
+    /// balanced nested angle brackets.  The outer `>` commits only when the
+    /// following token is `(`, `.`, or `{`; once committed, a later type parse
+    /// error never backtracks into relational operators.
+    fn generic_apply_suffix_commits(&self) -> bool {
+        if self.peek() != Some(&Token::Less) {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut idx = self.pos;
+        loop {
+            match self.peek_at(idx) {
+                Some(Token::Less) => depth += 1,
+                Some(Token::Greater) => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return matches!(
+                            self.peek_at(idx + 1),
+                            Some(Token::LeftParen | Token::Dot | Token::LeftBrace)
+                        );
+                    }
+                }
+                Some(Token::GreaterGreater) if depth >= 2 => {
+                    depth -= 2;
+                    if depth == 0 {
+                        return matches!(
+                            self.peek_at(idx + 1),
+                            Some(Token::LeftParen | Token::Dot | Token::LeftBrace)
+                        );
+                    }
+                }
+                Some(Token::Comma | Token::Dot) => {}
+                Some(token) if Self::is_ident_token(token) => {}
+                _ => return false,
+            }
+            idx += 1;
+        }
+    }
+
+    fn qualified_assoc_path_commits(&self) -> bool {
+        if self.peek() != Some(&Token::Less) {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut saw_as = false;
+        let mut idx = self.pos;
+        loop {
+            match self.peek_at(idx) {
+                Some(Token::Less) => depth += 1,
+                Some(Token::As) if depth == 1 => saw_as = true,
+                Some(Token::Greater) => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return saw_as && self.peek_at(idx + 1) == Some(&Token::Dot);
+                    }
+                }
+                Some(Token::GreaterGreater) if depth >= 2 => {
+                    depth -= 2;
+                    if depth == 0 {
+                        return saw_as && self.peek_at(idx + 1) == Some(&Token::Dot);
+                    }
+                }
+                None => return false,
+                _ => {}
+            }
+            idx += 1;
+        }
+    }
+
+    fn record_init_suffix_allowed(&mut self, expr: &Expr) -> bool {
+        let explicit_generic = matches!(expr, Expr::GenericApplySuffix { .. });
+        let eligible = matches!(
+            expr,
+            Expr::ContextVariant(_) | Expr::GenericApplySuffix { .. } | Expr::QualifiedAssoc(_)
+        );
+        eligible
+            && (explicit_generic || !self.no_struct_literal())
+            && self.peek() == Some(&Token::LeftBrace)
+            && self.probe_struct_init_brace()
+    }
+
+    fn parse_record_init_postfix(&mut self, lhs: Spanned<Expr>) -> Option<Spanned<Expr>> {
+        let expr_start = lhs.1.start;
+        self.advance();
+        let (fields, base) = self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
+        let end = self.peek_span().start;
+        Some(match lhs {
+            (Expr::ContextVariant(mut context), _) => {
+                context.record = Some(Box::new(ContextVariantRecord { fields, base }));
+                (Expr::ContextVariant(context), expr_start..end)
+            }
+            (Expr::GenericApplySuffix { target, type_args }, _) => {
+                if let Some(name) = Self::dotted_expr_name(&target.0) {
+                    (
+                        Expr::StructInit {
+                            name,
+                            fields,
+                            type_args: Some(type_args),
+                            base,
+                        },
+                        expr_start..end,
+                    )
+                } else {
+                    let generic = (
+                        Expr::GenericApplySuffix { target, type_args },
+                        expr_start..end,
+                    );
+                    (
+                        Expr::RecordInitSuffix {
+                            target: Box::new(generic),
+                            fields,
+                            base,
+                        },
+                        expr_start..end,
+                    )
+                }
+            }
+            other => (
+                Expr::RecordInitSuffix {
+                    target: Box::new(other),
+                    fields,
+                    base,
+                },
+                expr_start..end,
+            ),
+        })
+    }
+
+    fn parse_generic_apply_postfix(&mut self, lhs: Spanned<Expr>) -> Option<Spanned<Expr>> {
+        let start = lhs.1.start;
+        self.advance();
+        let type_args = self.parse_type_args()?;
+        let end = self.peek_span().start;
+        Some((
+            Expr::GenericApplySuffix {
+                target: Box::new(lhs),
+                type_args,
+            },
+            start..end,
+        ))
+    }
+
+    fn parse_qualified_assoc_primary(&mut self) -> Option<Expr> {
+        self.advance();
+        let base = self.parse_type()?;
+        self.expect(&Token::As)?;
+        let trait_path = self.parse_syntactic_path()?;
+        if !self.eat_closing_angle() {
+            self.error("expected '>' after qualified associated path base".to_string());
+            return None;
+        }
+        self.expect(&Token::Dot)?;
+        let mut members = vec![self.expect_ident()?];
+        while self.eat(&Token::Dot) {
+            members.push(self.expect_ident()?);
+        }
+        Some(Expr::QualifiedAssoc(Box::new(QualifiedAssocExpr {
+            base: Box::new(base),
+            trait_path,
+            members,
+        })))
+    }
+
     pub(crate) fn parse_expr(&mut self) -> Option<Spanned<Expr>> {
         let _guard = self.enter_recursion()?;
         self.parse_expr_bp(0)
@@ -170,7 +335,7 @@ impl Parser<'_> {
                         start..end,
                     )
                 }
-                _ => unreachable!(),
+                _ => unreachable!("prefix parser dispatches only recognized unary operators"),
             }
         } else {
             self.parse_primary()?
@@ -178,6 +343,11 @@ impl Parser<'_> {
 
         // Infix + postfix
         loop {
+            if self.record_init_suffix_allowed(&lhs.0) {
+                lhs = self.parse_record_init_postfix(lhs)?;
+                continue;
+            }
+
             // Try postfix first (highest precedence)
             match self.peek() {
                 Some(Token::Dot) => {
@@ -215,33 +385,40 @@ impl Parser<'_> {
                 _ => {}
             }
 
-            // Generic call: ident<Type1, Type2>(args)
-            // Must check BEFORE infix operators consume '<' as less-than.
-            if self.peek() == Some(&Token::Less) {
-                if let Expr::Identifier(_) = &lhs.0 {
-                    let saved = self.save_pos();
-                    self.advance(); // consume '<'
-                    if let Some(type_args) = self.parse_type_args() {
-                        if self.peek() == Some(&Token::LeftParen) {
-                            self.advance(); // consume '('
-                            let args = self.parse_call_args()?;
-                            self.expect(&Token::RightParen)?;
-                            let end = self.peek_span().start;
-                            lhs = (
-                                Expr::Call {
-                                    function: Box::new(lhs),
-                                    type_args: Some(type_args),
-                                    args,
-                                    is_tail_call: false,
-                                },
-                                start..end,
-                            );
-                            continue;
-                        }
+            // Preserve the established bare-function generic call grammar for
+            // type arguments outside the bounded dotted-suffix lookahead, such
+            // as a unit type. This path commits only after the full type list
+            // parses and is immediately followed by a call.
+            if self.peek() == Some(&Token::Less) && matches!(lhs.0, Expr::Identifier(_)) {
+                let saved = self.save_pos();
+                self.advance();
+                if let Some(type_args) = self.parse_type_args() {
+                    if self.peek() == Some(&Token::LeftParen) {
+                        self.advance();
+                        let args = self.parse_call_args()?;
+                        self.expect(&Token::RightParen)?;
+                        let end = self.peek_span().start;
+                        lhs = (
+                            Expr::Call {
+                                function: Box::new(lhs),
+                                type_args: Some(type_args),
+                                args,
+                                is_tail_call: false,
+                            },
+                            start..end,
+                        );
+                        continue;
                     }
-                    // Not a generic call — backtrack
-                    self.restore_pos(saved);
                 }
+                self.restore_pos(saved);
+            }
+
+            // Generic application binds to the immediately preceding segment.
+            // The bounded scan above is the commitment point; do not restore
+            // parser state if the subsequent type parse reports an error.
+            if self.generic_apply_suffix_commits() {
+                lhs = self.parse_generic_apply_postfix(lhs)?;
+                continue;
             }
 
             // Timeout combinator: expr | after duration
@@ -420,6 +597,16 @@ impl Parser<'_> {
         let start = self.peek_span().start;
 
         let expr = match self.peek()? {
+            Token::Dot if self.peek_at(self.pos + 1).is_some_and(Self::is_ident_token) => {
+                self.advance();
+                Expr::ContextVariant(ContextVariantExpr {
+                    name: self.expect_ident()?,
+                    record: None,
+                })
+            }
+            Token::Less if self.qualified_assoc_path_commits() => {
+                self.parse_qualified_assoc_primary()?
+            }
             Token::Duration(s) => {
                 if let Some(nanos) = parse_duration_literal(s) {
                     self.advance();
@@ -580,71 +767,8 @@ impl Parser<'_> {
                 Expr::ByteArrayLiteral(values)
             }
             Token::Identifier(name) => {
-                let mut name = name.to_string();
+                let name = name.to_string();
                 self.advance();
-
-                // Handle path expressions like Vec::new, HashMap::new
-                // Optionally accept Rust-style turbofish on a path segment:
-                // `Type::<T, U>::method` — the `<...>` are stashed and surface
-                // as the call's `type_args` when the path is invoked with `(`.
-                let mut turbofish: Option<Vec<Spanned<TypeExpr>>> = None;
-                while self.eat(&Token::DoubleColon) {
-                    if self.peek() == Some(&Token::Less) {
-                        let saved = self.save_pos();
-                        self.advance(); // consume '<'
-                        if let Some(args) = self.parse_type_args() {
-                            if turbofish.is_some() {
-                                self.error(
-                                    "turbofish `::<...>` may appear at most once in a path"
-                                        .to_string(),
-                                );
-                            }
-                            turbofish = Some(args);
-                            // A turbofish must be followed by another `::ident`
-                            // segment or the call site `(`. If we don't see
-                            // `::` next we fall out of the loop and let the
-                            // surrounding logic (`(args)`) consume the call.
-                            continue;
-                        }
-                        self.restore_pos(saved);
-                        break;
-                    }
-                    if let Some(segment) = self.expect_ident() {
-                        name = format!("{name}::{segment}");
-                    } else {
-                        break;
-                    }
-                }
-
-                // If turbofish was present, the path must be invoked as a call.
-                // Build the `Expr::Call` here so the explicit type args reach the
-                // checker via `Call.type_args` exactly as for the bare-call form
-                // `Type::method<T>(args)`. The struct-init / generic-call paths
-                // below are skipped because turbofish is unambiguously a call.
-                if let Some(type_args) = turbofish {
-                    if self.peek() != Some(&Token::LeftParen) {
-                        self.error(
-                            "turbofish `::<...>` must be followed by a function call `(...)`"
-                                .to_string(),
-                        );
-                        return None;
-                    }
-                    self.advance(); // consume '('
-                    let args = self.parse_call_args()?;
-                    self.expect(&Token::RightParen)?;
-                    let end = self.peek_span().start;
-                    let func_span = start..end;
-                    let func = (Expr::Identifier(name), func_span.clone());
-                    return Some((
-                        Expr::Call {
-                            function: Box::new(func),
-                            type_args: Some(type_args),
-                            args,
-                            is_tail_call: false,
-                        },
-                        start..end,
-                    ));
-                }
 
                 // Check for struct initialization — including the explicit-type-arg form
                 // `Name<T, ...> { field: expr, ... }`.  We need a speculative parse
@@ -702,8 +826,8 @@ impl Parser<'_> {
             }
             Token::Less => {
                 // Speculative parse to detect old generic lambda: <T>(x: T) => expr.
-                // This form was removed in v0.5; type-parameterized closures are not
-                // supported. Detect the form and emit a typed migration diagnostic.
+                // Type-parameterized closures are not supported. Detect the form
+                // and emit a typed diagnostic.
                 let saved_pos = self.save_pos();
                 self.advance(); // consume '<'
 
@@ -766,8 +890,8 @@ impl Parser<'_> {
                 let _allow_struct = self.set_no_struct_literal(false);
 
                 // Detect and reject old `(params) => body` parenthesized lambda syntax.
-                // This form was removed in v0.5; the current form is `|params| body`.
-                // Keep the detection here so we can surface a typed migration diagnostic
+                // The current closure form is `|params| body`. Keep the detection here
+                // so we can surface a typed diagnostic
                 // rather than a cryptic parse error when `=>` is encountered later.
                 let saved_pos = self.save_pos();
                 let is_old_paren_lambda = if self.try_parse_lambda_params().is_some() {
@@ -984,7 +1108,7 @@ impl Parser<'_> {
                 self.advance();
 
                 // Check whether the user wrote the legacy `spawn (params) => body` form.
-                // This form was removed in favour of `actor |params| { body }`.
+                // The supported form is `actor |params| { body }`.
                 // Consume an optional `move` keyword only to detect legacy syntax; it is not
                 // used in the regular `spawn ActorName(...)` form.
                 let _is_move_legacy = self.eat(&Token::Move);
@@ -1024,19 +1148,19 @@ impl Parser<'_> {
                 // or spawn ActorName<T>(...) with explicit turbofish type args.
                 let name = self.expect_ident()?;
                 let name_end = self.peek_span().start;
-                let target = if self.eat(&Token::Dot) {
+                let mut target = (Expr::Identifier(name), start..name_end);
+                while self.eat(&Token::Dot) {
                     let actor_name = self.expect_ident()?;
                     let actor_end = self.peek_span().start;
-                    Box::new((
+                    target = (
                         Expr::FieldAccess {
-                            object: Box::new((Expr::Identifier(name), start..name_end)),
+                            object: Box::new(target),
                             field: actor_name,
                         },
                         start..actor_end,
-                    ))
-                } else {
-                    Box::new((Expr::Identifier(name), start..name_end))
-                };
+                    );
+                }
+                let target = Box::new(target);
 
                 // Optional turbofish type-argument list `<T, U>` before `(`.
                 // A bare `<` here is unambiguous: spawn does not admit
@@ -1572,53 +1696,29 @@ impl Parser<'_> {
             ));
         }
 
-        let field = self.expect_ident()?;
+        let method = self.expect_ident()?;
 
-        // Accumulate optional `::Segment` pairs after the first identifier.
-        // This handles cross-module enum variant construction: `fs.IoError::TimedOut(0)`.
-        // Mirrors the DoubleColon accumulation loop in parse_primary's Identifier branch.
-        let mut method = field;
-        while self.eat(&Token::DoubleColon) {
-            if let Some(segment) = self.expect_ident() {
-                method = format!("{method}::{segment}");
-            } else {
-                break;
-            }
-        }
-
-        if method.contains("::") {
+        // Pure-dot nominal record/record-variant path: `wire.Message.Data { ... }`.
+        if self.peek() == Some(&Token::LeftBrace)
+            && !self.no_struct_literal()
+            && self.probe_struct_init_brace()
+        {
             if let Some(mut name) = Self::dotted_expr_name(&lhs.0) {
                 name.push('.');
                 name.push_str(&method);
-                // A `{` here begins a struct literal only when struct literals
-                // are allowed in this position and the brace actually opens a
-                // field list. In `if`/`while` condition or `match` scrutinee
-                // position the `no_struct_literal` restriction is active, so
-                // `if m.E::V { } else { }` opens the then-block — the `{` must
-                // NOT be consumed as an empty struct literal here (which would
-                // orphan the `else`). The probe also guards `{ stmt; }` blocks.
-                if self.peek() == Some(&Token::LeftBrace)
-                    && !self.no_struct_literal()
-                    && self.probe_struct_init_brace()
-                {
-                    self.advance(); // consume {
-                                    // Inside the struct body the `{` is consumed, so any nested
-                                    // bare-ident struct literal is unambiguous again.
-                    let (fields, base) =
-                        self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
-                    let end = self.peek_span().start;
-                    return Some((
-                        Expr::StructInit {
-                            name,
-                            fields,
-                            type_args: None,
-                            base,
-                        },
-                        start..end,
-                    ));
-                }
+                self.advance();
+                let (fields, base) =
+                    self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
                 let end = self.peek_span().start;
-                return Some((Expr::Identifier(name), start..end));
+                return Some((
+                    Expr::StructInit {
+                        name,
+                        fields,
+                        type_args: None,
+                        base,
+                    },
+                    start..end,
+                ));
             }
         }
 
@@ -1638,74 +1738,7 @@ impl Parser<'_> {
                 },
                 start..end,
             ))
-        } else if self.peek() == Some(&Token::LeftBrace) && method.contains("::") {
-            // Module-qualified struct literal: `module.Type::Variant { fields }`.
-            //
-            // Gate: `::` must have been consumed above — `method` carries the
-            // full `Type::Variant` path segment.  A plain field access like
-            // `obj.field { ... }` does NOT enter this arm (no `::` in field),
-            // preserving the existing parse error / block interpretation for that
-            // shape.
-            //
-            // The receiver (`lhs`) must be a bare `Ident` (single-level module
-            // alias).  Nested-module paths (`a.b.Type::Variant`) fall through to
-            // FieldAccess; that limit is deferred to v0.5.1.
-            //
-            // Disambiguate via the shared probe: `{ field: val }` → struct init;
-            // `{ stmt; }` or `{ expr }` → not a struct literal, fall through.
-            //
-            // In `if`/`while` condition or `match` scrutinee position the
-            // `no_struct_literal` restriction is active, so `if m.E::V { }` opens
-            // the block rather than starting a struct literal — consistent with
-            // the bare-identifier form above.
-            if !self.no_struct_literal() && self.probe_struct_init_brace() {
-                // Build the qualified type name: `module.Type::Variant`.
-                // `lhs` is the module identifier; `method` is `Type::Variant`.
-                // Non-identifier receivers (e.g. chained `a.b.C::D { }`) fall
-                // through to FieldAccess — nested-module paths are out of scope
-                // for v0.5; the checker surfaces an error via the field-access
-                // path rather than a misleading struct-literal attempt.
-                let module_name = if let Expr::Identifier(n) = &lhs.0 {
-                    n.clone()
-                } else {
-                    let end = self.peek_span().start;
-                    return Some((
-                        Expr::FieldAccess {
-                            object: Box::new(lhs),
-                            field: method,
-                        },
-                        start..end,
-                    ));
-                };
-                let qualified_name = format!("{module_name}.{method}");
-                self.advance(); // consume {
-                let (fields, base) =
-                    self.with_struct_literals_allowed(Self::parse_struct_init_body)?;
-                let end = self.peek_span().start;
-                Some((
-                    Expr::StructInit {
-                        name: qualified_name,
-                        fields,
-                        type_args: None,
-                        base,
-                    },
-                    start..end,
-                ))
-            } else {
-                // Brace begins a block, not a struct literal — fall through to
-                // FieldAccess.  The brace will be parsed as the next statement.
-                let end = self.peek_span().start;
-                Some((
-                    Expr::FieldAccess {
-                        object: Box::new(lhs),
-                        field: method,
-                    },
-                    start..end,
-                ))
-            }
         } else {
-            // Field access (method == field when no :: was consumed; otherwise a
-            // unit-variant or bare type-path reference — preserved as FieldAccess).
             let end = self.peek_span().start;
             Some((
                 Expr::FieldAccess {
@@ -1822,10 +1855,15 @@ impl Parser<'_> {
         self.expect(&Token::RightParen)?;
         let end = self.peek_span().start;
 
+        let (function, type_args) = match lhs {
+            (Expr::GenericApplySuffix { target, type_args }, _) => (target, Some(type_args)),
+            other => (Box::new(other), None),
+        };
+
         Some((
             Expr::Call {
-                function: Box::new(lhs),
-                type_args: None, // postfix calls don't parse type args (ambiguous with <)
+                function,
+                type_args,
                 args,
                 is_tail_call: false,
             },

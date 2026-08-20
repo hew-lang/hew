@@ -1,8 +1,8 @@
 //! Round-trip tests for std::encoding::compress.
 
-import std::encoding::compress;
+import std.encoding.compress;
 
-import std::testing;
+import std.testing;
 
 // WASM-TODO(compression): add coverage once std::encoding::compress is verified on wasm32-wasip1.
 const DEFAULT_DECOMPRESS_LIMIT: i64 = 64 * 1024 * 1024;
@@ -16,7 +16,7 @@ fn assert_bytes_eq(actual: bytes, expected: bytes) {
 
 #[test]
 fn test_gzip_round_trip() {
-    let input: bytes = bytes::new();
+    let input: bytes = bytes.new();
     input.push(72); // H
     input.push(101); // e
     input.push(108); // l
@@ -29,7 +29,7 @@ fn test_gzip_round_trip() {
 
 #[test]
 fn test_gzip_round_trip_empty() {
-    let input: bytes = bytes::new();
+    let input: bytes = bytes.new();
     let compressed = compress.gzip_compress(input);
     let decompressed = compress.gzip_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
     assert_bytes_eq(decompressed, input);
@@ -37,7 +37,7 @@ fn test_gzip_round_trip_empty() {
 
 #[test]
 fn test_deflate_round_trip() {
-    let input: bytes = bytes::new();
+    let input: bytes = bytes.new();
     input.push(0);
     input.push(1);
     input.push(2);
@@ -50,7 +50,7 @@ fn test_deflate_round_trip() {
 
 #[test]
 fn test_deflate_round_trip_empty() {
-    let input: bytes = bytes::new();
+    let input: bytes = bytes.new();
     let compressed = compress.deflate_compress(input);
     let decompressed = compress.deflate_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
     assert_bytes_eq(decompressed, input);
@@ -58,7 +58,7 @@ fn test_deflate_round_trip_empty() {
 
 #[test]
 fn test_zlib_round_trip() {
-    let input: bytes = bytes::new();
+    let input: bytes = bytes.new();
     input.push(120); // x
     input.push(121); // y
     input.push(122); // z
@@ -69,7 +69,7 @@ fn test_zlib_round_trip() {
 
 #[test]
 fn test_zlib_round_trip_empty() {
-    let input: bytes = bytes::new();
+    let input: bytes = bytes.new();
     let compressed = compress.zlib_compress(input);
     let decompressed = compress.zlib_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
     assert_bytes_eq(decompressed, input);
@@ -77,7 +77,7 @@ fn test_zlib_round_trip_empty() {
 
 // ── #36: a codec failure is distinguishable from valid empty output ───
 fn garbage() -> bytes {
-    let data: bytes = bytes::new();
+    let data: bytes = bytes.new();
     data.push(1);
     data.push(2);
     data.push(3);
@@ -88,16 +88,16 @@ fn garbage() -> bytes {
 #[test]
 fn test_try_gzip_decompress_reports_a_malformed_stream_as_a_failure() {
     match compress.try_gzip_decompress(garbage(), DEFAULT_DECOMPRESS_LIMIT) {
-        Ok(out) => panic(f"expected a malformed gzip stream to fail, got {out.len()} bytes"),
-        Err(reason) => testing.assert_gt(reason.len(), 0),
+        .Ok(out) => panic(f"expected a malformed gzip stream to fail, got {out.len()} bytes"),
+        .Err(reason) => testing.assert_gt(reason.len(), 0),
     }
 }
 
 #[test]
 fn test_try_zlib_decompress_reports_a_malformed_stream_as_a_failure() {
     match compress.try_zlib_decompress(garbage(), DEFAULT_DECOMPRESS_LIMIT) {
-        Ok(out) => panic(f"expected a malformed zlib stream to fail, got {out.len()} bytes"),
-        Err(reason) => testing.assert_gt(reason.len(), 0),
+        .Ok(out) => panic(f"expected a malformed zlib stream to fail, got {out.len()} bytes"),
+        .Err(reason) => testing.assert_gt(reason.len(), 0),
     }
 }
 
@@ -105,59 +105,59 @@ fn test_try_zlib_decompress_reports_a_malformed_stream_as_a_failure() {
 fn test_try_decompress_of_a_valid_empty_payload_is_an_empty_success() {
     // The same zero-byte answer a failure produces, but this one is real; the
     // codec's reason slot is what tells them apart.
-    let empty: bytes = bytes::new();
+    let empty: bytes = bytes.new();
     let compressed = compress.gzip_compress(empty);
     match compress.try_gzip_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT) {
-        Ok(out) => testing.assert_eq(out.len(), 0),
-        Err(reason) => panic(f"a valid empty payload must decompress: {reason}"),
+        .Ok(out) => testing.assert_eq(out.len(), 0),
+        .Err(reason) => panic(f"a valid empty payload must decompress: {reason}"),
     }
 }
 
 #[test]
 fn test_try_deflate_decompress_of_a_valid_empty_payload_is_an_empty_success() {
-    let empty: bytes = bytes::new();
+    let empty: bytes = bytes.new();
     let compressed = compress.deflate_compress(empty);
     match compress.try_deflate_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT) {
-        Ok(out) => testing.assert_eq(out.len(), 0),
-        Err(reason) => panic(f"a valid empty payload must decompress: {reason}"),
+        .Ok(out) => testing.assert_eq(out.len(), 0),
+        .Err(reason) => panic(f"a valid empty payload must decompress: {reason}"),
     }
 }
 
 #[test]
 fn test_try_decompress_rejects_a_negative_output_limit() {
-    let empty: bytes = bytes::new();
+    let empty: bytes = bytes.new();
     let compressed = compress.gzip_compress(empty);
     match compress.try_gzip_decompress(compressed, -1) {
-        Ok(out) => panic(f"expected a negative limit to be rejected, got {out.len()} bytes"),
-        Err(reason) => testing.assert_eq_str(reason, "max output length must be non-negative, got -1"),
+        .Ok(out) => panic(f"expected a negative limit to be rejected, got {out.len()} bytes"),
+        .Err(reason) => testing.assert_eq_str(reason, "max output length must be non-negative, got -1"),
     }
 }
 
 #[test]
 fn test_try_decompress_rejects_output_over_the_limit() {
-    let input: bytes = bytes::new();
+    let input: bytes = bytes.new();
     for _ in 0 .. 64 {
         input.push(65);
     }
     let compressed = compress.zlib_compress(input);
     match compress.try_zlib_decompress(compressed, 8) {
-        Ok(out) => panic(f"expected the output limit to be enforced, got {out.len()} bytes"),
-        Err(reason) => testing.assert_eq_str(reason, "output exceeded 8 byte limit"),
+        .Ok(out) => panic(f"expected the output limit to be enforced, got {out.len()} bytes"),
+        .Err(reason) => testing.assert_eq_str(reason, "output exceeded 8 byte limit"),
     }
 }
 
 #[test]
 fn test_codec_failure_does_not_leak_into_the_next_call() {
     match compress.try_gzip_decompress(garbage(), DEFAULT_DECOMPRESS_LIMIT) {
-        Ok(_) => panic("expected a malformed gzip stream to fail"),
-        Err(_) => {},
+        .Ok(_) => panic("expected a malformed gzip stream to fail"),
+        .Err(_) => {},
     }
-    let input: bytes = bytes::new();
+    let input: bytes = bytes.new();
     input.push(90);
     let compressed = compress.gzip_compress(input);
     match compress.try_gzip_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT) {
-        Ok(out) => testing.assert_eq(out.len(), 1),
-        Err(reason) => panic(f"a later valid call must not inherit the earlier failure: {reason}"),
+        .Ok(out) => testing.assert_eq(out.len(), 1),
+        .Err(reason) => panic(f"a later valid call must not inherit the earlier failure: {reason}"),
     }
 }
 

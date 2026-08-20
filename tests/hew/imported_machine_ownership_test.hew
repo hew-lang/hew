@@ -5,9 +5,9 @@
 //! exercises direct construction, matching, transition, calls, returns, and a
 //! record field while its heap string makes the clone/drop path observable.
 
-import tests::hew::imported_machine_support::machine_defs;
+import tests.hew.imported_machine_support.machine_defs;
 
-import std::testing;
+import std.testing;
 
 type Envelope {
     value: machine_defs.PayloadLifecycle;
@@ -18,16 +18,14 @@ fn carry_hidden(value: machine_defs.RunLifecycle) -> machine_defs.RunLifecycle {
     value
 }
 
-fn carry_payload(
-    value: machine_defs.PayloadLifecycle,
-) -> machine_defs.PayloadLifecycle {
+fn carry_payload(value: machine_defs.PayloadLifecycle) -> machine_defs.PayloadLifecycle {
     value
 }
 
 fn payload_label(value: machine_defs.PayloadLifecycle) -> string {
     match value {
-        machine_defs.PayloadLifecycle::Loaded { label } => label,
-        machine_defs.PayloadLifecycle::Empty => "empty",
+        machine_defs.PayloadLifecycle.Loaded { label } => label,
+        machine_defs.PayloadLifecycle.Empty => "empty",
     }
 }
 
@@ -36,7 +34,7 @@ fn imported_private_machine_crosses_an_owned_call_boundary() {
     let value = machine_defs.initial();
     let carried = carry_hidden(value);
     let tag = match carried {
-        machine_defs.RunLifecycle::Running => 1,
+        machine_defs.RunLifecycle.Running => 1,
         _ => 0,
     };
     testing.assert_eq(tag, 1);
@@ -49,7 +47,6 @@ fn imported_payload_machine_covers_construction_calls_returns_and_record_storage
     let envelope = Envelope { value: returned, marker: 17 };
     testing.assert_eq(envelope.marker, 17);
     testing.assert_eq_str(payload_label(envelope.value), "CALLER-TO-CALLEE");
-
     let made = machine_defs.make("callee-to-caller".to_upper());
     let carried = carry_payload(made);
     testing.assert_eq_str(payload_label(carried), "CALLEE-TO-CALLER");
@@ -58,7 +55,7 @@ fn imported_payload_machine_covers_construction_calls_returns_and_record_storage
 #[test]
 fn imported_machine_transitions_and_supports_dotted_unit_construction() {
     var value = machine_defs.PayloadLifecycle.Empty;
-    value.step(machine_defs.PayloadLifecycleEvent::Load);
+    value.step(machine_defs.PayloadLifecycleEvent.Load);
     testing.assert_eq_str(payload_label(value), "TRANSITIONED");
 }
 
@@ -74,7 +71,6 @@ fn imported_machine_transitions_and_supports_dotted_unit_construction() {
 fn module_qualified_variant_pattern_selects_the_matching_arm_for_both_states() {
     let empty = machine_defs.PayloadLifecycle.Empty;
     testing.assert_eq_str(payload_label(empty), "empty");
-
     let loaded = machine_defs.make("direct".to_upper());
     testing.assert_eq_str(payload_label(loaded), "DIRECT");
 }

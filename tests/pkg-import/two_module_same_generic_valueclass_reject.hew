@@ -20,9 +20,9 @@
 // + codegen symbols), this program becomes VALID and both `Key<T>`s resolve to
 // their own module's instantiation — at which point this reject pin flips to a
 // compile+run oracle. Keyed in `run.sh` under the #2653 known-gap reject block.
-import hew::keyleft;
+import hew.keyleft;
 
-import hew::keyright;
+import hew.keyright;
 
 fn main() {
     let a: keyleft.Key<i32> = keyleft.mk(12345);

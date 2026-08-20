@@ -15,9 +15,9 @@ indirect enum Wrapped {
 gen fn make_vecs(n: i64) -> Vec<Wrapped> {
     var i = 0;
     while i < n {
-        let v: Vec<Wrapped> = Vec::new();
-        v.push(Wrapped::Val(i));
-        v.push(Wrapped::Val(i * 2));
+        let v: Vec<Wrapped> = Vec.new();
+        v.push(Wrapped.Val(i));
+        v.push(Wrapped.Val(i * 2));
         yield v;
         i = i + 1;
     }

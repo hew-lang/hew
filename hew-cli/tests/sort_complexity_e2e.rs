@@ -10,10 +10,10 @@ use std::process::Output;
 
 use support::{describe_output, repo_root};
 
-const SOURCE: &str = r#"import std::sort;
+const SOURCE: &str = r#"import std.sort;
 
 fn check_ints() -> i64 {
-    let reverse: Vec<i64> = Vec::new();
+    let reverse: Vec<i64> = Vec.new();
     for i in 0 .. 1024 {
         reverse.push(1023 - i);
     }
@@ -24,7 +24,7 @@ fn check_ints() -> i64 {
         if reverse[i] != 1023 - i { return 12; }
     }
 
-    let non_power: Vec<i64> = Vec::new();
+    let non_power: Vec<i64> = Vec.new();
     for i in 0 .. 17 {
         non_power.push((i * 7) % 5);
     }
@@ -43,7 +43,7 @@ fn check_ints() -> i64 {
     }
     if before_sum != after_sum || before_squares != after_squares { return 15; }
 
-    let equal: Vec<i64> = Vec::new();
+    let equal: Vec<i64> = Vec.new();
     for _i in 0 .. 33 { equal.push(7); }
     let equal_out = sort.sort_ints(equal);
     for i in 0 .. 33 {
@@ -66,7 +66,7 @@ fn reverse_key(i: i64) -> string {
 }
 
 fn check_strings() -> i64 {
-    let duplicate_reverse: Vec<string> = Vec::new();
+    let duplicate_reverse: Vec<string> = Vec.new();
     for i in 0 .. 256 {
         duplicate_reverse.push(reverse_key(i));
     }
@@ -92,7 +92,7 @@ fn check_strings() -> i64 {
         return 31;
     }
 
-    let non_power: Vec<string> = Vec::new();
+    let non_power: Vec<string> = Vec.new();
     for i in 0 .. 17 {
         let value = match i % 3 {
             0 => "charlie",

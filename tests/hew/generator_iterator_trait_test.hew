@@ -13,7 +13,7 @@
 //! and the `check_generator_iter_map_owned_handle_aggregate_fails_closed`
 //! integration test for that fail-closed pin.
 
-import std::testing;
+import std.testing;
 
 gen fn counter(n: i64) -> i64 {
     var i: i64 = 0;

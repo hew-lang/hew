@@ -777,7 +777,7 @@ mod non_root_module_inference_scope {
     #[test]
     fn bare_channel_handle_signature_stays_valid() {
         let source = concat!(
-            "import std::channel::channel;\n",
+            "import std.channel.channel;\n",
             "fn close_sender(tx: channel.Sender) {\n",
             "    tx.close();\n",
             "}\n",

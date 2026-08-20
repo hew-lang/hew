@@ -3,7 +3,7 @@
 
 // HTTP + JSON pipeline demo.
 //
-// Demonstrates `std::net::http::http_client` and `std::encoding::json`
+// Demonstrates `std.net.http.http_client` and `std.encoding.json`
 // working together: fetch a JSON payload over HTTP, navigate a nested
 // object, extract typed fields, and count an array.
 //
@@ -28,9 +28,9 @@
 // heap-allocated Value clone. Each such handle is freed before the
 // enclosing scope exits. `print_field` frees the child Value it
 // fetches; it never frees the parent passed by the caller.
-import std::net::http::http_client;
+import std.net.http.http_client;
 
-import std::encoding::json::{Value};
+import std.encoding.json.{Value};
 
 // Fetch a URL and return the body string, or None on transport failure.
 fn fetch(url: string) -> Option<string> {
@@ -51,9 +51,9 @@ fn main() {
     let url = "https://httpbin.org/json";
     println(f"Fetching {url}...");
     match fetch(url) {
-        Some(body) => {
+        .Some(body) => {
             match json.try_parse(body) {
-                Ok(root) => {
+                .Ok(root) => {
                     // httpbin /json returns a "slideshow" object at the root.
                     // `get_field` returns a new owned clone — caller must free.
                     let slideshow = root.get_field("slideshow"); // owned
@@ -71,15 +71,15 @@ fn main() {
                     slideshow.free(); // free before root
                     root.free(); // outermost last
                 },
-                Err(_) => {
-                    // Err(ParseError::Invalid(msg)) is accepted by `hew check`
+                .Err(_) => {
+                    // Err(ParseError.Invalid(msg)) is accepted by `hew check`
                     // but fails at runtime with an undeclared-variable
                     // error. Use `Err(_)` and a static message instead.
                     println("json parse failed");
                 },
             }
         },
-        None => {
+        .None => {
             println("http request failed (no network or server unreachable)");
         },
     }

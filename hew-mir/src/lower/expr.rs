@@ -87,19 +87,21 @@ fn catalog_display_call_authority(callee: &str) -> crate::CallAuthority {
 fn compiler_builtin_call_authority(endpoint: &str) -> Option<crate::CallAuthority> {
     use crate::IdentityAggregateKind as Kind;
 
-    let kind = match endpoint {
-        "Node::id" => Kind::NodeId,
-        "hew_node_id_display" => Kind::NodeIdDisplay,
-        "hew_location_node_id" => Kind::LocationNodeId,
-        "hew_location_slot" => Kind::LocationSlot,
-        "hew_location_incarnation" => Kind::LocationIncarnation,
-        "hew_location_display" => Kind::LocationDisplay,
-        "hew_remote_pid_location" => Kind::RemotePidLocation,
-        "hew_remote_pid_node_id" => Kind::RemotePidNodeId,
-        "hew_remote_pid_slot" => Kind::RemotePidSlot,
-        "hew_remote_pid_incarnation" => Kind::RemotePidIncarnation,
-        "hew_remote_pid_display" => Kind::RemotePidDisplay,
-        _ => return None,
+    let kind = match hew_types::runtime_call::RuntimeCallFamily::from_checker_signature(endpoint) {
+        Some(hew_types::runtime_call::RuntimeCallFamily::NodeId) => Kind::NodeId,
+        _ => match endpoint {
+            "hew_node_id_display" => Kind::NodeIdDisplay,
+            "hew_location_node_id" => Kind::LocationNodeId,
+            "hew_location_slot" => Kind::LocationSlot,
+            "hew_location_incarnation" => Kind::LocationIncarnation,
+            "hew_location_display" => Kind::LocationDisplay,
+            "hew_remote_pid_location" => Kind::RemotePidLocation,
+            "hew_remote_pid_node_id" => Kind::RemotePidNodeId,
+            "hew_remote_pid_slot" => Kind::RemotePidSlot,
+            "hew_remote_pid_incarnation" => Kind::RemotePidIncarnation,
+            "hew_remote_pid_display" => Kind::RemotePidDisplay,
+            _ => return None,
+        },
     };
     Some(crate::CallAuthority::Compiler(
         crate::CompilerCallKind::IdentityAggregate(kind),
@@ -224,7 +226,7 @@ impl Builder {
                     site,
                 },
                 note: format!(
-                    "`VecIter::next()` must clone each element into an independent owner, \
+                    "`VecIter.next()` must clone each element into an independent owner, \
                      but {reason}; MIR refuses to lower the generic Iterator dispatch"
                 ),
             });
@@ -238,7 +240,7 @@ impl Builder {
         else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::UnsupportedNode {
-                    reason: "builtin VecIter Iterator::next receiver is not a binding".to_string(),
+                    reason: "builtin VecIter Iterator.next receiver is not a binding".to_string(),
                 },
                 note: "the builtin cursor state machine mutates the receiver's existing local slot"
                     .to_string(),
@@ -252,7 +254,7 @@ impl Builder {
                     name: name.clone(),
                     site: receiver.site,
                 },
-                note: "builtin VecIter Iterator::next receiver has no MIR place".to_string(),
+                note: "builtin VecIter Iterator.next receiver has no MIR place".to_string(),
             });
             return None;
         };
@@ -313,17 +315,12 @@ impl Builder {
         });
 
         self.start_block(none_bb);
-        let none_tag = self.alloc_local(ResolvedTy::I64);
-        self.push_instr(Instr::ConstI64 {
-            dest: none_tag,
-            value: 1,
-        });
         let Place::Local(result_local) = result else {
             unreachable!("alloc_local returns Place::Local");
         };
-        self.push_instr(Instr::Move {
+        self.push_instr(Instr::ConstI64 {
             dest: Place::EnumTag(result_local),
-            src: none_tag,
+            value: 1,
         });
         self.finish_current_block(Terminator::Goto { target: join_bb });
 
@@ -587,13 +584,38 @@ impl Builder {
     /// whose element drop must run `close` — correctly is. Same verdict the
     /// codegen owned-Vec walker reaches, so getter, constructor, and release
     /// agree (`dedup-semantic-boundary`).
-    fn named_elem_carries_drop_obligation(&self, ty: &ResolvedTy) -> bool {
+    pub(super) fn named_elem_carries_drop_obligation(&self, ty: &ResolvedTy) -> bool {
         crate::model::ty_carries_drop_obligation_mir(
             ty,
             &self.record_field_orders,
             &self.enum_layouts,
             self.type_classes.lifecycle_registry(),
         )
+    }
+
+    /// Lower a consuming `VecIter` `vec`-field source that reads a bare actor
+    /// state field: load the field's handle (an alias read — the take-all call
+    /// arg is the load's only use, so the state-load classifier keeps it a
+    /// bare `Borrowed` load), then move the buffer into a fresh vec via
+    /// `hew_vec_take_all`. The returned place owns the taken vec; the state
+    /// slot keeps its handle, now a valid empty vec with the same stamped
+    /// element descriptor (dogfood F3 — see
+    /// [`Builder::vec_field_src_consumes_bare_actor_state_field`]).
+    fn lower_vec_take_all_from_state_field(&mut self, fexpr: &HirExpr) -> Option<Place> {
+        let src = self.lower_value(fexpr)?;
+        let taken = self.alloc_local(self.subst_ty(&fexpr.ty));
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_vec_take_all".to_string(),
+            authority: crate::CallAuthority::Runtime(
+                hew_types::runtime_call::RuntimeCallFamily::VecTakeAll,
+            ),
+            args: vec![src],
+            dest: Some(taken),
+            next,
+        });
+        self.start_block(next);
+        Some(taken)
     }
 
     pub(crate) fn fieldless_enum_layout_key(&self, ty: &ResolvedTy) -> Option<String> {
@@ -738,7 +760,10 @@ impl Builder {
             // `resolved_ty_element_owns_heap_for_owned_vec` exactly, so the
             // drop_fn the elaborator emits matches what codegen constructs —
             // `dedup-semantic-boundary`).
-            ResolvedTy::Named {
+            // A trait-object slot likewise owns its two-word `HeapBoxed` payload
+            // under a drop-only element descriptor.
+            ResolvedTy::TraitObject { .. }
+            | ResolvedTy::Named {
                 builtin:
                     Some(
                         hew_types::BuiltinType::HashMap
@@ -816,7 +841,6 @@ impl Builder {
             | ResolvedTy::Closure { .. }
             | ResolvedTy::Pointer { .. }
             | ResolvedTy::Borrow { .. }
-            | ResolvedTy::TraitObject { .. }
             | ResolvedTy::Task(_)
             | ResolvedTy::TypeParam { .. } => false,
         }
@@ -1391,11 +1415,10 @@ impl Builder {
             .is_some_and(|elem| self.is_owned_vec_element(elem))
     }
 
-    /// `Receiver<T>` slots have a descriptor close thunk but no clone thunk.
-    /// Sender is intentionally excluded: it remains a normal cloneable
-    /// descriptor-backed element. The predicate is used only to refuse Vec
-    /// operations that would manufacture a second endpoint owner.
-    pub(super) fn vec_receiver_has_drop_only_receiver_element(&self, vec_ty: &ResolvedTy) -> bool {
+    /// True when a Vec element descriptor has a drop callback but no clone
+    /// callback. Receiver endpoints and trait-object boxes are affine; every
+    /// operation that would manufacture a second owner must be refused.
+    pub(super) fn vec_receiver_has_drop_only_element(&self, vec_ty: &ResolvedTy) -> bool {
         let ResolvedTy::Named {
             args,
             builtin: Some(hew_types::BuiltinType::Vec),
@@ -1404,31 +1427,44 @@ impl Builder {
         else {
             return false;
         };
-        matches!(
-            args.first(),
-            Some(ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::Receiver),
-                ..
-            })
-        )
+        matches!(args.first(), Some(ResolvedTy::TraitObject { .. }))
+            || matches!(
+                args.first(),
+                Some(ResolvedTy::Named {
+                    builtin: Some(hew_types::BuiltinType::Receiver),
+                    ..
+                })
+            )
     }
 
-    pub(super) fn reject_drop_only_receiver_vec_operation(
+    pub(super) fn reject_drop_only_vec_operation(
         &mut self,
         operation: &str,
         site: SiteId,
     ) -> Option<Place> {
         self.diagnostics.push(MirDiagnostic {
             kind: MirDiagnosticKind::NotYetImplemented {
-                construct: format!("`Vec<channel.Receiver<_>>::{operation}()`"),
+                construct: format!("drop-only `Vec` element operation `{operation}`"),
                 site,
             },
-            note: "channel.Receiver<T> is a drop-only Vec element: this operation would clone \
-                   or copy a receiver slot. Move a receiver through a consuming operation \
-                   instead."
+            note: "this Vec element has a drop callback but no semantic clone: the operation \
+                   would create a second owner. Use push/pop/remove or consuming iteration \
+                   to transfer the value instead."
                 .to_string(),
         });
         None
+    }
+
+    fn vec_receiver_has_trait_object_element(&self, vec_ty: &ResolvedTy) -> bool {
+        let ResolvedTy::Named {
+            args,
+            builtin: Some(hew_types::BuiltinType::Vec),
+            ..
+        } = self.subst_ty(vec_ty)
+        else {
+            return false;
+        };
+        matches!(args.first(), Some(ResolvedTy::TraitObject { .. }))
     }
 
     /// Prove that a concrete collection payload has a total semantic clone and
@@ -4109,8 +4145,23 @@ impl Builder {
                     let borrows_vec_iter_source = is_vec_iter_cursor
                         && fname == "vec"
                         && fexpr.intent == hew_hir::IntentKind::Capture;
+                    // A consuming cursor over a BARE actor state field
+                    // (`plugins.into_iter()`) must neither alias-share the
+                    // handle (the cursor's own free would dangle the
+                    // persistent slot: next dispatch reads freed heap,
+                    // teardown double-frees — dogfood F3) nor deep-clone it
+                    // (drop-only dyn elements have no clone thunk). Route the
+                    // loaded handle through `hew_vec_take_all`: the cursor
+                    // owns the moved buffer, the state slot stays a valid
+                    // empty vec with its stamped element descriptor — later
+                    // pushes and the exactly-once state drop stay sound.
+                    let takes_persistent_state_vec = is_vec_iter_cursor
+                        && fname == "vec"
+                        && self.vec_field_src_consumes_bare_actor_state_field(fexpr);
                     let place = if borrows_vec_iter_source {
                         self.lower_value(fexpr)
+                    } else if takes_persistent_state_vec {
+                        self.lower_vec_take_all_from_state_field(fexpr)
                     } else {
                         self.lower_value_for_move(fexpr)
                     };
@@ -4737,9 +4788,12 @@ impl Builder {
                         let _ = self.lower_value(object);
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
+                                // `construct` carries only the construct; the
+                                // CLI diagnostic frame wraps it in the
+                                // "MIR lowering for … is not implemented yet"
+                                // sentence.
                                 construct: format!(
-                                    "MIR lowering for field access on unregistered record type \
-                                     `{type_name}` is not implemented yet"
+                                    "field access on unregistered record type `{type_name}`"
                                 ),
                                 site: expr.site,
                             },
@@ -5087,7 +5141,7 @@ impl Builder {
                             reason: reason.clone(),
                         },
                         note: format!(
-                            "dyn-trait method call `{trait_name}::{method_name}` reached MIR with \
+                            "dyn-trait method call `{trait_name}.{method_name}` reached MIR with \
                              an unresolved caller-side FnSig: {reason}. The checker's \
                              trait-object bound substitution at the receiver's coercion site \
                              must produce a fully resolved signature; codegen (W3.031 Stage 7) \
@@ -5249,7 +5303,7 @@ impl Builder {
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
                                 construct: format!(
-                                    "`Vec::{method_name}` on the type-parameter \
+                                    "`Vec.{method_name}` on the type-parameter \
                                      element `{elem}`"
                                 ),
                                 site: expr.site,
@@ -5301,7 +5355,8 @@ impl Builder {
                 // caller keeps its own independent drop.
                 let callee = if callee == "hew_vec_push_owned"
                     && args.len() == 1
-                    && self.expr_is_owned_vec_move_ingress_owner(&args[0])
+                    && (self.vec_receiver_has_trait_object_element(&receiver.ty)
+                        || self.expr_is_owned_vec_move_ingress_owner(&args[0]))
                 {
                     "hew_vec_push_owned_move".to_string()
                 } else {
@@ -5347,11 +5402,10 @@ impl Builder {
                 // have already been rewritten to their `_move` siblings above,
                 // so rejecting only these exact symbols preserves the sole
                 // supported construction path without weakening Sender.
-                if self.vec_receiver_has_drop_only_receiver_element(&receiver.ty)
+                if self.vec_receiver_has_drop_only_element(&receiver.ty)
                     && matches!(callee.as_str(), "hew_vec_push_owned" | "hew_vec_set_owned")
                 {
-                    return self
-                        .reject_drop_only_receiver_vec_operation("push/set copy-in", expr.site);
+                    return self.reject_drop_only_vec_operation("push/set copy-in", expr.site);
                 }
 
                 // `hew_vec_get_clone` is the clone-out choke used by both
@@ -5365,8 +5419,8 @@ impl Builder {
                 // resources, opaque handles, and unresolved layouts fail
                 // closed instead of receiving a shallow clone.
                 if callee == "hew_vec_get_clone" {
-                    if self.vec_receiver_has_drop_only_receiver_element(&receiver.ty) {
-                        return self.reject_drop_only_receiver_vec_operation("get", expr.site);
+                    if self.vec_receiver_has_drop_only_element(&receiver.ty) {
+                        return self.reject_drop_only_vec_operation("get", expr.site);
                     }
                     let concrete_receiver = self.subst_ty(&receiver.ty);
                     let ResolvedTy::Named {
@@ -5400,7 +5454,7 @@ impl Builder {
                                 site: expr.site,
                             },
                             note: format!(
-                                "`VecIter::next()` must clone each element into an independent \
+                                "`VecIter.next()` must clone each element into an independent \
                                  owner, but {reason}; the concrete generic instantiation is \
                                  rejected before the runtime clone choke"
                             ),
@@ -5419,9 +5473,8 @@ impl Builder {
                     callee.as_str(),
                     "hew_vec_clone" | "hew_vec_clone_layout" | "hew_vec_clone_owned"
                 ) {
-                    if self.vec_receiver_has_drop_only_receiver_element(&receiver.ty) {
-                        return self
-                            .reject_drop_only_receiver_vec_operation("clone/iter", expr.site);
+                    if self.vec_receiver_has_drop_only_element(&receiver.ty) {
+                        return self.reject_drop_only_vec_operation("clone/iter", expr.site);
                     }
                     let concrete_receiver = self.subst_ty(&receiver.ty);
                     let ResolvedTy::Named {
@@ -5452,7 +5505,7 @@ impl Builder {
                                 site: expr.site,
                             },
                             note: format!(
-                                "`Vec::clone()` / `Vec::iter()` must duplicate every element \
+                                "`Vec.clone()` / `Vec.iter()` must duplicate every element \
                                  into an independent owner, but {reason}; the clone is rejected \
                                  before it reaches the runtime"
                             ),
@@ -5515,19 +5568,19 @@ impl Builder {
                         if let Err(reason) = self.validate_collection_clone_value(part_ty) {
                             let operation = match callee.as_str() {
                                 "hew_hashmap_clone_layout" => {
-                                    "HashMap::clone() must duplicate every key and value"
+                                    "HashMap.clone() must duplicate every key and value"
                                 }
                                 "hew_hashmap_keys_layout" => {
-                                    "HashMap::keys() must clone every key into an independent snapshot"
+                                    "HashMap.keys() must clone every key into an independent snapshot"
                                 }
                                 "hew_hashmap_values_layout" => {
-                                    "HashMap::values() must clone every value into an independent snapshot"
+                                    "HashMap.values() must clone every value into an independent snapshot"
                                 }
                                 "hew_hashmap_entries_layout" => {
-                                    "HashMap::entries() must clone every key and value into an independent snapshot"
+                                    "HashMap.entries() must clone every key and value into an independent snapshot"
                                 }
                                 _ => {
-                                    "HashMap::get() must clone the matched value into an independent owner"
+                                    "HashMap.get() must clone the matched value into an independent owner"
                                 }
                             };
                             self.diagnostics.push(MirDiagnostic {
@@ -5580,9 +5633,9 @@ impl Builder {
                     };
                     if let Err(reason) = self.validate_collection_clone_value(elem_ty) {
                         let operation = if callee == "hew_hashset_clone_layout" {
-                            "HashSet::clone() must duplicate every element"
+                            "HashSet.clone() must duplicate every element"
                         } else {
-                            "HashSet::to_vec() must clone every element into an independent snapshot"
+                            "HashSet.to_vec() must clone every element into an independent snapshot"
                         };
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
@@ -5640,7 +5693,22 @@ impl Builder {
                 let mut arg_places = vec![receiver_place];
                 let mut yield_retained_locals: Vec<u32> = Vec::new();
                 for arg in args {
-                    let move_ingress = builtin_method_arg_is_move_ingress(*target_family);
+                    // A trait-object element push is the one rewrite that turns
+                    // a BARE-BINDING push into `hew_vec_push_owned_move` (the
+                    // drop-only descriptor has no clone thunk for copy-in), so
+                    // the source binding must be consumed through the move
+                    // ingress here. The scope is structural trait-object-ness,
+                    // never the `_move` spelling alone: the array-literal
+                    // desugar owns its element consume
+                    // (`consume_owned_vec_move_array_element` below), and the
+                    // fresh-rvalue `_move` rewrite for other owned elements
+                    // moves an unbound temp with no binding to consume — a
+                    // second move-ingress consume on either would double-record
+                    // the same site as use-after-consume.
+                    let move_ingress = builtin_method_arg_is_move_ingress(*target_family)
+                        || (callee == "hew_vec_push_owned_move"
+                            && !vec_owned_move_array_ingress
+                            && self.vec_receiver_has_trait_object_element(&receiver.ty));
                     // `HashMap`/`HashSet` ingress is MOVE by ABI — the runtime
                     // documents copy-in as intentionally absent — so the operand's
                     // heap is byte-transferred into the collection and the
@@ -5804,7 +5872,7 @@ impl Builder {
                             site: expr.site,
                         },
                         note: format!(
-                            "static trait dispatch `{declaring_trait}::{method_name}` reached \
+                            "static trait dispatch `{declaring_trait}.{method_name}` reached \
                              MIR in a concrete function body without a substitution for \
                              receiver type parameter `{receiver_type_param}`; this indicates \
                              a missing monomorphization binding (the generic origin should \
@@ -5821,7 +5889,7 @@ impl Builder {
                         kind: MirDiagnosticKind::NotYetImplemented {
                             construct: format!(
                                 "static trait dispatch on receiver shape `{concrete_ty:?}` \
-                                 for `{declaring_trait}::{method_name}`"
+                                 for `{declaring_trait}.{method_name}`"
                             ),
                             site: expr.site,
                         },
@@ -8180,14 +8248,16 @@ impl Builder {
             }
         };
 
-        if matches!(
-            elem_ty,
-            ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::Receiver),
-                ..
-            }
-        ) {
-            return self.reject_drop_only_receiver_vec_operation("range slice", site);
+        if matches!(elem_ty, ResolvedTy::TraitObject { .. })
+            || matches!(
+                elem_ty,
+                ResolvedTy::Named {
+                    builtin: Some(hew_types::BuiltinType::Receiver),
+                    ..
+                }
+            )
+        {
+            return self.reject_drop_only_vec_operation("range slice", site);
         }
 
         let slice_symbol = match &elem_ty {
@@ -8578,7 +8648,7 @@ impl Builder {
                     site,
                 },
                 note: format!(
-                    "static trait dispatch `{declaring_trait}::{method_name}` reached \
+                    "static trait dispatch `{declaring_trait}.{method_name}` reached \
                      MIR in a concrete function body without a substitution for \
                      receiver type parameter `{receiver_type_param}`; this indicates \
                      a missing monomorphization binding (the generic origin should \
@@ -8594,7 +8664,7 @@ impl Builder {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!(
                         "static trait dispatch on receiver shape `{concrete_ty:?}` \
-                         for `{declaring_trait}::{method_name}`"
+                         for `{declaring_trait}.{method_name}`"
                     ),
                     site,
                 },
@@ -8722,9 +8792,8 @@ impl Builder {
                     ),
                     site,
                 },
-                note:
-                    "MIR will not reconstruct a var-self method endpoint from `Type::method` text"
-                        .to_string(),
+                note: "MIR will not reconstruct a var-self method endpoint from `Type.method` text"
+                    .to_string(),
             });
             return None;
         };

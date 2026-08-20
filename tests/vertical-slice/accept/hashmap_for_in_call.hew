@@ -13,7 +13,7 @@
 // Entries 1->10, 2->20, 3->30: keys sum 6, values sum 60, exit 66; a count
 // guard pins the iteration count to 3.
 fn make_map() -> HashMap<i64, i64> {
-    let m: HashMap<i64, i64> = HashMap::new();
+    let m: HashMap<i64, i64> = HashMap.new();
     m.insert(1, 10);
     m.insert(2, 20);
     m.insert(3, 30);

@@ -1,0 +1,6 @@
+[package]
+name = "hew.preludemachinecollision_reject"
+version = "0.1.0"
+description = "Reject fixture for package-owned machine prelude collisions"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

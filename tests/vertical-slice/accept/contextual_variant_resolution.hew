@@ -1,0 +1,24 @@
+enum Choice {
+    Some(i64);
+    None;
+}
+
+fn choose(flag: bool) -> Choice {
+    if flag {
+        .Some(41)
+    } else {
+        .None
+    }
+}
+
+fn read(value: Choice) -> i64 {
+    match value {
+        .Some(number) => number + 1,
+        .None => 0,
+    }
+}
+
+fn main() {
+    println(read(choose(true)));
+    println(read(choose(false)));
+}

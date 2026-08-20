@@ -1,6 +1,6 @@
 actor BytesIndexCrasher {
     receive fn boom() {
-        let b: bytes = bytes::new();
+        let b: bytes = bytes.new();
         b.push(1);
         let _x: u8 = b[99];
     }

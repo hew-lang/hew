@@ -66,7 +66,7 @@ fn record_vec_receiver_source(frames: usize) -> String {
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\
-         \x20       var v: Vec<i64> = Vec::new();\n\
+         \x20       var v: Vec<i64> = Vec.new();\n\
          \x20       v.push(1); v.push(2); v.push(3);\n\
          \x20       let b = Bag {{ items: v }};\n\
          \x20       total = total + b.touch();\n\

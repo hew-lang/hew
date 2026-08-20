@@ -25,7 +25,7 @@ fn std_iter_output(root_body: &str) -> hew_hir::LowerOutput {
         .cloned()
         .collect();
     let mut root =
-        support::checker_pipeline::parse_source(&format!("import std::iter;\n{root_body}"));
+        support::checker_pipeline::parse_source(&format!("import std.iter;\n{root_body}"));
     for (item, _) in &mut root.program.items {
         if let Item::Import(import) = item {
             import.resolved_items = Some(iter_items.clone());

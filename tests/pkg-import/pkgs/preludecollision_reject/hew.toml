@@ -1,0 +1,6 @@
+[package]
+name = "hew.preludecollision_reject"
+version = "0.1.0"
+description = "Reject fixture for package-owned protected prelude declarations"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

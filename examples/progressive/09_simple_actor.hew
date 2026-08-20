@@ -16,7 +16,7 @@ fn main() {
     counter.increment(10);
     // Actor asks return Result<T, string> — use `match await` to extract the value.
     match await counter.get_count() {
-        Ok(count) => println(count),
-        Err(_) => println("ask failed"),
+        .Ok(count) => println(count),
+        .Err(_) => println("ask failed"),
     }
 }

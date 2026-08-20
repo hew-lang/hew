@@ -44,9 +44,9 @@ enum Packet {
 
 fn next(i: i64, cap: i64) -> Packet {
     if i < cap {
-        Packet::Payload("while-let-backedge-payload-abcdefghijklmnopqrstuvwxyz".to_upper())
+        Packet.Payload("while-let-backedge-payload-abcdefghijklmnopqrstuvwxyz".to_upper())
     } else {
-        Packet::Done
+        Packet.Done
     }
 }
 
@@ -54,7 +54,7 @@ fn probe(cap: i64) -> i64 {
     var i = 0;
     var q = next(i, cap);
     var total = 0;
-    while let Packet::Payload(s) = q {
+    while let Packet.Payload(s) = q {
         if i == 2 {
             break;
         }

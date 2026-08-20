@@ -5,7 +5,7 @@
 // per-instantiation mangling actually distinguishes the two emitted symbols —
 // not a one-symbol collapse. Prints only concrete-typed values (no abstract
 // `T`), so the gate keys on the call-lowering fix alone.
-import hew::genhelpers;
+import hew.genhelpers;
 
 fn main() {
     let a = genhelpers.first([1, 2, 3]);

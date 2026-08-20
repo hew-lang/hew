@@ -9,7 +9,7 @@
 // are not yet supported). Outer match on `Result`, inner match on `Option<string>`.
 //
 // Exit-code contract: Ok(Some(_)) arm → 1; other arms → negative.
-import std::stream;
+import std.stream;
 
 actor Pipeline {
     receive fn run() -> i64 {

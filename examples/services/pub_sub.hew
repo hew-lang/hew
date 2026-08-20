@@ -69,8 +69,8 @@ fn main() {
     println("");
 
     // Create broker
-    let empty_topics: Vec<string> = Vec::new();
-    let empty_actors: Vec<LocalPid<Subscriber>> = Vec::new();
+    let empty_topics: Vec<string> = Vec.new();
+    let empty_actors: Vec<LocalPid<Subscriber>> = Vec.new();
     let broker = spawn Broker(sub_topics: empty_topics, sub_actors: empty_actors, published: 0);
     // Create subscribers
     let alice = spawn Subscriber(name: "alice", received: 0);

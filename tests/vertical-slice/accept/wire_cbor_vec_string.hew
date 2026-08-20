@@ -8,7 +8,7 @@ type Names {
 }
 
 fn main() -> i64 {
-    let xs: Vec<string> = Vec::new();
+    let xs: Vec<string> = Vec.new();
     xs.push("Hello");
     xs.push("World");
     let h = Names { items: xs };

@@ -100,8 +100,8 @@ fn program(defs: &str) -> IrPipeline {
         "{PRELUDE}{defs}\n\
          fn main() -> i64 {{\n    var i: i64 = 0;\n    \
          while i < 2 {{\n        \
-         match make() {{ Outcome::Loaded(h) => {{ println(\"a\"); }} \
-         Outcome::Failed(n) => {{ println(n); }} }}\n        \
+         match make() {{ Outcome.Loaded(h) => {{ println(\"a\"); }} \
+         Outcome.Failed(n) => {{ println(n); }} }}\n        \
          i = i + 1;\n    }}\n    0\n}}\n"
     ))
 }
@@ -122,7 +122,7 @@ fn a_declared_release_payload_over_a_direct_extern_mints_once_and_releases_once(
          type Handle { raw: Dq; }\n\
          impl Handle { fn close(self) { unsafe { host_free(self.raw) }; } }\n\
          enum Outcome { Loaded(Handle); Failed(string); }\n\
-         fn make() -> Outcome { Outcome::Loaded(Handle { raw: unsafe { host_new() } }) }",
+         fn make() -> Outcome { Outcome.Loaded(Handle { raw: unsafe { host_new() } }) }",
     );
     assert_eq!(
         scrutinee_binds(&p, "main"),
@@ -154,11 +154,11 @@ fn a_consuming_arm_keeps_the_arm_as_the_sole_close_authority() {
          type Handle {{ raw: Dq; }}\n\
          impl Handle {{ fn close(self) {{ unsafe {{ host_free(self.raw) }}; }} }}\n\
          enum Outcome {{ Loaded(Handle); Failed(string); }}\n\
-         fn make() -> Outcome {{ Outcome::Loaded(Handle {{ raw: unsafe {{ host_new() }} }}) }}\n\
+         fn make() -> Outcome {{ Outcome.Loaded(Handle {{ raw: unsafe {{ host_new() }} }}) }}\n\
          fn main() -> i64 {{\n    var i: i64 = 0;\n    \
          while i < 2 {{\n        \
-         match make() {{ Outcome::Loaded(h) => {{ h.close(); }} \
-         Outcome::Failed(n) => {{ println(n); }} }}\n        \
+         match make() {{ Outcome.Loaded(h) => {{ h.close(); }} \
+         Outcome.Failed(n) => {{ println(n); }} }}\n        \
          i = i + 1;\n    }}\n    0\n}}\n"
     ));
     assert_eq!(
@@ -185,7 +185,7 @@ fn a_resource_record_with_a_field_the_teardown_frees_is_still_refused() {
          type Handle { raw: Dq; log: string; }\n\
          impl Handle { fn close(self) { unsafe { host_free(self.raw) }; } }\n\
          enum Outcome { Loaded(Handle); Failed(string); }\n\
-         fn make() -> Outcome { Outcome::Loaded(Handle { raw: unsafe { host_new() }, log: \"t\" }) }",
+         fn make() -> Outcome { Outcome.Loaded(Handle { raw: unsafe { host_new() }, log: \"t\" }) }",
     );
     assert_eq!(
         scrutinee_binds(&p, "main"),
@@ -207,7 +207,7 @@ fn a_plain_record_over_a_direct_extern_is_still_refused() {
     let p = program(
         "type Handle { raw: Dq; }\n\
          enum Outcome { Loaded(Handle); Failed(string); }\n\
-         fn make() -> Outcome { Outcome::Loaded(Handle { raw: unsafe { host_new() } }) }",
+         fn make() -> Outcome { Outcome.Loaded(Handle { raw: unsafe { host_new() } }) }",
     );
     assert_eq!(
         scrutinee_binds(&p, "main"),
@@ -224,7 +224,7 @@ fn a_plain_record_over_a_direct_extern_is_still_refused() {
 fn a_bare_extern_handle_payload_is_still_refused() {
     let p = program(
         "enum Outcome { Loaded(Dq); Failed(string); }\n\
-         fn make() -> Outcome { Outcome::Loaded(unsafe { host_new() }) }",
+         fn make() -> Outcome { Outcome.Loaded(unsafe { host_new() }) }",
     );
     assert_eq!(
         scrutinee_binds(&p, "main"),
@@ -247,7 +247,7 @@ fn a_declared_release_payload_over_a_wrapper_still_mints_once() {
          impl Handle { fn close(self) { unsafe { host_free(self.raw) }; } }\n\
          enum Outcome { Loaded(Handle); Failed(string); }\n\
          fn fresh() -> Dq { unsafe { host_new() } }\n\
-         fn make() -> Outcome { Outcome::Loaded(Handle { raw: fresh() }) }",
+         fn make() -> Outcome { Outcome.Loaded(Handle { raw: fresh() }) }",
     );
     assert_eq!(scrutinee_binds(&p, "main"), 1);
     assert_eq!(enum_in_place_drops(&p, "main"), LOOP_EXIT_RELEASES);
@@ -262,7 +262,7 @@ fn a_domestic_payload_keeps_its_mint_and_releases_once() {
     let p = program(
         "type Handle { label: string; }\n\
          enum Outcome { Loaded(Handle); Failed(string); }\n\
-         fn make() -> Outcome { Outcome::Loaded(Handle { label: \"t\" }) }",
+         fn make() -> Outcome { Outcome.Loaded(Handle { label: \"t\" }) }",
     );
     assert_eq!(
         scrutinee_binds(&p, "main"),
@@ -283,7 +283,7 @@ fn a_resource_marker_without_a_close_method_is_still_refused() {
         "#[resource]\n\
          type Handle { raw: Dq; }\n\
          enum Outcome { Loaded(Handle); Failed(string); }\n\
-         fn make() -> Outcome { Outcome::Loaded(Handle { raw: unsafe { host_new() } }) }",
+         fn make() -> Outcome { Outcome.Loaded(Handle { raw: unsafe { host_new() } }) }",
     );
     assert_eq!(
         scrutinee_binds(&p, "main"),

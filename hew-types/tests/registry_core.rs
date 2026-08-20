@@ -19,6 +19,8 @@ mod closure_escape_advisory;
 mod consumes_receiver_metadata;
 #[path = "registry_core/descriptor_authority.rs"]
 mod descriptor_authority;
+#[path = "registry_core/dotted_type_member_dispatch.rs"]
+mod dotted_type_member_dispatch;
 #[path = "registry_core/extern_symbol_runtime_descriptor_boundary.rs"]
 mod extern_symbol_runtime_descriptor_boundary;
 #[path = "registry_core/iterator_lazy_wrappers.rs"]

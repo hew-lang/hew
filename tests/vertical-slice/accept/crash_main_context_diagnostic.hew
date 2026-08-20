@@ -9,7 +9,7 @@
 //   1. Exit code is 132 (SIGILL+128 on x86_64) or 133 (SIGTRAP+128 on aarch64).
 //   2. stderr contains "hew: trap in main context" — the diagnostic is present.
 fn main() -> i64 {
-    let xs: Vec<i64> = Vec::new();
+    let xs: Vec<i64> = Vec.new();
     xs.push(42);
     // Index 1 is out of bounds (only index 0 exists) — triggers IndexOutOfBounds trap.
     let _ = xs[1];

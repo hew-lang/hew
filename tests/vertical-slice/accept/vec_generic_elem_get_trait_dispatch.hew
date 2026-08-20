@@ -24,7 +24,7 @@ fn render_all<T: Show>(items: Vec<T>) -> string {
 }
 
 fn main() {
-    let v: Vec<Color> = Vec::new();
+    let v: Vec<Color> = Vec.new();
     v.push(Color { r: 1, g: 2, b: 3 });
     println(render_all(v));
 }

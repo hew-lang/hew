@@ -1343,14 +1343,15 @@ pub struct MachineVariantLayout {
 /// correctly size the switch and dominance checks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MachineLayout {
-    /// Canonical machine layout key (e.g. `"TrafficLight"` or
-    /// `"control.Lifecycle$$i64"`).  This is the exact key derived from a
-    /// `MachineMonoEntry`, never a leaf-name fallback.
+    /// Canonical machine layout key (e.g. `"mc$$TrafficLight$$"` or
+    /// `"mc$$control_Lifecycle$$i64"`).  This is the exact key derived from
+    /// a `MachineMonoEntry`, never a leaf-name fallback.
     pub name: String,
     /// Canonical layout key for this machine's event companion (e.g.
-    /// `"TrafficLightEvent"` or `"control.LifecycleEvent$$i64"`).  Kept
-    /// explicit because `MachineEvent<T>` is mangled from its own nominal
-    /// origin, not by appending `Event` after the machine instance key.
+    /// `"mc$$TrafficLightEvent$$"` or
+    /// `"mc$$control_LifecycleEvent$$i64"`).  Kept explicit because
+    /// `MachineEvent<T>` is mangled from its own nominal origin, not by
+    /// appending `Event` after the machine instance key.
     pub event_name: String,
     /// Bit width of the discriminant tag field. Computed as
     /// `u32::max(1, (state_count as f64).log2().ceil() as u32)` —
@@ -6432,7 +6433,7 @@ pub enum MirCheck {
     /// Rather than emit the double-free, the elaborator refuses. This is the
     /// catch-all gate for the combinatorial aggregate-extraction shapes (re-
     /// aggregation, nested aggregates, multi-hop extraction) whose precise
-    /// exact-once proof is deferred to v0.5.1: the invariant is "no owned handle
+    /// The exact-once proof is incomplete: the invariant is "no owned handle
     /// reaches codegen with more than one live free path; unprovable → refuse".
     ///
     /// `name` is the source binding's name; `handle_ty` is its rendered type for

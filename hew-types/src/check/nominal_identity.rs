@@ -100,6 +100,14 @@ impl Checker {
             if let Some(owner) = self.extern_nominal_file_owner(name) {
                 return Some(owner);
             }
+            // A declaration in the root source file keeps its bare canonical
+            // identity. `local_type_defs` is the lexical declaration set, not
+            // a process-wide leaf registry, so this rung cannot select an
+            // imported same-leaf type. Expression callers still apply value
+            // binding precedence before consulting the nominal ladder.
+            if self.current_module.is_none() && self.local_type_defs.contains(name) {
+                return Some(name.to_string());
+            }
         }
         if let Some(canonical) = self.canonical_nominal_name(name) {
             return Some(canonical);
@@ -144,10 +152,11 @@ impl Checker {
     /// a compiler-owned source lifecycle nominal. Anything else falls through
     /// and the ladder keeps failing closed.
     fn imported_binding_declaration(&self, name: &str) -> Option<String> {
-        if let Some(identity) = self
-            .import_type_name_aliases
-            .get(&(self.current_module.clone(), name.to_string()))
-        {
+        if let Some(identity) = self.import_type_name_aliases.get(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            name.to_string(),
+        )) {
             if self.type_defs.contains_key(identity)
                 || self.known_types.contains(identity)
                 || crate::lookup_source_owned_lifecycle_type(identity).is_some()

@@ -14,7 +14,7 @@
 //! computed. The value-returning task await (binding the child's `T`) is a
 //! separate follow-on; this fixture covers only the unit reroute.
 
-import std::testing;
+import std.testing;
 
 actor Worker {
     var ticks: i64 = 0;
@@ -44,8 +44,8 @@ fn unit_task_await_resumes_after_child_done() {
     // sets out = 1 and increments ticks. Exact value 1 proves the await resumed
     // exactly once after the child completed.
     match await w.run() {
-        Ok(n) => testing.assert_eq(n, 1),
-        Err(_) => testing.assert_true(false),
+        .Ok(n) => testing.assert_eq(n, 1),
+        .Err(_) => testing.assert_true(false),
     }
 }
 
@@ -57,7 +57,7 @@ fn repeated_unit_task_await_each_resumes() {
     // its frame nor double-resumed.
     let _ = await w.run();
     match await w.run() {
-        Ok(n) => testing.assert_eq(n, 2),
-        Err(_) => testing.assert_true(false),
+        .Ok(n) => testing.assert_eq(n, 2),
+        .Err(_) => testing.assert_true(false),
     }
 }

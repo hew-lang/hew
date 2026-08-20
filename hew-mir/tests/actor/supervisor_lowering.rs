@@ -470,7 +470,7 @@ fn supervisor_child_with_on_crash_hook_surfaces_symbol_on_layout() {
         actor Crashable {
             receive fn ping() {}
             #[on(crash)]
-            fn handle_crash(info: CrashInfo) -> CrashAction { CrashAction::Restart }
+            fn handle_crash(info: CrashInfo) -> CrashAction { CrashAction.Restart }
         }
         actor Stable {
             receive fn ping() {}

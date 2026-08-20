@@ -18,8 +18,8 @@ actor Coordinator {
     receive fn run(n: i64) -> i64 {
         let r = await worker.compute(n);
         match r {
-            Ok(v) => v,
-            Err(_) => -1,
+            .Ok(v) => v,
+            .Err(_) => -1,
         }
     }
 }
@@ -29,7 +29,7 @@ fn main() {
     let c = spawn Coordinator(worker: w);
     let r = await c.run(7);
     match r {
-        Ok(v) => println(f"result={v}"),
-        Err(_) => println("ask failed"),
+        .Ok(v) => println(f"result={v}"),
+        .Err(_) => println("ask failed"),
     }
 }

@@ -75,7 +75,7 @@ copy-on-write's lazy, on-demand fork. `clone x` (prefix form, the natural and
 primary spelling) and `x.clone()` (method form) are equivalent:
 
 ```hew
-let a: Vec<i64> = Vec::new();
+let a: Vec<i64> = Vec.new();
 a.push(1); a.push(2);
 let b = clone a;      // == a.clone() — independent copy, forked eagerly now
 b.push(99);

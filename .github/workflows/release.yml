@@ -19,9 +19,9 @@
 #   APPLE_API_KEY_ID            — App Store Connect API key ID
 #   APPLE_API_ISSUER_ID         — App Store Connect API issuer ID
 #
-# Required secret for the required playground dispatch:
-#   PLAYGROUND_DISPATCH_TOKEN — purpose-scoped token with the minimum permission
-#     needed to dispatch hew-lang/playground's build.yml workflow
+# Required variable and secret for the required playground dispatch:
+#   secrets.PLAYGROUND_APP_ID — GitHub App ID for the playground dispatch App
+#   secrets.PLAYGROUND_APP_PRIVATE_KEY — Private key for the playground dispatch App
 #
 # Homebrew tap updates use a separate optional credential and are skipped for
 # prereleases:
@@ -52,10 +52,38 @@ env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
+  validate-release-version:
+    name: Validate release tag version
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Assert release tag matches Cargo version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_TAG}" ]]; then
+            echo "::error::release tag is empty; refusing to build"
+            exit 1
+          fi
+          cargo_version="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
+          if [[ -z "${cargo_version}" ]]; then
+            echo "::error::workspace Cargo version could not be read; refusing to build"
+            exit 1
+          fi
+          expected_tag="v${cargo_version}"
+          if [[ "${RELEASE_TAG}" != "${expected_tag}" ]]; then
+            echo "::error::release tag ${RELEASE_TAG} does not match Cargo version ${cargo_version} (expected ${expected_tag}); refusing to build"
+            exit 1
+          fi
+
   # ─────────────────────────────────────────────────────────────────────────
   # Cross-built release libraries — proved by their target-native consumers
   # ─────────────────────────────────────────────────────────────────────────
   build-cross-release-libs:
+    needs: validate-release-version
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
@@ -768,6 +796,7 @@ jobs:
   # Linux build — glibc baseline artifacts built inside Ubuntu 22.04
   # ─────────────────────────────────────────────────────────────────────────
   build-linux:
+    needs: validate-release-version
     strategy:
       fail-fast: false
       matrix:
@@ -1565,18 +1594,36 @@ jobs:
           fi
           echo "hew_sha=${HEW_SHA}" >> "${GITHUB_OUTPUT}"
 
+      - name: Validate playground GitHub App configuration
+        shell: bash
+        env:
+          PLAYGROUND_APP_ID: ${{ secrets.PLAYGROUND_APP_ID }}
+          PLAYGROUND_APP_PRIVATE_KEY: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${PLAYGROUND_APP_ID}" || -z "${PLAYGROUND_APP_PRIVATE_KEY}" ]]; then
+            echo "::error::Playground dispatch requires secrets.PLAYGROUND_APP_ID and secrets.PLAYGROUND_APP_PRIVATE_KEY; configure both before running a release"
+            exit 1
+          fi
+
+      - name: Mint playground GitHub App token
+        id: playground-app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349  # v2.2.2
+        with:
+          app-id: ${{ secrets.PLAYGROUND_APP_ID }}
+          private-key: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}
+          owner: hew-lang
+          repositories: playground
+
       - name: Trigger playground image rebuild
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.PLAYGROUND_DISPATCH_TOKEN }}
+          GH_TOKEN: ${{ steps.playground-app-token.outputs.token }}
           HEW_SHA: ${{ steps.release-commit.outputs.hew_sha }}
         run: |
           set -euo pipefail
 
-          if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::PLAYGROUND_DISPATCH_TOKEN secret is required for the playground dispatch"
-            exit 1
-          fi
           if ! [[ "${HEW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::release commit identity is not an exact lowercase 40-character commit SHA"
             exit 1

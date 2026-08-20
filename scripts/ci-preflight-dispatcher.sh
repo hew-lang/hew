@@ -104,6 +104,10 @@ command_timeout_floor() {
         "make checked-mir-verify") echo 45 ;;
         "make checked-mir-run") echo 420 ;;
         "make ll-diff") echo 45 ;;
+        # Cold-tree headroom for the capability authority ratchet: the crate
+        # itself builds in seconds (serde/toml only) but a cold cargo tree
+        # still pays the shared-dependency compile before the test runs.
+        "cargo nextest run --profile ci -p hew-capability-gen") echo 300 ;;
         "make hew-check-all") echo 300 ;;
         "make hew-fmt-property") echo 600 ;;
         "make test-leak-oracle-selftest") echo 60 ;;
@@ -421,6 +425,35 @@ is_trap_fixtures_path() {
     return 1
 }
 
+is_capability_authority_path() {
+    # hew-capability-gen's authority ratchet (tests/authority.rs) pins checker
+    # coverage over the capability surface STRUCTURALLY — the crate has no
+    # cargo dependency on hew-mir or hew-types, so the reverse-dependency
+    # closure that feeds AFFECTED_PACKAGE_ARGS can never select it.  A
+    # hew-mir / hew-types change can therefore break the ratchet while every
+    # closure-routed test stays green (escape class: structural ratchets that
+    # live outside the cargo dependency graph).
+    case "$1" in
+        hew-mir/*|hew-types/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+is_ll_oracle_path() {
+    # The ll-oracle golden corpus (tests/ll-oracle/corpus/golden) pins the
+    # emitted per-function LLVM IR.  Any MIR-lowering or codegen emission
+    # change can drift it (e.g. an epilogue reorder), and nothing else in the
+    # narrow lanes diffs those goldens — only make ll-diff does (~45s).
+    case "$1" in
+        hew-hir/*|hew-mir/*|hew-codegen-rs/*|tests/ll-oracle/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 is_scripts_config_path() {
     case "$1" in
         .gitignore|scripts/*|.github/*)
@@ -549,6 +582,8 @@ needs_sandbox_fixture_check=0
 needs_sandbox_parity=0
 needs_trap_fixtures=0
 needs_runtime_compiled_suite=0
+needs_capability_authority=0
+needs_ll_diff=0
 
 for path in "${CHANGED_FILES[@]}"; do
     crate_dir="${path%%/*}"
@@ -601,6 +636,15 @@ for path in "${CHANGED_FILES[@]}"; do
     # lane body without changing the lane selector itself.
     if is_trap_fixtures_path "$path"; then
         needs_trap_fixtures=1
+    fi
+
+    # Parallel side-channels in the same pattern: these flags append catching
+    # gates after the lane body without changing the lane selector.
+    if is_capability_authority_path "$path"; then
+        needs_capability_authority=1
+    fi
+    if is_ll_oracle_path "$path"; then
+        needs_ll_diff=1
     fi
 
     if is_sandbox_parity_path "$path"; then
@@ -998,6 +1042,29 @@ if (( needs_trap_fixtures == 1 )) && [[ "$LANE" != "fallback" && "$LANE" != "com
     # not already include fuzz-oracle.  Append it so the trap signal-code ratchet
     # runs before push regardless of the primary lane selected.
     add_command "make fuzz-oracle"
+fi
+
+if (( needs_capability_authority == 1 )) && [[ "$LANE" != "fallback" ]]; then
+    # hew-mir / hew-types changed: run the capability authority ratchet
+    # (hew-capability-gen/tests/authority.rs), which pins checker coverage
+    # structurally and sits OUTSIDE the reverse-dep closure — no closure-routed
+    # nextest run ever selects it (see is_capability_authority_path).  Cheap:
+    # the crate depends only on serde/serde_json/toml.  The hew-cli
+    # ownership/affine suites (e.g. affine_resource_carrier_boundaries) do NOT
+    # need an explicit entry here: hew-cli is a reverse dependency of both
+    # crates, so the lane's closure nextest run already carries them — pinned
+    # by test_mir_types_diff_routes_cross_crate_catching_gates.
+    # Skip when LANE is fallback: make test covers the whole workspace.
+    add_command "cargo nextest run --profile ci -p hew-capability-gen"
+fi
+
+if (( needs_ll_diff == 1 )) && [[ "$LANE" != "fallback" ]]; then
+    # MIR lowering / codegen emission changed: diff the ll-oracle golden corpus
+    # so an emission drift (an epilogue reorder, a changed intrinsic sequence)
+    # surfaces locally with the regen instruction instead of costing a hosted
+    # CI cycle.  Intentional drifts regenerate via make ll-golden in the same
+    # commit.  Skip when LANE is fallback: it already includes make ll-diff.
+    add_command "make ll-diff"
 fi
 
 # Orchestration-token leak scan — run on every push for every lane.

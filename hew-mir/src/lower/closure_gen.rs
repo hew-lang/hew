@@ -240,11 +240,29 @@ impl Builder {
     /// the ledger turns exactly that case into `BorrowsOnly`: the env aliases the
     /// value and releases nothing — the leak-not-double-free direction, and the
     /// same answer the binder itself gave.
+    ///
+    /// A checker-inferred `Borrow` capture (read-only body use, no `move`
+    /// keyword) does NOT consume the source: the env owns a RETAINED SHARE
+    /// (`OwnsClonedOrRetained`) and the source binding keeps its own owner.
+    /// The string ownership prover mints the balancing `+1`
+    /// (`string_share_sink_places` lists these env fields as share sinks;
+    /// aggregate sources get `StringRetainCondition::AggregateBorrowedIngress`),
+    /// and the env free thunk releases the env's share — two independent
+    /// owners, each released exactly once. The share is admitted only for
+    /// shapes the recursive string retain fully co-owns
+    /// (`string_or_bitcopy_tree`): a shape with bytes/collection/resource
+    /// leaves keeps the consuming `OwnsMoved` capture — the fail-closed
+    /// direction (compile-time `UseAfterConsume` on a later source use), never
+    /// a partially-retained env that would double-free the unretained leaves.
+    /// That fallback retires when a whole-value retain/clone authority exists
+    /// for those leaf classes (copy-on-write north star); extend the predicate, not this
+    /// match.
     fn closure_env_capture_ownership(
         &self,
         strategy: crate::closure_env::AllocationStrategy,
         ty: &ResolvedTy,
         source_binding: Option<BindingId>,
+        mode: hew_types::ClosureCaptureMode,
     ) -> ClosureEnvFieldOwnership {
         match strategy {
             crate::closure_env::AllocationStrategy::Stack
@@ -269,6 +287,15 @@ impl Builder {
                     .is_some_and(|binding| self.proven_foreign_bindings.contains(&binding));
                 if nothing_to_own || proven_foreign {
                     ClosureEnvFieldOwnership::BorrowsOnly
+                } else if mode == hew_types::ClosureCaptureMode::Borrow
+                    && super::composite_own::string_or_bitcopy_tree(
+                        &ty,
+                        &self.record_field_orders,
+                        &self.enum_layouts,
+                        &mut HashSet::new(),
+                    )
+                {
+                    ClosureEnvFieldOwnership::OwnsClonedOrRetained
                 } else {
                     ClosureEnvFieldOwnership::OwnsMoved
                 }
@@ -407,7 +434,12 @@ impl Builder {
                 continue;
             };
             let field_ty = self.subst_ty(&capture.ty);
-            let ownership = self.closure_env_capture_ownership(strategy, &field_ty, source_binding);
+            let ownership = self.closure_env_capture_ownership(
+                strategy,
+                &field_ty,
+                source_binding,
+                capture.mode,
+            );
             if ownership == ClosureEnvFieldOwnership::OwnsMoved {
                 if let Some(binding) = source_binding {
                     self.statements.push(MirStatement::Use {

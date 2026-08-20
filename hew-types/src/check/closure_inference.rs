@@ -213,10 +213,35 @@ fn body_visit_expr(expr: &Expr, out: &mut LambdaBodyFacts) {
         Expr::Unary { operand, .. } | Expr::Clone(operand) => body_visit_expr(&operand.0, out),
         Expr::Literal(_)
         | Expr::Identifier(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}
+        Expr::ContextVariant(context) => {
+            if let Some(record) = &context.record {
+                for (_, (value, _)) in &record.fields {
+                    body_visit_expr(value, out);
+                }
+                if let Some(base) = &record.base {
+                    body_visit_expr(&base.0, out);
+                }
+            }
+        }
+        Expr::GenericApplySuffix { target, .. } => body_visit_expr(&target.0, out),
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            body_visit_expr(&target.0, out);
+            for (_, (value, _)) in fields {
+                body_visit_expr(value, out);
+            }
+            if let Some(base) = base {
+                body_visit_expr(&base.0, out);
+            }
+        }
         Expr::Tuple(items) | Expr::Array(items) => {
             for (e, _) in items {
                 body_visit_expr(e, out);
@@ -636,10 +661,37 @@ fn esc_visit_expr(
             esc_visit_expr(&operand.0, name, in_fork, acc, false);
         }
         Expr::Literal(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}
+        Expr::ContextVariant(context) => {
+            if let Some(record) = &context.record {
+                for (_, (value, _)) in &record.fields {
+                    esc_visit_arg(value, name, in_fork, acc);
+                }
+                if let Some(base) = &record.base {
+                    esc_visit_arg(&base.0, name, in_fork, acc);
+                }
+            }
+        }
+        Expr::GenericApplySuffix { target, .. } => {
+            esc_visit_expr(&target.0, name, in_fork, acc, is_tail);
+        }
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            esc_visit_expr(&target.0, name, in_fork, acc, false);
+            for (_, (value, _)) in fields {
+                esc_visit_arg(value, name, in_fork, acc);
+            }
+            if let Some(base) = base {
+                esc_visit_arg(&base.0, name, in_fork, acc);
+            }
+        }
         Expr::Tuple(items) | Expr::Array(items) => {
             for (e, _) in items {
                 esc_visit_arg(e, name, in_fork, acc);

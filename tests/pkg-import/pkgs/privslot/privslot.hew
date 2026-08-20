@@ -22,7 +22,7 @@ pub type Store<T> {
 }
 
 pub fn new<T>() -> Store<T> {
-    Store { slots: Vec::new() }
+    Store { slots: Vec.new() }
 }
 
 impl<T> Store<T> {

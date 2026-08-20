@@ -1,4 +1,4 @@
-import m::*;
+import m.{ matching, mismatched };
 
 fn matching() -> i64 {
     1

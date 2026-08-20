@@ -5,7 +5,7 @@
 // walk folds `Base`'s methods into the known set via two distinct branches
 // (deduped), so the single inline `base` is KNOWN and its signature is checked
 // against `supertraits.Base` (`-> i64`). Run e2e so every method dispatches.
-import hew::supertraits::{ Diamond };
+import hew.supertraits.{ Diamond };
 
 type DM {
     id: i64;

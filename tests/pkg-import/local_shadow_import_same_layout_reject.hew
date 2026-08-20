@@ -14,7 +14,7 @@
 //
 // Harness verb: hew check (expected to FAIL). Asserts a nominal type-mismatch
 // diagnostic AND the absence of any `E_CODEGEN_FRONT` / `D10` fall-through.
-import hew::widgeti64;
+import hew.widgeti64;
 
 type Widget {
     v: i64;

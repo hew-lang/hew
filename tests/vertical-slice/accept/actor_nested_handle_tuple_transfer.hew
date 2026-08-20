@@ -6,7 +6,7 @@
 // This is the positive half of the W5.0-nested-handle-transfer gate:
 // the transfer compiles, runs, and produces the expected output without a
 // double-close.
-import std::channel::channel;
+import std.channel.channel;
 
 actor Worker {
     receive fn deliver(pair: (channel.Receiver<string>, string)) {

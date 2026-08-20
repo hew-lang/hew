@@ -1,0 +1,19 @@
+//! Support module for the cross-module `#[wire]` codec tests. The wire
+//! surface must be reachable through the module-qualified type identity,
+//! not only the bare declaration name this file spells.
+
+#[wire]
+pub type Env {
+    name: string @1,
+    port: i64 @2,
+}
+
+#[wire]
+pub enum Signal {
+    Ready;
+    Busy(i64);
+}
+
+pub fn env_to_json(e: Env) -> string {
+    e.to_json()
+}

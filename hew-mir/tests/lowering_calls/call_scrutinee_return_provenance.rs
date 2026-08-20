@@ -61,6 +61,108 @@ fn pipeline(source: &str) -> AuthorityPipeline {
     }
 }
 
+fn imported_result_pipeline(
+    root_source: &str,
+    module_source: &str,
+    payload_source: &str,
+) -> AuthorityPipeline {
+    use hew_parser::ast::Item;
+    use hew_parser::module::{Module, ModuleGraph, ModuleId, ModuleImport};
+
+    let mut root = hew_parser::parse(root_source);
+    assert!(root.errors.is_empty(), "parse errors: {:#?}", root.errors);
+    let imported = hew_parser::parse(module_source);
+    assert!(
+        imported.errors.is_empty(),
+        "import parse errors: {:#?}",
+        imported.errors
+    );
+    let imported_items = imported.program.items;
+    let payload = hew_parser::parse(payload_source);
+    assert!(
+        payload.errors.is_empty(),
+        "payload parse errors: {:#?}",
+        payload.errors
+    );
+    let payload_items = payload.program.items;
+    let mut imported_items = imported_items;
+    let payload_import = imported_items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("result module fixture must import its payload producer");
+    payload_import.resolved_items = Some(payload_items.clone());
+    let import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("root fixture must contain an import");
+    import.resolved_items = Some(imported_items.clone());
+
+    let root_id = ModuleId::root();
+    let module_id = ModuleId::new(vec!["result_source".to_string()]);
+    let payload_id = ModuleId::new(vec!["payload_source".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: payload_id.clone(),
+            items: payload_items,
+            imports: Vec::new(),
+            source_paths: Vec::new(),
+            doc: None,
+        })
+        .expect("payload module id must be unique");
+    graph
+        .add_module(Module {
+            id: module_id.clone(),
+            items: imported_items,
+            imports: vec![ModuleImport {
+                target: payload_id.clone(),
+                spec: None,
+                span: 0..0,
+            }],
+            source_paths: Vec::new(),
+            doc: None,
+        })
+        .expect("module id must be unique");
+    graph.topo_order = vec![payload_id, module_id, root_id];
+    root.program.module_graph = Some(graph);
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&root.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type errors: {:#?}",
+        tc_output.errors
+    );
+    let output = lower_program(
+        &root.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        output.diagnostics
+    );
+    let facts = complete_produced_value_facts(&output.module);
+    let spans = collect_site_spans(&output.module);
+    let mir = lower_hir_module(&output.module);
+    AuthorityPipeline {
+        mir,
+        source: root_source.to_string(),
+        facts,
+        spans,
+    }
+}
+
 fn sites_at(p: &AuthorityPipeline, expression: &str) -> Vec<SiteId> {
     let mut sites: Vec<_> = p
         .spans
@@ -482,6 +584,71 @@ fn fresh_producer_match_publishes_fresh_fact() {
     let p = pipeline(src);
     assert_owned(&p, "make_fresh()", Acquisition::Fresh);
     assert_clean(&p);
+}
+
+#[test]
+fn imported_result_direct_call_scrutinee_publishes_fresh_fact() {
+    let root = r"
+        import result_source;
+
+        fn use_it() -> i64 {
+            match result_source.make() { Ok(_) => 1, Err(_) => 0 }
+        }
+    ";
+    let module = r"
+        import payload_source;
+
+        pub enum Failure {
+            None;
+            Other;
+        }
+
+        pub fn make() -> Result<bytes, Failure> { Ok(payload_source.make()) }
+    ";
+    let payload = r"
+        pub fn make() -> bytes { bytes.new() }
+    ";
+    let p = imported_result_pipeline(root, module, payload);
+    assert_owned(&p, "result_source.make()", Acquisition::Fresh);
+    assert_clean(&p);
+}
+
+#[test]
+fn imported_result_forwarder_scrutinee_preserves_borrowed_fact() {
+    let root = r"
+        import result_source;
+
+        fn use_it(r: Result<string, string>) -> i64 {
+            match result_source.forward(r) { Ok(_) => 1, Err(_) => 0 }
+        }
+    ";
+    let module = r"
+        import payload_source;
+
+        pub fn forward(r: Result<string, string>) -> Result<string, string> { r }
+    ";
+    let payload = r"
+        pub fn unused() -> i64 { 0 }
+    ";
+    let p = imported_result_pipeline(root, module, payload);
+    assert_authority(&p, "result_source.forward(r)", Ownership::Borrowed);
+    assert_clean(&p);
+}
+
+#[test]
+fn unknown_extern_result_discard_stays_fail_closed() {
+    let src = r#"
+        extern "C" {
+            fn ext_make() -> string;
+        }
+        fn use_it() {
+            ext_make();
+        }
+    "#;
+    let p = pipeline(src);
+    assert_authority(&p, "ext_make()", Ownership::Unknown);
+    assert_eq!(unresolved_ownership_count(&p), 1, "{:#?}", p.diagnostics);
+    assert_eq!(p.diagnostics.len(), 1, "{:#?}", p.diagnostics);
 }
 
 // An extern-produced nominal without an audited transfer lifecycle completes

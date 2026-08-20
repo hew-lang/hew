@@ -1,6 +1,6 @@
 // Catalan numbers using dynamic programming
 fn catalan(n: i64) -> i64 {
-    let dp: Vec<i64> = Vec::new();
+    let dp: Vec<i64> = Vec.new();
     dp.push(1); // C(0) = 1
     var i = 1;
     while i <= n {

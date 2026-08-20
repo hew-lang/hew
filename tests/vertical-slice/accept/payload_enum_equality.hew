@@ -4,9 +4,9 @@ enum Shape {
 }
 
 fn main() {
-    let a: Shape = Shape::Circle(1);
-    let b: Shape = Shape::Circle(1);
-    let c: Shape = Shape::Empty;
+    let a: Shape = Shape.Circle(1);
+    let b: Shape = Shape.Circle(1);
+    let c: Shape = Shape.Empty;
 
     println(a == b);
     println(a == c);

@@ -18,19 +18,19 @@ fn set_then_pop<T>(v: Vec<T>, a: T, b: T) -> T {
 }
 
 fn main() {
-    let vi: Vec<i64> = Vec::new();
+    let vi: Vec<i64> = Vec.new();
     println(store_and_read(vi, 42));
 
-    let vf: Vec<f64> = Vec::new();
+    let vf: Vec<f64> = Vec.new();
     println(store_and_read(vf, 3.5));
 
-    let vb: Vec<bool> = Vec::new();
+    let vb: Vec<bool> = Vec.new();
     let flag = store_and_read(vb, true);
     if flag { println(1) } else { println(0) }
 
-    let vs: Vec<string> = Vec::new();
+    let vs: Vec<string> = Vec.new();
     println(store_and_read(vs, "hello"));
 
-    let vp: Vec<i64> = Vec::new();
+    let vp: Vec<i64> = Vec.new();
     println(set_then_pop(vp, 10, 99));
 }

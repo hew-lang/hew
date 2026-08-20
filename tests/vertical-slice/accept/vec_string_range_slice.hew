@@ -1,5 +1,5 @@
 fn main() {
-    let xs: Vec<string> = Vec::new();
+    let xs: Vec<string> = Vec.new();
     xs.push("red");
     xs.push("green");
     xs.push("blue");

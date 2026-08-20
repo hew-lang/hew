@@ -9,12 +9,12 @@ enum Colour {
 }
 
 fn describe_eq(c: Colour) {
-    if c == Colour::Red {
+    if c == Colour.Red {
         println("red-eq");
     } else {
         println("not-red");
     }
-    if c != Colour::Blue {
+    if c != Colour.Blue {
         println("not-blue");
     } else {
         println("blue");
@@ -22,7 +22,7 @@ fn describe_eq(c: Colour) {
 }
 
 fn main() {
-    describe_eq(Colour::Red);
-    describe_eq(Colour::Green);
-    describe_eq(Colour::Blue);
+    describe_eq(Colour.Red);
+    describe_eq(Colour.Green);
+    describe_eq(Colour.Blue);
 }

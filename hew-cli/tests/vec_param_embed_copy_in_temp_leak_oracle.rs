@@ -180,7 +180,7 @@ type Slot<T> { value: Option<T> }
 type Arena<T> { slots: Vec<Slot<T>> }
 
 fn newArena<T>() -> Arena<T> {
-    Arena { slots: Vec::new() }
+    Arena { slots: Vec.new() }
 }
 
 impl<T> Arena<T> {
@@ -442,12 +442,12 @@ impl Ops {
 
     fn storeEnum(h: Payload) -> i64 {
         match h {
-            Payload::Text(s) => {
+            Payload.Text(s) => {
                 let v: Vec<string> = [];
                 v.push(s);
                 v.len()
             },
-            Payload::Scalar(_) => 0,
+            Payload.Scalar(_) => 0,
         }
     }
 }
@@ -455,8 +455,8 @@ impl Ops {
 fn main() -> i64 {
     let h = Holder { items: ["record"], keep: "keep" };
     let t = (["tuple"], "keep");
-    let e = Payload::Text("enum");
-    let total = Ops::storeRecord(h) + Ops::storeTuple(t) + Ops::storeEnum(e);
+    let e = Payload.Text("enum");
+    let total = Ops.storeRecord(h) + Ops.storeTuple(t) + Ops.storeEnum(e);
     if h.items.len() != 1 { return 91; }
     if t.0.len() != 1 { return 92; }
     total
@@ -528,14 +528,14 @@ enum Mixed {
 
 fn inspect(x: Mixed) -> i64 {
     match x {
-        Mixed::Text(s) => s.len(),
-        Mixed::Opaque(_) => 0,
+        Mixed.Text(s) => s.len(),
+        Mixed.Opaque(_) => 0,
     }
 }
 
 fn main() -> i64 {
     for i in 0..$FRAMES {
-        if inspect(Mixed::Text(f"payload-{i}".to_upper())) < 9 { return 61; }
+        if inspect(Mixed.Text(f"payload-{i}".to_upper())) < 9 { return 61; }
     }
     0
 }
@@ -549,13 +549,13 @@ enum Mixed {
 
 fn inspect(x: Mixed) -> i64 {
     match x {
-        Mixed::Text(s) => s.len(),
-        Mixed::Scalar(_) => 0,
+        Mixed.Text(s) => s.len(),
+        Mixed.Scalar(_) => 0,
     }
 }
 
 fn main() -> i64 {
-    inspect(Mixed::Text("payload".to_upper()))
+    inspect(Mixed.Text("payload".to_upper()))
 }
 "#;
 

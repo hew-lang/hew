@@ -15,7 +15,7 @@ use crate::manifest;
 pub struct NativeArtifact {
     /// The `[lib] name` (without the `lib` prefix or file extension).
     pub lib: String,
-    /// Absolute path to the built artifact (e.g. `.../release/lib<lib>.a`).
+    /// Absolute path to the built artifact (e.g. `.../release-lib/lib<lib>.a`).
     pub path: PathBuf,
 }
 
@@ -39,7 +39,8 @@ fn artifact_file_name(lib: &str, kind: &str) -> String {
 
 /// Build the `[native]` library declared in `<manifest_dir>/hew.toml`, if any.
 ///
-/// Runs `cargo build --release` for the crate and locates the produced library.
+/// Runs Cargo with the non-LTO `release-lib` profile used for consumer-facing
+/// static libraries and locates the produced artifact.
 /// Returns `Ok(None)` when the manifest has no `[native]` section.
 ///
 /// # Errors
@@ -67,9 +68,20 @@ pub fn build_native(manifest_dir: &Path) -> Result<Option<NativeArtifact>, Strin
     // the crate dir. The native staticlib must be built with the *same* rustc
     // as `libhew.a` so its embedded `libstd` is byte-identical and the linker
     // dedups `rust_eh_personality`; a mismatched toolchain re-introduces a
-    // duplicate-symbol link failure.
+    // duplicate-symbol link failure. Define `release-lib` on the Cargo
+    // command line so standalone packages inherit their own release settings
+    // while always disabling LTO for a consumer-linkable archive.
     let status = Command::new("cargo")
-        .args(["build", "--release", "--manifest-path"])
+        .args([
+            "build",
+            "--profile",
+            "release-lib",
+            "--config",
+            r#"profile.release-lib.inherits="release""#,
+            "--config",
+            "profile.release-lib.lto=false",
+            "--manifest-path",
+        ])
         .arg(&cargo_toml)
         .current_dir(&crate_dir)
         .status()
@@ -83,7 +95,7 @@ pub fn build_native(manifest_dir: &Path) -> Result<Option<NativeArtifact>, Strin
 
     let target_dir = cargo_target_dir(&cargo_toml)?;
     let file_name = artifact_file_name(&native.lib, &native.kind);
-    let artifact = target_dir.join("release").join(&file_name);
+    let artifact = target_dir.join("release-lib").join(&file_name);
     if !artifact.exists() {
         return Err(format!(
             "[native] crate built but artifact not found: {} (expected lib name `{}`, kind `{}`)",

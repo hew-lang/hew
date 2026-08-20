@@ -14,10 +14,8 @@ on a single entry-point file and resolve imports recursively from there. Pass
 `main.hew` (or your real top-level entry file), not every file in the tree.
 
 For the standard bootstrap flow, start with `hew init <name>` so you get
-`hew.toml`, `main.hew`, and `.gitignore`, then begin with
-`hew check main.hew` / `hew compile main.hew`. `hew init` remains the lighter
-source-only scaffold: it writes `main.hew` plus `README.md`, but no
-`hew.toml`.
+`hew.toml`, `main.hew`, and a merged `.gitignore`, then begin with
+`hew check main.hew` / `hew compile main.hew`.
 
 ## Build & linking
 
@@ -92,30 +90,35 @@ What to check:
   entry file, not a peer file inside a module directory.
 - For `import greeting;`, Hew looks for `greeting.hew` beside the importer or
   `greeting/greeting.hew` in a directory-form module. The entry file stem must
-  match the directory name.
+  match the directory name. If both spellings exist, the import fails with
+  ``import `greeting` is ambiguous: both ... exist`` — remove or rename one.
 - Other top-level `.hew` files in that directory merge into the same module
   automatically. Subdirectories do not; import child modules explicitly, for
   example `import text_stats::words;`.
 - Standard library imports are available under the last path segment:
   `import std::fs;` gives `fs`, and `import std::encoding::json;` gives `json`.
-- Search roots are tried in this exact order, first match wins:
-  1. `HEWPATH` (colon-separated entries; each entry is the parent directory of
-     `std/`)
-  2. `HEW_STD` (the path to `std/` itself; Hew uses its parent as the search
-     root)
-  3. the installed `<prefix>/share/hew` tree relative to the `hew` binary
-  4. a development fallback to the repo root when `std/` exists two levels
-     above the binary
+- Search roots are tried in three tiers; the first tier that produces a
+  result wins:
+  1. Explicit override — `HEWPATH` (colon-separated entries; each entry is
+     the parent directory of `std/`) or `HEW_STD` (the path to `std/`
+     itself; Hew uses its parent as the search root).
+  2. In-worktree development — Hew walks up from the source file (or the
+     current directory) looking for an enclosing Hew checkout (a directory
+     containing `std/builtins.hew`).
+  3. Installed / external project — the FHS layout beside the binary
+     (`<prefix>/share/hew`), XDG (`~/.local/share/hew`), `~/.hew`,
+     `/usr/local/share/hew`, `/usr/share/hew`, and a development fallback to
+     the repo root when `std/` exists two levels above the binary.
 - `hew.toml` does not configure module search paths. Use `HEWPATH` or
   `HEW_STD` when you need Hew to look in a non-default module root.
 - If the missing module is a package dependency, run `hew install`. If it is
   undeclared in project metadata, add it with `hew add ...` first.
 - Use the candidate-path list in the module-not-found error to confirm where Hew
   actually looked.
-- `import mod::*;` works, but wildcard imports currently can emit a
-  false-positive `unused import` warning when the module is only used through
-  type references. Prefer bare (`import mod;`) or selective
-  (`import mod::{Name}`) imports while reorganizing modules.
+- `import mod::*;` works, including when the module is only reached through
+  type references (a record field, a signature, or a generic argument). Bare
+  (`import mod;`) and selective (`import mod::{Name}`) imports are equally
+  valid — choose whichever reads better.
 - To browse the shipped stdlib, generate docs for it directly:
 
   ```sh
@@ -142,8 +145,9 @@ What to check:
 
 - Matches over enums, `Option<T>`, `Result<T, E>`, machine states, and `bool`
   are fail-closed: cover every case or add `_ => ...`.
-- For scalar or open-ended values such as `i64`, a missing catch-all is only a
-  warning.
+- Scalar or open-ended values such as `i64` are fail-closed too: a `match` on
+  an integer without a catch-all is a hard error
+  (`non-exhaustive match: missing _`), not a warning. Add `_ => ...`.
 - When a new variant or state lands, update old match sites before chasing
   downstream type errors.
 - For machine-specific transition and exhaustiveness rules, see

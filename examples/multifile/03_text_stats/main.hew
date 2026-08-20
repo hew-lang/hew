@@ -5,22 +5,22 @@
 //   text_stats/
 //     text_stats.hew     ← `text_stats` module entry
 //     words/
-//       words.hew        ← `text_stats::words` sub-module entry
+//       words.hew        ← `text_stats.words` sub-module entry
 //
-// Key point: `import text_stats;` and `import text_stats::words;` are two
+// Key point: `import text_stats;` and `import text_stats.words;` are two
 // independent imports.  The parent module does NOT automatically expose the
 // child module's symbols — you must import each level you want to use.
 //
 // This mirrors how large Hew projects are typically structured: a top-level
 // module (e.g. `http`) provides the most common API, while sub-modules
-// (e.g. `http::headers`, `http::status`) hold specialised helpers that
+// (e.g. `http.headers`, `http.status`) hold specialised helpers that
 // callers opt into individually.
 //
 // Run:   hew run   examples/multifile/03_text_stats/main.hew
 // Check: hew check examples/multifile/03_text_stats/main.hew
 import text_stats;
 
-import text_stats::words;
+import text_stats.words;
 
 fn main() {
     let sample = "the quick brown fox";

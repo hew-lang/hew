@@ -25,7 +25,7 @@ enum Box {
 }
 
 fn same_scope(i: i64) -> i64 {
-    let b = Box::Text(f"same-{i}");
+    let b = Box.Text(f"same-{i}");
     match b {
         Text(s) => {
             let inner = s;
@@ -36,7 +36,7 @@ fn same_scope(i: i64) -> i64 {
 }
 
 fn nested_scope(i: i64) -> i64 {
-    let b = Box::Text(f"nested-{i}");
+    let b = Box.Text(f"nested-{i}");
     match b {
         Text(s) => {
             let n = {
@@ -50,7 +50,7 @@ fn nested_scope(i: i64) -> i64 {
 }
 
 fn chained(i: i64) -> i64 {
-    let b = Box::Text(f"chain-{i}");
+    let b = Box.Text(f"chain-{i}");
     match b {
         Text(s) => {
             let first = s;
@@ -62,7 +62,7 @@ fn chained(i: i64) -> i64 {
 }
 
 fn direct(i: i64) -> i64 {
-    let b = Box::Text(f"direct-{i}");
+    let b = Box.Text(f"direct-{i}");
     match b {
         Text(s) => s.len(),
         Empty => 0,

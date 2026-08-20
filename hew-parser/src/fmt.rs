@@ -10,11 +10,11 @@ use crate::ast::{
     CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
     ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl,
     MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
-    OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl, RecordDecl, RecordKind,
-    RestartPolicy, SelectArm, ShutdownDirective, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
-    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
-    VariantKind, Visibility, WhereClause, WireMetadata,
+    NominalPatternPayload, OverflowPolicy, Param, Path, Pattern, PatternField, Program,
+    ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm, ShutdownDirective, Spanned,
+    Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
+    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
+    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -53,6 +53,111 @@ pub fn format_source(source: &str, program: &Program) -> String {
     f.format_program(program);
     f.flush_comments_before(usize::MAX);
     f.output
+}
+
+/// A checker-approved replacement for a legacy bare enum variant.
+///
+/// The formatter owns the byte edit, while the caller supplies the semantic
+/// decision.  Keeping that split prevents a token rewrite from guessing whether
+/// an identifier denotes a variant or an ordinary binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantMigration {
+    pub span: Range<usize>,
+    pub name: String,
+    pub replacement: String,
+}
+
+/// A source location the legacy-syntax migrator deliberately declined to edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationRefusal {
+    pub span: Range<usize>,
+    pub reason: String,
+}
+
+/// Failure returned when the migrator cannot prove a requested source edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationError {
+    pub refusals: Vec<MigrationRefusal>,
+}
+
+impl std::fmt::Display for MigrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "legacy syntax migration refused {} site(s)",
+            self.refusals.len()
+        )
+    }
+}
+
+impl std::error::Error for MigrationError {}
+
+/// Rewrite legacy path separators and checker-approved bare variants.
+///
+/// Every edit is anchored to lexer tokens.  Comments and string literals never
+/// produce a `DoubleColon` token, and a caller-provided variant span must still
+/// point at the named identifier token before it is changed.
+///
+/// # Errors
+///
+/// Returns [`MigrationError`] when a checker-selected variant no longer points
+/// at its expected identifier token, or when requested edits overlap.
+pub fn migrate_legacy_syntax(
+    source: &str,
+    variants: &[VariantMigration],
+) -> Result<String, MigrationError> {
+    let tokens = hew_lexer::lex(source);
+    let mut edits: Vec<(Range<usize>, String)> = Vec::new();
+
+    for (index, (token, span)) in tokens.iter().enumerate() {
+        if !matches!(token, hew_lexer::Token::DoubleColon) {
+            continue;
+        }
+        let is_turbofish = tokens
+            .get(index + 1)
+            .is_some_and(|(next, _)| matches!(next, hew_lexer::Token::Less));
+        let replacement = if is_turbofish { "" } else { "." };
+        edits.push((span.start..span.end, replacement.to_string()));
+    }
+
+    let mut refusals = Vec::new();
+    for variant in variants {
+        let valid_token = tokens.iter().any(|(token, span)| {
+            span.start == variant.span.start
+                && span.end == variant.span.end
+                && matches!(token, hew_lexer::Token::Identifier(name) if *name == variant.name)
+        });
+        if !valid_token {
+            refusals.push(MigrationRefusal {
+                span: variant.span.clone(),
+                reason: format!(
+                    "expected identifier `{}` selected by the checker",
+                    variant.name
+                ),
+            });
+            continue;
+        }
+        edits.push((variant.span.clone(), variant.replacement.clone()));
+    }
+
+    edits.sort_by_key(|(span, _)| (span.start, span.end));
+    for pair in edits.windows(2) {
+        if pair[0].0.end > pair[1].0.start {
+            refusals.push(MigrationRefusal {
+                span: pair[1].0.clone(),
+                reason: "migration edits overlap".to_string(),
+            });
+        }
+    }
+    if !refusals.is_empty() {
+        return Err(MigrationError { refusals });
+    }
+
+    let mut migrated = source.to_string();
+    for (span, replacement) in edits.into_iter().rev() {
+        migrated.replace_range(span, &replacement);
+    }
+    Ok(migrated)
 }
 
 struct Formatter<'a> {
@@ -112,6 +217,10 @@ impl<'a> Formatter<'a> {
             }
             fmt_item(self, item);
         }
+    }
+
+    fn format_path(&mut self, path: &Path) {
+        self.write(&path.source_spelling());
     }
 
     fn write_visibility(&mut self, vis: Visibility) {
@@ -318,12 +427,18 @@ impl<'a> Formatter<'a> {
             self.write(file_path);
             self.write("\"");
         } else {
-            self.write(&decl.path.join("::"));
+            if let Some(first) = decl.path.first() {
+                self.write(first);
+                for segment in decl.path.iter().skip(1) {
+                    self.write(".");
+                    self.write(segment);
+                }
+            }
             if let Some(spec) = &decl.spec {
+                self.write(".");
                 match spec {
-                    ImportSpec::Glob => self.write("::*"),
                     ImportSpec::Names(names) => {
-                        self.write("::{");
+                        self.write("{");
                         self.comma_sep(names, |f, n| {
                             f.write(&n.name);
                             if let Some(alias) = &n.alias {
@@ -331,6 +446,9 @@ impl<'a> Formatter<'a> {
                                 f.write(alias);
                             }
                         });
+                        if decl.selection_trailing_comma {
+                            self.write(",");
+                        }
                         self.write("}");
                     }
                 }
@@ -362,8 +480,10 @@ impl<'a> Formatter<'a> {
     fn format_type_alias(&mut self, decl: &TypeAliasDecl) {
         self.write_outer_doc(decl.doc_comment.as_ref());
         self.write_indent();
+        self.write_visibility(decl.visibility);
         self.write("type ");
         self.write(&decl.name);
+        self.format_opt_type_params(decl.type_params.as_ref());
         self.write(" = ");
         self.format_type_expr(&decl.ty.0);
         self.write(";\n");
@@ -1788,6 +1908,17 @@ impl<'a> Formatter<'a> {
                     self.write(">");
                 }
             }
+            TypeExpr::QualifiedAssocPath(assoc) => {
+                self.write("<");
+                self.format_type_expr(&assoc.base.0);
+                self.write(" as ");
+                self.format_path(&assoc.trait_path);
+                self.write(">");
+                for member in &assoc.members {
+                    self.write(".");
+                    self.write(member);
+                }
+            }
             TypeExpr::Result { ok, err } => {
                 self.write("Result<");
                 self.format_type_expr(&ok.0);
@@ -2124,16 +2255,31 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the exhaustive expression-shape classifier stays readable as one match"
+    )]
     fn can_format_expr_inline(expr: &Expr) -> bool {
         match expr {
             Expr::Literal(_)
             | Expr::Identifier(_)
+            | Expr::QualifiedAssoc(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
             | Expr::This
             | Expr::Yield(None)
             | Expr::Return(None) => true,
+            Expr::ContextVariant(context) => context.record.as_ref().is_none_or(|record| {
+                record
+                    .fields
+                    .iter()
+                    .all(|(_, expr)| Self::can_format_expr_inline(&expr.0))
+                    && record
+                        .base
+                        .as_ref()
+                        .is_none_or(|expr| Self::can_format_expr_inline(&expr.0))
+            }),
             Expr::Tuple(exprs) | Expr::Array(exprs) => exprs
                 .iter()
                 .all(|(expr, _)| Self::can_format_expr_inline(expr)),
@@ -2167,7 +2313,9 @@ impl<'a> Formatter<'a> {
                         .iter()
                         .all(|arg| Self::can_format_expr_inline(&arg.expr().0))
             }
-            Expr::FieldAccess { object, .. } => Self::can_format_expr_inline(&object.0),
+            Expr::FieldAccess { object, .. } | Expr::GenericApplySuffix { target: object, .. } => {
+                Self::can_format_expr_inline(&object.0)
+            }
             Expr::Index { object, index } => {
                 Self::can_format_expr_inline(&object.0) && Self::can_format_expr_inline(&index.0)
             }
@@ -2184,6 +2332,19 @@ impl<'a> Formatter<'a> {
                 fields
                     .iter()
                     .all(|(_, expr)| Self::can_format_expr_inline(&expr.0))
+                    && base
+                        .as_ref()
+                        .is_none_or(|expr| Self::can_format_expr_inline(&expr.0))
+            }
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                Self::can_format_expr_inline(&target.0)
+                    && fields
+                        .iter()
+                        .all(|(_, expr)| Self::can_format_expr_inline(&expr.0))
                     && base
                         .as_ref()
                         .is_none_or(|expr| Self::can_format_expr_inline(&expr.0))
@@ -2779,6 +2940,74 @@ impl<'a> Formatter<'a> {
             }
             Expr::Literal(lit) => self.format_literal(lit),
             Expr::Identifier(name) => self.write(name),
+            Expr::ContextVariant(context) => {
+                self.write(".");
+                self.write(&context.name);
+                if let Some(record) = &context.record {
+                    self.write(" { ");
+                    self.comma_sep(&record.fields, |f, (name, value)| {
+                        f.write(name);
+                        f.write(": ");
+                        f.format_expr(&value.0);
+                    });
+                    if let Some(base) = &record.base {
+                        if !record.fields.is_empty() {
+                            self.write(", ");
+                        }
+                        self.write("..");
+                        self.format_expr(&base.0);
+                    }
+                    self.write(" }");
+                }
+            }
+            Expr::GenericApplySuffix { target, type_args } => {
+                if matches!(
+                    &target.0,
+                    Expr::Identifier(_)
+                        | Expr::FieldAccess { .. }
+                        | Expr::QualifiedAssoc(_)
+                        | Expr::GenericApplySuffix { .. }
+                ) {
+                    self.format_expr(&target.0);
+                } else {
+                    self.format_receiver(&target.0);
+                }
+                self.write("<");
+                self.comma_sep(type_args, |f, ty| f.format_type_expr(&ty.0));
+                self.write(">");
+            }
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                self.format_receiver(&target.0);
+                self.write(" { ");
+                self.comma_sep(fields, |f, (name, value)| {
+                    f.write(name);
+                    f.write(": ");
+                    f.format_expr(&value.0);
+                });
+                if let Some(base) = base {
+                    if !fields.is_empty() {
+                        self.write(", ");
+                    }
+                    self.write("..");
+                    self.format_expr(&base.0);
+                }
+                self.write(" }");
+            }
+            Expr::QualifiedAssoc(assoc) => {
+                self.write("<");
+                self.format_type_expr(&assoc.base.0);
+                self.write(" as ");
+                self.format_path(&assoc.trait_path);
+                self.write(">");
+                for member in &assoc.members {
+                    self.write(".");
+                    self.write(member);
+                }
+            }
             Expr::Clone(operand) => {
                 self.write("clone ");
                 self.format_expr(&operand.0);
@@ -3003,8 +3232,8 @@ impl<'a> Formatter<'a> {
                 // re-parses as `Call { FieldAccess }`, not as a `MethodCall`. The two forms
                 // are syntactically distinct (different AST nodes, different checker paths);
                 // normalising them would break the round-trip property.
-                let needs_callee_parens =
-                    matches!(function.0, Expr::Lambda { .. } | Expr::FieldAccess { .. });
+                let needs_callee_parens = matches!(function.0, Expr::Lambda { .. })
+                    || (type_args.is_none() && matches!(function.0, Expr::FieldAccess { .. }));
                 if needs_callee_parens {
                     self.write("(");
                 }
@@ -3321,6 +3550,15 @@ impl<'a> Formatter<'a> {
             Pattern::Wildcard => self.write("_"),
             Pattern::Literal(lit) => self.format_literal(lit),
             Pattern::Identifier(name) => self.write(name),
+            Pattern::NominalPath { path, payload } => {
+                self.format_path(path);
+                self.format_nominal_pattern_payload(payload.as_ref());
+            }
+            Pattern::ContextVariant(context) => {
+                self.write(".");
+                self.write(&context.name);
+                self.format_nominal_pattern_payload(context.payload.as_ref());
+            }
             Pattern::Constructor { name, patterns } => {
                 self.write(name);
                 if !patterns.is_empty() {
@@ -3351,6 +3589,21 @@ impl<'a> Formatter<'a> {
                 self.write("re\"");
                 self.write(&escape_regex_pattern(pattern));
                 self.write("\"");
+            }
+        }
+    }
+
+    fn format_nominal_pattern_payload(&mut self, payload: Option<&NominalPatternPayload>) {
+        match payload {
+            None => {}
+            Some(NominalPatternPayload::Tuple(patterns)) => {
+                self.write("(");
+                self.comma_sep(patterns, |f, pattern| f.format_pattern(&pattern.0));
+                self.write(")");
+            }
+            Some(NominalPatternPayload::Record { fields, rest }) => {
+                self.write(" ");
+                self.format_record_pattern_fields(fields, rest.as_ref());
             }
         }
     }
@@ -3888,6 +4141,65 @@ mod tests {
     use super::*;
     use crate::parse;
 
+    #[test]
+    fn migrates_legacy_paths_turbofish_and_checker_selected_variants() {
+        let source = concat!(
+            "import a.b.{C};\n",
+            "fn main() {\n",
+            "    let value = Some(42);\n",
+            "    f::<T>();\n",
+            "    HashMap::<string, i64>::new();\n",
+            "    Vec::new::<i64>();\n",
+            "    // keep a::b and f::<T>() in comments\n",
+            "    println(\"a::b and f::<T>()\");\n",
+            "}\n"
+        );
+        let start = source.find("Some(42)").unwrap();
+        let migrated = migrate_legacy_syntax(
+            source,
+            &[VariantMigration {
+                span: start..start + "Some".len(),
+                name: "Some".to_string(),
+                replacement: "Option.Some".to_string(),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(
+            migrated,
+            concat!(
+                "import a.b.{C};\n",
+                "fn main() {\n",
+                "    let value = Option.Some(42);\n",
+                "    f<T>();\n",
+                "    HashMap<string, i64>.new();\n",
+                "    Vec.new<i64>();\n",
+                "    // keep a::b and f::<T>() in comments\n",
+                "    println(\"a::b and f::<T>()\");\n",
+                "}\n"
+            )
+        );
+        assert_eq!(migrate_legacy_syntax(&migrated, &[]).unwrap(), migrated);
+    }
+
+    #[test]
+    fn refuses_variant_rewrite_without_the_checker_selected_token() {
+        let error = migrate_legacy_syntax(
+            "fn main() { println(\"Some\"); }\n",
+            &[VariantMigration {
+                span: 21..25,
+                name: "Some".to_string(),
+                replacement: ".Some".to_string(),
+            }],
+        )
+        .unwrap_err();
+
+        assert_eq!(error.refusals.len(), 1);
+        assert!(error.refusals[0]
+            .reason
+            .contains("expected identifier `Some` selected by the checker"));
+    }
+
     fn roundtrip(src: &str) -> String {
         let result = parse(src);
         assert!(
@@ -3977,6 +4289,36 @@ extern \"rt\" {
     fn println(s: string);
     fn print(s: string);
     fn assert(cond: bool);
+}
+";
+        let formatted = roundtrip(src);
+        assert_eq!(formatted, src);
+    }
+
+    #[test]
+    fn pub_type_alias_roundtrip() {
+        // `format_type_alias` emits `write_visibility` before `type`; a `pub`
+        // top-level alias must survive format -> reparse rather than
+        // silently losing its visibility modifier.
+        let src = "\
+pub type Label = string;
+
+fn main() {
+}
+";
+        let formatted = roundtrip(src);
+        assert_eq!(formatted, src);
+    }
+
+    #[test]
+    fn parameterized_type_alias_roundtrip() {
+        // `format_type_alias` calls `format_opt_type_params` between the
+        // alias name and `=`; a generic alias's type-parameter list must
+        // round-trip through format -> reparse.
+        let src = "\
+type Pair<T> = (T, T);
+
+fn main() {
 }
 ";
         let formatted = roundtrip(src);
@@ -4249,8 +4591,8 @@ type Config {
 fn classify(e: IoError) -> string {
     match e {
         // file not found
-        IoError::NotFound(_) => \"missing\",
-        IoError::PermissionDenied(_) => \"denied\", // access error
+        IoError.NotFound(_) => \"missing\",
+        IoError.PermissionDenied(_) => \"denied\", // access error
         _ => \"other\",
     }
 }
@@ -4263,8 +4605,8 @@ fn classify(e: IoError) -> string {
         let src = "\
 fn classify(e: IoError) -> string {
     match e {
-        IoError::NotFound(_) => \"missing\",
-        IoError::Other(_) => \"error\", // catch-all trailing
+        IoError.NotFound(_) => \"missing\",
+        IoError.Other(_) => \"error\", // catch-all trailing
     }
 }
 ";
@@ -4277,7 +4619,7 @@ fn classify(e: IoError) -> string {
 fn main() -> string {
     let msg = match get_error() {
         // success path
-        IoError::NotFound(_) => \"not found\",
+        IoError.NotFound(_) => \"not found\",
         _ => \"error\",
     };
     msg
@@ -4340,9 +4682,9 @@ type Cfg {
 fn handle(s: Status) -> int {
     match s {
         // success
-        Status::Ok => 0,
+        Status.Ok => 0,
         // failure
-        Status::Err(code) => code,
+        Status.Err(code) => code,
     }
 }
 ";

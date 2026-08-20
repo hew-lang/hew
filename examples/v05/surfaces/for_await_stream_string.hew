@@ -2,7 +2,7 @@
 //! Description: Drains a `Stream<string>` with `for await` end-to-end,
 //! including an empty `""` item to lock the empty-item invariant.
 //!
-//! `Stream<string>::recv` resolves to the layout-witness runtime entry
+//! `Stream<string>.recv` resolves to the layout-witness runtime entry
 //! `hew_stream_next_layout` (one symbol for every describable element
 //! type). The suspending coroutine path lowers it to
 //! `Terminator::SuspendingStreamNext`; the resume
@@ -15,7 +15,7 @@
 //! once the loop body exits, and the stream handle is freed at end-of-scope
 //! (no extra free on the recv edge — see `is_handle_borrowing_call_abi`).
 
-import std::stream;
+import std.stream;
 
 actor DrainStrings {
     let frames: i64;

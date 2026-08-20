@@ -126,14 +126,14 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
 
 // --- Tests ---
 fn test_insert_and_iterate() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = unrolled_insert(n, head, 10);
     head = unrolled_insert(n, head, 20);
     head = unrolled_insert(n, head, 30);
-    let r: Vec<i64> = Vec::new();
+    let r: Vec<i64> = Vec.new();
     unrolled_iterate(n, head, r);
-    let e: Vec<i64> = Vec::new();
+    let e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(20);
     e.push(30);
@@ -146,7 +146,7 @@ fn test_insert_and_iterate() -> i64 {
 }
 
 fn test_block_split() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     // Insert 5 elements - should create 2 blocks (4+1)
     head = unrolled_insert(n, head, 1);
@@ -165,13 +165,13 @@ fn test_block_split() -> i64 {
 }
 
 fn test_cross_block_iteration() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     // Insert 10 elements across 3 blocks (4+4+2)
     for i in 0 .. 10 {
         head = unrolled_insert(n, head, (i + 1) * 10);
     }
-    let r: Vec<i64> = Vec::new();
+    let r: Vec<i64> = Vec.new();
     unrolled_iterate(n, head, r);
     var ok = 1;
     for i in 0 .. 10 {
@@ -190,7 +190,7 @@ fn test_cross_block_iteration() -> i64 {
 }
 
 fn test_random_access() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     for i in 0 .. 8 {
         head = unrolled_insert(n, head, i * 100);
@@ -214,7 +214,7 @@ fn test_random_access() -> i64 {
 }
 
 fn test_single_block() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     head = unrolled_insert(n, head, 42);
     if block_count_total(n, head) == 1 {
@@ -228,7 +228,7 @@ fn test_single_block() -> i64 {
 }
 
 fn test_many_blocks() -> i64 {
-    let n: Vec<i64> = Vec::new();
+    let n: Vec<i64> = Vec.new();
     var head = -1;
     // 20 elements = 5 blocks of 4
     for i in 0 .. 20 {
@@ -237,7 +237,7 @@ fn test_many_blocks() -> i64 {
     if block_count_total(n, head) == 5 {
         if unrolled_len(n, head) == 20 {
             // Verify order
-            let r: Vec<i64> = Vec::new();
+            let r: Vec<i64> = Vec.new();
             unrolled_iterate(n, head, r);
             var ok = 1;
             for i in 0 .. 20 {

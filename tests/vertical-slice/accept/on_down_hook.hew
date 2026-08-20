@@ -1,24 +1,24 @@
-import std::link_monitor::{DownNotification, DownReason, DownTarget};
+import std.link_monitor.{DownNotification, DownReason, DownTarget};
 
 actor Watcher {
     #[on(down)]
     fn on_down(note: DownNotification) {
         let _id = note.monitor.value;
         match note.target {
-            DownTarget::Local(slot) => {
+            DownTarget.Local(slot) => {
                 let _slot = slot;
             }
-            DownTarget::Remote(location) => {
+            DownTarget.Remote(location) => {
                 let _location = location;
             }
         }
         match note.reason {
-            DownReason::Exited => {}
-            DownReason::Crashed(kind) => {
+            DownReason.Exited => {}
+            DownReason.Crashed(kind) => {
                 let _kind = kind;
             }
-            DownReason::MonitorLost => {}
-            DownReason::LocalShutdown => {}
+            DownReason.MonitorLost => {}
+            DownReason.LocalShutdown => {}
         }
     }
 }

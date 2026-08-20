@@ -1,17 +1,17 @@
 //! FFI fixture package mirroring the ecosystem `hew::db::sqlite` shape:
 //! an actor whose asks reply with i32 / i64 / string / record values, and a
 //! record handle whose trait methods are thin extern wrappers consuming the
-//! opaque `Result` handle. The record is deliberately named `Result` —
-//! shadowing the prelude's generic enum — so importers exercise the
-//! shadow-resolution and enum-registry seeding paths.
+//! opaque `TestResult` handle. A separate reject fixture owns the protected
+//! prelude-collision oracle; this positive package keeps a distinct nominal
+//! name so it also passes standalone corpus checking.
 
 /// A fixture result set. A zero handle is an error result.
 /// Must be freed exactly once with `free()`.
-type Result {
+type TestResult {
     handle: i64;
 }
 
-trait ResultMethods {
+trait TestResultMethods {
     /// Number of rows; -1 for an error result.
     fn rows(self) -> i32;
 
@@ -33,7 +33,7 @@ trait ResultMethods {
     fn echo_tag(self, s: string) -> i64;
 }
 
-impl ResultMethods for Result {
+impl TestResultMethods for TestResult {
     fn rows(self) -> i32 {
         unsafe {
             hew_testffi_result_rows(self)
@@ -88,7 +88,7 @@ pub actor Db {
     }
 
     // Ask returning the imported record handle.
-    receive fn query(rows: i32) -> Result {
+    receive fn query(rows: i32) -> TestResult {
         unsafe {
             hew_testffi_query(seed, rows)
         }
@@ -100,9 +100,9 @@ extern "C" {
     fn hew_testffi_count32(seed: i64) -> i32;
     fn hew_testffi_count64(seed: i64) -> i64;
     fn hew_testffi_name(seed: i64) -> string;
-    fn hew_testffi_query(seed: i64, rows: i32) -> Result;
-    fn hew_testffi_result_rows(result: Result) -> i32;
-    fn hew_testffi_result_get(result: Result, row: i32) -> string;
-    fn hew_testffi_result_total(result: Result) -> i64;
-    fn hew_testffi_result_free(result: Result);
+    fn hew_testffi_query(seed: i64, rows: i32) -> TestResult;
+    fn hew_testffi_result_rows(result: TestResult) -> i32;
+    fn hew_testffi_result_get(result: TestResult, row: i32) -> string;
+    fn hew_testffi_result_total(result: TestResult) -> i64;
+    fn hew_testffi_result_free(result: TestResult);
 }

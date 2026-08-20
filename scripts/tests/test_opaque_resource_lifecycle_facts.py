@@ -69,8 +69,8 @@ with tempfile.TemporaryDirectory() as temp:
     }
     failures = []
     for index, row in enumerate(cases):
-        assert "import std::" in row["scope_exit_source"]
-        assert "::{ " in row["scope_exit_source"]
+        assert "import std." in row["scope_exit_source"]
+        assert ".{ " in row["scope_exit_source"]
         assert "fn scope_exit_case(consume value:" in row["scope_exit_source"]
         assert "value.close();" in row["explicit_close_source"]
 

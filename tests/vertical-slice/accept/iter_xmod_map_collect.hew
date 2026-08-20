@@ -15,7 +15,7 @@
 // the fixture's drop-safety claim one it actually holds.
 //
 // Countdown{3} yields [3,2,1]; map doubles each -> [6,4,2]; collect; sum = 12.
-import std::iter;
+import std.iter;
 
 type Countdown {
     n: i64;
@@ -35,8 +35,8 @@ impl Iterator for Countdown {
 }
 
 pub fn main() -> i64 {
-    let mapped = iter::map(Countdown { n: 3 }, |x: i64| x * 2);
-    let v: Vec<i64> = iter::collect(mapped);
+    let mapped = iter.map(Countdown { n: 3 }, |x: i64| x * 2);
+    let v: Vec<i64> = iter.collect(mapped);
     var total = 0;
     for n in v {
         total = total + n;

@@ -100,8 +100,13 @@ fn run_loop(frames: i64) -> i64 {
     );
 }
 
+/// A checker-`Borrow` (read-only) heap capture of a `string` is a RETAINED
+/// SHARE: the env field manifest records `OwnsClonedOrRetained`, an
+/// unconditional `StringRetain` mints the env's co-owner before the env init,
+/// and the source binding is NOT consumed (its own scope-exit owner survives).
+/// The env free thunk releases the env's share — two owners, two releases.
 #[test]
-fn single_source_heap_capture_manifest_owns_moved_source() {
+fn single_source_heap_borrow_capture_manifest_is_retained_share() {
     let pl = pipeline_with_tc(
         r#"
 fn make_label(n: i64) -> fn() -> i64 {
@@ -116,28 +121,64 @@ fn make_label(n: i64) -> fn() -> i64 {
         pl.diagnostics
     );
     let make_label = raw_fn(&pl, "make_label");
-    let env_fields: Vec<_> = make_label
+    let instructions: Vec<_> = make_label
         .blocks
         .iter()
         .flat_map(|block| block.instructions.iter())
-        .filter_map(|instr| match instr {
-            Instr::ClosureEnvInit { fields, .. } => Some(fields),
+        .collect();
+    let (env_init_index, retained_src, retained_binding) = instructions
+        .iter()
+        .enumerate()
+        .find_map(|(index, instr)| match instr {
+            Instr::ClosureEnvInit { fields, .. } => fields
+                .iter()
+                .find(|field| {
+                    field.allocation == ClosureEnvAllocation::Heap
+                        && field.ownership == ClosureEnvFieldOwnership::OwnsClonedOrRetained
+                })
+                .and_then(|field| {
+                    field
+                        .source_binding
+                        .map(|binding| (index, field.src, binding))
+                }),
             _ => None,
         })
-        .flat_map(|fields| fields.iter())
-        .collect();
+        .expect("heap Borrow string capture must carry a retained-share manifest");
+    let retain_index = instructions
+        .iter()
+        .position(
+            |instr| matches!(instr, Instr::StringRetain { value, .. } if *value == retained_src),
+        )
+        .expect("the env co-owner must be minted with a StringRetain");
     assert!(
-        env_fields.iter().any(|field| {
-            field.allocation == ClosureEnvAllocation::Heap
-                && field.ownership == ClosureEnvFieldOwnership::OwnsMoved
-                && field.source_binding.is_some()
-        }),
-        "heap string capture must own a moved source binding: {env_fields:?}"
+        retain_index < env_init_index,
+        "the retain must precede the env init that byte-copies the handle"
+    );
+    assert!(
+        !make_label
+            .blocks
+            .iter()
+            .flat_map(|block| block.statements.iter())
+            .any(|stmt| matches!(
+                stmt,
+                hew_mir::MirStatement::Use {
+                    binding,
+                    intent: hew_hir::IntentKind::Consume,
+                    ..
+                } if *binding == retained_binding
+            )),
+        "a retained-share capture must not consume the source binding"
     );
 }
 
+/// A read-only (`Borrow`) capture of an owned call-carrier record parameter is
+/// a RETAINED SHARE: the env field manifest records `OwnsClonedOrRetained`, an
+/// `AggregateBorrowedIngress` string retain mints the env's co-owner over the
+/// record's string leaves before the env init, and the parameter is NOT
+/// moved-and-neutralized — its own terminal carrier drop survives as the
+/// second, independent release.
 #[test]
-fn owned_carrier_parameter_capture_transfers_before_terminal_drop() {
+fn owned_carrier_parameter_borrow_capture_retains_and_keeps_terminal_drop() {
     let pl = pipeline_with_tc(
         r#"
 type Holder {
@@ -179,48 +220,41 @@ fn run_once() -> i64 {
                 .iter()
                 .find(|field| {
                     field.source_is_parameter
-                        && field.ownership == ClosureEnvFieldOwnership::OwnsMoved
+                        && field.ownership == ClosureEnvFieldOwnership::OwnsClonedOrRetained
                 })
                 .map(|field| (index, field.src)),
             _ => None,
         })
-        .expect("owned parameter capture manifest");
+        .expect("retained-share parameter capture manifest");
 
     let parameter = Place::Local(0);
-    assert_ne!(
-        env_source, parameter,
-        "the heap env must receive the transferred owner, not alias the parameter slot"
-    );
-    let move_index = instructions
+    let retain_index = instructions
         .iter()
         .position(|instr| {
-            matches!(instr, Instr::Move { dest, src } if *dest == env_source && *src == parameter)
+            matches!(
+                instr,
+                Instr::StringRetain {
+                    value,
+                    condition: hew_mir::StringRetainCondition::AggregateBorrowedIngress,
+                } if *value == env_source
+            )
         })
-        .expect("carrier parameter move into the env source");
-    let neutralize_indices: Vec<_> = instructions
-        .iter()
-        .enumerate()
-        .filter_map(|(index, instr)| {
-            matches!(instr, Instr::NeutralizePayloadSlot { place, .. } if *place == parameter)
-                .then_some(index)
-        })
-        .collect();
-    assert_eq!(
-        neutralize_indices.len(),
-        1,
-        "the captured carrier parameter must be neutralized exactly once"
-    );
-    let terminal_drop_index = instructions
-        .iter()
-        .position(
-            |instr| matches!(instr, Instr::ValueSnapshotDrop { value, .. } if *value == parameter),
-        )
-        .expect("terminal owned-carrier parameter drop");
+        .expect("the env co-owner must be minted with an aggregate string retain");
     assert!(
-        move_index < neutralize_indices[0]
-            && neutralize_indices[0] < env_init_index
-            && env_init_index < terminal_drop_index,
-        "the owner must move and neutralize before env initialization, while the terminal drop remains"
+        retain_index < env_init_index,
+        "the aggregate retain must precede the env init that byte-copies the record"
+    );
+    assert!(
+        !instructions.iter().any(|instr| {
+            matches!(instr, Instr::NeutralizePayloadSlot { place, .. } if *place == parameter)
+        }),
+        "a retained-share capture must not neutralize the parameter slot"
+    );
+    assert!(
+        instructions.iter().any(|instr| {
+            matches!(instr, Instr::ValueSnapshotDrop { value, .. } if *value == parameter)
+        }),
+        "the parameter's terminal owned-carrier drop must survive as the second release"
     );
 }
 
@@ -300,6 +334,11 @@ fn run_loop(frames: i64) -> i64 {
     );
 }
 
+/// The `label` sharing between the two closures is now legal (each env takes a
+/// retained share), but storing a CAPTURING closure pair into a record field
+/// still fails closed (`UseAfterConsume` on `a`/`b` at the `RecordInit`) — the
+/// closure-pair-into-record transfer has no ownership protocol yet. This pin
+/// holds the fail-closed line at that seam.
 #[test]
 fn shared_source_heap_capture_fails_closed_before_codegen() {
     let pl = pipeline_with_tc(

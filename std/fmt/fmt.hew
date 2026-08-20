@@ -16,7 +16,7 @@
 //! }
 //! ```
 
-import std::string;
+import std.string;
 
 // ── Number-to-string conversions ─────────────────────────────────────
 /// Convert an integer to its lowercase hexadecimal string representation.

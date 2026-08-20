@@ -1,9 +1,9 @@
 //! Tests for std::text::semver — parse, accessors, compare, matches,
 //! and to_string. Version is a value type; no explicit free() is required.
 
-import std::text::semver;
+import std.text.semver;
 
-import std::testing;
+import std.testing;
 
 // ── parse / accessors ─────────────────────────────────────────────────
 #[test]
@@ -245,15 +245,15 @@ fn test_parse_panics_on_missing_second_dot() {
 // ── SemVer 2.0 grammar is exact ───────────────────────────────────────
 fn expect_rejected(s: string) {
     match semver.try_parse(s) {
-        Ok(v) => panic(f"expected `{s}` to be rejected, got {v.to_string()}"),
-        Err(_) => {},
+        .Ok(v) => panic(f"expected `{s}` to be rejected, got {v.to_string()}"),
+        .Err(_) => {},
     }
 }
 
 fn expect_accepted(s: string) {
     match semver.try_parse(s) {
-        Ok(_) => {},
-        Err(reason) => panic(f"expected `{s}` to parse: {reason}"),
+        .Ok(_) => {},
+        .Err(reason) => panic(f"expected `{s}` to parse: {reason}"),
     }
 }
 

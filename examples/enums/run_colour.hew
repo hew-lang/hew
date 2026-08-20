@@ -1,7 +1,7 @@
 // Exercises user-defined enum unit variant construction.
 //
 // This fixture verifies:
-//   1. Qualified constructor `Colour::Red` resolves and constructs correctly.
+//   1. Qualified constructor `Colour.Red` resolves and constructs correctly.
 //   2. Bare constructor `Green` resolves when unambiguous across all enums.
 //   3. Enum-typed values can be passed to and returned from functions.
 //
@@ -28,18 +28,18 @@ fn status_id(s: Status) -> Status {
 
 fn main() {
     // Qualified constructor.
-    let r: Colour = Colour::Red;
+    let r: Colour = Colour.Red;
     // Bare constructor (unambiguous — `Green` appears only in `Colour`).
-    let g: Colour = Green;
+    let g: Colour = .Green;
     // Bare constructor for a second enum.
-    let a: Status = Active;
+    let a: Status = .Active;
     // Round-trip through identity functions to confirm enum-typed locals
     // survive function call ABI correctly.
     let _r2 = colour_id(r);
     let _g2 = colour_id(g);
     let _a2 = status_id(a);
     // Qualified constructor of the second enum.
-    let i: Status = Status::Inactive;
+    let i: Status = Status.Inactive;
     let _i2 = status_id(i);
     println("colour-enum-ok");
 }

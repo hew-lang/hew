@@ -236,6 +236,10 @@ impl Builder {
         if warrant.withholds_mint() {
             return;
         }
+        if matches!(ty, ResolvedTy::TraitObject { .. }) {
+            self.dyn_trait_storage
+                .insert(binding, crate::TraitObjectStorage::HeapBoxed);
+        }
         let bound_place = self.binding_locals.get(&binding).copied();
         let place = bound_place.unwrap_or(Place::Local(0));
         let ownership = ValueOwnership::classify(&ty, place, &self.ownership_ctx());
@@ -2795,15 +2799,21 @@ impl Builder {
                 builtin: Some(BuiltinType::Generator),
                 ..
             } => true,
+            // A checker-authored imported machine spelling must already carry
+            // its declaration owner here. `machine_layout_names` contains only
+            // canonical class-tagged projections, so a bare presentation leaf
+            // cannot recover by suffix and accidentally select a same-leaf
+            // machine from another module.
             ResolvedTy::Named { name, args, .. } if args.is_empty() => {
                 self.actor_layouts.contains_key(name)
                     || machine_layout_ty_matches(&self.machine_layout_names, ty)
             }
             // Generic enum applications (`Named { name: "Option", args: [I64] }`):
-            // the origin name is in `machine_layout_names` if the HIR mono pass
-            // discovered at least one instantiation and registered it in
-            // `module.enum_layouts`. Actor layouts never have type args, so this
-            // arm is purely for generic enum types. Classifying as `BitCopy`
+            // its canonical class-tagged projection is in
+            // `machine_layout_names` if the HIR mono pass discovered at least
+            // one instantiation and registered it in `module.enum_layouts`.
+            // Actor layouts never have type args, so this arm is purely for
+            // generic enum types. Classifying as `BitCopy`
             // matches the tagged-union substrate — enums are stack-allocated
             // discriminated unions with no drop side-effect.
             ResolvedTy::Named { .. } => machine_layout_ty_matches(&self.machine_layout_names, ty),
@@ -3192,7 +3202,8 @@ impl Builder {
         }
 
         match ty {
-            ResolvedTy::String
+            ResolvedTy::TraitObject { .. }
+            | ResolvedTy::String
             | ResolvedTy::Bytes
             | ResolvedTy::CancellationToken
             | ResolvedTy::Named {

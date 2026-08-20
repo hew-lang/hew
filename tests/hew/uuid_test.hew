@@ -3,11 +3,11 @@
 //! UUID generation is non-deterministic; tests verify structural properties
 //! (length, format, is_valid round-trip) rather than specific values.
 
-import std::misc::uuid;
-import std::testing;
+import std.misc.uuid;
+
+import std.testing;
 
 // ── is_valid rejects known-bad strings ───────────────────────────────
-
 #[test]
 fn test_is_valid_rejects_empty_string() {
     testing.assert_false(uuid.is_valid(""));
@@ -30,7 +30,6 @@ fn test_is_valid_rejects_non_hex_characters() {
 }
 
 // ── is_valid accepts well-formed UUID strings ─────────────────────────
-
 #[test]
 fn test_is_valid_accepts_canonical_nil_uuid() {
     testing.assert_true(uuid.is_valid("00000000-0000-0000-0000-000000000000"));
@@ -47,7 +46,6 @@ fn test_is_valid_accepts_known_uuid_uppercase() {
 }
 
 // ── v4 generation round-trip ──────────────────────────────────────────
-
 #[test]
 fn test_v4_produces_valid_uuid() {
     let id = uuid.v4();
@@ -70,7 +68,6 @@ fn test_v4_two_calls_produce_distinct_ids() {
 }
 
 // ── v7 generation round-trip ──────────────────────────────────────────
-
 #[test]
 fn test_v7_produces_valid_uuid() {
     let id = uuid.v7();

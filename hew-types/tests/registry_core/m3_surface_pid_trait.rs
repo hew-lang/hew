@@ -14,37 +14,37 @@ fn user_pid_trait_does_not_inherit_builtin_serializable_policy() {
             id: i32,
         }
 
-        trait Pid {
+        trait UserPid {
             type Msg;
-            fn send(pid: Self, msg: Self::Msg) -> i32;
+            fn send(pid: Self, msg: Self.Msg) -> i32;
         }
 
-        impl Pid for Local {
+        impl UserPid for Local {
             type Msg = Work;
             fn send(pid: Local, msg: Work) -> i32 {
                 pid.id + msg.id
             }
         }
 
-        fn relay<P: Pid>(pid: P, msg: P::Msg) -> i32 {
+        fn relay<P: UserPid>(pid: P, msg: P.Msg) -> i32 {
             pid.send(msg)
         }
 
-        fn relay_dyn(pid: dyn Pid<Msg = Work>, msg: Work) -> i32 {
+        fn relay_dyn(pid: dyn UserPid<Msg = Work>, msg: Work) -> i32 {
             pid.send(msg)
         }
 
         fn main() {
             let local = Local { id: 1 };
             let _a = relay(local, Work { id: 2 });
-            let local_dyn: dyn Pid<Msg = Work> = Local { id: 3 };
+            let local_dyn: dyn UserPid<Msg = Work> = Local { id: 3 };
             let _b = relay_dyn(local_dyn, Work { id: 4 });
         }
         ",
     );
     assert!(
         output.errors.is_empty(),
-        "a root user trait named Pid must not acquire std.builtins.Pid policy: {:#?}",
+        "an ordinary user trait must not acquire std.builtins.Pid policy: {:#?}",
         output.errors
     );
 }
@@ -68,7 +68,7 @@ fn pid_trait_generic_send_fails_closed_without_serializable_projection_bound() {
             type Reply = ();
         }
 
-        fn ping<P: Pid>(p: P, m: P::Msg) -> Result<(), SendError> {
+        fn ping<P: Pid>(p: P, m: P.Msg) -> Result<(), SendError> {
             p.send(m)
         }
 
@@ -84,8 +84,8 @@ fn pid_trait_generic_send_fails_closed_without_serializable_projection_bound() {
             .errors
             .iter()
             .any(|error| error.message.contains("fail-closed")
-                && error.message.contains("P::Msg: Serializable")),
-        "generic Pid::send must fail closed without a P::Msg Serializable proof: {:#?}",
+                && error.message.contains("P.Msg: Serializable")),
+        "generic Pid.send must fail closed without a P.Msg Serializable proof: {:#?}",
         output.errors
     );
 }
@@ -109,7 +109,7 @@ fn local_pid_generic_pid_send_still_fails_closed_without_projection_bound() {
             type Reply = ();
         }
 
-        fn takes_pid<P: Pid>(pid: P, msg: P::Msg) -> Result<(), SendError> {
+        fn takes_pid<P: Pid>(pid: P, msg: P.Msg) -> Result<(), SendError> {
             pid.send(msg)
         }
 
@@ -124,8 +124,8 @@ fn local_pid_generic_pid_send_still_fails_closed_without_projection_bound() {
             .errors
             .iter()
             .any(|error| error.message.contains("fail-closed")
-                && error.message.contains("P::Msg: Serializable")),
-        "generic Pid::send must fail closed even when a call site later supplies LocalPid: {:#?}",
+                && error.message.contains("P.Msg: Serializable")),
+        "generic Pid.send must fail closed even when a call site later supplies LocalPid: {:#?}",
         output.errors
     );
 }

@@ -9,7 +9,7 @@
 //!
 //! `ExternProvenance` is captured at HIR lowering from the enclosing module
 //! name, so the same `std/process.hew` carries `Module("std.process")` when it
-//! is reached through `import std::process` and `Root` when it is handed
+//! is reached through `import std.process` and `Root` when it is handed
 //! directly to `hew check`. `ProvenForeignPolicy` read `Root` as "foreign
 //! host", so the compiler classified its own runtime ABI as foreign and refused
 //! shipped code — but only on the path the stdlib type-check ratchet uses, and
@@ -73,6 +73,28 @@ fn check(args: &[&std::path::Path]) -> Verdict {
             .find(|line| line.contains("error"))
             .unwrap_or("")
             .to_string(),
+    }
+}
+
+fn compile_to_mir(file: &std::path::Path) -> Verdict {
+    let output = Command::new(hew_binary())
+        .arg("compile")
+        .arg(file)
+        .args(["--dump-mir", "elab"])
+        .current_dir(repo_root())
+        .output()
+        .expect("run hew compile --dump-mir elab");
+    #[cfg(unix)]
+    let killed_by = {
+        use std::os::unix::process::ExitStatusExt;
+        output.status.signal()
+    };
+    #[cfg(not(unix))]
+    let killed_by = None;
+    Verdict {
+        ok: output.status.success(),
+        killed_by,
+        detail: String::from_utf8_lossy(&output.stderr).into_owned(),
     }
 }
 
@@ -144,6 +166,22 @@ fn every_stdlib_file_checks_clean_as_a_root_compilation_unit() {
     );
 }
 
+#[test]
+fn prelude_compiles_to_mir_cleanly_as_a_root_compilation_unit() {
+    let prelude = repo_root().join("std/prelude.hew");
+    let verdict = compile_to_mir(&prelude);
+    assert_eq!(
+        verdict.killed_by, None,
+        "prelude root compilation must diagnose rather than abort: {}",
+        verdict.detail
+    );
+    assert!(
+        verdict.ok,
+        "prelude must compile through HIR and MIR as a root unit: {}",
+        verdict.detail
+    );
+}
+
 /// The axis this round's defect lived on, over the real corpus.
 ///
 /// A driver that merely imports a module is enough: the import pulls the module
@@ -155,9 +193,13 @@ fn every_stdlib_file_checks_clean_as_a_root_compilation_unit() {
 /// (`Vec`, `HashMap`, `Option`, `Result`). That shape is reserved to the
 /// standard library, and a driver written outside `std/` is user code by
 /// definition, so the import is refused by an `E_HIR` rule about WHO may
-/// declare an impl — nothing to do with ownership or provenance. The root-unit
-/// case above still covers this file.
-const NOT_USER_IMPORTABLE: &[&str] = &["std::builtins"];
+/// declare an impl — nothing to do with ownership or provenance.
+///
+/// `std::prelude` is the compiler-owned, import-only authority manifest. Its
+/// imports publish the implicit source surface instead of forming a module
+/// that user programs import directly. The root-unit case above still covers
+/// both files.
+const NOT_USER_IMPORTABLE: &[&str] = &["std::builtins", "std::prelude"];
 
 #[test]
 fn a_stdlib_module_checks_the_same_through_an_import_as_it_does_as_a_root_unit() {
@@ -173,9 +215,10 @@ fn a_stdlib_module_checks_the_same_through_an_import_as_it_does_as_a_root_unit()
             continue;
         }
         let driver = dir.join(format!("{}.hew", module.replace("::", "_")));
+        let surface_module = module.replace("::", ".");
         std::fs::write(
             &driver,
-            format!("import {module};\n\nfn main() -> i64 {{\n    0\n}}\n"),
+            format!("import {surface_module};\n\nfn main() -> i64 {{\n    0\n}}\n"),
         )
         .expect("write driver");
 

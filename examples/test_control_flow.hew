@@ -70,13 +70,13 @@ fn test_match_integers() -> i64 {
 fn test_match_option() -> i64 {
     let some_val: Option<i64> = Some(42);
     let r1 = match some_val {
-        Some(v) => v,
-        None => -1,
+        .Some(v) => v,
+        .None => -1,
     };
     let none_val: Option<i64> = None;
     let r2 = match none_val {
-        Some(v) => v,
-        None => -1,
+        .Some(v) => v,
+        .None => -1,
     };
     if r1 == 42 {
         if r2 == -1 {
@@ -94,12 +94,12 @@ fn test_match_result() -> i64 {
     let ok_val: Result<i64, i64> = Ok(99);
     let err_val: Result<i64, i64> = Err(-1);
     let r1 = match ok_val {
-        Ok(v) => v,
-        Err(_) => -1,
+        .Ok(v) => v,
+        .Err(_) => -1,
     };
     let r2 = match err_val {
-        Ok(_v) => 0,
-        Err(e) => e,
+        .Ok(_v) => 0,
+        .Err(e) => e,
     };
     if r1 == 99 {
         if r2 == -1 {

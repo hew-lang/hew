@@ -1,11 +1,11 @@
 fn main() {
-    let x: HashMap<string, i64> = HashMap::new();
+    let x: HashMap<string, i64> = HashMap.new();
     x.insert("a", 1);
     x.insert("b", 2);
-    let y: HashMap<string, i64> = HashMap::new();
+    let y: HashMap<string, i64> = HashMap.new();
     y.insert("a", 2);
     y.insert("b", 3);
-    let v: Vec<HashMap<string, i64>> = Vec::new();
+    let v: Vec<HashMap<string, i64>> = Vec.new();
     v.push(x);
     v.push(y);
     let n = v.len();

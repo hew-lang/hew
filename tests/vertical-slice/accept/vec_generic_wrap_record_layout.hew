@@ -3,7 +3,7 @@ type Wrap<T> {
 }
 
 fn main() {
-    let values: Vec<Wrap<i64>> = Vec::new();
+    let values: Vec<Wrap<i64>> = Vec.new();
     values.push(Wrap { v: 10 });
     values.push(Wrap { v: 20 });
     values.push(Wrap { v: 30 });

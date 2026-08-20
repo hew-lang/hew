@@ -1,0 +1,5 @@
+import "flat_file_import_bare_fn_call_lib.hew";
+
+pub fn main() -> i64 {
+    double(21)
+}

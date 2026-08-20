@@ -17,10 +17,10 @@ fn kind(e: Event) -> string {
 }
 
 fn main() {
-    print(kind(Event::Click(1)));
+    print(kind(Event.Click(1)));
     print("\n");
-    print(kind(Event::Scroll(2)));
+    print(kind(Event.Scroll(2)));
     print("\n");
-    print(kind(Event::Idle));
+    print(kind(Event.Idle));
     print("\n");
 }

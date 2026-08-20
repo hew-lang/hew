@@ -411,7 +411,7 @@ fn hir_stmt_is_synthetic_vec_get_clone(stmt: &HirStmt) -> bool {
                             hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Get),
                         ref target_symbol,
                         ..
-                    } if target_symbol == "hew_vec_get_clone"
+                    } if matches!(target_symbol.as_str(), "hew_vec_get_clone" | "hew_vec_take_owned")
                 )
     )
 }
@@ -967,7 +967,11 @@ pub(super) fn terminator_escape_places(
             ..
         } => {
             // `MonitorRef::id` reads the handle without consuming it.
-            let borrows_owned_handle = callee == "MonitorRef::id";
+            let borrows_owned_handle = hew_types::has_builtin_associated_item_identity(
+                callee,
+                hew_types::BuiltinType::MonitorRef,
+                "id",
+            );
             args.iter()
                 .copied()
                 .filter(|place| {

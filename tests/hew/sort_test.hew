@@ -2,14 +2,14 @@
 //! reverse_* family. Each function returns a new vector; the original
 //! is never mutated.
 
-import std::sort;
-import std::testing;
+import std.sort;
+
+import std.testing;
 
 // ── sort_ints ─────────────────────────────────────────────────────────
-
 #[test]
 fn test_sort_ints_ascending_order() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(3);
     v.push(1);
     v.push(4);
@@ -26,7 +26,7 @@ fn test_sort_ints_ascending_order() {
 
 #[test]
 fn test_sort_ints_does_not_mutate_original() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(9);
     v.push(3);
     v.push(7);
@@ -38,7 +38,7 @@ fn test_sort_ints_does_not_mutate_original() {
 
 #[test]
 fn test_sort_ints_already_sorted() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(2);
     v.push(3);
@@ -50,7 +50,7 @@ fn test_sort_ints_already_sorted() {
 
 #[test]
 fn test_sort_ints_reverse_sorted_input() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(5);
     v.push(4);
     v.push(3);
@@ -63,7 +63,7 @@ fn test_sort_ints_reverse_sorted_input() {
 
 #[test]
 fn test_sort_ints_single_element() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(42);
     let out = sort.sort_ints(v);
     testing.assert_eq(out.len(), 1);
@@ -72,14 +72,14 @@ fn test_sort_ints_single_element() {
 
 #[test]
 fn test_sort_ints_empty() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     let out = sort.sort_ints(v);
     testing.assert_eq(out.len(), 0);
 }
 
 #[test]
 fn test_sort_ints_negative_values() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(0);
     v.push(-5);
     v.push(3);
@@ -93,13 +93,11 @@ fn test_sort_ints_negative_values() {
 
 #[test]
 fn test_sort_ints_comparison_bound_1024_reverse() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     for i in 0 .. 1024 {
         v.push(1023 - i);
     }
-
     let (out, comparisons) = sort.sort_ints_counted(v);
-
     // n * ceil(log2(n)) is a deterministic upper bound for the production
     // merge core. Selection sort performs 523,776 comparisons here.
     testing.assert_true(comparisons <= 1024 * 10);
@@ -112,12 +110,11 @@ fn test_sort_ints_comparison_bound_1024_reverse() {
 
 #[test]
 fn test_sort_ints_non_power_of_two_permutation_and_equal_values() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     for i in 0 .. 17 {
-        v.push((i * 7) % 5);
+        v.push(i * 7 % 5);
     }
     let out = sort.sort_ints(v);
-
     testing.assert_eq(out.len(), 17);
     for i in 1 .. out.len() {
         testing.assert_true(out[i - 1] <= out[i]);
@@ -131,12 +128,11 @@ fn test_sort_ints_non_power_of_two_permutation_and_equal_values() {
         output_sum = output_sum + out[i];
         input_squares = input_squares + v[i] * v[i];
         output_squares = output_squares + out[i] * out[i];
-        testing.assert_eq(v[i], (i * 7) % 5);
+        testing.assert_eq(v[i], i * 7 % 5);
     }
     testing.assert_eq(output_sum, input_sum);
     testing.assert_eq(output_squares, input_squares);
-
-    let equal: Vec<i64> = Vec::new();
+    let equal: Vec<i64> = Vec.new();
     for _i in 0 .. 33 {
         equal.push(7);
     }
@@ -148,10 +144,9 @@ fn test_sort_ints_non_power_of_two_permutation_and_equal_values() {
 }
 
 // ── sort_strings ──────────────────────────────────────────────────────
-
 #[test]
 fn test_sort_strings_alphabetical_order() {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     v.push("banana");
     v.push("apple");
     v.push("cherry");
@@ -164,7 +159,7 @@ fn test_sort_strings_alphabetical_order() {
 
 #[test]
 fn test_sort_strings_does_not_mutate_original() {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     v.push("zebra");
     v.push("ant");
     sort.sort_strings(v);
@@ -174,7 +169,7 @@ fn test_sort_strings_does_not_mutate_original() {
 
 #[test]
 fn test_sort_strings_single_element() {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     v.push("only");
     let out = sort.sort_strings(v);
     testing.assert_eq(out.len(), 1);
@@ -183,14 +178,14 @@ fn test_sort_strings_single_element() {
 
 #[test]
 fn test_sort_strings_empty() {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     let out = sort.sort_strings(v);
     testing.assert_eq(out.len(), 0);
 }
 
 #[test]
 fn test_sort_strings_duplicate_entries() {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     v.push("b");
     v.push("a");
     v.push("b");
@@ -202,7 +197,7 @@ fn test_sort_strings_duplicate_entries() {
 
 #[test]
 fn test_sort_strings_comparison_bound_256_duplicate_reverse() {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     for i in 0 .. 256 {
         let key = match i % 8 {
             0 => "hotel",
@@ -216,9 +211,7 @@ fn test_sort_strings_comparison_bound_256_duplicate_reverse() {
         };
         v.push(key);
     }
-
     let (out, comparisons) = sort.sort_strings_counted(v);
-
     // n * ceil(log2(n)) is a deterministic upper bound for the production
     // merge core. Selection sort performs 32,640 comparisons here.
     testing.assert_true(comparisons <= 256 * 8);
@@ -243,10 +236,9 @@ fn test_sort_strings_comparison_bound_256_duplicate_reverse() {
 }
 
 // ── sort_floats ───────────────────────────────────────────────────────
-
 #[test]
 fn test_sort_floats_ascending_order() {
-    let v: Vec<f64> = Vec::new();
+    let v: Vec<f64> = Vec.new();
     v.push(3.5);
     v.push(1.25);
     v.push(2.0);
@@ -259,7 +251,7 @@ fn test_sort_floats_ascending_order() {
 
 #[test]
 fn test_sort_floats_negative_values() {
-    let v: Vec<f64> = Vec::new();
+    let v: Vec<f64> = Vec.new();
     v.push(1.0);
     v.push(-3.0);
     v.push(0.5);
@@ -273,7 +265,7 @@ fn test_sort_floats_negative_values() {
 
 #[test]
 fn test_sort_floats_single_element() {
-    let v: Vec<f64> = Vec::new();
+    let v: Vec<f64> = Vec.new();
     v.push(9.9);
     let out = sort.sort_floats(v);
     testing.assert_eq(out.len(), 1);
@@ -282,16 +274,15 @@ fn test_sort_floats_single_element() {
 
 #[test]
 fn test_sort_floats_empty() {
-    let v: Vec<f64> = Vec::new();
+    let v: Vec<f64> = Vec.new();
     let out = sort.sort_floats(v);
     testing.assert_eq(out.len(), 0);
 }
 
 // ── reverse_ints ──────────────────────────────────────────────────────
-
 #[test]
 fn test_reverse_ints_three_elements() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(2);
     v.push(3);
@@ -303,7 +294,7 @@ fn test_reverse_ints_three_elements() {
 
 #[test]
 fn test_reverse_ints_does_not_mutate_original() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(2);
     v.push(3);
@@ -313,7 +304,7 @@ fn test_reverse_ints_does_not_mutate_original() {
 
 #[test]
 fn test_reverse_ints_single_element() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(7);
     let out = sort.reverse_ints(v);
     testing.assert_eq(out.len(), 1);
@@ -322,14 +313,14 @@ fn test_reverse_ints_single_element() {
 
 #[test]
 fn test_reverse_ints_empty() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     let out = sort.reverse_ints(v);
     testing.assert_eq(out.len(), 0);
 }
 
 #[test]
 fn test_reverse_then_sort_round_trips() {
-    let v: Vec<i64> = Vec::new();
+    let v: Vec<i64> = Vec.new();
     v.push(3);
     v.push(1);
     v.push(2);
@@ -342,10 +333,9 @@ fn test_reverse_then_sort_round_trips() {
 }
 
 // ── reverse_strings ───────────────────────────────────────────────────
-
 #[test]
 fn test_reverse_strings_three_elements() {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     v.push("a");
     v.push("b");
     v.push("c");
@@ -357,7 +347,7 @@ fn test_reverse_strings_three_elements() {
 
 #[test]
 fn test_reverse_strings_single_element() {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     v.push("solo");
     let out = sort.reverse_strings(v);
     testing.assert_eq(out.len(), 1);
@@ -366,16 +356,15 @@ fn test_reverse_strings_single_element() {
 
 #[test]
 fn test_reverse_strings_empty() {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     let out = sort.reverse_strings(v);
     testing.assert_eq(out.len(), 0);
 }
 
 // ── reverse_floats ────────────────────────────────────────────────────
-
 #[test]
 fn test_reverse_floats_three_elements() {
-    let v: Vec<f64> = Vec::new();
+    let v: Vec<f64> = Vec.new();
     v.push(1.0);
     v.push(2.5);
     v.push(3.0);
@@ -387,7 +376,7 @@ fn test_reverse_floats_three_elements() {
 
 #[test]
 fn test_reverse_floats_single_element() {
-    let v: Vec<f64> = Vec::new();
+    let v: Vec<f64> = Vec.new();
     v.push(4.4);
     let out = sort.reverse_floats(v);
     testing.assert_eq(out.len(), 1);
@@ -396,7 +385,7 @@ fn test_reverse_floats_single_element() {
 
 #[test]
 fn test_reverse_floats_empty() {
-    let v: Vec<f64> = Vec::new();
+    let v: Vec<f64> = Vec.new();
     let out = sort.reverse_floats(v);
     testing.assert_eq(out.len(), 0);
 }

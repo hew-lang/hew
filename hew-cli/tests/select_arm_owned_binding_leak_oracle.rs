@@ -81,7 +81,7 @@ fn ask_unused_binding_loop_source(frames: usize) -> String {
 /// `select` and is a separate seam.
 fn recv_unused_binding_loop_source(frames: usize) -> String {
     format!(
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n\
@@ -110,7 +110,7 @@ fn recv_unused_binding_loop_source(frames: usize) -> String {
 /// no drop of an unwritten slot.
 fn after_wins_owned_losers_loop_source(frames: usize) -> String {
     format!(
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor SlowReplier {{\n\
          \x20   receive fn fetch() -> string {{\n\

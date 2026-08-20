@@ -6,9 +6,9 @@
 //! The visual output shape (coloured text / NDJSON) is verified by the
 //! integration probes in examples/log/ which are run with `hew run`.
 
-import std::misc::log;
+import std.misc.log;
 
-import std::testing;
+import std.testing;
 
 // ── Level and format constants ────────────────────────────────────────────────
 #[test]
@@ -199,7 +199,7 @@ fn test_set_format_and_get_format_round_trip() {
 fn test_logger_info_does_not_crash() {
     log.setup();
     let lg = log.new_logger(log.INFO, log.TEXT);
-    let fields: Vec<string> = Vec::new();
+    let fields: Vec<string> = Vec.new();
     fields.push(log.field("k", "v"));
     log.logger_info(lg, "test message", fields);
     testing.assert_true(true);
@@ -209,7 +209,7 @@ fn test_logger_info_does_not_crash() {
 fn test_logger_with_empty_fields_does_not_crash() {
     log.setup();
     let lg = log.new_logger(log.INFO, log.TEXT);
-    let empty: Vec<string> = Vec::new();
+    let empty: Vec<string> = Vec.new();
     log.logger_info(lg, "no fields", empty);
     testing.assert_true(true);
 }
@@ -218,7 +218,7 @@ fn test_logger_with_empty_fields_does_not_crash() {
 fn test_logger_debug_filtered_at_info_level_does_not_crash() {
     log.setup();
     let lg = log.new_logger(log.INFO, log.TEXT);
-    let fields: Vec<string> = Vec::new();
+    let fields: Vec<string> = Vec.new();
     fields.push(log.field("should_not_appear", "true"));
     log.logger_debug(lg, "filtered message", fields);
     testing.assert_true(true);
@@ -228,7 +228,7 @@ fn test_logger_debug_filtered_at_info_level_does_not_crash() {
 fn test_logger_json_format_does_not_crash() {
     log.setup();
     let lg = log.new_logger(log.INFO, log.JSON);
-    let fields: Vec<string> = Vec::new();
+    let fields: Vec<string> = Vec.new();
     fields.push(log.field("svc", "auth"));
     fields.push(log.field_int("uid", 42));
     log.logger_info(lg, "json output", fields);
@@ -239,7 +239,7 @@ fn test_logger_json_format_does_not_crash() {
 #[test]
 fn test_info_with_does_not_crash() {
     log.setup();
-    let fields: Vec<string> = Vec::new();
+    let fields: Vec<string> = Vec.new();
     fields.push(log.field_int("port", 8080));
     fields.push(log.field("env", "test"));
     log.info_with("module level", fields);
@@ -249,7 +249,7 @@ fn test_info_with_does_not_crash() {
 #[test]
 fn test_error_with_does_not_crash() {
     log.setup();
-    let fields: Vec<string> = Vec::new();
+    let fields: Vec<string> = Vec.new();
     fields.push(log.field_int("status", 500));
     log.error_with("request failed", fields);
     testing.assert_true(true);
@@ -258,7 +258,7 @@ fn test_error_with_does_not_crash() {
 #[test]
 fn test_debug_with_filtered_at_info_level_does_not_crash() {
     log.set_level(log.INFO);
-    let fields: Vec<string> = Vec::new();
+    let fields: Vec<string> = Vec.new();
     fields.push(log.field("key", "x"));
     log.debug_with("should be filtered", fields);
     testing.assert_true(true);

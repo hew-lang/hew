@@ -112,7 +112,7 @@ fn structural_coverage_ratchet_is_pinned() {
     );
     assert_eq!(
         manifest.backlog.len(),
-        40,
+        39,
         "review every backlog row change"
     );
     assert_eq!(

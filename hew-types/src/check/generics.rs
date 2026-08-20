@@ -1017,7 +1017,7 @@ impl Checker {
             // Arity mismatch — return on first found.
             if trait_sig.params.len() != type_sig.params.len() {
                 return vec![format!(
-                    "`{type_name}::{method_name}` has {} parameter(s) but trait \
+                    "`{type_name}.{method_name}` has {} parameter(s) but trait \
                      `{trait_display}` requires {} — arity mismatch",
                     type_sig.params.len(),
                     trait_sig.params.len(),
@@ -1030,7 +1030,7 @@ impl Checker {
                 .substitute_named_param("Self", &concrete_ty);
             if expected_ret != type_sig.return_type {
                 return vec![format!(
-                    "`{type_name}::{method_name}` returns `{}` but trait `{trait_display}` \
+                    "`{type_name}.{method_name}` returns `{}` but trait `{trait_display}` \
                      requires `{}` — return-type mismatch",
                     type_sig.return_type.user_facing(),
                     expected_ret.user_facing(),
@@ -1047,7 +1047,7 @@ impl Checker {
                 let expected = trait_param.substitute_named_param("Self", &concrete_ty);
                 if expected != *type_param {
                     return vec![format!(
-                        "`{type_name}::{method_name}` parameter {} has type `{}` but \
+                        "`{type_name}.{method_name}` parameter {} has type `{}` but \
                          trait `{trait_display}` requires `{}` — type mismatch",
                         i + 1,
                         type_param.user_facing(),
@@ -1229,7 +1229,17 @@ impl Checker {
             ),
             _ => None,
         });
-        identity.is_some_and(|identity| self.type_identity_implements_trait(&identity, trait_name))
+        if identity
+            .as_deref()
+            .is_some_and(|identity| self.type_identity_implements_trait(identity, trait_name))
+        {
+            return true;
+        }
+        let Ty::Named { name, args, .. } = ty else {
+            return false;
+        };
+        self.alias_target_for_instance(name, args)
+            .is_some_and(|target| self.type_implements_trait_for_ty(&target, trait_name))
     }
 
     /// Check if `child_trait` transitively extends `parent_trait`.

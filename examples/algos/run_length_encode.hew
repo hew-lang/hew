@@ -1,5 +1,5 @@
 // Run-length encoding
-import std::string;
+import std.string;
 
 fn rle_encode(s: string) -> string {
     let n = s.len();

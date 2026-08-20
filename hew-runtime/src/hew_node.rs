@@ -5182,8 +5182,8 @@ pub unsafe extern "C" fn hew_node_api_register(
 
 /// `Node::register<T>(name, pid)` — Register a named actor by bare PID.
 ///
-/// Per registry R81 (2026-05-23), `LocalPid<T>` lowers to a bare `u64` PID
-/// at this ABI boundary rather than a `*mut HewActor` pointer. The caller
+/// `LocalPid<T>` lowers to a bare `u64` PID at this ABI boundary rather than a
+/// `*mut HewActor` pointer. The caller
 /// extracts the PID via `hew_actor_pid` before passing it here.
 ///
 /// Returns 0 on success, -1 on any of the fail-closed conditions:

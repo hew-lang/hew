@@ -80,11 +80,11 @@ fn vec_i32_get_and_set_accept_i32_index_values() {
         "vec_i32_get_set_i32_index",
         r#"
         fn main() {
-            let queue: Vec<i32> = Vec::new();
+            let queue: Vec<i32> = Vec.new();
             queue.push(1);
             queue.push(2);
 
-            let offsets: Vec<i32> = Vec::new();
+            let offsets: Vec<i32> = Vec.new();
             offsets.push(10);
             offsets.push(20);
             offsets.push(30);

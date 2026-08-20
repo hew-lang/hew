@@ -1272,6 +1272,61 @@ fn foo(s: Shape) -> i64 {
 
 // ── Generic machine transition-body inference (Lane B S8 prerequisite) ────
 
+#[test]
+fn composite_machine_transition_accepts_contextual_target() {
+    let output = check_source(
+        r"
+        machine Connection {
+            events { Connect; }
+
+            state Disconnected;
+            state Connected {
+                initial state Authenticating;
+                state Active;
+            }
+
+            on Connect: Disconnected => .Authenticating;
+            on Connect: Authenticating => .Active;
+            on Connect: Active => Disconnected;
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "contextual composite transition targets must type-check: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn machine_transition_contextual_target_rejects_unknown_state() {
+    // A contextual target resolves against the machine's state enum. A name
+    // that is not a state must be a hard error, not a silently-accepted
+    // identifier.
+    let output = check_source(
+        r"
+        machine Switch {
+            events { Toggle; }
+
+            state Off;
+            state On;
+
+            on Toggle: Off => .Nope;
+            on Toggle: On => .Off;
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::PathMemberNotFound && error.message.contains("`Nope`")
+        }),
+        "an unknown contextual target must report E_PATH_MEMBER_NOT_FOUND: {:#?}",
+        output.errors
+    );
+}
+
 /// Bare struct-state constructor in a generic machine transition body must
 /// type-check when the machine has type params and the state has a generic
 /// field.  `Faulted { error: event.error }` must resolve without errors.

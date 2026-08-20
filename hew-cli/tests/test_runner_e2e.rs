@@ -123,6 +123,21 @@ fn project_test_imports_source_module_from_project_root() {
 }
 
 #[test]
+fn project_test_fixture_check_uses_enclosing_manifest_for_source_imports() {
+    require_codegen();
+
+    let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test_project_root_fixture");
+    let output = run_hew_in(&project, &["check", "tests/project_root_test.hew"]);
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn relative_string_import_resolves_from_test_file() {
     require_codegen();
 

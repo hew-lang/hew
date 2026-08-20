@@ -72,14 +72,21 @@ print_timeout_scaling() {
 # Per-command stuck ceilings from the local preflight timing audit.  These are
 # measurement-only hang budgets, not coverage skips or bypasses.  The effective
 # timeout is max(command floor, lane tier), so narrow lanes get enough time for
-# known-long suites while the fallback's 600s ceiling remains unchanged.
+# known-long suites while retaining finite stuck ceilings for every command.
 command_timeout_floor() {
     local cmd="$1"
     case "$cmd" in
         "make ci-preflight-smoke") echo 420 ;;
-        "make lint") echo 90 ;;
+        # A warm lint run measured 698 s on the 16-core developer machine.
+        # Add roughly 35% cache and host-load headroom, rounded to 945 s, while
+        # retaining a finite stuck ceiling.
+        "make lint") echo 945 ;;
         "make playground-check") echo 150 ;;
-        "make test") echo 360 ;;
+        # A warm workspace make test run measured 1129 s for 14,050 nextest
+        # tests on the 16-core developer machine.  Add roughly 35% cache and
+        # host-load headroom, rounded to 1530 s, while retaining a finite stuck
+        # ceiling.
+        "make test") echo 1530 ;;
         # test-compiler-pipeline carries the hew-cli consumer corpus (compiled
         # leak/drop oracles + e2e suites).  The 600 s figure came from ~234 s
         # on a warm 16-core developer machine; hosted runners have far fewer

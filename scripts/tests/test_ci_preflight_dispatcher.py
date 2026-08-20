@@ -173,14 +173,16 @@ def test_dry_run_scales_every_budget_from_detected_parallelism() -> None:
     assert "Host parallelism: 8 (nproc)" in result.stdout, result.stdout
     assert "max(1, 16 / 8) = 2.00x" in result.stdout, result.stdout
     assert "ceil(baseline * 16 / 8)" in result.stdout, result.stdout
-    assert "make lint  (budget: 1200s)" in result.stdout, result.stdout
+    assert "make lint  (budget: 1890s)" in result.stdout, result.stdout
+    assert "make test  (budget: 3060s)" in result.stdout, result.stdout
     assert "make test-hew-ratchet  (budget: 3000s)" in result.stdout, result.stdout
     assert "make test-o2-differential  (budget: 5400s)" in result.stdout, result.stdout
 
     fast_result = run_dispatcher("some-unclassified-root-file.txt", parallelism=32)
     assert fast_result.returncode == 0, fast_result.stderr
     assert "max(1, 16 / 32) = 1.00x" in fast_result.stdout, fast_result.stdout
-    assert "make lint  (budget: 600s)" in fast_result.stdout, fast_result.stdout
+    assert "make lint  (budget: 945s)" in fast_result.stdout, fast_result.stdout
+    assert "make test  (budget: 1530s)" in fast_result.stdout, fast_result.stdout
     assert "make test-hew-ratchet  (budget: 1500s)" in fast_result.stdout, (
         fast_result.stdout
     )

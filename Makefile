@@ -1483,9 +1483,8 @@ coverage-branch:
 # Validates that every hew-runtime #[no_mangle] export is classified in
 # scripts/jit-symbol-classification.toml (stable vs internal).
 
-verify-ffi:
+verify-ffi: cabi-surface-check
 	python3 scripts/verify-ffi-symbols.py --classify stable --validate > /dev/null
-	python3 scripts/generate-cabi-surface.py --check
 
 test-verify-ffi:
 	python3 scripts/tests/test_verify_ffi_symbols.py

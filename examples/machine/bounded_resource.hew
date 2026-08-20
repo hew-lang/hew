@@ -57,5 +57,5 @@ machine Bounded<T: Resource> {
 
 fn main() {
     let f = File { raw: 7 };
-    let holder: Bounded<File> = .Holding { handle: f };
+    let _holder: Bounded<File> = Bounded.Holding { handle: f };
 }

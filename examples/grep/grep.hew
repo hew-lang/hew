@@ -51,7 +51,7 @@ type MatchState {
 fn parse_args() -> Result<Config, string> {
     let argc = os.args_count();
     if argc < 2 {
-        return .Err("usage: grep [FLAGS] PATTERN [FILE...]");
+        return Result.Err("usage: grep [FLAGS] PATTERN [FILE...]");
     }
     var flag_i = false;
     var flag_n = false;
@@ -70,7 +70,7 @@ fn parse_args() -> Result<Config, string> {
             if arg == "--" {
                 i = i + 1;
                 if i >= argc {
-                    return .Err("grep: missing pattern after --");
+                    return Result.Err("grep: missing pattern after --");
                 }
                 pattern = os.args(i);
                 pattern_set = true;
@@ -93,7 +93,7 @@ fn parse_args() -> Result<Config, string> {
                 } else if ch == "r" {
                     flag_r = true;
                 } else {
-                    return .Err(f"grep: unknown flag: -{ch}");
+                    return Result.Err(f"grep: unknown flag: -{ch}");
                 }
                 fi = fi + 1;
             }
@@ -106,9 +106,9 @@ fn parse_args() -> Result<Config, string> {
         i = i + 1;
     }
     if !pattern_set {
-        return .Err("grep: missing pattern");
+        return Result.Err("grep: missing pattern");
     }
-    .Ok(Config { pattern: pattern, flag_i: flag_i, flag_n: flag_n, flag_v: flag_v, flag_c: flag_c, flag_r: flag_r, files: files })
+    Result.Ok(Config { pattern: pattern, flag_i: flag_i, flag_n: flag_n, flag_v: flag_v, flag_c: flag_c, flag_r: flag_r, files: files })
 }
 
 // ── Line-by-line matching ──────────────────────────────────────────────────────

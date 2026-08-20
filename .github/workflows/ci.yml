@@ -249,6 +249,9 @@ jobs:
       - name: Verify FreeBSD workflow contract
         run: make freebsd-workflow-contract-check
 
+      - name: Verify tool pin contract
+        run: make tool-pin-contract-check
+
       - name: Verify sanitizer gate wiring
         run: make check-sanitizer-gate
 

@@ -153,7 +153,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           rustup target add wasm32-wasip1
-          WASMTIME_TAG="$(gh release view --repo bytecodealliance/wasmtime --json tagName --jq .tagName)"
+          WASMTIME_TAG="${WASMTIME_VERSION}"
           WASMTIME_DIR="wasmtime-${WASMTIME_TAG}-x86_64-linux"
           .github/scripts/retry-download.sh \
             gh release download "$WASMTIME_TAG" --repo bytecodealliance/wasmtime \

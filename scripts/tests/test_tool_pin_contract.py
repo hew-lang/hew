@@ -47,6 +47,11 @@ def _assert_pins(
 
     for workflow in (ci, coverage, release_gate):
         assert 'WASMTIME_VERSION: "v47.0.2"' in workflow
+    assert 'WASMTIME_TAG="${WASMTIME_VERSION}"' in coverage
+    assert (
+        'gh release download "$WASMTIME_TAG" --repo bytecodealliance/wasmtime'
+        in coverage
+    )
     assert '$version = "${{ env.WASMTIME_VERSION }}"' in release_gate
     assert 'WASMTIME_VERSION: "v47.0.3"' not in release_gate
 
@@ -91,6 +96,25 @@ def test_pin_contract_rejects_workflow_drift() -> None:
     raise AssertionError("the tool-pin contract accepted a mismatched CI pin")
 
 
+def test_pin_contract_rejects_installer_drift() -> None:
+    coverage = COVERAGE.read_text().replace(
+        'WASMTIME_TAG="${WASMTIME_VERSION}"', 'WASMTIME_TAG="v47.0.3"', 1
+    )
+    try:
+        _assert_pins(
+            XTASK.read_text(),
+            CI.read_text(),
+            coverage,
+            RELEASE_GATE.read_text(),
+            FREEBSD.read_text(),
+            SETUP_WASM_PACK.read_text(),
+        )
+    except AssertionError:
+        return
+    raise AssertionError("the tool-pin contract accepted a mismatched installer pin")
+
+
 if __name__ == "__main__":
     test_workflow_pins_match_the_xtask_graph()
     test_pin_contract_rejects_workflow_drift()
+    test_pin_contract_rejects_installer_drift()

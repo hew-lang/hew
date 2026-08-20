@@ -303,7 +303,7 @@ pub fn normalize(p: string) -> string {
     }
     let rooted = p.starts_with("/");
     let parts = p.split("/");
-    let stack: Vec<string> = Vec::new();
+    let stack: Vec<string> = Vec.new();
     for i in 0 .. parts.len() {
         let seg = parts[i];
         if seg == "" || seg == "." {

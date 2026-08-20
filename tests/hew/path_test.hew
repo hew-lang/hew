@@ -1,4 +1,4 @@
-//! Tests for the std::path pure helper functions.
+//! Tests for the std.path pure helper functions.
 
 import std.fs;
 

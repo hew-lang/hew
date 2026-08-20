@@ -65,54 +65,6 @@ runtime-call-authority	runtime-call-family-use	hew-mir/src/lower/vec_index.rs	2	
 runtime-call-authority	runtime-call-family-use	hew-mir/src/runtime_symbols.rs	3	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-use	hew-types/src/runtime_call.rs	16	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	229	stage-4	typed runtime-family dispatch carrier
-semantic-leaf-name	leaf-rsplit-field	hew-analysis/src/hover.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-field	hew-analysis/src/inlay_hints.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-field	hew-analysis/src/signature_help.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-field	hew-mir/src/lower/consts.rs	1	stage-4	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-field	hew-types/src/check/calls.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-field	hew-types/src/check/diagnostics.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-field	hew-types/src/check/expressions.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-field	hew-types/src/check/patterns.rs	11	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-field	hew-types/src/check/registration.rs	4	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-field	hew-types/src/check/resolution.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-field	hew-types/src/stdlib_loader.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-identifier	hew-types/src/check/registration.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-analysis/src/completions.rs	1	stage-1	reviewed module-qualified actor completion compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-analysis/src/signature_help.rs	1	stage-1	reviewed editor-buffer binding split; the buffer holds a spelling and the binding resolves through module_import_bindings
-semantic-leaf-name	leaf-rsplit-once-field	hew-hir/src/lower.rs	12	stage-1	reviewed unique imported constructor and canonical impl-body owner compatibility seams
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/builtin_type.rs	1	stage-1	reviewed dotted builtin-type leaf extraction
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/calls.rs	4	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/expressions.rs	4	stage-1	reviewed qualified-variant surface split resolved through expected-nominal identity
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/generics.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/methods.rs	8	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/registration.rs	8	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/resolution.rs	13	stage-1	reviewed root builtin-shadow owner filtering plus remaining leaf-name presentation or compatibility seams
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/error.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/ffi_contracts.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/lib.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/module_registry.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/ty.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-field	hew-types/src/check/resolution.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-field	hew-types/src/check/types.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-analysis/src/hover.rs	4	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-analysis/src/signature_help.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-codegen-rs/src/llvm.rs	10	stage-5	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-hir/src/lower.rs	12	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-hir/src/stdlib_catalog.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-mir/src/lib.rs	1	stage-4	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-mir/src/lower/drop_plan.rs	3	stage-3	reviewed remaining leaf-name presentation or compatibility seam after exact resource owner cutover
-semantic-leaf-name	short-name-identifier	hew-mir/src/lower/mod.rs	1	stage-3	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-types/src/check/calls.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-types/src/check/expressions.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-types/src/check/generics.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-types/src/check/mod.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-types/src/check/patterns.rs	27	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-types/src/check/registration.rs	4	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-types/src/check/resolution.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-types/src/check/types.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-types/src/lib.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-types/src/module_registry.rs	4	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-types/src/stdlib_loader.rs	5	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-owner-shortening-sink	registry-key	hew-types/src/check/registration.rs	8	stage-1	reviewed remaining owner-shortening sink
 string-method-identity	qualified-format-macro	hew-analysis/src/hover.rs	5	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-analysis/src/inlay_hints.rs	5	stage-1	reviewed qualified string identity construction

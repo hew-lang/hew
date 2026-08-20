@@ -9,11 +9,11 @@ use serde_json::Value;
 type Result<T> = std::result::Result<T, String>;
 
 const NEXTEST: &str = "cargo-nextest@0.9.99";
-const CARGO_DENY: &str = "cargo-deny@0.20.2";
-const CARGO_ABOUT: &str = "cargo-about@0.9.1";
+const CARGO_DENY: &str = "cargo-deny@0.19.6";
+const CARGO_ABOUT: &str = "cargo-about@0.9.0";
 const LLVM_COV: &str = "cargo-llvm-cov@0.8.7";
-const WASM_PACK: &str = "wasm-pack@0.15.0";
-const WASMTIME: &str = "wasmtime@47.0.3";
+const WASM_PACK: &str = "wasm-pack@0.13.1";
+const WASMTIME: &str = "wasmtime@47.0.2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Profile {
@@ -43,7 +43,7 @@ pub(crate) fn run(args: &[String], root: &Path) -> Result<()> {
     match command {
         "build" => build(root, &parse_build_options(&args[1..])?),
         "gate" => gate(root, &args[1..]),
-        "tools" => tools(&args[1..]),
+        "tools" => tools(root, &args[1..]),
         "ci-local" => ci_local(root, &args[1..]),
         "help" | "--help" | "-h" => {
             println!("{}", usage());
@@ -146,7 +146,7 @@ fn build_native(root: &Path, profile: Profile, target: Option<&str>, all_bins: b
 }
 
 fn build_libhew(root: &Path, profile: Profile, target: Option<&str>) -> Result<()> {
-    let mut cargo_args = vec!["cargo", "build", "-p", "hew-lib"];
+    let mut cargo_args = vec!["build", "-p", "hew-lib"];
     match profile {
         Profile::Debug => {}
         Profile::Release => cargo_args.extend(["--profile", "release-lib"]),
@@ -165,11 +165,12 @@ fn build_libhew(root: &Path, profile: Profile, target: Option<&str>) -> Result<(
             .arg("--debug-dir")
             .arg(output)
             .arg("--")
+            .arg(cargo_executable())
             .args(cargo_args);
         run_command(&mut command, "build and certify libhew")
     } else {
-        let mut command = Command::new(cargo_args[0]);
-        command.current_dir(root).args(&cargo_args[1..]);
+        let mut command = Command::new(cargo_executable());
+        command.current_dir(root).args(cargo_args);
         run_command(&mut command, "build release libhew")
     }
 }
@@ -299,7 +300,7 @@ fn compiled_hew_script(root: &Path, script: &str, args: &[&str]) -> Result<()> {
     run_command(&mut command, script)
 }
 
-fn tools(args: &[String]) -> Result<()> {
+fn tools(root: &Path, args: &[String]) -> Result<()> {
     let mut gates = None;
     let mut field = "tools";
     let mut verify = false;
@@ -324,9 +325,10 @@ fn tools(args: &[String]) -> Result<()> {
             other => return Err(format!("unknown tools option {other:?}")),
         }
     }
-    let plan = ToolPlan::for_gates(gates.as_deref().unwrap_or(""))?;
+    let gates = gates.ok_or_else(|| "tools requires a gate list".to_string())?;
+    let plan = ToolPlan::for_gates(&gates)?;
     if verify {
-        return plan.verify();
+        return plan.verify(root);
     }
     match field {
         "tools" => println!("{}", plan.tools.into_iter().collect::<Vec<_>>().join(",")),
@@ -346,6 +348,9 @@ struct ToolPlan {
 
 impl ToolPlan {
     fn for_gates(input: &str) -> Result<Self> {
+        if !input.split(',').any(|gate| !gate.trim().is_empty()) {
+            return Err("tools requires at least one gate".to_string());
+        }
         let mut plan = Self::default();
         for gate in input
             .split(',')
@@ -374,15 +379,15 @@ impl ToolPlan {
         Ok(plan)
     }
 
-    fn verify(&self) -> Result<()> {
+    fn verify(&self, root: &Path) -> Result<()> {
         for tool in &self.tools {
             let (binary, expected) = match *tool {
                 NEXTEST => ("cargo-nextest", "0.9.99"),
-                CARGO_DENY => ("cargo-deny", "0.20.2"),
-                CARGO_ABOUT => ("cargo-about", "0.9.1"),
+                CARGO_DENY => ("cargo-deny", "0.19.6"),
+                CARGO_ABOUT => ("cargo-about", "0.9.0"),
                 LLVM_COV => ("cargo-llvm-cov", "0.8.7"),
-                WASM_PACK => ("wasm-pack", "0.15.0"),
-                WASMTIME => ("wasmtime", "47.0.3"),
+                WASM_PACK => ("wasm-pack", "0.13.1"),
+                WASMTIME => ("wasmtime", "47.0.2"),
                 _ => return Err(format!("no verifier for {tool}")),
             };
             let output = Command::new(binary)
@@ -402,13 +407,12 @@ impl ToolPlan {
             println!("verified {binary} {expected}");
         }
         if self.ast_grep {
-            let binary = Path::new(".ast-grep/tool/bin").join(executable("ast-grep"));
-            let status = Command::new(&binary)
-                .arg("--version")
+            let binary = ast_grep_binary(root);
+            let status = ast_grep_command(root)
                 .status()
                 .map_err(|err| format!("execute {}: {err}", binary.display()))?;
             ensure_success(status, "verify ast-grep")?;
-            if !Path::new(".ast-grep/hew-lang.so").is_file() {
+            if !root.join(".ast-grep/hew-lang.so").is_file() {
                 return Err(".ast-grep/hew-lang.so is missing".to_string());
             }
         }
@@ -416,15 +420,25 @@ impl ToolPlan {
     }
 }
 
+fn ast_grep_binary(root: &Path) -> PathBuf {
+    root.join(".ast-grep/tool/bin").join(executable("ast-grep"))
+}
+
+fn ast_grep_command(root: &Path) -> Command {
+    let mut command = Command::new(ast_grep_binary(root));
+    command.current_dir(root).arg("--version");
+    command
+}
+
 fn ci_local(root: &Path, args: &[String]) -> Result<()> {
     let mut command = Command::new("act");
     command
         .current_dir(root)
-        .args(["workflow_dispatch", "-W", ".github/workflows/ci-local.yml"]);
+        .args(["workflow_dispatch", "-W", ".github/workflows/ci.yml"]);
     if args == ["--list"] {
         command.arg("--list");
     } else if args.is_empty() {
-        command.args(["-j", "provisioning-smoke"]);
+        command.args(["-j", "lint"]);
     } else {
         return Err("ci-local accepts only --list".to_string());
     }
@@ -530,5 +544,25 @@ mod tests {
     #[test]
     fn tool_plan_rejects_unknown_gates() {
         assert!(ToolPlan::for_gates("workspace,typo").is_err());
+    }
+
+    #[test]
+    fn tool_plan_rejects_an_empty_gate_list() {
+        assert_eq!(
+            ToolPlan::for_gates(" , ").unwrap_err(),
+            "tools requires at least one gate"
+        );
+        assert_eq!(
+            tools(Path::new("/tmp/hew-workspace"), &[]).unwrap_err(),
+            "tools requires a gate list"
+        );
+    }
+
+    #[test]
+    fn ast_grep_verification_uses_the_workspace_root() {
+        let root = Path::new("/tmp/hew-workspace");
+        let command = ast_grep_command(root);
+        assert_eq!(command.get_program(), ast_grep_binary(root));
+        assert_eq!(command.get_current_dir(), Some(root));
     }
 }

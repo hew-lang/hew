@@ -117,7 +117,7 @@ jobs:
 
             # Install cargo-nextest for slow-timeout envelope (FreeBSD's pkg
             # does not yet carry cargo-nextest, so install via cargo).
-            cargo install cargo-nextest --locked
+            cargo install cargo-nextest --locked --version 0.9.99
 
             # Default features include "full" (encryption + profiler + quic),
             # so all QUIC transport tests run without an explicit flag.

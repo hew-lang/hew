@@ -706,7 +706,7 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         with:
           targets: wasm32-unknown-unknown
-          tools: nextest
+          tools: nextest@0.9.99
           cache-shared-key: build-test-linux
 
       - name: Install WASI target
@@ -846,7 +846,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
-          tools: nextest
+          tools: nextest@0.9.99
           cache-shared-key: build-test-windows
 
       - name: Build Rust crates
@@ -1028,7 +1028,7 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         with:
           targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
-          tools: nextest
+          tools: nextest@0.9.99
           cache-shared-key: build-test-macos
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}

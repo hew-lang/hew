@@ -307,14 +307,16 @@ fn load_project_context(
 ) -> Result<ProjectContext, FrontendFailure> {
     let source = std::fs::read_to_string(input)
         .map_err(|e| FrontendFailure::message_only(format!("Error: cannot read {input}: {e}")))?;
+    let input_dir = Path::new(input).parent().unwrap_or(Path::new("."));
     let project_dir = options
         .and_then(|options| options.project_dir.clone())
-        .unwrap_or_else(|| {
-            Path::new(input)
-                .parent()
-                .unwrap_or(Path::new("."))
-                .to_path_buf()
-        });
+        .or_else(|| {
+            input_dir
+                .ancestors()
+                .find(|dir| dir.join("hew.toml").is_file())
+                .map(Path::to_path_buf)
+        })
+        .unwrap_or_else(|| input_dir.to_path_buf());
     let (manifest_deps, package_name) = load_manifest_metadata(&project_dir)?;
     Ok(ProjectContext {
         source,

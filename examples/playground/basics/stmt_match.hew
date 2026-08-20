@@ -9,20 +9,20 @@ enum Color {
 
 fn describe(c: Color) {
     match c {
-        Red => println("red"),
-        Green => println("green"),
-        Blue => println("blue"),
+        .Red => println("red"),
+        .Green => println("green"),
+        .Blue => println("blue"),
     }
 }
 
 fn main() {
-    describe(Red);
-    describe(Green);
-    describe(Blue);
+    describe(.Red);
+    describe(.Green);
+    describe(.Blue);
     let c = Green;
     match c {
-        Red => println("stop"),
-        Green => println("go"),
-        Blue => println("other"),
+        .Red => println("stop"),
+        .Green => println("go"),
+        .Blue => println("other"),
     }
 }

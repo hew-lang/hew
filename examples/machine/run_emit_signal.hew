@@ -59,11 +59,11 @@ machine Signal {
 fn main() {
     var s = Idle;
     println(s.state_name());
-    s.step(Start);
+    s.step(.Start);
     println(s.state_name());
-    println(s.take_emits(Ready));
-    println(s.take_emits(Ready));
-    println(s.take_emits(Stop));
-    s.step(Stop);
+    println(s.take_emits(.Ready));
+    println(s.take_emits(.Ready));
+    println(s.take_emits(.Stop));
+    s.step(.Stop);
     println(s.state_name());
 }

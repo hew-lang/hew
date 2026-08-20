@@ -20,13 +20,13 @@ enum Shape {
 
 fn describe_shape(s: Shape) {
     match s {
-        Circle => {
+        .Circle => {
             println("  A circle")
         },
-        Square => {
+        .Square => {
             println("  A square")
         },
-        Triangle => {
+        .Triangle => {
             println("  A triangle")
         },
     }
@@ -122,8 +122,8 @@ fn main() {
     c.increment();
     let r = await c.get_count();
     match r {
-        Ok(count) => println(f"  Counter after 3 increments: {count}"),
-        Err(_) => println("  Counter: ask failed"),
+        .Ok(count) => println(f"  Counter after 3 increments: {count}"),
+        .Err(_) => println("  Counter: ask failed"),
     }
     // 10. Boolean operators
     println("10. Boolean operators:");

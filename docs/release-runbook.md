@@ -127,9 +127,26 @@ HEW_MACOS_LLVM_PREFIX=/opt/homebrew/opt/llvm@22
 LINUX_AARCH64_HOST=user@ubuntu-24-arm-host
 FREEBSD_HOST=user@freebsd-host
 WINDOWS_HOST=user@windows-host
-# Required for Windows validation; prepared by the release packaging step.
+# Required for Windows validation; build it with `make windows-release-candidate`
+# (archives the committed HEAD tree — Cargo.toml/Cargo.lock/crate sources —
+# since scripts/windows-release-build.ps1 runs `cargo build` on the Windows
+# host itself; it does not consume precompiled artifacts).
 HEW_WINDOWS_CANDIDATE_ARCHIVE=/absolute/path/to/hew-windows-candidate.tar.gz
 ```
+
+Build the candidate archive from the repo root before running Windows
+validation:
+
+```bash
+make windows-release-candidate
+export HEW_WINDOWS_CANDIDATE_ARCHIVE="$(pwd)/hew-windows-candidate.tar.gz"
+```
+
+The Windows host must also have a populated Cargo cache for the workspace's
+locked dependencies: `windows-release-build.ps1` runs
+`cargo fetch --locked --offline` before building and fails validation outright
+if that cache is missing, so run `cargo fetch --locked` (online) on the
+Windows host at least once beforehand.
 
 Windows hosts also need Visual Studio C++ Build Tools with a Windows SDK and a
 one-time LLVM 22 install that matches the tag release workflow: install into

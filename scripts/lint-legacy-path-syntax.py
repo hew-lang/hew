@@ -60,7 +60,13 @@ def check_markdown_file(path: Path, errors: list[str]) -> None:
 def main() -> int:
     errors: list[str] = []
     check_hew_files(errors)
-    for path in [REPO_ROOT / "README.md", *(REPO_ROOT / "docs").rglob("*.md")]:
+    markdown_roots = [
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "CHANGELOG.md",
+        *(REPO_ROOT / "docs").rglob("*.md"),
+        *(REPO_ROOT / "examples").rglob("*.md"),
+    ]
+    for path in markdown_roots:
         check_markdown_file(path, errors)
     if errors:
         print("legacy Hew path syntax is not allowed:", file=sys.stderr)

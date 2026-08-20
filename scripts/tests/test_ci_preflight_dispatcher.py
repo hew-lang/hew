@@ -234,6 +234,7 @@ def test_run_all_continues_after_failure_and_profiles_all_commands() -> None:
                     "printf '%s' RUN_TWO >/dev/null\n"
                     "printf '%s' RUN_THREE >/dev/null\n"
                 ),
+                "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
             },
             dry_run=False,
             timeout=30,
@@ -244,11 +245,18 @@ def test_run_all_continues_after_failure_and_profiles_all_commands() -> None:
         profile_entries = json.loads(Path(profile.name).read_text())
 
     assert [entry["cmd"] for entry in profile_entries] == [
+        "true",
         "exit 7",
         "printf '%s' RUN_TWO >/dev/null",
         "printf '%s' RUN_THREE >/dev/null",
     ]
-    assert [entry["status"] for entry in profile_entries] == [7, 0, 0]
+    assert [entry["phase"] for entry in profile_entries] == [
+        "warm-up",
+        "command",
+        "command",
+        "command",
+    ]
+    assert [entry["status"] for entry in profile_entries] == [0, 7, 0, 0]
     assert "    exit 7" in result.stdout, result.stdout
     assert "    printf '%s' RUN_TWO >/dev/null" in result.stdout, result.stdout
     assert "    printf '%s' RUN_THREE >/dev/null" in result.stdout, result.stdout
@@ -267,6 +275,7 @@ def test_fail_fast_stops_after_first_failure_and_profiles_only_run_commands() ->
                     "printf '%s' RUN_TWO >/dev/null\n"
                     "printf '%s' RUN_THREE >/dev/null\n"
                 ),
+                "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
             },
             dry_run=False,
             timeout=30,
@@ -278,8 +287,9 @@ def test_fail_fast_stops_after_first_failure_and_profiles_only_run_commands() ->
         )
         profile_entries = json.loads(Path(profile.name).read_text())
 
-    assert [entry["cmd"] for entry in profile_entries] == ["exit 7"]
-    assert [entry["status"] for entry in profile_entries] == [7]
+    assert [entry["cmd"] for entry in profile_entries] == ["true", "exit 7"]
+    assert [entry["phase"] for entry in profile_entries] == ["warm-up", "command"]
+    assert [entry["status"] for entry in profile_entries] == [0, 7]
     assert "    exit 7" in result.stdout, result.stdout
     summary = result.stdout.split("==> Preflight summary", 1)[1]
     assert "RUN_TWO" not in summary, result.stdout
@@ -328,6 +338,7 @@ def test_synthetic_timeout_via_run_loop() -> None:
             env={
                 "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
                 "PREFLIGHT_TEST_COMMANDS": "sleep 30",
+                "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
                 "PREFLIGHT_TIMEOUT_NARROW": "1",
             },
             dry_run=False,
@@ -337,10 +348,10 @@ def test_synthetic_timeout_via_run_loop() -> None:
 
     assert result.returncode != 0, result.stdout
     assert "TIMEOUT: 'sleep 30' exceeded 1s budget" in result.stdout, result.stdout
-    assert len(profile_entries) == 1, profile_entries
-    assert profile_entries[0]["cmd"] == "sleep 30", profile_entries
-    assert profile_entries[0]["status"] in {137, 143}, profile_entries
-    assert 1 <= profile_entries[0]["elapsed_s"] <= 10, profile_entries
+    assert [entry["phase"] for entry in profile_entries] == ["warm-up", "command"]
+    assert profile_entries[1]["cmd"] == "sleep 30", profile_entries
+    assert profile_entries[1]["status"] in {137, 143}, profile_entries
+    assert 1 <= profile_entries[1]["elapsed_s"] <= 10, profile_entries
     summary = result.stdout.split("==> Preflight summary", 1)[1]
     assert "sleep 30" in summary, result.stdout
     assert "[FAILED]" in summary, result.stdout
@@ -355,6 +366,7 @@ def test_profile_json_records_elapsed_for_each_command() -> None:
             env={
                 "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
                 "PREFLIGHT_TEST_COMMANDS": "true\nfalse\ntrue",
+                "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
             },
             dry_run=False,
             timeout=30,
@@ -362,11 +374,60 @@ def test_profile_json_records_elapsed_for_each_command() -> None:
         profile_entries = json.loads(Path(profile.name).read_text())
 
     assert result.returncode == 1, result.stdout
-    assert [entry["cmd"] for entry in profile_entries] == ["true", "false"]
-    assert [entry["status"] for entry in profile_entries] == [0, 1]
+    assert [entry["cmd"] for entry in profile_entries] == ["true", "true", "false"]
+    assert [entry["phase"] for entry in profile_entries] == [
+        "warm-up",
+        "command",
+        "command",
+    ]
+    assert [entry["status"] for entry in profile_entries] == [0, 0, 1]
     for entry in profile_entries:
         assert isinstance(entry["elapsed_s"], int), profile_entries
         assert entry["elapsed_s"] >= 0, profile_entries
+
+
+def test_compile_warmup_runs_first_and_has_a_summary_row() -> None:
+    """Compile profiles warm artifacts before their watchdog-timed commands."""
+    result = run_dispatcher(
+        "hew-parser/src/lib.rs",
+        env={
+            "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+            "PREFLIGHT_TEST_WARMUP_COMMANDS": "printf '%s\\n' WARMUP_RAN",
+            "PREFLIGHT_TEST_COMMANDS": "printf '%s\\n' GATE_RAN",
+        },
+        dry_run=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    warmup_start = result.stdout.index("==> warm-up")
+    gate_start = result.stdout.index("==> printf '%s\\n' GATE_RAN")
+    summary = result.stdout.split("==> Preflight summary", 1)[1]
+    assert "WARMUP_RAN" in result.stdout, result.stdout
+    assert warmup_start < gate_start, result.stdout
+    assert "warm-up  " in summary, result.stdout
+    assert summary.index("warm-up  ") < summary.index("GATE_RAN"), result.stdout
+
+
+def test_rust_diff_derives_its_warmup_artifacts_before_commands() -> None:
+    """A parser diff warms only the artifacts its selected commands need."""
+    result = run_dispatcher("hew-parser/src/lib.rs")
+
+    assert result.returncode == 0, result.stderr
+    warmup = result.stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
+    assert warmup == (
+        "  - cargo build --workspace --all-targets\n"
+        "  - make hew\n"
+        "  - make wasm-runtime\n"
+    ), result.stdout
+    assert result.stdout.index("Warm-up:\n") < result.stdout.index("Commands:\n")
+
+
+def test_docs_diff_has_no_warmup_block() -> None:
+    result = run_dispatcher("docs/hew-language-guide.md")
+
+    assert result.returncode == 0, result.stderr
+    assert "Warm-up:\n" not in result.stdout, result.stdout
 
 
 def test_scripts_config_budget_annotation() -> None:
@@ -430,6 +491,7 @@ def test_zero_timeout_fails_closed() -> None:
         env={
             "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
             "PREFLIGHT_TEST_COMMANDS": "true",
+            "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
             "PREFLIGHT_TIMEOUT_NARROW": "0",
         },
         dry_run=False,
@@ -922,9 +984,14 @@ def test_compiler_pipeline_absorbs_types_bucket_in_mixed_diff() -> None:
 def test_leaf_crate_runs_only_its_reverse_dependency_closure() -> None:
     result = run_dispatcher("hew-observe/src/lib.rs")
     assert result.returncode == 0, result.stderr
-    assert "cargo nextest run --profile ci -p hew-observe" in result.stdout
-    assert "--workspace" not in result.stdout
-    assert "-p hew-parser" not in result.stdout
+    sections = result.stdout.split("Warm-up:\n", 1)
+    assert len(sections) == 2, result.stdout
+    commands = sections[1].split("Commands:\n", 1)
+    assert len(commands) == 2, result.stdout
+    commands = commands[1]
+    assert "cargo nextest run --profile ci -p hew-observe" in commands
+    assert "--workspace" not in commands
+    assert "-p hew-parser" not in commands
 
 
 def test_analysis_change_runs_known_dependents_without_workspace() -> None:
@@ -1026,6 +1093,9 @@ _TESTS = [
     test_fail_fast_stops_after_first_failure_and_profiles_only_run_commands,
     test_synthetic_timeout_via_run_loop,
     test_profile_json_records_elapsed_for_each_command,
+    test_compile_warmup_runs_first_and_has_a_summary_row,
+    test_rust_diff_derives_its_warmup_artifacts_before_commands,
+    test_docs_diff_has_no_warmup_block,
     test_scripts_config_budget_annotation,
     test_runtime_net_lane_budget_annotation,
     test_runtime_net_lane_rebuilds_libhew,

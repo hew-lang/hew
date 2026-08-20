@@ -3338,6 +3338,10 @@ pub struct Checker {
     /// Allows declarations from the compiler-embedded builtin source to
     /// provide names that the prelude protects from user replacement.
     pub(super) checking_embedded_builtins: bool,
+    /// Whether this checker has completed its first `check_program` entry.
+    /// Caller-seeded configuration remains available to the first program;
+    /// every later program starts from structurally fresh program-owned state.
+    pub(super) has_checked_program: bool,
     /// Tracks (span, feature) pairs we've already warned about for WASM limits.
     pub(super) wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
     /// Tracks (span, feature) pairs we've already rejected as errors for WASM.
@@ -3777,6 +3781,7 @@ impl Checker {
             is_stdlib_source: false,
             in_stdlib_registration: false,
             checking_embedded_builtins: false,
+            has_checked_program: false,
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),
             current_machine_transition: None,

@@ -1224,7 +1224,7 @@ map_warmup_artifacts() {
             add_warmup_command "$cmd --no-run"
             ;;
         "make test-cabi")
-            add_warmup_command "cargo nextest run --profile ci-cabi -p hew-cabi --no-run"
+            add_warmup_command "make test-cabi-build"
             ;;
         "make test-runtime-unit")
             add_warmup_command "cargo nextest run --profile ci -p hew-runtime --no-default-features --no-run"

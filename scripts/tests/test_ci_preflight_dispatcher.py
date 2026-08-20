@@ -473,9 +473,21 @@ def test_comprehensive_warms_clippy_and_nextest_the_way_the_gates_build() -> Non
         "  - cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run\n"
         in warmup
     ), result.stdout
-    assert "  - cargo nextest run --profile ci-cabi -p hew-cabi --no-run\n" in warmup, (
-        result.stdout
-    )
+    assert "  - make test-cabi-build\n" in warmup, result.stdout
+
+
+def test_no_warmup_names_a_non_ci_nextest_profile() -> None:
+    """A3a of the reachability gate scans this dry-run text for fast-tier profiles.
+
+    scripts/check-gate-reachability.py feeds the fallback dry-run output into the
+    CI command corpus, so a warm-up that spells `--profile ci-cabi` reads as CI
+    running a non-`ci` nextest profile. Warm through the Makefile target instead.
+    """
+    result = run_dispatcher("some-unclassified-root-file.txt")
+
+    assert result.returncode == 0, result.stderr
+    profiles = set(re.findall(r"--profile\s+([A-Za-z0-9_-]+)", result.stdout))
+    assert profiles <= {"ci"}, result.stdout
 
 
 def test_scripts_config_budget_annotation() -> None:
@@ -779,13 +791,17 @@ def test_comprehensive_profile_reserves_smoke_for_local_opt_in() -> None:
     assert result.returncode == 0, result.stderr
     assert "Selected profile: comprehensive" in result.stdout, result.stdout
     assert "make ci-preflight-smoke" not in result.stdout, result.stdout
-    assert "cargo fmt --all -- --check" in result.stdout, result.stdout
-    assert "make lint" in result.stdout, result.stdout
-    assert "make test" in result.stdout, result.stdout
 
-    fmt_pos = result.stdout.index("cargo fmt --all -- --check")
-    lint_pos = result.stdout.index("make lint")
-    test_pos = result.stdout.index("make test")
+    # Order is a property of the gate list, not of the whole transcript: the
+    # warm-up block above it also names `make test-*` targets.
+    commands = result.stdout.split("Commands:\n", 1)[1]
+    assert "cargo fmt --all -- --check" in commands, result.stdout
+    assert "make lint" in commands, result.stdout
+    assert "make test" in commands, result.stdout
+
+    fmt_pos = commands.index("cargo fmt --all -- --check")
+    lint_pos = commands.index("make lint")
+    test_pos = commands.index("make test")
     assert fmt_pos < lint_pos < test_pos, result.stdout
 
     makefile = (ROOT / "Makefile").read_text()
@@ -1146,6 +1162,7 @@ _TESTS = [
     test_docs_diff_has_no_warmup_block,
     test_no_lane_warms_test_targets_with_all_targets,
     test_comprehensive_warms_clippy_and_nextest_the_way_the_gates_build,
+    test_no_warmup_names_a_non_ci_nextest_profile,
     test_scripts_config_budget_annotation,
     test_runtime_net_lane_budget_annotation,
     test_runtime_net_lane_rebuilds_libhew,

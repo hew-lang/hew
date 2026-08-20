@@ -49,7 +49,6 @@ const ARTIFACT_ROOTS: &[&str] = &[
 const ARTIFACT_FILES: &[&str] = &[
     "scripts/stdlib-execution-proofs.tsv",
     "scripts/structural-authority-inventory.tsv",
-    "scripts/structural-authority-presentation.tsv",
     "wasm-capability-manifest.toml",
     "hew-types/src/wasm_capabilities_generated.rs",
     "examples/playground/wasm-capabilities.json",

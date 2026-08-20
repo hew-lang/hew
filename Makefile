@@ -72,7 +72,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
+.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-ci-coverage-check structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -1217,8 +1217,12 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate codegen-trap-inventory-check verify-ffi test-verify-ffi test-python310-toml-compat verify-sys-lane-closure hew-fmt-check sandbox-parity-coverage-check
+lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate codegen-trap-inventory-check verify-ffi test-verify-ffi test-python310-toml-compat verify-sys-lane-closure hew-fmt-check sandbox-parity-coverage-check lint-ci-coverage-check
 	cargo clippy --workspace --tests -- -D warnings
+
+lint-ci-coverage-check:
+	python3 scripts/check-lint-ci-coverage.py
+	python3 scripts/tests/test_check_lint_ci_coverage.py
 
 # Self-provisioning: the pinned toolchain install is a prerequisite of every
 # structural-lint entry point, not a separate manual step. The install path

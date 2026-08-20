@@ -137,6 +137,33 @@ machine Light {
 }
 
 #[test]
+fn reject_machine_transition_with_contextual_wildcard_target() {
+    let result = hew_parser::parse(
+        r"
+machine Light {
+    events { Toggle; }
+    state Off;
+    state On;
+    on Toggle: Off => ._ {
+        state
+    }
+}
+",
+    );
+    let messages: Vec<&str> = result
+        .errors
+        .iter()
+        .map(|error| error.message.as_str())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("wildcard target is written `_`")),
+        "`._` must be rejected in the target position: {messages:?}"
+    );
+}
+
+#[test]
 fn reject_machine_transition_with_dangling_contextual_state_pattern() {
     let result = hew_parser::parse(
         r"

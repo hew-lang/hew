@@ -1090,6 +1090,19 @@ impl Parser<'_> {
                 return None;
             }
             self.advance();
+            // `_` is a wildcard, not a variant of the state enum, so there is
+            // no contextual form of it to accept in the target position
+            // either. Reject `._` here so the one spelling of a wildcard
+            // target is `_`, matching the source position and the guide.
+            if matches!(self.peek(), Some(Token::Identifier(name)) if *name == "_") {
+                let span = start..self.peek_span().end;
+                self.error_at_with_hint(
+                    "a machine transition wildcard target is written `_`, not `._`".to_string(),
+                    span,
+                    "remove the leading `.`; `_` matches any state and is not a variant of the state enum",
+                );
+                return None;
+            }
             let name = self.expect_ident()?;
             return Some(StatePattern {
                 name,

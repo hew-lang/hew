@@ -1964,6 +1964,15 @@ fn fmt_machine_wildcard_source_contextual_target_roundtrip() {
 }
 
 #[test]
+fn fmt_machine_wildcard_target_stays_bare_roundtrip() {
+    // `_` is a wildcard on either side of the arrow, never `._`, even in a
+    // machine whose other targets are contextual.
+    exact_roundtrip(
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: _ => _ {\n        state\n    }\n}\n",
+    );
+}
+
+#[test]
 fn fmt_machine_contextual_target_with_block_body_roundtrip() {
     exact_roundtrip(
         "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On {\n        state\n    }\n    on Toggle: On => .Off {\n        state\n    }\n}\n",

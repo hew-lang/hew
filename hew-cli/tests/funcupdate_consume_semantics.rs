@@ -1572,7 +1572,7 @@ fn accept_carry_nested_and_collection_bearing_tuples() {
         (
             "tuple nested in tuple",
             r#"
-import std::string;
+import std.string;
 record T { pair: (string, (string, i64)), tag: string }
 fn mk() -> T {
     let b = T { pair: (string.repeat("k", 32), (string.repeat("m", 32), 7)), tag: string.repeat("x", 32) };
@@ -1584,7 +1584,7 @@ fn main() { let r = mk(); println(r.tag); println(r.pair.0); }
         (
             "tuple of tuples",
             r#"
-import std::string;
+import std.string;
 record T { pair: ((string, i64), (string, i64)), tag: string }
 fn mk() -> T {
     let b = T { pair: ((string.repeat("k", 32), 1), (string.repeat("m", 32), 2)), tag: string.repeat("x", 32) };
@@ -1596,10 +1596,10 @@ fn main() { let r = mk(); println(r.tag); }
         (
             "tuple carrying a Vec",
             r#"
-import std::string;
+import std.string;
 record T { pair: (Vec<string>, i64), tag: string }
 fn mk() -> T {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     v.push(string.repeat("k", 32));
     let b = T { pair: (v, 7), tag: string.repeat("x", 32) };
     T { tag: string.repeat("y", 32), ..b }
@@ -1610,7 +1610,7 @@ fn main() { let r = mk(); println(r.tag); println(r.pair.0.len()); }
         (
             "tuple carrying an owned record",
             r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record T { pair: (Inner, i64), tag: string }
 fn mk() -> T {
@@ -1623,7 +1623,7 @@ fn main() { let r = mk(); println(r.tag); }
         (
             "tuple carrying an Option payload",
             r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 record T { pair: (Option<Inner>, i64), tag: string }
 fn mk() -> T {
@@ -1636,7 +1636,7 @@ fn main() { let r = mk(); println(r.tag); }
         (
             "tuple carrying a user-enum payload",
             r#"
-import std::string;
+import std.string;
 record Inner { label: string, n: i64 }
 enum Payload { Value(Inner); Empty; }
 record T { pair: (Payload, i64), tag: string }
@@ -1672,7 +1672,7 @@ fn main() { let r = mk(); println(r.tag); }
 #[test]
 fn reject_carry_non_heap_tuple_field_is_conservative() {
     let source = r#"
-import std::string;
+import std.string;
 record T { pair: (i64, i64), tag: string }
 fn mk() -> T {
     let b = T { pair: (3, 7), tag: string.repeat("x", 32) };

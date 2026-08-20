@@ -505,19 +505,19 @@ with tempfile.TemporaryDirectory() as temp:
     target.write_text(
         "fn authority(module_path: &str, name: &str) {\n"
         '    let owner = module_path.rsplit("::").next().unwrap();\n'
-        '    let _ = DefId::new(format!("{}.{}", owner, name));\n'
+        '    let _ = DefId::legacy_reconstruct_from_full_path(format!("{}.{}", owner, name));\n'
         "}\n"
     )
     set_inventory(work)
     result = run(work)
-    assert result.returncode != 0, "a leaf owner must not mint a DefId"
+    assert result.returncode != 0, "a leaf owner must not reconstruct a DefId"
     assert "semantic-owner-shortening-sink/def-id" in result.stderr
 
     target.write_text(
         "fn authority(current_module: &str, name: &str) {\n"
         "    let owner = short_name(current_module);\n"
-        '    let _ = CallTarget::User(DefId::new(format!("{}.{}", owner, name)));\n'
-        '    let _ = NominalId::new(format!("{}.{}", owner, name));\n'
+        '    let _ = CallTarget::User(DefId::legacy_reconstruct_from_full_path(format!("{}.{}", owner, name)));\n'
+        '    let _ = NominalId::legacy_reconstruct_from_full_path(format!("{}.{}", owner, name));\n'
         "}\n"
     )
     set_inventory(work)

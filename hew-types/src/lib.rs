@@ -124,6 +124,15 @@ pub use wasm_capabilities_generated::{
 /// let _identity = DefId::new(leaf);
 /// ```
 ///
+/// Fixture construction is test-only as well:
+///
+/// ```compile_fail
+/// use hew_types::DefId;
+///
+/// let leaf = "Widget";
+/// let _identity = DefId::for_test(leaf);
+/// ```
+///
 /// The resolver/checker owns declaration minting; downstream phases receive a
 /// `DefId` and carry it unchanged.
 #[derive(
@@ -179,8 +188,9 @@ impl DefId {
 
     /// Create a fixture identity without granting production code a minting API.
     ///
-    /// Integration tests compile this crate as a dependency, so this explicit
-    /// seam remains public rather than relying on `cfg(test)`.
+    /// This seam exists only in test builds or with the explicit
+    /// `test` feature for direct test dependencies.
+    #[cfg(any(test, feature = "test"))]
     #[doc(hidden)]
     #[must_use]
     pub fn for_test(full_path: impl Into<String>) -> Self {
@@ -231,6 +241,7 @@ impl NominalId {
 
     /// Create a fixture nominal identity without granting production code a
     /// minting API.
+    #[cfg(any(test, feature = "test"))]
     #[doc(hidden)]
     #[must_use]
     pub fn for_test(full_path: impl Into<String>) -> Self {

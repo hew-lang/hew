@@ -1943,6 +1943,7 @@ impl Checker {
             module_idx,
             source_module,
             source: Some(source),
+            type_params: HashMap::new(),
         };
         lints::lint_source(&ctx, levels, source, out);
     }
@@ -1964,28 +1965,44 @@ impl Checker {
             module_idx,
             source_module,
             source: self.lint_sources.source_for(source_module),
+            type_params: HashMap::new(),
         };
+        // Each body is linted under the type parameters actually in scope for
+        // it — the enclosing item's, extended by the body's own. A lint that
+        // proposes a rewrite reads bounds from here; a parameter missing from
+        // the map is not treated as generic, and a rewrite over it is refused
+        // by the unregistered-nominal path instead.
         match item {
-            Item::Function(fn_decl) => lints::lint_block(&ctx, levels, &fn_decl.body, out),
+            Item::Function(fn_decl) => {
+                let ctx = ctx.with_type_params(fn_decl.type_params.as_ref());
+                lints::lint_block(&ctx, levels, &fn_decl.body, out);
+            }
             Item::Impl(impl_decl) => {
+                let impl_ctx = ctx.with_type_params(impl_decl.type_params.as_ref());
                 for method in &impl_decl.methods {
+                    let ctx = impl_ctx.with_type_params(method.type_params.as_ref());
                     lints::lint_block(&ctx, levels, &method.body, out);
                 }
             }
             Item::Actor(actor) => {
+                let actor_ctx = ctx.with_type_params(Some(&actor.type_params));
                 for method in &actor.methods {
+                    let ctx = actor_ctx.with_type_params(method.type_params.as_ref());
                     lints::lint_block(&ctx, levels, &method.body, out);
                 }
                 for rec in &actor.receive_fns {
+                    let ctx = actor_ctx.with_type_params(rec.type_params.as_ref());
                     lints::lint_receive_fn_definition(&ctx, levels, rec, out);
                     lints::lint_block(&ctx, levels, &rec.body, out);
                     lints::lint_receive_fn(&ctx, levels, &rec.body, out);
                 }
             }
             Item::Trait(trait_decl) => {
+                let trait_ctx = ctx.with_type_params(trait_decl.type_params.as_ref());
                 for trait_item in &trait_decl.items {
                     if let TraitItem::Method(trait_method) = trait_item {
                         if let Some(body) = &trait_method.body {
+                            let ctx = trait_ctx.with_type_params(trait_method.type_params.as_ref());
                             lints::lint_block(&ctx, levels, body, out);
                         }
                     }

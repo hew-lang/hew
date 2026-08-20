@@ -4531,6 +4531,11 @@ impl Builder {
                 };
             let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
             let mut call_carrier_match_result_candidates = Vec::new();
+            // Contextual `Sink` handoffs admitted while destructuring this
+            // arm's payload binders. The destructure runs BEFORE the arm's
+            // guard decides, so the slot-clearing instruction is held here and
+            // emitted on the arm-selected edge below.
+            let mut pending_sink_handoffs: Vec<Instr> = Vec::new();
             // Fresh `Some(x)` bindings whose payload owns heap. VecIter clone
             // reads, generator drives, and receiver reads all hand the body a
             // fresh sole owner, so one shared lifecycle releases it at
@@ -4622,13 +4627,22 @@ impl Builder {
                     src: payload_source,
                 });
                 let previous = self.binding_locals.insert(binding.binding, dest);
-                let transferred_sink = self.transfer_contextual_sink_payload(
+                // Clearing the carrier slot here would neutralize it before a
+                // guard on this arm has selected it: a false guard falls
+                // through to a later arm that re-destructures the same slot and
+                // binds a null handle, while this arm's dead binder keeps the
+                // real close authority. Defer to the arm-selected edge — the
+                // same neutralize-before-guard hazard `in_fallthrough_match_guard`
+                // rejects for an in-guard consume.
+                let sink_handoff = self.contextual_sink_payload_handoff(
                     call_scrutinee_owner.as_ref(),
                     binding.binding,
                     payload_source,
                     dest,
                     &binding_ty,
                 );
+                let transferred_sink = sink_handoff.is_some();
+                pending_sink_handoffs.extend(sink_handoff);
                 if projected_tuple_owner_active && keep_for_drop_elab {
                     self.push_move_out_neutralize(
                         payload_source,
@@ -4939,6 +4953,12 @@ impl Builder {
                     });
                     self.start_block(body_entry_bb);
                 }
+            }
+
+            // The arm is now selected on every reaching path: clear the
+            // carrier slots whose payloads this arm's binders own.
+            for instr in pending_sink_handoffs.drain(..) {
+                self.push_instr(instr);
             }
 
             let body_start_block_id = self.current_block_id;

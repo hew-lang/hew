@@ -121,6 +121,34 @@ impl crate::return_provenance::LeafPolicy for ClosureStringReturnPolicy<'_> {
 }
 
 impl Builder {
+    /// Emit the handoff immediately. Correct wherever the destructure itself
+    /// only runs on the path that selected the pattern (`if let` / `while let`
+    /// / `let else`). A match arm destructures before its guard decides, so it
+    /// uses [`Self::contextual_sink_payload_handoff`] and emits on the
+    /// arm-selected edge instead.
+    pub(crate) fn transfer_contextual_sink_payload(
+        &mut self,
+        scrutinee_owner: Option<&(BindingId, ResolvedTy)>,
+        binding: BindingId,
+        source: Place,
+        dest: Place,
+        binding_ty: &ResolvedTy,
+    ) -> bool {
+        match self.contextual_sink_payload_handoff(
+            scrutinee_owner,
+            binding,
+            source,
+            dest,
+            binding_ty,
+        ) {
+            Some(instr) => {
+                self.push_instr(instr);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Transfer a runtime-close payload out of a fresh contextual scrutinee.
     ///
     /// A builtin `Sink` payload is a nullable handle with a typed runtime close
@@ -132,20 +160,21 @@ impl Builder {
     /// path. User-close resources are deliberately excluded: their close body
     /// can observe zeroed storage, so nulling a field does not make the shell's
     /// later user close inert.
-    pub(crate) fn transfer_contextual_sink_payload(
+    ///
+    /// Admit the handoff and return the slot-clearing instruction the caller
+    /// must emit on the path that selects this binder. Returning the `Instr`
+    /// rather than pushing it keeps admission (which reads the ownership
+    /// registries as they stand at destructure time) separate from placement.
+    pub(crate) fn contextual_sink_payload_handoff(
         &mut self,
         scrutinee_owner: Option<&(BindingId, ResolvedTy)>,
         binding: BindingId,
         source: Place,
         dest: Place,
         binding_ty: &ResolvedTy,
-    ) -> bool {
-        let Some((owner, owner_ty)) = scrutinee_owner else {
-            return false;
-        };
-        let Some(source_root) = base_local(source) else {
-            return false;
-        };
+    ) -> Option<Instr> {
+        let (owner, owner_ty) = scrutinee_owner?;
+        let source_root = base_local(source)?;
         let source_is_fresh_owned_result = matches!(
             (owner_ty, source),
             (
@@ -187,17 +216,16 @@ impl Builder {
                 ))
             )
         {
-            return false;
+            return None;
         }
-        self.push_instr(Instr::NeutralizePayloadSlot {
-            place: source,
-            transferee: Some(dest),
-            authority: crate::model::NeutralizeAuthority::EphemeralTempConsume,
-        });
         if let Some(local) = base_local(dest) {
             self.fresh_variant_payload_binder_locals.insert(local);
         }
-        true
+        Some(Instr::NeutralizePayloadSlot {
+            place: source,
+            transferee: Some(dest),
+            authority: crate::model::NeutralizeAuthority::EphemeralTempConsume,
+        })
     }
 
     pub(crate) fn publish_produced_value_place(&mut self, expr: &HirExpr, place: Place) {

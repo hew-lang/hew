@@ -197,6 +197,45 @@ fn if_explicit_early(path: string, before: bool, after: bool) {
 fn main() {}
 "#;
 
+/// A guarded `.Ok` arm followed by an unguarded one. The guard decides AFTER
+/// the arm has destructured its payload, so a handoff emitted at destructure
+/// time neutralizes the carrier slot on a path the arm may not take — the
+/// later arm then re-destructures a null handle while the rejected arm's dead
+/// binder holds the real close authority.
+const SINK_GUARDED_ARM: &str = r#"
+fn make(path: string) -> Result<Sink<string>, string> {
+    unsafe {
+        let sink = hew_stream_from_file_write(path);
+        if hew_sink_is_valid(sink) {
+            Ok(sink)
+        } else {
+            Err("open failed")
+        }
+    }
+}
+
+extern "C" {
+    fn hew_stream_from_file_write(path: string) -> Sink<string>;
+    fn hew_sink_is_valid(sink: Sink<string>) -> bool;
+    fn hew_sink_write_string(sink: Sink<string>, data: string);
+    fn hew_sink_close(consume sink: Sink<string>);
+}
+
+fn pick(flag: bool) -> bool {
+    return flag;
+}
+
+fn guarded(path: string, flag: bool) {
+    match make(path) {
+        .Ok(sink) if pick(flag) => sink.write("guard taken"),
+        .Ok(sink) => sink.write("guard fallthrough"),
+        .Err(_) => {},
+    }
+}
+
+fn main() {}
+"#;
+
 fn raw_function<'a>(pipeline: &'a IrPipeline, name: &str) -> &'a RawMirFunction {
     pipeline
         .raw_mir
@@ -478,4 +517,82 @@ fn contextual_sink_matrix_has_one_close_authority_per_exit() {
     assert_exit_drop_counts(early_elab, ExitPath::Return { block: 10 }, 0, 1);
     assert_exit_drop_counts(early_elab, ExitPath::Cancel { block: 12 }, 0, 1);
     assert_each_exit_has_unique_close_authorities(early_elab);
+}
+
+/// Blocks from which the call to `callee` is still reachable — every block
+/// that can run while that call's answer is still outstanding, including the
+/// call's own block. A guard's answer is outstanding exactly here.
+fn blocks_reaching_call(function: &RawMirFunction, callee: &str) -> std::collections::HashSet<u32> {
+    let mut predecessors: std::collections::HashMap<u32, Vec<u32>> =
+        std::collections::HashMap::new();
+    for block in &function.blocks {
+        for successor in block.successors() {
+            predecessors.entry(successor).or_default().push(block.id);
+        }
+    }
+    let mut queue: Vec<u32> = function
+        .blocks
+        .iter()
+        .filter(|block| {
+            matches!(
+                &block.terminator,
+                Terminator::Call { callee: name, .. } if name == callee
+            )
+        })
+        .map(|block| block.id)
+        .collect();
+    assert!(
+        !queue.is_empty(),
+        "no call to {callee} in {}",
+        function.name
+    );
+    let mut seen = std::collections::HashSet::new();
+    while let Some(id) = queue.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        queue.extend(predecessors.get(&id).into_iter().flatten().copied());
+    }
+    seen
+}
+
+#[test]
+fn guarded_match_arm_defers_its_sink_handoff_past_the_guard() {
+    let pipeline = pipeline_with_runtime_contracts(SINK_GUARDED_ARM);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "guarded Sink arm diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    let guarded = raw_function(&pipeline, "guarded");
+
+    // Both `.Ok` arms own their payload once selected, so both take a handoff.
+    assert_eq!(
+        transfer_neutralize_count(guarded),
+        2,
+        "each `.Ok` arm binder takes the carrier's close authority"
+    );
+
+    // None of those handoffs may run while the guard's answer is still
+    // unknown: a false guard falls through to the second arm, which must find
+    // the carrier slot still holding the live handle.
+    let undecided = blocks_reaching_call(guarded, "pick");
+    for block in &guarded.blocks {
+        if !undecided.contains(&block.id) {
+            continue;
+        }
+        assert!(
+            !block.instructions.iter().any(|instruction| matches!(
+                instruction,
+                Instr::NeutralizePayloadSlot {
+                    transferee: Some(_),
+                    ..
+                }
+            )),
+            "block {} neutralizes the carrier slot before the guard selects an arm",
+            block.id
+        );
+    }
+
+    assert_each_exit_has_unique_close_authorities(elaborated_function(&pipeline, "guarded"));
 }

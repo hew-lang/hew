@@ -335,6 +335,70 @@ fn main() {
     }
 }
 
+#[test]
+fn guarded_match_arm_hands_the_live_sink_to_the_selected_arm() {
+    let dir = std::env::temp_dir().join(format!("hew-guarded-file-sink-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create guarded sink temp dir");
+    let taken_path = dir.join("taken.txt");
+    let fallthrough_path = dir.join("fallthrough.txt");
+    let source = r#"import std.stream;
+
+fn pick(flag: bool) -> bool {
+    return flag;
+}
+
+fn guarded(path: string, flag: bool) {
+    match stream.to_file(path) {
+        .Ok(sink) if pick(flag) => {
+            sink.write("guard taken");
+        },
+        .Ok(sink) => {
+            sink.write("guard fallthrough");
+        },
+        .Err(e) => {
+            println(f"open failed: {e}");
+        },
+    }
+}
+
+fn main() {
+    guarded("__TAKEN_PATH__", true);
+    guarded("__FALLTHROUGH_PATH__", false);
+    println("guarded-ok");
+}
+"#
+    .replace("__TAKEN_PATH__", &taken_path.to_string_lossy())
+    .replace("__FALLTHROUGH_PATH__", &fallthrough_path.to_string_lossy());
+
+    let stdout = run_hew_source_env("guarded_file_sink_arm", &source, true);
+    assert_eq!(stdout, "guarded-ok");
+
+    // The rejected arm destructured the carrier before its guard answered. If
+    // that arm keeps the handle, the selected arm writes through a null Sink
+    // and the file is never closed.
+    assert_eq!(
+        std::fs::read_to_string(&taken_path).expect("read guard-taken output"),
+        "guard taken"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&fallthrough_path).expect("read guard-fallthrough output"),
+        "guard fallthrough"
+    );
+
+    let ir = emit_llvm_ir("guarded_file_sink_arm_ir", &source);
+    assert_eq!(
+        count_source_calls_in_function(&ir, "guarded", "hew_sink_close"),
+        0,
+        "neither arm closes explicitly"
+    );
+    assert_eq!(
+        count_calls_in_function(&ir, "guarded", "hew_sink_close"),
+        6,
+        "each arm binder gets its own mutually exclusive exit closes"
+    );
+}
+
 // ── Slice B: awaited non-byte send routing ────────────────────────────────
 
 /// `await sink.send(f"...")` over a `Sink<string>` inside an actor handler

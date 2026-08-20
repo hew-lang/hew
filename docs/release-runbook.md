@@ -131,7 +131,7 @@ WINDOWS_HOST=user@windows-host
 # (archives the committed HEAD tree — Cargo.toml/Cargo.lock/crate sources —
 # since scripts/windows-release-build.ps1 runs `cargo build` on the Windows
 # host itself; it does not consume precompiled artifacts).
-HEW_WINDOWS_CANDIDATE_ARCHIVE=/absolute/path/to/hew-windows-candidate.tar.gz
+HEW_WINDOWS_CANDIDATE_ARCHIVE=/absolute/path/to/target/hew-windows-candidate.tar.gz
 ```
 
 Build the candidate archive from the repo root before running Windows
@@ -139,7 +139,7 @@ validation:
 
 ```bash
 make windows-release-candidate
-export HEW_WINDOWS_CANDIDATE_ARCHIVE="$(pwd)/hew-windows-candidate.tar.gz"
+export HEW_WINDOWS_CANDIDATE_ARCHIVE="$(pwd)/target/hew-windows-candidate.tar.gz"
 ```
 
 The Windows host must also have a populated Cargo cache for the workspace's

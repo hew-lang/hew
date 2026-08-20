@@ -678,8 +678,9 @@ pre-release: release
 # Cargo.toml/Cargo.lock and every crate, not compiled artifacts). Archives
 # the committed HEAD tree, so uncommitted changes are not included.
 windows-release-candidate:
-	git archive --format=tar.gz -o hew-windows-candidate.tar.gz HEAD
-	@echo "Wrote hew-windows-candidate.tar.gz from $$(git rev-parse HEAD)"
+	@mkdir -p target
+	git archive --format=tar.gz -o target/hew-windows-candidate.tar.gz HEAD
+	@echo "Wrote target/hew-windows-candidate.tar.gz from $$(git rev-parse HEAD)"
 
 # Build stdlib docs and print the wrangler deploy command.
 # Requires a release binary; run `make release` first if the release hew

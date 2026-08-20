@@ -39,7 +39,7 @@ set -euo pipefail
 #   HEW_MACOS_LLVM_PREFIX=/opt/homebrew/opt/llvm@22
 #   HEW_WINDOWS_LLVM_PREFIX='C:\llvm-22'
 #   HEW_WINDOWS_STAGE_ROOT='P:/hew-pre-release-stages'
-#   HEW_WINDOWS_CANDIDATE_ARCHIVE='/path/to/hew-windows-candidate.tar.gz'
+#   HEW_WINDOWS_CANDIDATE_ARCHIVE='/path/to/target/hew-windows-candidate.tar.gz'
 #   HEW_WINDOWS_CC=cl
 #   HEW_WINDOWS_CXX=cl
 #

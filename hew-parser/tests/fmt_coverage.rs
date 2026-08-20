@@ -1934,6 +1934,56 @@ fn fmt_machine_decl_roundtrip() {
     );
 }
 
+// The authored spelling of a transition target (`=> On` vs `=> .On`) lives on
+// `MachineTransition::target_is_contextual`, not in the body expression, so the
+// formatter must preserve it under every body form. Source states are patterns
+// and have no contextual form, so they are always bare — including `_`.
+
+#[test]
+fn fmt_machine_contextual_transition_target_roundtrip() {
+    exact_roundtrip(
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: On => .Off;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_mixed_transition_target_spellings_roundtrip() {
+    // A half-migrated machine: the formatter neither adds a dot to the bare
+    // target nor drops the one the author already wrote.
+    exact_roundtrip(
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: On => Off;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_wildcard_source_contextual_target_roundtrip() {
+    // `_` is a pattern, never `._`, even when the target is contextual.
+    exact_roundtrip(
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: _ => .Off;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_contextual_target_with_block_body_roundtrip() {
+    exact_roundtrip(
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On {\n        state\n    }\n    on Toggle: On => .Off {\n        state\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_contextual_target_with_payload_shorthand_roundtrip() {
+    exact_roundtrip(
+        "machine Bank {\n    events {\n        Deposit { amount: Int; }\n    }\n\n    state Open { balance: Int; }\n\n    on Deposit: Open => .Open { balance: event.amount }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_contextual_target_with_reenter_and_guard_roundtrip() {
+    exact_roundtrip(
+        "machine Gate {\n    events {\n        Try;\n    }\n\n    state Locked;\n    state Open;\n\n    on Try: Locked => .Locked when flag;\n    on Try: Locked => .Open reenter;\n}\n",
+    );
+}
+
 #[test]
 fn fmt_machine_state_with_fields_roundtrip() {
     exact_roundtrip(

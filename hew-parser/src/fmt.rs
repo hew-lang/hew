@@ -1409,8 +1409,16 @@ impl<'a> Formatter<'a> {
             self.write(")");
         }
         self.write(": ");
+        // Source states are patterns and have no contextual form, so they are
+        // always emitted bare. The target's leading `.` comes from the AST's
+        // authored-spelling flag — never inferred from the body expression,
+        // which is not the authority for it and does not exist in the
+        // block/payload-shorthand forms.
         self.write(&transition.source_state);
         self.write(" => ");
+        if transition.target_is_contextual {
+            self.write(".");
+        }
         self.write(&transition.target_state);
         if transition.reenter {
             self.write(" reenter");
@@ -1445,13 +1453,20 @@ impl<'a> Formatter<'a> {
         match transition.body_form {
             MachineTransitionBodyForm::Implicit => self.write(";"),
             MachineTransitionBodyForm::PayloadShorthand => {
-                let Expr::StructInit { name, fields, .. } = body_expr else {
-                    self.write(" { ");
-                    self.format_expr(body_expr);
-                    self.write(" }");
-                    return;
+                // The head already wrote the target name (with its authored
+                // dot); the shorthand re-emits only the payload field list.
+                // Bare targets carry a `StructInit`, contextual ones a
+                // `ContextVariant` record — both name the target state.
+                let payload = match body_expr {
+                    Expr::StructInit { name, fields, .. } if name == &transition.target_state => {
+                        Some(fields)
+                    }
+                    Expr::ContextVariant(context) if context.name == transition.target_state => {
+                        context.record.as_ref().map(|record| &record.fields)
+                    }
+                    _ => None,
                 };
-                if name == &transition.target_state {
+                if let Some(fields) = payload {
                     self.write(" { ");
                     for (i, (fname, fval)) in fields.iter().enumerate() {
                         if i > 0 {

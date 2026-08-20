@@ -63,6 +63,11 @@ HEW_BIN="${HEW_BIN:-$(cargo_debug_dir "$REPO_ROOT")/hew}"
 DOCS=(
     "docs/hew-language-guide.md:guide"
     "docs/specs/HEW-SPEC-2026.md:spec"
+    "docs/language/actors.hew:lang-actors"
+    "docs/language/concurrency.hew:lang-concurrency"
+    "docs/language/machines.hew:lang-machines"
+    "docs/language/resources.hew:lang-resources"
+    "docs/language/supervision.hew:lang-supervision"
 )
 
 usage() {
@@ -130,10 +135,26 @@ extract_doc() {
     local filepath="$1"
     local prefix="$2"
 
+    # Doc-comment pages (docs/language/*.hew) carry their prose as `//!` module
+    # doc comments, so their fences read `//! ```hew`, not ```hew. Strip the
+    # `//!` prefix (plus one following space, preserving fence indentation) as
+    # the file is read; every downstream step — fence detection, skip-marker
+    # scanning, content emission — then works unchanged. Non-doc-comment lines
+    # are blanked rather than kept: fenced samples live in the doc comment, and
+    # a page's own code is not doc content.
+    local strip_doc_prefix=0
+    [[ "$filepath" == *.hew ]] && strip_doc_prefix=1
+
     # Read the file into an array (one element per line, newline preserved).
     # mapfile requires bash 4; use a while loop for bash 3 compat (macOS ships 3.x).
     local lines=()
     while IFS= read -r line; do
+        if (( strip_doc_prefix )); then
+            case "$line" in
+                '//!'*) line="${line#//!}"; line="${line# }" ;;
+                *)      line="" ;;
+            esac
+        fi
         lines+=("$line")
     done < "$filepath"
 

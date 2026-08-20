@@ -325,6 +325,10 @@ const SYNTHETIC_DISCARDED_CALL_RESULT_NAME: &str = "__hew_discarded_call_result"
 /// once at caller scope exit. Gated on the target param being BORROW (a CONSUME
 /// target's temporary is the callee's obligation — no caller drop).
 const SYNTHETIC_TEMP_ARG_NAME: &str = "__hew_temp_arg";
+/// Name for a provisional owned result completed when a resolved method borrows
+/// it as an anonymous receiver. Named receivers keep their ordinary binding;
+/// specialised cursor rewrites keep their dedicated transfer authority.
+const SYNTHETIC_TEMP_RECEIVER_NAME: &str = "__hew_temp_receiver";
 /// Name for the owner minted over a fresh Vec COPY-IN element temporary when
 /// every whole by-value parameter embedded in it is a retained string share.
 /// The binding owns the temporary's retained share only; the parameter remains

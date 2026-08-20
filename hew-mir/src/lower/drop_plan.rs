@@ -6968,13 +6968,29 @@ pub(super) fn enumerate_exits(
                 )
             })
     };
-    // A binder destructured out of an enum normally shares the payload owned by
-    // that composite. Suppress the binder when the carrier's recursive drop is
-    // present on this same edge, or when the carrier is a borrowed view of
-    // persistent actor state (its owner outlives the function entirely). If a
-    // function-owned carrier's admission withheld its drop, the binder is the
-    // remaining release authority and must keep its typed drop; suppressing
-    // both strands the payload. This mirrors the terminal-exit filter above.
+    // Projection-alias taint: a binding that is a non-owning interior alias of a
+    // composite (a match/if-let payload binder destructured out of an enum
+    // scrutinee — `Ok(inner)` / `Some(s)` — or a `*FieldLoad` interior pointer).
+    // Such a binding NEVER solely owns its value; the OWNING composite frees it
+    // through its recursive `EnumInPlace` / `RecordInPlace` / `TupleInPlace` drop.
+    // A scope-close `Goto` must NOT fire a drop for one: when `Ok(inner)` is bound
+    // and the inner `Option<string>` (`inner`) leaves scope crossing the join, the
+    // outer `Result` composite is STILL live past the join and frees `inner`
+    // recursively at the eventual `Return`. Dropping `inner` on the goto here AND
+    // letting the composite free it at the return double-frees the payload string
+    // (DI-020).
+    //
+    // The suppression stays UNCONDITIONAL here, unlike the terminal-exit filter
+    // above. Carrier absence from a single edge's live drop set is not evidence
+    // that carrier admission was withheld: the obligation checker folds every
+    // alias discharge back onto the carrier mint, so a sibling binder of the same
+    // carrier discharging at a LATER exit on the same path is invisible to this
+    // edge. Reading absence as withheld admission double-freed
+    // `std$net$connect_timeout`, whose `Ok`/`Err` binders both alias one
+    // `__hew_call_scrutinee` mint. Conditional payload close authority is restored
+    // by keeping the owned binder's Place reachable through
+    // `deferred_drop_binding_locals` (see `lower_function`), not by relaxing this
+    // filter.
     //
     // The single function-wide taint set was computed with the REAL `locals`
     // table (not an empty slice), so the `string`
@@ -6989,20 +7005,11 @@ pub(super) fn enumerate_exits(
     // parent composite is consume-marked on the selected arm; those destinations
     // are sole owners and must close on this edge before the join loses them.
     let drops_for_scope_close_goto = |block_id: u32, target: u32| -> Vec<ElabDrop> {
-        let live = drops_for_exit(block_id);
-        let carrier_locals_present: HashSet<u32> = live
-            .iter()
-            .filter_map(|drop| base_local(drop.place))
-            .collect();
-        live.into_iter()
+        drops_for_exit(block_id)
+            .into_iter()
             .filter(|drop| {
                 if let Some(l) = base_local(drop.place) {
-                    if projection_alias_tainted.contains(&l)
-                        && payload_alias_carrier.get(&l).is_some_and(|carrier| {
-                            carrier_locals_present.contains(carrier)
-                                || borrowed_view_carrier_locals.contains(carrier)
-                        })
-                    {
+                    if projection_alias_tainted.contains(&l) {
                         return false;
                     }
                 }

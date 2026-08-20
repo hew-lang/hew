@@ -26,7 +26,7 @@ fn if_let_sink_source(frames: usize, explicit_close: bool) -> String {
         "import std.stream;\n\
          fn main() -> i64 {{\n\
          \x20   for i in 0..{frames} {{\n\
-         \x20       if let Ok(sink) = stream.to_file(\"/tmp/hew-if-let-resource-oracle.txt\") {{\n\
+         \x20       if let .Ok(sink) = stream.to_file(\"/tmp/hew-if-let-resource-oracle.txt\") {{\n\
          \x20           sink.write(\"frame\");\n\
          {close}\
          \x20           println(\"closed\");\n\

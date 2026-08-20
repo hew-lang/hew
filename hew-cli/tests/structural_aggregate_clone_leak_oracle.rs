@@ -17,7 +17,7 @@ fn source(body: &str) -> String {
     format!(
         "\
 fn make(seed: string) -> (Vec<string>, string) {{
-    let original: (Vec<string>, string) = (Vec::new(), seed + \"-tail\");
+    let original: (Vec<string>, string) = (Vec.new(), seed + \"-tail\");
     original.0.push(seed + \"-item\");
 {body}
 }}

@@ -1,6 +1,6 @@
 //! Regression coverage for compiler-derived structural clone.
 
-import std::testing;
+import std.testing;
 
 type Pair { number: i64; label: string; }
 
@@ -20,7 +20,7 @@ fn builtin_aggregates_clone_member_wise() {
 
 #[test]
 fn tuple_clone_owns_nested_collections_independently() {
-    let original: (Vec<i64>, string) = (Vec::new(), "left");
+    let original: (Vec<i64>, string) = (Vec.new(), "left");
     original.0.push(1);
     let copy = clone original;
     copy.0.push(2);

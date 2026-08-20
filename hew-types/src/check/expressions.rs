@@ -6,11 +6,16 @@ use super::types::GenericLambdaSig;
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::check::types::{
+    GenericCallEdge, GenericFnInstantiationSite, GenericStructuralEqRequirement,
+    PendingInstantiation,
+};
 use crate::env::{PlaceConflict, PlacePath};
 use crate::eq_eligibility::{
     ty_eq_ineligibility_with_type_params, EqEligibility, EqEligibilityFailure,
 };
 use crate::BuiltinType;
+use std::collections::VecDeque;
 
 type DangerousRcBinding = String;
 type DangerousRcScope = HashMap<String, Option<DangerousRcBinding>>;
@@ -5091,6 +5096,14 @@ impl Checker {
             }
         });
         let Some(unsupported) = unsupported else {
+            // Admitted. If the admission leaned on an abstract type parameter,
+            // the template proved nothing about the concrete leaves — record
+            // the obligation so every instantiation re-runs the same walk.
+            if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+                for ty in [left_resolved, right_resolved] {
+                    self.record_generic_structural_eq_requirement(ty, &current_type_params);
+                }
+            }
             return;
         };
         // Span the whole comparison, not just one operand.
@@ -5158,6 +5171,258 @@ impl Checker {
             message,
             vec![suggestion],
         );
+    }
+
+    /// True when `ty` still names one of `params`.
+    ///
+    /// Implemented by substituting every parameter for a type that cannot occur
+    /// in a checked program (`Ty::Never`) and comparing: this reuses the one
+    /// substitution traversal instead of adding a second walk that could drift
+    /// out of sync with it as `Ty` grows variants.
+    fn ty_mentions_type_params(ty: &Ty, params: &[String]) -> bool {
+        if params.is_empty() {
+            return false;
+        }
+        let probe: HashMap<String, Ty> = params
+            .iter()
+            .cloned()
+            .map(|param| (param, Ty::Never))
+            .collect();
+        ty.substitute_named_params_parallel(&probe) != *ty
+    }
+
+    /// Record a structural-equality obligation raised by the generic function
+    /// currently being checked.
+    ///
+    /// Only aggregates that actually mention the owning signature's type
+    /// parameters are recorded — a fully concrete aggregate was already decided
+    /// on the spot by `reject_record_comparison`.
+    fn record_generic_structural_eq_requirement(&mut self, ty: &Ty, in_scope: &HashSet<String>) {
+        if in_scope.is_empty() {
+            return;
+        }
+        let Some(fn_key) = self.current_function.clone() else {
+            return;
+        };
+        let Some(params) = self
+            .fn_sigs
+            .get(&fn_key)
+            .map(|sig| sig.type_params.clone())
+            .filter(|params| !params.is_empty())
+        else {
+            return;
+        };
+        if !Self::ty_mentions_type_params(ty, &params) {
+            return;
+        }
+        let requirements = self
+            .generic_structural_eq_requirements
+            .entry(fn_key)
+            .or_default();
+        if requirements.iter().any(|existing| existing.ty == *ty) {
+            return;
+        }
+        requirements.push(GenericStructuralEqRequirement { ty: ty.clone() });
+    }
+
+    /// Record a generic function call site for later obligation discharge.
+    ///
+    /// Reads the type arguments back out of `call_type_args`, which
+    /// `apply_instantiated_call_signature_with_assoc` has just written for this
+    /// span, so there is exactly one authority for what a call site
+    /// instantiated.
+    pub(super) fn record_generic_fn_instantiation_site(&mut self, callee: &str, span: &Span) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let Some(type_args) = self.call_type_args.get(&key).cloned() else {
+            return;
+        };
+        let owner = self.current_function.clone();
+        let owner_params = owner
+            .as_ref()
+            .and_then(|name| self.fn_sigs.get(name))
+            .map_or_else(Vec::new, |sig| sig.type_params.clone());
+        let target_params = self
+            .fn_sigs
+            .get(callee)
+            .map_or_else(Vec::new, |sig| sig.type_params.clone());
+        self.generic_fn_instantiation_sites
+            .push(GenericFnInstantiationSite {
+                caller: owner,
+                caller_type_params: owner_params,
+                callee: callee.to_string(),
+                callee_type_params: target_params,
+                type_args,
+                span: span.clone(),
+                source_module: self.current_module.clone(),
+            });
+    }
+
+    /// Split the recorded call sites into concrete instantiation roots and
+    /// generic → generic edges.
+    ///
+    /// A site whose type arguments still name the enclosing generic function's
+    /// own parameters proves nothing on its own; it becomes an edge, reachable
+    /// only once a concrete root pins those parameters.
+    fn partition_generic_instantiation_sites(
+        &self,
+        sites: Vec<GenericFnInstantiationSite>,
+    ) -> (
+        Vec<PendingInstantiation>,
+        HashMap<String, Vec<GenericCallEdge>>,
+    ) {
+        let mut roots: Vec<PendingInstantiation> = Vec::new();
+        let mut edges: HashMap<String, Vec<GenericCallEdge>> = HashMap::new();
+        for site in sites {
+            let type_args: Vec<Ty> = site
+                .type_args
+                .iter()
+                .map(|ty| self.subst.resolve(ty).materialize_literal_defaults())
+                .collect();
+            if Self::ty_list_mentions_type_params(&type_args, &site.caller_type_params) {
+                if let Some(owner) = site.caller {
+                    edges.entry(owner).or_default().push(GenericCallEdge {
+                        callee: site.callee,
+                        callee_type_params: site.callee_type_params,
+                        type_args,
+                    });
+                }
+                continue;
+            }
+            roots.push(PendingInstantiation {
+                callee: site.callee,
+                callee_type_params: site.callee_type_params,
+                type_args,
+                report_span: site.span,
+                report_module: site.source_module,
+                depth: 0,
+            });
+        }
+        (roots, edges)
+    }
+
+    /// Build the diagnostic for one ineligible instantiation of a generic
+    /// function that compares `template` structurally.
+    fn generic_structural_eq_instantiation_error(
+        callee: &str,
+        template: &Ty,
+        concrete: &Ty,
+        failure: EqEligibilityFailure,
+        pending: &PendingInstantiation,
+    ) -> crate::error::TypeError {
+        let mut err = crate::error::TypeError::new(
+            TypeErrorKind::InvalidOperation,
+            pending.report_span.clone(),
+            format!(
+                "`{callee}` compares `{}` structurally; this instantiation `{}` has no \
+                 structural equality path because member `{}` is ineligible: {}",
+                template.user_facing(),
+                concrete.user_facing(),
+                failure.member,
+                Self::structural_eq_ineligibility_reason(failure.reason),
+            ),
+        )
+        .with_suggestion(format!(
+            "instantiate `{callee}` with a type whose members all support structural equality, \
+             or compare the eligible members explicitly inside `{callee}`"
+        ));
+        if let Some(module) = pending.report_module.clone() {
+            err = err.with_source_module(module);
+        }
+        err
+    }
+
+    /// Discharge every generic structural-equality obligation against the
+    /// concrete instantiations the program actually contains.
+    ///
+    /// The walk starts at instantiations whose type arguments are concrete in
+    /// the caller's terms and follows generic → generic call edges, so an
+    /// obligation raised two hops down still lands on the concrete call site
+    /// the programmer wrote. Codegen's `eq_thunk` is therefore never the first
+    /// to notice an ineligible instantiation.
+    pub(super) fn finalize_generic_structural_eq(&mut self) {
+        // WHY a depth cap: polymorphic recursion (`fn f<T>() { g::<Vec<T>>() }`)
+        // generates an unbounded instantiation chain. Monomorphisation rejects
+        // such programs downstream; the cap keeps this walk terminating without
+        // pretending to have proved anything past it.
+        const MAX_INSTANTIATION_DEPTH: u32 = 64;
+
+        let requirements = std::mem::take(&mut self.generic_structural_eq_requirements);
+        let sites = std::mem::take(&mut self.generic_fn_instantiation_sites);
+        if requirements.is_empty() {
+            return;
+        }
+
+        let (roots, edges) = self.partition_generic_instantiation_sites(sites);
+        let mut seen: HashSet<(String, String, usize)> = HashSet::new();
+        let mut work: VecDeque<PendingInstantiation> = roots.into();
+        let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
+
+        while let Some(pending) = work.pop_front() {
+            if pending.depth > MAX_INSTANTIATION_DEPTH
+                || pending.callee_type_params.len() != pending.type_args.len()
+            {
+                continue;
+            }
+            let rendered = pending
+                .type_args
+                .iter()
+                .map(|ty| ty.user_facing().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if !seen.insert((pending.callee.clone(), rendered, pending.report_span.start)) {
+                continue;
+            }
+            let substitution: HashMap<String, Ty> = pending
+                .callee_type_params
+                .iter()
+                .cloned()
+                .zip(pending.type_args.iter().cloned())
+                .collect();
+
+            for requirement in requirements.get(&pending.callee).into_iter().flatten() {
+                let concrete = requirement
+                    .ty
+                    .substitute_named_params_parallel(&substitution);
+                if concrete.contains_error() || concrete.has_inference_var() {
+                    continue;
+                }
+                if let Some(failure) = ty_eq_ineligibility_with_type_params(
+                    &concrete,
+                    &self.type_defs,
+                    &HashSet::new(),
+                ) {
+                    new_errors.push(Self::generic_structural_eq_instantiation_error(
+                        &pending.callee,
+                        &requirement.ty,
+                        &concrete,
+                        failure,
+                        &pending,
+                    ));
+                }
+            }
+
+            for edge in edges.get(&pending.callee).into_iter().flatten() {
+                work.push_back(PendingInstantiation {
+                    callee: edge.callee.clone(),
+                    callee_type_params: edge.callee_type_params.clone(),
+                    type_args: edge
+                        .type_args
+                        .iter()
+                        .map(|ty| ty.substitute_named_params_parallel(&substitution))
+                        .collect(),
+                    report_span: pending.report_span.clone(),
+                    report_module: pending.report_module.clone(),
+                    depth: pending.depth + 1,
+                });
+            }
+        }
+
+        self.errors.extend(new_errors);
+    }
+
+    fn ty_list_mentions_type_params(args: &[Ty], params: &[String]) -> bool {
+        args.iter()
+            .any(|ty| Self::ty_mentions_type_params(ty, params))
     }
 
     fn structural_eq_ineligibility_reason(reason: EqEligibility) -> String {

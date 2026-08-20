@@ -505,9 +505,9 @@ fn channel_handle_clone_terminals_match_runtime_semantics() {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
         !output.status.success()
-            && stderr.contains("drop-only `Vec` element operation `clone/iter`")
-            && stderr.contains("drop callback")
-            && stderr.contains("no semantic clone"),
+            && stderr.contains("Vec<std.channel.Receiver<Token>>")
+            && stderr.contains("cannot be cloned")
+            && stderr.contains("affine close contract"),
         "Receiver has no dup helper and must be rejected by the shared affine-clone authority:\n{stderr}"
     );
 }

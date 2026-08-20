@@ -3909,3 +3909,325 @@ let _b: Result<Cfg, string> = Cfg.from_toml("n = 1");
 // updated `type_satisfies_trait_bound` fallback without changing any
 // existing program behaviour.
 // -------------------------------------------------------------------------
+
+// -------------------------------------------------------------------------
+// Generic structural capability: clone and equality
+//
+// A type parameter's capability INSIDE a generic template comes from its
+// declared bound; the concrete capability is decided at instantiation. These
+// tests pin both halves for `clone` and for structural equality, and pin that
+// the checker — never codegen — is the first to refuse an ineligible
+// instantiation.
+// -------------------------------------------------------------------------
+
+#[test]
+fn bounded_generic_clone_of_builtin_aggregate_is_admitted() {
+    let source = r"
+fn clone_option<T: Clone>(value: Option<T>) -> Option<T> {
+    clone value
+}
+
+fn main() -> i64 {
+    let original: Option<i64> = Some(3);
+    let copied = clone_option(original);
+    match copied {
+        .Some(n) => n,
+        .None => 0,
+    }
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "`T: Clone` grants the template clone capability for `Option<T>`; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn unbounded_generic_clone_of_builtin_aggregate_is_refused() {
+    let source = r"
+fn clone_option<T>(value: Option<T>) -> Option<T> {
+    clone value
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Some` of type `T`")
+                && e.message.contains("has no Clone capability")
+        }),
+        "an unbounded `T` grants no clone capability inside the template; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn bounded_generic_clone_instantiated_with_resource_is_refused() {
+    let source = r"
+#[resource]
+type Token { id: i64; }
+
+impl Token {
+    fn close(self) {}
+}
+
+fn clone_option<T: Clone>(value: Option<T>) -> Option<T> {
+    clone value
+}
+
+fn main() {
+    let held: Option<Token> = Some(Token { id: 1 });
+    let _copied = clone_option(held);
+}
+";
+    let output = check_source(source);
+    assert!(
+        !output.errors.is_empty(),
+        "an affine resource does not satisfy `T: Clone` at instantiation"
+    );
+}
+
+#[test]
+fn generic_equality_with_eligible_instantiation_is_admitted() {
+    let source = r"
+fn same<T>(a: Option<T>, b: Option<T>) -> bool {
+    a == b
+}
+
+fn main() -> i64 {
+    let left: Option<i64> = Some(1);
+    let right: Option<i64> = Some(1);
+    if same(left, right) { 0 } else { 1 }
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "`Option<i64>` has a structural equality path; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_equality_with_ineligible_instantiation_is_refused_by_checker() {
+    let source = r"
+fn same<T>(a: Option<T>, b: Option<T>) -> bool {
+    a == b
+}
+
+fn main() -> i64 {
+    let left: HashMap<string, i64> = HashMap.new();
+    let right: HashMap<string, i64> = HashMap.new();
+    let boxed_left: Option<HashMap<string, i64>> = Some(left);
+    let boxed_right: Option<HashMap<string, i64>> = Some(right);
+    if same(boxed_left, boxed_right) { 0 } else { 1 }
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+        }),
+        "the checker must name the ineligible member and its type at the instantiation; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_equality_ineligible_through_a_generic_caller_is_refused_by_checker() {
+    let source = r"
+fn same<T>(a: Option<T>, b: Option<T>) -> bool {
+    a == b
+}
+
+fn same_twice<U>(a: Option<U>, b: Option<U>) -> bool {
+    same(a, b)
+}
+
+fn main() -> i64 {
+    let left: HashMap<string, i64> = HashMap.new();
+    let right: HashMap<string, i64> = HashMap.new();
+    let boxed_left: Option<HashMap<string, i64>> = Some(left);
+    let boxed_right: Option<HashMap<string, i64>> = Some(right);
+    if same_twice(boxed_left, boxed_right) { 0 } else { 1 }
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+        }),
+        "the requirement must propagate through a generic caller; got: {:?}",
+        output.errors
+    );
+}
+
+// -------------------------------------------------------------------------
+// Refcounted shared handles inside aggregates
+//
+// `clone rc` is a retain and is fine. `clone <aggregate containing an Rc>` is
+// not: aggregate ingress emits no retain while both the source binder and the
+// aggregate's composite drop release the handle, so the inverse drop plan
+// over-releases. Fail closed at the checker until the ingress retain exists.
+// -------------------------------------------------------------------------
+
+#[test]
+fn bare_rc_clone_stays_admitted() {
+    let source = r"
+type Node { value: i64; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let _copied = clone shared;
+    0
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "cloning an `Rc` handle directly is a retain and must stay admitted; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn tuple_clone_with_rc_member_is_refused() {
+    let source = r#"
+type Node { value: i64; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let pair: (Rc<Node>, string) = (shared, "tag");
+    let _copied = clone pair;
+    0
+}
+"#;
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `0` of type `Rc<Node>`")
+                && e.message.contains("no aggregate-ingress retain")
+        }),
+        "a tuple carrying an `Rc` has no balanced clone/drop plan; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn option_clone_with_rc_payload_is_refused() {
+    let source = r"
+type Node { value: i64; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let held: Option<Rc<Node>> = Some(shared);
+    let _copied = clone held;
+    0
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Some` of type `Rc<Node>`")
+                && e.message.contains("no aggregate-ingress retain")
+        }),
+        "`Option<Rc<T>>` shares the tuple refusal; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn result_clone_with_rc_payload_is_refused() {
+    let source = r"
+type Node { value: i64; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let held: Result<Rc<Node>, string> = Ok(shared);
+    let _copied = clone held;
+    0
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Ok` of type `Rc<Node>`")
+                && e.message.contains("no aggregate-ingress retain")
+        }),
+        "`Result<Rc<T>, E>` shares the tuple refusal; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn record_clone_with_rc_field_is_refused() {
+    let source = r#"
+type Node { value: i64; }
+type Holder { r: Rc<Node>; tag: string; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let holder = Holder { r: shared, tag: "tag" };
+    let _copied = clone holder;
+    0
+}
+"#;
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `r` of type `Rc<Node>`")
+                && e.message.contains("no aggregate-ingress retain")
+        }),
+        "the record path carries the same unbalanced drop plan; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clone_with_rc_elements_stays_admitted() {
+    let source = r"
+type Node { value: i64; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let holders: Vec<Rc<Node>> = Vec.new();
+    holders.push(shared);
+    let copied = clone holders;
+
+    copied.len() + holders.len()
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "a heap container clones `Rc` elements through its owned-element thunk, which retains; \
+         got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn tuple_clone_with_vec_of_rc_member_stays_admitted() {
+    let source = r#"
+type Node { value: i64; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let holders: Vec<Rc<Node>> = Vec.new();
+    holders.push(shared);
+    let pair: (Vec<Rc<Node>>, string) = (holders, "tag");
+    let copied = clone pair;
+
+    copied.0.len()
+}
+"#;
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "the value-aggregate position must reset at a heap container boundary; got: {:?}",
+        output.errors
+    );
+}

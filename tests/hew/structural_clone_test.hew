@@ -28,3 +28,17 @@ fn tuple_clone_owns_nested_collections_independently() {
     testing.assert_true(original.0.len() == 1);
     testing.assert_true(copy.0.len() == 2);
 }
+
+/// A type parameter's clone capability inside a generic template comes from its
+/// declared bound; the concrete capability is decided at instantiation.
+fn clone_option<T: Clone>(value: Option<T>) -> Option<T> {
+    clone value
+}
+
+#[test]
+fn bounded_generic_clone_is_admitted_and_instantiates() {
+    let original: Option<i64> = Some(3);
+    let copied = clone_option(original);
+
+    testing.assert_true(copied == Some(3));
+}

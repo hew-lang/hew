@@ -2103,6 +2103,13 @@ impl Checker {
                 true,
             );
 
+            // Structural-equality obligations raised inside a generic body are
+            // discharged per instantiation; this is where the checker learns
+            // which instantiations exist.
+            if !sig.type_params.is_empty() {
+                self.record_generic_fn_instantiation_site(&resolved_fn_name, span);
+            }
+
             let target = self.call_target_for_signature(&resolved_fn_name);
             if matches!(
                 &target,

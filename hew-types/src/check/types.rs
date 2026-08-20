@@ -2173,6 +2173,70 @@ pub(super) struct DeferredBuiltinCloneAdmission {
     pub(super) source_module: Option<String>,
 }
 
+/// A structural-equality requirement raised by a generic function body.
+///
+/// `a == b` on an aggregate whose members bottom out in the enclosing
+/// function's type parameters is admitted in the template — the parameter has
+/// no concrete leaf to walk yet — and the obligation is recorded here in the
+/// owner's own type-parameter terms (`Option<T>`). Every instantiation of that
+/// function substitutes the obligation and re-runs the *same* eligibility
+/// walk, so the checker refuses `T = HashMap<string, i64>` instead of letting
+/// codegen's `eq_thunk` be the first to notice.
+///
+/// A semantic `Eq` bound is deliberately NOT accepted as a proxy: `Eq` can be
+/// satisfied by types that have no structural compare path.
+#[derive(Debug, Clone)]
+pub(super) struct GenericStructuralEqRequirement {
+    /// The aggregate type, spelled in the owning function's type parameters.
+    pub(super) ty: Ty,
+}
+
+/// One generic function call site, recorded so structural-equality obligations
+/// can be discharged per instantiation.
+///
+/// `type_args` are captured in the *caller's* terms: inside a generic caller
+/// they may still name the caller's own parameters, which is what lets
+/// [`Checker::finalize_generic_structural_eq`] walk generic → generic call
+/// edges from a concrete root instead of stopping at the first hop.
+#[derive(Debug, Clone)]
+pub(super) struct GenericFnInstantiationSite {
+    pub(super) caller: Option<String>,
+    pub(super) caller_type_params: Vec<String>,
+    pub(super) callee: String,
+    /// The callee signature's own type-parameter names, snapshotted here
+    /// because `fn_sigs` is no longer addressable by this key once the
+    /// output-boundary pass has run.
+    pub(super) callee_type_params: Vec<String>,
+    pub(super) type_args: Vec<Ty>,
+    pub(super) span: Span,
+    pub(super) source_module: Option<String>,
+}
+
+/// One generic → generic call edge, in the enclosing generic function's own
+/// type-parameter terms. Following these from a concrete root is what lets an
+/// obligation raised several hops down land on the call site the programmer
+/// actually wrote.
+#[derive(Debug, Clone)]
+pub(super) struct GenericCallEdge {
+    pub(super) callee: String,
+    pub(super) callee_type_params: Vec<String>,
+    pub(super) type_args: Vec<Ty>,
+}
+
+/// One concrete instantiation queued for structural-equality discharge.
+#[derive(Debug, Clone)]
+pub(super) struct PendingInstantiation {
+    pub(super) callee: String,
+    pub(super) callee_type_params: Vec<String>,
+    pub(super) type_args: Vec<Ty>,
+    /// Span and module of the CONCRETE call site the diagnostic points at —
+    /// carried unchanged along every edge so a nested obligation still reports
+    /// where the program pinned the type arguments.
+    pub(super) report_span: Span,
+    pub(super) report_module: Option<String>,
+    pub(super) depth: u32,
+}
+
 /// A channel method call rewrite deferred until after all inference has settled.
 ///
 /// Recorded when a `Sender<T>::send` / `Receiver<T>::recv` / `try_recv` call is
@@ -2626,6 +2690,14 @@ pub struct Checker {
     /// Built-in value-container clone checks deferred until after inference.
     /// Keyed by clone call-site span.
     pub(super) deferred_builtin_clone_admission: HashMap<SpanKey, DeferredBuiltinCloneAdmission>,
+    /// Structural-equality obligations raised inside generic function bodies,
+    /// keyed by the owning function's `fn_sigs` key. Discharged per
+    /// instantiation by `finalize_generic_structural_eq`.
+    pub(super) generic_structural_eq_requirements:
+        HashMap<String, Vec<GenericStructuralEqRequirement>>,
+    /// Every generic function call site observed while checking bodies, in
+    /// source order. Consumed alongside `generic_structural_eq_requirements`.
+    pub(super) generic_fn_instantiation_sites: Vec<GenericFnInstantiationSite>,
     /// Channel method call rewrites deferred until after inference completes.
     /// Keyed by call-site span so repeated traversal of the same site is
     /// idempotent (last write wins, which is fine since the inner type is the
@@ -3637,6 +3709,8 @@ impl Checker {
             hashset_layout_facts: HashMap::new(),
             deferred_vec_admission: HashMap::new(),
             deferred_builtin_clone_admission: HashMap::new(),
+            generic_structural_eq_requirements: HashMap::new(),
+            generic_fn_instantiation_sites: Vec::new(),
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),

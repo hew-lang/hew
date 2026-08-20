@@ -77,3 +77,19 @@ fn vec_contains_copy_record_stays_structural() {
     testing.assert_true(points.contains(Point { x: 1, y: 2 }));
     testing.assert_false(points.contains(Point { x: 9, y: 9 }));
 }
+
+/// Structural equality over a type parameter is admitted in the template and
+/// re-decided per instantiation; an eligible instantiation compares member-wise.
+fn same<T>(left: Option<T>, right: Option<T>) -> bool {
+    left == right
+}
+
+#[test]
+fn generic_equality_compares_eligible_instantiations_member_wise() {
+    let a: Option<i64> = Some(1);
+    let b: Option<i64> = Some(1);
+    let c: Option<i64> = Some(2);
+
+    testing.assert_true(same(a, b));
+    testing.assert_false(same(a, c));
+}

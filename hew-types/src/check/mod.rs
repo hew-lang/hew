@@ -1007,6 +1007,7 @@ impl Checker {
         self.finalize_hashset_admission();
         self.finalize_vec_admission();
         self.finalize_channel_rewrites();
+        self.finalize_generic_structural_eq();
 
         // Prune any layout facts whose span is not in the validated expr_types map.
         // This prevents orphaned layout facts (from expressions that were pruned

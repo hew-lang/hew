@@ -994,9 +994,13 @@ fn record_clone_affine_veto_is_transitive_but_stops_at_rc() {
             member,
         } if type_name == "owner.LinearTicket" && member == "linear"
     ));
+    // The AFFINE veto still stops at `Rc`: a shared handle to a resource is not
+    // itself affine, so this is not an `AffineValue` refusal. It is refused for
+    // the separate ownership reason — an `Rc` member of a value aggregate has no
+    // aggregate-ingress retain, so the composite drop plan would over-release.
     assert!(matches!(
         checker.record_clone_admissibility("SharedWrapper", &[], &span),
-        RecordCloneAdmissibility::Admissible
+        RecordCloneAdmissibility::UnbalancedSharedHandle { member, .. } if member == "shared"
     ));
 }
 
@@ -1150,9 +1154,12 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
     );
 
     let span = Span::from(0..0);
+    // Semantic-handle fields are not affine-clone blockers. The `rc` field is
+    // still refused, but for the ownership reason (no aggregate-ingress retain
+    // for a shared handle inside a value aggregate), never as an affine veto.
     assert!(matches!(
         checker.record_clone_admissibility("HandleWrapper", &[], &span),
-        RecordCloneAdmissibility::Admissible
+        RecordCloneAdmissibility::UnbalancedSharedHandle { member, .. } if member == "rc"
     ));
     assert!(
         matches!(

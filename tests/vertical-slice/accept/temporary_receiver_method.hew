@@ -3,9 +3,9 @@ fn make_vec(seed: i64) -> Vec<string> {
 }
 
 fn main() -> i64 {
-    let map: HashMap<string, string> = HashMap::new();
-    let set: HashSet<string> = HashSet::new();
-    let values: Vec<string> = Vec::new();
+    let map: HashMap<string, string> = HashMap.new();
+    let set: HashSet<string> = HashSet.new();
+    let values: Vec<string> = Vec.new();
     var i = 0;
     while i < 3 {
         map.insert(f"key-{i}", f"value-{i}");

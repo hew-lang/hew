@@ -9,7 +9,7 @@ fn inspect(values: Vec<string>) -> i64 {
 }
 
 fn main() -> i64 {
-    let map: HashMap<string, string> = HashMap::new();
+    let map: HashMap<string, string> = HashMap.new();
     var i = 0;
     while i < 3 {
         map.insert(f"key-{i}", f"value-{i}");

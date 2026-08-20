@@ -22,9 +22,9 @@ fn projection_shapes_source(frames: usize) -> String {
          \x20   [f\"made-{{seed}}-a\", f\"made-{{seed}}-b\", f\"made-{{seed}}-c\"]\n\
          }}\n\
          fn frame(seed: i64) -> i64 {{\n\
-         \x20   let map: HashMap<string, string> = HashMap::new();\n\
-         \x20   let set: HashSet<string> = HashSet::new();\n\
-         \x20   let values: Vec<string> = Vec::new();\n\
+         \x20   let map: HashMap<string, string> = HashMap.new();\n\
+         \x20   let set: HashSet<string> = HashSet.new();\n\
+         \x20   let values: Vec<string> = Vec.new();\n\
          \x20   var i = 0;\n\
          \x20   while i < 3 {{\n\
          \x20       map.insert(f\"key-{{seed}}-{{i}}\", f\"value-{{seed}}-{{i}}\");\n\

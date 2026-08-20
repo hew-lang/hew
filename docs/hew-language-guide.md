@@ -307,7 +307,7 @@ fn describe(e: Event) -> string {
 }
 ```
 
-Variant arms bind their payload positionally. Construct values with bare variant names (`Number(5)`, `Empty`). Enum variants are declared `;`-separated.
+Variant arms bind their payload positionally. Construct values with dotted variant names (`.Number(5)`, `.Empty`). Enum variants are declared `;`-separated.
 
 ### match exhaustiveness is enforced
 
@@ -1059,7 +1059,7 @@ Compose records by nesting; access depth-chains directly. Every field must be su
 >
 > // Construction — commas (required)
 > let p = Point { x: 1, y: 2 };
-> let c = Red;
+> let c = .Red;
 > ```
 >
 > The compiler error for a semicolon in a construction literal is "expected `}`, found `;`". Enum variants reject commas with "use `;` instead of `,` to separate variants". Type field definitions accept both separators, but `;` is the idiomatic style.
@@ -1081,11 +1081,11 @@ fn area(s: Shape) -> f64 {
 }
 fn main() {
     println(area(.Circle(2.0)));
-    println(area(Rect { w: 3.0, h: 4.0 }));
+    println(area(Shape.Rect { w: 3.0, h: 4.0 }));
 }
 ```
 
-Mix unit, tuple, and struct variants in one enum. Enum variants are separated by `;`. Struct-variant fields use `;` separators; the variant pattern uses `{ w, h }` shorthand. Construct variants by bare name.
+Mix unit, tuple, and struct variants in one enum. Enum variants are separated by `;`. Struct-variant fields use `;` separators; the variant pattern uses `{ w, h }` shorthand. Construct variants with dotted names such as `Shape.Rect { w: 3.0, h: 4.0 }`.
 
 ### Pattern destructuring in match
 
@@ -3005,8 +3005,8 @@ bare element type, not `Option<T>` — see
 [`examples/playground/types/wire_types.hew`](../examples/playground/types/wire_types.hew)
 for that form.
 
-`e.to_json()` and `TypeName.from_json(text)` (a call on the type name
-itself, rather than a source spelling, round-trip a wire type through JSON. The runtime envelope
+`e.to_json()` and `TypeName.from_json(text)` round-trip a wire type through
+JSON; the latter is a call on the type name itself rather than a source spelling. The runtime envelope
 used for actor-to-actor message transport is CBOR; the `std.encoding` modules
 surface (JSON, MessagePack, ...) is for cross-service and file I/O. Use `hew
 wire check <file.hew> --against <baseline.hew>` to check schema

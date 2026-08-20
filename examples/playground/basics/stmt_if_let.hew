@@ -24,7 +24,7 @@ fn main() {
     if let .Value(n) = x {
         println(f"x is {n}");
     }
-    let y = Empty;
+    let y: Wrapped = .Empty;
     if let .Value(n) = y {
         println(f"should not print: {n}");
     }

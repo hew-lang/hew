@@ -5,7 +5,7 @@
 //! would leave the caller's Result with a dangling slot.
 
 fn seed() -> Vec<i64> {
-    let values: Vec<i64> = Vec::new();
+    let values: Vec<i64> = Vec.new();
     values.push(1);
     values
 }
@@ -16,12 +16,12 @@ fn forward(result: Result<Vec<i64>, Vec<i64>>) -> Result<Vec<i64>, Vec<i64>> {
 
 fn consume(result: Result<Vec<i64>, Vec<i64>>) -> i64 {
     match forward(result) {
-        Ok(payload) => {
+        .Ok(payload) => {
             var moved = payload;
             moved = seed();
             moved.len()
         },
-        Err(payload) => payload.len(),
+        .Err(payload) => payload.len(),
     }
 }
 

@@ -721,7 +721,7 @@ fn borrowed_call_forwarder_payload_move_stays_rejected() {
     let src = format!(
         "{FORWARDER}
          fn seed() -> Vec<i64> {{
-            let values: Vec<i64> = Vec::new();
+            let values: Vec<i64> = Vec.new();
             values.push(1);
             values
          }}
@@ -746,7 +746,7 @@ fn borrowed_call_forwarder_payload_move_stays_rejected() {
 fn fresh_call_result_payload_move_is_admitted() {
     let src = r"
         fn seed() -> Vec<i64> {
-            let values: Vec<i64> = Vec::new();
+            let values: Vec<i64> = Vec.new();
             values.push(1);
             values
         }

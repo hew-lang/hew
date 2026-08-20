@@ -98,10 +98,11 @@ use hew_types::{
 // OBSOLETE: rc2, once dedicated trap codes for crash-cleanup and
 // lifecycle-lock failures can be minted.
 use hew_runtime::internal::types::{
-    HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH,
-    HEW_TRAP_HEAP_EXCEEDED, HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW,
-    HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE, HEW_TRAP_MODULE_INIT_REGEX_FAILED,
-    HEW_TRAP_SHIFT_OUT_OF_RANGE, HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE, HEW_TRAP_WIRE_DECODE_FAILED,
+    HewError, HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO,
+    HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH, HEW_TRAP_HEAP_EXCEEDED, HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+    HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE,
+    HEW_TRAP_MODULE_INIT_REGEX_FAILED, HEW_TRAP_SHIFT_OUT_OF_RANGE,
+    HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE, HEW_TRAP_WIRE_DECODE_FAILED,
 };
 
 use inkwell::builder::Builder;
@@ -31237,19 +31238,12 @@ fn lower_terminator<'ctx>(
                 "actor send payload size",
             )?;
             let msg_type = fn_ctx.ctx.i32_type().const_int(*msg_type as u64, false);
-            // Bind the i32 return value. `0` (`HewError::Ok`) is the only
-            // non-trapping status: `hew_actor_send_by_id` already resolves a
-            // declared bounded-mailbox policy-drop (`drop_new`/`drop_old`/
-            // `coalesce`; spec §6.2, silent by definition) down to `0` below
-            // this call, at the mailbox-send seam
-            // (`hew_mailbox_send_fire_and_forget` in the runtime) — NOT here.
-            // Every other status this call can return (recipient gone,
-            // `fail`-policy overflow, OOM, foreign-runtime, remote partition
-            // rejection) is a genuine, caller-visible failure and must trap:
-            // proceeding past one could leave the caller operating on stale
-            // state or attempting a follow-up ask on a dead actor. Do not
-            // special-case any particular non-zero value here — every
-            // failure code is, and must stay, caller-visible.
+            // Bind the i32 return value. `0` (`HewError::Ok`) includes
+            // declared bounded-mailbox policy drops (`drop_new`/`drop_old`/
+            // `coalesce`; spec §6.2). `ErrActorStopped` is also non-trapping
+            // for this fire-and-forget LocalPid surface: it means a peer died
+            // before delivery, so the send is a no-op. Every other non-zero
+            // status remains a genuine, caller-visible failure and traps.
             // `Terminator::Send` targets a LOCAL actor handle (`LocalPid`);
             // it delivers into a local mailbox and never reaches the cross-node
             // serialize path (that is the `RemotePid<T>` `emit_remote_pid_send_call`
@@ -31277,9 +31271,11 @@ fn lower_terminator<'ctx>(
                 })?
                 .into_int_value();
 
-            // Branch: status == 0 → next_bb; any nonzero status →
-            // send_fail_bb. No status value is excluded — see the comment
-            // above the call for why every nonzero code must trap.
+            // A stopped LocalPid is normal actor topology churn for a
+            // fire-and-forget send: the receiver is already terminal and the
+            // runtime has discarded the payload. Treat that one status as a
+            // no-op so a broadcast can outlive a dead peer. Other failures
+            // remain fail-closed; they are not a liveness observation.
             let send_fail_bb = fn_ctx
                 .builder
                 .get_insert_block()
@@ -31292,6 +31288,23 @@ fn lower_terminator<'ctx>(
                 .builder
                 .build_int_compare(inkwell::IntPredicate::NE, send_status, zero, "send_not_ok")
                 .llvm_ctx("send status cmp")?;
+            let recipient_stopped = fn_ctx
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    send_status,
+                    i32_ty.const_int(HewError::ErrActorStopped as i32 as u64, true),
+                    "send_recipient_stopped",
+                )
+                .llvm_ctx("send stopped-recipient status cmp")?;
+            let recipient_running = fn_ctx
+                .builder
+                .build_not(recipient_stopped, "send_recipient_running")
+                .llvm_ctx("send stopped-recipient inversion")?;
+            let send_must_trap = fn_ctx
+                .builder
+                .build_and(send_failed, recipient_running, "send_must_trap")
+                .llvm_ctx("send failure classification")?;
 
             let next_bb = *fn_ctx
                 .blocks
@@ -31299,7 +31312,7 @@ fn lower_terminator<'ctx>(
                 .ok_or_else(|| CodegenError::FailClosed(format!("Send next bb{next} missing")))?;
             fn_ctx
                 .builder
-                .build_conditional_branch(send_failed, send_fail_bb, next_bb)
+                .build_conditional_branch(send_must_trap, send_fail_bb, next_bb)
                 .llvm_ctx("send status branch")?;
 
             fn_ctx.builder.position_at_end(send_fail_bb);

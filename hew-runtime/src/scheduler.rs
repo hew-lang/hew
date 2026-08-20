@@ -663,6 +663,23 @@ fn reopen_admission_gates() {
     crate::reactor::reset_listener_admission();
 }
 
+/// Resolve the number of scheduler workers from the environment or host.
+fn configured_scheduler_worker_count() -> usize {
+    let default_count = thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+
+    match std::env::var("HEW_WORKERS") {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                eprintln!("warning: HEW_WORKERS={val} is invalid, using default");
+                default_count
+            }
+        },
+        Err(_) => default_count,
+    }
+    .clamp(1, crate::actor::HEW_MAX_WORKERS)
+}
+
 /// Initialize and start the M:N scheduler.
 ///
 /// Spawns one worker thread per available CPU core (falls back to 4).
@@ -672,19 +689,7 @@ fn reopen_admission_gates() {
 /// printing a diagnostic — scheduler init failure is unrecoverable.
 #[no_mangle]
 pub extern "C" fn hew_sched_init() -> c_int {
-    let default_count = thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
-
-    let worker_count = match std::env::var("HEW_WORKERS") {
-        Ok(val) => match val.parse::<usize>() {
-            Ok(n) if n > 0 => n.clamp(1, crate::actor::HEW_MAX_WORKERS),
-            _ => {
-                eprintln!("warning: HEW_WORKERS={val} is invalid, using default");
-                default_count
-            }
-        },
-        Err(_) => default_count,
-    }
-    .clamp(1, crate::actor::HEW_MAX_WORKERS);
+    let worker_count = configured_scheduler_worker_count();
 
     match std::env::var("HEW_SEED") {
         Ok(seed_str) => {
@@ -747,6 +752,7 @@ pub extern "C" fn hew_sched_init() -> c_int {
         // Another thread beat us — `install_default` already dropped ours.
         return 0;
     }
+    actor::reset_unsupervised_actor_crash();
     reopen_admission_gates();
 
     // Ignore SIGPIPE process-wide, before ANY background thread is spawned or

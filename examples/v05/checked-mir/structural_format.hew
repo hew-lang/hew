@@ -1,0 +1,13 @@
+// MIR-corpus fixture: structural aggregate formatting.
+//
+// Pins `hew_structural_format`, which renders a record through a borrowed
+// structural view rather than a concrete Display implementation.
+record Point {
+    x: i64,
+    label: string,
+}
+
+fn main() {
+    let point = Point { x: 7, label: "west" };
+    println(f"{point:?}");
+}

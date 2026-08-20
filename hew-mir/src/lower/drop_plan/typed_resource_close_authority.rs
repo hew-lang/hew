@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 use super::*;
 use hew_hir::OpaqueResourceLifecycle;
 use hew_types::ffi_contracts::ReleaseDischargeDepth;
@@ -7,9 +12,11 @@ use std::collections::BTreeSet;
 fn admit_lifecycle(classes: &mut hew_hir::TypeClassTable, ty: &str, close: &str) {
     classes
         .admit_opaque_resource_lifecycle(OpaqueResourceLifecycle {
-            resource_declaration: hew_types::DefId::new(ty),
-            close_declaration: hew_types::DefId::new(format!("{ty}::close")),
-            release_declaration: hew_types::DefId::new(format!(
+            resource_declaration: hew_types::DefId::legacy_reconstruct_from_full_path(ty),
+            close_declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
+                "{ty}::close"
+            )),
+            release_declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
                 "hew_release_{}",
                 ty.replace('.', "_")
             )),

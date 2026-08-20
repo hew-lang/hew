@@ -2196,7 +2196,7 @@ mod tests {
             "hew_testffi_name",
             "hew_testffi_query",
         ] {
-            let declaration = hew_types::DefId::new(format!("hew.testffi.{name}"));
+            let declaration = hew_types::DefId::for_test(format!("hew.testffi.{name}"));
             assert_eq!(
                 symbols.get(&declaration),
                 Some(&name.to_string()),
@@ -2250,8 +2250,8 @@ mod tests {
         .expect("copy mixed-import library");
 
         let root_tag =
-            hew_types::DefId::new("TestResult::<impl TestResultMethods for TestResult>::tag");
-        let package_rows = hew_types::DefId::new(
+            hew_types::DefId::for_test("TestResult::<impl TestResultMethods for TestResult>::tag");
+        let package_rows = hew_types::DefId::for_test(
             "hew.testffi.TestResult::<impl hew.testffi.TestResultMethods for hew.testffi.TestResult>::rows",
         );
 
@@ -2359,13 +2359,13 @@ mod tests {
         let expected = [
             (
                 "hew.privslot.Store::add",
-                hew_types::DefId::new(
+                hew_types::DefId::for_test(
                     "hew.privslot.Store::<impl inherent for hew.privslot.Store<T>>::add",
                 ),
             ),
             (
                 "hew.privslot.Store::generation_at",
-                hew_types::DefId::new(
+                hew_types::DefId::for_test(
                     "hew.privslot.Store::<impl inherent for hew.privslot.Store<T>>::generation_at",
                 ),
             ),
@@ -2556,18 +2556,18 @@ fn main() {
         );
         let symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
         let expected = [
-            (hew_types::DefId::new("root_first"), "root_first"),
+            (hew_types::DefId::for_test("root_first"), "root_first"),
             (
-                hew_types::DefId::new("file_helpers.file_first"),
+                hew_types::DefId::for_test("file_helpers.file_first"),
                 "file_helpers$file_first",
             ),
             (
-                hew_types::DefId::new("hew.genhelpers.first"),
+                hew_types::DefId::for_test("hew.genhelpers.first"),
                 "hew$genhelpers$first",
             ),
-            (hew_types::DefId::new("alpha.first"), "alpha$first"),
+            (hew_types::DefId::for_test("alpha.first"), "alpha$first"),
             (
-                hew_types::DefId::new("beta.alpha.first"),
+                hew_types::DefId::for_test("beta.alpha.first"),
                 "beta$alpha$first",
             ),
         ];
@@ -2580,8 +2580,8 @@ fn main() {
             );
         }
         assert_ne!(
-            symbols.get(&hew_types::DefId::new("alpha.first")),
-            symbols.get(&hew_types::DefId::new("beta.alpha.first")),
+            symbols.get(&hew_types::DefId::for_test("alpha.first")),
+            symbols.get(&hew_types::DefId::for_test("beta.alpha.first")),
             "same-leaf generic functions must not share a direct-call symbol"
         );
 
@@ -2893,10 +2893,10 @@ fn main() {
         );
         let symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
         let ids = [
-            hew_types::DefId::new("left.render.render_value"),
-            hew_types::DefId::new("right.render.render_value"),
-            hew_types::DefId::new("left.render.default_value"),
-            hew_types::DefId::new("right.render.default_value"),
+            hew_types::DefId::for_test("left.render.render_value"),
+            hew_types::DefId::for_test("right.render.render_value"),
+            hew_types::DefId::for_test("left.render.default_value"),
+            hew_types::DefId::for_test("right.render.default_value"),
         ];
         let projected: Vec<_> = ids
             .iter()

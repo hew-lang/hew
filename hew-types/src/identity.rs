@@ -9,11 +9,58 @@
 //! dual-imported or root-vs-imported source resolves to ONE identity) and the
 //! canonical fn-sig key mint for the root compilation unit. Later stages
 //! (B-F of the identity-substrate lane) extend the table to declaration
-//! `DefId`s minted here and thread the IDs through HIR/MIR/codegen; at that
-//! point `DefId::new`/`NominalId::new` become mint-restricted to this module.
+//! `DefId`s are minted here and threaded through HIR/MIR/codegen. Downstream
+//! code must carry these identities rather than reconstructing them from names.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use crate::{DefId, NominalId};
+
+/// Unforgeable witness that a declaration path was resolved canonically.
+///
+/// Only this module can create a witness, so even crate-local code cannot
+/// bypass the minting authority by calling `DefId::from_minted_path` directly.
+#[derive(Debug)]
+pub(crate) struct MintingAuthority(());
+
+/// Mint a declaration identity from the canonical path determined by the
+/// resolver/checker. This crate-private entry point is the only production
+/// constructor that accepts a bare declaration path.
+#[must_use]
+pub(crate) fn mint_def_id(full_path: impl Into<String>) -> DefId {
+    DefId::from_minted_path(full_path, MintingAuthority(()))
+}
+
+/// Mint a nominal identity from the canonical path determined by the
+/// resolver/checker.
+#[must_use]
+pub(crate) fn mint_nominal_id(full_path: impl Into<String>) -> NominalId {
+    NominalId::from_minted_declaration(mint_def_id(full_path))
+}
+
+/// The one migration escape hatch for downstream code that still reconstructs
+/// identities. It exists only behind the intentionally alarming public
+/// `legacy_reconstruct_from_full_path` methods on the identity types.
+#[must_use]
+pub(crate) fn legacy_reconstruct_def_id(full_path: impl Into<String>) -> DefId {
+    mint_def_id(full_path)
+}
+
+#[must_use]
+pub(crate) fn legacy_reconstruct_nominal_id(full_path: impl Into<String>) -> NominalId {
+    mint_nominal_id(full_path)
+}
+
+#[must_use]
+pub(crate) fn test_def_id(full_path: impl Into<String>) -> DefId {
+    mint_def_id(full_path)
+}
+
+#[must_use]
+pub(crate) fn test_nominal_id(full_path: impl Into<String>) -> NominalId {
+    mint_nominal_id(full_path)
+}
 
 /// Interned handle for one source module, independent of how the module was
 /// reached (root unit, import, alias, dual-import). Index into the owning

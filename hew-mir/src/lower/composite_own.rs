@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 #[cfg(not(test))]
 use super::temp_drop::{
     corroborated_retained_bytes_move_sites, corroborated_retained_string_move_sites,
@@ -8663,7 +8668,7 @@ mod witness_verifier_composite_traversal {
         let func = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
-            declaration: hew_types::DefId::new("origin"),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path("origin"),
             name: "origin".to_string(),
             type_params: declared.iter().map(|s| (*s).to_string()).collect(),
             is_generator: false,

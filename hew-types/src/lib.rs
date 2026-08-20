@@ -112,6 +112,20 @@ pub use wasm_capabilities_generated::{
 /// A `DefId` deliberately stores the complete declaration path rather than a
 /// leaf spelling.  It is suitable for semantic maps and dispatch tables; use
 /// [`DefId::display_name`] only when rendering a diagnostic.
+///
+/// # Compile-time boundary
+///
+/// A downstream layer cannot mint a definition identity from a leaf spelling:
+///
+/// ```compile_fail
+/// use hew_types::DefId;
+///
+/// let leaf = "Widget";
+/// let _identity = DefId::new(leaf);
+/// ```
+///
+/// The resolver/checker owns declaration minting; downstream phases receive a
+/// `DefId` and carry it unchanged.
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -127,25 +141,50 @@ impl std::borrow::Borrow<str> for DefId {
 }
 
 impl DefId {
-    /// Construct an identity from the declaration's canonical full path.
+    /// Construct an identity from a path minted by the checker/resolver.
     ///
-    /// Root declarations legitimately have a single path segment.  Every
-    /// imported declaration must retain its module prefix before reaching this
-    /// constructor; callers must not manufacture an id from a short-name
-    /// retry.
+    /// This is intentionally crate-private: declaration identity is minted
+    /// once while resolving declarations, then carried through later compiler
+    /// phases.
     ///
     /// # Panics
     ///
     /// Panics when `full_path` is empty, because an empty declaration path has
     /// no canonical identity.
     #[must_use]
-    pub fn new(full_path: impl Into<String>) -> Self {
+    pub(crate) fn from_minted_path(
+        full_path: impl Into<String>,
+        _authority: crate::identity::MintingAuthority,
+    ) -> Self {
         let full_path = full_path.into();
         assert!(
             !full_path.is_empty(),
             "DefId requires a non-empty canonical declaration path"
         );
         Self { full_path }
+    }
+
+    /// Temporarily reconstruct an identity in a downstream compiler phase.
+    ///
+    /// This is the sole migration escape hatch while declaration identities are
+    /// threaded through HIR, MIR, and code generation. Remove each use by
+    /// carrying the resolver-minted [`DefId`] instead.
+    #[deprecated(
+        note = "carry the resolver-minted DefId; this temporary migration escape hatch must not mint new identity"
+    )]
+    #[must_use]
+    pub fn legacy_reconstruct_from_full_path(full_path: impl Into<String>) -> Self {
+        crate::identity::legacy_reconstruct_def_id(full_path)
+    }
+
+    /// Create a fixture identity without granting production code a minting API.
+    ///
+    /// Integration tests compile this crate as a dependency, so this explicit
+    /// seam remains public rather than relying on `cfg(test)`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn for_test(full_path: impl Into<String>) -> Self {
+        crate::identity::test_def_id(full_path)
     }
 
     /// The canonical full declaration path used for identity and linker
@@ -176,10 +215,26 @@ pub struct NominalId {
 
 impl NominalId {
     #[must_use]
-    pub fn new(full_path: impl Into<String>) -> Self {
-        Self {
-            declaration: DefId::new(full_path),
-        }
+    pub(crate) fn from_minted_declaration(declaration: DefId) -> Self {
+        Self { declaration }
+    }
+
+    /// Temporarily reconstruct a nominal identity in a downstream compiler
+    /// phase. Remove each use by carrying the resolver-minted `NominalId`.
+    #[deprecated(
+        note = "carry the resolver-minted NominalId; this temporary migration escape hatch must not mint new identity"
+    )]
+    #[must_use]
+    pub fn legacy_reconstruct_from_full_path(full_path: impl Into<String>) -> Self {
+        crate::identity::legacy_reconstruct_nominal_id(full_path)
+    }
+
+    /// Create a fixture nominal identity without granting production code a
+    /// minting API.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn for_test(full_path: impl Into<String>) -> Self {
+        crate::identity::test_nominal_id(full_path)
     }
 
     #[must_use]
@@ -244,11 +299,11 @@ mod tests {
 
     #[test]
     fn canonical_ids_keep_same_leaf_declarations_distinct() {
-        let left = NominalId::new("left.Box");
-        let right = NominalId::new("right.Box");
+        let left = NominalId::for_test("left.Box");
+        let right = NominalId::for_test("right.Box");
         assert_ne!(left, right);
         assert_eq!(left.display_name(), "Box");
         assert_eq!(left.full_path(), "left.Box");
-        assert_ne!(DefId::new("left.Box"), DefId::new("right.Box"));
+        assert_ne!(DefId::for_test("left.Box"), DefId::for_test("right.Box"));
     }
 }

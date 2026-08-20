@@ -182,7 +182,7 @@ impl Builder {
         // preserves the pre-promotion behaviour rather than fabricating an
         // unowned heap box.
         let strategy = layout.allocation_strategy();
-        let (shim_name, _env_ty, env_place, suspends) =
+        let (shim_name, _env_ty, env_place, suspends, _manifest) =
             self.materialize_closure_env(expr, params, ret_ty, body, captures, strategy)?;
         // Record the body-suspends verdict so the enclosing `Let` handler can
         // attribute it to the bound binding (the suspendable-callee
@@ -336,7 +336,7 @@ impl Builder {
         body: &HirExpr,
         captures: &[hew_hir::HirClosureCapture],
         strategy: crate::closure_env::AllocationStrategy,
-    ) -> Option<(String, ResolvedTy, Place, bool)> {
+    ) -> Option<(String, ResolvedTy, Place, bool, Vec<ClosureEnvFieldInit>)> {
         let closure_id = self.next_closure_id;
         self.next_closure_id = self
             .next_closure_id
@@ -489,7 +489,7 @@ impl Builder {
         let env_place = self.alloc_local(env_ty.clone());
         self.push_instr(Instr::ClosureEnvInit {
             ty: env_ty.clone(),
-            fields: field_pairs,
+            fields: field_pairs.clone(),
             dest: env_place,
         });
 
@@ -508,7 +508,7 @@ impl Builder {
             .any(|b| terminator_is_suspend_carrier(&b.terminator));
         self.generated_functions.push(lowered);
 
-        Some((shim_name, env_ty, env_place, suspends))
+        Some((shim_name, env_ty, env_place, suspends, field_pairs))
     }
 
     /// The module-level lookup tables every child `Builder` (closure shim,

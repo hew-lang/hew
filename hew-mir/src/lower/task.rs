@@ -2,11 +2,11 @@ use super::{
     bracket_actor_handler_blocks, check_function, check_to_diagnostic,
     collect_unknown_type_diagnostics, dataflow, elaborate, finalize_bytes_ownership,
     finalize_string_ownership, BasicBlock, BindingId, Builder, BuiltinType, CheckedMirFunction,
-    ClosureEnvFieldOwnership, FieldOffset, HirBlock, HirExpr, HirExprKind, HirFn, HirJoin,
-    HirSelect, HirSelectArmKind, HirStmtKind, Instr, IntentKind, JoinBranch, LoweredFunction,
-    MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, ResolvedTy, SelectArm,
-    SelectArmKind, SourceOrigin, SpawnEnvFieldOwnership, SuspendKind, Terminator, ThirFunction,
-    ValueClass,
+    ClosureEnvFieldInit, ClosureEnvFieldOwnership, FieldOffset, HirBlock, HirExpr, HirExprKind,
+    HirFn, HirJoin, HirSelect, HirSelectArmKind, HirStmtKind, Instr, IntentKind, JoinBranch,
+    LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction,
+    ResolvedTy, SelectArm, SelectArmKind, SourceOrigin, SpawnEnvFieldOwnership, SuspendKind,
+    Terminator, ThirFunction, ValueClass,
 };
 use crate::model::StableActorRole;
 
@@ -37,6 +37,19 @@ fn select_task_output_ty(ty: ResolvedTy) -> Option<ResolvedTy> {
         ResolvedTy::Task(inner) => Some(*inner),
         _ => None,
     }
+}
+
+fn spawn_env_ownership_from_closure_manifest(
+    manifest: &[ClosureEnvFieldInit],
+) -> Vec<SpawnEnvFieldOwnership> {
+    manifest
+        .iter()
+        .map(|field| match field.ownership {
+            ClosureEnvFieldOwnership::OwnsMoved => SpawnEnvFieldOwnership::OwnsMoved,
+            ClosureEnvFieldOwnership::BorrowsOnly
+            | ClosureEnvFieldOwnership::OwnsClonedOrRetained => SpawnEnvFieldOwnership::BorrowsOnly,
+        })
+        .collect()
 }
 
 impl Builder {
@@ -1064,7 +1077,7 @@ impl Builder {
             });
             return None;
         }
-        let (fn_symbol, env_ty, env_place, _suspends) = self.materialize_closure_env(
+        let (fn_symbol, env_ty, env_place, _suspends, manifest) = self.materialize_closure_env(
             callee,
             params,
             ret_ty,
@@ -1080,24 +1093,7 @@ impl Builder {
             fn_symbol,
             env: env_place,
             env_ty,
-            env_ownership: captures
-                .iter()
-                .map(|capture| {
-                    let ty = self.subst_ty(&capture.ty);
-                    match self.closure_env_capture_ownership(
-                        crate::closure_env::AllocationStrategy::ScopeOwned,
-                        &ty,
-                        Some(capture.binding),
-                        capture.mode,
-                    ) {
-                        ClosureEnvFieldOwnership::OwnsMoved => SpawnEnvFieldOwnership::OwnsMoved,
-                        ClosureEnvFieldOwnership::BorrowsOnly
-                        | ClosureEnvFieldOwnership::OwnsClonedOrRetained => {
-                            SpawnEnvFieldOwnership::BorrowsOnly
-                        }
-                    }
-                })
-                .collect(),
+            env_ownership: spawn_env_ownership_from_closure_manifest(&manifest),
         });
         Some(task_place)
     }
@@ -1204,7 +1200,7 @@ impl Builder {
             kind: HirExprKind::Block(body.clone()),
             span: body.span.clone(),
         };
-        let (fn_symbol, env_ty, env_place, _suspends) = self.materialize_closure_env(
+        let (fn_symbol, env_ty, env_place, _suspends, manifest) = self.materialize_closure_env(
             &body_expr,
             &[],
             &ResolvedTy::Unit,
@@ -1221,24 +1217,7 @@ impl Builder {
             fn_symbol,
             env: env_place,
             env_ty,
-            env_ownership: captures
-                .iter()
-                .map(|capture| {
-                    let ty = self.subst_ty(&capture.ty);
-                    match self.closure_env_capture_ownership(
-                        crate::closure_env::AllocationStrategy::ScopeOwned,
-                        &ty,
-                        Some(capture.binding),
-                        capture.mode,
-                    ) {
-                        ClosureEnvFieldOwnership::OwnsMoved => SpawnEnvFieldOwnership::OwnsMoved,
-                        ClosureEnvFieldOwnership::BorrowsOnly
-                        | ClosureEnvFieldOwnership::OwnsClonedOrRetained => {
-                            SpawnEnvFieldOwnership::BorrowsOnly
-                        }
-                    }
-                })
-                .collect(),
+            env_ownership: spawn_env_ownership_from_closure_manifest(&manifest),
         });
         Some(task_place)
     }

@@ -88,6 +88,9 @@ const FORK_AWAIT_DRIVER: &str = r"
     }
 ";
 
+const SCOPE_MOVE_CLOSURE_OWNED_CAPTURE: &str =
+    include_str!("../../../tests/vertical-slice/accept/scope_move_closure_owned_capture.hew");
+
 #[test]
 fn fork_binding_awaited_emits_no_must_consume() {
     // `await t` consumes the linear Task<()> handle: the MustConsume exit
@@ -279,24 +282,7 @@ fn fork_string_arg_spawn_env_owns_the_moved_field() {
 
 #[test]
 fn spawned_move_closure_env_owns_its_scope_owned_capture() {
-    let mir = lower_clean_to_mir(
-        r#"
-        actor _Driver {
-            receive fn drive() {
-                let greeting = "hello" + " world";
-                scope {
-                    (move || println(greeting))();
-                };
-            }
-        }
-
-        fn main() -> i64 {
-            let d = spawn _Driver;
-            d.drive();
-            0
-        }
-        "#,
-    );
+    let mir = lower_clean_to_mir(SCOPE_MOVE_CLOSURE_OWNED_CAPTURE);
     let ownership = mir
         .raw_mir
         .iter()
@@ -314,6 +300,37 @@ fn spawned_move_closure_env_owns_its_scope_owned_capture() {
         &[SpawnEnvFieldOwnership::OwnsMoved],
         "the task environment must release the moved capture after the parent transfers it"
     );
+}
+
+#[test]
+fn spawned_move_closure_parent_and_shim_emit_no_drops_for_moved_capture() {
+    // The parent transfers the string owner into the scope-owned environment,
+    // and the closure shim only reads that environment field. The task Rc
+    // environment callback is therefore the sole release site.
+    let mir = lower_clean_to_mir(SCOPE_MOVE_CLOSURE_OWNED_CAPTURE);
+    let shim_name = mir
+        .raw_mir
+        .iter()
+        .flat_map(|func| &func.blocks)
+        .flat_map(|block| block.instructions.iter())
+        .find_map(|instr| match instr {
+            Instr::SpawnTaskClosure { fn_symbol, .. } => Some(fn_symbol.as_str()),
+            _ => None,
+        })
+        .expect("spawned move closure entry shim");
+
+    for func in &mir.elaborated_mir {
+        if func.name.contains("Driver__run") || func.name == shim_name {
+            for (exit, plan) in &func.drop_plans {
+                assert!(
+                    plan.drops.is_empty(),
+                    "{}: expected empty drop plan at {exit:?}, got {:#?}",
+                    func.name,
+                    plan.drops
+                );
+            }
+        }
+    }
 }
 
 #[test]

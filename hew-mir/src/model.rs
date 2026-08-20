@@ -5278,7 +5278,8 @@ pub enum Instr {
         env_ty: ResolvedTy,
         /// Per-field ownership contract for the Rc task environment. Fork
         /// argument fields transferred from the parent are owned by this
-        /// environment; scope-owned closure captures remain borrowed.
+        /// environment; scope-owned closure captures carry the ownership
+        /// verdict recorded while their closure environment was materialised.
         env_ownership: Vec<SpawnEnvFieldOwnership>,
     },
     /// Run the drop ritual for `place`. Cluster 3 makes this first-class:

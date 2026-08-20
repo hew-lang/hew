@@ -46,7 +46,9 @@
 
 mod support;
 
-use support::leak_slope::{measure_leaks, require_leaks_tool};
+use support::leak_slope::{
+    measure_leaks, measure_leaks_exact, require_leaks_tool, run_under_malloc_scribble,
+};
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -190,6 +192,11 @@ fn main() {\n\
 \x20   print(a + b + d);\n\
 \x20   print(\"OK\");\n\
 }\n";
+
+/// Scope-owned moved-capture fixture shared with the vertical-slice and MIR
+/// drop-plan oracles.
+const SCOPE_MOVE_CLOSURE_OWNED_CAPTURE: &str =
+    include_str!("../../tests/vertical-slice/accept/scope_move_closure_owned_capture.hew");
 
 // ── leak measurement plumbing (same shape as vec_local_drop_leak_oracle) ────
 
@@ -379,4 +386,42 @@ fn closure_env_shapes_run_clean_under_malloc_scribble() {
          scribbled value indicates a producer-side double-drop of an env field;\n{}",
         describe_output(&output)
     );
+}
+
+/// A heap string moved into a directly-invoked scope closure is released by
+/// the task environment exactly once: no leaked allocation and no second free.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "ownership oracle needs macOS `leaks(1)` and the Darwin poisoned allocator"
+)]
+#[test]
+fn scope_move_closure_owned_capture_has_zero_leaks_and_no_double_free() {
+    require_leaks_tool();
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("scope-move-closure-ownership-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        SCOPE_MOVE_CLOSURE_OWNED_CAPTURE,
+        dir.path(),
+        "scope_move_closure_owned_capture",
+    );
+
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "scope-owned moved capture must not double-free under the poisoned allocator:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "owned heap\n",
+        "the spawned closure must run to completion before ownership is measured"
+    );
+
+    let (count, bytes) = measure_leaks_exact(&bin);
+    assert_eq!(count, 0, "expected 0 leaks, got {count}");
+    assert_eq!(bytes, 0, "expected 0 leaked bytes, got {bytes}");
+    eprintln!("scope moved-capture ownership: 0 leaks, 0 double-frees — PASS");
 }

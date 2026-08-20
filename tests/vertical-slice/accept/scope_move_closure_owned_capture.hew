@@ -1,0 +1,23 @@
+// A moved closure invoked directly inside a task scope is spawned with a
+// scope-owned environment. The runtime-built string must transfer into that
+// environment and be released exactly once when the task completes.
+//
+// Harness verb: compile + run (exit 0)
+// Expected stdout: owned heap
+actor Driver {
+    receive fn run() -> i64 {
+        let message = "owned" + " heap";
+        scope {
+            (move || println(message))();
+        };
+        0
+    }
+}
+
+fn main() -> i64 {
+    let driver = spawn Driver;
+    match await driver.run() {
+        Ok(code) => code,
+        Err(_error) => 1,
+    }
+}

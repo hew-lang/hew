@@ -4,7 +4,7 @@
 // structural view rather than a concrete Display implementation.
 record Point {
     x: i64,
-    label: string,
+    label: string
 }
 
 fn main() {

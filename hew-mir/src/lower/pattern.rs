@@ -4678,7 +4678,21 @@ impl Builder {
                 // that transfer as a re-readable-place move-out. Skip it.
                 let is_fresh_owned_frame_payload =
                     arm_is_fresh_owned_vec_iter_some || arm_is_generator_some || arm_is_recv_some;
-                if !is_fresh_owned_frame_payload && !transferred_sink {
+                if !is_fresh_owned_frame_payload {
+                    // A binder that took the contextual `Sink` handoff is still a
+                    // projected payload and must route its consumes through the
+                    // same default-deny hook — a guard that consumes it (or moves
+                    // it out) has to be refused fail-closed like any other. Its
+                    // origin is not the generic scrutinee verdict: the handoff's
+                    // admission already PROVED a fresh, solely-owned `Result`
+                    // carrier, which is exactly `EphemeralTemp` — nulling the
+                    // variant slot transfers ownership with no re-readable origin
+                    // left behind.
+                    let origin = if transferred_sink {
+                        ProjectedPayloadOrigin::EphemeralTemp
+                    } else {
+                        scrutinee_origin.clone()
+                    };
                     self.record_projected_payload_provenance(
                         binding.binding,
                         &binding.name,
@@ -4687,7 +4701,7 @@ impl Builder {
                             variant_idx,
                             field_idx: binding.field_idx,
                         },
-                        scrutinee_origin.clone(),
+                        origin,
                         keep_for_drop_elab,
                     );
                 }

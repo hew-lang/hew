@@ -399,6 +399,190 @@ fn main() {
     );
 }
 
+/// The guard-shape matrix over a contextual `Sink`: a guard that BORROWS the
+/// binder, two consecutive guarded `.Ok` arms, a guarded `.Ok` ahead of `.Err`
+/// and a wildcard, and a nested `match` inside a guarded arm. Every path is
+/// asserted for exact file contents under a scribble-poisoned run, for its
+/// exact close-site count, and — via a bounded repeat of the paths that never
+/// bind the payload to a body — for the absence of an fd leak.
+#[test]
+fn guard_shapes_over_a_contextual_sink_write_and_close_on_every_path() {
+    let dir = std::env::temp_dir().join(format!("hew-guard-shapes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create guard-shape temp dir");
+    let path_for = |stem: &str| dir.join(format!("{stem}.txt"));
+    let expected = [
+        // (a) the guard borrows the binder: its write lands on BOTH paths, then
+        // the selected arm appends its own.
+        ("a_taken", "probe taken"),
+        ("a_fallthrough", "probe fallthrough"),
+        // (b) two consecutive guarded `.Ok` arms ahead of an unguarded one.
+        ("b_first", "first"),
+        ("b_second", "second"),
+        ("b_third", "third"),
+        // (c) guarded `.Ok`, then `.Err`, then `_`. The wildcard path never
+        // binds the payload, so the carrier stays its close authority.
+        ("c_guarded", "guarded ok"),
+        ("c_wildcard", ""),
+        // (d) a nested `match` inside the guarded arm.
+        ("d_positive", "nested positive"),
+        ("d_negative", "nested non-positive"),
+        ("d_fallthrough", "outer fallthrough"),
+    ];
+
+    let mut source = r#"import std.stream;
+
+fn classify(n: i64) -> Result<string, string> {
+    if n > 0 {
+        return Ok("positive");
+    }
+    return Err("non-positive");
+}
+
+fn borrow_guard(path: string, flag: bool) {
+    match stream.to_file(path) {
+        .Ok(sink) if { sink.write("probe "); flag } => {
+            sink.write("taken");
+        },
+        .Ok(sink) => {
+            sink.write("fallthrough");
+        },
+        .Err(e) => println(f"open failed: {e}"),
+    }
+}
+
+fn two_guards(path: string, first: bool, second: bool) {
+    match stream.to_file(path) {
+        .Ok(sink) if first => {
+            sink.write("first");
+        },
+        .Ok(sink) if second => {
+            sink.write("second");
+        },
+        .Ok(sink) => {
+            sink.write("third");
+        },
+        .Err(e) => println(f"open failed: {e}"),
+    }
+}
+
+fn guarded_then_wildcard(path: string, flag: bool) {
+    match stream.to_file(path) {
+        .Ok(sink) if flag => {
+            sink.write("guarded ok");
+        },
+        .Err(e) => println(f"open failed: {e}"),
+        _ => {},
+    }
+}
+
+fn nested_arm(path: string, flag: bool, n: i64) {
+    match stream.to_file(path) {
+        .Ok(sink) if flag => {
+            match classify(n) {
+                .Ok(tag) => sink.write(f"nested {tag}"),
+                .Err(e) => sink.write(f"nested {e}"),
+            }
+        },
+        .Ok(sink) => {
+            sink.write("outer fallthrough");
+        },
+        .Err(e) => println(f"open failed: {e}"),
+    }
+}
+
+fn main() {
+    borrow_guard("__A_TAKEN__", true);
+    borrow_guard("__A_FALLTHROUGH__", false);
+    two_guards("__B_FIRST__", true, false);
+    two_guards("__B_SECOND__", false, true);
+    two_guards("__B_THIRD__", false, false);
+    guarded_then_wildcard("__C_GUARDED__", true);
+    guarded_then_wildcard("__C_WILDCARD__", false);
+    nested_arm("__D_POSITIVE__", true, 1);
+    nested_arm("__D_NEGATIVE__", true, -1);
+    nested_arm("__D_FALLTHROUGH__", false, 1);
+    // A path that never binds the payload to an arm body leaves the carrier as
+    // the close authority. Repeat it past any plausible fd table so a missing
+    // close surfaces as `open failed`, not as a silent leak.
+    for i in 0..2000 {
+        guarded_then_wildcard("__C_WILDCARD__", false);
+        two_guards("__B_THIRD__", false, false);
+    }
+    println("guard-shapes-ok");
+}
+"#
+    .to_string();
+    for (stem, _) in expected {
+        source = source.replace(
+            &format!("__{}__", stem.to_uppercase()),
+            &path_for(stem).to_string_lossy(),
+        );
+    }
+
+    let stdout = run_hew_source_env("guard_shapes_sink", &source, true);
+    assert_eq!(stdout, "guard-shapes-ok");
+    for (stem, contents) in expected {
+        let path = path_for(stem);
+        assert_eq!(
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display())),
+            contents,
+            "{stem} must hold exactly the selected arm's output"
+        );
+    }
+
+    let ir = emit_llvm_ir("guard_shapes_sink_ir", &source);
+    for (function, total) in [
+        ("borrow_guard", 6),
+        ("two_guards", 9),
+        ("guarded_then_wildcard", 3),
+        ("nested_arm", 9),
+    ] {
+        assert_eq!(
+            count_calls_in_function(&ir, function, "hew_sink_close"),
+            total,
+            "{function} must keep exactly its mutually exclusive exit close sites"
+        );
+        assert_eq!(
+            count_source_calls_in_function(&ir, function, "hew_sink_close"),
+            0,
+            "{function} closes implicitly on every path"
+        );
+    }
+}
+
+/// A guard that CONSUMES the handed-off `Sink` runs its close before the guard
+/// result is known: a false guard would fall through to a later arm holding a
+/// closed handle, then close it again. The handoff does not exempt the binder
+/// from the projected-payload consume hook, so this is refused fail-closed.
+#[test]
+fn consuming_the_sink_inside_a_fallthrough_guard_is_refused() {
+    let source = r#"import std.stream;
+
+fn guarded(path: string, flag: bool) {
+    match stream.to_file(path) {
+        .Ok(sink) if { sink.close(); flag } => {
+            println("guard taken");
+        },
+        .Ok(sink) => {
+            sink.write("guard fallthrough");
+        },
+        .Err(e) => println(f"open failed: {e}"),
+    }
+}
+
+fn main() {
+    guarded("/dev/null", false);
+}
+"#;
+    let stderr = compile_expect_refusal("guarded_sink_consume_refusal", source);
+    assert!(
+        stderr.contains("cannot move the heap-owning payload `sink` out of a `match`-arm guard"),
+        "refusal must name the guarded consume; stderr was:\n{stderr}"
+    );
+}
+
 // ── Slice B: awaited non-byte send routing ────────────────────────────────
 
 /// `await sink.send(f"...")` over a `Sink<string>` inside an actor handler

@@ -2,7 +2,7 @@
 
 use hew_mir::{
     CallAuthority, DropFnSpec, DropKind, ElaboratedMirFunction, ExitPath, Instr, IrPipeline,
-    RawMirFunction, Terminator,
+    MirDiagnosticKind, ProjectedPayloadRejectReason, RawMirFunction, Terminator,
 };
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::runtime_call::{RuntimeCallFamily, RuntimeDropDescriptor};
@@ -519,6 +519,39 @@ fn contextual_sink_matrix_has_one_close_authority_per_exit() {
     assert_each_exit_has_unique_close_authorities(early_elab);
 }
 
+/// The same carrier, with a guard that CONSUMES the binder. The handoff makes
+/// the binder an owner but not an exempt one: consuming it in a guard that can
+/// fall through must still be refused fail-closed.
+const SINK_CONSUMING_GUARD: &str = r#"
+fn make(path: string) -> Result<Sink<string>, string> {
+    unsafe {
+        let sink = hew_stream_from_file_write(path);
+        if hew_sink_is_valid(sink) {
+            Ok(sink)
+        } else {
+            Err("open failed")
+        }
+    }
+}
+
+extern "C" {
+    fn hew_stream_from_file_write(path: string) -> Sink<string>;
+    fn hew_sink_is_valid(sink: Sink<string>) -> bool;
+    fn hew_sink_write_string(sink: Sink<string>, data: string);
+    fn hew_sink_close(consume sink: Sink<string>);
+}
+
+fn consuming_guard(path: string, flag: bool) {
+    match make(path) {
+        .Ok(sink) if { sink.close(); flag } => {},
+        .Ok(sink) => sink.write("guard fallthrough"),
+        .Err(_) => {},
+    }
+}
+
+fn main() {}
+"#;
+
 /// Blocks from which the call to `callee` is still reachable — every block
 /// that can run while that call's answer is still outstanding, including the
 /// call's own block. A guard's answer is outstanding exactly here.
@@ -595,4 +628,29 @@ fn guarded_match_arm_defers_its_sink_handoff_past_the_guard() {
     }
 
     assert_each_exit_has_unique_close_authorities(elaborated_function(&pipeline, "guarded"));
+}
+
+#[test]
+fn consuming_guard_over_a_handed_off_sink_is_refused() {
+    let pipeline = pipeline_with_runtime_contracts(SINK_CONSUMING_GUARD);
+    let refusals: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| match &diagnostic.kind {
+            MirDiagnosticKind::ProjectedPayloadMoveFromReadablePlace { name, reason, .. } => {
+                Some((name.clone(), *reason))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        refusals,
+        vec![(
+            "sink".to_string(),
+            ProjectedPayloadRejectReason::GuardedConsume
+        )],
+        "consuming the handed-off Sink in a fallthrough guard must be refused; \
+         diagnostics were {:#?}",
+        pipeline.diagnostics
+    );
 }

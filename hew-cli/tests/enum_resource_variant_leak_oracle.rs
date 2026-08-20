@@ -330,12 +330,14 @@ fn projected_resource_close_then_crash_releases_source_snapshot_once() {
     );
 
     let output = run_under_malloc_scribble(&bin);
-    assert!(
-        output.status.success(),
+    assert_eq!(
+        output.status.code(),
+        Some(1),
         "projected resource close followed by a handled actor crash must not \
          double-release the source snapshot:\n{}",
         describe_output(&output)
     );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("crash after explicit close"));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "ok=9\nhandled-crash\nsurvived\n",
@@ -361,12 +363,14 @@ fn bytes_runtime_mutation_then_crash_releases_refreshed_snapshot_once() {
     );
 
     let output = run_under_malloc_scribble(&bin);
-    assert!(
-        output.status.success(),
+    assert_eq!(
+        output.status.code(),
+        Some(1),
         "bytes.clear followed by a handled actor crash must not release the \
          helper's pre-mutation snapshot:\n{}",
         describe_output(&output)
     );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("crash after bytes.clear"));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "ok=7\nhandled-crash\nsurvived\n",
@@ -394,12 +398,14 @@ fn returned_bytes_loan_releases_once_on_success_and_crash() {
     );
 
     let output = run_under_malloc_scribble(&bin);
-    assert!(
-        output.status.success(),
+    assert_eq!(
+        output.status.code(),
+        Some(1),
         "returned bytes must survive its successful ReturnSlot handoff and the \
          crashing loan must release its buffer exactly once:\n{}",
         describe_output(&output)
     );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("crash during returned bytes loan"));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "ok=8\nhandled-crash\nsurvived\n",

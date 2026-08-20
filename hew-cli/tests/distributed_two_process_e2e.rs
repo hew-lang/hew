@@ -349,7 +349,7 @@ fn run_setup_exit_race_scenario() -> String {
     let client = scene.spawn_client("remote_setup_exit_race", &[("HEW_LINK_PROBE", "1")]);
 
     let _server_stdout = wait_for_server_ready(&mut server);
-    let stdout = run_client_to_completion(client, 0, None);
+    let stdout = run_client_to_completion(client, 1, Some("panicked in Linker"));
     drop(server);
     stdout
 }
@@ -360,12 +360,17 @@ fn run_setup_exit_race_scenario() -> String {
 /// client runs to completion observing the connection-drop DOWN. Returns the
 /// client's captured stdout.
 fn run_conn_drop_scenario(scenario: &str) -> String {
-    run_conn_drop_scenario_with_env(scenario, &[])
+    run_conn_drop_scenario_with_env(scenario, &[], 0, None)
 }
 
 /// As [`run_conn_drop_scenario`], with extra client environment (e.g.
 /// `HEW_LINK_PROBE=1` for the cross-node link partition cascade).
-fn run_conn_drop_scenario_with_env(scenario: &str, client_env: &[(&str, &str)]) -> String {
+fn run_conn_drop_scenario_with_env(
+    scenario: &str,
+    client_env: &[(&str, &str)],
+    expected_exit_code: i32,
+    expected_stderr: Option<&str>,
+) -> String {
     let scene = SecureScenario::new();
 
     // Concurrent launch for the mutual credential exchange (see
@@ -434,10 +439,21 @@ fn run_conn_drop_scenario_with_env(scenario: &str, client_env: &[(&str, &str)]) 
         .child
         .wait()
         .expect("wait for client after connection-drop scenario");
-    assert!(
-        status.success(),
-        "client exited non-zero ({status:?}) on connection-drop scenario\nstdout:\n{captured}"
+    let mut stderr = String::new();
+    if let Some(mut err) = client.child.stderr.take() {
+        let _ = err.read_to_string(&mut stderr);
+    }
+    assert_eq!(
+        status.code(),
+        Some(expected_exit_code),
+        "client should exit {expected_exit_code} ({status:?}) on connection-drop scenario\nstdout:\n{captured}\nstderr:\n{stderr}"
     );
+    if let Some(expected_stderr) = expected_stderr {
+        assert!(
+            stderr.contains(expected_stderr),
+            "client stderr did not contain {expected_stderr:?}\nstdout:\n{captured}\nstderr:\n{stderr}"
+        );
+    }
     captured
 }
 
@@ -879,7 +895,8 @@ fn remote_ask_under_partition_fails_closed_not_hang() {
     // shipped libhew exports the symbol but it drains nothing unless
     // `HEW_DIST_TEST_PROBE=1` is set, so only this harness can drive the
     // deterministic fail-closed seam.
-    let stdout = run_conn_drop_scenario_with_env("partition_ask", &[("HEW_DIST_TEST_PROBE", "1")]);
+    let stdout =
+        run_conn_drop_scenario_with_env("partition_ask", &[("HEW_DIST_TEST_PROBE", "1")], 0, None);
 
     // Phase A: the armed probe must PROVE it fired. The stalled ask is
     // resolvable only by the probe's Partition fan-out, so any other outcome
@@ -1116,7 +1133,7 @@ fn monitor_watcher_node_death_prunes_target_table() {
 /// asserts it reached Crashed.
 #[test]
 fn link_remote_crash_cascade_on_clean_exit() {
-    let stdout = run_link_cascade_scenario("link_remote_clean_exit", 0, None);
+    let stdout = run_link_cascade_scenario("link_remote_clean_exit", 1, Some("panicked in Linker"));
     assert!(
         stdout.contains("PASS link_remote_clean_exit linker-crashed reason=5"),
         "expected the local linked actor to crash (Crashed == 5) when its remote \
@@ -1151,8 +1168,12 @@ fn link_remote_crash_cascade_on_crash() {
 /// would fail-open (a linked actor surviving its dead peer).
 #[test]
 fn link_remote_crash_cascade_on_partition() {
-    let stdout =
-        run_conn_drop_scenario_with_env("link_remote_partition", &[("HEW_LINK_PROBE", "1")]);
+    let stdout = run_conn_drop_scenario_with_env(
+        "link_remote_partition",
+        &[("HEW_LINK_PROBE", "1")],
+        1,
+        Some("panicked in Linker"),
+    );
     assert!(
         stdout.contains("PASS link_remote_partition linker-crashed reason=5"),
         "expected the local linked actor to crash on a partition under CrashLinked; \

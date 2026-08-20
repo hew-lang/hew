@@ -3329,6 +3329,54 @@ impl Builder {
             // placement IS a use-after-move, so keep the strict check.
             partial_projection: false,
         });
+        self.record_affine_aggregate_ingress_transfer(*id);
+    }
+
+    /// Record the path-local ownership TRANSFER for an affine handle whose
+    /// whole value was just placed into an owning aggregate.
+    ///
+    /// An `Rc` / `Weak` handle (and a non-idempotent user `#[resource]`) is
+    /// byte-copied into a tuple / record / enum payload / machine payload /
+    /// array element with NO retain: the aggregate's composite drop
+    /// (`tuple_in_place`, `record_in_place`, `enum_in_place`, the container's
+    /// element release) becomes an owner of the SAME count the source binder
+    /// still holds a `DropKind::RcRelease` obligation for. Left unrecorded,
+    /// both fire and the second one underflows the strong count — the runtime's
+    /// `Rc double-free` abort, reachable from a plain
+    /// `let pair = (shared, "tag")` with no `clone` anywhere.
+    ///
+    /// Every other owning class already answers this: `Vec`, `HashMap` /
+    /// `HashSet`, `bytes`, `CoW string` and owned records each gate their
+    /// scope-exit release on a per-class escape-scan allow-set that removes a
+    /// handle proven to have escaped into an aggregate. `Rc` / `Weak` have no
+    /// such allow-set — `build_lifo_drops`' `AffineResource` arm emits their
+    /// release unconditionally — so the transfer has to be recorded where it
+    /// happens.
+    ///
+    /// The record is the SAME path-sensitive drop-flag store a by-value
+    /// `Use { Consume }` already emits (`#1933` / `#1941`):
+    /// `affine_release_needs_drop_flag` mints the flag for EVERY `Rc` / `Weak`
+    /// local at its introducing `let`, zero-initialised so the init dominates
+    /// this store and every exit, and codegen gates the release on `flag == 0`.
+    /// Storing `1` here therefore skips the binder's release on exactly the
+    /// paths that transferred the handle and keeps it on the paths that did not
+    /// — the conditional ingress (`match flag { true => (shared, "t"), false =>
+    /// 0 }`) stays exactly-once on both arms.
+    ///
+    /// Deliberately NOT a dataflow `Consumed` transition: `AliasedIntoAggregate`
+    /// is `Live` for every escape-scan / alias / drop reader, and demoting it
+    /// would turn the W3.053 fail-closed aggregate refusals into leaks for the
+    /// classes that DO have allow-sets. The binder keeps its `owned_locals`
+    /// membership and its dataflow state; only the runtime transfer record is
+    /// added. A binding with no flag (any non-affine class) is untouched.
+    fn record_affine_aggregate_ingress_transfer(&mut self, binding: BindingId) {
+        let Some(flag) = self.affine_release_flags.get(&binding).copied() else {
+            return;
+        };
+        self.push_instr(Instr::ConstI64 {
+            dest: flag,
+            value: 1,
+        });
     }
     /// True when an overriding functional-update field VALUE is, at its
     /// value-producing root, a bare interior alias of the consumed base's

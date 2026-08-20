@@ -9,10 +9,10 @@
 //! # Examples
 //!
 //! ```
-//! import std::encoding::compress;
+//! import std.encoding.compress;
 //!
 //! fn main() {
-//!     let data: bytes = bytes::new();
+//!     let data: bytes = bytes.new();
 //!     data.push(72);
 //!     data.push(101);
 //!     data.push(108);

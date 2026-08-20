@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::misc::uuid;
+//! import std.misc.uuid;
 //!
 //! fn main() {
 //!     let id = uuid.v4();

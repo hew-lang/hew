@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::os;
+//! import std.os;
 //!
 //! fn main() {
 //!     let n = os.args_count();

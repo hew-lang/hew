@@ -1,0 +1,11 @@
+machine Switch {
+    events {
+        Toggle;
+    }
+
+    state Off;
+    state On;
+
+    on Toggle: Off => On;
+    on Toggle: On => Off;
+}

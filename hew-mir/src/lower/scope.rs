@@ -16,7 +16,10 @@ impl Builder {
         if matches!(value.kind, HirExprKind::StructInit { .. }) {
             return vec_iter_let_cursor_owns_handle(value)
                 && !self.vec_iter_source_projects_actor_state_field(value)
-                && !self.vec_iter_source_indexes_owned_element_vec(value);
+                && !self.vec_iter_source_indexes_owned_element_vec(value)
+                && self
+                    .vec_iter_source_live_binding_record_field_root(value)
+                    .is_none();
         }
         // A `VecIter<T>` returned through the Hew call ABI is an ownership
         // transfer. The callee's return edge suppresses its local cursor drop,
@@ -234,6 +237,7 @@ impl Builder {
         value: &HirExpr,
         binding_ty: &ResolvedTy,
         slot_is_wired: bool,
+        value_place: Option<Place>,
     ) {
         if !slot_is_wired
             || self.vec_iter_cursor_release_symbol(binding_ty).is_none()
@@ -258,6 +262,18 @@ impl Builder {
                         self.vec_iter_borrowed_sources
                             .push((scope, *source_binding));
                     }
+                }
+            }
+            // A field-projection cursor rooted at a live binding borrows the
+            // root's field handle: pin the ROOT against mid-loop moves /
+            // reassignment, and mark the cursor init so the composite-drop
+            // provers keep the root's single release authority admitted
+            // (`vec_iter_projection_borrow_inits`).
+            if let Some((root, path)) = self.vec_iter_source_live_binding_record_field_path(value) {
+                self.vec_iter_borrowed_sources.push((scope, root));
+                self.vec_iter_borrowed_projections.push((scope, root, path));
+                if let Some(init) = value_place {
+                    self.vec_iter_projection_borrow_inits.insert(init);
                 }
             }
         }
@@ -317,6 +333,8 @@ impl Builder {
         }
         self.vec_iter_borrowed_sources
             .retain(|(scope, _)| *scope != scope_id);
+        self.vec_iter_borrowed_projections
+            .retain(|(scope, ..)| *scope != scope_id);
     }
 
     /// Release the `vec` handle of every registered `for x in …` cursor
@@ -517,6 +535,51 @@ impl Builder {
     /// function-local AND its `name` resolves in `current_actor_state_fields`)
     /// is the same one the `ActorStateFieldLoad` emitter uses to recognise a
     /// bare state field.
+    /// True when a `VecIter { vec, idx }` cursor's `vec`-field SOURCE expr is a
+    /// consuming read of a BARE actor state field (`plugins.into_iter()` inside
+    /// a receive handler). The fourth member of the projection-borrow family —
+    /// unlike the three borrow siblings, this shape must neither borrow (a
+    /// consuming iteration over drop-only elements MUTATES the shared buffer —
+    /// `hew_vec_take_owned` zeroes each yielded slot, so a later dispatch would
+    /// re-iterate moved-from values) nor move the handle (the cursor's own free
+    /// would leave the persistent state slot dangling: the next dispatch reads
+    /// freed heap and teardown double-frees — dogfood F3, 2026-08-13). The
+    /// lowering instead routes the loaded handle through `hew_vec_take_all`:
+    /// the cursor owns the taken buffer, the state slot stays a valid empty
+    /// vec with its stamped element descriptor.
+    ///
+    /// The `Capture` intent exclusion keeps the direct `for x in field` desugar
+    /// (a genuine borrow cursor over clone-out getters) on its established
+    /// borrow path; `.iter()`'s clone and rvalue sources are not `BindingRef`s
+    /// and never reach here. The root discriminator (`id` is not a
+    /// function-local AND `name` resolves in `current_actor_state_fields`)
+    /// matches the `ActorStateFieldLoad` emitter's, so this predicate fires for
+    /// exactly the loads that alias persistent state.
+    pub(crate) fn vec_field_src_consumes_bare_actor_state_field(&self, src: &HirExpr) -> bool {
+        let mut cur = src;
+        while let HirExprKind::SubsumedValue { source, .. } = &cur.kind {
+            cur = source;
+        }
+        if cur.intent == hew_hir::IntentKind::Capture {
+            return false;
+        }
+        let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(id),
+        } = &cur.kind
+        else {
+            return false;
+        };
+        !self.binding_locals.contains_key(id)
+            && self.current_actor_state_fields.contains_key(name)
+            && matches!(
+                self.subst_ty(&cur.ty),
+                ResolvedTy::Named {
+                    builtin: Some(BuiltinType::Vec),
+                    ..
+                }
+            )
+    }
     pub(crate) fn vec_iter_source_projects_actor_state_field(&self, value: &HirExpr) -> bool {
         let Some(mut cur) = vec_iter_init_vec_source_expr(value) else {
             return false;
@@ -541,6 +604,80 @@ impl Builder {
                         && self.current_actor_state_fields.contains_key(name);
                 }
                 _ => return false,
+            }
+        }
+    }
+    /// The live local/param ROOT binding of a `for x in root.f` cursor whose
+    /// `vec` source is a pure `FieldAccess` chain over a function-local
+    /// binding, or `None` for any other source shape.
+    ///
+    /// The third sibling of the projection-borrow family —
+    /// [`Self::vec_iter_source_projects_actor_state_field`] (#2540, actor-state
+    /// root) and [`Self::vec_iter_source_indexes_owned_element_vec`] (#2545,
+    /// owned-element Vec index). A record-field projection rooted at a LIVE
+    /// binding is owned by that binding's storage:
+    ///   - a by-value parameter's guarded carrier drop
+    ///     (`append_owned_carrier_param_drops`) runs
+    ///     `__hew_record_drop_inplace_<R>` on the whole record at every
+    ///     return/trap/cancel edge unless the WHOLE value transferred — the
+    ///     guard never tracks a field-level move, so a cursor that took the
+    ///     field handle and freed it at exhaustion double-freed the buffer at
+    ///     normal return (the poisoned-allocator SIGABRT);
+    ///   - a local record root fares no better as an owner donor: the
+    ///     composite-drop prover sees the field escape into the cursor init,
+    ///     excludes the WHOLE root, and every non-iterated sibling field leaks.
+    ///
+    /// The cursor must BORROW — the root's one drop authority frees every
+    /// field exactly once, mirroring what the bare-`BindingRef` arm of
+    /// [`vec_iter_let_cursor_owns_handle`] already grants `for x in v`.
+    /// Registration also records the root in `vec_iter_borrowed_sources`, so
+    /// moving or reassigning it mid-loop is rejected while the cursor reads
+    /// the shared handle.
+    ///
+    /// Only `FieldAccess` hops are admitted. A `TupleIndex` hop keeps today's
+    /// sole-owner disposition: the tuple composite prover has no
+    /// borrow-ingress exemption yet, so flipping it would trade its current
+    /// behaviour for a whole-tuple leak. A non-`BindingRef` root (an rvalue
+    /// call, a block result) has no surviving owner and the cursor stays the
+    /// sole owner as before.
+    pub(crate) fn vec_iter_source_live_binding_record_field_root(
+        &self,
+        value: &HirExpr,
+    ) -> Option<hew_hir::BindingId> {
+        self.vec_iter_source_live_binding_record_field_path(value)
+            .map(|(root, _)| root)
+    }
+    /// Path-carrying sibling of
+    /// [`Self::vec_iter_source_live_binding_record_field_root`]: the live root
+    /// binding AND the projected field-name chain in root→leaf order
+    /// (`outer.inner.items` → `(outer, ["inner", "items"])`). The chain feeds
+    /// `vec_iter_borrowed_projections`, whose prefix guard rejects
+    /// record-field stores that would overwrite the borrowed handle's slot
+    /// mid-loop.
+    pub(crate) fn vec_iter_source_live_binding_record_field_path(
+        &self,
+        value: &HirExpr,
+    ) -> Option<(hew_hir::BindingId, Vec<String>)> {
+        let mut cur = vec_iter_init_vec_source_expr(value)?;
+        let mut path: Vec<String> = Vec::new();
+        loop {
+            match &cur.kind {
+                HirExprKind::SubsumedValue { source, .. } => cur = source,
+                HirExprKind::FieldAccess { object, field } => {
+                    path.push(field.clone());
+                    cur = object;
+                }
+                HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(id),
+                    ..
+                } => {
+                    if path.is_empty() || !self.binding_locals.contains_key(id) {
+                        return None;
+                    }
+                    path.reverse();
+                    return Some((*id, path));
+                }
+                _ => return None,
             }
         }
     }

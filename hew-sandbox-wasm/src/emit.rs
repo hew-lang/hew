@@ -1636,6 +1636,54 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
     fn lower_expr(&mut self, expr: &Spanned<Expr>) -> Result<String, CompileError> {
         let (kind, span) = expr;
         match kind {
+            Expr::ContextVariant(context) => {
+                if let Ty::Named { name, .. } = self.ty_for_expr(expr) {
+                    if self.package.machine_names.contains(&name) {
+                        let type_id = self.package.type_id_for_named(&name, &[]);
+                        let machine_ty = Ty::Named {
+                            name,
+                            args: Vec::new(),
+                            builtin: None,
+                        };
+                        let dst = self.temp_local(&machine_ty, Some(span.clone()));
+                        self.emit_instruction(
+                            "machine.new",
+                            Some(dst.clone()),
+                            vec![Operand::ty(type_id), Operand::symbol(context.name.clone())],
+                            Some(span.clone()),
+                            None,
+                        );
+                        return Ok(dst);
+                    }
+                }
+                let compatibility = if let Some(record) = &context.record {
+                    Expr::StructInit {
+                        name: context.name.clone(),
+                        fields: record.fields.clone(),
+                        type_args: None,
+                        base: record.base.clone(),
+                    }
+                } else {
+                    Expr::Identifier(context.name.clone())
+                };
+                self.lower_expr(&(compatibility, span.clone()))
+            }
+            Expr::GenericApplySuffix { target, .. } => self.lower_expr(target),
+            Expr::RecordInitSuffix {
+                target,
+                fields,
+                base,
+            } => {
+                self.lower_expr(target)?;
+                for (_, value) in fields {
+                    self.lower_expr(value)?;
+                }
+                if let Some(base) = base {
+                    self.lower_expr(base)?;
+                }
+                self.emit_unsupported(Some(span.clone()));
+                Ok(self.emit_const_unit(Some(span.clone())))
+            }
             Expr::Literal(literal) => Ok(self.lower_literal(literal, span.clone())),
             Expr::RegexLiteral(pattern) => {
                 let pattern_local = self.temp_local(&Ty::String, Some(span.clone()));
@@ -1804,6 +1852,40 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 name, fields, base, ..
             } => self.lower_struct_init(expr, name, fields, base.as_deref(), span.clone()),
             Expr::FieldAccess { object, field } => {
+                if let Expr::Identifier(machine) = &object.0 {
+                    if self.package.machine_names.contains(machine) {
+                        let type_id = self.package.type_id_for_named(machine, &[]);
+                        let machine_ty = Ty::Named {
+                            name: machine.clone(),
+                            args: Vec::new(),
+                            builtin: None,
+                        };
+                        let dst = self.temp_local(&machine_ty, Some(span.clone()));
+                        self.emit_instruction(
+                            "machine.new",
+                            Some(dst.clone()),
+                            vec![Operand::ty(type_id), Operand::symbol(field.clone())],
+                            Some(span.clone()),
+                            None,
+                        );
+                        return Ok(dst);
+                    }
+                    let qualified_name = format!("{machine}::{field}");
+                    if let Some((type_id, tag, _)) =
+                        self.package.enum_variant_tags.get(&qualified_name).cloned()
+                    {
+                        let ty = self.ty_for_expr(expr);
+                        let dst = self.temp_local(&ty, Some(span.clone()));
+                        self.emit_instruction(
+                            "enum.new",
+                            Some(dst.clone()),
+                            vec![Operand::ty(type_id), Operand::literal(tag as u64)],
+                            Some(span.clone()),
+                            None,
+                        );
+                        return Ok(dst);
+                    }
+                }
                 let object_ty = self.ty_for_expr(object);
                 // `supervisor.childName` resolves a running child actor handle.
                 // The supervisor handle is a `LocalPid<SupervisorName>`, so we
@@ -2163,6 +2245,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             | Expr::Yield(_)
             | Expr::Return(_)
             | Expr::This
+            | Expr::QualifiedAssoc(_)
             | Expr::Range { .. }
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
@@ -2833,6 +2916,22 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         span: std::ops::Range<usize>,
     ) -> Result<String, CompileError> {
         match &function.0 {
+            Expr::ContextVariant(context) => {
+                let Some((type_id, tag, _)) =
+                    self.package.enum_variant_tags.get(&context.name).cloned()
+                else {
+                    self.emit_unsupported(Some(span.clone()));
+                    return Ok(self.emit_const_unit(Some(span)));
+                };
+                let mut operands = vec![Operand::ty(type_id), Operand::literal(tag as u64)];
+                for arg in args {
+                    operands.push(Operand::local(self.lower_expr(arg.expr())?));
+                }
+                let result_ty = self.ty_for_span(&span);
+                let dst = self.temp_local(&result_ty, Some(span.clone()));
+                self.emit_instruction("enum.new", Some(dst.clone()), operands, Some(span), None);
+                Ok(dst)
+            }
             Expr::Identifier(name) if name == "println" => {
                 let symbol = self.package.register_stdout();
                 let mut operands = vec![Operand::symbol(symbol)];
@@ -3179,16 +3278,18 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             self.emit_unsupported(Some(span.clone()));
             return Ok(self.emit_const_unit(Some(span)));
         };
-        let Some(Expr::Identifier(event)) = args.first().map(|arg| &arg.expr().0) else {
-            self.emit_unsupported(Some(span.clone()));
-            return Ok(self.emit_const_unit(Some(span)));
+        let event = match args.first().map(|arg| &arg.expr().0) {
+            Some(Expr::Identifier(event)) => event.clone(),
+            Some(Expr::ContextVariant(context)) => context.name.clone(),
+            _ => {
+                self.emit_unsupported(Some(span.clone()));
+                return Ok(self.emit_const_unit(Some(span)));
+            }
         };
-        // Accept a bare `Event` or a `Machine::Event` path.
-        let event_name = event.rsplit("::").next().unwrap_or(event).to_string();
         self.emit_instruction(
             "machine.step",
             Some(local.clone()),
-            vec![Operand::local(local), Operand::symbol(event_name)],
+            vec![Operand::local(local), Operand::symbol(event)],
             Some(span.clone()),
             None,
         );
@@ -3206,6 +3307,33 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         args: &[CallArg],
         span: std::ops::Range<usize>,
     ) -> Result<String, CompileError> {
+        if let Expr::Identifier(type_name) = &receiver.0 {
+            let qualified_name = format!("{type_name}::{method}");
+            if let Some((type_id, tag, _)) =
+                self.package.enum_variant_tags.get(&qualified_name).cloned()
+            {
+                let mut operands = vec![Operand::ty(type_id), Operand::literal(tag as u64)];
+                for arg in args {
+                    operands.push(Operand::local(self.lower_expr(arg.expr())?));
+                }
+                let result_ty = self.ty_for_span(&span);
+                let dst = self.temp_local(&result_ty, Some(span.clone()));
+                self.emit_instruction("enum.new", Some(dst.clone()), operands, Some(span), None);
+                return Ok(dst);
+            }
+        }
+
+        let vector_constructor = match &receiver.0 {
+            Expr::Identifier(module) => module == "Vec",
+            Expr::GenericApplySuffix { target, .. } => {
+                matches!(&target.0, Expr::Identifier(module) if module == "Vec")
+            }
+            _ => false,
+        };
+        if method == "new" && vector_constructor {
+            return Ok(self.lower_vector_new(span));
+        }
+
         if matches!((&receiver.0, method), (Expr::Identifier(module), "new") if module == "regex") {
             let pattern = args
                 .first()
@@ -3855,6 +3983,39 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     }
                 }
             }
+            Pattern::ContextVariant(context) => {
+                let Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) =
+                    &context.payload
+                else {
+                    return;
+                };
+                let payload_tys = self
+                    .variant_info_for_name(&context.name, scrutinee_ty)
+                    .map(|(_, tys)| tys)
+                    .unwrap_or_default();
+                for (idx, payload_pattern) in patterns.iter().enumerate() {
+                    if let Pattern::Identifier(binding) = &payload_pattern.0 {
+                        let ty = payload_tys.get(idx).cloned().unwrap_or(Ty::Unit);
+                        let local = self.declare_local(
+                            Some(binding.clone()),
+                            &ty,
+                            false,
+                            Some(payload_pattern.1.clone()),
+                        );
+                        self.emit_instruction(
+                            "enum.payload",
+                            Some(local.clone()),
+                            vec![
+                                Operand::local(scrutinee_local.to_string()),
+                                Operand::literal(idx as u64),
+                            ],
+                            Some(payload_pattern.1.clone()),
+                            None,
+                        );
+                        self.bindings.insert(binding.clone(), local);
+                    }
+                }
+            }
             Pattern::Tuple(patterns) => {
                 if let Ty::Tuple(elem_tys) = scrutinee_ty {
                     for (idx, subpattern) in patterns.iter().enumerate() {
@@ -4009,6 +4170,17 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             Pattern::Constructor { name, .. } | Pattern::Identifier(name) => self
                 .variant_info_for_name(name, scrutinee_ty)
                 .map(|(tag, _)| tag),
+            Pattern::ContextVariant(context) => self
+                .variant_info_for_name(&context.name, scrutinee_ty)
+                .map(|(tag, _)| tag),
+            _ => None,
+        }
+    }
+
+    fn constructor_pattern_name(pattern: &Spanned<Pattern>) -> Option<String> {
+        match &pattern.0 {
+            Pattern::Constructor { name, .. } => Some(name.clone()),
+            Pattern::ContextVariant(context) => Some(context.name.clone()),
             _ => None,
         }
     }
@@ -4556,11 +4728,10 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         let scrutinee_ty = self.ty_for_expr(expr);
         let scrutinee = self.lower_expr(expr)?;
 
-        let Pattern::Constructor { name, .. } = &pattern.0 else {
+        let Some(constructor_name) = Self::constructor_pattern_name(pattern) else {
             self.emit_unsupported(Some(span));
             return Ok(());
         };
-        let constructor_name = name.clone();
 
         let span_ref = self.package.spans.span_ref(&span);
         let (then_idx, then_id) = self.new_block("ifl_then", span_ref.clone());
@@ -4664,11 +4835,10 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         // second value to join, so fall back to the statement form (the result
         // is unit anyway). Non-constructor patterns are unsupported by the
         // statement form too; route through it so they trap consistently.
-        let Pattern::Constructor { name, .. } = &pattern.0 else {
+        let Some(constructor_name) = Self::constructor_pattern_name(pattern) else {
             self.lower_stmt_if_let(pattern, scrutinee_expr, body, else_body, span.clone())?;
             return Ok(self.emit_const_unit(Some(span)));
         };
-        let constructor_name = name.clone();
         let Some(else_body) = else_body else {
             self.lower_stmt_if_let(pattern, scrutinee_expr, body, None, span.clone())?;
             return Ok(self.emit_const_unit(Some(span)));
@@ -4790,11 +4960,10 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         let scrutinee_ty = self.ty_for_expr(expr);
         let scrutinee = self.lower_expr(expr)?;
 
-        let Pattern::Constructor { name, .. } = &pattern.0 else {
+        let Some(constructor_name) = Self::constructor_pattern_name(pattern) else {
             self.emit_unsupported(Some(span));
             return Ok(());
         };
-        let constructor_name = name.clone();
 
         let tag_local = self.temp_local(&Ty::I64, Some(expr.1.clone()));
         self.emit_instruction(
@@ -4978,6 +5147,11 @@ fn collect_import_edges(program: &Program) -> Vec<ImportEdge> {
 
 fn ty_from_type_expr(ty: &hew_parser::ast::TypeExpr) -> Ty {
     match ty {
+        hew_parser::ast::TypeExpr::QualifiedAssocPath(path) => Ty::AssocType {
+            base: Box::new(ty_from_type_expr(&path.base.0)),
+            trait_name: path.trait_path.source_spelling().into_boxed_str(),
+            assoc_name: path.members.join(".").into_boxed_str(),
+        },
         hew_parser::ast::TypeExpr::Named { name, type_args } => {
             let args = type_args
                 .as_ref()

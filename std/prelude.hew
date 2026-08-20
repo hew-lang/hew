@@ -1,5 +1,17 @@
 //! Compiler-embedded prelude authority manifest.
 //!
-//! Lane 0 reserves the single manifest path and parses it with the other
-//! substrate sources. It remains intentionally empty until the prelude
-//! publication migration, so this foundation does not change name resolution.
+//! These imports describe the complete implicit source surface. The checker
+//! snapshots the resulting bindings before user declarations and imports so
+//! later compatibility registries cannot silently replace them.
+
+import std.builtins.{Display, Index, IntoIterator, Iterator, Option, Result};
+
+import std.failure.{CrashInfo, CrashAction, CrashNotification, CrashKind};
+
+import std.io.closable.{Closable, CloseError};
+
+import std.link_monitor.{MonitorError, PartitionPolicy, MonitorId, DownTarget, DownReason, DownNotification, MonitorRef, set_partition_policy,};
+
+import std.math as math;
+
+import std.random as random;

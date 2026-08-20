@@ -1,7 +1,7 @@
 fn main() {
     let x: bool = true;
     let y: bool = false;
-    let v: Vec<bool> = Vec::new();
+    let v: Vec<bool> = Vec.new();
     v.push(x);
     v.push(y);
     let n = v.len();

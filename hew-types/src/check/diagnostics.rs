@@ -5,6 +5,34 @@
 use super::*;
 
 impl Checker {
+    pub(super) fn warn_bare_variant_expr(&mut self, name: &str, replacement: &str, span: &Span) {
+        self.warnings.push(TypeError {
+            severity: crate::error::Severity::Warning,
+            kind: TypeErrorKind::BareVariantExpr,
+            span: span.clone(),
+            message: format!(
+                "E_BARE_VARIANT_EXPR: bare variant `{name}` is deprecated; use `.{name}` when the surrounding type selects the enum, or qualify the variant with its type"
+            ),
+            notes: Vec::new(),
+            suggestions: vec![format!("replace `{name}` with `{replacement}`")],
+            source_module: self.current_module.clone(),
+        });
+    }
+
+    pub(super) fn warn_bare_variant_pattern(&mut self, name: &str, span: &Span) {
+        self.warnings.push(TypeError {
+            severity: crate::error::Severity::Warning,
+            kind: TypeErrorKind::BareVariantPattern,
+            span: span.clone(),
+            message: format!(
+                "E_BARE_VARIANT_PATTERN: bare variant pattern `{name}` is deprecated; use `.{name}` when the scrutinee type selects the enum, or qualify the variant with its type"
+            ),
+            notes: Vec::new(),
+            suggestions: vec![format!("replace `{name}` with `.{name}`")],
+            source_module: self.current_module.clone(),
+        });
+    }
+
     /// Emit warnings for functions that are never called (dead code).
     /// Uses BFS reachability from entry points: main, actor handlers, and
     /// underscore-prefixed functions.
@@ -737,6 +765,8 @@ impl Checker {
             | Pattern::Identifier(_)
             | Pattern::Literal(_)
             | Pattern::Constructor { .. }
+            | Pattern::NominalPath { .. }
+            | Pattern::ContextVariant(_)
             | Pattern::Struct { .. }
             | Pattern::Tuple(_)
             | Pattern::Or(..) => {

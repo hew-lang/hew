@@ -1,4 +1,4 @@
-// HashSet takes exactly one type argument.
+// The retired Rust-style turbofish spelling must suggest dotted Hew syntax.
 fn main() -> i64 {
     let _s = HashSet::<i64, i64>::new();
     0

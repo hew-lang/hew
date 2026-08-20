@@ -8,19 +8,19 @@ enum Holder<T> {
 }
 
 fn wrap<T>(x: T) -> Holder<T> {
-    Holder::Present(x)
+    Holder.Present(x)
 }
 
 fn unwrap_or<T>(h: Holder<T>, fallback: T) -> T {
     match h {
-        Holder::Present(v) => v,
-        Holder::Absent => fallback,
+        Holder.Present(v) => v,
+        Holder.Absent => fallback,
     }
 }
 
 fn main() {
     let present = wrap(99);
     println(unwrap_or(present, 0));
-    let absent: Holder<i64> = Holder::Absent;
+    let absent: Holder<i64> = Holder.Absent;
     println(unwrap_or(absent, 42));
 }

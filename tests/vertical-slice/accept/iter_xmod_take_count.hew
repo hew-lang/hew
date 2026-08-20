@@ -9,7 +9,7 @@
 // does.
 //
 // Countdown{5} yields [5,4,3,2,1]; take(3) yields [5,4,3]; count returns 3.
-import std::iter;
+import std.iter;
 
 type Countdown {
     n: i64;
@@ -29,6 +29,6 @@ impl Iterator for Countdown {
 }
 
 pub fn main() -> i64 {
-    let t = iter::take(Countdown { n: 5 }, 3);
-    iter::count(t)
+    let t = iter.take(Countdown { n: 5 }, 3);
+    iter.count(t)
 }

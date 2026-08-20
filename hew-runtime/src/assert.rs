@@ -9,6 +9,59 @@
 
 use std::os::raw::c_char;
 
+macro_rules! integer_assert_eq {
+    ($name:ident, $ty:ty) => {
+        /// Assert that two integer values are equal.
+        ///
+        /// # Safety
+        ///
+        /// Called from compiled Hew programs via C ABI. No preconditions.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(left: $ty, right: $ty) {
+            if left != right {
+                eprintln!("assertion failed: assert_eq({left}, {right})");
+                // SAFETY: abort() is always safe to call.
+                unsafe { libc::abort() };
+            }
+        }
+    };
+}
+
+macro_rules! integer_assert_ne {
+    ($name:ident, $ty:ty) => {
+        /// Assert that two integer values are not equal.
+        ///
+        /// # Safety
+        ///
+        /// Called from compiled Hew programs via C ABI. No preconditions.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(left: $ty, right: $ty) {
+            if left == right {
+                eprintln!("assertion failed: assert_ne({left}, {right})");
+                // SAFETY: abort() is always safe to call.
+                unsafe { libc::abort() };
+            }
+        }
+    };
+}
+
+integer_assert_eq!(hew_assert_eq_i8, i8);
+integer_assert_eq!(hew_assert_eq_i16, i16);
+integer_assert_eq!(hew_assert_eq_i32, i32);
+integer_assert_eq!(hew_assert_eq_isize, isize);
+integer_assert_eq!(hew_assert_eq_u16, u16);
+integer_assert_eq!(hew_assert_eq_u32, u32);
+integer_assert_eq!(hew_assert_eq_u64, u64);
+integer_assert_eq!(hew_assert_eq_usize, usize);
+integer_assert_ne!(hew_assert_ne_i8, i8);
+integer_assert_ne!(hew_assert_ne_i16, i16);
+integer_assert_ne!(hew_assert_ne_i32, i32);
+integer_assert_ne!(hew_assert_ne_isize, isize);
+integer_assert_ne!(hew_assert_ne_u16, u16);
+integer_assert_ne!(hew_assert_ne_u32, u32);
+integer_assert_ne!(hew_assert_ne_u64, u64);
+integer_assert_ne!(hew_assert_ne_usize, usize);
+
 /// Assert that a condition (as `i64`) is truthy (non-zero).
 ///
 /// # Safety

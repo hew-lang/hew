@@ -18,7 +18,7 @@ fn main() -> i64 {
     // Vec<string> index-into-compare: the pre-fix shape leaked one retained
     // hew_vec_get_str node per indexed compare.  Post-fix, the inline
     // hew_string_drop balances each borrowing-compare operand.
-    let xs: Vec<string> = Vec::new();
+    let xs: Vec<string> = Vec.new();
     xs.push("hello");
     xs.push("world");
     var hits: i64 = 0;
@@ -38,7 +38,7 @@ fn main() -> i64 {
     // to confirm per-iteration strings + backing buffer are freed.
     var i: i64 = 0;
     while i < 5 {
-        let v: Vec<string> = Vec::new();
+        let v: Vec<string> = Vec.new();
         v.push("alpha");
         v.push("beta");
         if v.len() != 2 {

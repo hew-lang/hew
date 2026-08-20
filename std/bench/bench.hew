@@ -15,7 +15,7 @@
 //! }
 //! ```
 
-import std::time::datetime;
+import std.time.datetime;
 
 // ── Types ─────────────────────────────────────────────────────────────
 /// A single benchmark result containing timing statistics.
@@ -37,7 +37,7 @@ pub type Suite {
 // ── Constructor ───────────────────────────────────────────────────────
 /// Create a new benchmark suite.
 pub fn suite(name: string) -> Suite {
-    let results: Vec<BenchResult> = Vec::new();
+    let results: Vec<BenchResult> = Vec.new();
     Suite { name: name, results: results }
 }
 

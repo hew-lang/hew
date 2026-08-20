@@ -60,6 +60,10 @@ pub(crate) fn push_json_string(out: &mut String, s: &str) {
 }
 
 /// Extract a readable message from a panic payload.
+//
+// KEEP(wasm32): reached from `take_panic_payload_message`, whose own note
+// explains why the whole pair is native-only.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn panic_payload_message(panic_payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = panic_payload.downcast_ref::<&str>() {
         (*s).to_string()
@@ -97,6 +101,16 @@ pub(crate) fn quarantine_panic_payload(mut payload: Box<dyn std::any::Any + Send
 
 /// Extract a diagnostic string, then release the owned payload through the
 /// runtime's containment authority.
+//
+// KEEP(wasm32): six call sites across `lambda_actor.rs`, `timer_periodic.rs`,
+// `task_scope.rs` and `blocking_pool.rs`, plus `report_join_panic` in this
+// file. All five of those are declared `#[cfg(not(target_arch = "wasm32"))]`
+// while `pub mod util` is unconditional, so wasm32 is the only build with no
+// caller. The behaviour is load-bearing: a background-thread panic becomes a
+// diagnostic and the payload is released through `quarantine_panic_payload`,
+// which contains a hostile `Drop` rather than letting a second unwind escape
+// the runtime boundary.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn take_panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
     let message = panic_payload_message(payload.as_ref());
     quarantine_panic_payload(payload);

@@ -27,16 +27,16 @@ fn source(frames: usize, move_payload: bool) -> String {
          }}\n\
          fn next(i: i64, cap: i64) -> Packet {{\n\
          \x20   if i < cap {{\n\
-         \x20       Packet::Payload(\"{payload}\".to_upper())\n\
+         \x20       Packet.Payload(\"{payload}\".to_upper())\n\
          \x20   }} else {{\n\
-         \x20       Packet::Done\n\
+         \x20       Packet.Done\n\
          \x20   }}\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   var i = 0;\n\
          \x20   var q = next(i, {frames});\n\
          \x20   var total = 0;\n\
-         \x20   while let Packet::Payload(s) = q {{\n\
+         \x20   while let Packet.Payload(s) = q {{\n\
          \x20       {payload_use}\n\
          \x20       i = i + 1;\n\
          \x20       q = next(i, {frames});\n\
@@ -62,16 +62,16 @@ enum Packet {
 
 fn next(i: i64, cap: i64) -> Packet {
     if i < cap {
-        Packet::Payload("while-let-backedge-edge-payload-abcdefghijklmnopqrstuvwxyz".to_upper())
+        Packet.Payload("while-let-backedge-edge-payload-abcdefghijklmnopqrstuvwxyz".to_upper())
     } else {
-        Packet::Done
+        Packet.Done
     }
 }
 
 fn run_break() {
     var i = 0;
     var q = next(i, 4);
-    while let Packet::Payload(s) = q {
+    while let Packet.Payload(s) = q {
         if s.len() > 0 {
             break;
         }
@@ -83,7 +83,7 @@ fn run_break() {
 fn run_tag_false() {
     var i = 0;
     var q = next(i, 4);
-    while let Packet::Payload(s) = q {
+    while let Packet.Payload(s) = q {
         i = i + 1;
         q = next(i, 4);
     }

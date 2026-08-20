@@ -4,7 +4,7 @@
 # `hew run --pkg-path`. Exercises, end-to-end:
 #   - imported-actor value asks (i32 / i64 / string / record replies)
 #   - imported-type trait methods (rows/get/total/free on the handle)
-#   - the prelude-shadowing record name (`type Result`)
+#   - imported record handles without shadowing a protected prelude binding
 #   - [native] auto-link: the package's Rust staticlib builds on demand
 #   - local-actor asks coexisting with imported asks (regression guard)
 #   - mixed file-import + package-import impls on distinct same-bare-named
@@ -44,6 +44,9 @@ fixtures=(
   imported_actor_ask_i64
   imported_actor_ask_string
   imported_actor_ask_record
+  # Ordinary package registration must leave the builtin Result enum used by
+  # unrelated stdlib APIs intact.
+  imported_result_does_not_shadow_builtin
   imported_trait_method
   local_actor_ask_guard
   mixed_import_impl_collision
@@ -416,6 +419,37 @@ for fixture in "${fixtures[@]}"; do
   echo "PASS ${fixture}"
 done
 
+# A package-owned declaration is governed by the same protected-prelude rule
+# as an identical root declaration. This specifically exercises publication
+# while the importer is the active checker frame: authority must follow the
+# declaring package, and rejection must stop at the checker boundary.
+for prelude_decl_reject in \
+  imported_prelude_decl_collision_reject \
+  imported_prelude_machine_collision_reject; do
+  prelude_decl_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${prelude_decl_reject}.hew" 2>&1)" && {
+    echo "FAIL ${prelude_decl_reject}: package-owned Result declaration unexpectedly succeeded" >&2
+    echo "${prelude_decl_out}" >&2
+    exit 1
+  }
+  if [[ "$(grep -c "collides with the protected prelude binding" <<<"${prelude_decl_out}")" -ne 1 ]]; then
+    echo "FAIL ${prelude_decl_reject}: expected exactly one protected-prelude collision diagnostic" >&2
+    echo "${prelude_decl_out}" >&2
+    exit 1
+  fi
+  prelude_decl_json="$("${HEW}" check --format json --pkg-path "${PKGS}" "${DIR}/${prelude_decl_reject}.hew" 2>&1 || true)"
+  if [[ "$(grep -c '"code": "E_PRELUDE_DECL_COLLISION"' <<<"${prelude_decl_json}")" -ne 1 ]]; then
+    echo "FAIL ${prelude_decl_reject}: expected exactly one E_PRELUDE_DECL_COLLISION code" >&2
+    echo "${prelude_decl_json}" >&2
+    exit 1
+  fi
+  if grep -qE "E_HIR|E_MIR|E_CODEGEN_FRONT|E_NOT_YET_IMPLEMENTED" <<<"${prelude_decl_out}"; then
+    echo "FAIL ${prelude_decl_reject}: collision reached a downstream lowering boundary" >&2
+    echo "${prelude_decl_out}" >&2
+    exit 1
+  fi
+  echo "PASS ${prelude_decl_reject}"
+done
+
 # Reject fixture: two imported packages (`hew::replysend`, `hew::replynonsend`)
 # both export a type named `Reply` — one Send (`i64`), one non-Send (`Rc<i64>`).
 # The ask-reply Send gate derives Send from a named type's member set; keying it
@@ -489,7 +523,7 @@ trait_sig_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${trait_sig_reject}
   echo "${trait_sig_out}" >&2
   exit 1
 }
-if ! grep -q "but trait \`Closable\` requires" <<<"${trait_sig_out}"; then
+if ! grep -q "but trait .* requires" <<<"${trait_sig_out}"; then
   echo "FAIL ${trait_sig_reject}: expected a TraitImplSignatureMismatch return-type diagnostic" >&2
   echo "${trait_sig_out}" >&2
   exit 1
@@ -502,9 +536,9 @@ fi
 echo "PASS ${trait_sig_reject}"
 
 # Reject fixture: local-shadow + cross-module trait impl. The importer opts only
-# the trait `Closable` into scope and defines its OWN local `CloseError`, then
-# impls `close` returning that LOCAL bare `CloseError`. The trait requires
-# `closableerr.CloseError`; the local type is distinct, so the impl must be
+# the trait into scope and defines its OWN local `LocalShadowError`, then impls
+# `close` returning that LOCAL bare type. The source trait requires
+# `closableerr.LocalShadowError`; the local type is distinct, so the impl must be
 # REJECTED with `TraitImplSignatureMismatch`. The local-shadow carve-out is
 # side-specific: it preserves the local identity only on the IMPL/actual side,
 # while the trait side's bare `CloseError` always qualifies to the trait owner.
@@ -516,7 +550,7 @@ local_shadow_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${local_shadow_r
   echo "${local_shadow_out}" >&2
   exit 1
 }
-if ! grep -q "but trait \`Closable\` requires" <<<"${local_shadow_out}"; then
+if ! grep -q "but trait .* requires" <<<"${local_shadow_out}"; then
   echo "FAIL ${local_shadow_reject}: expected a TraitImplSignatureMismatch return-type diagnostic" >&2
   echo "${local_shadow_out}" >&2
   exit 1
@@ -823,17 +857,17 @@ done
 echo "PASS missing_assoc_type_collision_accept (10x determinism)"
 
 # Reject fixture: two opt-ins of the same bare name from divergent-layout
-# modules is a genuine ambiguity. The checker must fail closed with `ambiguous
-# type` naming both published candidates, at the type boundary (NOT a bare
-# last-write-wins binding that trips a downstream MIR field-order failure).
+# modules collide during import publication. The checker must reject the whole
+# second import at the type boundary (NOT leave a last-write-wins binding that
+# trips a downstream MIR field-order failure).
 ambig_fixture="published_bare_two_optin_ambiguous"
 ambig_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${ambig_fixture}.hew" 2>&1)" && {
   echo "FAIL ${ambig_fixture}: hew check unexpectedly succeeded (ambiguous bare name slipped the gate)" >&2
   echo "${ambig_out}" >&2
   exit 1
 }
-if ! grep -q "ambiguous type \`Gadget\`" <<<"${ambig_out}"; then
-  echo "FAIL ${ambig_fixture}: expected an ambiguous-type diagnostic over the published candidates" >&2
+if ! grep -q "import binding \`Gadget\` is already defined in this file; no bindings from this import were added" <<<"${ambig_out}"; then
+  echo "FAIL ${ambig_fixture}: expected an atomic import-binding collision diagnostic" >&2
   echo "${ambig_out}" >&2
   exit 1
 fi
@@ -845,7 +879,7 @@ fi
 echo "PASS ${ambig_fixture}"
 
 # Same-bare-name publication must fail at the checker/frontend boundary in
-# every namespace, for both named and glob imports. Each fixture imports a pair
+# every namespace. Each fixture imports a pair
 # of single-symbol modules so an unrelated trait or generated machine method
 # cannot mask the namespace under test. A downstream HIR/MIR/codegen rejection
 # is not sufficient: the source binding itself is ambiguous and must be rejected
@@ -859,9 +893,15 @@ assert_sameleaf_binding_ambiguous() {
     echo "${out}" >&2
     exit 1
   }
-  if ! grep -qE "ambiguous.*${symbol}|${symbol}.*defined multiple times" <<<"${out}"; then
+  if ! grep -qE "ambiguous.*${symbol}|${symbol}.*already defined in this file" <<<"${out}"; then
     echo "FAIL ${fixture}: rejected outside the source-binding ambiguity boundary" >&2
     echo "${out}" >&2
+    exit 1
+  fi
+  json_out="$(${HEW} check --format json --pkg-path "${PKGS}" "${DIR}/${fixture}.hew" 2>&1 || true)"
+  if ! grep -q '"code": "E_IMPORT_BINDING_COLLISION"' <<<"${json_out}"; then
+    echo "FAIL ${fixture}: missing E_IMPORT_BINDING_COLLISION diagnostic" >&2
+    echo "${json_out}" >&2
     exit 1
   fi
   if grep -qE "E_HIR|E_MIR|E_CODEGEN_FRONT|E_NOT_YET_IMPLEMENTED" <<<"${out}"; then
@@ -872,14 +912,33 @@ assert_sameleaf_binding_ambiguous() {
   echo "PASS ${fixture}"
 }
 
-for import_form in named glob; do
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_function_ambiguous" "clash_fn"
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_const_ambiguous" "CLASH_CONST"
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_trait_ambiguous" "ClashTrait"
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_type_ambiguous" "ClashType"
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_actor_ambiguous" "ClashActor"
-  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_machine_ambiguous" "ClashMachine"
+for namespace in function const trait type actor machine; do
+  case "$namespace" in
+    function) symbol="clash_fn" ;;
+    const) symbol="CLASH_CONST" ;;
+    trait) symbol="ClashTrait" ;;
+    type) symbol="ClashType" ;;
+    actor) symbol="ClashActor" ;;
+    machine) symbol="ClashMachine" ;;
+  esac
+  assert_sameleaf_binding_ambiguous "sameleaf_named_${namespace}_ambiguous" "$symbol"
 done
+
+# Positive controls: these fixtures formerly carried `_ambiguous` names, but
+# now test aliased selective imports and must remain executable by this runner.
+assert_aliased_selective_import() {
+  local fixture="$1"
+  local out
+  out="$(${HEW} check --pkg-path "${PKGS}" "${DIR}/${fixture}.hew" 2>&1)" || {
+    echo "FAIL ${fixture}: aliased selective import was rejected" >&2
+    echo "${out}" >&2
+    exit 1
+  }
+  echo "PASS ${fixture}"
+}
+
+assert_aliased_selective_import aliased_selective_type_import
+assert_aliased_selective_import aliased_selective_function_import
 
 # Positive complement: distinct qualifiers/aliases for the working function,
 # nominal-type, and trait surfaces must remain accepted while the bare controls

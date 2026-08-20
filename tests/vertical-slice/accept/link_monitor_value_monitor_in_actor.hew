@@ -9,22 +9,22 @@
 // `cancel_exit` block carries NO `hew_actor_demonitor` call (the demonitor must
 // appear only on the normal return path, after construction). Exit 0 proves the
 // program runs the watch handler and tears the monitor down cleanly.
-import std::link_monitor::{MonitorError, MonitorRef};
+import std.link_monitor.{MonitorError, MonitorRef};
 
 actor Target {
     receive fn ping() {}
 }
 
 actor Watcher {
-    var active_monitor: Result<MonitorRef, MonitorError> = Err(MonitorError::InvalidTarget);
+    var active_monitor: Result<MonitorRef, MonitorError> = Err(MonitorError.InvalidTarget);
     receive fn watch(t: LocalPid<Target>) {
         active_monitor = monitor(t);
         // Borrow the active MonitorRef through the Result payload. The actor
         // state remains the sole close authority; this binder must not acquire
         // an independent scope-exit demonitor.
         let _monitor_id = match active_monitor {
-            Result::Ok(monitor_ref) => monitor_ref.id().value,
-            Result::Err(_) => 0,
+            Result.Ok(monitor_ref) => monitor_ref.id().value,
+            Result.Err(_) => 0,
         };
     }
 }

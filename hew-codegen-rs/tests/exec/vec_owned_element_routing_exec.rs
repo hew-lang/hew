@@ -80,11 +80,9 @@ fn run_hew_source(repo: &Path, stem: &str, source: &str) -> String {
     let path = dir.join(format!("{stem}.hew"));
     std::fs::write(&path, source).expect("write temp Hew source");
 
-    let output = hew_command(repo)
-        .arg("run")
-        .arg(&path)
-        .output()
-        .expect("spawn hew run");
+    let mut command = hew_command(repo);
+    command.arg("run").arg(&path);
+    let output = super::run_hew_command(&mut command, format!("hew run {}", path.display()));
     assert!(
         output.status.success(),
         "hew run {} exited non-zero (status={:?}); stderr:\n{}",
@@ -109,7 +107,7 @@ fn vec_payload_free_enum_constructs_and_pushes_bitcopy() {
         enum Color { Red; Green; Blue }
 
         fn main() {
-            let v: Vec<Color> = Vec::new();
+            let v: Vec<Color> = Vec.new();
             v.push(Red);
             v.push(Green);
             v.push(Blue);
@@ -133,7 +131,7 @@ fn vec_scalar_payload_enum_constructs_and_pushes_bitcopy() {
         enum Tag { A(i64); B(i64) }
 
         fn main() {
-            let v: Vec<Tag> = Vec::new();
+            let v: Vec<Tag> = Vec.new();
             v.push(A(1));
             v.push(B(2));
             println(v.len());

@@ -25,6 +25,37 @@ fn write_fixture(files: &[(&str, &str)]) -> tempfile::TempDir {
 
 // ── rendered-output tests ────────────────────────────────────────────────────
 
+/// A hyphenated package import in a named source file must preserve the file
+/// attribution and the underscore-normalized package suggestion in rendered
+/// `hew check` output.
+#[test]
+fn hyphenated_import_rendered_with_filename_and_underscore_suggestion() {
+    let fixture = write_fixture(&[("hyphenated_import.hew", "import config-telemetry.types;\n")]);
+    let source_path = fixture.path().join("hyphenated_import.hew");
+
+    let output = Command::new(hew_binary())
+        .args(["check", source_path.to_str().unwrap()])
+        .current_dir(fixture.path())
+        .output()
+        .expect("hew binary must run");
+
+    assert!(
+        !output.status.success(),
+        "hew check must reject a hyphenated package import"
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("hyphenated_import.hew:"),
+        "rendered diagnostic must name the source file; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("set `name = \"config_telemetry\"`")
+            && stderr.contains("import `config_telemetry`"),
+        "rendered diagnostic must carry the underscore suggestion; got:\n{stderr}"
+    );
+}
+
 /// A type error in `dep.hew` must be rendered with `dep.hew` as the filename
 /// header (not the root `main.hew`), and the underline must point at source
 /// text from `dep.hew`.

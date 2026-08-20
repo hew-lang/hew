@@ -108,13 +108,18 @@ pub enum LintId {
     /// A comment contains an invisible/default-ignorable Unicode codepoint that
     /// can hide text or create visually indistinguishable source.
     InvisibleCodepointInComment,
-    // NOTE: a `clean_counter` lint (a loop-carried accumulator that is
-    // incremented but never read after the loop) is deliberately NOT registered
-    // here. It has no emission code yet, and registering an un-emitted lint
-    // would make `-D/-W/-A clean_counter` and `// hew:allow(clean_counter)`
-    // silently no-op — a fail-open that defeats `from_name`'s fail-closed
-    // contract (an unknown lint must surface as a CLI error). Detecting it
-    // precisely needs faint-variable analysis; tracked in issue #2178.
+    /// A loop-carried counter / accumulator whose value is never read after the
+    /// loop exits — the counting is dead work and the local can be removed.
+    ///
+    /// Emitted by the MIR-stage faint-variable (strong-liveness) pass in
+    /// `hew-mir`, not the HIR checker sweep. The lint is deliberately narrow:
+    /// it fires only when the accumulate step is **non-trapping**, so deleting
+    /// the counter is provably semantics-preserving. Hew's default integer
+    /// arithmetic lowers to `IntArithChecked` whose overflow flag branches to a
+    /// `Trap`, which makes an integer counter *strongly* live (its value
+    /// decides whether the program traps) — those are excluded. See
+    /// `docs/design/lint-pass.md` §10 and issue #2178.
+    CleanCounter,
 }
 
 impl LintId {
@@ -136,6 +141,7 @@ impl LintId {
         LintId::ActorHandleBuiltinShadow,
         LintId::TextDirectionCodepointInComment,
         LintId::InvisibleCodepointInComment,
+        LintId::CleanCounter,
     ];
 
     /// The stable, lowercase string name for this lint.
@@ -159,6 +165,7 @@ impl LintId {
             LintId::ActorHandleBuiltinShadow => "actor_handle_builtin_shadow",
             LintId::TextDirectionCodepointInComment => "text_direction_codepoint_in_comment",
             LintId::InvisibleCodepointInComment => "invisible_codepoint_in_comment",
+            LintId::CleanCounter => "clean_counter",
         }
     }
 
@@ -187,7 +194,8 @@ impl LintId {
             | LintId::MustUse
             | LintId::SleepLoopBlocksMailbox
             | LintId::ActorHandleBuiltinShadow
-            | LintId::InvisibleCodepointInComment => LintLevel::Warn,
+            | LintId::InvisibleCodepointInComment
+            | LintId::CleanCounter => LintLevel::Warn,
             LintId::TextDirectionCodepointInComment => LintLevel::Deny,
         }
     }
@@ -487,7 +495,7 @@ pub(super) fn lint_receive_fn_definition(
         format!(
             "`receive fn {}` shadows builtin actor-handle method {shadowed_builtin}; \
              concrete actor handles dispatch to this handler, while generic `P: Pid` \
-             contexts use builtin `Pid::send` semantics",
+             contexts use builtin `Pid.send` semantics",
             rec.name
         ),
         format!(
@@ -501,8 +509,8 @@ pub(super) fn lint_receive_fn_definition(
 
 fn shadowed_actor_handle_builtin(name: &str) -> Option<&'static str> {
     match name {
-        "send" => Some("`LocalPid<T>::send` / `RemotePid<T>::send`"),
-        "ask" => Some("`RemotePid<T>::ask`"),
+        "send" => Some("`LocalPid<T>.send` / `RemotePid<T>.send`"),
+        "ask" => Some("`RemotePid<T>.ask`"),
         _ => None,
     }
 }
@@ -683,10 +691,37 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
     match expr {
         Expr::Literal(_)
         | Expr::Identifier(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}
+        Expr::ContextVariant(context) => {
+            if let Some(record) = &context.record {
+                for (_, value) in &record.fields {
+                    walk_expr(&value.0, &value.1, visitor);
+                }
+                if let Some(base) = &record.base {
+                    walk_expr(&base.0, &base.1, visitor);
+                }
+            }
+        }
+        Expr::GenericApplySuffix { target, .. } => {
+            walk_expr(&target.0, &target.1, visitor);
+        }
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            walk_expr(&target.0, &target.1, visitor);
+            for (_, value) in fields {
+                walk_expr(&value.0, &value.1, visitor);
+            }
+            if let Some(base) = base {
+                walk_expr(&base.0, &base.1, visitor);
+            }
+        }
         Expr::Binary { left, right, .. } => {
             walk_expr(&left.0, &left.1, visitor);
             walk_expr(&right.0, &right.1, visitor);

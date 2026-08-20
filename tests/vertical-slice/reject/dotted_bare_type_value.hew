@@ -1,0 +1,7 @@
+enum Choice {
+    Present(i64)
+}
+
+fn main() {
+    let invalid = Choice;
+}

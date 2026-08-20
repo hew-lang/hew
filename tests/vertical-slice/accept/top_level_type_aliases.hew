@@ -1,0 +1,31 @@
+type Meters = i64;
+
+impl Meters {
+    fn answer(self) -> i64 {
+        42
+    }
+}
+
+type Pair<T> = (T, T);
+type MyMap = HashMap<string, i64>;
+
+fn roundtrip_pair(pair: Pair<i64>) -> Pair<i64> {
+    pair
+}
+
+fn roundtrip(values: MyMap) -> MyMap {
+    values
+}
+
+fn main() {
+    let distance: Meters = 5;
+    println(distance);
+    println(distance.answer());
+    let _pair: Pair<i64> = roundtrip_pair((20, 22));
+    println(42);
+
+    let values: MyMap = HashMap.new();
+    values.insert("answer", 42);
+    let _returned: MyMap = roundtrip(values);
+    println(1);
+}

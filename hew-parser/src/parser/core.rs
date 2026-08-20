@@ -24,7 +24,7 @@ impl<'src> Parser<'src> {
         let raw_tokens = hew_lexer::lex(source);
         let mut errors = Vec::new();
         let mut tokens = Vec::new();
-        for (t, s) in raw_tokens {
+        for (index, (mut t, s)) in raw_tokens.iter().cloned().enumerate() {
             let span = (s.start + offset)..(s.end + offset);
             if matches!(t, Token::Error) {
                 errors.push(ParseError {
@@ -34,9 +34,63 @@ impl<'src> Parser<'src> {
                     severity: Severity::Error,
                     kind: ParseDiagnosticKind::InvalidLiteral,
                 });
-            } else {
-                tokens.push((t, span));
+                continue;
             }
+
+            if matches!(t, Token::DoubleColon) {
+                let next = raw_tokens.get(index + 1).map(|(token, _)| token);
+                let line_start = source[..s.start].rfind('\n').map_or(0, |at| at + 1);
+                let line_end = source[s.end..]
+                    .find('\n')
+                    .map_or(source.len(), |at| s.end + at);
+                let line = source[line_start..line_end].trim();
+                let migrated = line
+                    .replace("::*", ".{ Name }")
+                    .replace("::<", "<")
+                    .replace("::", ".");
+                let (kind, message, hint) = if matches!(next, Some(Token::Less)) {
+                    (
+                        ParseDiagnosticKind::LegacyTurbofish,
+                        format!(
+                            "E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `{migrated}`"
+                        ),
+                        format!("use the migrated spelling `{migrated}`"),
+                    )
+                } else if matches!(next, Some(Token::Star)) {
+                    (
+                        ParseDiagnosticKind::ImportGlobRemoved,
+                        format!(
+                            "E_IMPORT_GLOB_REMOVED: glob imports have been removed; import explicit names: `{migrated}`"
+                        ),
+                        format!("replace the glob with an explicit selection such as `{migrated}`"),
+                    )
+                } else {
+                    (
+                        ParseDiagnosticKind::LegacyPathSeparator,
+                        format!(
+                            "E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `{migrated}`"
+                        ),
+                        format!("use the migrated spelling `{migrated}`"),
+                    )
+                };
+                errors.push(ParseError {
+                    message,
+                    span: span.clone(),
+                    hint: Some(hint),
+                    severity: Severity::Error,
+                    kind,
+                });
+
+                // Preserve parser recovery without retaining a successful legacy production:
+                // `::<` disappears before generic application, while ordinary separators become
+                // dots. The recorded hard error still makes the parse fail closed.
+                if matches!(next, Some(Token::Less)) {
+                    continue;
+                }
+                t = Token::Dot;
+            }
+
+            tokens.push((t, span));
         }
         Self {
             tokens,
@@ -647,23 +701,56 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// Type-declaration keywords admitted as import path segments. Module
+    /// files are named after what they declare (`actor.hew`, `machine.hew`),
+    /// so these words must be spellable in an import path even though they
+    /// are reserved everywhere else. Import path position is unambiguous:
+    /// segments only appear directly after `import` or `::`, where no
+    /// declaration keyword carries its keyword meaning. Qualifier position
+    /// (`machine.Machine` as a type annotation) stays reserved — selective
+    /// import (`import a::machine::{Machine};`) is the supported spelling.
+    pub(crate) fn import_path_segment_keyword(tok: &Token<'_>) -> Option<&'static str> {
+        match tok {
+            Token::Actor => Some("actor"),
+            Token::Machine => Some("machine"),
+            Token::Record => Some("record"),
+            Token::Enum => Some("enum"),
+            Token::Supervisor => Some("supervisor"),
+            Token::Type => Some("type"),
+            Token::Trait => Some("trait"),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_import_path_segment_token(tok: &Token<'_>) -> bool {
-        matches!(tok, Token::Identifier(_) | Token::Actor)
+        matches!(tok, Token::Identifier(_))
+            || Self::import_path_segment_keyword(tok).is_some()
             || Self::contextual_keyword_name(tok).is_some()
+    }
+
+    pub(crate) fn import_path_segment_text(tok: &Token<'_>) -> Option<String> {
+        match tok {
+            Token::Identifier(name) => Some((*name).to_string()),
+            _ => Self::import_path_segment_keyword(tok)
+                .or_else(|| Self::contextual_keyword_name(tok))
+                .map(str::to_string),
+        }
     }
 
     pub(crate) fn expect_import_path_segment(&mut self) -> Option<String> {
         match self.peek() {
-            Some(Token::Actor) => {
-                self.advance();
-                Some("actor".to_string())
+            Some(tok) => {
+                if let Some(name) = Self::import_path_segment_keyword(tok) {
+                    self.advance();
+                    Some(name.to_string())
+                } else if let Some(name) = Self::contextual_keyword_name(tok) {
+                    self.advance();
+                    Some(name.to_string())
+                } else {
+                    self.expect_ident()
+                }
             }
-            Some(tok) if Self::contextual_keyword_name(tok).is_some() => {
-                let name = Self::contextual_keyword_name(tok).expect("checked above");
-                self.advance();
-                Some(name.to_string())
-            }
-            _ => self.expect_ident(),
+            None => self.expect_ident(),
         }
     }
 

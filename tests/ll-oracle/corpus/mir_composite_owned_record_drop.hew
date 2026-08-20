@@ -16,7 +16,7 @@ type Bundle {
 }
 
 fn main() -> i64 {
-    let parts: Vec<string> = Vec::new();
+    let parts: Vec<string> = Vec.new();
     parts.push("a" + "x");
     let b = Bundle { label: "hdr" + "!", parts: parts };
     let n = b.label.len();

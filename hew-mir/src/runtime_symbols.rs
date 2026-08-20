@@ -341,6 +341,7 @@ pub(crate) const fn vec_getter_ownership_contract(
         VecGetElem::Owned | VecGetElem::Ptr => ResultOwnership::Borrowed,
         VecGetElem::Bool
         | VecGetElem::Clone
+        | VecGetElem::Take
         | VecGetElem::F32
         | VecGetElem::F64
         | VecGetElem::I8
@@ -542,6 +543,7 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_hashmap_clone_layout"
         | "hew_hashmap_insert_layout"
         | "hew_hashmap_keys_layout"
+        | "hew_hashmap_entries_layout"
         | "hew_hashmap_len_layout"
         | "hew_hashmap_values_layout"
         | "hew_hashset_clear_layout"
@@ -661,7 +663,12 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_vec_slice_range_layout"
         | "hew_vec_slice_range_owned"
         | "hew_vec_slice_range_ptr"
-        | "hew_vec_slice_range_str" => CalleeOwnershipContract::new(
+        | "hew_vec_slice_range_str"
+        // Whole-buffer move-out: borrows the source handle (the vec stays the
+        // caller's live, now-empty owner) and returns a fresh vec the
+        // consuming-iteration cursor owns; cursor drop registration (not a
+        // contract-derived temp drop) frees it, same as `hew_vec_clone_owned`.
+        | "hew_vec_take_all" => CalleeOwnershipContract::new(
             BorrowsReceiver {
                 scans: ReceiverScanSet::VEC,
             },
@@ -774,6 +781,11 @@ const TOML_RESULT_CONSISTENCY: &[(&str, &str, ResultOwnership)] = &[
         "fresh",
         ResultOwnership::IndependentValue,
     ),
+    (
+        "hew_vec_take_owned",
+        "fresh",
+        ResultOwnership::IndependentValue,
+    ),
     ("hew_vec_get_owned", "borrowed", ResultOwnership::Borrowed),
     (
         "hew_vec_get_str",
@@ -839,6 +851,7 @@ mod tests {
         "hew_hashmap_get_layout",
         "hew_hashmap_insert_layout",
         "hew_hashmap_keys_layout",
+        "hew_hashmap_entries_layout",
         "hew_hashmap_len_layout",
         "hew_hashmap_remove_layout",
         "hew_hashmap_remove_take_layout",
@@ -894,6 +907,7 @@ mod tests {
         "hew_vec_clone",
         "hew_vec_clone_layout",
         "hew_vec_clone_owned",
+        "hew_vec_take_all",
         "hew_vec_contains_f64",
         "hew_vec_contains_i32",
         "hew_vec_contains_i64",
@@ -902,6 +916,7 @@ mod tests {
         "hew_vec_contains_thunk",
         "hew_vec_get_bool",
         "hew_vec_get_clone",
+        "hew_vec_take_owned",
         "hew_vec_get_f32",
         "hew_vec_get_f64",
         "hew_vec_get_i16",
@@ -1051,7 +1066,7 @@ mod tests {
     #[test]
     fn callee_ownership_contract_symbols_are_unique_positive_rows() {
         let unique = CONTRACT_SYMBOLS.iter().copied().collect::<BTreeSet<_>>();
-        assert_eq!(CONTRACT_SYMBOLS.len(), 175);
+        assert_eq!(CONTRACT_SYMBOLS.len(), 178);
         assert_eq!(
             unique.len(),
             CONTRACT_SYMBOLS.len(),

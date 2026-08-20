@@ -71,11 +71,9 @@ fn run_hew_source(repo: &Path, stem: &str, source: &str) -> String {
     let path = dir.join(format!("{stem}.hew"));
     std::fs::write(&path, source).expect("write temp Hew source");
 
-    let output = hew_command(repo)
-        .arg("run")
-        .arg(&path)
-        .output()
-        .expect("spawn hew run");
+    let mut command = hew_command(repo);
+    command.arg("run").arg(&path);
+    let output = super::run_hew_command(&mut command, format!("hew run {}", path.display()));
     assert!(
         output.status.success(),
         "hew run {} exited non-zero (status={:?}); stderr:\n{}",
@@ -149,7 +147,7 @@ fn vec_record_get_method_reads_correct_field_values() {
         type Point { x: i64; y: i64 }
 
         fn main() {
-            let pts: Vec<Point> = Vec::new();
+            let pts: Vec<Point> = Vec.new();
             pts.push(Point{x:100, y:200});
             pts.push(Point{x:300, y:400});
             let a = pts[0];

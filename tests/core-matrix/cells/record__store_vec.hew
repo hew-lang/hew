@@ -6,7 +6,7 @@ type Rec {
 fn main() {
     let x = Rec { a: 1, b: "x0" };
     let y = Rec { a: 2, b: "x1" };
-    let v: Vec<Rec> = Vec::new();
+    let v: Vec<Rec> = Vec.new();
     v.push(x);
     v.push(y);
     let n = v.len();

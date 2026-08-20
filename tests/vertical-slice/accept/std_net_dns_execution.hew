@@ -1,4 +1,4 @@
-import std::net::dns;
+import std.net.dns;
 
 fn main() {
     let addrs = match dns.try_resolve("localhost") {

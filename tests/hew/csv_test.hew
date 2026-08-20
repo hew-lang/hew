@@ -1,10 +1,10 @@
 //! Behavioural tests for std::encoding::csv.
 
-import std::encoding::csv;
+import std.encoding.csv;
 
-import std::fs;
+import std.fs;
 
-import std::testing;
+import std.testing;
 
 // ── Happy-path parse ──────────────────────────────────────────────────
 #[test]
@@ -63,15 +63,16 @@ fn test_parse_get_by_name_missing_column_returns_empty() {
 }
 
 #[test]
+#[serial]
 fn test_try_parse_file_missing_path_returns_err() {
     let path = "tests/hew/_csv_try_parse_missing.csv";
     let _ = fs.try_delete(path);
     match csv.try_parse_file(path) {
-        Ok(tbl) => {
+        .Ok(tbl) => {
             tbl.free();
             panic("expected missing CSV path to return Err");
         },
-        Err(reason) => testing.assert_true(reason.contains("NotFound")),
+        .Err(reason) => testing.assert_true(reason.contains("NotFound")),
     }
 }
 
@@ -284,70 +285,70 @@ fn test_parse_trailing_crlf_yields_correct_row_count() {
 #[test]
 fn test_try_parse_rejects_an_unterminated_quoted_field() {
     match csv.try_parse("name,note\nAlice,\"never closed") {
-        Ok(tbl) => panic(f"expected an unterminated quote to be rejected, got {tbl.rows()} rows"),
-        Err(reason) => testing.assert_eq_str(reason, "csv: unterminated quoted field"),
+        .Ok(tbl) => panic(f"expected an unterminated quote to be rejected, got {tbl.rows()} rows"),
+        .Err(reason) => testing.assert_eq_str(reason, "csv: unterminated quoted field"),
     }
 }
 
 #[test]
 fn test_try_parse_rejects_text_after_a_closing_quote() {
     match csv.try_parse("a,b\n\"x\"junk,y") {
-        Ok(tbl) => panic(f"expected junk after a closing quote to be rejected, got {tbl.get(0, 0)}"),
-        Err(reason) => testing.assert_eq_str(reason, "csv: unexpected text after a closing quote"),
+        .Ok(tbl) => panic(f"expected junk after a closing quote to be rejected, got {tbl.get(0, 0)}"),
+        .Err(reason) => testing.assert_eq_str(reason, "csv: unexpected text after a closing quote"),
     }
 }
 
 #[test]
 fn test_try_parse_rejects_a_quote_inside_an_unquoted_field() {
     match csv.try_parse("a,b\nx\"y,z") {
-        Ok(tbl) => panic(f"expected a bare quote to be rejected, got {tbl.get(0, 0)}"),
-        Err(reason) => testing.assert_eq_str(reason, "csv: unescaped quote inside an unquoted field"),
+        .Ok(tbl) => panic(f"expected a bare quote to be rejected, got {tbl.get(0, 0)}"),
+        .Err(reason) => testing.assert_eq_str(reason, "csv: unescaped quote inside an unquoted field"),
     }
 }
 
 #[test]
 fn test_try_parse_preserves_a_multiline_quoted_field() {
     match csv.try_parse("a,b\n\"line1\nline2\",z") {
-        Ok(tbl) => {
+        .Ok(tbl) => {
             testing.assert_eq(tbl.rows(), 1);
             testing.assert_eq_str(tbl.get(0, 0), "line1\nline2");
             testing.assert_eq_str(tbl.get(0, 1), "z");
         },
-        Err(reason) => panic(f"a multiline quoted field must parse: {reason}"),
+        .Err(reason) => panic(f"a multiline quoted field must parse: {reason}"),
     }
 }
 
 #[test]
 fn test_try_parse_preserves_an_escaped_quote() {
     match csv.try_parse("a,b\n\"say \"\"hi\"\"\",z") {
-        Ok(tbl) => {
+        .Ok(tbl) => {
             testing.assert_eq_str(tbl.get(0, 0), "say \"hi\"");
             testing.assert_eq_str(tbl.get(0, 1), "z");
         },
-        Err(reason) => panic(f"an escaped quote must parse: {reason}"),
+        .Err(reason) => panic(f"an escaped quote must parse: {reason}"),
     }
 }
 
 #[test]
 fn test_try_parse_accepts_an_empty_quoted_field_as_an_empty_value() {
     match csv.try_parse("a,b\n\"\",z") {
-        Ok(tbl) => {
+        .Ok(tbl) => {
             testing.assert_eq(tbl.rows(), 1);
             testing.assert_eq_str(tbl.get(0, 0), "");
             testing.assert_eq_str(tbl.get(0, 1), "z");
         },
-        Err(reason) => panic(f"an empty quoted field must parse: {reason}"),
+        .Err(reason) => panic(f"an empty quoted field must parse: {reason}"),
     }
 }
 
 #[test]
 fn test_try_parse_accepts_an_empty_document_as_an_empty_table() {
     match csv.try_parse("") {
-        Ok(tbl) => {
+        .Ok(tbl) => {
             testing.assert_eq(tbl.rows(), 0);
             testing.assert_eq(tbl.cols(), 0);
         },
-        Err(reason) => panic(f"an empty document must parse: {reason}"),
+        .Err(reason) => panic(f"an empty document must parse: {reason}"),
     }
 }
 

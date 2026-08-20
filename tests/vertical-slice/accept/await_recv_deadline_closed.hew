@@ -6,7 +6,7 @@
 // runtime completes immediately with `Ok(None)` — the deadline timer never fires.
 //
 // Exit-code contract: Ok(None) arm → 5.
-import std::channel::channel;
+import std.channel.channel;
 
 actor Worker {
     receive fn run() -> i64 {

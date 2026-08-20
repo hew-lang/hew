@@ -13,7 +13,13 @@ use super::{
 
 impl Builder {
     pub(super) fn binding_ref_use_intent(&self, expr: &HirExpr) -> IntentKind {
-        if self.param_ownership.borrow_arg_sites.contains(&expr.site)
+        if self
+            .projected_resource_direct_move_sites
+            .last()
+            .is_some_and(|site| *site == expr.site)
+        {
+            IntentKind::Consume
+        } else if self.param_ownership.borrow_arg_sites.contains(&expr.site)
             || self.bytes_local_share_sites.contains(&expr.site)
             || self.string_local_share_sites.contains_key(&expr.site)
         {
@@ -3629,9 +3635,7 @@ pub(crate) fn named_layout_key(name: &str, args: &[ResolvedTy]) -> String {
 pub(super) fn machine_layout_ty_matches(layout_names: &HashSet<String>, ty: &ResolvedTy) -> bool {
     match ty {
         ResolvedTy::Named { name, args, .. } => {
-            let enum_key = named_layout_key(name, args);
-            layout_names.contains(&enum_key)
-                || layout_names.contains(&hew_hir::machine_layout_key(name, args))
+            layout_names.contains(&hew_hir::machine_layout_key(name, args))
         }
         _ => false,
     }
@@ -3894,7 +3898,6 @@ fn is_codegen_ready_user_component(
     readiness.record_field_orders.contains_key(&layout_key)
         || readiness.actor_layouts.contains_key(name)
         || readiness.supervisor_layout_map.contains_key(name)
-        || readiness.machine_layout_names.contains(&layout_key)
         || readiness
             .machine_layout_names
             .contains(&hew_hir::machine_layout_key(name, &component.args))
@@ -3940,6 +3943,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_hashmap_get_layout",
         "hew_hashmap_insert_layout",
         "hew_hashmap_keys_layout",
+        "hew_hashmap_entries_layout",
         "hew_hashmap_len_layout",
         "hew_hashmap_remove_layout",
         "hew_hashmap_remove_take_layout",
@@ -3998,6 +4002,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_vec_contains_thunk",
         "hew_vec_get_bool",
         "hew_vec_get_clone",
+        "hew_vec_take_owned",
         "hew_vec_get_f32",
         "hew_vec_get_f64",
         "hew_vec_get_i16",
@@ -4106,6 +4111,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_vec_contains_thunk",
         "hew_vec_get_bool",
         "hew_vec_get_clone",
+        "hew_vec_take_owned",
         "hew_vec_get_f32",
         "hew_vec_get_f64",
         "hew_vec_get_i16",
@@ -4193,6 +4199,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_hashmap_get_layout",
         "hew_hashmap_insert_layout",
         "hew_hashmap_keys_layout",
+        "hew_hashmap_entries_layout",
         "hew_hashmap_len_layout",
         "hew_hashmap_remove_layout",
         "hew_hashmap_remove_take_layout",
@@ -4328,7 +4335,7 @@ mod runtime_callee_ownership_contract_parity {
 
     #[test]
     fn callee_ownership_contract_matches_literal_projection_sets() {
-        assert_eq!(CLASSIFIER_SYMBOLS.len(), 169);
+        assert_eq!(CLASSIFIER_SYMBOLS.len(), 171);
         let vec_receiver = expected_set(VEC_RECEIVER_SYMBOLS);
         let collection_receiver = expected_set(COLLECTION_RECEIVER_SYMBOLS);
         let copy_in = expected_set(COPY_IN_SYMBOLS);
@@ -4340,8 +4347,8 @@ mod runtime_callee_ownership_contract_parity {
         let interior_alias = expected_set(INTERIOR_ALIAS_SYMBOLS);
         let fresh_bytes = expected_set(FRESH_BYTES_SYMBOLS);
 
-        assert_eq!(vec_receiver.len(), 92);
-        assert_eq!(collection_receiver.len(), 19);
+        assert_eq!(vec_receiver.len(), 93);
+        assert_eq!(collection_receiver.len(), 20);
         assert_eq!(bytes_receiver.len(), 11);
         assert_eq!(string_use.len(), 38);
         assert_eq!(fresh_string.len(), 34);
@@ -4459,7 +4466,7 @@ mod layout_key_shortening_guard {
 }
 #[cfg(test)]
 mod enum_layout_tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use super::{lower_hir_module, Builder};
     use hew_hir::{
@@ -4618,6 +4625,59 @@ mod enum_layout_tests {
             "expected one EnumLayout for Colour"
         );
         assert_eq!(colour_layouts[0].variants.len(), 3);
+    }
+
+    #[test]
+    fn tagged_union_classification_uses_one_canonical_key_family() {
+        let keys = HashSet::from([
+            hew_hir::machine_layout_key("Colour", &[]),
+            hew_hir::machine_layout_key("pkg.Toggle", &[]),
+            hew_hir::machine_layout_key("pkg.Option", &[ResolvedTy::I64]),
+        ]);
+        let builder = Builder {
+            machine_layout_names: keys.clone(),
+            ..Builder::default()
+        };
+
+        assert!(super::machine_layout_ty_matches(
+            &keys,
+            &ResolvedTy::named_user("Colour", vec![]),
+        ));
+        assert!(super::machine_layout_ty_matches(
+            &keys,
+            &ResolvedTy::named_user("pkg.Toggle", vec![]),
+        ));
+        assert!(super::machine_layout_ty_matches(
+            &keys,
+            &ResolvedTy::named_user("pkg.Option", vec![ResolvedTy::I64]),
+        ));
+        assert!(builder.is_known_actor_runtime_ty(&ResolvedTy::named_user("Colour", vec![])));
+        assert!(builder.is_known_actor_runtime_ty(&ResolvedTy::named_user(
+            "pkg.Option",
+            vec![ResolvedTy::I64],
+        )));
+        assert!(keys.iter().all(|key| key.starts_with("mc$$")));
+        assert!(!keys.contains("Colour"));
+    }
+
+    #[test]
+    fn bare_imported_machine_spelling_does_not_recover_by_leaf() {
+        let keys = HashSet::from([hew_hir::machine_layout_key("pkg.Toggle", &[])]);
+        let builder = Builder {
+            machine_layout_names: keys.clone(),
+            ..Builder::default()
+        };
+
+        assert!(!super::machine_layout_ty_matches(
+            &keys,
+            &ResolvedTy::named_user("Toggle", vec![]),
+        ));
+        assert!(super::machine_layout_ty_matches(
+            &keys,
+            &ResolvedTy::named_user("pkg.Toggle", vec![]),
+        ));
+        assert!(!builder.is_known_actor_runtime_ty(&ResolvedTy::named_user("Toggle", vec![])));
+        assert!(builder.is_known_actor_runtime_ty(&ResolvedTy::named_user("pkg.Toggle", vec![])));
     }
 
     #[test]

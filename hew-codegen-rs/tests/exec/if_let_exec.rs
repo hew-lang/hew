@@ -163,14 +163,14 @@ fn if_let_user_enum_payload_matches_correct_variant() {
 }
 
 fn main() {
-    let circle: Shape = Shape::Circle(10);
-    if let Shape::Circle(r) = circle {
+    let circle: Shape = Shape.Circle(10);
+    if let Shape.Circle(r) = circle {
         println(r);
     } else {
         println(-1);
     }
-    let square: Shape = Shape::Square(5);
-    if let Shape::Circle(r) = square {
+    let square: Shape = Shape.Square(5);
+    if let Shape.Circle(r) = square {
         println(r);
     } else {
         println(-1);

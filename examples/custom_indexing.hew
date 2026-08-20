@@ -1,5 +1,5 @@
 //! Status: runs
-//! Description: `obj[k]` desugars to `Index::at(obj, k)` via the Index trait,
+//! Description: `obj[k]` desugars to `Index.at(obj, k)` via the Index trait,
 //! mirroring the trait-based pattern used by Iterator (associated-type `Output`).
 //! A user composite implements both halves of the convergence: `get` returns
 //! `Option<Output>` (delegating to the wrapped leaf's `get`), and `at` is the
@@ -23,8 +23,8 @@ impl Index<i64> for Grid {
 
 fn main() {
     let g = Grid { data: [10, 20, 30, 40], width: 2 };
-    let val = g[0]; // desugars to Index::at(g, 0)
-    let val2 = g[2]; // desugars to Index::at(g, 2)
+    let val = g[0]; // desugars to Index.at(g, 0)
+    let val2 = g[2]; // desugars to Index.at(g, 2)
     println(val);
     println(val2);
 }

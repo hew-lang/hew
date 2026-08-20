@@ -1,18 +1,18 @@
 //! Behavioural tests for std::encoding::toml.
 
-import std::encoding::toml;
+import std.encoding.toml;
 
-import std::testing;
+import std.testing;
 
 // ── try_parse ─────────────────────────────────────────────────────────
 #[test]
 fn test_try_parse_valid_returns_ok() {
     let r = toml.try_parse("[package]\nname = \"hew\"\nversion = 1");
     match r {
-        Ok(val) => {
+        .Ok(val) => {
             val.free();
         },
-        Err(_) => panic("expected Ok, got Err"),
+        .Err(_) => panic("expected Ok, got Err"),
     }
 }
 
@@ -20,11 +20,11 @@ fn test_try_parse_valid_returns_ok() {
 fn test_try_parse_invalid_returns_err() {
     let r = toml.try_parse("[[not valid toml");
     match r {
-        Ok(val) => {
+        .Ok(val) => {
             val.free();
             panic("expected Err, got Ok");
         },
-        Err(ParseError::Invalid(_)) => {},
+        .Err(ParseError.Invalid(_)) => {},
     }
 }
 
@@ -62,13 +62,13 @@ fn test_stringify_produces_valid_toml() {
     let s = tbl.stringify();
     let r = toml.try_parse(s);
     match r {
-        Ok(reparsed) => {
+        .Ok(reparsed) => {
             let field = reparsed.get_field("x");
             testing.assert_eq(field.get_int(), 5);
             field.free();
             reparsed.free();
         },
-        Err(_) => panic("stringify produced unparseable TOML"),
+        .Err(_) => panic("stringify produced unparseable TOML"),
     }
     tbl.free();
 }
@@ -80,13 +80,13 @@ fn test_try_parse_empty_string_is_empty_table() {
     // get_field on any key returns a null handle (array_len == -1).
     let r = toml.try_parse("");
     match r {
-        Ok(val) => {
+        .Ok(val) => {
             let missing = val.get_field("x");
             testing.assert_eq(missing.array_len(), -1);
             missing.free(); // null-safe no-op
             val.free();
         },
-        Err(_) => panic("expected Ok for empty TOML"),
+        .Err(_) => panic("expected Ok for empty TOML"),
     }
 }
 
@@ -95,13 +95,13 @@ fn test_try_parse_simple_key_value() {
     // "x = 1" → table with integer field x.
     let r = toml.try_parse("x = 1");
     match r {
-        Ok(val) => {
+        .Ok(val) => {
             let f = val.get_field("x");
             testing.assert_eq(f.get_int(), 1);
             f.free();
             val.free();
         },
-        Err(_) => panic("expected Ok for simple TOML key-value"),
+        .Err(_) => panic("expected Ok for simple TOML key-value"),
     }
 }
 
@@ -111,7 +111,7 @@ fn test_parse_array_of_integers() {
     // "a = [1, 2, 3]" → root table; get_field("a") → array of 3 ints.
     let r = toml.try_parse("a = [1, 2, 3]");
     match r {
-        Ok(root) => {
+        .Ok(root) => {
             let a = root.get_field("a");
             testing.assert_eq(a.array_len(), 3);
             let v0 = a.array_get(0);
@@ -126,7 +126,7 @@ fn test_parse_array_of_integers() {
             a.free();
             root.free();
         },
-        Err(_) => panic("expected Ok for TOML integer array"),
+        .Err(_) => panic("expected Ok for TOML integer array"),
     }
 }
 
@@ -136,7 +136,7 @@ fn test_nested_table_dotted_key() {
     // [outer] x=1 [outer.inner] y=2 → walk outer → inner → y; free leaf-first.
     let r = toml.try_parse("[outer]\nx = 1\n[outer.inner]\ny = 2");
     match r {
-        Ok(root) => {
+        .Ok(root) => {
             let outer = root.get_field("outer");
             let inner = outer.get_field("inner");
             let y = inner.get_field("y");
@@ -147,7 +147,7 @@ fn test_nested_table_dotted_key() {
             outer.free();
             root.free();
         },
-        Err(_) => panic("expected Ok for nested TOML table"),
+        .Err(_) => panic("expected Ok for nested TOML table"),
     }
 }
 
@@ -157,7 +157,7 @@ fn test_array_of_tables_walk() {
     // [[items]] k=1 [[items]] k=2 → root.get_field("items") is an array.
     let r = toml.try_parse("[[items]]\nk = 1\n[[items]]\nk = 2");
     match r {
-        Ok(root) => {
+        .Ok(root) => {
             let items = root.get_field("items");
             testing.assert_eq(items.array_len(), 2);
             let item0 = items.array_get(0);
@@ -173,7 +173,7 @@ fn test_array_of_tables_walk() {
             items.free();
             root.free();
         },
-        Err(_) => panic("expected Ok for TOML array of tables"),
+        .Err(_) => panic("expected Ok for TOML array of tables"),
     }
 }
 
@@ -184,13 +184,13 @@ fn test_missing_field_handle_is_invalid() {
     // handle returns -1. free() is null-safe.
     let r = toml.try_parse("a = 1");
     match r {
-        Ok(root) => {
+        .Ok(root) => {
             let missing = root.get_field("nope");
             testing.assert_eq(missing.array_len(), -1);
             missing.free(); // null-safe no-op; call to document discipline
             root.free();
         },
-        Err(_) => panic("expected Ok"),
+        .Err(_) => panic("expected Ok"),
     }
 }
 
@@ -227,14 +227,14 @@ fn test_from_float_round_trip_via_table_field() {
     let s = tbl.stringify();
     let r = toml.try_parse(s);
     match r {
-        Ok(reparsed) => {
+        .Ok(reparsed) => {
             let f = reparsed.get_field("ratio");
             // 1.5 is exactly representable in IEEE 754; round-trip equality holds.
             testing.assert_true(f.get_float() == 1.5);
             f.free();
             reparsed.free();
         },
-        Err(_) => panic("stringify + reparse of float table failed"),
+        .Err(_) => panic("stringify + reparse of float table failed"),
     }
     tbl.free();
 }
@@ -246,8 +246,8 @@ fn test_try_stringify_rejects_a_root_toml_cannot_represent() {
     // string here would be a fabricated success.
     let val = toml.from_float(1.5);
     match toml.try_stringify(val) {
-        Ok(text) => panic(f"expected a bare float root to be rejected, got {text.len()} bytes"),
-        Err(reason) => testing.assert_true(reason.contains("unsupported")),
+        .Ok(text) => panic(f"expected a bare float root to be rejected, got {text.len()} bytes"),
+        .Err(reason) => testing.assert_true(reason.contains("unsupported")),
     }
     val.free();
 }
@@ -256,8 +256,8 @@ fn test_try_stringify_rejects_a_root_toml_cannot_represent() {
 fn test_try_stringify_rejects_a_bare_integer_root() {
     let val = toml.from_int(7);
     match toml.try_stringify(val) {
-        Ok(text) => panic(f"expected a bare integer root to be rejected, got {text.len()} bytes"),
-        Err(reason) => testing.assert_gt(reason.len(), 0),
+        .Ok(text) => panic(f"expected a bare integer root to be rejected, got {text.len()} bytes"),
+        .Err(reason) => testing.assert_gt(reason.len(), 0),
     }
     val.free();
 }
@@ -267,8 +267,8 @@ fn test_try_stringify_rejects_a_bare_array_root() {
     let val = toml.array();
     val.push_int(1);
     match toml.try_stringify(val) {
-        Ok(text) => panic(f"expected a bare array root to be rejected, got {text.len()} bytes"),
-        Err(reason) => testing.assert_gt(reason.len(), 0),
+        .Ok(text) => panic(f"expected a bare array root to be rejected, got {text.len()} bytes"),
+        .Err(reason) => testing.assert_gt(reason.len(), 0),
     }
     val.free();
 }
@@ -279,8 +279,8 @@ fn test_try_stringify_of_an_empty_table_is_a_valid_empty_document() {
     // real: an empty table is a well-formed, empty TOML document.
     let tbl = toml.table();
     match toml.try_stringify(tbl) {
-        Ok(text) => testing.assert_eq(text.len(), 0),
-        Err(reason) => panic(f"an empty table is a valid TOML document: {reason}"),
+        .Ok(text) => testing.assert_eq(text.len(), 0),
+        .Err(reason) => panic(f"an empty table is a valid TOML document: {reason}"),
     }
     tbl.free();
 }
@@ -290,8 +290,8 @@ fn test_try_stringify_preserves_a_populated_table() {
     let tbl = toml.table();
     tbl.with_int("n", 42);
     match toml.try_stringify(tbl) {
-        Ok(text) => testing.assert_eq_str(text, "n = 42\n"),
-        Err(reason) => panic(f"a populated table must serialize: {reason}"),
+        .Ok(text) => testing.assert_eq_str(text, "n = 42\n"),
+        .Err(reason) => panic(f"a populated table must serialize: {reason}"),
     }
     tbl.free();
 }
@@ -300,14 +300,14 @@ fn test_try_stringify_preserves_a_populated_table() {
 fn test_stringify_failure_does_not_leak_into_the_next_call() {
     let bad = toml.from_float(1.5);
     match toml.try_stringify(bad) {
-        Ok(_) => panic("expected a bare float root to be rejected"),
-        Err(_) => {},
+        .Ok(_) => panic("expected a bare float root to be rejected"),
+        .Err(_) => {},
     }
     bad.free();
     let tbl = toml.table();
     match toml.try_stringify(tbl) {
-        Ok(text) => testing.assert_eq(text.len(), 0),
-        Err(reason) => panic(f"a later valid call must not inherit the earlier failure: {reason}"),
+        .Ok(text) => testing.assert_eq(text.len(), 0),
+        .Err(reason) => panic(f"a later valid call must not inherit the earlier failure: {reason}"),
     }
     tbl.free();
 }
@@ -344,7 +344,7 @@ fn test_nested_builder_stringify_reparse() {
     let s = outer.stringify();
     let r = toml.try_parse(s);
     match r {
-        Ok(reparsed) => {
+        .Ok(reparsed) => {
             let inner_f = reparsed.get_field("inner");
             let v_f = inner_f.get_field("v");
             testing.assert_eq(v_f.get_int(), 9);
@@ -352,7 +352,7 @@ fn test_nested_builder_stringify_reparse() {
             inner_f.free();
             reparsed.free();
         },
-        Err(_) => panic("stringify + reparse of nested TOML table failed"),
+        .Err(_) => panic("stringify + reparse of nested TOML table failed"),
     }
     outer.free();
 }
@@ -363,11 +363,11 @@ fn test_try_parse_duplicate_key_returns_err() {
     // TOML forbids duplicate keys in the same table.
     let r = toml.try_parse("a = 1\na = 2");
     match r {
-        Ok(val) => {
+        .Ok(val) => {
             val.free();
             panic("expected Err for duplicate TOML key");
         },
-        Err(ParseError::Invalid(_)) => {},
+        .Err(ParseError.Invalid(_)) => {},
     }
 }
 

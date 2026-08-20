@@ -12,7 +12,7 @@ actor Holder {
 
     receive fn hold(v: LocalPid<Echo>) -> i64 {
         sleep(2ms);
-        match await v.take(1) { Ok(v_v) => println(f"echo {v_v}"), Err(_) => println("err"), }
+        match await v.take(1) { Result.Ok(v_v) => println(f"echo {v_v}"), Err(_) => println("err"), }
         ready = true;
         1
     }
@@ -22,7 +22,7 @@ fn main() {
     let x = spawn Echo(seen: 0);
     let h = spawn Holder(ready: false);
     match await h.hold(x) {
-        Ok(n) => println(f"held {n}"),
+        Result.Ok(n) => println(f"held {n}"),
         Err(_) => println("err"),
     }
 }

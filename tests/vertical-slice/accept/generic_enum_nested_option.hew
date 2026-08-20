@@ -1,19 +1,19 @@
-// Accept: nested generic enum — Option<Option<i64>> end-to-end lowering.
-// The HIR mono-pass must register both Option<i64> and Option<Option<i64>>
+// Accept: nested generic enum — Maybe<Maybe<i64>> end-to-end lowering.
+// The HIR mono-pass must register both Maybe<i64> and Maybe<Maybe<i64>>
 // layouts. Exit code 5 proves the nested Some arm was reached.
-enum Option<T> {
+enum Maybe<T> {
     Some(T);
     None;
 }
 
 fn main() -> i64 {
-    let inner: Option<i64> = Option::Some(5);
-    let outer: Option<Option<i64>> = Option::Some(inner);
+    let inner: Maybe<i64> = Maybe.Some(5);
+    let outer: Maybe<Maybe<i64>> = Maybe.Some(inner);
     match outer {
-        Option::Some(v) => match v {
-            Option::Some(n) => n,
-            Option::None => 0,
+        Maybe.Some(v) => match v {
+            Maybe.Some(n) => n,
+            Maybe.None => 0,
         },
-        Option::None => 0,
+        Maybe.None => 0,
     }
 }

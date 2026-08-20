@@ -12,7 +12,7 @@
 
 pub trait Container {
     type Item;
-    fn unwrap(self) -> Option<Self::Item>;
+    fn unwrap(self) -> Option<Self.Item>;
 }
 
 pub type Holder {

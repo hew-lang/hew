@@ -17,6 +17,8 @@ mod call_trait_method_static_creation_allowlist;
 mod closure_capture_lower;
 #[path = "lowering_calls/display_dispatch_lower.rs"]
 mod display_dispatch_lower;
+#[path = "lowering_calls/dotted_type_member_dispatch.rs"]
+mod dotted_type_member_dispatch;
 #[path = "lowering_calls/dyn_trait_type_annotation_lower.rs"]
 mod dyn_trait_type_annotation_lower;
 #[path = "lowering_calls/imported_free_fn_lower.rs"]

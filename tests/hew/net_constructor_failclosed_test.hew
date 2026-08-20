@@ -10,15 +10,15 @@
 //! binding `127.0.0.1:0`, read back, and either held (to force a conflict) or
 //! released (to force a refusal). No fixed port is held and nothing sleeps.
 
-import std::net;
+import std.net;
 
-import std::net::http;
+import std.net.http;
 
-import std::net::url;
+import std.net.url;
 
-import std::net::websocket;
+import std.net.websocket;
 
-import std::testing;
+import std.testing;
 
 /// Claim an ephemeral loopback port and release it.
 ///
@@ -26,12 +26,12 @@ import std::testing;
 /// immediately rather than waiting on a timeout.
 fn closed_loopback_port() -> i64 {
     match websocket.listen("127.0.0.1:0") {
-        Ok(server) => {
+        .Ok(server) => {
             let port = server.port();
             server.close();
             port
         },
-        Err(_err) => {
+        .Err(_err) => {
             panic("could not claim an ephemeral loopback port");
             0
         },
@@ -41,11 +41,11 @@ fn closed_loopback_port() -> i64 {
 #[test]
 fn test_http_listen_on_an_ephemeral_port_succeeds() {
     match http.listen("127.0.0.1:0") {
-        Ok(server) => {
+        .Ok(server) => {
             server.close();
             testing.assert_true(true);
         },
-        Err(_err) => {
+        .Err(_err) => {
             panic("expected an ephemeral loopback bind to succeed");
         },
     }
@@ -55,23 +55,23 @@ fn test_http_listen_on_an_ephemeral_port_succeeds() {
 #[test]
 fn test_http_listen_reports_a_bind_failure_instead_of_a_null_backed_server() {
     match websocket.listen("127.0.0.1:0") {
-        Ok(held) => {
+        .Ok(held) => {
             let port = held.port();
             let addr = f"127.0.0.1:{port}";
             match http.listen(addr) {
-                Ok(server) => {
+                .Ok(server) => {
                     server.close();
                     held.close();
                     panic("expected a bind to an occupied port to fail");
                 },
-                Err(err) => {
+                .Err(err) => {
                     held.close();
                     let reason = net.net_error_message(err);
                     testing.assert_true(reason.contains("AddressInUse"));
                 },
             }
         },
-        Err(_err) => {
+        .Err(_err) => {
             panic("could not claim an ephemeral loopback port");
         },
     }
@@ -80,13 +80,13 @@ fn test_http_listen_reports_a_bind_failure_instead_of_a_null_backed_server() {
 #[test]
 fn test_http_listen_reports_an_unparsable_address_as_a_failure() {
     match http.listen("not an address") {
-        Ok(server) => {
+        .Ok(server) => {
             server.close();
             panic("expected an unparsable address to be rejected");
         },
-        Err(err) => {
+        .Err(err) => {
             match err {
-                NetError::InvalidArgument(detail) => {
+                NetError.InvalidArgument(detail) => {
                     testing.assert_eq_str(detail, "http.listen: cannot bind `not an address`: invalid socket address");
                     testing.assert_eq_str(http.listen_error(), detail);
                 },
@@ -104,30 +104,30 @@ fn test_http_listen_clears_the_detail_slot_on_success() {
     // without reading the detail. That leaves the detail for this test to
     // observe, which is what makes the success clear checkable at all.
     match websocket.listen("127.0.0.1:0") {
-        Ok(held) => {
+        .Ok(held) => {
             let port = held.port();
             let addr = f"127.0.0.1:{port}";
             match http.listen(addr) {
-                Ok(server) => {
+                .Ok(server) => {
                     server.close();
                     held.close();
                     panic("expected a bind to an occupied port to fail");
                 },
-                Err(_err) => {
+                .Err(_err) => {
                     held.close();
                 },
             }
         },
-        Err(_err) => {
+        .Err(_err) => {
             panic("could not claim an ephemeral loopback port");
         },
     }
     match http.listen("127.0.0.1:0") {
-        Ok(server) => {
+        .Ok(server) => {
             server.close();
             testing.assert_eq_str(http.listen_error(), "");
         },
-        Err(_err) => {
+        .Err(_err) => {
             panic("expected an ephemeral loopback bind to succeed");
         },
     }
@@ -136,12 +136,12 @@ fn test_http_listen_clears_the_detail_slot_on_success() {
 #[test]
 fn test_websocket_listen_on_an_ephemeral_port_succeeds() {
     match websocket.listen("127.0.0.1:0") {
-        Ok(server) => {
+        .Ok(server) => {
             let port = server.port();
             server.close();
             testing.assert_true(port > 0);
         },
-        Err(_err) => {
+        .Err(_err) => {
             panic("expected an ephemeral loopback bind to succeed");
         },
     }
@@ -150,23 +150,23 @@ fn test_websocket_listen_on_an_ephemeral_port_succeeds() {
 #[test]
 fn test_websocket_listen_reports_a_bind_failure_instead_of_a_null_backed_server() {
     match websocket.listen("127.0.0.1:0") {
-        Ok(held) => {
+        .Ok(held) => {
             let port = held.port();
             let addr = f"127.0.0.1:{port}";
             match websocket.listen(addr) {
-                Ok(server) => {
+                .Ok(server) => {
                     server.close();
                     held.close();
                     panic("expected a bind to an occupied port to fail");
                 },
-                Err(err) => {
+                .Err(err) => {
                     held.close();
                     let reason = net.net_error_message(err);
                     testing.assert_true(reason.contains("AddressInUse"));
                 },
             }
         },
-        Err(_err) => {
+        .Err(_err) => {
             panic("could not claim an ephemeral loopback port");
         },
     }
@@ -175,13 +175,13 @@ fn test_websocket_listen_reports_a_bind_failure_instead_of_a_null_backed_server(
 #[test]
 fn test_websocket_listen_reports_an_unparsable_address_as_invalid_argument() {
     match websocket.listen("not an address") {
-        Ok(server) => {
+        .Ok(server) => {
             server.close();
             panic("expected an unparsable address to be rejected");
         },
-        Err(err) => {
+        .Err(err) => {
             match err {
-                NetError::InvalidArgument(detail) => {
+                NetError.InvalidArgument(detail) => {
                     testing.assert_eq_str(detail, "websocket.listen: cannot bind `not an address`");
                     testing.assert_eq_str(websocket.last_error(), detail);
                 },
@@ -198,13 +198,13 @@ fn test_websocket_connect_reports_a_refused_connection_as_a_failure() {
     let port = closed_loopback_port();
     let target = f"ws://127.0.0.1:{port}/";
     match websocket.connect(target) {
-        Ok(conn) => {
+        .Ok(conn) => {
             conn.close();
             panic("expected a connect to a closed port to fail");
         },
-        Err(err) => {
+        .Err(err) => {
             match err {
-                NetError::ConnectionRefused(_errno) => {
+                NetError.ConnectionRefused(_errno) => {
                     testing.assert_true(websocket.last_error().len() > 0);
                 },
                 _ => panic(f"expected ConnectionRefused, got {net.net_error_message(err)}"),
@@ -216,13 +216,13 @@ fn test_websocket_connect_reports_a_refused_connection_as_a_failure() {
 #[test]
 fn test_websocket_connect_reports_an_unparsable_url_as_a_failure() {
     match websocket.connect("not a url") {
-        Ok(conn) => {
+        .Ok(conn) => {
             conn.close();
             panic("expected an unparsable url to be rejected");
         },
-        Err(err) => {
+        .Err(err) => {
             match err {
-                NetError::InvalidArgument(detail) => {
+                NetError.InvalidArgument(detail) => {
                     testing.assert_eq_str(detail, "websocket.connect: HTTP format error: invalid uri character");
                     testing.assert_eq_str(websocket.last_error(), detail);
                 },
@@ -237,18 +237,18 @@ fn test_websocket_listen_clears_the_detail_slot_on_success() {
     let port = closed_loopback_port();
     let target = f"ws://127.0.0.1:{port}/";
     match websocket.connect(target) {
-        Ok(conn) => {
+        .Ok(conn) => {
             conn.close();
             panic("expected a connect to a closed port to fail");
         },
-        Err(_err) => {},
+        .Err(_err) => {},
     }
     match websocket.listen("127.0.0.1:0") {
-        Ok(server) => {
+        .Ok(server) => {
             server.close();
             testing.assert_eq_str(websocket.last_error(), "");
         },
-        Err(_err) => {
+        .Err(_err) => {
             panic("expected an ephemeral loopback bind to succeed");
         },
     }
@@ -258,11 +258,11 @@ fn test_websocket_listen_clears_the_detail_slot_on_success() {
 fn test_url_resolve_returns_the_joined_url() {
     let base = url.parse("https://example.com/a/b");
     match base.resolve("../c") {
-        Ok(joined) => {
+        .Ok(joined) => {
             testing.assert_eq_str(joined.to_string(), "https://example.com/c");
             joined.close();
         },
-        Err(_msg) => {
+        .Err(_msg) => {
             panic("expected a relative path to resolve");
         },
     }
@@ -274,11 +274,11 @@ fn test_url_resolve_returns_the_joined_url() {
 fn test_url_resolve_reports_an_unresolvable_path_as_a_failure() {
     let base = url.parse("https://example.com/a/b");
     match base.resolve("http://[") {
-        Ok(joined) => {
+        .Ok(joined) => {
             joined.close();
             panic("expected an unresolvable path to be rejected");
         },
-        Err(msg) => {
+        .Err(msg) => {
             testing.assert_true(msg.contains("cannot resolve"));
         },
     }

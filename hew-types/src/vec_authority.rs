@@ -195,6 +195,7 @@ pub fn classify_element_with(
         Ty::F32 => VecElementToken::F32,
         Ty::F64 => VecElementToken::F64,
         Ty::String => VecElementToken::Str,
+        Ty::TraitObject { .. } => VecElementToken::Layout,
         Ty::Tuple(_) => VecElementToken::Layout,
         // `Option<T>` / `Result<T, E>` lower to an inline tagged-union value
         // (a fixed-size `{ tag, payload }` struct), exactly like a user

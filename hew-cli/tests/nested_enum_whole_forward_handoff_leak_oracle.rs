@@ -58,7 +58,7 @@ enum TupleOuter {
 }
 
 fn whole(i: i64) -> i64 {
-    let outer = Outer::Wrap(Inner::Text(f"whole-{i}"));
+    let outer = Outer.Wrap(Inner.Text(f"whole-{i}"));
     match outer {
         Wrap(st) => {
             let w = st;
@@ -72,7 +72,7 @@ fn whole(i: i64) -> i64 {
 }
 
 fn direct(i: i64) -> i64 {
-    let outer = Outer::Wrap(Inner::Text(f"direct-{i}"));
+    let outer = Outer.Wrap(Inner.Text(f"direct-{i}"));
     match outer {
         Wrap(st) => match st {
             Text(s) => s.len(),
@@ -83,7 +83,7 @@ fn direct(i: i64) -> i64 {
 }
 
 fn depth_two(i: i64) -> i64 {
-    let outer = DeepOuter::Wrap(Middle::Wrap(Inner::Text(f"deep-{i}")));
+    let outer = DeepOuter.Wrap(Middle.Wrap(Inner.Text(f"deep-{i}")));
     match outer {
         Wrap(mid) => match mid {
             Wrap(st) => match st {
@@ -97,8 +97,8 @@ fn depth_two(i: i64) -> i64 {
 }
 
 fn record_field(i: i64) -> i64 {
-    let outer = RecordOuter::Wrap(Holder {
-        value: Inner::Text(f"record-{i}"),
+    let outer = RecordOuter.Wrap(Holder {
+        value: Inner.Text(f"record-{i}"),
         sibling: i,
     });
     match outer {
@@ -114,7 +114,7 @@ fn record_field(i: i64) -> i64 {
 }
 
 fn tuple_field(i: i64) -> i64 {
-    let outer = TupleOuter::Wrap((Inner::Text(f"tuple-{i}"), i));
+    let outer = TupleOuter.Wrap((Inner.Text(f"tuple-{i}"), i));
     match outer {
         Wrap(st) => {
             let w = st.0;

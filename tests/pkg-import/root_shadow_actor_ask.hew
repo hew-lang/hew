@@ -3,7 +3,7 @@
 // `rootreply.Payload` (two distinct qualified identities share the bare name);
 // the checker/HIR collision set must include the root declarant so the ask
 // reply carries the same qualified identity and reads the right layout.
-import hew::rootreply;
+import hew.rootreply;
 
 // Root's own `Payload` with a DIVERGENT field set (`tag`, not `code`).
 type Payload {

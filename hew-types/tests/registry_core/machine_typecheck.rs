@@ -710,8 +710,8 @@ fn machine_step_dispatch() {
         }
 
         fn main() {
-            var light: Light = Light::Off;
-            light.step(LightEvent::Toggle);
+            var light: Light = Light.Off;
+            light.step(LightEvent.Toggle);
             let name: string = light.state_name();
             let _ = name;
         }
@@ -776,8 +776,8 @@ fn machine_step_suppresses_unused_mut_warning() {
         }
 
         fn main() {
-            var light: Light = Light::Off;
-            light.step(LightEvent::Toggle);
+            var light: Light = Light.Off;
+            light.step(LightEvent.Toggle);
         }
         ",
     );
@@ -813,8 +813,8 @@ fn machine_step_on_let_receiver_is_rejected() {
         }
 
         fn main() {
-            let light: Light = Light::Off;
-            light.step(LightEvent::Toggle);
+            let light: Light = Light.Off;
+            light.step(LightEvent.Toggle);
         }
         ",
     );
@@ -849,8 +849,8 @@ fn machine_state_pattern_match_uses_variant_infrastructure() {
 
         fn seq_or_zero(state: TcpState) -> i64 {
             match state {
-                TcpState::Closed => 0,
-                TcpState::Established { seq } => seq,
+                TcpState.Closed => 0,
+                TcpState.Established { seq } => seq,
             }
         }
         ",
@@ -894,11 +894,11 @@ fn generic_machine_threads_type_params_into_state_event_and_step() {
         }
 
         fn main() {
-            var lifecycle: Lifecycle<i64> = Lifecycle::Loaded { value: 1 };
-            lifecycle.step(LifecycleEvent::Load { value: 2 });
+            var lifecycle: Lifecycle<i64> = Lifecycle.Loaded { value: 1 };
+            lifecycle.step(LifecycleEvent.Load { value: 2 });
             let value: i64 = match lifecycle {
-                Lifecycle::Empty => 0,
-                Lifecycle::Loaded { value } => value,
+                Lifecycle.Empty => 0,
+                Lifecycle.Loaded { value } => value,
             };
             let _ = value;
         }
@@ -1000,9 +1000,9 @@ fn machine_event_match_outside_transition_rejected() {
         }
 
         fn main() {
-            let event: LightEvent = LightEvent::Toggle;
+            let event: LightEvent = LightEvent.Toggle;
             let _: i64 = match event {
-                LightEvent::Toggle => 1,
+                LightEvent.Toggle => 1,
             };
         }
         ",
@@ -1095,10 +1095,10 @@ fn imported_machine_unit_state_constructor_resolves() {
 
     // Machine TypeDef must be populated with state variants
     assert!(
-        output.type_defs.contains_key("Traffic"),
-        "machine type 'Traffic' must be registered in type_defs for the import path"
+        output.type_defs.contains_key("lights.Traffic"),
+        "imported machine registration must preserve its exact source owner"
     );
-    let td = &output.type_defs["Traffic"];
+    let td = &output.type_defs["lights.Traffic"];
     assert!(
         td.variants.contains_key("Red"),
         "state variant 'Red' must appear in Traffic TypeDef"
@@ -1110,8 +1110,26 @@ fn imported_machine_unit_state_constructor_resolves() {
 
     // Companion event enum must also be registered
     assert!(
-        output.type_defs.contains_key("TrafficEvent"),
-        "companion event enum 'TrafficEvent' must be registered for the import path"
+        output.type_defs.contains_key("lights.TrafficEvent"),
+        "imported event registration must preserve its exact source owner"
+    );
+    assert_eq!(
+        output.fn_sigs["Red"].return_type,
+        Ty::Named {
+            builtin: None,
+            name: "lights.Traffic".to_string(),
+            args: vec![],
+        },
+        "an imported state constructor must return the exact machine identity"
+    );
+    assert_eq!(
+        output.type_defs["lights.Traffic"].methods["step"].params,
+        vec![Ty::Named {
+            builtin: None,
+            name: "lights.TrafficEvent".to_string(),
+            args: vec![],
+        }],
+        "an imported step method must accept the exact companion event identity"
     );
 }
 
@@ -1282,7 +1300,7 @@ fn imported_generic_machine_type_params_survive_registration() {
 
     let td = output
         .type_defs
-        .get("Worker")
+        .get("workers.Worker")
         .expect("generic machine 'Worker' must be registered via the non-root module path");
     assert_eq!(
         td.type_params,
@@ -1291,7 +1309,7 @@ fn imported_generic_machine_type_params_survive_registration() {
     );
     let event_td = output
         .type_defs
-        .get("WorkerEvent")
+        .get("workers.WorkerEvent")
         .expect("companion event enum 'WorkerEvent' must be registered");
     assert_eq!(
         event_td.type_params,

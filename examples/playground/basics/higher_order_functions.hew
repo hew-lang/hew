@@ -9,9 +9,9 @@ enum Operation {
 
 fn apply(op: Operation, x: i64) -> i64 {
     match op {
-        Double => x * 2,
-        Square => x * x,
-        Negate => 0 - x,
+        .Double => x * 2,
+        .Square => x * x,
+        .Negate => 0 - x,
     }
 }
 
@@ -20,8 +20,8 @@ fn compose(a: Operation, b: Operation, x: i64) -> i64 {
 }
 
 fn main() {
-    println(f"double(5)          = {apply(Double, 5)}");
-    println(f"square(5)          = {apply(Square, 5)}");
-    println(f"negate(7)          = {apply(Negate, 7)}");
-    println(f"double then square = {compose(Double, Square, 3)}");
+    println(f"double(5)          = {apply(.Double, 5)}");
+    println(f"square(5)          = {apply(.Square, 5)}");
+    println(f"negate(7)          = {apply(.Negate, 7)}");
+    println(f"double then square = {compose(.Double, .Square, 3)}");
 }

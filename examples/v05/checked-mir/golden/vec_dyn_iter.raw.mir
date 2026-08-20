@@ -1,0 +1,4307 @@
+fn Person::label_size(Person) -> i64 [conv=default]
+  locals:
+    _0: Person
+    _1: string
+    _2: i64
+  bb0:
+    stmt: use BindingId(0) val site=SiteId(2) ty=Person intent=Read
+    _1 = _0.field[0]
+    _2 = call hew_string_length(_1) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(0)) ty=i64
+    drop _1 ty=string fn=release(hew_string_drop)
+    ret = move _2
+    return
+
+fn Parcel::label_size(Parcel) -> i64 [conv=default]
+  locals:
+    _0: Parcel
+    _1: string
+    _2: i64
+  bb0:
+    stmt: use BindingId(1) val site=SiteId(6) ty=Parcel intent=Read
+    _1 = _0.field[0]
+    _2 = call hew_string_length(_1) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(4)) ty=i64
+    drop _1 ty=string fn=release(hew_string_drop)
+    ret = move _2
+    return
+
+fn make_person(string) -> dyn Labeled [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: string
+    _3: Person
+    _4: dyn Labeled
+    _5: dyn Labeled
+  bb0:
+    stmt: use BindingId(2) seed site=SiteId(10) ty=string intent=Read
+    _1 = const.i64 3
+    _2 = call std$string$repeat(_0, _1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(9) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(8) ty=Person
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(13) ty=dyn Labeled
+    stmt: bind BindingId(3) erased site=SiteId(13) ty=dyn Labeled
+    stmt: use BindingId(3) erased site=SiteId(14) ty=dyn Labeled intent=Read
+    stmt: return site=Some(SiteId(14)) ty=dyn Labeled
+    _3 = record_init Person { .0=_2 }
+    _4 = coerce_dyn _3 trait=Labeled concrete=Person methods=[label_size=Person::label_size]
+    _5 = move _4
+    ret = move _5
+    return
+
+fn make_parcel(string) -> dyn Labeled [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: string
+    _3: Parcel
+    _4: dyn Labeled
+    _5: dyn Labeled
+  bb0:
+    stmt: use BindingId(4) seed site=SiteId(17) ty=string intent=Read
+    _1 = const.i64 5
+    _2 = call std$string$repeat(_0, _1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(16) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(15) ty=Parcel
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(20) ty=dyn Labeled
+    stmt: bind BindingId(5) erased site=SiteId(20) ty=dyn Labeled
+    stmt: use BindingId(5) erased site=SiteId(21) ty=dyn Labeled intent=Read
+    stmt: return site=Some(SiteId(21)) ty=dyn Labeled
+    _3 = record_init Parcel { .0=_2 }
+    _4 = coerce_dyn _3 trait=Labeled concrete=Parcel methods=[label_size=Parcel::label_size]
+    _5 = move _4
+    ret = move _5
+    return
+
+fn main() -> () [conv=default]
+  locals:
+    _0: Vec<dyn Labeled>
+    _1: Vec<dyn Labeled>
+    _2: string
+    _3: dyn Labeled
+    _4: string
+    _5: dyn Labeled
+    _6: string
+    _7: dyn Labeled
+    _8: i64
+    _9: i64
+    _10: i64
+    _11: i64
+    _12: VecIter<dyn Labeled>
+    _13: i64
+    _14: VecIter<dyn Labeled>
+    _15: ()
+    _16: Option<dyn Labeled>
+    _17: i64
+    _18: Vec<dyn Labeled>
+    _19: i64
+    _20: bool
+    _21: Option<dyn Labeled>
+    _22: i64
+    _23: Option<dyn Labeled>
+    _24: Vec<dyn Labeled>
+    _25: i64
+    _26: Option<dyn Labeled>
+    _27: Option<dyn Labeled>
+    _28: i64
+    _29: i64
+    _30: i64
+    _31: bool
+    _32: Option<dyn Labeled>
+    _33: Option<dyn Labeled>
+    _34: i64
+    _35: i64
+    _36: bool
+    _37: i64
+    _38: bool
+    _39: dyn Labeled
+    _40: i64
+    _41: i64
+    _42: bool
+    _43: i64
+    _44: bool
+    _45: Vec<dyn Labeled>
+    _46: Vec<dyn Labeled>
+    _47: string
+    _48: dyn Labeled
+    _49: string
+    _50: dyn Labeled
+    _51: i64
+    _52: i64
+    _53: i64
+    _54: i64
+    _55: VecIter<dyn Labeled>
+    _56: i64
+    _57: VecIter<dyn Labeled>
+    _58: ()
+    _59: Option<dyn Labeled>
+    _60: i64
+    _61: Vec<dyn Labeled>
+    _62: i64
+    _63: bool
+    _64: Option<dyn Labeled>
+    _65: i64
+    _66: Option<dyn Labeled>
+    _67: Vec<dyn Labeled>
+    _68: i64
+    _69: Option<dyn Labeled>
+    _70: Option<dyn Labeled>
+    _71: i64
+    _72: i64
+    _73: i64
+    _74: bool
+    _75: Option<dyn Labeled>
+    _76: Option<dyn Labeled>
+    _77: i64
+    _78: i64
+    _79: bool
+    _80: i64
+    _81: bool
+    _82: dyn Labeled
+    _83: i64
+    _84: i64
+    _85: bool
+    _86: i64
+    _87: bool
+  bb0:
+    _0 = call Vec::new() [authority=Runtime(VecNew)] -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(22) ty=Vec<dyn Labeled>
+    stmt: bind BindingId(6) values site=SiteId(22) ty=Vec<dyn Labeled>
+    stmt: use BindingId(6) values site=SiteId(25) ty=Vec<dyn Labeled> intent=Read
+    _1 = move _0
+    _2 = string_lit "p"
+    _3 = call make_person(_2) -> bb2
+  bb2:
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(26) ty=dyn Labeled
+    call hew_vec_push_owned_move(_1, _3) [authority=Runtime(VecPushOwnedMove)] -> bb3
+  bb3:
+    stmt: eval site=SiteId(24) ty=()
+    stmt: use BindingId(6) values site=SiteId(30) ty=Vec<dyn Labeled> intent=Read
+    _4 = string_lit "q"
+    _5 = call make_parcel(_4) -> bb4
+  bb4:
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(31) ty=dyn Labeled
+    call hew_vec_push_owned_move(_1, _5) [authority=Runtime(VecPushOwnedMove)] -> bb5
+  bb5:
+    stmt: eval site=SiteId(29) ty=()
+    stmt: use BindingId(6) values site=SiteId(35) ty=Vec<dyn Labeled> intent=Read
+    _6 = string_lit "r"
+    _7 = call make_person(_6) -> bb6
+  bb6:
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(36) ty=dyn Labeled
+    call hew_vec_push_owned_move(_1, _7) [authority=Runtime(VecPushOwnedMove)] -> bb7
+  bb7:
+    stmt: eval site=SiteId(34) ty=()
+    stmt: bind BindingId(7) total site=SiteId(39) ty=i64
+    stmt: use BindingId(6) values site=SiteId(41) ty=Vec<dyn Labeled> intent=Consume
+    stmt: agg_alias BindingId(6) values site=SiteId(41) ty=Vec<dyn Labeled>
+    stmt: bind BindingId(9) __hew_for_iter_8 site=SiteId(40) ty=VecIter<dyn Labeled>
+    _8 = const.i64 0
+    _9 = move _8
+    _10 = const.i64 0
+    _11 = const.i64 0
+    _12 = record_init VecIter<dyn Labeled> { .0=_1, .1=_11 }
+    _13 = move _10
+    _14 = move _12
+    goto bb8
+  bb8:
+    stmt: use BindingId(9) __hew_for_iter_8 site=SiteId(45) ty=VecIter<dyn Labeled> intent=Read
+    stmt: use BindingId(9) __hew_for_iter_8 site=SiteId(47) ty=VecIter<dyn Labeled> intent=Read
+    _17 = _14.field[1]
+    _18 = _14.field[0]
+    _19 = call hew_vec_len(_18) [authority=Runtime(VecLen)] -> bb10
+  bb9:
+    stmt: eval site=SiteId(76) ty=()
+    _43 = const.i64 0
+    _44 = icmp.eq _13 _43
+    branch _44 ? bb25 : bb26
+  bb10:
+    _20 = icmp.sge _17 _19
+    branch _20 ? bb11 : bb12
+  bb11:
+    _22 = const.i64 1
+    mtag21 = move _22
+    _23 = move _21
+    _16 = move _23
+    goto bb13
+  bb12:
+    stmt: use BindingId(9) __hew_for_iter_8 site=SiteId(53) ty=VecIter<dyn Labeled> intent=Read
+    stmt: use BindingId(9) __hew_for_iter_8 site=SiteId(55) ty=VecIter<dyn Labeled> intent=Read
+    _24 = _14.field[0]
+    _25 = _14.field[1]
+    _26 = call hew_vec_take_owned(_24, _25) [authority=Runtime(VecGet(Take))] -> bb14
+  bb13:
+    _33 = move _16
+    _34 = move etag33
+    _35 = const.i64 0
+    _36 = icmp.eq _34 _35
+    branch _36 ? bb18 : bb21
+  bb14:
+    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(57) ty=Option<dyn Labeled>
+    stmt: bind BindingId(11) __hew_iter_value_10 site=SiteId(57) ty=Option<dyn Labeled>
+    stmt: use BindingId(9) __hew_for_iter_8 site=SiteId(60) ty=VecIter<dyn Labeled> intent=Read
+    _27 = move _26
+    _28 = _14.field[1]
+    _29 = const.i64 1
+    _30 ovf=_31 = add.checked.s _28 _29
+    branch _31 ? bb15 : bb16
+  bb15:
+    trap(IntegerOverflow)
+  bb16:
+    stmt: use BindingId(9) __hew_for_iter_8 site=SiteId(58) ty=VecIter<dyn Labeled> intent=Modify
+    stmt: eval site=SiteId(63) ty=()
+    stmt: use BindingId(11) __hew_iter_value_10 site=SiteId(64) ty=Option<dyn Labeled> intent=Consume
+    _14.field[1] = _30
+    _32 = move _27
+    _16 = move _32
+    goto bb13
+  bb17:
+    stmt: eval site=SiteId(75) ty=()
+    goto bb8
+  bb18:
+    stmt: bind BindingId(12) value site=SiteId(73) ty=dyn Labeled
+    stmt: use BindingId(7) total site=SiteId(70) ty=i64 intent=Read
+    stmt: use BindingId(12) value site=SiteId(72) ty=dyn Labeled intent=Read
+    _39 = move mvar33.0.0
+    _40 = call_trait Labeled::label_size[slot=3] _39 ()
+    _41 ovf=_42 = add.checked.s _9 _40
+    branch _42 ? bb22 : bb23
+  bb19:
+    goto bb9
+  bb20:
+    trap(ExhaustivenessFallthrough)
+  bb21:
+    _37 = const.i64 1
+    _38 = icmp.eq _34 _37
+    branch _38 ? bb19 : bb20
+  bb22:
+    trap(IntegerOverflow)
+  bb23:
+    stmt: bind BindingId(7) total site=SiteId(68) ty=i64
+    stmt: eval site=SiteId(69) ty=()
+    _9 = move _41
+    goto bb17
+  bb24:
+    goto bb17
+  bb25:
+    drop_field _14.field[0] ty=Vec<dyn Labeled> fn=Release("hew_vec_free_owned")
+    _13 = const.i64 1
+    goto bb26
+  bb26:
+    stmt: eval site=SiteId(77) ty=()
+    stmt: use BindingId(7) total site=SiteId(79) ty=i64 intent=Read
+    call println_i64(_9) -> bb27
+  bb27:
+    stmt: eval site=SiteId(78) ty=()
+    _45 = call Vec::new() [authority=Runtime(VecNew)] -> bb28
+  bb28:
+    stmt: bind BindingId(4294967226) __hew_produced_value site=SiteId(81) ty=Vec<dyn Labeled>
+    stmt: bind BindingId(13) partial site=SiteId(81) ty=Vec<dyn Labeled>
+    stmt: use BindingId(13) partial site=SiteId(84) ty=Vec<dyn Labeled> intent=Read
+    _46 = move _45
+    _47 = string_lit "a"
+    _48 = call make_person(_47) -> bb29
+  bb29:
+    stmt: bind BindingId(4294967225) __hew_produced_value site=SiteId(85) ty=dyn Labeled
+    call hew_vec_push_owned_move(_46, _48) [authority=Runtime(VecPushOwnedMove)] -> bb30
+  bb30:
+    stmt: eval site=SiteId(83) ty=()
+    stmt: use BindingId(13) partial site=SiteId(89) ty=Vec<dyn Labeled> intent=Read
+    _49 = string_lit "b"
+    _50 = call make_parcel(_49) -> bb31
+  bb31:
+    stmt: bind BindingId(4294967224) __hew_produced_value site=SiteId(90) ty=dyn Labeled
+    call hew_vec_push_owned_move(_46, _50) [authority=Runtime(VecPushOwnedMove)] -> bb32
+  bb32:
+    stmt: eval site=SiteId(88) ty=()
+    stmt: bind BindingId(14) seen site=SiteId(93) ty=i64
+    stmt: use BindingId(13) partial site=SiteId(95) ty=Vec<dyn Labeled> intent=Consume
+    stmt: agg_alias BindingId(13) partial site=SiteId(95) ty=Vec<dyn Labeled>
+    stmt: bind BindingId(16) __hew_for_iter_15 site=SiteId(94) ty=VecIter<dyn Labeled>
+    _51 = const.i64 0
+    _52 = move _51
+    _53 = const.i64 0
+    _54 = const.i64 0
+    _55 = record_init VecIter<dyn Labeled> { .0=_46, .1=_54 }
+    _56 = move _53
+    _57 = move _55
+    goto bb33
+  bb33:
+    stmt: use BindingId(16) __hew_for_iter_15 site=SiteId(99) ty=VecIter<dyn Labeled> intent=Read
+    stmt: use BindingId(16) __hew_for_iter_15 site=SiteId(101) ty=VecIter<dyn Labeled> intent=Read
+    _60 = _57.field[1]
+    _61 = _57.field[0]
+    _62 = call hew_vec_len(_61) [authority=Runtime(VecLen)] -> bb35
+  bb34:
+    stmt: eval site=SiteId(131) ty=()
+    _86 = const.i64 0
+    _87 = icmp.eq _56 _86
+    branch _87 ? bb51 : bb52
+  bb35:
+    _63 = icmp.sge _60 _62
+    branch _63 ? bb36 : bb37
+  bb36:
+    _65 = const.i64 1
+    mtag64 = move _65
+    _66 = move _64
+    _59 = move _66
+    goto bb38
+  bb37:
+    stmt: use BindingId(16) __hew_for_iter_15 site=SiteId(107) ty=VecIter<dyn Labeled> intent=Read
+    stmt: use BindingId(16) __hew_for_iter_15 site=SiteId(109) ty=VecIter<dyn Labeled> intent=Read
+    _67 = _57.field[0]
+    _68 = _57.field[1]
+    _69 = call hew_vec_take_owned(_67, _68) [authority=Runtime(VecGet(Take))] -> bb39
+  bb38:
+    _76 = move _59
+    _77 = move etag76
+    _78 = const.i64 0
+    _79 = icmp.eq _77 _78
+    branch _79 ? bb43 : bb46
+  bb39:
+    stmt: bind BindingId(4294967223) __hew_produced_value site=SiteId(111) ty=Option<dyn Labeled>
+    stmt: bind BindingId(18) __hew_iter_value_17 site=SiteId(111) ty=Option<dyn Labeled>
+    stmt: use BindingId(16) __hew_for_iter_15 site=SiteId(114) ty=VecIter<dyn Labeled> intent=Read
+    _70 = move _69
+    _71 = _57.field[1]
+    _72 = const.i64 1
+    _73 ovf=_74 = add.checked.s _71 _72
+    branch _74 ? bb40 : bb41
+  bb40:
+    trap(IntegerOverflow)
+  bb41:
+    stmt: use BindingId(16) __hew_for_iter_15 site=SiteId(112) ty=VecIter<dyn Labeled> intent=Modify
+    stmt: eval site=SiteId(117) ty=()
+    stmt: use BindingId(18) __hew_iter_value_17 site=SiteId(118) ty=Option<dyn Labeled> intent=Consume
+    _57.field[1] = _73
+    _75 = move _70
+    _59 = move _75
+    goto bb38
+  bb42:
+    stmt: eval site=SiteId(130) ty=()
+    goto bb33
+  bb43:
+    stmt: bind BindingId(19) value site=SiteId(128) ty=dyn Labeled
+    stmt: use BindingId(14) seen site=SiteId(124) ty=i64 intent=Read
+    stmt: use BindingId(19) value site=SiteId(126) ty=dyn Labeled intent=Read
+    _82 = move mvar76.0.0
+    _83 = call_trait Labeled::label_size[slot=3] _82 ()
+    _84 ovf=_85 = add.checked.s _52 _83
+    branch _85 ? bb47 : bb48
+  bb44:
+    goto bb34
+  bb45:
+    trap(ExhaustivenessFallthrough)
+  bb46:
+    _80 = const.i64 1
+    _81 = icmp.eq _77 _80
+    branch _81 ? bb44 : bb45
+  bb47:
+    trap(IntegerOverflow)
+  bb48:
+    stmt: bind BindingId(14) seen site=SiteId(122) ty=i64
+    stmt: eval site=SiteId(123) ty=()
+    _52 = move _84
+    goto bb34
+  bb49:
+    stmt: eval site=SiteId(127) ty=()
+    goto bb42
+  bb50:
+    goto bb42
+  bb51:
+    drop_field _57.field[0] ty=Vec<dyn Labeled> fn=Release("hew_vec_free_owned")
+    _56 = const.i64 1
+    goto bb52
+  bb52:
+    stmt: eval site=SiteId(132) ty=()
+    stmt: use BindingId(14) seen site=SiteId(134) ty=i64 intent=Read
+    call println_i64(_52) -> bb53
+  bb53:
+    stmt: eval site=SiteId(133) ty=()
+    return
+
+fn std$string$from_int(i64) -> string [conv=default]
+  locals:
+    _0: i64
+    _1: string
+  bb0:
+    stmt: use BindingId(20) n site=SiteId(137) ty=i64 intent=Read
+    _1 = call hew_i64_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(136) ty=string
+    stmt: return site=Some(SiteId(136)) ty=string
+    ret = move _1
+    return
+
+fn std$string$from_float(f64) -> string [conv=default]
+  locals:
+    _0: f64
+    _1: string
+  bb0:
+    stmt: use BindingId(21) f site=SiteId(141) ty=f64 intent=Read
+    _1 = call hew_float_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(140) ty=string
+    stmt: return site=Some(SiteId(140)) ty=string
+    ret = move _1
+    return
+
+fn std$string$from_bool(bool) -> string [conv=default]
+  locals:
+    _0: bool
+    _1: string
+    _2: string
+    _3: string
+    _4: string
+    _5: string
+  bb0:
+    stmt: use BindingId(22) b site=SiteId(145) ty=bool intent=Read
+    branch _0 ? bb1 : bb2
+  bb1:
+    _2 = string_lit "true"
+    _3 = move _2
+    _1 = move _3
+    goto bb3
+  bb2:
+    _4 = string_lit "false"
+    _5 = move _4
+    _1 = move _5
+    goto bb3
+  bb3:
+    stmt: return site=Some(SiteId(144)) ty=string
+    ret = move _1
+    return
+
+fn std$string$from_char(i64) -> string [conv=default]
+  locals:
+    _0: i64
+    _1: ()
+    _2: bool
+    _3: bool
+    _4: i64
+    _5: bool
+    _6: i64
+    _7: bool
+    _8: bool
+    _9: i64
+    _10: bool
+    _11: i64
+    _12: bool
+    _13: string
+    _14: string
+    _15: string
+    _16: i32
+    _17: string
+    _18: string
+  bb0:
+    stmt: use BindingId(23) code site=SiteId(153) ty=i64 intent=Read
+    _2 = const.i64 1
+    _3 = const.i64 1
+    _4 = const.i64 0
+    _5 = icmp.slt _0 _4
+    branch _5 ? bb2 : bb1
+  bb1:
+    stmt: use BindingId(23) code site=SiteId(156) ty=i64 intent=Read
+    _6 = const.i64 1114111
+    _7 = icmp.sgt _0 _6
+    _3 = move _7
+    goto bb2
+  bb2:
+    branch _3 ? bb4 : bb3
+  bb3:
+    stmt: use BindingId(23) code site=SiteId(160) ty=i64 intent=Read
+    _8 = const.i64 0
+    _9 = const.i64 55296
+    _10 = icmp.sge _0 _9
+    branch _10 ? bb5 : bb6
+  bb4:
+    branch _2 ? bb7 : bb8
+  bb5:
+    stmt: use BindingId(23) code site=SiteId(163) ty=i64 intent=Read
+    _11 = const.i64 57343
+    _12 = icmp.sle _0 _11
+    _8 = move _12
+    goto bb6
+  bb6:
+    _2 = move _8
+    goto bb4
+  bb7:
+    stmt: use BindingId(23) code site=SiteId(168) ty=i64 intent=Read
+    _13 = string_lit "string.from_char: invalid Unicode scalar value "
+    _14 = call hew_i64_to_string(_0) -> bb10
+  bb8:
+    goto bb9
+  bb9:
+    stmt: eval site=SiteId(175) ty=()
+    stmt: use BindingId(23) code site=SiteId(179) ty=i64 intent=Read
+    _16 = cast _0 i64 -> i32
+    _17 = call hew_char_to_string(_16) -> bb12
+  bb10:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(170) ty=string
+    stmt: bind BindingId(4294967230) __hew_temp_arg site=SiteId(166) ty=string
+    _15 = call_rt hew_string_concat(_13, _14)
+    drop _14 ty=string fn=release(hew_string_drop)
+    call hew_panic_msg(_15) -> bb11
+  bb11:
+    stmt: eval site=SiteId(165) ty=!
+    goto bb9
+  bb12:
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(177) ty=string
+    stmt: return site=Some(SiteId(176)) ty=string
+    _18 = move _17
+    ret = move _18
+    return
+
+fn std$string$to_int(string) -> Option<i64> [conv=default]
+  locals:
+    _0: string
+    _1: Option<i64>
+    _2: Result<i64, string>
+    _3: i64
+    _4: i64
+    _5: bool
+    _6: i64
+    _7: bool
+    _8: i64
+    _9: Option<i64>
+    _10: i64
+    _11: Option<i64>
+    _12: i64
+  bb0:
+    stmt: use BindingId(24) s site=SiteId(183) ty=string intent=Read
+    _2 = call std$string$try_to_int(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(182) ty=Result<i64, string>
+    _3 = move etag2
+    _4 = const.i64 0
+    _5 = icmp.eq _3 _4
+    branch _5 ? bb3 : bb6
+  bb2:
+    stmt: return site=Some(SiteId(181)) ty=Option<i64>
+    ret = move _1
+    return
+  bb3:
+    stmt: bind BindingId(25) value site=SiteId(185) ty=i64
+    stmt: use BindingId(25) value site=SiteId(186) ty=i64 intent=Read
+    _8 = move mvar2.0.0
+    _10 = const.i64 0
+    mtag9 = move _10
+    string.retain_aggregate _8
+    mvar9.0.0 = move _8
+    _1 = move _9
+    goto bb2
+  bb4:
+    _12 = const.i64 1
+    mtag11 = move _12
+    _1 = move _11
+    goto bb2
+  bb5:
+    trap(ExhaustivenessFallthrough)
+  bb6:
+    _6 = const.i64 1
+    _7 = icmp.eq _3 _6
+    branch _7 ? bb4 : bb5
+
+fn std$string$try_to_int(string) -> Result<i64, string> [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: i64
+    _3: ()
+    _4: i64
+    _5: bool
+    _6: Result<i64, string>
+    _7: string
+    _8: i64
+    _9: i64
+    _10: i64
+    _11: bool
+    _12: bool
+    _13: i64
+    _14: i64
+    _15: string
+    _16: string
+    _17: ()
+    _18: string
+    _19: bool
+    _20: bool
+    _21: i64
+    _22: ()
+    _23: string
+    _24: bool
+    _25: i64
+    _26: ()
+    _27: bool
+    _28: Result<i64, string>
+    _29: string
+    _30: i64
+    _31: i64
+    _32: i64
+    _33: i64
+    _34: i64
+    _35: i64
+    _36: i64
+    _37: i64
+    _38: i64
+    _39: i64
+    _40: i64
+    _41: i64
+    _42: i64
+    _43: i64
+    _44: i64
+    _45: bool
+    _46: bool
+    _47: i64
+    _48: i64
+    _49: bool
+    _50: string
+    _51: string
+    _52: i64
+    _53: i64
+    _54: ()
+    _55: i64
+    _56: bool
+    _57: Result<i64, string>
+    _58: string
+    _59: i64
+    _60: ()
+    _61: bool
+    _62: bool
+    _63: bool
+    _64: bool
+    _65: bool
+    _66: Result<i64, string>
+    _67: string
+    _68: i64
+    _69: i64
+    _70: i64
+    _71: bool
+    _72: i64
+    _73: bool
+    _74: bool
+    _75: Result<i64, string>
+    _76: Result<i64, string>
+    _77: i64
+    _78: Result<i64, string>
+    _79: Result<i64, string>
+    _80: i64
+    _81: i64
+    _82: bool
+    _83: i64
+    _84: Result<i64, string>
+  bb0:
+    stmt: use BindingId(26) s site=SiteId(189) ty=string intent=Read
+    _1 = call hew_string_length(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(27) slen site=SiteId(188) ty=i64
+    stmt: use BindingId(27) slen site=SiteId(192) ty=i64 intent=Read
+    _2 = move _1
+    _4 = const.i64 0
+    _5 = icmp.eq _2 _4
+    branch _5 ? bb2 : bb3
+  bb2:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(194) ty=Result<i64, string>
+    stmt: return site=Some(SiteId(194)) ty=Result<i64, string>
+    _7 = string_lit "string.try_to_int: invalid integer literal"
+    _8 = const.i64 1
+    mtag6 = move _8
+    mvar6.1.0 = move _7
+    ret = move _6
+    return
+  bb3:
+    goto bb4
+  bb4:
+    stmt: eval site=SiteId(197) ty=()
+    stmt: bind BindingId(28) start site=SiteId(198) ty=i64
+    stmt: bind BindingId(29) negative site=SiteId(199) ty=bool
+    stmt: use BindingId(26) s site=SiteId(201) ty=string intent=Read
+    _9 = const.i64 0
+    _10 = move _9
+    _11 = const.i64 0
+    _12 = move _11
+    _13 = const.i64 0
+    _14 = const.i64 1
+    _15 = call hew_string_slice(_0, _13, _14) -> bb6
+  bb5:
+    goto bb4
+  bb6:
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(200) ty=string
+    stmt: bind BindingId(30) first site=SiteId(200) ty=string
+    stmt: use BindingId(30) first site=SiteId(206) ty=string intent=Read
+    _16 = move _15
+    _18 = string_lit "-"
+    _19 = icmp.eq _16 _18
+    branch _19 ? bb7 : bb8
+  bb7:
+    stmt: bind BindingId(29) negative site=SiteId(208) ty=bool
+    stmt: eval site=SiteId(209) ty=()
+    stmt: bind BindingId(28) start site=SiteId(210) ty=i64
+    stmt: eval site=SiteId(211) ty=()
+    _20 = const.i64 1
+    _12 = move _20
+    _21 = const.i64 1
+    _10 = move _21
+    goto bb9
+  bb8:
+    stmt: use BindingId(30) first site=SiteId(214) ty=string intent=Read
+    _23 = string_lit "+"
+    _24 = icmp.eq _16 _23
+    branch _24 ? bb10 : bb11
+  bb9:
+    stmt: eval site=SiteId(220) ty=()
+    stmt: use BindingId(28) start site=SiteId(222) ty=i64 intent=Read
+    stmt: use BindingId(27) slen site=SiteId(223) ty=i64 intent=Read
+    _27 = icmp.sge _10 _2
+    branch _27 ? bb13 : bb14
+  bb10:
+    stmt: bind BindingId(28) start site=SiteId(216) ty=i64
+    stmt: eval site=SiteId(217) ty=()
+    _25 = const.i64 1
+    _10 = move _25
+    goto bb12
+  bb11:
+    goto bb12
+  bb12:
+    _17 = move _22
+    goto bb9
+  bb13:
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(224) ty=Result<i64, string>
+    stmt: return site=Some(SiteId(224)) ty=Result<i64, string>
+    _29 = string_lit "string.try_to_int: invalid integer literal"
+    _30 = const.i64 1
+    mtag28 = move _30
+    mvar28.1.0 = move _29
+    ret = move _28
+    return
+  bb14:
+    goto bb15
+  bb15:
+    stmt: eval site=SiteId(227) ty=()
+    stmt: bind BindingId(31) cutoff site=SiteId(228) ty=i64
+    stmt: use BindingId(29) negative site=SiteId(230) ty=bool intent=Read
+    _31 = const.i64 -922337203685477580
+    _32 = move _31
+    branch _12 ? bb17 : bb18
+  bb16:
+    goto bb15
+  bb17:
+    _34 = const.i64 8
+    _35 = move _34
+    _33 = move _35
+    goto bb19
+  bb18:
+    _36 = const.i64 7
+    _37 = move _36
+    _33 = move _37
+    goto bb19
+  bb19:
+    stmt: bind BindingId(32) max_last_digit site=SiteId(229) ty=i64
+    stmt: bind BindingId(33) result site=SiteId(235) ty=i64
+    _38 = move _33
+    _39 = const.i64 0
+    _40 = move _39
+    _43 = const.i64 1
+    _44 = const.i64 0
+    _45 = icmp.sle _43 _44
+    branch _45 ? bb24 : bb25
+  bb20:
+    _46 = icmp.slt _41 _42
+    branch _46 ? bb21 : bb23
+  bb21:
+    stmt: bind BindingId(34) i site=SiteId(0) ty=i64
+    stmt: use BindingId(26) s site=SiteId(240) ty=string intent=Read
+    stmt: use BindingId(34) i site=SiteId(241) ty=i64 intent=Read
+    stmt: use BindingId(34) i site=SiteId(243) ty=i64 intent=Read
+    _47 = const.i64 1
+    _48 ovf=_49 = add.checked.s _41 _47
+    branch _49 ? bb26 : bb27
+  bb22:
+    _41 ovf=_74 = add.checked.s _41 _43
+    branch _74 ? bb47 : bb20
+  bb23:
+    stmt: eval site=SiteId(281) ty=()
+    stmt: use BindingId(29) negative site=SiteId(283) ty=bool intent=Read
+    branch _12 ? bb48 : bb49
+  bb24:
+    trap(DivideByZero)
+  bb25:
+    stmt: use BindingId(28) start site=SiteId(236) ty=i64 intent=Read
+    stmt: use BindingId(27) slen site=SiteId(237) ty=i64 intent=Read
+    _41 = move _10
+    _42 = move _2
+    goto bb20
+  bb26:
+    trap(IntegerOverflow)
+  bb27:
+    _50 = call hew_string_slice(_0, _41, _48) -> bb28
+  bb28:
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(239) ty=string
+    stmt: bind BindingId(35) digit site=SiteId(239) ty=string
+    stmt: use BindingId(35) digit site=SiteId(247) ty=string intent=Read
+    _51 = move _50
+    _52 = call std$string$digit_value(_51) -> bb29
+  bb29:
+    stmt: bind BindingId(36) d site=SiteId(246) ty=i64
+    stmt: use BindingId(35) digit site=SiteId(251) ty=string intent=Read
+    _53 = move _52
+    call hew_string_drop(_51) -> bb30
+  bb30:
+    stmt: eval site=SiteId(249) ty=()
+    stmt: use BindingId(36) d site=SiteId(254) ty=i64 intent=Read
+    _55 = const.i64 0
+    _56 = icmp.slt _53 _55
+    branch _56 ? bb31 : bb32
+  bb31:
+    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(256) ty=Result<i64, string>
+    stmt: return site=Some(SiteId(256)) ty=Result<i64, string>
+    _58 = string_lit "string.try_to_int: invalid integer literal"
+    _59 = const.i64 1
+    mtag57 = move _59
+    mvar57.1.0 = move _58
+    ret = move _57
+    return
+  bb32:
+    goto bb33
+  bb33:
+    stmt: eval site=SiteId(259) ty=()
+    stmt: use BindingId(33) result site=SiteId(262) ty=i64 intent=Read
+    stmt: use BindingId(31) cutoff site=SiteId(263) ty=i64 intent=Read
+    _61 = const.i64 1
+    _62 = icmp.slt _40 _32
+    branch _62 ? bb36 : bb35
+  bb34:
+    goto bb33
+  bb35:
+    stmt: use BindingId(33) result site=SiteId(266) ty=i64 intent=Read
+    stmt: use BindingId(31) cutoff site=SiteId(267) ty=i64 intent=Read
+    _63 = const.i64 0
+    _64 = icmp.eq _40 _32
+    branch _64 ? bb37 : bb38
+  bb36:
+    branch _61 ? bb39 : bb40
+  bb37:
+    stmt: use BindingId(36) d site=SiteId(269) ty=i64 intent=Read
+    stmt: use BindingId(32) max_last_digit site=SiteId(270) ty=i64 intent=Read
+    _65 = icmp.sgt _53 _38
+    _63 = move _65
+    goto bb38
+  bb38:
+    _61 = move _63
+    goto bb36
+  bb39:
+    stmt: bind BindingId(4294967226) __hew_produced_value site=SiteId(271) ty=Result<i64, string>
+    stmt: return site=Some(SiteId(271)) ty=Result<i64, string>
+    _67 = string_lit "string.try_to_int: integer out of range"
+    _68 = const.i64 1
+    mtag66 = move _68
+    mvar66.1.0 = move _67
+    ret = move _66
+    return
+  bb40:
+    goto bb41
+  bb41:
+    stmt: eval site=SiteId(274) ty=()
+    stmt: use BindingId(33) result site=SiteId(278) ty=i64 intent=Read
+    _69 = const.i64 10
+    _70 ovf=_71 = mul.checked.s _40 _69
+    branch _71 ? bb43 : bb44
+  bb42:
+    goto bb41
+  bb43:
+    trap(IntegerOverflow)
+  bb44:
+    stmt: use BindingId(36) d site=SiteId(280) ty=i64 intent=Read
+    _72 ovf=_73 = sub.checked.s _70 _53
+    branch _73 ? bb45 : bb46
+  bb45:
+    trap(IntegerOverflow)
+  bb46:
+    stmt: bind BindingId(33) result site=SiteId(275) ty=i64
+    stmt: eval site=SiteId(276) ty=()
+    _40 = move _72
+    goto bb22
+  bb47:
+    trap(IntegerOverflow)
+  bb48:
+    stmt: use BindingId(33) result site=SiteId(286) ty=i64 intent=Read
+    _77 = const.i64 0
+    mtag76 = move _77
+    mvar76.0.0 = move _40
+    _78 = move _76
+    _75 = move _78
+    goto bb50
+  bb49:
+    stmt: use BindingId(33) result site=SiteId(291) ty=i64 intent=Read
+    _80 = const.i64 0
+    _81 ovf=_82 = sub.checked.s _80 _40
+    branch _82 ? bb51 : bb52
+  bb50:
+    stmt: return site=Some(SiteId(282)) ty=Result<i64, string>
+    ret = move _75
+    return
+  bb51:
+    trap(IntegerOverflow)
+  bb52:
+    _83 = const.i64 0
+    mtag79 = move _83
+    mvar79.0.0 = move _81
+    _84 = move _79
+    _75 = move _84
+    goto bb50
+
+fn std$string$to_float(string) -> f64 [conv=default]
+  locals:
+    _0: string
+    _1: f64
+    _2: Result<f64, string>
+    _3: i64
+    _4: i64
+    _5: bool
+    _6: i64
+    _7: bool
+    _8: f64
+    _9: f64
+  bb0:
+    stmt: use BindingId(37) s site=SiteId(294) ty=string intent=Read
+    _2 = call std$string$try_to_float(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(293) ty=Result<f64, string>
+    _3 = move etag2
+    _4 = const.i64 0
+    _5 = icmp.eq _3 _4
+    branch _5 ? bb3 : bb6
+  bb2:
+    stmt: return site=Some(SiteId(292)) ty=f64
+    ret = move _1
+    return
+  bb3:
+    stmt: bind BindingId(38) value site=SiteId(296) ty=f64
+    stmt: use BindingId(38) value site=SiteId(296) ty=f64 intent=Read
+    _8 = move mvar2.0.0
+    _1 = move _8
+    goto bb2
+  bb4:
+    _9 = const.f64 0x0000000000000000
+    _1 = move _9
+    goto bb2
+  bb5:
+    trap(ExhaustivenessFallthrough)
+  bb6:
+    _6 = const.i64 1
+    _7 = icmp.eq _3 _6
+    branch _7 ? bb4 : bb5
+
+fn std$string$try_to_float(string) -> Result<f64, string> [conv=default]
+  locals:
+    _0: string
+    _1: Result<f64, string>
+    _2: bool
+    _3: Result<f64, string>
+    _4: f64
+    _5: i64
+    _6: Result<f64, string>
+    _7: Result<f64, string>
+    _8: string
+    _9: i64
+    _10: Result<f64, string>
+  bb0:
+    stmt: use BindingId(39) s site=SiteId(300) ty=string intent=Read
+    _2 = call std$string$is_valid_float_literal(_0) -> bb1
+  bb1:
+    branch _2 ? bb2 : bb3
+  bb2:
+    stmt: use BindingId(39) s site=SiteId(305) ty=string intent=Read
+    _4 = call std$string$parse_valid_float_literal(_0) -> bb5
+  bb3:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(308) ty=Result<f64, string>
+    _8 = string_lit "string.try_to_float: invalid float literal"
+    _9 = const.i64 1
+    mtag7 = move _9
+    mvar7.1.0 = move _8
+    _10 = move _7
+    _1 = move _10
+    goto bb4
+  bb4:
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(298) ty=Result<f64, string>
+    stmt: return site=Some(SiteId(298)) ty=Result<f64, string>
+    ret = move _1
+    return
+  bb5:
+    _5 = const.i64 0
+    mtag3 = move _5
+    mvar3.0.0 = move _4
+    _6 = move _3
+    _1 = move _6
+    goto bb4
+
+fn std$string$is_valid_float_literal(string) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: i64
+    _3: ()
+    _4: i64
+    _5: bool
+    _6: bool
+    _7: i64
+    _8: i64
+    _9: ()
+    _10: i64
+    _11: bool
+    _12: bool
+    _13: i64
+    _14: i64
+    _15: ()
+    _16: i64
+    _17: bool
+    _18: bool
+    _19: i64
+    _20: i64
+    _21: bool
+    _22: i64
+    _23: i64
+    _24: i64
+    _25: ()
+    _26: bool
+    _27: bool
+    _28: bool
+    _29: ()
+    _30: i64
+    _31: bool
+    _32: i64
+    _33: i64
+    _34: bool
+    _35: bool
+    _36: bool
+  bb0:
+    stmt: use BindingId(40) s site=SiteId(311) ty=string intent=Read
+    _1 = call hew_string_length(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(41) slen site=SiteId(310) ty=i64
+    stmt: use BindingId(41) slen site=SiteId(314) ty=i64 intent=Read
+    _2 = move _1
+    _4 = const.i64 0
+    _5 = icmp.eq _2 _4
+    branch _5 ? bb2 : bb3
+  bb2:
+    stmt: return site=Some(SiteId(316)) ty=bool
+    _6 = const.i64 0
+    ret = move _6
+    return
+  bb3:
+    goto bb4
+  bb4:
+    stmt: eval site=SiteId(318) ty=()
+    stmt: use BindingId(40) s site=SiteId(320) ty=string intent=Read
+    stmt: use BindingId(41) slen site=SiteId(321) ty=i64 intent=Read
+    _7 = call std$string$float_parse_start(_0, _2) -> bb6
+  bb5:
+    goto bb4
+  bb6:
+    stmt: bind BindingId(42) start site=SiteId(319) ty=i64
+    stmt: use BindingId(42) start site=SiteId(324) ty=i64 intent=Read
+    _8 = move _7
+    _10 = const.i64 0
+    _11 = icmp.slt _8 _10
+    branch _11 ? bb7 : bb8
+  bb7:
+    stmt: return site=Some(SiteId(326)) ty=bool
+    _12 = const.i64 0
+    ret = move _12
+    return
+  bb8:
+    goto bb9
+  bb9:
+    stmt: eval site=SiteId(328) ty=()
+    stmt: use BindingId(40) s site=SiteId(330) ty=string intent=Read
+    stmt: use BindingId(42) start site=SiteId(331) ty=i64 intent=Read
+    stmt: use BindingId(41) slen site=SiteId(332) ty=i64 intent=Read
+    _13 = call std$string$find_exponent_index(_0, _8, _2) -> bb11
+  bb10:
+    goto bb9
+  bb11:
+    stmt: bind BindingId(43) exponent_index site=SiteId(329) ty=i64
+    stmt: use BindingId(43) exponent_index site=SiteId(335) ty=i64 intent=Read
+    _14 = move _13
+    _16 = const.i64 -1
+    _17 = icmp.slt _14 _16
+    branch _17 ? bb12 : bb13
+  bb12:
+    stmt: return site=Some(SiteId(337)) ty=bool
+    _18 = const.i64 0
+    ret = move _18
+    return
+  bb13:
+    goto bb14
+  bb14:
+    stmt: eval site=SiteId(339) ty=()
+    stmt: use BindingId(43) exponent_index site=SiteId(342) ty=i64 intent=Read
+    _20 = const.i64 0
+    _21 = icmp.slt _14 _20
+    branch _21 ? bb16 : bb17
+  bb15:
+    goto bb14
+  bb16:
+    stmt: use BindingId(41) slen site=SiteId(345) ty=i64 intent=Read
+    _22 = move _2
+    _19 = move _22
+    goto bb18
+  bb17:
+    stmt: use BindingId(43) exponent_index site=SiteId(347) ty=i64 intent=Read
+    _23 = move _14
+    _19 = move _23
+    goto bb18
+  bb18:
+    stmt: bind BindingId(44) significand_end site=SiteId(340) ty=i64
+    stmt: use BindingId(40) s site=SiteId(350) ty=string intent=Read
+    stmt: use BindingId(42) start site=SiteId(351) ty=i64 intent=Read
+    stmt: use BindingId(44) significand_end site=SiteId(352) ty=i64 intent=Read
+    _24 = move _19
+    _26 = call std$string$is_valid_float_significand(_0, _8, _24) -> bb19
+  bb19:
+    _27 = not _26
+    branch _27 ? bb20 : bb21
+  bb20:
+    stmt: return site=Some(SiteId(354)) ty=bool
+    _28 = const.i64 0
+    ret = move _28
+    return
+  bb21:
+    goto bb22
+  bb22:
+    stmt: eval site=SiteId(356) ty=()
+    stmt: use BindingId(43) exponent_index site=SiteId(358) ty=i64 intent=Read
+    _30 = const.i64 0
+    _31 = icmp.sge _14 _30
+    branch _31 ? bb24 : bb25
+  bb23:
+    goto bb22
+  bb24:
+    stmt: use BindingId(40) s site=SiteId(361) ty=string intent=Read
+    stmt: use BindingId(43) exponent_index site=SiteId(363) ty=i64 intent=Read
+    _32 = const.i64 1
+    _33 ovf=_34 = add.checked.s _14 _32
+    branch _34 ? bb27 : bb28
+  bb25:
+    goto bb26
+  bb26:
+    stmt: eval site=SiteId(368) ty=()
+    stmt: return site=Some(SiteId(369)) ty=bool
+    _36 = const.i64 1
+    ret = move _36
+    return
+  bb27:
+    trap(IntegerOverflow)
+  bb28:
+    stmt: use BindingId(41) slen site=SiteId(365) ty=i64 intent=Read
+    _35 = call std$string$is_valid_float_exponent(_0, _33, _2) -> bb29
+  bb29:
+    stmt: return site=Some(SiteId(360)) ty=bool
+    ret = move _35
+    return
+  bb30:
+    goto bb26
+
+fn std$string$float_parse_start(string, i64) -> i64 [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: i64
+    _3: i64
+    _4: i64
+    _5: i64
+    _6: string
+    _7: string
+    _8: bool
+    _9: string
+    _10: bool
+    _11: string
+    _12: bool
+    _13: bool
+    _14: ()
+    _15: i64
+    _16: ()
+    _17: bool
+    _18: i64
+  bb0:
+    stmt: bind BindingId(47) start site=SiteId(370) ty=i64
+    stmt: use BindingId(45) s site=SiteId(372) ty=string intent=Read
+    _2 = const.i64 0
+    _3 = move _2
+    _4 = const.i64 0
+    _5 = const.i64 1
+    _6 = call hew_string_slice(_0, _4, _5) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(371) ty=string
+    stmt: bind BindingId(48) first site=SiteId(371) ty=string
+    stmt: use BindingId(48) first site=SiteId(378) ty=string intent=Read
+    _7 = move _6
+    _8 = const.i64 1
+    _9 = string_lit "-"
+    _10 = icmp.eq _7 _9
+    branch _10 ? bb3 : bb2
+  bb2:
+    stmt: use BindingId(48) first site=SiteId(381) ty=string intent=Read
+    _11 = string_lit "+"
+    _12 = icmp.eq _7 _11
+    _8 = move _12
+    goto bb3
+  bb3:
+    stmt: bind BindingId(49) has_sign site=SiteId(376) ty=bool
+    stmt: use BindingId(48) first site=SiteId(385) ty=string intent=Read
+    _13 = move _8
+    call hew_string_drop(_7) -> bb4
+  bb4:
+    stmt: eval site=SiteId(383) ty=()
+    stmt: use BindingId(49) has_sign site=SiteId(387) ty=bool intent=Read
+    branch _13 ? bb5 : bb6
+  bb5:
+    stmt: bind BindingId(47) start site=SiteId(388) ty=i64
+    stmt: eval site=SiteId(389) ty=()
+    _15 = const.i64 1
+    _3 = move _15
+    goto bb7
+  bb6:
+    goto bb7
+  bb7:
+    stmt: eval site=SiteId(391) ty=()
+    stmt: use BindingId(47) start site=SiteId(393) ty=i64 intent=Read
+    stmt: use BindingId(46) slen site=SiteId(394) ty=i64 intent=Read
+    _17 = icmp.sge _3 _1
+    branch _17 ? bb8 : bb9
+  bb8:
+    stmt: return site=Some(SiteId(395)) ty=i64
+    _18 = const.i64 -1
+    ret = move _18
+    return
+  bb9:
+    goto bb10
+  bb10:
+    stmt: eval site=SiteId(397) ty=()
+    stmt: use BindingId(47) start site=SiteId(398) ty=i64 intent=Read
+    stmt: return site=Some(SiteId(398)) ty=i64
+    ret = move _3
+    return
+  bb11:
+    goto bb10
+
+fn std$string$parse_valid_float_literal(string) -> f64 [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: i64
+    _3: i64
+    _4: i64
+    _5: i64
+    _6: i64
+    _7: string
+    _8: string
+    _9: string
+    _10: bool
+    _11: bool
+    _12: i64
+    _13: i64
+    _14: i64
+    _15: i64
+    _16: bool
+    _17: i64
+    _18: i64
+    _19: i64
+    _20: f64
+    _21: f64
+    _22: ()
+    _23: i64
+    _24: bool
+    _25: i64
+    _26: i64
+    _27: bool
+    _28: i64
+    _29: i64
+    _30: f64
+    _31: f64
+    _32: f64
+    _33: f64
+    _34: f64
+    _35: f64
+  bb0:
+    stmt: use BindingId(50) s site=SiteId(400) ty=string intent=Read
+    _1 = call hew_string_length(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(51) slen site=SiteId(399) ty=i64
+    stmt: use BindingId(50) s site=SiteId(403) ty=string intent=Read
+    stmt: use BindingId(51) slen site=SiteId(404) ty=i64 intent=Read
+    _2 = move _1
+    _3 = call std$string$float_parse_start(_0, _2) -> bb2
+  bb2:
+    stmt: bind BindingId(52) start site=SiteId(402) ty=i64
+    stmt: use BindingId(50) s site=SiteId(407) ty=string intent=Read
+    _4 = move _3
+    _5 = const.i64 0
+    _6 = const.i64 1
+    _7 = call hew_string_slice(_0, _5, _6) -> bb3
+  bb3:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(406) ty=string
+    stmt: bind BindingId(53) first site=SiteId(406) ty=string
+    stmt: use BindingId(53) first site=SiteId(412) ty=string intent=Read
+    stmt: bind BindingId(54) negative site=SiteId(411) ty=bool
+    stmt: use BindingId(53) first site=SiteId(416) ty=string intent=Read
+    _8 = move _7
+    _9 = string_lit "-"
+    _10 = icmp.eq _8 _9
+    _11 = move _10
+    call hew_string_drop(_8) -> bb4
+  bb4:
+    stmt: eval site=SiteId(414) ty=()
+    stmt: use BindingId(50) s site=SiteId(419) ty=string intent=Read
+    stmt: use BindingId(52) start site=SiteId(420) ty=i64 intent=Read
+    stmt: use BindingId(51) slen site=SiteId(421) ty=i64 intent=Read
+    _12 = call std$string$find_exponent_index(_0, _4, _2) -> bb5
+  bb5:
+    stmt: bind BindingId(55) exponent_index site=SiteId(418) ty=i64
+    stmt: use BindingId(55) exponent_index site=SiteId(425) ty=i64 intent=Read
+    _13 = move _12
+    _15 = const.i64 0
+    _16 = icmp.slt _13 _15
+    branch _16 ? bb6 : bb7
+  bb6:
+    stmt: use BindingId(51) slen site=SiteId(428) ty=i64 intent=Read
+    _17 = move _2
+    _14 = move _17
+    goto bb8
+  bb7:
+    stmt: use BindingId(55) exponent_index site=SiteId(430) ty=i64 intent=Read
+    _18 = move _13
+    _14 = move _18
+    goto bb8
+  bb8:
+    stmt: bind BindingId(56) significand_end site=SiteId(423) ty=i64
+    stmt: use BindingId(50) s site=SiteId(432) ty=string intent=Read
+    stmt: use BindingId(52) start site=SiteId(433) ty=i64 intent=Read
+    stmt: use BindingId(56) significand_end site=SiteId(434) ty=i64 intent=Read
+    _19 = move _14
+    _20 = call std$string$parse_float_significand(_0, _4, _19) -> bb9
+  bb9:
+    stmt: bind BindingId(57) value site=SiteId(431) ty=f64
+    stmt: use BindingId(55) exponent_index site=SiteId(437) ty=i64 intent=Read
+    _21 = move _20
+    _23 = const.i64 0
+    _24 = icmp.sge _13 _23
+    branch _24 ? bb10 : bb11
+  bb10:
+    stmt: use BindingId(50) s site=SiteId(440) ty=string intent=Read
+    stmt: use BindingId(55) exponent_index site=SiteId(442) ty=i64 intent=Read
+    _25 = const.i64 1
+    _26 ovf=_27 = add.checked.s _13 _25
+    branch _27 ? bb13 : bb14
+  bb11:
+    goto bb12
+  bb12:
+    stmt: eval site=SiteId(452) ty=()
+    stmt: use BindingId(54) negative site=SiteId(454) ty=bool intent=Read
+    branch _11 ? bb17 : bb18
+  bb13:
+    trap(IntegerOverflow)
+  bb14:
+    stmt: use BindingId(51) slen site=SiteId(444) ty=i64 intent=Read
+    _28 = call std$string$parse_float_exponent(_0, _26, _2) -> bb15
+  bb15:
+    stmt: bind BindingId(58) exponent site=SiteId(439) ty=i64
+    stmt: use BindingId(57) value site=SiteId(448) ty=f64 intent=Read
+    stmt: use BindingId(58) exponent site=SiteId(449) ty=i64 intent=Read
+    _29 = move _28
+    _30 = call std$string$apply_float_exponent(_21, _29) -> bb16
+  bb16:
+    stmt: bind BindingId(57) value site=SiteId(446) ty=f64
+    stmt: eval site=SiteId(447) ty=()
+    _21 = move _30
+    goto bb12
+  bb17:
+    stmt: use BindingId(57) value site=SiteId(458) ty=f64 intent=Read
+    _32 = const.f64 0x0000000000000000
+    _33 = fsub.f64 _32 _21
+    _34 = move _33
+    _31 = move _34
+    goto bb19
+  bb18:
+    stmt: use BindingId(57) value site=SiteId(460) ty=f64 intent=Read
+    _35 = move _21
+    _31 = move _35
+    goto bb19
+  bb19:
+    stmt: return site=Some(SiteId(453)) ty=f64
+    ret = move _31
+    return
+
+fn std$string$digit_value(string) -> i64 [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: string
+    _3: bool
+    _4: i64
+    _5: string
+    _6: bool
+    _7: i64
+    _8: string
+    _9: bool
+    _10: i64
+    _11: string
+    _12: bool
+    _13: i64
+    _14: string
+    _15: bool
+    _16: i64
+    _17: string
+    _18: bool
+    _19: i64
+    _20: string
+    _21: bool
+    _22: i64
+    _23: string
+    _24: bool
+    _25: i64
+    _26: string
+    _27: bool
+    _28: i64
+    _29: string
+    _30: bool
+    _31: i64
+    _32: i64
+  bb0:
+    stmt: use BindingId(59) ch site=SiteId(462) ty=string intent=Read
+    goto bb2
+  bb1:
+    stmt: return site=Some(SiteId(461)) ty=i64
+    ret = move _1
+    return
+  bb2:
+    _2 = string_lit "0"
+    _3 = icmp.eq _0 _2
+    branch _3 ? bb14 : bb3
+  bb3:
+    _5 = string_lit "1"
+    _6 = icmp.eq _0 _5
+    branch _6 ? bb15 : bb4
+  bb4:
+    _8 = string_lit "2"
+    _9 = icmp.eq _0 _8
+    branch _9 ? bb16 : bb5
+  bb5:
+    _11 = string_lit "3"
+    _12 = icmp.eq _0 _11
+    branch _12 ? bb17 : bb6
+  bb6:
+    _14 = string_lit "4"
+    _15 = icmp.eq _0 _14
+    branch _15 ? bb18 : bb7
+  bb7:
+    _17 = string_lit "5"
+    _18 = icmp.eq _0 _17
+    branch _18 ? bb19 : bb8
+  bb8:
+    _20 = string_lit "6"
+    _21 = icmp.eq _0 _20
+    branch _21 ? bb20 : bb9
+  bb9:
+    _23 = string_lit "7"
+    _24 = icmp.eq _0 _23
+    branch _24 ? bb21 : bb10
+  bb10:
+    _26 = string_lit "8"
+    _27 = icmp.eq _0 _26
+    branch _27 ? bb22 : bb11
+  bb11:
+    _29 = string_lit "9"
+    _30 = icmp.eq _0 _29
+    branch _30 ? bb23 : bb12
+  bb12:
+    _32 = const.i64 -1
+    _1 = move _32
+    goto bb1
+  bb13:
+    trap(ExhaustivenessFallthrough)
+  bb14:
+    _4 = const.i64 0
+    _1 = move _4
+    goto bb1
+  bb15:
+    _7 = const.i64 1
+    _1 = move _7
+    goto bb1
+  bb16:
+    _10 = const.i64 2
+    _1 = move _10
+    goto bb1
+  bb17:
+    _13 = const.i64 3
+    _1 = move _13
+    goto bb1
+  bb18:
+    _16 = const.i64 4
+    _1 = move _16
+    goto bb1
+  bb19:
+    _19 = const.i64 5
+    _1 = move _19
+    goto bb1
+  bb20:
+    _22 = const.i64 6
+    _1 = move _22
+    goto bb1
+  bb21:
+    _25 = const.i64 7
+    _1 = move _25
+    goto bb1
+  bb22:
+    _28 = const.i64 8
+    _1 = move _28
+    goto bb1
+  bb23:
+    _31 = const.i64 9
+    _1 = move _31
+    goto bb1
+
+fn std$string$find_exponent_index(string, i64, i64) -> i64 [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: i64
+    _3: i64
+    _4: i64
+    _5: i64
+    _6: i64
+    _7: i64
+    _8: i64
+    _9: bool
+    _10: bool
+    _11: i64
+    _12: i64
+    _13: bool
+    _14: string
+    _15: string
+    _16: bool
+    _17: string
+    _18: bool
+    _19: string
+    _20: bool
+    _21: bool
+    _22: ()
+    _23: ()
+    _24: i64
+    _25: bool
+    _26: i64
+    _27: bool
+  bb0:
+    stmt: bind BindingId(63) exponent_index site=SiteId(474) ty=i64
+    _3 = const.i64 -1
+    _4 = move _3
+    _7 = const.i64 1
+    _8 = const.i64 0
+    _9 = icmp.sle _7 _8
+    branch _9 ? bb5 : bb6
+  bb1:
+    _10 = icmp.slt _5 _6
+    branch _10 ? bb2 : bb4
+  bb2:
+    stmt: bind BindingId(64) i site=SiteId(0) ty=i64
+    stmt: use BindingId(60) s site=SiteId(479) ty=string intent=Read
+    stmt: use BindingId(64) i site=SiteId(480) ty=i64 intent=Read
+    stmt: use BindingId(64) i site=SiteId(482) ty=i64 intent=Read
+    _11 = const.i64 1
+    _12 ovf=_13 = add.checked.s _5 _11
+    branch _13 ? bb7 : bb8
+  bb3:
+    _5 ovf=_27 = add.checked.s _5 _7
+    branch _27 ? bb20 : bb1
+  bb4:
+    stmt: eval site=SiteId(507) ty=()
+    stmt: use BindingId(63) exponent_index site=SiteId(508) ty=i64 intent=Read
+    stmt: return site=Some(SiteId(508)) ty=i64
+    ret = move _4
+    return
+  bb5:
+    trap(DivideByZero)
+  bb6:
+    stmt: use BindingId(61) start site=SiteId(475) ty=i64 intent=Read
+    stmt: use BindingId(62) end site=SiteId(476) ty=i64 intent=Read
+    _5 = move _1
+    _6 = move _2
+    goto bb1
+  bb7:
+    trap(IntegerOverflow)
+  bb8:
+    _14 = call hew_string_slice(_0, _5, _12) -> bb9
+  bb9:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(478) ty=string
+    stmt: bind BindingId(65) ch site=SiteId(478) ty=string
+    stmt: use BindingId(65) ch site=SiteId(487) ty=string intent=Read
+    _15 = move _14
+    _16 = const.i64 1
+    _17 = string_lit "e"
+    _18 = icmp.eq _15 _17
+    branch _18 ? bb11 : bb10
+  bb10:
+    stmt: use BindingId(65) ch site=SiteId(490) ty=string intent=Read
+    _19 = string_lit "E"
+    _20 = icmp.eq _15 _19
+    _16 = move _20
+    goto bb11
+  bb11:
+    stmt: bind BindingId(66) is_exponent site=SiteId(485) ty=bool
+    stmt: use BindingId(65) ch site=SiteId(494) ty=string intent=Read
+    _21 = move _16
+    call hew_string_drop(_15) -> bb12
+  bb12:
+    stmt: eval site=SiteId(492) ty=()
+    stmt: use BindingId(66) is_exponent site=SiteId(497) ty=bool intent=Read
+    branch _21 ? bb13 : bb14
+  bb13:
+    stmt: use BindingId(63) exponent_index site=SiteId(500) ty=i64 intent=Read
+    _24 = const.i64 0
+    _25 = icmp.sge _4 _24
+    branch _25 ? bb16 : bb17
+  bb14:
+    goto bb15
+  bb15:
+    goto bb3
+  bb16:
+    stmt: return site=Some(SiteId(502)) ty=i64
+    _26 = const.i64 -2
+    ret = move _26
+    return
+  bb17:
+    goto bb18
+  bb18:
+    stmt: eval site=SiteId(504) ty=()
+    stmt: use BindingId(64) i site=SiteId(506) ty=i64 intent=Consume
+    stmt: bind BindingId(63) exponent_index site=SiteId(505) ty=i64
+    stmt: eval site=SiteId(506) ty=()
+    _4 = move _5
+    goto bb15
+  bb19:
+    goto bb18
+  bb20:
+    trap(IntegerOverflow)
+
+fn std$string$is_valid_float_significand(string, i64, i64) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: i64
+    _3: ()
+    _4: bool
+    _5: bool
+    _6: bool
+    _7: bool
+    _8: bool
+    _9: bool
+    _10: i64
+    _11: i64
+    _12: i64
+    _13: i64
+    _14: bool
+    _15: bool
+    _16: i64
+    _17: i64
+    _18: bool
+    _19: string
+    _20: string
+    _21: string
+    _22: bool
+    _23: bool
+    _24: ()
+    _25: ()
+    _26: bool
+    _27: bool
+    _28: i64
+    _29: i64
+    _30: ()
+    _31: i64
+    _32: bool
+    _33: bool
+    _34: bool
+    _35: bool
+  bb0:
+    stmt: use BindingId(68) start site=SiteId(510) ty=i64 intent=Read
+    stmt: use BindingId(69) end site=SiteId(511) ty=i64 intent=Read
+    _4 = icmp.sge _1 _2
+    branch _4 ? bb1 : bb2
+  bb1:
+    stmt: return site=Some(SiteId(512)) ty=bool
+    _5 = const.i64 0
+    ret = move _5
+    return
+  bb2:
+    goto bb3
+  bb3:
+    stmt: eval site=SiteId(514) ty=()
+    stmt: bind BindingId(70) saw_digit site=SiteId(515) ty=bool
+    stmt: bind BindingId(71) saw_decimal site=SiteId(516) ty=bool
+    _6 = const.i64 0
+    _7 = move _6
+    _8 = const.i64 0
+    _9 = move _8
+    _12 = const.i64 1
+    _13 = const.i64 0
+    _14 = icmp.sle _12 _13
+    branch _14 ? bb9 : bb10
+  bb4:
+    goto bb3
+  bb5:
+    _15 = icmp.slt _10 _11
+    branch _15 ? bb6 : bb8
+  bb6:
+    stmt: bind BindingId(72) i site=SiteId(0) ty=i64
+    stmt: use BindingId(67) s site=SiteId(521) ty=string intent=Read
+    stmt: use BindingId(72) i site=SiteId(522) ty=i64 intent=Read
+    stmt: use BindingId(72) i site=SiteId(524) ty=i64 intent=Read
+    _16 = const.i64 1
+    _17 ovf=_18 = add.checked.s _10 _16
+    branch _18 ? bb11 : bb12
+  bb7:
+    _10 ovf=_35 = add.checked.s _10 _12
+    branch _35 ? bb28 : bb5
+  bb8:
+    stmt: eval site=SiteId(559) ty=()
+    stmt: use BindingId(70) saw_digit site=SiteId(560) ty=bool intent=Read
+    stmt: return site=Some(SiteId(560)) ty=bool
+    ret = move _7
+    return
+  bb9:
+    trap(DivideByZero)
+  bb10:
+    stmt: use BindingId(68) start site=SiteId(517) ty=i64 intent=Read
+    stmt: use BindingId(69) end site=SiteId(518) ty=i64 intent=Read
+    _10 = move _1
+    _11 = move _2
+    goto bb5
+  bb11:
+    trap(IntegerOverflow)
+  bb12:
+    _19 = call hew_string_slice(_0, _10, _17) -> bb13
+  bb13:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(520) ty=string
+    stmt: bind BindingId(73) ch site=SiteId(520) ty=string
+    stmt: use BindingId(73) ch site=SiteId(528) ty=string intent=Read
+    stmt: bind BindingId(74) is_decimal site=SiteId(527) ty=bool
+    stmt: use BindingId(74) is_decimal site=SiteId(531) ty=bool intent=Read
+    _20 = move _19
+    _21 = string_lit "."
+    _22 = icmp.eq _20 _21
+    _23 = move _22
+    branch _23 ? bb14 : bb15
+  bb14:
+    stmt: use BindingId(73) ch site=SiteId(535) ty=string intent=Read
+    call hew_string_drop(_20) -> bb17
+  bb15:
+    stmt: use BindingId(73) ch site=SiteId(545) ty=string intent=Read
+    _28 = call std$string$digit_value(_20) -> bb22
+  bb16:
+    goto bb7
+  bb17:
+    stmt: eval site=SiteId(533) ty=()
+    stmt: use BindingId(71) saw_decimal site=SiteId(537) ty=bool intent=Read
+    branch _9 ? bb18 : bb19
+  bb18:
+    stmt: return site=Some(SiteId(538)) ty=bool
+    _26 = const.i64 0
+    ret = move _26
+    return
+  bb19:
+    goto bb20
+  bb20:
+    stmt: eval site=SiteId(540) ty=()
+    stmt: bind BindingId(71) saw_decimal site=SiteId(541) ty=bool
+    stmt: eval site=SiteId(542) ty=()
+    _27 = const.i64 1
+    _9 = move _27
+    goto bb16
+  bb21:
+    goto bb20
+  bb22:
+    stmt: bind BindingId(75) digit site=SiteId(544) ty=i64
+    stmt: use BindingId(73) ch site=SiteId(549) ty=string intent=Read
+    _29 = move _28
+    call hew_string_drop(_20) -> bb23
+  bb23:
+    stmt: eval site=SiteId(547) ty=()
+    stmt: use BindingId(75) digit site=SiteId(552) ty=i64 intent=Read
+    _31 = const.i64 0
+    _32 = icmp.slt _29 _31
+    branch _32 ? bb24 : bb25
+  bb24:
+    stmt: return site=Some(SiteId(554)) ty=bool
+    _33 = const.i64 0
+    ret = move _33
+    return
+  bb25:
+    goto bb26
+  bb26:
+    stmt: eval site=SiteId(556) ty=()
+    stmt: bind BindingId(70) saw_digit site=SiteId(557) ty=bool
+    stmt: eval site=SiteId(558) ty=()
+    _34 = const.i64 1
+    _7 = move _34
+    goto bb16
+  bb27:
+    goto bb26
+  bb28:
+    trap(IntegerOverflow)
+
+fn std$string$is_valid_float_exponent(string, i64, i64) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: i64
+    _3: ()
+    _4: bool
+    _5: bool
+    _6: i64
+    _7: i64
+    _8: i64
+    _9: bool
+    _10: string
+    _11: string
+    _12: bool
+    _13: string
+    _14: bool
+    _15: string
+    _16: bool
+    _17: bool
+    _18: ()
+    _19: i64
+    _20: i64
+    _21: bool
+    _22: ()
+    _23: bool
+    _24: bool
+    _25: i64
+    _26: i64
+    _27: i64
+    _28: i64
+    _29: bool
+    _30: bool
+    _31: i64
+    _32: i64
+    _33: bool
+    _34: string
+    _35: string
+    _36: i64
+    _37: i64
+    _38: ()
+    _39: i64
+    _40: bool
+    _41: bool
+    _42: bool
+    _43: bool
+  bb0:
+    stmt: use BindingId(77) start site=SiteId(562) ty=i64 intent=Read
+    stmt: use BindingId(78) end site=SiteId(563) ty=i64 intent=Read
+    _4 = icmp.sge _1 _2
+    branch _4 ? bb1 : bb2
+  bb1:
+    stmt: return site=Some(SiteId(564)) ty=bool
+    _5 = const.i64 0
+    ret = move _5
+    return
+  bb2:
+    goto bb3
+  bb3:
+    stmt: eval site=SiteId(566) ty=()
+    stmt: use BindingId(77) start site=SiteId(567) ty=i64 intent=Consume
+    stmt: bind BindingId(79) index site=SiteId(567) ty=i64
+    stmt: use BindingId(76) s site=SiteId(569) ty=string intent=Read
+    stmt: use BindingId(77) start site=SiteId(570) ty=i64 intent=Read
+    stmt: use BindingId(77) start site=SiteId(572) ty=i64 intent=Read
+    _6 = move _1
+    _7 = const.i64 1
+    _8 ovf=_9 = add.checked.s _1 _7
+    branch _9 ? bb5 : bb6
+  bb4:
+    goto bb3
+  bb5:
+    trap(IntegerOverflow)
+  bb6:
+    _10 = call hew_string_slice(_0, _1, _8) -> bb7
+  bb7:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(568) ty=string
+    stmt: bind BindingId(80) first site=SiteId(568) ty=string
+    stmt: use BindingId(80) first site=SiteId(577) ty=string intent=Read
+    _11 = move _10
+    _12 = const.i64 1
+    _13 = string_lit "-"
+    _14 = icmp.eq _11 _13
+    branch _14 ? bb9 : bb8
+  bb8:
+    stmt: use BindingId(80) first site=SiteId(580) ty=string intent=Read
+    _15 = string_lit "+"
+    _16 = icmp.eq _11 _15
+    _12 = move _16
+    goto bb9
+  bb9:
+    stmt: bind BindingId(81) has_sign site=SiteId(575) ty=bool
+    stmt: use BindingId(80) first site=SiteId(584) ty=string intent=Read
+    _17 = move _12
+    call hew_string_drop(_11) -> bb10
+  bb10:
+    stmt: eval site=SiteId(582) ty=()
+    stmt: use BindingId(81) has_sign site=SiteId(586) ty=bool intent=Read
+    branch _17 ? bb11 : bb12
+  bb11:
+    stmt: use BindingId(77) start site=SiteId(589) ty=i64 intent=Read
+    _19 = const.i64 1
+    _20 ovf=_21 = add.checked.s _1 _19
+    branch _21 ? bb14 : bb15
+  bb12:
+    goto bb13
+  bb13:
+    stmt: eval site=SiteId(592) ty=()
+    stmt: use BindingId(79) index site=SiteId(594) ty=i64 intent=Read
+    stmt: use BindingId(78) end site=SiteId(595) ty=i64 intent=Read
+    _23 = icmp.sge _6 _2
+    branch _23 ? bb16 : bb17
+  bb14:
+    trap(IntegerOverflow)
+  bb15:
+    stmt: bind BindingId(79) index site=SiteId(587) ty=i64
+    stmt: eval site=SiteId(588) ty=()
+    _6 = move _20
+    goto bb13
+  bb16:
+    stmt: return site=Some(SiteId(596)) ty=bool
+    _24 = const.i64 0
+    ret = move _24
+    return
+  bb17:
+    goto bb18
+  bb18:
+    stmt: eval site=SiteId(598) ty=()
+    _27 = const.i64 1
+    _28 = const.i64 0
+    _29 = icmp.sle _27 _28
+    branch _29 ? bb24 : bb25
+  bb19:
+    goto bb18
+  bb20:
+    _30 = icmp.slt _25 _26
+    branch _30 ? bb21 : bb23
+  bb21:
+    stmt: bind BindingId(82) i site=SiteId(0) ty=i64
+    stmt: use BindingId(76) s site=SiteId(603) ty=string intent=Read
+    stmt: use BindingId(82) i site=SiteId(604) ty=i64 intent=Read
+    stmt: use BindingId(82) i site=SiteId(606) ty=i64 intent=Read
+    _31 = const.i64 1
+    _32 ovf=_33 = add.checked.s _25 _31
+    branch _33 ? bb26 : bb27
+  bb22:
+    _25 ovf=_42 = add.checked.s _25 _27
+    branch _42 ? bb35 : bb20
+  bb23:
+    stmt: eval site=SiteId(622) ty=()
+    stmt: return site=Some(SiteId(623)) ty=bool
+    _43 = const.i64 1
+    ret = move _43
+    return
+  bb24:
+    trap(DivideByZero)
+  bb25:
+    stmt: use BindingId(79) index site=SiteId(599) ty=i64 intent=Read
+    stmt: use BindingId(78) end site=SiteId(600) ty=i64 intent=Read
+    _25 = move _6
+    _26 = move _2
+    goto bb20
+  bb26:
+    trap(IntegerOverflow)
+  bb27:
+    _34 = call hew_string_slice(_0, _25, _32) -> bb28
+  bb28:
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(602) ty=string
+    stmt: bind BindingId(83) digit site=SiteId(602) ty=string
+    stmt: use BindingId(83) digit site=SiteId(610) ty=string intent=Read
+    _35 = move _34
+    _36 = call std$string$digit_value(_35) -> bb29
+  bb29:
+    stmt: bind BindingId(84) value site=SiteId(609) ty=i64
+    stmt: use BindingId(83) digit site=SiteId(614) ty=string intent=Read
+    _37 = move _36
+    call hew_string_drop(_35) -> bb30
+  bb30:
+    stmt: eval site=SiteId(612) ty=()
+    stmt: use BindingId(84) value site=SiteId(618) ty=i64 intent=Read
+    _39 = const.i64 0
+    _40 = icmp.slt _37 _39
+    branch _40 ? bb31 : bb32
+  bb31:
+    stmt: return site=Some(SiteId(621)) ty=bool
+    _41 = const.i64 0
+    ret = move _41
+    return
+  bb32:
+    goto bb33
+  bb33:
+    goto bb22
+  bb34:
+    goto bb33
+  bb35:
+    trap(IntegerOverflow)
+
+fn std$string$parse_float_significand(string, i64, i64) -> f64 [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: i64
+    _3: f64
+    _4: f64
+    _5: f64
+    _6: f64
+    _7: f64
+    _8: f64
+    _9: bool
+    _10: bool
+    _11: i64
+    _12: i64
+    _13: i64
+    _14: i64
+    _15: bool
+    _16: bool
+    _17: i64
+    _18: i64
+    _19: bool
+    _20: string
+    _21: string
+    _22: string
+    _23: bool
+    _24: bool
+    _25: ()
+    _26: bool
+    _27: i64
+    _28: i64
+    _29: f64
+    _30: f64
+    _31: ()
+    _32: f64
+    _33: f64
+    _34: f64
+    _35: f64
+    _36: f64
+    _37: f64
+    _38: f64
+    _39: f64
+    _40: bool
+    _41: f64
+    _42: f64
+  bb0:
+    stmt: bind BindingId(88) whole site=SiteId(624) ty=f64
+    stmt: bind BindingId(89) fraction site=SiteId(625) ty=f64
+    stmt: bind BindingId(90) fraction_scale site=SiteId(626) ty=f64
+    stmt: bind BindingId(91) saw_decimal site=SiteId(627) ty=bool
+    _3 = const.f64 0x0000000000000000
+    _4 = move _3
+    _5 = const.f64 0x0000000000000000
+    _6 = move _5
+    _7 = const.f64 0x3ff0000000000000
+    _8 = move _7
+    _9 = const.i64 0
+    _10 = move _9
+    _13 = const.i64 1
+    _14 = const.i64 0
+    _15 = icmp.sle _13 _14
+    branch _15 ? bb5 : bb6
+  bb1:
+    _16 = icmp.slt _11 _12
+    branch _16 ? bb2 : bb4
+  bb2:
+    stmt: bind BindingId(92) i site=SiteId(0) ty=i64
+    stmt: use BindingId(85) s site=SiteId(632) ty=string intent=Read
+    stmt: use BindingId(92) i site=SiteId(633) ty=i64 intent=Read
+    stmt: use BindingId(92) i site=SiteId(635) ty=i64 intent=Read
+    _17 = const.i64 1
+    _18 ovf=_19 = add.checked.s _11 _17
+    branch _19 ? bb7 : bb8
+  bb3:
+    _11 ovf=_40 = add.checked.s _11 _13
+    branch _40 ? bb21 : bb1
+  bb4:
+    stmt: eval site=SiteId(681) ty=()
+    stmt: use BindingId(88) whole site=SiteId(683) ty=f64 intent=Read
+    stmt: use BindingId(89) fraction site=SiteId(685) ty=f64 intent=Read
+    stmt: use BindingId(90) fraction_scale site=SiteId(686) ty=f64 intent=Read
+    stmt: return site=Some(SiteId(682)) ty=f64
+    _41 = fdiv.f64 _6 _8
+    _42 = fadd.f64 _4 _41
+    ret = move _42
+    return
+  bb5:
+    trap(DivideByZero)
+  bb6:
+    stmt: use BindingId(86) start site=SiteId(628) ty=i64 intent=Read
+    stmt: use BindingId(87) end site=SiteId(629) ty=i64 intent=Read
+    _11 = move _1
+    _12 = move _2
+    goto bb1
+  bb7:
+    trap(IntegerOverflow)
+  bb8:
+    _20 = call hew_string_slice(_0, _11, _18) -> bb9
+  bb9:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(631) ty=string
+    stmt: bind BindingId(93) ch site=SiteId(631) ty=string
+    stmt: use BindingId(93) ch site=SiteId(639) ty=string intent=Read
+    stmt: bind BindingId(94) is_decimal site=SiteId(638) ty=bool
+    stmt: use BindingId(94) is_decimal site=SiteId(641) ty=bool intent=Read
+    _21 = move _20
+    _22 = string_lit "."
+    _23 = icmp.eq _21 _22
+    _24 = move _23
+    branch _24 ? bb10 : bb11
+  bb10:
+    stmt: use BindingId(93) ch site=SiteId(644) ty=string intent=Read
+    call hew_string_drop(_21) -> bb13
+  bb11:
+    goto bb12
+  bb12:
+    stmt: eval site=SiteId(650) ty=()
+    stmt: use BindingId(93) ch site=SiteId(652) ty=string intent=Read
+    _27 = call std$string$digit_value(_21) -> bb15
+  bb13:
+    stmt: eval site=SiteId(642) ty=()
+    stmt: bind BindingId(91) saw_decimal site=SiteId(646) ty=bool
+    stmt: eval site=SiteId(647) ty=()
+    _26 = const.i64 1
+    _10 = move _26
+    goto bb3
+  bb14:
+    stmt: eval site=SiteId(648) ty=()
+    goto bb12
+  bb15:
+    stmt: bind BindingId(95) value site=SiteId(651) ty=i64
+    stmt: use BindingId(93) ch site=SiteId(656) ty=string intent=Read
+    _28 = move _27
+    call hew_string_drop(_21) -> bb16
+  bb16:
+    stmt: eval site=SiteId(654) ty=()
+    stmt: use BindingId(95) value site=SiteId(659) ty=i64 intent=Read
+    _29 = call std$string$digit_to_float(_28) -> bb17
+  bb17:
+    stmt: bind BindingId(96) digit site=SiteId(658) ty=f64
+    stmt: use BindingId(91) saw_decimal site=SiteId(662) ty=bool intent=Read
+    _30 = move _29
+    branch _10 ? bb18 : bb19
+  bb18:
+    stmt: use BindingId(89) fraction site=SiteId(667) ty=f64 intent=Read
+    stmt: use BindingId(96) digit site=SiteId(669) ty=f64 intent=Read
+    stmt: bind BindingId(89) fraction site=SiteId(664) ty=f64
+    stmt: eval site=SiteId(665) ty=()
+    stmt: use BindingId(90) fraction_scale site=SiteId(672) ty=f64 intent=Read
+    stmt: bind BindingId(90) fraction_scale site=SiteId(670) ty=f64
+    stmt: eval site=SiteId(671) ty=()
+    _32 = const.f64 0x4024000000000000
+    _33 = fmul.f64 _6 _32
+    _34 = fadd.f64 _33 _30
+    _6 = move _34
+    _35 = const.f64 0x4024000000000000
+    _36 = fmul.f64 _8 _35
+    _8 = move _36
+    goto bb20
+  bb19:
+    stmt: use BindingId(88) whole site=SiteId(678) ty=f64 intent=Read
+    stmt: use BindingId(96) digit site=SiteId(680) ty=f64 intent=Read
+    stmt: bind BindingId(88) whole site=SiteId(675) ty=f64
+    stmt: eval site=SiteId(676) ty=()
+    _37 = const.f64 0x4024000000000000
+    _38 = fmul.f64 _4 _37
+    _39 = fadd.f64 _38 _30
+    _4 = move _39
+    goto bb20
+  bb20:
+    goto bb3
+  bb21:
+    trap(IntegerOverflow)
+
+fn std$string$parse_float_exponent(string, i64, i64) -> i64 [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: i64
+    _3: i64
+    _4: bool
+    _5: bool
+    _6: i64
+    _7: i64
+    _8: bool
+    _9: string
+    _10: string
+    _11: string
+    _12: bool
+    _13: bool
+    _14: string
+    _15: bool
+    _16: bool
+    _17: ()
+    _18: bool
+    _19: i64
+    _20: i64
+    _21: bool
+    _22: ()
+    _23: i64
+    _24: i64
+    _25: bool
+    _26: i64
+    _27: i64
+    _28: i64
+    _29: i64
+    _30: i64
+    _31: i64
+    _32: bool
+    _33: bool
+    _34: i64
+    _35: i64
+    _36: bool
+    _37: string
+    _38: string
+    _39: i64
+    _40: i64
+    _41: i64
+    _42: i64
+    _43: bool
+    _44: i64
+    _45: bool
+    _46: bool
+    _47: i64
+    _48: i64
+    _49: i64
+    _50: bool
+    _51: i64
+    _52: i64
+  bb0:
+    stmt: use BindingId(98) start site=SiteId(687) ty=i64 intent=Consume
+    stmt: bind BindingId(100) index site=SiteId(687) ty=i64
+    stmt: bind BindingId(101) negative site=SiteId(688) ty=bool
+    stmt: use BindingId(97) s site=SiteId(690) ty=string intent=Read
+    stmt: use BindingId(98) start site=SiteId(691) ty=i64 intent=Read
+    stmt: use BindingId(98) start site=SiteId(693) ty=i64 intent=Read
+    _3 = move _1
+    _4 = const.i64 0
+    _5 = move _4
+    _6 = const.i64 1
+    _7 ovf=_8 = add.checked.s _1 _6
+    branch _8 ? bb1 : bb2
+  bb1:
+    trap(IntegerOverflow)
+  bb2:
+    _9 = call hew_string_slice(_0, _1, _7) -> bb3
+  bb3:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(689) ty=string
+    stmt: bind BindingId(102) first site=SiteId(689) ty=string
+    stmt: use BindingId(102) first site=SiteId(697) ty=string intent=Read
+    stmt: bind BindingId(103) has_negative_sign site=SiteId(696) ty=bool
+    stmt: use BindingId(102) first site=SiteId(700) ty=string intent=Read
+    stmt: bind BindingId(104) has_positive_sign site=SiteId(699) ty=bool
+    stmt: use BindingId(102) first site=SiteId(704) ty=string intent=Read
+    _10 = move _9
+    _11 = string_lit "-"
+    _12 = icmp.eq _10 _11
+    _13 = move _12
+    _14 = string_lit "+"
+    _15 = icmp.eq _10 _14
+    _16 = move _15
+    call hew_string_drop(_10) -> bb4
+  bb4:
+    stmt: eval site=SiteId(702) ty=()
+    stmt: use BindingId(103) has_negative_sign site=SiteId(706) ty=bool intent=Read
+    branch _13 ? bb5 : bb6
+  bb5:
+    stmt: bind BindingId(101) negative site=SiteId(707) ty=bool
+    stmt: eval site=SiteId(708) ty=()
+    stmt: use BindingId(98) start site=SiteId(711) ty=i64 intent=Read
+    _18 = const.i64 1
+    _5 = move _18
+    _19 = const.i64 1
+    _20 ovf=_21 = add.checked.s _1 _19
+    branch _21 ? bb8 : bb9
+  bb6:
+    stmt: use BindingId(104) has_positive_sign site=SiteId(714) ty=bool intent=Read
+    branch _16 ? bb10 : bb11
+  bb7:
+    stmt: eval site=SiteId(721) ty=()
+    stmt: bind BindingId(105) exponent site=SiteId(722) ty=i64
+    _26 = const.i64 0
+    _27 = move _26
+    _30 = const.i64 1
+    _31 = const.i64 0
+    _32 = icmp.sle _30 _31
+    branch _32 ? bb19 : bb20
+  bb8:
+    trap(IntegerOverflow)
+  bb9:
+    stmt: bind BindingId(100) index site=SiteId(709) ty=i64
+    stmt: eval site=SiteId(710) ty=()
+    _3 = move _20
+    goto bb7
+  bb10:
+    stmt: use BindingId(98) start site=SiteId(717) ty=i64 intent=Read
+    _23 = const.i64 1
+    _24 ovf=_25 = add.checked.s _1 _23
+    branch _25 ? bb13 : bb14
+  bb11:
+    goto bb12
+  bb12:
+    _17 = move _22
+    goto bb7
+  bb13:
+    trap(IntegerOverflow)
+  bb14:
+    stmt: bind BindingId(100) index site=SiteId(715) ty=i64
+    stmt: eval site=SiteId(716) ty=()
+    _3 = move _24
+    goto bb12
+  bb15:
+    _33 = icmp.slt _28 _29
+    branch _33 ? bb16 : bb18
+  bb16:
+    stmt: bind BindingId(106) i site=SiteId(0) ty=i64
+    stmt: use BindingId(97) s site=SiteId(727) ty=string intent=Read
+    stmt: use BindingId(106) i site=SiteId(728) ty=i64 intent=Read
+    stmt: use BindingId(106) i site=SiteId(730) ty=i64 intent=Read
+    _34 = const.i64 1
+    _35 ovf=_36 = add.checked.s _28 _34
+    branch _36 ? bb21 : bb22
+  bb17:
+    _28 ovf=_46 = add.checked.s _28 _30
+    branch _46 ? bb30 : bb15
+  bb18:
+    stmt: eval site=SiteId(746) ty=()
+    stmt: use BindingId(101) negative site=SiteId(748) ty=bool intent=Read
+    branch _5 ? bb31 : bb32
+  bb19:
+    trap(DivideByZero)
+  bb20:
+    stmt: use BindingId(100) index site=SiteId(723) ty=i64 intent=Read
+    stmt: use BindingId(99) end site=SiteId(724) ty=i64 intent=Read
+    _28 = move _3
+    _29 = move _2
+    goto bb15
+  bb21:
+    trap(IntegerOverflow)
+  bb22:
+    _37 = call hew_string_slice(_0, _28, _35) -> bb23
+  bb23:
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(726) ty=string
+    stmt: bind BindingId(107) digit site=SiteId(726) ty=string
+    stmt: use BindingId(107) digit site=SiteId(734) ty=string intent=Read
+    _38 = move _37
+    _39 = call std$string$digit_value(_38) -> bb24
+  bb24:
+    stmt: bind BindingId(108) value site=SiteId(733) ty=i64
+    stmt: use BindingId(107) digit site=SiteId(738) ty=string intent=Read
+    _40 = move _39
+    call hew_string_drop(_38) -> bb25
+  bb25:
+    stmt: eval site=SiteId(736) ty=()
+    stmt: use BindingId(105) exponent site=SiteId(743) ty=i64 intent=Read
+    _41 = const.i64 10
+    _42 ovf=_43 = mul.checked.s _27 _41
+    branch _43 ? bb26 : bb27
+  bb26:
+    trap(IntegerOverflow)
+  bb27:
+    stmt: use BindingId(108) value site=SiteId(745) ty=i64 intent=Read
+    _44 ovf=_45 = add.checked.s _42 _40
+    branch _45 ? bb28 : bb29
+  bb28:
+    trap(IntegerOverflow)
+  bb29:
+    stmt: bind BindingId(105) exponent site=SiteId(740) ty=i64
+    stmt: eval site=SiteId(741) ty=()
+    _27 = move _44
+    goto bb17
+  bb30:
+    trap(IntegerOverflow)
+  bb31:
+    stmt: use BindingId(105) exponent site=SiteId(752) ty=i64 intent=Read
+    _48 = const.i64 0
+    _49 ovf=_50 = sub.checked.s _48 _27
+    branch _50 ? bb34 : bb35
+  bb32:
+    stmt: use BindingId(105) exponent site=SiteId(754) ty=i64 intent=Read
+    _52 = move _27
+    _47 = move _52
+    goto bb33
+  bb33:
+    stmt: return site=Some(SiteId(747)) ty=i64
+    ret = move _47
+    return
+  bb34:
+    trap(IntegerOverflow)
+  bb35:
+    _51 = move _49
+    _47 = move _51
+    goto bb33
+
+fn std$string$apply_float_exponent(f64, i64) -> f64 [conv=default]
+  locals:
+    _0: f64
+    _1: i64
+    _2: f64
+    _3: f64
+    _4: i64
+    _5: i64
+    _6: bool
+    _7: i64
+    _8: i64
+    _9: bool
+    _10: i64
+    _11: i64
+    _12: i64
+    _13: i64
+    _14: i64
+    _15: i64
+    _16: i64
+    _17: bool
+    _18: i64
+    _19: bool
+    _20: f64
+    _21: f64
+    _22: bool
+    _23: f64
+    _24: i64
+    _25: bool
+    _26: f64
+    _27: f64
+    _28: f64
+    _29: f64
+  bb0:
+    stmt: bind BindingId(111) scale site=SiteId(755) ty=f64
+    stmt: use BindingId(110) exponent site=SiteId(758) ty=i64 intent=Read
+    _2 = const.f64 0x3ff0000000000000
+    _3 = move _2
+    _5 = const.i64 0
+    _6 = icmp.slt _1 _5
+    branch _6 ? bb1 : bb2
+  bb1:
+    stmt: use BindingId(110) exponent site=SiteId(763) ty=i64 intent=Read
+    _7 = const.i64 0
+    _8 ovf=_9 = sub.checked.s _7 _1
+    branch _9 ? bb4 : bb5
+  bb2:
+    stmt: use BindingId(110) exponent site=SiteId(765) ty=i64 intent=Read
+    _11 = move _1
+    _4 = move _11
+    goto bb3
+  bb3:
+    stmt: bind BindingId(112) exp_abs site=SiteId(756) ty=i64
+    _12 = move _4
+    _15 = const.i64 1
+    _16 = const.i64 0
+    _17 = icmp.sle _15 _16
+    branch _17 ? bb10 : bb11
+  bb4:
+    trap(IntegerOverflow)
+  bb5:
+    _10 = move _8
+    _4 = move _10
+    goto bb3
+  bb6:
+    _19 = icmp.slt _13 _14
+    branch _19 ? bb7 : bb9
+  bb7:
+    stmt: bind BindingId(113) i site=SiteId(0) ty=i64
+    stmt: use BindingId(111) scale site=SiteId(771) ty=f64 intent=Read
+    stmt: bind BindingId(111) scale site=SiteId(769) ty=f64
+    stmt: eval site=SiteId(770) ty=()
+    _20 = const.f64 0x4024000000000000
+    _21 = fmul.f64 _3 _20
+    _3 = move _21
+    goto bb8
+  bb8:
+    _13 ovf=_22 = add.checked.s _13 _15
+    branch _22 ? bb12 : bb6
+  bb9:
+    stmt: eval site=SiteId(773) ty=()
+    stmt: use BindingId(110) exponent site=SiteId(776) ty=i64 intent=Read
+    _24 = const.i64 0
+    _25 = icmp.slt _1 _24
+    branch _25 ? bb13 : bb14
+  bb10:
+    trap(DivideByZero)
+  bb11:
+    stmt: use BindingId(112) exp_abs site=SiteId(767) ty=i64 intent=Read
+    _18 = const.i64 0
+    _13 = move _18
+    _14 = move _12
+    goto bb6
+  bb12:
+    trap(IntegerOverflow)
+  bb13:
+    stmt: use BindingId(109) value site=SiteId(780) ty=f64 intent=Read
+    stmt: use BindingId(111) scale site=SiteId(781) ty=f64 intent=Read
+    _26 = fdiv.f64 _0 _3
+    _27 = move _26
+    _23 = move _27
+    goto bb15
+  bb14:
+    stmt: use BindingId(109) value site=SiteId(784) ty=f64 intent=Read
+    stmt: use BindingId(111) scale site=SiteId(785) ty=f64 intent=Read
+    _28 = fmul.f64 _0 _3
+    _29 = move _28
+    _23 = move _29
+    goto bb15
+  bb15:
+    stmt: return site=Some(SiteId(774)) ty=f64
+    ret = move _23
+    return
+
+fn std$string$digit_to_float(i64) -> f64 [conv=default]
+  locals:
+    _0: i64
+    _1: f64
+    _2: i64
+    _3: bool
+    _4: f64
+    _5: i64
+    _6: bool
+    _7: f64
+    _8: i64
+    _9: bool
+    _10: f64
+    _11: i64
+    _12: bool
+    _13: f64
+    _14: i64
+    _15: bool
+    _16: f64
+    _17: i64
+    _18: bool
+    _19: f64
+    _20: i64
+    _21: bool
+    _22: f64
+    _23: i64
+    _24: bool
+    _25: f64
+    _26: i64
+    _27: bool
+    _28: f64
+    _29: i64
+    _30: bool
+    _31: f64
+    _32: f64
+  bb0:
+    stmt: use BindingId(114) digit site=SiteId(787) ty=i64 intent=Read
+    goto bb2
+  bb1:
+    stmt: return site=Some(SiteId(786)) ty=f64
+    ret = move _1
+    return
+  bb2:
+    _2 = const.i64 0
+    _3 = icmp.eq _0 _2
+    branch _3 ? bb14 : bb3
+  bb3:
+    _5 = const.i64 1
+    _6 = icmp.eq _0 _5
+    branch _6 ? bb15 : bb4
+  bb4:
+    _8 = const.i64 2
+    _9 = icmp.eq _0 _8
+    branch _9 ? bb16 : bb5
+  bb5:
+    _11 = const.i64 3
+    _12 = icmp.eq _0 _11
+    branch _12 ? bb17 : bb6
+  bb6:
+    _14 = const.i64 4
+    _15 = icmp.eq _0 _14
+    branch _15 ? bb18 : bb7
+  bb7:
+    _17 = const.i64 5
+    _18 = icmp.eq _0 _17
+    branch _18 ? bb19 : bb8
+  bb8:
+    _20 = const.i64 6
+    _21 = icmp.eq _0 _20
+    branch _21 ? bb20 : bb9
+  bb9:
+    _23 = const.i64 7
+    _24 = icmp.eq _0 _23
+    branch _24 ? bb21 : bb10
+  bb10:
+    _26 = const.i64 8
+    _27 = icmp.eq _0 _26
+    branch _27 ? bb22 : bb11
+  bb11:
+    _29 = const.i64 9
+    _30 = icmp.eq _0 _29
+    branch _30 ? bb23 : bb12
+  bb12:
+    _32 = const.f64 0x0000000000000000
+    _1 = move _32
+    goto bb1
+  bb13:
+    trap(ExhaustivenessFallthrough)
+  bb14:
+    _4 = const.f64 0x0000000000000000
+    _1 = move _4
+    goto bb1
+  bb15:
+    _7 = const.f64 0x3ff0000000000000
+    _1 = move _7
+    goto bb1
+  bb16:
+    _10 = const.f64 0x4000000000000000
+    _1 = move _10
+    goto bb1
+  bb17:
+    _13 = const.f64 0x4008000000000000
+    _1 = move _13
+    goto bb1
+  bb18:
+    _16 = const.f64 0x4010000000000000
+    _1 = move _16
+    goto bb1
+  bb19:
+    _19 = const.f64 0x4014000000000000
+    _1 = move _19
+    goto bb1
+  bb20:
+    _22 = const.f64 0x4018000000000000
+    _1 = move _22
+    goto bb1
+  bb21:
+    _25 = const.f64 0x401c000000000000
+    _1 = move _25
+    goto bb1
+  bb22:
+    _28 = const.f64 0x4020000000000000
+    _1 = move _28
+    goto bb1
+  bb23:
+    _31 = const.f64 0x4022000000000000
+    _1 = move _31
+    goto bb1
+
+fn std$string$is_empty(string) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: bool
+  bb0:
+    stmt: use BindingId(115) s site=SiteId(800) ty=string intent=Read
+    _1 = call hew_string_is_empty(_0) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(799)) ty=bool
+    ret = move _1
+    return
+
+fn std$string$repeat(string, i64) -> string [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: string
+  bb0:
+    stmt: use BindingId(116) s site=SiteId(803) ty=string intent=Read
+    stmt: use BindingId(117) n site=SiteId(804) ty=i64 intent=Read
+    _2 = call hew_string_repeat(_0, _1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(802) ty=string
+    stmt: return site=Some(SiteId(802)) ty=string
+    ret = move _2
+    return
+
+fn std$string$pad_left(string, i64, string) -> string [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: string
+    _3: i64
+    _4: i64
+    _5: ()
+    _6: i64
+    _7: bool
+    _8: string
+    _9: i64
+    _10: i64
+    _11: ()
+    _12: bool
+    _13: i64
+    _14: bool
+    _15: string
+    _16: string
+  bb0:
+    stmt: use BindingId(120) pad site=SiteId(807) ty=string intent=Read
+    _3 = call hew_string_char_count(_2) -> bb1
+  bb1:
+    stmt: bind BindingId(121) pad_len site=SiteId(806) ty=i64
+    stmt: use BindingId(121) pad_len site=SiteId(810) ty=i64 intent=Read
+    _4 = move _3
+    _6 = const.i64 1
+    _7 = icmp.ne _4 _6
+    branch _7 ? bb2 : bb3
+  bb2:
+    _8 = string_lit "string.pad_left: pad must contain exactly one character"
+    call hew_panic_msg(_8) -> bb5
+  bb3:
+    goto bb4
+  bb4:
+    stmt: eval site=SiteId(816) ty=()
+    stmt: use BindingId(118) s site=SiteId(818) ty=string intent=Read
+    _9 = call hew_string_char_count(_0) -> bb6
+  bb5:
+    stmt: eval site=SiteId(812) ty=!
+    goto bb4
+  bb6:
+    stmt: bind BindingId(122) slen site=SiteId(817) ty=i64
+    stmt: use BindingId(122) slen site=SiteId(821) ty=i64 intent=Read
+    stmt: use BindingId(119) width site=SiteId(822) ty=i64 intent=Read
+    _10 = move _9
+    _12 = icmp.sge _10 _1
+    branch _12 ? bb7 : bb8
+  bb7:
+    stmt: use BindingId(118) s site=SiteId(823) ty=string intent=Consume
+    stmt: return site=Some(SiteId(823)) ty=string
+    string.retain _0
+    ret = move _0
+    return
+  bb8:
+    goto bb9
+  bb9:
+    stmt: eval site=SiteId(825) ty=()
+    stmt: use BindingId(120) pad site=SiteId(828) ty=string intent=Read
+    stmt: use BindingId(119) width site=SiteId(830) ty=i64 intent=Read
+    stmt: use BindingId(122) slen site=SiteId(831) ty=i64 intent=Read
+    _13 ovf=_14 = sub.checked.s _1 _10
+    branch _14 ? bb11 : bb12
+  bb10:
+    goto bb9
+  bb11:
+    trap(IntegerOverflow)
+  bb12:
+    _15 = call std$string$repeat(_2, _13) -> bb13
+  bb13:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(827) ty=string
+    stmt: use BindingId(118) s site=SiteId(833) ty=string intent=Read
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(826) ty=string
+    stmt: return site=Some(SiteId(826)) ty=string
+    _16 = call_rt hew_string_concat(_15, _0)
+    drop _15 ty=string fn=release(hew_string_drop)
+    ret = move _16
+    return
+
+fn std$string$pad_right(string, i64, string) -> string [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: string
+    _3: i64
+    _4: i64
+    _5: ()
+    _6: i64
+    _7: bool
+    _8: string
+    _9: i64
+    _10: i64
+    _11: ()
+    _12: bool
+    _13: i64
+    _14: bool
+    _15: string
+    _16: string
+  bb0:
+    stmt: use BindingId(125) pad site=SiteId(835) ty=string intent=Read
+    _3 = call hew_string_char_count(_2) -> bb1
+  bb1:
+    stmt: bind BindingId(126) pad_len site=SiteId(834) ty=i64
+    stmt: use BindingId(126) pad_len site=SiteId(838) ty=i64 intent=Read
+    _4 = move _3
+    _6 = const.i64 1
+    _7 = icmp.ne _4 _6
+    branch _7 ? bb2 : bb3
+  bb2:
+    _8 = string_lit "string.pad_right: pad must contain exactly one character"
+    call hew_panic_msg(_8) -> bb5
+  bb3:
+    goto bb4
+  bb4:
+    stmt: eval site=SiteId(844) ty=()
+    stmt: use BindingId(123) s site=SiteId(846) ty=string intent=Read
+    _9 = call hew_string_char_count(_0) -> bb6
+  bb5:
+    stmt: eval site=SiteId(840) ty=!
+    goto bb4
+  bb6:
+    stmt: bind BindingId(127) slen site=SiteId(845) ty=i64
+    stmt: use BindingId(127) slen site=SiteId(849) ty=i64 intent=Read
+    stmt: use BindingId(124) width site=SiteId(850) ty=i64 intent=Read
+    _10 = move _9
+    _12 = icmp.sge _10 _1
+    branch _12 ? bb7 : bb8
+  bb7:
+    stmt: use BindingId(123) s site=SiteId(851) ty=string intent=Consume
+    stmt: return site=Some(SiteId(851)) ty=string
+    string.retain _0
+    ret = move _0
+    return
+  bb8:
+    goto bb9
+  bb9:
+    stmt: eval site=SiteId(853) ty=()
+    stmt: use BindingId(123) s site=SiteId(855) ty=string intent=Read
+    stmt: use BindingId(125) pad site=SiteId(857) ty=string intent=Read
+    stmt: use BindingId(124) width site=SiteId(859) ty=i64 intent=Read
+    stmt: use BindingId(127) slen site=SiteId(860) ty=i64 intent=Read
+    _13 ovf=_14 = sub.checked.s _1 _10
+    branch _14 ? bb11 : bb12
+  bb10:
+    goto bb9
+  bb11:
+    trap(IntegerOverflow)
+  bb12:
+    _15 = call std$string$repeat(_2, _13) -> bb13
+  bb13:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(856) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(854) ty=string
+    stmt: return site=Some(SiteId(854)) ty=string
+    _16 = call_rt hew_string_concat(_0, _15)
+    drop _15 ty=string fn=release(hew_string_drop)
+    ret = move _16
+    return
+
+fn std$string$is_numeric(string) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: i64
+    _3: ()
+    _4: i64
+    _5: bool
+    _6: bool
+    _7: i64
+    _8: i64
+    _9: i64
+    _10: i64
+    _11: bool
+    _12: i64
+    _13: bool
+    _14: i64
+    _15: i64
+    _16: bool
+    _17: string
+    _18: i64
+    _19: i64
+    _20: ()
+    _21: i64
+    _22: bool
+    _23: bool
+    _24: bool
+    _25: bool
+  bb0:
+    stmt: use BindingId(128) s site=SiteId(863) ty=string intent=Read
+    _1 = call hew_string_length(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(129) slen site=SiteId(862) ty=i64
+    stmt: use BindingId(129) slen site=SiteId(866) ty=i64 intent=Read
+    _2 = move _1
+    _4 = const.i64 0
+    _5 = icmp.eq _2 _4
+    branch _5 ? bb2 : bb3
+  bb2:
+    stmt: return site=Some(SiteId(868)) ty=bool
+    _6 = const.i64 0
+    ret = move _6
+    return
+  bb3:
+    goto bb4
+  bb4:
+    stmt: eval site=SiteId(870) ty=()
+    _9 = const.i64 1
+    _10 = const.i64 0
+    _11 = icmp.sle _9 _10
+    branch _11 ? bb10 : bb11
+  bb5:
+    goto bb4
+  bb6:
+    _13 = icmp.slt _7 _8
+    branch _13 ? bb7 : bb9
+  bb7:
+    stmt: bind BindingId(130) i site=SiteId(0) ty=i64
+    stmt: use BindingId(128) s site=SiteId(876) ty=string intent=Read
+    stmt: use BindingId(130) i site=SiteId(877) ty=i64 intent=Read
+    stmt: use BindingId(130) i site=SiteId(879) ty=i64 intent=Read
+    _14 = const.i64 1
+    _15 ovf=_16 = add.checked.s _7 _14
+    branch _16 ? bb12 : bb13
+  bb8:
+    _7 ovf=_24 = add.checked.s _7 _9
+    branch _24 ? bb20 : bb6
+  bb9:
+    stmt: eval site=SiteId(889) ty=()
+    stmt: return site=Some(SiteId(890)) ty=bool
+    _25 = const.i64 1
+    ret = move _25
+    return
+  bb10:
+    trap(DivideByZero)
+  bb11:
+    stmt: use BindingId(129) slen site=SiteId(872) ty=i64 intent=Read
+    _12 = const.i64 0
+    _7 = move _12
+    _8 = move _2
+    goto bb6
+  bb12:
+    trap(IntegerOverflow)
+  bb13:
+    _17 = call hew_string_slice(_0, _7, _15) -> bb14
+  bb14:
+    stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(875) ty=string
+    _18 = call std$string$digit_value(_17) -> bb15
+  bb15:
+    stmt: bind BindingId(131) d site=SiteId(874) ty=i64
+    stmt: use BindingId(131) d site=SiteId(885) ty=i64 intent=Read
+    _19 = move _18
+    _21 = const.i64 0
+    _22 = icmp.slt _19 _21
+    branch _22 ? bb16 : bb17
+  bb16:
+    stmt: return site=Some(SiteId(888)) ty=bool
+    _23 = const.i64 0
+    ret = move _23
+    return
+  bb17:
+    goto bb18
+  bb18:
+    goto bb8
+  bb19:
+    goto bb18
+  bb20:
+    trap(IntegerOverflow)
+
+fn std$string$count(string, string) -> i64 [conv=default]
+  locals:
+    _0: string
+    _1: string
+    _2: i64
+    _3: i64
+    _4: ()
+    _5: i64
+    _6: bool
+    _7: i64
+    _8: i64
+    _9: i64
+    _10: i64
+    _11: i64
+    _12: i64
+    _13: i64
+    _14: i64
+    _15: bool
+    _16: bool
+    _17: string
+    _18: string
+    _19: i64
+    _20: Option<i64>
+    _21: i64
+    _22: i64
+    _23: bool
+    _24: i64
+    _25: bool
+    _26: i64
+    _27: i64
+    _28: i64
+    _29: i64
+    _30: bool
+    _31: i64
+    _32: bool
+    _33: i64
+    _34: bool
+  bb0:
+    stmt: use BindingId(133) needle site=SiteId(892) ty=string intent=Read
+    _2 = call hew_string_length(_1) -> bb1
+  bb1:
+    stmt: bind BindingId(134) nlen site=SiteId(891) ty=i64
+    stmt: use BindingId(134) nlen site=SiteId(895) ty=i64 intent=Read
+    _3 = move _2
+    _5 = const.i64 0
+    _6 = icmp.eq _3 _5
+    branch _6 ? bb2 : bb3
+  bb2:
+    stmt: return site=Some(SiteId(897)) ty=i64
+    _7 = const.i64 0
+    ret = move _7
+    return
+  bb3:
+    goto bb4
+  bb4:
+    stmt: eval site=SiteId(899) ty=()
+    stmt: bind BindingId(135) n site=SiteId(900) ty=i64
+    stmt: bind BindingId(136) pos site=SiteId(901) ty=i64
+    stmt: use BindingId(132) haystack site=SiteId(903) ty=string intent=Read
+    _8 = const.i64 0
+    _9 = move _8
+    _10 = const.i64 0
+    _11 = move _10
+    _12 = call hew_string_length(_0) -> bb6
+  bb5:
+    goto bb4
+  bb6:
+    stmt: bind BindingId(137) hlen site=SiteId(902) ty=i64
+    _13 = move _12
+    goto bb7
+  bb7:
+    stmt: use BindingId(136) pos site=SiteId(906) ty=i64 intent=Read
+    stmt: use BindingId(137) hlen site=SiteId(908) ty=i64 intent=Read
+    stmt: use BindingId(134) nlen site=SiteId(909) ty=i64 intent=Read
+    _14 ovf=_15 = sub.checked.s _13 _3
+    branch _15 ? bb10 : bb11
+  bb8:
+    stmt: use BindingId(132) haystack site=SiteId(911) ty=string intent=Read
+    stmt: use BindingId(136) pos site=SiteId(912) ty=i64 intent=Read
+    stmt: use BindingId(137) hlen site=SiteId(913) ty=i64 intent=Read
+    _17 = call hew_string_slice(_0, _11, _13) -> bb12
+  bb9:
+    stmt: eval site=SiteId(933) ty=()
+    stmt: use BindingId(135) n site=SiteId(934) ty=i64 intent=Read
+    stmt: return site=Some(SiteId(934)) ty=i64
+    ret = move _9
+    return
+  bb10:
+    trap(IntegerOverflow)
+  bb11:
+    _16 = icmp.sle _11 _14
+    branch _16 ? bb8 : bb9
+  bb12:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(910) ty=string
+    stmt: bind BindingId(138) rest site=SiteId(910) ty=string
+    stmt: use BindingId(138) rest site=SiteId(917) ty=string intent=Read
+    stmt: use BindingId(133) needle site=SiteId(918) ty=string intent=Read
+    _18 = move _17
+    _20 = call hew_string_find(_18, _1) [authority=Runtime(StringFind)] -> bb13
+  bb13:
+    _21 = move etag20
+    _22 = const.i64 0
+    _23 = icmp.eq _21 _22
+    branch _23 ? bb15 : bb18
+  bb14:
+    stmt: bind BindingId(140) idx site=SiteId(915) ty=i64
+    stmt: use BindingId(135) n site=SiteId(925) ty=i64 intent=Read
+    _27 = move _19
+    _28 = const.i64 1
+    _29 ovf=_30 = add.checked.s _9 _28
+    branch _30 ? bb20 : bb21
+  bb15:
+    stmt: bind BindingId(139) i site=SiteId(920) ty=i64
+    stmt: use BindingId(139) i site=SiteId(920) ty=i64 intent=Read
+    _26 = move mvar20.0.0
+    _19 = move _26
+    goto bb14
+  bb16:
+    stmt: use BindingId(135) n site=SiteId(922) ty=i64 intent=Consume
+    stmt: return site=Some(SiteId(922)) ty=i64
+    ret = move _9
+    return
+  bb17:
+    trap(ExhaustivenessFallthrough)
+  bb18:
+    _24 = const.i64 1
+    _25 = icmp.eq _21 _24
+    branch _25 ? bb16 : bb17
+  bb19:
+    goto bb14
+  bb20:
+    trap(IntegerOverflow)
+  bb21:
+    stmt: bind BindingId(135) n site=SiteId(923) ty=i64
+    stmt: eval site=SiteId(924) ty=()
+    stmt: use BindingId(136) pos site=SiteId(930) ty=i64 intent=Read
+    stmt: use BindingId(140) idx site=SiteId(931) ty=i64 intent=Read
+    _9 = move _29
+    _31 ovf=_32 = add.checked.s _11 _27
+    branch _32 ? bb22 : bb23
+  bb22:
+    trap(IntegerOverflow)
+  bb23:
+    stmt: use BindingId(134) nlen site=SiteId(932) ty=i64 intent=Read
+    _33 ovf=_34 = add.checked.s _31 _3
+    branch _34 ? bb24 : bb25
+  bb24:
+    trap(IntegerOverflow)
+  bb25:
+    stmt: bind BindingId(136) pos site=SiteId(927) ty=i64
+    stmt: eval site=SiteId(928) ty=()
+    _11 = move _33
+    goto bb7
+
+fn std$string$starts_with(string, string) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: string
+    _2: bool
+  bb0:
+    stmt: use BindingId(141) s site=SiteId(936) ty=string intent=Read
+    stmt: use BindingId(142) prefix site=SiteId(937) ty=string intent=Read
+    _2 = call hew_string_starts_with(_0, _1) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(935)) ty=bool
+    ret = move _2
+    return
+
+fn std$string$ends_with(string, string) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: string
+    _2: bool
+  bb0:
+    stmt: use BindingId(143) s site=SiteId(940) ty=string intent=Read
+    stmt: use BindingId(144) suffix site=SiteId(941) ty=string intent=Read
+    _2 = call hew_string_ends_with(_0, _1) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(939)) ty=bool
+    ret = move _2
+    return
+
+fn std$string$contains(string, string) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: string
+    _2: bool
+  bb0:
+    stmt: use BindingId(145) s site=SiteId(944) ty=string intent=Read
+    stmt: use BindingId(146) sub site=SiteId(945) ty=string intent=Read
+    _2 = call hew_string_contains(_0, _1) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(943)) ty=bool
+    ret = move _2
+    return
+
+fn std$string$is_ascii(string) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: i64
+    _3: i64
+    _4: i64
+    _5: i64
+    _6: i64
+    _7: bool
+    _8: i64
+    _9: bool
+    _10: char
+    _11: Option<char>
+    _12: i64
+    _13: i64
+    _14: bool
+    _15: i64
+    _16: bool
+    _17: char
+    _18: bool
+    _19: char
+    _20: ()
+    _21: i64
+    _22: i64
+    _23: bool
+    _24: bool
+    _25: bool
+    _26: bool
+  bb0:
+    stmt: use BindingId(147) s site=SiteId(948) ty=string intent=Read
+    _1 = call hew_string_length(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(148) len site=SiteId(947) ty=i64
+    _2 = move _1
+    _5 = const.i64 1
+    _6 = const.i64 0
+    _7 = icmp.sle _5 _6
+    branch _7 ? bb6 : bb7
+  bb2:
+    _9 = icmp.slt _3 _4
+    branch _9 ? bb3 : bb5
+  bb3:
+    stmt: bind BindingId(149) i site=SiteId(0) ty=i64
+    stmt: use BindingId(147) s site=SiteId(955) ty=string intent=Read
+    stmt: use BindingId(149) i site=SiteId(956) ty=i64 intent=Read
+    _11 = call hew_string_char_at(_0, _3) [authority=Runtime(StringCharAt)] -> bb8
+  bb4:
+    _3 ovf=_25 = add.checked.s _3 _5
+    branch _25 ? bb19 : bb2
+  bb5:
+    stmt: eval site=SiteId(968) ty=()
+    stmt: return site=Some(SiteId(969)) ty=bool
+    _26 = const.i64 1
+    ret = move _26
+    return
+  bb6:
+    trap(DivideByZero)
+  bb7:
+    stmt: use BindingId(148) len site=SiteId(951) ty=i64 intent=Read
+    _8 = const.i64 0
+    _3 = move _8
+    _4 = move _2
+    goto bb2
+  bb8:
+    _12 = move etag11
+    _13 = const.i64 0
+    _14 = icmp.eq _12 _13
+    branch _14 ? bb10 : bb13
+  bb9:
+    stmt: bind BindingId(151) ch site=SiteId(953) ty=char
+    stmt: use BindingId(151) ch site=SiteId(964) ty=char intent=Read
+    _19 = move _10
+    _21 = cast _19 char -> i64
+    _22 = const.i64 127
+    _23 = icmp.sgt _21 _22
+    branch _23 ? bb15 : bb16
+  bb10:
+    stmt: bind BindingId(150) c site=SiteId(958) ty=char
+    stmt: use BindingId(150) c site=SiteId(958) ty=char intent=Read
+    _17 = move mvar11.0.0
+    _10 = move _17
+    goto bb9
+  bb11:
+    stmt: return site=Some(SiteId(960)) ty=bool
+    _18 = const.i64 0
+    ret = move _18
+    return
+  bb12:
+    trap(ExhaustivenessFallthrough)
+  bb13:
+    _15 = const.i64 1
+    _16 = icmp.eq _12 _15
+    branch _16 ? bb11 : bb12
+  bb14:
+    goto bb9
+  bb15:
+    stmt: return site=Some(SiteId(967)) ty=bool
+    _24 = const.i64 0
+    ret = move _24
+    return
+  bb16:
+    goto bb17
+  bb17:
+    goto bb4
+  bb18:
+    goto bb17
+  bb19:
+    trap(IntegerOverflow)
+
+fn std$string$trim(string) -> string [conv=default]
+  locals:
+    _0: string
+    _1: string
+  bb0:
+    stmt: use BindingId(152) s site=SiteId(971) ty=string intent=Read
+    _1 = call hew_string_trim(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(970) ty=string
+    stmt: return site=Some(SiteId(970)) ty=string
+    ret = move _1
+    return
+
+fn std$string$replace(string, string, string) -> string [conv=default]
+  locals:
+    _0: string
+    _1: string
+    _2: string
+    _3: string
+  bb0:
+    stmt: use BindingId(153) s site=SiteId(974) ty=string intent=Read
+    stmt: use BindingId(154) old site=SiteId(975) ty=string intent=Read
+    stmt: use BindingId(155) new_val site=SiteId(976) ty=string intent=Read
+    _3 = call hew_string_replace(_0, _1, _2) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(973) ty=string
+    stmt: return site=Some(SiteId(973)) ty=string
+    ret = move _3
+    return
+
+fn std$string$split(string, string) -> Vec<string> [conv=default]
+  locals:
+    _0: string
+    _1: string
+    _2: Vec<string>
+  bb0:
+    stmt: use BindingId(156) s site=SiteId(979) ty=string intent=Read
+    stmt: use BindingId(157) sep site=SiteId(980) ty=string intent=Read
+    _2 = call hew_string_split(_0, _1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(978) ty=Vec<string>
+    stmt: return site=Some(SiteId(978)) ty=Vec<string>
+    ret = move _2
+    return
+
+fn std$string$lines(string) -> Vec<string> [conv=default]
+  locals:
+    _0: string
+    _1: Vec<string>
+    _2: Vec<string>
+    _3: i64
+    _4: i64
+    _5: i64
+    _6: i64
+    _7: bool
+    _8: string
+    _9: string
+    _10: string
+    _11: Option<i64>
+    _12: Option<i64>
+    _13: ()
+    _14: bool
+    _15: i64
+    _16: i64
+    _17: bool
+    _18: i64
+    _19: bool
+    _20: bool
+    _21: bool
+    _22: i64
+    _23: i64
+    _24: i64
+    _25: bool
+    _26: i64
+    _27: bool
+    _28: i64
+    _29: i64
+    _30: i64
+    _31: i64
+    _32: bool
+    _33: i64
+    _34: ()
+    _35: bool
+    _36: bool
+    _37: i64
+    _38: i64
+    _39: bool
+    _40: string
+    _41: string
+    _42: bool
+    _43: i64
+    _44: i64
+    _45: bool
+    _46: string
+    _47: i64
+    _48: bool
+    _49: i64
+    _50: i64
+    _51: bool
+    _52: i64
+    _53: ()
+    _54: bool
+    _55: bool
+    _56: i64
+    _57: i64
+    _58: bool
+    _59: string
+    _60: string
+    _61: bool
+    _62: i64
+    _63: i64
+    _64: bool
+    _65: string
+  bb0:
+    _1 = call Vec::new() [authority=Runtime(VecNew)] -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(982) ty=Vec<string>
+    stmt: bind BindingId(159) result site=SiteId(982) ty=Vec<string>
+    stmt: use BindingId(158) s site=SiteId(985) ty=string intent=Read
+    _2 = move _1
+    _3 = call hew_string_length(_0) -> bb2
+  bb2:
+    stmt: bind BindingId(160) slen site=SiteId(984) ty=i64
+    stmt: bind BindingId(161) start site=SiteId(987) ty=i64
+    _4 = move _3
+    _5 = const.i64 0
+    _6 = move _5
+    goto bb3
+  bb3:
+    stmt: use BindingId(161) start site=SiteId(989) ty=i64 intent=Read
+    stmt: use BindingId(160) slen site=SiteId(990) ty=i64 intent=Read
+    _7 = icmp.slt _6 _4
+    branch _7 ? bb4 : bb5
+  bb4:
+    stmt: use BindingId(158) s site=SiteId(992) ty=string intent=Read
+    stmt: use BindingId(161) start site=SiteId(993) ty=i64 intent=Read
+    stmt: use BindingId(160) slen site=SiteId(994) ty=i64 intent=Read
+    _8 = call hew_string_slice(_0, _6, _4) -> bb6
+  bb5:
+    stmt: eval site=SiteId(1046) ty=()
+    stmt: use BindingId(160) slen site=SiteId(1047) ty=i64 intent=Consume
+    stmt: bind BindingId(167) final_end site=SiteId(1047) ty=i64
+    stmt: use BindingId(167) final_end site=SiteId(1050) ty=i64 intent=Read
+    stmt: use BindingId(161) start site=SiteId(1051) ty=i64 intent=Read
+    _52 = move _4
+    _54 = const.i64 0
+    _55 = icmp.sgt _52 _6
+    branch _55 ? bb40 : bb41
+  bb6:
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(991) ty=string
+    stmt: bind BindingId(162) rest site=SiteId(991) ty=string
+    stmt: use BindingId(162) rest site=SiteId(997) ty=string intent=Read
+    _9 = move _8
+    _10 = string_lit "\n"
+    _11 = call hew_string_find(_9, _10) [authority=Runtime(StringFind)] -> bb7
+  bb7:
+    stmt: bind BindingId(163) found site=SiteId(996) ty=Option<i64>
+    stmt: use BindingId(163) found site=SiteId(1001) ty=Option<i64> intent=Read
+    _12 = move _11
+    _15 = move etag12
+    _16 = const.i64 0
+    _17 = icmp.eq _15 _16
+    branch _17 ? bb9 : bb12
+  bb8:
+    branch _14 ? bb13 : bb14
+  bb9:
+    _20 = const.i64 0
+    _14 = move _20
+    goto bb8
+  bb10:
+    _21 = const.i64 1
+    _14 = move _21
+    goto bb8
+  bb11:
+    trap(ExhaustivenessFallthrough)
+  bb12:
+    _18 = const.i64 1
+    _19 = icmp.eq _15 _18
+    branch _19 ? bb10 : bb11
+  bb13:
+    goto bb5
+  bb14:
+    goto bb15
+  bb15:
+    stmt: eval site=SiteId(1006) ty=()
+    stmt: use BindingId(163) found site=SiteId(1008) ty=Option<i64> intent=Consume
+    _23 = move etag12
+    _24 = const.i64 0
+    _25 = icmp.eq _23 _24
+    branch _25 ? bb18 : bb21
+  bb16:
+    stmt: eval site=SiteId(1004) ty=()
+    goto bb15
+  bb17:
+    stmt: bind BindingId(165) idx site=SiteId(1007) ty=i64
+    stmt: use BindingId(161) start site=SiteId(1012) ty=i64 intent=Read
+    stmt: use BindingId(165) idx site=SiteId(1013) ty=i64 intent=Read
+    _30 = move _22
+    _31 ovf=_32 = add.checked.s _6 _30
+    branch _32 ? bb22 : bb23
+  bb18:
+    stmt: bind BindingId(164) __option_unwrap_or_value site=SiteId(1010) ty=i64
+    stmt: use BindingId(164) __option_unwrap_or_value site=SiteId(1010) ty=i64 intent=Read
+    _28 = move mvar12.0.0
+    _22 = move _28
+    goto bb17
+  bb19:
+    _29 = const.i64 0
+    _22 = move _29
+    goto bb17
+  bb20:
+    trap(ExhaustivenessFallthrough)
+  bb21:
+    _26 = const.i64 1
+    _27 = icmp.eq _23 _26
+    branch _27 ? bb19 : bb20
+  bb22:
+    trap(IntegerOverflow)
+  bb23:
+    stmt: bind BindingId(166) end site=SiteId(1011) ty=i64
+    stmt: use BindingId(166) end site=SiteId(1016) ty=i64 intent=Read
+    stmt: use BindingId(161) start site=SiteId(1017) ty=i64 intent=Read
+    _33 = move _31
+    _35 = const.i64 0
+    _36 = icmp.sgt _33 _6
+    branch _36 ? bb24 : bb25
+  bb24:
+    stmt: use BindingId(158) s site=SiteId(1020) ty=string intent=Read
+    stmt: use BindingId(166) end site=SiteId(1022) ty=i64 intent=Read
+    _37 = const.i64 1
+    _38 ovf=_39 = sub.checked.s _33 _37
+    branch _39 ? bb26 : bb27
+  bb25:
+    branch _35 ? bb29 : bb30
+  bb26:
+    trap(IntegerOverflow)
+  bb27:
+    stmt: use BindingId(166) end site=SiteId(1024) ty=i64 intent=Read
+    _40 = call hew_string_slice(_0, _38, _33) -> bb28
+  bb28:
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(1019) ty=string
+    _41 = string_lit "\r"
+    _42 = icmp.eq _40 _41
+    drop _40 ty=string fn=release(hew_string_drop)
+    _35 = move _42
+    goto bb25
+  bb29:
+    stmt: use BindingId(166) end site=SiteId(1029) ty=i64 intent=Read
+    _43 = const.i64 1
+    _44 ovf=_45 = sub.checked.s _33 _43
+    branch _45 ? bb32 : bb33
+  bb30:
+    goto bb31
+  bb31:
+    stmt: eval site=SiteId(1032) ty=()
+    stmt: use BindingId(159) result site=SiteId(1034) ty=Vec<string> intent=Read
+    stmt: use BindingId(158) s site=SiteId(1036) ty=string intent=Read
+    stmt: use BindingId(161) start site=SiteId(1037) ty=i64 intent=Read
+    stmt: use BindingId(166) end site=SiteId(1038) ty=i64 intent=Read
+    _46 = call hew_string_slice(_0, _6, _33) -> bb34
+  bb32:
+    trap(IntegerOverflow)
+  bb33:
+    stmt: bind BindingId(166) end site=SiteId(1027) ty=i64
+    stmt: eval site=SiteId(1028) ty=()
+    _33 = move _44
+    goto bb31
+  bb34:
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(1035) ty=string
+    call hew_vec_push_str(_2, _46) [authority=Runtime(VecScalar { op: Push, elem: Str })] -> bb35
+  bb35:
+    stmt: eval site=SiteId(1033) ty=()
+    stmt: use BindingId(161) start site=SiteId(1043) ty=i64 intent=Read
+    stmt: use BindingId(165) idx site=SiteId(1044) ty=i64 intent=Read
+    drop _46 ty=string fn=release(hew_string_drop)
+    _47 ovf=_48 = add.checked.s _6 _30
+    branch _48 ? bb36 : bb37
+  bb36:
+    trap(IntegerOverflow)
+  bb37:
+    _49 = const.i64 1
+    _50 ovf=_51 = add.checked.s _47 _49
+    branch _51 ? bb38 : bb39
+  bb38:
+    trap(IntegerOverflow)
+  bb39:
+    stmt: bind BindingId(161) start site=SiteId(1040) ty=i64
+    stmt: eval site=SiteId(1041) ty=()
+    _6 = move _50
+    goto bb3
+  bb40:
+    stmt: use BindingId(158) s site=SiteId(1054) ty=string intent=Read
+    stmt: use BindingId(167) final_end site=SiteId(1056) ty=i64 intent=Read
+    _56 = const.i64 1
+    _57 ovf=_58 = sub.checked.s _52 _56
+    branch _58 ? bb42 : bb43
+  bb41:
+    branch _54 ? bb45 : bb46
+  bb42:
+    trap(IntegerOverflow)
+  bb43:
+    stmt: use BindingId(167) final_end site=SiteId(1058) ty=i64 intent=Read
+    _59 = call hew_string_slice(_0, _57, _52) -> bb44
+  bb44:
+    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(1053) ty=string
+    _60 = string_lit "\r"
+    _61 = icmp.eq _59 _60
+    drop _59 ty=string fn=release(hew_string_drop)
+    _54 = move _61
+    goto bb41
+  bb45:
+    stmt: use BindingId(167) final_end site=SiteId(1063) ty=i64 intent=Read
+    _62 = const.i64 1
+    _63 ovf=_64 = sub.checked.s _52 _62
+    branch _64 ? bb48 : bb49
+  bb46:
+    goto bb47
+  bb47:
+    stmt: eval site=SiteId(1066) ty=()
+    stmt: use BindingId(159) result site=SiteId(1068) ty=Vec<string> intent=Read
+    stmt: use BindingId(158) s site=SiteId(1070) ty=string intent=Read
+    stmt: use BindingId(161) start site=SiteId(1071) ty=i64 intent=Read
+    stmt: use BindingId(167) final_end site=SiteId(1072) ty=i64 intent=Read
+    _65 = call hew_string_slice(_0, _6, _52) -> bb50
+  bb48:
+    trap(IntegerOverflow)
+  bb49:
+    stmt: bind BindingId(167) final_end site=SiteId(1061) ty=i64
+    stmt: eval site=SiteId(1062) ty=()
+    _52 = move _63
+    goto bb47
+  bb50:
+    stmt: bind BindingId(4294967226) __hew_produced_value site=SiteId(1069) ty=string
+    call hew_vec_push_str(_2, _65) [authority=Runtime(VecScalar { op: Push, elem: Str })] -> bb51
+  bb51:
+    stmt: eval site=SiteId(1067) ty=()
+    stmt: use BindingId(159) result site=SiteId(1074) ty=Vec<string> intent=Read
+    stmt: return site=Some(SiteId(1074)) ty=Vec<string>
+    drop _65 ty=string fn=release(hew_string_drop)
+    ret = move _2
+    return
+
+fn std$string$join(Vec<string>, string) -> string [conv=default]
+  locals:
+    _0: Vec<string>
+    _1: string
+    _2: i64
+    _3: i64
+    _4: ()
+    _5: i64
+    _6: bool
+    _7: string
+    _8: i64
+    _9: i64
+    _10: bool
+    _11: string
+    _12: string
+    _13: i64
+    _14: i64
+    _15: i64
+    _16: i64
+    _17: bool
+    _18: i64
+    _19: bool
+    _20: string
+    _21: i64
+    _22: bool
+    _23: string
+    _24: string
+    _25: bool
+  bb0:
+    stmt: use BindingId(168) parts site=SiteId(1076) ty=Vec<string> intent=Read
+    _2 = call hew_vec_len(_0) [authority=Runtime(VecLen)] -> bb1
+  bb1:
+    stmt: bind BindingId(170) n site=SiteId(1075) ty=i64
+    stmt: use BindingId(170) n site=SiteId(1078) ty=i64 intent=Read
+    _3 = move _2
+    _5 = const.i64 0
+    _6 = icmp.eq _3 _5
+    branch _6 ? bb2 : bb3
+  bb2:
+    stmt: return site=Some(SiteId(1080)) ty=string
+    _7 = string_lit ""
+    ret = move _7
+    return
+  bb3:
+    goto bb4
+  bb4:
+    stmt: eval site=SiteId(1082) ty=()
+    stmt: use BindingId(168) parts site=SiteId(1084) ty=Vec<string> intent=Read
+    _8 = const.i64 0
+    _9 = call_rt hew_vec_len(_0)
+    _10 = icmp.uge _8 _9
+    branch _10 ? bb6 : bb7
+  bb5:
+    goto bb4
+  bb6:
+    trap(IndexOutOfBounds)
+  bb7:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1083) ty=string
+    stmt: bind BindingId(171) result site=SiteId(1083) ty=string
+    _11 = call_rt hew_vec_get_str(_0, _8)
+    _12 = move _11
+    _15 = const.i64 1
+    _16 = const.i64 0
+    _17 = icmp.sle _15 _16
+    branch _17 ? bb12 : bb13
+  bb8:
+    _19 = icmp.slt _13 _14
+    branch _19 ? bb9 : bb11
+  bb9:
+    stmt: bind BindingId(172) i site=SiteId(0) ty=i64
+    stmt: use BindingId(171) result site=SiteId(1092) ty=string intent=Read
+    stmt: use BindingId(169) sep site=SiteId(1093) ty=string intent=Read
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(1091) ty=string
+    stmt: use BindingId(168) parts site=SiteId(1095) ty=Vec<string> intent=Read
+    stmt: use BindingId(172) i site=SiteId(1096) ty=i64 intent=Read
+    _20 = call_rt hew_string_concat(_12, _1)
+    _21 = call_rt hew_vec_len(_0)
+    _22 = icmp.uge _13 _21
+    branch _22 ? bb14 : bb15
+  bb10:
+    _13 ovf=_25 = add.checked.s _13 _15
+    branch _25 ? bb16 : bb8
+  bb11:
+    stmt: eval site=SiteId(1097) ty=()
+    stmt: use BindingId(171) result site=SiteId(1098) ty=string intent=Read
+    stmt: return site=Some(SiteId(1098)) ty=string
+    ret = move _12
+    return
+  bb12:
+    trap(DivideByZero)
+  bb13:
+    stmt: use BindingId(170) n site=SiteId(1087) ty=i64 intent=Read
+    _18 = const.i64 1
+    _13 = move _18
+    _14 = move _3
+    goto bb8
+  bb14:
+    trap(IndexOutOfBounds)
+  bb15:
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(1094) ty=string
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(1090) ty=string
+    stmt: bind BindingId(171) result site=SiteId(1089) ty=string
+    stmt: eval site=SiteId(1090) ty=()
+    _23 = call_rt hew_vec_get_str(_0, _13)
+    _24 = call_rt hew_string_concat(_20, _23)
+    drop _23 ty=string fn=release(hew_string_drop)
+    drop _12 ty=string fn=release(hew_string_drop)
+    _12 = move _24
+    goto bb10
+  bb16:
+    trap(IntegerOverflow)
+
+fn std.string.string::len(string) -> i64 [conv=default]
+  locals:
+    _0: string
+    _1: i64
+  bb0:
+    stmt: return site=Some(SiteId(1099)) ty=i64
+    _1 = const.i64 0
+    ret = move _1
+    return
+
+fn std.string.string::is_empty(string) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: bool
+  bb0:
+    stmt: return site=Some(SiteId(1100)) ty=bool
+    _1 = const.i64 0
+    ret = move _1
+    return
+
+fn std.string.string::contains(string, string) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: string
+    _2: bool
+  bb0:
+    stmt: return site=Some(SiteId(1101)) ty=bool
+    _2 = const.i64 0
+    ret = move _2
+    return
+
+fn std.string.string::starts_with(string, string) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: string
+    _2: bool
+  bb0:
+    stmt: return site=Some(SiteId(1102)) ty=bool
+    _2 = const.i64 0
+    ret = move _2
+    return
+
+fn std.string.string::ends_with(string, string) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: string
+    _2: bool
+  bb0:
+    stmt: return site=Some(SiteId(1103)) ty=bool
+    _2 = const.i64 0
+    ret = move _2
+    return
+
+fn std.string.string::to_upper(string) -> string [conv=default]
+  locals:
+    _0: string
+    _1: string
+  bb0:
+    stmt: return site=Some(SiteId(1104)) ty=string
+    _1 = string_lit ""
+    ret = move _1
+    return
+
+fn std.string.string::to_lower(string) -> string [conv=default]
+  locals:
+    _0: string
+    _1: string
+  bb0:
+    stmt: return site=Some(SiteId(1105)) ty=string
+    _1 = string_lit ""
+    ret = move _1
+    return
+
+fn std.string.string::trim(string) -> string [conv=default]
+  locals:
+    _0: string
+    _1: string
+  bb0:
+    stmt: return site=Some(SiteId(1106)) ty=string
+    _1 = string_lit ""
+    ret = move _1
+    return
+
+fn std.string.string::is_digit(string) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: bool
+  bb0:
+    stmt: return site=Some(SiteId(1107)) ty=bool
+    _1 = const.i64 0
+    ret = move _1
+    return
+
+fn std.string.string::is_alpha(string) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: bool
+  bb0:
+    stmt: return site=Some(SiteId(1108)) ty=bool
+    _1 = const.i64 0
+    ret = move _1
+    return
+
+fn std.string.string::is_alphanumeric(string) -> bool [conv=default]
+  locals:
+    _0: string
+    _1: bool
+  bb0:
+    stmt: return site=Some(SiteId(1109)) ty=bool
+    _1 = const.i64 0
+    ret = move _1
+    return
+
+fn std.string.string::clone(string) -> string [conv=default]
+  locals:
+    _0: string
+    _1: string
+  bb0:
+    stmt: return site=Some(SiteId(1110)) ty=string
+    _1 = string_lit ""
+    ret = move _1
+    return
+
+fn std.string.string::replace(string, string, string) -> string [conv=default]
+  locals:
+    _0: string
+    _1: string
+    _2: string
+    _3: string
+  bb0:
+    stmt: return site=Some(SiteId(1111)) ty=string
+    _3 = string_lit ""
+    ret = move _3
+    return
+
+fn std.string.string::split(string, string) -> Vec<string> [conv=default]
+  locals:
+    _0: string
+    _1: string
+    _2: Vec<string>
+  bb0:
+    _2 = call Vec::new() [authority=Runtime(VecNew)] -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1112) ty=Vec<string>
+    stmt: return site=Some(SiteId(1112)) ty=Vec<string>
+    ret = move _2
+    return
+
+fn std.string.string::lines(string) -> Vec<string> [conv=default]
+  locals:
+    _0: string
+    _1: Vec<string>
+  bb0:
+    _1 = call Vec::new() [authority=Runtime(VecNew)] -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1114) ty=Vec<string>
+    stmt: return site=Some(SiteId(1114)) ty=Vec<string>
+    ret = move _1
+    return
+
+fn std.string.string::find(string, string) -> Option<i64> [conv=default]
+  locals:
+    _0: string
+    _1: string
+    _2: Option<i64>
+    _3: i64
+  bb0:
+    stmt: return site=Some(SiteId(1116)) ty=Option<i64>
+    _3 = const.i64 1
+    mtag2 = move _3
+    ret = move _2
+    return
+
+fn std.string.string::slice(string, i64, i64) -> string [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: i64
+    _3: string
+  bb0:
+    stmt: return site=Some(SiteId(1117)) ty=string
+    _3 = string_lit ""
+    ret = move _3
+    return
+
+fn std.string.string::repeat(string, i64) -> string [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: string
+  bb0:
+    stmt: return site=Some(SiteId(1118)) ty=string
+    _2 = string_lit ""
+    ret = move _2
+    return
+
+fn std.string.string::char_at(string, i64) -> Option<char> [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: Option<char>
+    _3: i64
+  bb0:
+    stmt: return site=Some(SiteId(1119)) ty=Option<char>
+    _3 = const.i64 1
+    mtag2 = move _3
+    ret = move _2
+    return
+
+fn std.string.string::get(string, i64) -> Option<char> [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: Option<char>
+    _3: i64
+  bb0:
+    stmt: return site=Some(SiteId(1120)) ty=Option<char>
+    _3 = const.i64 1
+    mtag2 = move _3
+    ret = move _2
+    return
+
+fn std.string.string::chars(string) -> Vec<char> [conv=default]
+  locals:
+    _0: string
+    _1: Vec<char>
+  bb0:
+    _1 = call Vec::new() [authority=Runtime(VecNew)] -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1121) ty=Vec<char>
+    stmt: return site=Some(SiteId(1121)) ty=Vec<char>
+    ret = move _1
+    return
+
+fn std.string.string::char_count_utf8(string) -> i64 [conv=default]
+  locals:
+    _0: string
+    _1: i64
+  bb0:
+    stmt: return site=Some(SiteId(1123)) ty=i64
+    _1 = const.i64 0
+    ret = move _1
+    return
+
+fn std.string.string::codepoint_at_utf8(string, i64) -> Option<i64> [conv=default]
+  locals:
+    _0: string
+    _1: i64
+    _2: Option<i64>
+    _3: i64
+  bb0:
+    stmt: return site=Some(SiteId(1124)) ty=Option<i64>
+    _3 = const.i64 1
+    mtag2 = move _3
+    ret = move _2
+    return
+
+fn std.string.string::to_bytes(string) -> bytes [conv=default]
+  locals:
+    _0: string
+    _1: bytes
+  bb0:
+    _1 = call bytes::new() [authority=Runtime(BytesNew)] -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1125) ty=bytes
+    stmt: return site=Some(SiteId(1125)) ty=bytes
+    ret = move _1
+    return
+
+fn i8::fmt(i8) -> string [conv=default]
+  locals:
+    _0: i8
+    _1: i32
+    _2: string
+  bb0:
+    stmt: use BindingId(218) val site=SiteId(1197) ty=i8 intent=Read
+    _1 = cast _0 i8 -> i32
+    _2 = call hew_int_to_string(_1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1195) ty=string
+    stmt: return site=Some(SiteId(1195)) ty=string
+    ret = move _2
+    return
+
+fn i16::fmt(i16) -> string [conv=default]
+  locals:
+    _0: i16
+    _1: i32
+    _2: string
+  bb0:
+    stmt: use BindingId(219) val site=SiteId(1201) ty=i16 intent=Read
+    _1 = cast _0 i16 -> i32
+    _2 = call hew_int_to_string(_1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1199) ty=string
+    stmt: return site=Some(SiteId(1199)) ty=string
+    ret = move _2
+    return
+
+fn i32::fmt(i32) -> string [conv=default]
+  locals:
+    _0: i32
+    _1: string
+  bb0:
+    stmt: use BindingId(220) val site=SiteId(1204) ty=i32 intent=Read
+    _1 = call hew_int_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1203) ty=string
+    stmt: return site=Some(SiteId(1203)) ty=string
+    ret = move _1
+    return
+
+fn i64::fmt(i64) -> string [conv=default]
+  locals:
+    _0: i64
+    _1: string
+  bb0:
+    stmt: use BindingId(221) val site=SiteId(1207) ty=i64 intent=Read
+    _1 = call hew_i64_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1206) ty=string
+    stmt: return site=Some(SiteId(1206)) ty=string
+    ret = move _1
+    return
+
+fn u8::fmt(u8) -> string [conv=default]
+  locals:
+    _0: u8
+    _1: string
+  bb0:
+    stmt: use BindingId(222) val site=SiteId(1210) ty=u8 intent=Read
+    _1 = call hew_u8_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1209) ty=string
+    stmt: return site=Some(SiteId(1209)) ty=string
+    ret = move _1
+    return
+
+fn u16::fmt(u16) -> string [conv=default]
+  locals:
+    _0: u16
+    _1: string
+  bb0:
+    stmt: use BindingId(223) val site=SiteId(1213) ty=u16 intent=Read
+    _1 = call hew_uint_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1212) ty=string
+    stmt: return site=Some(SiteId(1212)) ty=string
+    ret = move _1
+    return
+
+fn u32::fmt(u32) -> string [conv=default]
+  locals:
+    _0: u32
+    _1: string
+  bb0:
+    stmt: use BindingId(224) val site=SiteId(1216) ty=u32 intent=Read
+    _1 = call hew_uint_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1215) ty=string
+    stmt: return site=Some(SiteId(1215)) ty=string
+    ret = move _1
+    return
+
+fn u64::fmt(u64) -> string [conv=default]
+  locals:
+    _0: u64
+    _1: string
+  bb0:
+    stmt: use BindingId(225) val site=SiteId(1219) ty=u64 intent=Read
+    _1 = call hew_u64_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1218) ty=string
+    stmt: return site=Some(SiteId(1218)) ty=string
+    ret = move _1
+    return
+
+fn isize::fmt(isize) -> string [conv=default]
+  locals:
+    _0: isize
+    _1: i64
+    _2: string
+  bb0:
+    stmt: use BindingId(226) val site=SiteId(1223) ty=isize intent=Read
+    _1 = cast _0 isize -> i64
+    _2 = call hew_i64_to_string(_1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1221) ty=string
+    stmt: return site=Some(SiteId(1221)) ty=string
+    ret = move _2
+    return
+
+fn usize::fmt(usize) -> string [conv=default]
+  locals:
+    _0: usize
+    _1: u64
+    _2: string
+  bb0:
+    stmt: use BindingId(227) val site=SiteId(1227) ty=usize intent=Read
+    _1 = cast _0 usize -> u64
+    _2 = call hew_u64_to_string(_1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1225) ty=string
+    stmt: return site=Some(SiteId(1225)) ty=string
+    ret = move _2
+    return
+
+fn bool::fmt(bool) -> string [conv=default]
+  locals:
+    _0: bool
+    _1: string
+  bb0:
+    stmt: use BindingId(228) val site=SiteId(1230) ty=bool intent=Read
+    _1 = call hew_bool_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1229) ty=string
+    stmt: return site=Some(SiteId(1229)) ty=string
+    ret = move _1
+    return
+
+fn char::fmt(char) -> string [conv=default]
+  locals:
+    _0: char
+    _1: string
+  bb0:
+    stmt: use BindingId(229) val site=SiteId(1233) ty=char intent=Read
+    _1 = call hew_char_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1232) ty=string
+    stmt: return site=Some(SiteId(1232)) ty=string
+    ret = move _1
+    return
+
+fn f64::fmt(f64) -> string [conv=default]
+  locals:
+    _0: f64
+    _1: string
+  bb0:
+    stmt: use BindingId(230) val site=SiteId(1236) ty=f64 intent=Read
+    _1 = call hew_float_to_string(_0) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1235) ty=string
+    stmt: return site=Some(SiteId(1235)) ty=string
+    ret = move _1
+    return
+
+fn f32::fmt(f32) -> string [conv=default]
+  locals:
+    _0: f32
+    _1: f64
+    _2: string
+  bb0:
+    stmt: use BindingId(231) val site=SiteId(1240) ty=f32 intent=Read
+    _1 = cast _0 f32 -> f64
+    _2 = call hew_float_to_string(_1) -> bb1
+  bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1238) ty=string
+    stmt: return site=Some(SiteId(1238)) ty=string
+    ret = move _2
+    return
+
+fn string::fmt(string) -> string [conv=default]
+  locals:
+    _0: string
+  bb0:
+    stmt: use BindingId(232) val site=SiteId(1242) ty=string intent=Read
+    stmt: return site=Some(SiteId(1242)) ty=string
+    string.retain _0
+    ret = move _0
+    return
+
+fn duration::from_nanos(i64) -> duration [conv=default]
+  locals:
+    _0: i64
+    _1: duration
+    _2: duration
+    _3: bool
+  bb0:
+    stmt: use BindingId(233) n site=SiteId(1244) ty=i64 intent=Read
+    _1 = const.duration 1ns
+    _2 ovf=_3 = mul.checked.s _0 _1
+    branch _3 ? bb1 : bb2
+  bb1:
+    trap(IntegerOverflow)
+  bb2:
+    stmt: return site=Some(SiteId(1243)) ty=duration
+    ret = move _2
+    return
+
+fn duration::from_micros(i64) -> duration [conv=default]
+  locals:
+    _0: i64
+    _1: duration
+    _2: duration
+    _3: bool
+  bb0:
+    stmt: use BindingId(234) n site=SiteId(1247) ty=i64 intent=Read
+    _1 = const.duration 1000ns
+    _2 ovf=_3 = mul.checked.s _0 _1
+    branch _3 ? bb1 : bb2
+  bb1:
+    trap(IntegerOverflow)
+  bb2:
+    stmt: return site=Some(SiteId(1246)) ty=duration
+    ret = move _2
+    return
+
+fn duration::from_millis(i64) -> duration [conv=default]
+  locals:
+    _0: i64
+    _1: duration
+    _2: duration
+    _3: bool
+  bb0:
+    stmt: use BindingId(235) n site=SiteId(1250) ty=i64 intent=Read
+    _1 = const.duration 1000000ns
+    _2 ovf=_3 = mul.checked.s _0 _1
+    branch _3 ? bb1 : bb2
+  bb1:
+    trap(IntegerOverflow)
+  bb2:
+    stmt: return site=Some(SiteId(1249)) ty=duration
+    ret = move _2
+    return
+
+fn duration::from_secs(i64) -> duration [conv=default]
+  locals:
+    _0: i64
+    _1: duration
+    _2: duration
+    _3: bool
+  bb0:
+    stmt: use BindingId(236) n site=SiteId(1253) ty=i64 intent=Read
+    _1 = const.duration 1000000000ns
+    _2 ovf=_3 = mul.checked.s _0 _1
+    branch _3 ? bb1 : bb2
+  bb1:
+    trap(IntegerOverflow)
+  bb2:
+    stmt: return site=Some(SiteId(1252)) ty=duration
+    ret = move _2
+    return
+
+fn duration::fmt(duration) -> string [conv=default]
+  locals:
+    _0: duration
+    _1: i64
+    _2: string
+    _3: string
+    _4: string
+  bb0:
+    stmt: use BindingId(237) val site=SiteId(1258) ty=duration intent=Read
+    _1 = call hew_duration_nanos(_0) -> bb1
+  bb1:
+    _2 = call hew_i64_to_string(_1) -> bb2
+  bb2:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(1256) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(1255) ty=string
+    stmt: return site=Some(SiteId(1255)) ty=string
+    _3 = string_lit "ns"
+    _4 = call_rt hew_string_concat(_2, _3)
+    drop _2 ty=string fn=release(hew_string_drop)
+    ret = move _4
+    return
+

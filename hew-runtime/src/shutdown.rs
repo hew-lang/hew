@@ -232,10 +232,10 @@ pub extern "C" fn hew_shutdown_initiate(drain_timeout_ms: i64) {
 
 /// Initiate the compiler-generated main-exit drain.
 ///
-/// This preserves the pre-existing implicit drain contract: queued actor work may
-/// finish, but already-parked reactor waits remain abandoned rather than being
-/// surfaced as user-visible shutdown errors. Explicit [`hew_shutdown_initiate`]
-/// is the typed-cancellation boundary.
+/// Queued work and already-parked reactor waits may finish inside the bounded
+/// drain window. Unlike explicit [`hew_shutdown_initiate`], this does not inject
+/// typed cancellation into those waits; expiry is instead reported as shutdown
+/// failure so main cannot silently claim successful completion.
 #[no_mangle]
 pub extern "C" fn hew_shutdown_initiate_implicit(drain_timeout_ms: i64) {
     shutdown_initiate(drain_timeout_ms, false);
@@ -299,10 +299,10 @@ fn shutdown_initiate(drain_timeout_ms: i64, cancel_parked_waits: bool) {
     }
 }
 
-/// Block the calling thread until shutdown is complete (phase == DONE).
+/// Block the calling thread until shutdown completes or fails.
 ///
-/// Returns 0 on success, -1 if shutdown was never initiated, and -2 if the
-/// shutdown worker panicked before completion.
+/// Returns 0 on success, -1 if shutdown was never initiated, and -2 if shutdown
+/// failed before completion (including a drain timeout or orchestrator panic).
 #[no_mangle]
 pub extern "C" fn hew_shutdown_wait() -> c_int {
     loop {
@@ -445,7 +445,12 @@ fn drain_until_idle(timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     let mut idle_polls = 0;
     while Instant::now() < deadline {
-        if scheduler::drain_is_idle() {
+        // Sample scheduler idleness on both sides of the reactor probe. A
+        // readiness delivery can remove its registration and enqueue a resume
+        // between observations; the second scheduler sample closes that window.
+        let idle =
+            scheduler::drain_is_idle() && reactor::drain_is_idle() && scheduler::drain_is_idle();
+        if idle {
             idle_polls += 1;
             if idle_polls >= 2 {
                 return true;
@@ -462,7 +467,7 @@ fn drain_until_idle(timeout: Duration) -> bool {
     }
     // Covers the case where the deadline expired while sleeping but the runtime
     // became idle before the final observation.
-    scheduler::drain_is_idle()
+    scheduler::drain_is_idle() && reactor::drain_is_idle() && scheduler::drain_is_idle()
 }
 
 /// Orchestrate the 3-phase shutdown.
@@ -473,8 +478,23 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
 
 fn shutdown_orchestrate_mode(drain_timeout: Duration, cancel_parked_waits: bool) {
     // Phase 1: Quiesce (already set by caller).
-    // Nothing else to do — hew_is_shutting_down() now returns 1, which
-    // callers can check before spawning new actors.
+    // Close periodic-timer admission and wait out any callback already sending
+    // before sampling scheduler idleness. Otherwise a callback can enqueue an
+    // actor after the final idle observation but before worker shutdown, leaving
+    // cleanup with a Runnable actor that no worker can consume.
+    //
+    // Keep the shared timer wheel/ticker alive: suspended sleep activations still
+    // need it through drain and parked-frame retirement.
+    crate::timer_periodic::quiesce_periodic_timers();
+
+    // Close listener admission for the same category of race: an accept
+    // completion that BEGINS after the drain's mid-sample could deposit and
+    // enqueue its actor behind the final scheduler observation, terminating
+    // shutdown with a freshly accepted connection abandoned in the queue. Once
+    // closed, the reactor refuses to begin new accept completions, so a parked
+    // `await accept()` is an unconditionally skippable admission wait for the
+    // whole drain (the exemption `drain_is_idle` relies on).
+    reactor::close_listener_admission();
 
     // Phase 2: Drain — let workers process remaining messages.
     shutdown_phase_store(PHASE_DRAIN, Ordering::Release);
@@ -511,11 +531,14 @@ fn shutdown_orchestrate_mode(drain_timeout: Duration, cancel_parked_waits: bool)
         // stop, session_reset, cleanup_all_actors) would race the live
         // worker and risk a UAF.
         //
-        // Safe exit: mark shutdown complete and return.  main() unblocks
-        // from hew_shutdown_wait(), returns, and the OS reaps the stuck
-        // worker thread.  No heap memory is freed on this path — the process
-        // is exiting so the OS reclaims it all.
-        shutdown_phase_store(PHASE_DONE, Ordering::Release);
+        // Fail-closed exit: report that owned work is being abandoned, then
+        // publish FAILED so the compiler-generated main epilogue returns a
+        // non-zero status. No heap memory is freed on this path — the process
+        // exit reclaims it without racing the still-active worker.
+        eprintln!(
+            "hew: shutdown drain timed out after {drain_window:?}; abandoning in-flight work"
+        );
+        shutdown_phase_store(PHASE_FAILED, Ordering::Release);
         return;
     }
 
@@ -1089,16 +1112,45 @@ mod tests {
         reset_shutdown_state();
     }
 
+    #[test]
+    fn drain_converges_repeatedly_when_active_work_finishes_within_budget() {
+        const ITERATIONS: usize = 256;
+
+        let _guard = shutdown_test_guard();
+        reset_shutdown_state();
+
+        for iteration in 0..ITERATIONS {
+            scheduler::ACTIVE_WORKERS.fetch_add(1, Ordering::Release);
+            let release = std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_millis(1));
+                scheduler::ACTIVE_WORKERS.fetch_sub(1, Ordering::Release);
+            });
+
+            assert!(
+                drain_until_idle(Duration::from_millis(100)),
+                "iteration {iteration}: work that completed inside the budget must drain"
+            );
+            release.join().expect("active-work releaser must finish");
+        }
+
+        assert_eq!(
+            scheduler::ACTIVE_WORKERS.load(Ordering::Acquire),
+            0,
+            "contention probe must leave the active-worker gauge balanced"
+        );
+        reset_shutdown_state();
+    }
+
     /// When the drain window expires with a worker still active,
-    /// `shutdown_orchestrate` must set `PHASE_DONE` promptly (skipping the
-    /// join) rather than blocking indefinitely.
+    /// `shutdown_orchestrate` must set `PHASE_FAILED` promptly (skipping the
+    /// join) rather than claiming successful completion or blocking indefinitely.
     ///
     /// We simulate an un-drainable runtime by holding `ACTIVE_WORKERS` at 1
     /// for the duration of the drain window, then releasing it after
     /// `shutdown_orchestrate` returns so that `reset_shutdown_state` can
     /// complete cleanly.
     #[test]
-    fn shutdown_orchestrate_sets_done_on_drain_timeout() {
+    fn shutdown_orchestrate_reports_failure_on_drain_timeout() {
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
         shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
@@ -1116,8 +1168,13 @@ mod tests {
 
         assert_eq!(
             shutdown_phase_load(Ordering::Acquire),
-            PHASE_DONE,
-            "shutdown_orchestrate must reach DONE even when drain times out"
+            PHASE_FAILED,
+            "shutdown_orchestrate must not claim success when drain times out"
+        );
+        assert_eq!(
+            hew_shutdown_wait(),
+            -2,
+            "a timed-out drain must be observable through the shutdown ABI"
         );
         // Must complete within ~2× the drain window (drain + small grace).
         assert!(

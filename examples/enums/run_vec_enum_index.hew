@@ -12,27 +12,27 @@ enum Colour {
 }
 
 fn main() {
-    let v: Vec<Colour> = Vec::new();
-    v.push(Red);
-    v.push(Green(42));
-    v.push(Blue(10, 20));
+    let v: Vec<Colour> = Vec.new();
+    v.push(.Red);
+    v.push(.Green(42));
+    v.push(.Blue(10, 20));
     let c0 = v[0];
     let c1 = v[1];
     let c2 = v[2];
     match c0 {
-        Red => println("c0=Red"),
-        Green(n) => println(f"c0=Green({n})"),
-        Blue(a, b) => println(f"c0=Blue({a},{b})"),
+        .Red => println("c0=Red"),
+        .Green(n) => println(f"c0=Green({n})"),
+        .Blue(a, b) => println(f"c0=Blue({a},{b})"),
     }
     match c1 {
-        Red => println("c1=Red"),
-        Green(n) => println(f"c1=Green({n})"),
-        Blue(a, b) => println(f"c1=Blue({a},{b})"),
+        .Red => println("c1=Red"),
+        .Green(n) => println(f"c1=Green({n})"),
+        .Blue(a, b) => println(f"c1=Blue({a},{b})"),
     }
     match c2 {
-        Red => println("c2=Red"),
-        Green(n) => println(f"c2=Green({n})"),
-        Blue(a, b) => println(f"c2=Blue({a},{b})"),
+        .Red => println("c2=Red"),
+        .Green(n) => println(f"c2=Green({n})"),
+        .Blue(a, b) => println(f"c2=Blue({a},{b})"),
     }
     println("done");
 }

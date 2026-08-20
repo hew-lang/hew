@@ -19,14 +19,14 @@ type Holder {
     sock: Socket;
 }
 
-actor Sink {
+actor TestSink {
     receive fn take(s: Socket) -> i64 {
         return s.detach();
     }
 }
 
 fn main() -> i64 {
-    let sink = spawn Sink;
+    let sink = spawn TestSink;
     let holder = Holder { sock: Socket { fd: 7 } };
     let _ = await sink.take(holder.sock);
     return holder.sock.detach();

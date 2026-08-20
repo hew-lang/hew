@@ -275,6 +275,71 @@ pub(crate) fn host_data_layout_string() -> &'static str {
     })
 }
 
+/// Collect machine-layout indices that `field_ty` depends on for sizing.
+///
+/// Mirrors `collect_named_enum_deps`. `MachineLayout.name` is already the
+/// canonical class-tagged monomorphization key (`mc$$control.Lifecycle$$i64$$`),
+/// while a payload field carries the nominal owner plus its concrete type
+/// arguments. Project the latter through [`hew_hir::machine_layout_key`] so
+/// both sides meet without discarding module or generic identity. Records use
+/// the parallel [`hew_hir::layout_key_for_named`] authority before the walk
+/// descends through their fields. Recurses through generic args, tuples,
+/// arrays, and slices: any of them can carry an embedded machine whose body
+/// must be set before the container is sized.
+fn collect_named_machine_deps(
+    field_ty: &ResolvedTy,
+    index_of: &HashMap<String, usize>,
+    record_fields: &HashMap<String, &[ResolvedTy]>,
+    visiting: &mut Vec<String>,
+    out: &mut Vec<usize>,
+) {
+    match field_ty {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            let machine_key = hew_hir::machine_layout_key(name, args);
+            if let Some(&idx) = index_of.get(&machine_key) {
+                out.push(idx);
+            } else if let Some(record_key) = hew_hir::layout_key_for_named(name, args, *builtin) {
+                if let Some(fields) = record_fields.get(&record_key) {
+                    // A machine can be reached only THROUGH a record field
+                    // (`state Holding { w: Wrap }` where `type Wrap { inner: Inner }`).
+                    // The record is not itself a machine, so it misses `index_of`;
+                    // without descending here the embedded machine is never seen as
+                    // a dependency and the container is sized against an opaque
+                    // struct — the record-wrapped half of #2864.
+                    //
+                    // A record cycle is not representable by value, but recursion is
+                    // guarded rather than trusted: `visiting` makes a malformed or
+                    // indirect layout terminate instead of overflowing the stack.
+                    if !visiting.contains(&record_key) {
+                        visiting.push(record_key);
+                        for fty in *fields {
+                            collect_named_machine_deps(fty, index_of, record_fields, visiting, out);
+                        }
+                        visiting.pop();
+                    }
+                }
+            }
+            for arg in args {
+                collect_named_machine_deps(arg, index_of, record_fields, visiting, out);
+            }
+        }
+        ResolvedTy::Tuple(elems) => {
+            for e in elems {
+                collect_named_machine_deps(e, index_of, record_fields, visiting, out);
+            }
+        }
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            collect_named_machine_deps(inner, index_of, record_fields, visiting, out);
+        }
+        _ => {}
+    }
+}
+
 /// Register every machine from `pipeline.machine_layouts` as a named LLVM
 /// tagged-union struct. See the module-level "Layout invariants" block
 /// for the struct shape and access pattern.
@@ -289,12 +354,129 @@ pub(crate) fn register_machine_layouts<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     machine_layouts: &[MachineLayout],
+    record_layouts: &[hew_mir::RecordLayout],
     record_layout_map: &mut RecordLayoutMap<'ctx>,
     enum_layouts: &[EnumLayout],
     target_data: Option<&TargetData>,
 ) -> CodegenResult<MachineLayoutMap<'ctx>> {
     let mut map: MachineLayoutMap<'ctx> = HashMap::new();
-    for layout in machine_layouts {
+
+    // Process in dependency order, for the same reason `register_enum_layouts`
+    // does: `build_tagged_union_layout` sizes each variant payload via
+    // `TargetData::get_abi_size`. A state payload may hold ANOTHER machine
+    // (`state Holding { inner: Inner }`), and sizing that field while `Inner`'s
+    // named struct is still OPAQUE yields 0 — the outer payload array
+    // under-sizes and the state's accessor GEPs run past the alloca.
+    //
+    // WHY the input order is wrong: machine layouts arrive in SOURCE order, so
+    // declaring the container before the embedded machine (`Outer` then
+    // `Inner`) sizes `Outer` against an opaque `Inner`. Enum layouts are
+    // already topologically sorted here; machines were not, which made the
+    // identical program compile or miscompile purely on declaration order.
+    //
+    // ⚠️ Sizing against a still-opaque member is caught by the opaque-member
+    // layout guard, which fails closed with `E_NOT_YET_IMPLEMENTED` naming the
+    // container, variant, and field (verified on v0.6.0-rc1: the reversed
+    // declaration order is REJECTED, not miscompiled). Earlier revisions did
+    // silently miscompile — the container's payload sized 0 and the embedded
+    // machine's field read from unallocated memory — so this sort is what makes
+    // the valid program compile, while the guard remains defence in depth.
+    //
+    // WHEN OBSOLETE: if machine layouts are ever emitted in dependency order
+    // upstream, this sort becomes a no-op (already ordered) and can be removed.
+    //
+    // Algorithm: Kahn's topological sort, stable within each tier so unrelated
+    // machines keep input order — required by the first-registration-wins dedup
+    // below. Layout names are already canonical class-tagged keys; payload
+    // fields are projected through the same `machine_layout_key` authority.
+    let machine_order: Vec<usize> = {
+        let n = machine_layouts.len();
+        let index_of: HashMap<String, usize> = machine_layouts
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (l.name.clone(), i))
+            .collect();
+
+        // Records are not machines, so they never appear in `index_of` — but a
+        // state payload may reach a machine only by way of one. Preserve each
+        // record's canonical registry key so module-qualified and generic
+        // identities remain disjoint during the dependency walk.
+        let record_fields: HashMap<String, &[ResolvedTy]> = record_layouts
+            .iter()
+            .map(|r| (r.name.clone(), r.field_tys.as_slice()))
+            .collect();
+
+        // `dep_of[i]` = indices of machines whose bodies must be set before `i`.
+        let dep_of: Vec<Vec<usize>> = machine_layouts
+            .iter()
+            .enumerate()
+            .map(|(i, layout)| {
+                let mut deps: Vec<usize> = Vec::new();
+                for variant in layout.variants.iter().chain(layout.events.iter()) {
+                    for field_ty in &variant.field_tys {
+                        collect_named_machine_deps(
+                            field_ty,
+                            &index_of,
+                            &record_fields,
+                            &mut Vec::new(),
+                            &mut deps,
+                        );
+                    }
+                }
+                deps.sort_unstable();
+                deps.dedup();
+                // Defensive: a self-edge would deadlock Kahn's. A machine
+                // embedding itself inline is not representable anyway.
+                deps.retain(|&d| d != i);
+                deps
+            })
+            .collect();
+
+        let mut in_deg: Vec<usize> = dep_of.iter().map(|d| d.len()).collect();
+        let mut reverse: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (i, deps) in dep_of.iter().enumerate() {
+            for &d in deps {
+                reverse[d].push(i);
+            }
+        }
+
+        let mut order: Vec<usize> = Vec::with_capacity(n);
+        let mut queue: std::collections::VecDeque<usize> =
+            (0..n).filter(|&i| in_deg[i] == 0).collect();
+        while let Some(i) = queue.pop_front() {
+            order.push(i);
+            for &j in &reverse[i] {
+                in_deg[j] -= 1;
+                if in_deg[j] == 0 {
+                    queue.push_back(j);
+                }
+            }
+        }
+        if order.len() != n {
+            // A machine state payload holds machines inline (finite-size tagged
+            // unions), so a layout cycle has no finite size. Fail closed rather
+            // than fall back to input order, which would silently size one of
+            // the participants against an opaque member.
+            let cycle_names: Vec<&str> = machine_layouts
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !order.contains(i))
+                .map(|(_, l)| l.name.as_str())
+                .collect();
+            return Err(CodegenError::FailClosed(format!(
+                "cyclic machine layout detected — a machine state payload holds an \
+                 embedded machine inline (a finite-size tagged union), so the \
+                 following machine name(s) cannot be laid out: {}. \
+                 Break the cycle by holding the embedded machine behind an \
+                 indirection instead of inline in a state payload.",
+                cycle_names.join(", ")
+            )));
+        }
+        order
+    };
+
+    for &layout_idx in &machine_order {
+        let layout = &machine_layouts[layout_idx];
         // Within-class duplicate guard (mirrors `register_enum_layouts`):
         // a second `set_body` against the same predeclared opaque struct
         // is invalid LLVM. Skip the repeat if the outer struct's
@@ -1070,7 +1252,12 @@ pub(crate) fn collection_layout_witness(
         // collection: its drop is the user close-symbol call in
         // `emit_field_drop_step`'s dedicated arm and its clone is the rollback
         // refusal in `emit_field_clone_step`.
-        | StateFieldCloneKind::Resource { .. } => None,
+        | StateFieldCloneKind::Resource { .. }
+        // TraitObject is not a runtime-managed collection: the owned fat
+        // pointer drops through `hew_dyn_trait_drop_boxed_in_place` (the
+        // prepared-carrier and Vec-descriptor drop paths) and its clone is
+        // refused (erased concrete type — ownership moves instead).
+        | StateFieldCloneKind::TraitObject => None,
     })
 }
 
@@ -1256,6 +1443,14 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
     ) {
         return receiver_vec_elem_layout_descriptor_ptr(ctx, llvm_mod, target_data, elem_llvm_ty);
     }
+    if matches!(elem_resolved_ty, ResolvedTy::TraitObject { .. }) {
+        return trait_object_vec_elem_layout_descriptor_ptr(
+            ctx,
+            llvm_mod,
+            target_data,
+            elem_llvm_ty,
+        );
+    }
     let Some((kind, key)) = crate::thunks::owned_elem_thunk_key(regs, elem_resolved_ty) else {
         return Err(CodegenError::FailClosed(format!(
             "owned Vec element `{elem_resolved_ty:?}` has no resolvable record/enum \
@@ -1364,6 +1559,68 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
     g.set_linkage(Linkage::Private);
     g.set_initializer(&init);
     Ok(g.as_pointer_value())
+}
+
+/// Emit the clone-null descriptor shared by every `Vec<dyn Trait>`.
+///
+/// Each slot stores the two-word fat pointer for an independently HeapBoxed
+/// concrete value. Ingress and consuming iteration move those words; teardown
+/// calls the runtime callback that dispatches slot 0 and frees the box.
+fn trait_object_vec_elem_layout_descriptor_ptr<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
+    elem_llvm_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    const LAYOUT_NAME: &str = "__hew_vec_elem_layout_dyn_trait_drop_only";
+    if let Some(layout) = llvm_mod.get_global(LAYOUT_NAME) {
+        return Ok(layout.as_pointer_value());
+    }
+    let BasicTypeEnum::StructType(_) = elem_llvm_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "Vec<dyn Trait> must lower to the fat-pointer struct, got {elem_llvm_ty:?}"
+        )));
+    };
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let drop_fn = llvm_mod
+        .get_function("hew_dyn_trait_drop_boxed_in_place")
+        .unwrap_or_else(|| {
+            llvm_mod.add_function(
+                "hew_dyn_trait_drop_boxed_in_place",
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    let (size, align) = abi_size_align(elem_llvm_ty, Some(target_data))?;
+    let size_ty = ctx.ptr_sized_int_type(target_data, None);
+    let i8_ty = ctx.i8_type();
+    let layout_ty = ctx.struct_type(
+        &[
+            size_ty.into(),
+            size_ty.into(),
+            i8_ty.into(),
+            ptr_ty.into(),
+            ptr_ty.into(),
+        ],
+        false,
+    );
+    let init = layout_ty.const_named_struct(&[
+        size_ty.const_int(size, false).into(),
+        size_ty.const_int(u64::from(align), false).into(),
+        i8_ty
+            .const_int(
+                ownership_kind_byte(HewTypeOwnershipKind::LayoutManaged),
+                false,
+            )
+            .into(),
+        ptr_ty.const_null().into(),
+        drop_fn.as_global_value().as_pointer_value().into(),
+    ]);
+    let layout = llvm_mod.add_global(layout_ty, None, LAYOUT_NAME);
+    layout.set_constant(true);
+    layout.set_linkage(Linkage::Private);
+    layout.set_initializer(&init);
+    Ok(layout.as_pointer_value())
 }
 
 fn opaque_resource_vec_elem_layout_descriptor_ptr<'ctx>(
@@ -1827,6 +2084,9 @@ fn owned_vec_fn_type<'ctx>(
         }
         // ptr hew_vec_clone_owned(ptr vec)
         "hew_vec_clone_owned" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
+        // ptr hew_vec_take_all(ptr vec) — whole-buffer move-out; the source
+        // stays a valid empty vec with its stamped descriptor.
+        "hew_vec_take_all" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // i32 hew_vec_contains_owned(ptr vec, ptr data, ptr eq_fn)
         "hew_vec_contains_owned" => {
             Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false))
@@ -1878,7 +2138,7 @@ pub(crate) fn lower_owned_vec_direct_call(
         "hew_vec_set_owned" | "hew_vec_set_owned_move" => 3,
         "hew_vec_slice_range_owned" => 3,
         "hew_vec_remove_at_owned" => 2,
-        "hew_vec_pop_owned" | "hew_vec_clone_owned" => 1,
+        "hew_vec_pop_owned" | "hew_vec_clone_owned" | "hew_vec_take_all" => 1,
         _ => {
             return Err(CodegenError::FailClosed(format!(
                 "lower_owned_vec_direct_call called with non-owned Vec symbol `{callee}`"
@@ -2026,7 +2286,10 @@ pub(crate) fn lower_owned_vec_direct_call(
                 )
                 .llvm_ctx("hew_vec_remove_at_owned call")?;
         }
-        "hew_vec_clone_owned" => {
+        // Clone deep-copies; take-all MOVES the buffer wholesale and resets
+        // the source to a valid empty vec. Both return a fresh vec handle the
+        // dest place owns, so they share the identical LLVM call shape.
+        "hew_vec_clone_owned" | "hew_vec_take_all" => {
             let dest_place = dest.ok_or_else(|| {
                 CodegenError::FailClosed(
                     "hew_vec_clone_owned returns a Vec; producer must supply a dest".into(),
@@ -2634,6 +2897,7 @@ fn finalize_layout_facts_against_pipeline(
                 | F::HashMapRemoveLayout
                 | F::HashMapLenLayout
                 | F::HashMapKeysLayout
+                | F::HashMapEntriesLayout
                 | F::HashMapValuesLayout
                 | F::HashMapGetLayout
                 | F::HashSetInsertLayout
@@ -3017,6 +3281,10 @@ fn layout_hashmap_fn_type<'ctx>(
         "hew_hashmap_keys_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // `*mut HewVec hew_hashmap_values_layout(map)`
         "hew_hashmap_values_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
+        // `*mut HewVec hew_hashmap_entries_layout(map, pair_layout, v_offset)`
+        "hew_hashmap_entries_layout" => {
+            Ok(ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false))
+        }
         // `*mut HewLayoutHashMap hew_hashmap_clone_layout(map)`
         "hew_hashmap_clone_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // `void hew_hashmap_clear_layout(map)`
@@ -4300,6 +4568,8 @@ pub(crate) fn lower_layout_vec_direct_call(
 /// - `hew_hashmap_len_layout`:          1 arg  (handle)
 /// - `hew_hashmap_keys_layout`:         1 arg  (handle) → *mut HewVec
 /// - `hew_hashmap_values_layout`:       1 arg  (handle) → *mut HewVec
+/// - `hew_hashmap_entries_layout`:      1 arg  (handle) → *mut HewVec;
+///   codegen adds the tuple descriptor and V-field offset
 /// - `hew_hashset_insert_layout`:       2 args (handle, elem)
 /// - `hew_hashset_contains_layout`:     2 args (handle, elem)
 /// - `hew_hashset_remove_layout`:       2 args (handle, elem)
@@ -4469,6 +4739,7 @@ pub(crate) fn lower_hashmap_layout_direct_call(
         "hew_hashmap_contains_key_layout" | "hew_hashmap_remove_layout" => 2,
         "hew_hashmap_len_layout"
         | "hew_hashmap_keys_layout"
+        | "hew_hashmap_entries_layout"
         | "hew_hashmap_values_layout"
         | "hew_hashmap_clone_layout"
         | "hew_hashmap_clear_layout" => 1,
@@ -4658,6 +4929,79 @@ pub(crate) fn lower_hashmap_layout_direct_call(
                 .builder
                 .build_store(dest_ptr, vec_ptr)
                 .llvm_ctx("hew_hashmap_values_layout store")?;
+        }
+        "hew_hashmap_entries_layout" => {
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_hashmap_entries_layout returns *mut HewVec; call must supply a dest"
+                        .into(),
+                )
+            })?;
+            let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
+            let ResolvedTy::Named {
+                name,
+                args: vec_args,
+                ..
+            } = dest_ty
+            else {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_hashmap_entries_layout dest must be Vec<(K, V)>, got {dest_ty:?}"
+                )));
+            };
+            let [pair_ty] = vec_args.as_slice() else {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_hashmap_entries_layout dest must have one Vec element, got {vec_args:?}"
+                )));
+            };
+            if name != "Vec" || !matches!(pair_ty, ResolvedTy::Tuple(elems) if elems.len() == 2) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_hashmap_entries_layout dest must be Vec<(K, V)>, got {pair_ty:?}"
+                )));
+            }
+            let pair_llvm_ty = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                pair_ty,
+                fn_ctx.record_layouts,
+            )?;
+            let pair_struct = pair_llvm_ty.into_struct_type();
+            let v_offset = fn_ctx
+                .target_data
+                .offset_of_element(&pair_struct, 1)
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "hew_hashmap_entries_layout could not derive tuple V offset".into(),
+                    )
+                })?;
+            let pair_layout = owned_elem_layout_descriptor_ptr(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                fn_ctx.target_data,
+                fn_ctx.owned_elem_registries(),
+                pair_ty,
+                pair_llvm_ty,
+                "hashmap entries",
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[
+                        map_ptr.into(),
+                        pair_layout.into(),
+                        fn_ctx.ctx.i64_type().const_int(v_offset, false).into(),
+                    ],
+                    "hew_hashmap_entries_layout_call",
+                )
+                .llvm_ctx("hew_hashmap_entries_layout call")?;
+            let vec_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_hashmap_entries_layout returned void".into())
+            })?;
+            let (dest_ptr, _) = place_pointer(fn_ctx, *dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, vec_ptr)
+                .llvm_ctx("hew_hashmap_entries_layout store")?;
         }
         "hew_hashmap_clone_layout" => {
             // `*mut HewLayoutHashMap hew_hashmap_clone_layout(map)` — returns a
@@ -5442,6 +5786,7 @@ pub(crate) fn lower_hashmap_index_trap_call(
 /// of this change). On OOB the runtime returns `false` and we build `None`.
 pub(crate) fn lower_vec_get_clone_call(
     fn_ctx: &FnCtx<'_, '_>,
+    callee: &str,
     args: &[Place],
     dest: Option<&Place>,
     next: u32,
@@ -5530,7 +5875,7 @@ pub(crate) fn lower_vec_get_clone_call(
              element type {elem_llvm_ty:?}"
         )));
     }
-    let fv = get_or_declare_vec_get_clone_runtime(fn_ctx.ctx, fn_ctx.llvm_mod);
+    let fv = get_or_declare_vec_get_output_runtime(fn_ctx.ctx, fn_ctx.llvm_mod, callee);
     let is_some = fn_ctx
         .builder
         .build_call(
@@ -6243,18 +6588,19 @@ pub(crate) fn lower_string_sentinel_option_call(
 
 /// Declare (or fetch) the `hew_vec_get_clone(vec, index, out) -> bool` runtime
 /// choke point: `(ptr, i64, ptr) -> i1`.
-fn get_or_declare_vec_get_clone_runtime<'ctx>(
+fn get_or_declare_vec_get_output_runtime<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
+    symbol: &str,
 ) -> FunctionValue<'ctx> {
-    if let Some(fv) = llvm_mod.get_function("hew_vec_get_clone") {
+    if let Some(fv) = llvm_mod.get_function(symbol) {
         return fv;
     }
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i1_ty = ctx.bool_type();
     let i64_ty = ctx.i64_type();
     llvm_mod.add_function(
-        "hew_vec_get_clone",
+        symbol,
         i1_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
         Some(Linkage::External),
     )
@@ -6622,6 +6968,57 @@ mod tests {
             std::mem::size_of::<HewTypeLayout>(),
             "HewTypeLayout total size mismatch between the codegen mirror and the \
              hew_cabi::vec::HewTypeLayout struct"
+        );
+    }
+
+    /// `MachineLayout.name` arrives class-tagged from
+    /// `hew_hir::machine_layout_key`, while a state payload field carries its
+    /// nominal owner and concrete arguments. The dependency collector must
+    /// project that field through the same authority without collapsing
+    /// distinct module-qualified machines onto one leaf name.
+    ///
+    /// This is a discrimination test, not a presence test: it pins the exact
+    /// pairing that was broken, so re-introducing a bare `short_name` on
+    /// either side fails here rather than at runtime in a linked program.
+    #[test]
+    fn machine_dependency_lookup_uses_canonical_nominal_identity() {
+        let lifecycle_key = hew_hir::machine_layout_key("control.Lifecycle", &[ResolvedTy::I64]);
+        let index_of = HashMap::from([(lifecycle_key, 7)]);
+        let field_ty = ResolvedTy::Named {
+            name: "control.Lifecycle".to_string(),
+            args: vec![ResolvedTy::I64],
+            builtin: None,
+            is_opaque: false,
+        };
+        let mut deps = Vec::new();
+        let record_fields = HashMap::new();
+        let mut visiting = Vec::new();
+        collect_named_machine_deps(
+            &field_ty,
+            &index_of,
+            &record_fields,
+            &mut visiting,
+            &mut deps,
+        );
+        assert_eq!(deps, vec![7]);
+
+        let other_module = ResolvedTy::Named {
+            name: "other.Lifecycle".to_string(),
+            args: vec![ResolvedTy::I64],
+            builtin: None,
+            is_opaque: false,
+        };
+        collect_named_machine_deps(
+            &other_module,
+            &index_of,
+            &record_fields,
+            &mut visiting,
+            &mut deps,
+        );
+        assert_eq!(
+            deps,
+            vec![7],
+            "a same-leaf machine from another module must not claim this dependency"
         );
     }
 }

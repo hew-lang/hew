@@ -1302,6 +1302,7 @@ fn wasm_excluded_call_family(
         | F::HashMapGetLayout
         | F::HashMapInsertLayout
         | F::HashMapKeysLayout
+        | F::HashMapEntriesLayout
         | F::HashMapLenLayout
         | F::HashMapNew
         | F::HashMapNewWithLayout
@@ -1414,6 +1415,7 @@ fn wasm_excluded_call_family(
         | F::WebSocketAttachLocal
         | F::VecCloneLayout
         | F::VecCloneOwned
+        | F::VecTakeAll
         | F::VecAppend
         | F::VecClear
         | F::VecClone
@@ -1680,6 +1682,10 @@ pub(crate) struct CoroState<'ctx> {
     /// were inlined). `None` for a coroutine that carries an explicit final
     /// Suspend (a generator) — its `Return` arm just `ret`s the handle.
     pub(crate) final_suspend_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
+    /// The shared block that emits the coroutine's sole final suspend. Normal
+    /// completion reaches it after depositing a reply; cancellation reaches it
+    /// without a reply so the scheduler resolves the caller as an error.
+    pub(crate) final_suspend_emit_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     /// Whether this coroutine is a GENERATOR body (its MIR carries
     /// `Terminator::Yield`). A generator's value channel is the explicit
     /// out-pointer parameter the body publishes each yield into (NOT the
@@ -5457,6 +5463,16 @@ fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Clo
              emitted caller-side in emit_field_clone_step — caller must dispatch \
              separately (LESSONS: boundary-fail-closed)."
         ))),
+        // TraitObject clone is refused everywhere: the concrete type behind
+        // the vtable is erased, so no deep copy can be synthesised at a clone
+        // site. Ownership MOVES through the owned call-carrier transfer path
+        // instead (the fat pointer's existing heap box changes owner).
+        StateFieldCloneKind::TraitObject => Err(CodegenError::FailClosed(
+            "TraitObject has no clone helper; an owned `dyn Trait` box moves \
+             (owned call-carrier transfer) rather than cloning — the erased \
+             concrete type admits no structural deep copy."
+                .into(),
+        )),
     }
 }
 
@@ -5586,6 +5602,18 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
              (the close symbol is per-type, not a fixed runtime extern) — caller \
              must dispatch separately (LESSONS: boundary-fail-closed)."
         ))),
+        // TraitObject drop takes the SLOT ADDRESS of the two-word fat pointer
+        // (`hew_dyn_trait_drop_boxed_in_place`), not a loaded handle pointer,
+        // so it cannot ride the load-then-call `DropHelper` shape. The
+        // prepared-carrier drop path dispatches it directly; a record-field
+        // dyn drop step does not exist yet (dyn record fields are not a
+        // ratified surface) — fail closed if one reaches here.
+        StateFieldCloneKind::TraitObject => Err(CodegenError::FailClosed(
+            "TraitObject drop requires the slot-address dispatch to \
+             hew_dyn_trait_drop_boxed_in_place, not a loaded-handle runtime \
+             extern — caller must dispatch separately."
+                .into(),
+        )),
     }
 }
 
@@ -8075,7 +8103,11 @@ fn collect_clone_target_names(
         // Resource has no synthesised per-type clone/drop helper: its drop is
         // the inline user close-symbol call and its clone is the inline
         // rollback refusal. Nothing to enqueue.
-        | StateFieldCloneKind::Resource { .. } => {}
+        | StateFieldCloneKind::Resource { .. }
+        // TraitObject has no synthesised per-type helper: its drop is the
+        // slot-address call to hew_dyn_trait_drop_boxed_in_place and its
+        // clone is refused. Nothing to enqueue.
+        | StateFieldCloneKind::TraitObject => {}
     }
 }
 
@@ -9266,6 +9298,9 @@ fn overwrite_heap_leaf_capacity(
             // Resource clone is refused, so an affine handle can never alias a
             // new value's leaf — it contributes no neutralise-tracked slot.
             | StateFieldCloneKind::Resource { .. }
+            // TraitObject clone is refused for the same reason (erased
+            // concrete type): a new value can never alias a dyn box.
+            | StateFieldCloneKind::TraitObject
             | StateFieldCloneKind::ClosurePair => 0,
         };
     }
@@ -9497,6 +9532,9 @@ fn emit_overwrite_collect_leaves<'ctx>(
             // Resource contributes no collected leaf (clone refused → cannot
             // alias); the drop spine closes it directly.
             | StateFieldCloneKind::Resource { .. }
+            // TraitObject contributes no collected leaf (clone refused →
+            // a new value cannot alias a dyn box).
+            | StateFieldCloneKind::TraitObject
             | StateFieldCloneKind::ClosurePair => None,
         };
         if let Some(slot_src) = leaf_slot {
@@ -10009,6 +10047,31 @@ fn emit_overwrite_neutralize_leaves<'ctx>(
                 builder
                     .build_store(slot, ptr_ty.const_null())
                     .llvm_ctx_with(|| format!("{label} resource null store"))?;
+            }
+            StateFieldCloneKind::TraitObject => {
+                // Dyn-valued actor state is check-rejected upstream, so this
+                // leaf is unreachable from a state-field store today.
+                // Defensive posture mirroring ClosurePair/Resource
+                // (leak-over-UAF): zero the whole two-word fat pointer so the
+                // drop spine's slot dispatch no-ops on the nulled data word.
+                let parent_field_ty = st_ty.get_field_type_at_index(idx_u).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "overwrite-release neutralize: parent struct {st_ty:?} has no \
+                         field at index {idx_u} for TraitObject"
+                    ))
+                })?;
+                let BasicTypeEnum::StructType(fat_ty) = parent_field_ty else {
+                    return Err(CodegenError::FailClosed(format!(
+                        "overwrite-release neutralize: TraitObject field {idx_u} is \
+                         {parent_field_ty:?}, not the two-pointer fat-pointer struct"
+                    )));
+                };
+                let field_ptr = builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_dyn_ptr"))
+                    .llvm_ctx_with(|| format!("{label} trait object gep"))?;
+                builder
+                    .build_store(field_ptr, fat_ty.const_zero())
+                    .llvm_ctx_with(|| format!("{label} trait object zero store"))?;
             }
             StateFieldCloneKind::BitCopy { .. } | StateFieldCloneKind::OpaqueHandle { .. } => {}
         }
@@ -16193,6 +16256,9 @@ fn aggregate_kind_contains_inline_string(
         | StateFieldCloneKind::IoHandle { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::OpaqueHandle { .. }
+        // TraitObject: the concrete value behind the fat pointer is heap
+        // storage, not an inline string leaf — nothing to retain here.
+        | StateFieldCloneKind::TraitObject
         | StateFieldCloneKind::Resource { .. } => Ok(false),
     }
 }
@@ -16527,6 +16593,7 @@ fn retain_strings_in_aggregate_slot<'ctx>(
         | StateFieldCloneKind::IoHandle { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::OpaqueHandle { .. }
+        | StateFieldCloneKind::TraitObject
         | StateFieldCloneKind::Resource { .. } => Ok(()),
     }
 }
@@ -17304,6 +17371,11 @@ fn lower_actor_state_field_load(
                 | StateFieldCloneKind::Resource { .. }
                 | StateFieldCloneKind::OpaqueHandle { .. }
                 | StateFieldCloneKind::Tuple { .. }
+                // TraitObject: dyn-valued actor state is rejected at check
+                // time, so this arm is unreachable in practice; clone is
+                // structurally refused (no dup for an erased concrete type),
+                // matching the ClosurePair/Resource defensive grouping.
+                | StateFieldCloneKind::TraitObject
                 | StateFieldCloneKind::Array { .. } => {}
             }
         }
@@ -17568,9 +17640,13 @@ fn emit_field_overwrite_release(
         // proof the old value isn't aliased elsewhere risks a double-free/UAF,
         // which this crate treats as strictly worse than a leak. This arm now
         // also serves the widened ordinary-record-field-store call site above.
+        // TraitObject joins the same posture: an overwritten dyn slot is
+        // abandoned rather than released (dyn-valued state/record fields are
+        // check-rejected, so this arm is unreachable in practice).
         StateFieldCloneKind::BitCopy { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::Resource { .. }
+        | StateFieldCloneKind::TraitObject
         | StateFieldCloneKind::OpaqueHandle { .. } => Ok(()),
     }
 }
@@ -18771,6 +18847,10 @@ fn lower_value_snapshot_clone_instr<'ctx>(
         | StateFieldCloneKind::IoHandle { .. }
         | StateFieldCloneKind::OpaqueHandle { .. }
         | StateFieldCloneKind::ClosurePair
+        // TraitObject: clone is structurally refused (erased concrete type);
+        // `is_clone_total` is false, so MIR never emits a snapshot clone for
+        // a dyn value — ownership transfers through the carrier move instead.
+        | StateFieldCloneKind::TraitObject
         | StateFieldCloneKind::Resource { .. } => Err(CodegenError::FailClosed(format!(
             "snapshot clone for `{}` reached unsupported direct kind {:?}",
             ty.user_facing(),
@@ -18971,6 +19051,44 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
                     fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null(),
                 )
                 .llvm_ctx("prepared IO null store")?;
+            Ok(())
+        }
+        StateFieldCloneKind::TraitObject => {
+            // Owned `dyn Trait` carrier: dispatch vtable slot 0 on the boxed
+            // concrete value and free the box with the vtable's exact layout,
+            // via the slot-address helper (null-data tolerant — a moved-from
+            // slot neutralized by the transfer path no-ops). The helper
+            // zeroes both words of the slot after the release, so a
+            // structurally reachable second drop short-circuits.
+            let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
+            let is_fat_pair = matches!(
+                slot_ty,
+                BasicTypeEnum::StructType(st)
+                    if st.count_fields() == 2
+                        && st
+                            .get_field_types()
+                            .iter()
+                            .all(|t| matches!(t, BasicTypeEnum::PointerType(_)))
+            );
+            if !is_fat_pair {
+                return Err(CodegenError::FailClosed(format!(
+                    "prepared trait-object carrier `{}` has non-fat-pointer slot \
+                     type {slot_ty:?}; expected the two-pointer {{ data, vtable }} \
+                     struct",
+                    ty.user_facing()
+                )));
+            }
+            let helper = get_or_declare_drop_helper(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &DropHelper {
+                    name: "hew_dyn_trait_drop_boxed_in_place",
+                },
+            );
+            fn_ctx
+                .builder
+                .build_call(helper, &[slot.into()], "prepared_dyn_drop")
+                .llvm_ctx("prepared trait-object drop call")?;
             Ok(())
         }
         StateFieldCloneKind::ClosurePair
@@ -20238,6 +20356,7 @@ fn state_kind_key_fragment(kind: &StateFieldCloneKind) -> String {
         StateFieldCloneKind::UserRecord { name } => format!("record_{name}"),
         StateFieldCloneKind::Enum { name } => format!("enum_{name}"),
         StateFieldCloneKind::ClosurePair => "closure_pair".to_string(),
+        StateFieldCloneKind::TraitObject => "trait_object".to_string(),
         StateFieldCloneKind::Resource { name, .. } => format!("resource_{name}"),
         StateFieldCloneKind::OpaqueHandle { name } => format!("opaque_{name}"),
     }
@@ -20793,6 +20912,31 @@ fn lower_inline_drop(
     ty: &ResolvedTy,
     drop_fn: &hew_mir::DropFnSpec,
 ) -> CodegenResult<()> {
+    if matches!(ty, ResolvedTy::TraitObject { .. }) {
+        if *drop_fn != hew_mir::DropFnSpec::Release("hew_dyn_trait_drop_boxed_in_place") {
+            return Err(CodegenError::FailClosed(format!(
+                "inline dyn Trait drop @ {place:?} carries {drop_fn:?}; expected the \
+                 heap-boxed trait-object drop callback"
+            )));
+        }
+        let (slot, slot_ty) = place_pointer(fn_ctx, place)?;
+        let helper = get_or_declare_drop_helper(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &DropHelper {
+                name: "hew_dyn_trait_drop_boxed_in_place",
+            },
+        );
+        fn_ctx
+            .builder
+            .build_call(helper, &[slot.into()], "inline_dyn_trait_drop")
+            .llvm_ctx("inline dyn Trait drop call")?;
+        fn_ctx
+            .builder
+            .build_store(slot, slot_ty.const_zero())
+            .llvm_ctx("inline dyn Trait drop zero-store")?;
+        return Ok(());
+    }
     // Bytes ABI: a native `bytes` value is a stack-resident `BytesTriple
     // { ptr, i32, i32 }`, NOT a single owned pointer. The data buffer's sole
     // release is `hew_bytes_drop(data_ptr)` (`hew-runtime/src/bytes.rs`'s
@@ -24616,6 +24760,7 @@ pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
         } => !args
             .first()
             .is_some_and(|e| matches!(e, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })),
+        ResolvedTy::TraitObject { .. } => true,
         _ => false,
     }
 }
@@ -29016,6 +29161,7 @@ fn lower_terminator<'ctx>(
     match term {
         Terminator::Return => {
             emit_helper_crash_cleanup_retire_remaining_on_return(fn_ctx, block_id)?;
+            let mut shutdown_abandoned = None;
             // Implicit actor-drain floor: emit `hew_shutdown_initiate_implicit(0)` then
             // `hew_shutdown_wait()` before `main` returns. This ensures
             // fire-and-forget actor messages (spawned actors, pending handler
@@ -29056,10 +29202,28 @@ fn lower_terminator<'ctx>(
                         "hew_shutdown_initiate_implicit_call",
                     )
                     .llvm_ctx("hew_shutdown_initiate_implicit call")?;
-                fn_ctx
+                let wait_call = fn_ctx
                     .builder
                     .build_call(shutdown_wait, &[], "hew_shutdown_wait_call")
                     .llvm_ctx("hew_shutdown_wait call")?;
+                let wait_status = wait_call
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_shutdown_wait returned void".into())
+                    })?
+                    .into_int_value();
+                shutdown_abandoned = Some(
+                    fn_ctx
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::NE,
+                            wait_status,
+                            fn_ctx.ctx.i32_type().const_zero(),
+                            "hew_shutdown_failed",
+                        )
+                        .llvm_ctx("hew_shutdown_wait status compare")?,
+                );
             }
             // wasm32 cooperative-scheduler normal exit: run all runnable actors
             // to completion, then shut down scheduler state and clean up tracked
@@ -29075,23 +29239,7 @@ fn lower_terminator<'ctx>(
             }
             // Lambda-actor drain: each lambda actor runs on its own OS
             // thread outside the work-stealing scheduler, so the
-            // `hew_shutdown_wait` above does not cover them. Without this
-            // drain a fire-and-forget `let log = actor |s|{...}; log("hi")`
-            // races process termination and silently drops the body's
-            // `println`. `hew_lambda_drain_all` blocks until every
-            // dispatch thread has exited (or the 5 s default timeout
-            // elapses), and is a no-op when no lambda actors were
-            // spawned — so emitting unconditionally on every native
-            // `main` is cheap.
-            if fn_ctx.emit_lambda_drain_epilogue {
-                let i64_ty = fn_ctx.ctx.i64_type();
-                fn_ctx.call_runtime_void(
-                    "hew_lambda_drain_all",
-                    &[i64_ty.const_int(0, false).into()],
-                    "hew_lambda_drain_all_call",
-                    "hew_lambda_drain_all call",
-                )?;
-            }
+            // `hew_shutdown_wait` above does not cover them.
             // Supervisor-safe native shutdown: supervisor actors intentionally
             // bypass the generic idle drain because they remain live by design.
             // Close and join scheduler workers directly; the shared cleanup tail
@@ -29108,7 +29256,18 @@ fn lower_terminator<'ctx>(
             // arrive here after graceful drain; supervisor programs arrive after
             // immediate worker shutdown. Both consume registered supervisor roots
             // through free_registered_supervisors/InternalChildSpec::drop before
-            // actor cleanup and runtime detach.
+            // actor cleanup and runtime detach. This runs BEFORE the lambda drain
+            // below: actor cleanup synchronously runs each actor's codegen state
+            // drop (`free_actor_resources` -> `state_drop_fn`), which is the only
+            // release point for a `LambdaPid` an actor holds in its own state
+            // (e.g. a still-idle top-level actor never explicitly releases the
+            // field). Draining lambda dispatch threads first would wait forever
+            // on exactly that actor-held handle, since nothing else closes its
+            // mailbox. Workers are already joined by this point (via
+            // `hew_shutdown_wait` above or `hew_sched_shutdown` just above), so
+            // no actor handler is genuinely in-flight when its state is freed —
+            // this reorder only releases already-quiesced/parked state ahead of
+            // the drain, it does not let cleanup race a live handler.
             if fn_ctx.emit_runtime_cleanup_epilogue {
                 fn_ctx.call_runtime_void(
                     "hew_runtime_cleanup_after_main",
@@ -29116,6 +29275,102 @@ fn lower_terminator<'ctx>(
                     "hew_runtime_cleanup_after_main_call",
                     "hew_runtime_cleanup_after_main call",
                 )?;
+            }
+            // Lambda-actor drain: each lambda actor runs on its own OS thread
+            // outside the work-stealing scheduler, so nothing above joins its
+            // dispatch thread directly. Without this drain a fire-and-forget
+            // `let log = actor |s|{...}; log("hi")` races process termination
+            // and silently drops the body's `println`. `hew_lambda_drain_all`
+            // blocks until every dispatch thread has exited (or the 5 s default
+            // timeout elapses), and is a no-op when no lambda actors were
+            // spawned — so emitting unconditionally on every native `main` is
+            // cheap. Runs LAST, after actor cleanup above, so a `LambdaPid` held
+            // in actor state has already been released and its mailbox closed.
+            if fn_ctx.emit_lambda_drain_epilogue {
+                let i64_ty = fn_ctx.ctx.i64_type();
+                let lambda_drain = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_lambda_drain_all",
+                )?;
+                let drain_call = fn_ctx
+                    .builder
+                    .build_call(
+                        lambda_drain,
+                        &[i64_ty.const_int(0, false).into()],
+                        "hew_lambda_drain_all_call",
+                    )
+                    .llvm_ctx("hew_lambda_drain_all call")?;
+                let drain_status = drain_call
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_lambda_drain_all returned void".into())
+                    })?
+                    .into_int_value();
+                let lambda_abandoned = fn_ctx
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        drain_status,
+                        fn_ctx.ctx.i32_type().const_zero(),
+                        "hew_lambda_drain_failed",
+                    )
+                    .llvm_ctx("hew_lambda_drain_all status compare")?;
+                shutdown_abandoned = Some(match shutdown_abandoned {
+                    Some(scheduler_abandoned) => fn_ctx
+                        .builder
+                        .build_or(
+                            scheduler_abandoned,
+                            lambda_abandoned,
+                            "hew_shutdown_any_failed",
+                        )
+                        .llvm_ctx("combine shutdown failure statuses")?,
+                    None => lambda_abandoned,
+                });
+            }
+            if let Some(abandoned) = shutdown_abandoned {
+                let current_fn = fn_ctx
+                    .builder
+                    .get_insert_block()
+                    .and_then(|block| block.get_parent())
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "shutdown failure branch has no containing function".into(),
+                        )
+                    })?;
+                let failed_bb = fn_ctx
+                    .ctx
+                    .append_basic_block(current_fn, "hew_shutdown_exit_failed");
+                let continue_bb = fn_ctx
+                    .ctx
+                    .append_basic_block(current_fn, "hew_shutdown_exit_continue");
+                fn_ctx
+                    .builder
+                    .build_conditional_branch(abandoned, failed_bb, continue_bb)
+                    .llvm_ctx("branch on shutdown failure")?;
+
+                fn_ctx.builder.position_at_end(failed_bb);
+                let exit = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_exit",
+                )?;
+                fn_ctx
+                    .builder
+                    .build_call(
+                        exit,
+                        &[fn_ctx.ctx.i64_type().const_int(1, false).into()],
+                        "hew_shutdown_exit_call",
+                    )
+                    .llvm_ctx("hew_exit shutdown failure call")?;
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(continue_bb)
+                    .llvm_ctx("shutdown failure fallback continuation")?;
+                fn_ctx.builder.position_at_end(continue_bb);
             }
             // Coroutine completion (W6.010 value routing): a suspendable handler
             // does NOT `ret` its Hew value — the ramp returns the `coro.begin`
@@ -29699,9 +29954,18 @@ fn lower_terminator<'ctx>(
             // tracks). Scope-exit release is descriptor-driven.
             if matches!(
                 builtin,
-                Some(RtFamily::VecGet(hew_types::runtime_call::VecGetElem::Clone))
+                Some(RtFamily::VecGet(
+                    hew_types::runtime_call::VecGetElem::Clone
+                        | hew_types::runtime_call::VecGetElem::Take
+                ))
             ) {
-                crate::layout::lower_vec_get_clone_call(fn_ctx, args, dest.as_ref(), *next)?;
+                crate::layout::lower_vec_get_clone_call(
+                    fn_ctx,
+                    callee,
+                    args,
+                    dest.as_ref(),
+                    *next,
+                )?;
                 return Ok(());
             }
             if builtin.is_some_and(|family| {
@@ -33691,6 +33955,11 @@ fn lower_function<'ctx>(
         } else {
             Some(ctx.append_basic_block(llvm_fn, "coro.final.suspend"))
         };
+        let final_suspend_emit_block = if has_explicit_final_suspend {
+            None
+        } else {
+            Some(ctx.append_basic_block(llvm_fn, "coro.final.suspend.emit"))
+        };
         Some(CoroState {
             handle: cc.handle,
             id_token: cc.id_token,
@@ -33699,6 +33968,7 @@ fn lower_function<'ctx>(
             logical_return_ty,
             has_explicit_final_suspend,
             final_suspend_block,
+            final_suspend_emit_block,
             is_generator,
         })
     } else {
@@ -34921,6 +35191,14 @@ fn lower_function<'ctx>(
                     )
                     .llvm_ctx("coro hew_reply call")?;
             }
+            let final_suspend_emit_block = coro.final_suspend_emit_block.ok_or_else(|| {
+                CodegenError::Llvm("coroutine final suspend has no emit block".into())
+            })?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(final_suspend_emit_block)
+                .llvm_ctx("coro final reply -> final suspend")?;
+            fn_ctx.builder.position_at_end(final_suspend_emit_block);
             cc.emit_suspend(
                 coro.cleanup_block,
                 coro.cleanup_block,
@@ -35282,6 +35560,7 @@ fn build_module_for_target<'ctx>(
         ctx,
         &llvm_mod,
         &pipeline.machine_layouts,
+        &pipeline.record_layouts,
         &mut record_layouts,
         &pipeline.enum_layouts,
         Some(&target_data),

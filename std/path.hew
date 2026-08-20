@@ -44,8 +44,8 @@ pub enum PathError {
 /// Return the human-readable detail carried by a `PathError`.
 pub fn path_error_message(err: PathError) -> string {
     match err {
-        PathError::GlobFailed(message) => message,
-        PathError::IndexOutOfRange(message) => message,
+        PathError.GlobFailed(message) => message,
+        PathError.IndexOutOfRange(message) => message,
     }
 }
 
@@ -154,7 +154,7 @@ pub fn try_glob(pattern: string) -> Result<GlobResult, PathError> {
             // double-free it.
             let detail = hew_glob_error(handle);
             hew_glob_free(handle);
-            Err(PathError::GlobFailed(detail))
+            Err(PathError.GlobFailed(detail))
         }
     }
 }
@@ -263,7 +263,15 @@ pub fn is_dir(p: string) -> bool {
     }
 }
 
-/// Return the absolute form of a path.
+/// Return the absolute form of a path by joining `p` onto the current
+/// working directory when `p` is relative.
+///
+/// This does NOT resolve `..` or `.` segments — `absolute("../../etc/passwd")`
+/// returns `<cwd>/../../etc/passwd`, not a cleaned path. There is currently
+/// no `normalize`/`canonicalize` in this module; do not use `absolute()`
+/// alone for containment checks (e.g. "is this path still inside my sandbox
+/// root?") — a `..`-bearing or symlinked input can walk outside any prefix
+/// you check against.
 pub fn absolute(p: string) -> string {
     unsafe {
         hew_path_absolute(p)

@@ -432,8 +432,23 @@ thread_local! {
 /// Write `err` to the local-ask error slot and return `null`.
 #[inline]
 fn actor_ask_null(err: AskError) -> *mut c_void {
-    LAST_ACTOR_ASK_ERROR.with(|c| c.set(err as i32));
+    record_ask_error(err);
     ptr::null_mut()
+}
+
+/// Record `err` in the local-ask error slot without producing a null reply.
+///
+/// The with-channel ask family's counterpart of [`actor_ask_null`]: those
+/// entry points return a `HewError` code rather than a reply pointer, but
+/// codegen's Err-binding reads the SAME TLS slot
+/// (`hew_actor_ask_take_last_error`) to classify the failure. A synchronous
+/// refusal that returns its code without writing this slot surfaces as
+/// `Err(AskError::NoError)` — a genuine failure classified as "no error at
+/// all" (dogfood F1, mechanism 2). Every refuse/failure path in the ask
+/// family must therefore record a real kind before returning its code.
+#[inline]
+pub(crate) fn record_ask_error(err: AskError) {
+    LAST_ACTOR_ASK_ERROR.with(|c| c.set(err as i32));
 }
 
 /// Refuse an ask closed with `AskError::ActorStopped` and return null —
@@ -1525,6 +1540,37 @@ pub struct HewActor {
     /// successful clone registration can transfer a borrowed initial actor to
     /// owned without resurrecting authority already consumed by crash escrow.
     pub state_drop_borrowed: AtomicBool,
+
+    /// The reply channel of the `ask` this actor's PARKED activation still
+    /// owes, retained INDEPENDENTLY for the shutdown drain gate.
+    ///
+    /// Distinct from [`Self::suspended_reply_channel`], which holds the MOVED
+    /// sender-side reference the resume edge consumes to deposit the reply.
+    /// That reference can be released by the resumed body (a deposit into an
+    /// already-cancelled channel frees the channel while the slot still holds
+    /// the stale pointer), so a foreign thread must never dereference it. This
+    /// slot instead owns its own `hew_reply_channel_retain`ed reference, taken
+    /// on the suspend edge in the same guarded block as the W6.010 stash, so
+    /// the channel allocation is pinned for as long as this slot is non-null.
+    ///
+    /// The shutdown drain scan (`live_actors::has_drain_blocking_suspended_actor`)
+    /// reads it under the live-actors registry lock to decide whether a
+    /// `Suspended` actor still represents in-flight work: a suspended handler
+    /// whose ask reply channel is `cancelled` was ABANDONED by its caller
+    /// (`await … | after d` deadline, task cancel) and must not hold the drain
+    /// open; a live ask, or a parked handler with no ask at all, still blocks.
+    /// Release sites swap this slot to null UNDER that same registry lock
+    /// (`scheduler::release_parked_ask_channel`) before dropping the reference,
+    /// so the scan's dereference can never race the free.
+    ///
+    /// Set on the suspend edge; cleared wherever the parked activation's reply
+    /// obligation resolves (resume completion, resume crash, park refusal,
+    /// stop-cancel, and every `retire_suspended_reply_channel` route). Null
+    /// between dispatches and for actors that never suspend mid-`ask`.
+    ///
+    /// **ABI note**: appended at the struct tail, after `state_drop_borrowed`,
+    /// so no previously-mirrored offset (`id` at 8, `state` at 16) moves.
+    pub parked_ask_channel: AtomicPtr<c_void>,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -1564,6 +1610,14 @@ pub(crate) unsafe fn record_dispatch_state_drop_consumed(actor: *mut HewActor) {
 /// # Safety
 ///
 /// `actor` must be a live, newly spawned actor not yet visible to dispatch.
+// KEEP(wasm32): production caller in supervisor.rs marks a shallow-template
+// restart incarnation as borrowing state from the persistent child spec.
+// lib.rs gates `pub mod supervisor` behind
+// `#[cfg(not(target_arch = "wasm32"))]` while `pub mod actor` is ungated — the
+// same asymmetry already annotated elsewhere in this file. The bit it writes,
+// `HewActor::state_drop_borrowed`, is READ on both targets and is ABI
+// layout-asserted for wasm parity in scheduler_wasm.rs.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) unsafe fn mark_state_drop_borrowed(actor: *mut HewActor) {
     if actor.is_null() {
         eprintln!("fatal: null actor while recording borrowed state provenance");
@@ -1583,6 +1637,11 @@ pub(crate) unsafe fn mark_state_drop_borrowed(actor: *mut HewActor) {
 /// # Safety
 ///
 /// `actor` must be the live child whose former template alias was just broken.
+// KEEP(wasm32): production caller is `hew_supervisor_set_child_state_clone` in
+// the native-only supervisor module; it flips provenance to owned once the
+// template deep-clone breaks the alias. Same cfg asymmetry as
+// `mark_state_drop_borrowed`.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) unsafe fn mark_state_drop_owned(actor: *mut HewActor) {
     if actor.is_null() {
         eprintln!("fatal: null actor while recording owned state provenance");
@@ -3154,6 +3213,7 @@ fn build_spawned_actor(
         sys_dispatch: config.sys_dispatch,
         state_drop_consumed: AtomicBool::new(false),
         state_drop_borrowed: AtomicBool::new(false),
+        parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
     })
 }
 
@@ -5951,6 +6011,9 @@ where
     F: FnOnce(*mut HewReplyChannel) -> i32,
 {
     if ch.is_null() {
+        // Classify the refusal before returning the raw code: with-channel
+        // callers read the failure kind from `hew_actor_ask_take_last_error`.
+        record_ask_error(send_err_to_ask_err(HewError::ErrOom as i32));
         return HewError::ErrOom as i32;
     }
 
@@ -5962,6 +6025,12 @@ where
 
     let send_result = send(ch);
     if send_result != HewError::Ok as i32 {
+        // Classify the failure in the TLS ask-error slot BEFORE returning the
+        // raw code: the suspending (with-channel) callers surface their Err
+        // through `hew_actor_ask_take_last_error`, and an unwritten slot
+        // misreports the failure as `AskError::None`. The blocking twins
+        // overwrite this with the same mapped value via `actor_ask_null`.
+        record_ask_error(send_err_to_ask_err(send_result));
         if send_result == HewError::ErrOom as i32 {
             // Mirror `alloc_reply_buffer`: record allocation failure before the
             // error cleanup path releases the channel.
@@ -6363,6 +6432,7 @@ pub unsafe extern "C" fn hew_local_pid_ask_with_channel(
     ch: *mut c_void,
 ) -> i32 {
     let Some(actor_id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
+        record_ask_error(AskError::ActorStopped);
         return HewError::ErrActorStopped as i32;
     };
     live_actors::with_actor_send_by_id(actor_id, |actor| {
@@ -6381,7 +6451,10 @@ pub unsafe extern "C" fn hew_local_pid_ask_with_channel(
             ask_with_channel_wasm_internal(actor, msg_type, data, size, ch)
         }
     })
-    .unwrap_or(HewError::ErrActorStopped as i32)
+    .unwrap_or_else(|| {
+        record_ask_error(AskError::ActorStopped);
+        HewError::ErrActorStopped as i32
+    })
 }
 
 // Thread-local storage for the reply size from the last `hew_actor_ask_by_id`.
@@ -7254,6 +7327,10 @@ pub(crate) unsafe fn ask_with_channel_wasm_internal(
         send_result = HewError::ErrActorStopped as i32;
     }
     if send_result != HewError::Ok as i32 {
+        // Same TLS classification contract as the native
+        // `submit_ask_with_reply_channel`: the with-channel caller reads
+        // `hew_actor_ask_take_last_error` to bind its Err kind.
+        record_ask_error(send_err_to_ask_err(send_result));
         // SAFETY: release the sender-side reference retained for the failed send.
         unsafe { crate::reply_channel_wasm::hew_reply_channel_free(ch.cast()) };
         return send_result;
@@ -8048,6 +8125,7 @@ pub mod composition_test_support {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         }))
     }
 
@@ -9644,6 +9722,7 @@ mod tests {
                 sys_dispatch: None,
                 state_drop_consumed: AtomicBool::new(false),
                 state_drop_borrowed: AtomicBool::new(false),
+                parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             }));
             (actor, mailbox)
         }
@@ -10742,6 +10821,7 @@ mod tests {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });
@@ -13094,6 +13174,45 @@ mod tests {
 
     // ── ask error discrimination tests ───────────────────────────────────
 
+    /// Mechanism-2 regression (dogfood F1): the with-channel ask family
+    /// returns a `HewError` code instead of a reply pointer, but its callers
+    /// classify the failure through `hew_actor_ask_take_last_error`. A failed
+    /// synchronous submission must therefore record a real `AskError` kind —
+    /// before the fix the code was returned with the slot unwritten and the
+    /// failure surfaced as `Err(AskError::NoError)`.
+    #[test]
+    fn with_channel_ask_stopped_actor_records_actor_stopped_error() {
+        let _guard = crate::runtime_test_guard();
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: actor is valid; stopping it forces the send to fail.
+        unsafe { hew_actor_stop(actor) };
+
+        LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
+        let ch = reply_channel::hew_reply_channel_new();
+        // SAFETY: actor pointer remains valid after stop; ch is a live channel.
+        let status = unsafe { hew_actor_ask_with_channel(actor, 1, ptr::null_mut(), 0, ch) };
+        assert_ne!(
+            status,
+            HewError::Ok as i32,
+            "ask submission against a stopped actor must fail"
+        );
+        assert_eq!(
+            hew_actor_ask_take_last_error(),
+            AskError::ActorStopped as i32,
+            "a failed with-channel submission must record ActorStopped, never \
+             leave the slot at None"
+        );
+        // Failure keeps the creator reference (KeepCreatorRef); release it.
+        // SAFETY: ch was created by hew_reply_channel_new above.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
+
+        // SAFETY: actor is stopped and owned by this test.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+    }
+
     /// `hew_actor_ask` on a stopped actor sets `ActorStopped` in the error slot.
     #[test]
     fn native_ask_stopped_actor_sets_actor_stopped_error() {
@@ -15425,6 +15544,7 @@ mod tests {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });

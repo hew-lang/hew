@@ -1,8 +1,8 @@
 /// Parser regression tests for cross-module enum variant construction
-/// via the dot-postfix path (e.g. `fs.IoError::TimedOut(0)`).
+/// via the dot-postfix path (e.g. `fs.IoError.TimedOut(0)`).
 ///
-/// Covers the `DoubleColon` accumulation added to `parse_dot_postfix`
-/// to emit qualified constructor call paths.
+/// The parser preserves the final dotted segment as a method call; nominal
+/// constructor resolution happens later in the type checker.
 use hew_parser::ast::{CallArg, Expr, Item, Stmt};
 
 fn first_body_expr(source: &str) -> Expr {
@@ -35,15 +35,22 @@ fn first_body_expr(source: &str) -> Expr {
 
 #[test]
 fn cross_module_enum_variant_tuple_payload_parses() {
-    let expr = first_body_expr("fn f() { a.B::C(1) }");
-    let Expr::Call { function, args, .. } = expr else {
-        panic!("expected Call, got: {expr:?}");
+    let expr = first_body_expr("fn f() { a.B.C(1) }");
+    let Expr::MethodCall {
+        receiver,
+        method,
+        args,
+    } = expr
+    else {
+        panic!("expected MethodCall, got: {expr:?}");
     };
     assert!(
-        matches!(function.0, Expr::Identifier(ref n) if n == "a.B::C"),
-        "expected qualified constructor callee, got: {:?}",
-        function.0
+        matches!(&receiver.0, Expr::FieldAccess { object, field }
+            if matches!(&object.0, Expr::Identifier(n) if n == "a") && field == "B"),
+        "expected a.B receiver, got: {:?}",
+        receiver.0
     );
+    assert_eq!(method, "C");
     assert_eq!(args.len(), 1);
     let CallArg::Positional((Expr::Literal(lit), _)) = &args[0] else {
         panic!("expected positional literal arg, got: {:?}", args[0]);
@@ -58,15 +65,23 @@ fn cross_module_enum_variant_tuple_payload_parses() {
 
 #[test]
 fn cross_module_enum_nested_segments_parses() {
-    let expr = first_body_expr("fn f() { a.B::C::D(0) }");
-    let Expr::Call { function, args, .. } = expr else {
-        panic!("expected Call, got: {expr:?}");
+    let expr = first_body_expr("fn f() { a.B.C.D(0) }");
+    let Expr::MethodCall {
+        receiver,
+        method,
+        args,
+    } = expr
+    else {
+        panic!("expected MethodCall, got: {expr:?}");
     };
     assert!(
-        matches!(function.0, Expr::Identifier(ref n) if n == "a.B::C::D"),
-        "expected qualified constructor callee, got: {:?}",
-        function.0
+        matches!(&receiver.0, Expr::FieldAccess { object, field } if field == "C"
+            && matches!(&object.0, Expr::FieldAccess { object, field } if field == "B"
+                && matches!(&object.0, Expr::Identifier(n) if n == "a"))),
+        "expected a.B.C receiver, got: {:?}",
+        receiver.0
     );
+    assert_eq!(method, "D");
     assert_eq!(args.len(), 1);
 }
 
@@ -74,16 +89,24 @@ fn cross_module_enum_nested_segments_parses() {
 
 #[test]
 fn cross_module_enum_chained_field_then_variant_parses() {
-    // `a.b` is FieldAccess; `.C::D(0)` is MethodCall on that result.
-    let expr = first_body_expr("fn f() { a.b.C::D(0) }");
-    let Expr::Call { function, args, .. } = expr else {
-        panic!("expected outer Call, got: {expr:?}");
+    // `a.b.C` is a FieldAccess chain; `.D(0)` is a MethodCall on that result.
+    let expr = first_body_expr("fn f() { a.b.C.D(0) }");
+    let Expr::MethodCall {
+        receiver,
+        method,
+        args,
+    } = expr
+    else {
+        panic!("expected MethodCall, got: {expr:?}");
     };
     assert!(
-        matches!(function.0, Expr::Identifier(ref n) if n == "a.b.C::D"),
-        "expected qualified constructor callee, got: {:?}",
-        function.0
+        matches!(&receiver.0, Expr::FieldAccess { object, field } if field == "C"
+            && matches!(&object.0, Expr::FieldAccess { object, field } if field == "b"
+                && matches!(&object.0, Expr::Identifier(n) if n == "a"))),
+        "expected a.b.C receiver, got: {:?}",
+        receiver.0
     );
+    assert_eq!(method, "D");
     assert_eq!(args.len(), 1);
 }
 
@@ -127,14 +150,21 @@ fn field_access_regression() {
 
 #[test]
 fn cross_module_enum_variant_multi_arg_parses() {
-    let expr = first_body_expr("fn f() { mod.Outer::Inner(x, y) }");
-    let Expr::Call { function, args, .. } = expr else {
-        panic!("expected Call, got: {expr:?}");
+    let expr = first_body_expr("fn f() { mod.Outer.Inner(x, y) }");
+    let Expr::MethodCall {
+        receiver,
+        method,
+        args,
+    } = expr
+    else {
+        panic!("expected MethodCall, got: {expr:?}");
     };
     assert!(
-        matches!(function.0, Expr::Identifier(ref n) if n == "mod.Outer::Inner"),
-        "expected qualified constructor callee, got: {:?}",
-        function.0
+        matches!(&receiver.0, Expr::FieldAccess { object, field }
+            if matches!(&object.0, Expr::Identifier(n) if n == "mod") && field == "Outer"),
+        "expected mod.Outer receiver, got: {:?}",
+        receiver.0
     );
+    assert_eq!(method, "Inner");
     assert_eq!(args.len(), 2);
 }

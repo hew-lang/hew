@@ -23,6 +23,13 @@ pub struct FrontendOptions {
     /// validation, lockfile) identical to `compile_file`.  When `None` the
     /// old cwd-fallback with no manifest is used.
     pub project_dir: Option<PathBuf>,
+    /// Exact roots used to resolve standard-library and global modules.
+    ///
+    /// When unset, the frontend discovers roots from the source path, current
+    /// directory, and installed compiler layout. Synthetic in-process callers
+    /// should set this so resolution does not depend on the host process's
+    /// working directory or executable location.
+    pub module_search_paths: Option<Vec<PathBuf>>,
     /// Treat warning-severity diagnostics as hard errors.
     ///
     /// When `true`, [`check_file`], [`check_program`], [`compile_file`], and
@@ -209,6 +216,7 @@ pub struct ImportResolutionContext<'a> {
     pub locked_versions: Option<&'a [(String, String)]>,
     pub package_name: Option<&'a str>,
     pub project_dir: &'a Path,
+    pub module_search_paths: Option<&'a [PathBuf]>,
 }
 
 #[derive(Debug)]
@@ -268,15 +276,19 @@ pub fn validate_imports_against_manifest(
             continue;
         }
         let module_str = decl.path.join("::");
+        let source_module = decl.path.join(".");
         if is_builtin_module(&module_str) {
             continue;
         }
         if package_name.is_some_and(|pkg| decl.path.first().is_some_and(|seg| seg == pkg)) {
             continue;
         }
-        if !manifest_deps.contains(&module_str) {
+        if !manifest_deps
+            .iter()
+            .any(|dependency| dependency == &module_str || dependency == &source_module)
+        {
             errors.push(format!(
-                "Error: module `{module_str}` is not declared in hew.toml\n  hint: add it with `hew add {module_str}`"
+                "Error: module `{source_module}` is not declared in hew.toml\n  hint: add it with `hew add {source_module}`"
             ));
         }
     }
@@ -317,7 +329,11 @@ fn load_project_context(
 /// whose impl names a trait declared by that entry. Checking the peer directly
 /// must retain the lexical trait namespace that materializes default methods,
 /// without assembling unrelated peers into every standalone file check.
-fn directory_module_entry_for_peer(program: &Program, input: &Path) -> Option<String> {
+fn directory_module_entry_for_peer(
+    program: &Program,
+    input: &Path,
+    mode: FrontendParseMode,
+) -> Option<String> {
     let input_name = input.file_name()?.to_str()?;
     let parent = input.parent()?;
     let module_name = parent.file_name()?.to_str()?;
@@ -335,7 +351,7 @@ fn directory_module_entry_for_peer(program: &Program, input: &Path) -> Option<St
         })
         .collect::<HashSet<_>>();
     let entry_source = std::fs::read_to_string(entry_path).ok()?;
-    let entry_parse = hew_parser::parse(&entry_source);
+    let entry_parse = parse_for_frontend(&entry_source, mode);
     if entry_parse
         .errors
         .iter()
@@ -367,8 +383,12 @@ fn directory_module_entry_for_peer(program: &Program, input: &Path) -> Option<St
     Some(entry_name)
 }
 
-fn import_directory_module_entry_for_peer(program: &mut Program, input: &Path) {
-    let Some(entry_name) = directory_module_entry_for_peer(program, input) else {
+fn import_directory_module_entry_for_peer(
+    program: &mut Program,
+    input: &Path,
+    mode: FrontendParseMode,
+) {
+    let Some(entry_name) = directory_module_entry_for_peer(program, input, mode) else {
         return;
     };
     program.items.insert(
@@ -377,6 +397,7 @@ fn import_directory_module_entry_for_peer(program: &mut Program, input: &Path) {
             Item::Import(ImportDecl {
                 path: Vec::new(),
                 spec: None,
+                selection_trailing_comma: false,
                 module_alias: None,
                 file_path: Some(entry_name),
                 resolved_items: None,
@@ -413,11 +434,34 @@ fn project_context_for_program(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrontendParseMode {
+    Strict,
+    Migration,
+}
+
+fn parse_for_frontend(source: &str, mode: FrontendParseMode) -> hew_parser::ParseResult {
+    let mut result = hew_parser::parse(source);
+    if mode == FrontendParseMode::Migration {
+        for error in &mut result.errors {
+            if matches!(
+                error.kind,
+                hew_parser::ParseDiagnosticKind::LegacyPathSeparator
+                    | hew_parser::ParseDiagnosticKind::LegacyTurbofish
+            ) {
+                error.severity = hew_parser::Severity::Warning;
+            }
+        }
+    }
+    result
+}
+
 fn parse_source_with_diagnostics(
     source: &str,
     input: &str,
+    mode: FrontendParseMode,
 ) -> Result<(Program, Vec<FrontendDiagnostic>), FrontendFailure> {
-    let result = hew_parser::parse(source);
+    let result = parse_for_frontend(source, mode);
     let diagnostics = result
         .errors
         .iter()
@@ -441,7 +485,8 @@ fn parse_source_with_diagnostics(
 /// Returns [`FrontendFailure`] when parsing reports any error-severity
 /// diagnostic for the supplied source.
 pub fn parse_source(source: &str, input: &str) -> Result<Program, FrontendFailure> {
-    parse_source_with_diagnostics(source, input).map(|(program, _)| program)
+    parse_source_with_diagnostics(source, input, FrontendParseMode::Strict)
+        .map(|(program, _)| program)
 }
 
 fn resolve_imports_internal(
@@ -451,6 +496,7 @@ fn resolve_imports_internal(
     project: &ProjectContext,
     options: &FrontendOptions,
     diagnostics: &mut Vec<FrontendDiagnostic>,
+    mode: FrontendParseMode,
 ) -> Result<(), FrontendFailure> {
     if let Some(deps) = &project.manifest_deps {
         let errs = validate_imports_against_manifest(
@@ -477,6 +523,7 @@ fn resolve_imports_internal(
         locked_versions: project.locked_versions.as_deref(),
         package_name: project.package_name.as_deref(),
         project_dir: &project.project_dir,
+        module_search_paths: options.module_search_paths.as_deref(),
     };
     let module_graph = build_module_graph_with_diagnostics(
         input_path,
@@ -484,6 +531,7 @@ fn resolve_imports_internal(
         program.module_doc.clone(),
         &mut import_ctx,
         diagnostics,
+        mode,
     )?;
     program.module_graph = Some(module_graph);
     Ok(())
@@ -585,8 +633,9 @@ fn typecheck_program_with_diagnostics(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<(TypeCheckResult, Vec<FrontendDiagnostic>), FrontendFailure> {
-    let search_paths =
-        hew_types::module_registry::build_module_search_paths_for(options.project_dir.as_deref());
+    let search_paths = options.module_search_paths.clone().unwrap_or_else(|| {
+        hew_types::module_registry::build_module_search_paths_for(options.project_dir.as_deref())
+    });
     let module_registry = hew_types::module_registry::ModuleRegistry::new(search_paths);
 
     if options.no_typecheck {
@@ -694,6 +743,7 @@ pub fn check_program(
         &project,
         options,
         &mut diagnostics,
+        FrontendParseMode::Strict,
     ) {
         return Err(merge_prior_diagnostics(diagnostics, failure));
     }
@@ -747,6 +797,7 @@ pub fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
                 Item::Import(ImportDecl {
                     path,
                     spec: None,
+                    selection_trailing_comma: false,
                     module_alias: None,
                     file_path: None,
                     resolved_items: None,
@@ -837,6 +888,7 @@ fn build_module_graph_with_diagnostics(
     module_doc: Option<String>,
     ctx: &mut ImportResolutionContext<'_>,
     diagnostics: &mut Vec<FrontendDiagnostic>,
+    mode: FrontendParseMode,
 ) -> Result<hew_parser::module::ModuleGraph, FrontendFailure> {
     use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
@@ -845,7 +897,8 @@ fn build_module_graph_with_diagnostics(
     let source_dir = input_canonical.parent().unwrap_or(Path::new("."));
 
     ctx.in_progress_imports.insert(input_canonical.clone());
-    let resolve_result = resolve_file_imports_internal(&input_canonical, items, ctx, diagnostics);
+    let resolve_result =
+        resolve_file_imports_internal(&input_canonical, items, ctx, diagnostics, mode);
     ctx.in_progress_imports.remove(&input_canonical);
     resolve_result?;
 
@@ -916,7 +969,7 @@ fn check_ambiguous_module_import_bindings(
             if import.path.is_empty() || import.spec.is_some() {
                 continue;
             }
-            let source = import.path.join("::");
+            let source = import.path.join(".");
             let binding = import
                 .module_alias
                 .clone()
@@ -925,9 +978,10 @@ fn check_ambiguous_module_import_bindings(
             if let Some(existing) = seen.insert(binding.clone(), source.clone()) {
                 if existing != source {
                     return Err(format!(
-                        "Error: module `{owner_id}` imports both `{existing}` and `{source}` \
+                        "Error: module `{}` imports both `{existing}` and `{source}` \
                          under the ambiguous binding `{binding}`. \
-                         Give one import a distinct module alias."
+                         Give one import a distinct module alias.",
+                        owner_id.to_string().replace("::", ".")
                     ));
                 }
             }
@@ -996,7 +1050,14 @@ pub fn build_module_graph(
     ctx: &mut ImportResolutionContext<'_>,
 ) -> Result<hew_parser::module::ModuleGraph, FrontendFailure> {
     let mut diagnostics = Vec::new();
-    build_module_graph_with_diagnostics(source_file, items, module_doc, ctx, &mut diagnostics)
+    build_module_graph_with_diagnostics(
+        source_file,
+        items,
+        module_doc,
+        ctx,
+        &mut diagnostics,
+        FrontendParseMode::Strict,
+    )
 }
 
 fn flatten_file_import_items(program: &mut Program) {
@@ -1120,6 +1181,7 @@ fn resolve_file_imports_internal(
     items: &mut [Spanned<Item>],
     ctx: &mut ImportResolutionContext<'_>,
     diagnostics: &mut Vec<FrontendDiagnostic>,
+    mode: FrontendParseMode,
 ) -> Result<(), FrontendFailure> {
     let source_dir = source_file
         .parent()
@@ -1150,7 +1212,7 @@ fn resolve_file_imports_internal(
     // When the source has NO root, cwd candidates are kept (unchanged behaviour).
     //
     // WHY: cross-worktree dogfood regression — `cd <main-checkout> && hew check
-    //   <worktree>/examples/…` hit "import std::fs is ambiguous" in 4/6 sessions;
+    //   <worktree>/examples/…` hit "import std.fs is ambiguous" in 4/6 sessions;
     //   gap: `cd /tmp && hew check <worktree>/examples/…` also hit the same error
     //   because cwd has no root, so the old `(Some, Some) if ≠` guard didn't fire.
     // WHEN obsolete: when stdlib is co-installed with the binary (sysroot model);
@@ -1177,6 +1239,7 @@ fn resolve_file_imports_internal(
             }
             Item::Import(decl) if !decl.path.is_empty() => {
                 let module_str = decl.path.join("::");
+                let source_module = decl.path.join(".");
                 let is_local = ctx
                     .package_name
                     .is_some_and(|pkg| decl.path.first().is_some_and(|seg| seg == pkg));
@@ -1197,7 +1260,11 @@ fn resolve_file_imports_internal(
                 let mut locked_project_candidates = Vec::new();
                 let locked_version = ctx
                     .locked_versions
-                    .and_then(|locked| locked.iter().find(|(name, _)| name == &module_str))
+                    .and_then(|locked| {
+                        locked
+                            .iter()
+                            .find(|(name, _)| name == &module_str || name == &source_module)
+                    })
                     .map(|(_, version)| version.as_str());
 
                 if is_local && !rest_path.is_empty() {
@@ -1241,7 +1308,7 @@ fn resolve_file_imports_internal(
                             project_package_entry.clone(),
                             LockedPackageCheck {
                                 package_dir: project_package_dir,
-                                name: module_str.clone(),
+                                name: source_module.clone(),
                                 version: version.to_string(),
                             },
                         ));
@@ -1291,9 +1358,17 @@ fn resolve_file_imports_internal(
                 // Stdlib / global search roots — apply exclusive precedence tiers so that
                 // a file in worktree-A always resolves std from A only, never from the
                 // build binary's worktree or a sibling checkout.
-                for root in
-                    hew_types::module_registry::build_module_search_paths_for(Some(source_file))
-                {
+                let discovered_search_paths;
+                let search_paths = if let Some(paths) = ctx.module_search_paths {
+                    paths
+                } else {
+                    discovered_search_paths =
+                        hew_types::module_registry::build_module_search_paths_for(Some(
+                            source_file,
+                        ));
+                    &discovered_search_paths
+                };
+                for root in search_paths {
                     candidates.push(root.join(&dir_path));
                     candidates.push(root.join(&rel_path));
                 }
@@ -1323,7 +1398,7 @@ fn resolve_file_imports_internal(
                         .collect::<Vec<_>>()
                         .join("` and `");
                     return Err(FrontendFailure::message_only(format!(
-                        "Error: import `{module_str}` is ambiguous: both `{paths}` exist.\n  Rename or remove one to resolve the ambiguity."
+                        "Error: import `{source_module}` is ambiguous: both `{paths}` exist.\n  Rename or remove one to resolve the ambiguity."
                     )));
                 }
 
@@ -1335,10 +1410,11 @@ fn resolve_file_imports_internal(
                         .map(|candidate| candidate.display().to_string())
                         .collect::<Vec<_>>()
                         .join(", ");
-                    let hint = if ctx
-                        .manifest_deps
-                        .is_some_and(|deps| deps.contains(&module_str))
-                    {
+                    let hint = if ctx.manifest_deps.is_some_and(|deps| {
+                        deps.iter().any(|dependency| {
+                            dependency == &module_str || dependency == &source_module
+                        })
+                    }) {
                         "\n  hint: this dependency is declared in hew.toml — run `hew install`"
                     } else if ctx.manifest_deps.is_some() {
                         "\n  hint: add this module to [dependencies] in hew.toml"
@@ -1346,7 +1422,7 @@ fn resolve_file_imports_internal(
                         ""
                     };
                     return Err(FrontendFailure::message_only(format!(
-                        "Error: module `{module_str}` not found (tried: {tried}){hint}"
+                        "Error: module `{source_module}` not found (tried: {tried}){hint}"
                     )));
                 }
             }
@@ -1354,7 +1430,7 @@ fn resolve_file_imports_internal(
         };
 
         let Some(resolved_import) =
-            resolve_completed_import_internal(&canonical, ctx, &items[*idx].0, diagnostics)?
+            resolve_completed_import_internal(&canonical, ctx, &items[*idx].0, diagnostics, mode)?
         else {
             continue;
         };
@@ -1376,6 +1452,7 @@ fn resolve_completed_import_internal(
     ctx: &mut ImportResolutionContext<'_>,
     import_item: &Item,
     diagnostics: &mut Vec<FrontendDiagnostic>,
+    mode: FrontendParseMode,
 ) -> Result<Option<ResolvedImport>, FrontendFailure> {
     if let Some(cached) = ctx.resolved_imports.get(canonical) {
         return Ok(Some(cached.clone()));
@@ -1385,7 +1462,7 @@ fn resolve_completed_import_internal(
     }
 
     ctx.in_progress_imports.insert(canonical.to_path_buf());
-    let resolved = build_resolved_import_internal(canonical, ctx, import_item, diagnostics);
+    let resolved = build_resolved_import_internal(canonical, ctx, import_item, diagnostics, mode);
     ctx.in_progress_imports.remove(canonical);
 
     match resolved {
@@ -1403,6 +1480,7 @@ fn build_resolved_import_internal(
     ctx: &mut ImportResolutionContext<'_>,
     import_item: &Item,
     diagnostics: &mut Vec<FrontendDiagnostic>,
+    mode: FrontendParseMode,
 ) -> Result<ResolvedImport, FrontendFailure> {
     let module_dir = canonical.parent();
     let is_directory_module = module_dir.is_some_and(|dir| {
@@ -1430,14 +1508,19 @@ fn build_resolved_import_internal(
         Vec::new()
     };
 
-    let mut import_items = parse_and_resolve_file_internal(canonical, ctx, diagnostics)?;
+    let mut import_items = parse_and_resolve_file_internal(canonical, ctx, diagnostics, mode)?;
     let mut import_item_source_paths = vec![canonical.to_path_buf(); import_items.len()];
     let mut source_paths = vec![canonical.to_path_buf()];
 
     for peer in &peer_files {
         let peer_canonical = peer.canonicalize().unwrap_or_else(|_| peer.clone());
-        let Some(peer_resolved) =
-            resolve_completed_import_internal(&peer_canonical, ctx, import_item, diagnostics)?
+        let Some(peer_resolved) = resolve_completed_import_internal(
+            &peer_canonical,
+            ctx,
+            import_item,
+            diagnostics,
+            mode,
+        )?
         else {
             continue;
         };
@@ -1454,7 +1537,7 @@ fn build_resolved_import_internal(
             if decl.path.is_empty() {
                 canonical.display().to_string()
             } else {
-                decl.path.join("::")
+                decl.path.join(".")
             }
         } else {
             canonical.display().to_string()
@@ -1480,6 +1563,7 @@ fn parse_and_resolve_file_internal(
     canonical: &Path,
     ctx: &mut ImportResolutionContext<'_>,
     diagnostics: &mut Vec<FrontendDiagnostic>,
+    mode: FrontendParseMode,
 ) -> Result<Vec<Spanned<Item>>, FrontendFailure> {
     let source = std::fs::read_to_string(canonical).map_err(|e| {
         FrontendFailure::message_only(format!(
@@ -1488,7 +1572,7 @@ fn parse_and_resolve_file_internal(
         ))
     })?;
 
-    let result = hew_parser::parse(&source);
+    let result = parse_for_frontend(&source, mode);
     let display_path = canonical.display().to_string();
     let parse_diagnostics = result
         .errors
@@ -1510,7 +1594,7 @@ fn parse_and_resolve_file_internal(
 
     diagnostics.extend(parse_diagnostics);
     let mut import_items = result.program.items;
-    resolve_file_imports_internal(canonical, &mut import_items, ctx, diagnostics)?;
+    resolve_file_imports_internal(canonical, &mut import_items, ctx, diagnostics, mode)?;
     Ok(import_items)
 }
 
@@ -1562,10 +1646,10 @@ fn check_duplicate_pub_names(items: &[Spanned<Item>], module_name: &str) -> Resu
 /// - `lower_file_to_mir` (slice 2, v0.5 compile path) — will route through
 ///   [`run_file_frontend_to_typecheck`] instead of duplicating the frontend.
 ///
-/// **Do not construct a divergent wrapper.** If you need to call the frontend
-/// with different options, extend [`FrontendOptions`] and route through
-/// [`run_file_frontend_to_typecheck`]. A parallel frontend driver that
-/// duplicates load → parse → import-resolution → type-check is always wrong.
+/// **Do not construct a divergent wrapper.** Frontend variants must route
+/// through the shared private driver used by
+/// [`run_file_frontend_to_typecheck`]. A parallel driver that duplicates load
+/// → parse → import-resolution → type-check is always wrong.
 #[allow(
     missing_debug_implementations,
     reason = "transient pipeline value; Debug not required by any current consumer"
@@ -1595,10 +1679,9 @@ pub struct ProgramFrontendState {
 /// (stops here) and [`compile_file`] (continues into enrichment and
 /// codegen-metadata assembly via `finish_compile`).
 ///
-/// **Do not construct a divergent wrapper.** If you need to call the frontend
-/// with different options, extend [`FrontendOptions`] and route through here.
-/// A parallel driver that duplicates load → parse → import-resolution →
-/// type-check is always wrong.
+/// **Do not construct a divergent wrapper.** Frontend variants must route
+/// through the private shared driver below; a parallel driver that duplicates
+/// load → parse → import-resolution → type-check is always wrong.
 ///
 /// # Errors
 ///
@@ -1608,9 +1691,36 @@ pub fn run_file_frontend_to_typecheck(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<FileFrontendState, FrontendFailure> {
+    run_file_frontend_to_typecheck_with_mode(input, options, FrontendParseMode::Strict)
+}
+
+/// Run the shared file frontend for the checker-backed syntax migrator.
+///
+/// This is the only frontend entry point that recovers removed path separators
+/// and Rust-style turbofish long enough to resolve migration edits. Ordinary
+/// [`run_file_frontend_to_typecheck`], [`check_file`], and compile paths remain
+/// strict. Removed glob imports and every other parse error remain fatal here.
+///
+/// # Errors
+///
+/// Returns [`FrontendFailure`] when project loading, non-migratable parsing,
+/// import resolution, or type-checking fails.
+pub fn run_file_frontend_to_typecheck_for_migration(
+    input: &str,
+    options: &FrontendOptions,
+) -> Result<FileFrontendState, FrontendFailure> {
+    run_file_frontend_to_typecheck_with_mode(input, options, FrontendParseMode::Migration)
+}
+
+fn run_file_frontend_to_typecheck_with_mode(
+    input: &str,
+    options: &FrontendOptions,
+    mode: FrontendParseMode,
+) -> Result<FileFrontendState, FrontendFailure> {
     let project = load_project_context(input, Some(options))?;
-    let (mut program, parse_diagnostics) = parse_source_with_diagnostics(&project.source, input)?;
-    import_directory_module_entry_for_peer(&mut program, Path::new(input));
+    let (mut program, parse_diagnostics) =
+        parse_source_with_diagnostics(&project.source, input, mode)?;
+    import_directory_module_entry_for_peer(&mut program, Path::new(input), mode);
     let mut diagnostics = parse_diagnostics;
 
     if let Err(failure) = resolve_imports_internal(
@@ -1620,6 +1730,7 @@ pub fn run_file_frontend_to_typecheck(
         &project,
         options,
         &mut diagnostics,
+        mode,
     ) {
         return Err(merge_prior_diagnostics(diagnostics, failure));
     }
@@ -1669,6 +1780,7 @@ pub fn run_program_frontend_to_typecheck(
         &project,
         options,
         &mut diagnostics,
+        FrontendParseMode::Strict,
     ) {
         return Err(merge_prior_diagnostics(diagnostics, failure));
     }
@@ -1916,7 +2028,8 @@ mod tests {
     use super::{
         check_file, check_file_with_state, check_program, hir_diagnostics_to_frontend,
         load_dependencies, load_lockfile, load_package_name, parse_source,
-        run_file_frontend_to_typecheck, FrontendDiagnosticKind, FrontendOptions,
+        run_file_frontend_to_typecheck, run_file_frontend_to_typecheck_for_migration,
+        FrontendDiagnosticKind, FrontendOptions,
     };
     use hew_parser::ast::Item;
     use std::fs::{self, File};
@@ -1969,6 +2082,51 @@ mod tests {
             "a directly checked peer must share its directory module entry: {:#?}",
             result.err()
         );
+    }
+
+    #[test]
+    fn migration_frontend_does_not_relax_the_ordinary_frontend() {
+        let dir = tempfile::tempdir().expect("create migration frontend fixture");
+        let legacy = write_source(
+            dir.path(),
+            "legacy.hew",
+            "fn main() { let values: Vec<i64> = Vec::new(); println(values.len()); }\n",
+        );
+        let options = FrontendOptions {
+            project_dir: Some(dir.path().to_path_buf()),
+            ..FrontendOptions::default()
+        };
+
+        let strict = run_file_frontend_to_typecheck(&legacy, &options);
+        assert!(
+            strict.is_err(),
+            "ordinary frontend must reject legacy paths"
+        );
+
+        let migration = run_file_frontend_to_typecheck_for_migration(&legacy, &options)
+            .expect("migration frontend should recover a mechanically rewritable path");
+        assert!(migration.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            FrontendDiagnosticKind::Parse(ref error)
+                if matches!(error.kind, hew_parser::ParseDiagnosticKind::LegacyPathSeparator)
+                    && error.severity == hew_parser::Severity::Warning
+        )));
+
+        let removed_glob = write_source(
+            dir.path(),
+            "removed_glob.hew",
+            "import std::*;\nfn main() {}\n",
+        );
+        let Err(failure) = run_file_frontend_to_typecheck_for_migration(&removed_glob, &options)
+        else {
+            panic!("migration frontend must not admit removed glob imports");
+        };
+        assert!(failure.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            FrontendDiagnosticKind::Parse(ref error)
+                if matches!(error.kind, hew_parser::ParseDiagnosticKind::ImportGlobRemoved)
+                    && error.severity == hew_parser::Severity::Error
+        )));
     }
 
     #[test]
@@ -2051,13 +2209,13 @@ mod tests {
         reason = "the import-order regression keeps both declaration-owner permutations in one proof"
     )]
     fn mixed_file_and_package_impls_keep_declaration_owned_dispatch_in_both_import_orders() {
-        // A file import is flattened into the root program, whereas a package
-        // import retains its package-qualified declaration owner.  The two
-        // sources intentionally declare same-leaf `Result` / `ResultMethods`
-        // impls.  The checker must select the root-owned file declaration for
-        // `local.tag()` and the package-owned declaration for `r.rows()`;
-        // choosing an owner by the shared leaf name makes HIR's body lookup
-        // ambiguous or attaches the call to the wrong implementation.
+        // A file import shares the root checker declaration namespace, while
+        // its emitted HIR body retains the source-file symbol owner. A package
+        // import retains a package-qualified owner at both boundaries. The two
+        // sources intentionally declare same-leaf `TestResult` / `TestResultMethods`
+        // impls. The checker must select the root declaration for `local.tag()`
+        // and the package declaration for `r.rows()`; HIR's direct-call index
+        // must then project each declaration to its distinct emitted body.
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("hew-compile has a workspace parent");
@@ -2067,8 +2225,8 @@ mod tests {
 
         let source = fs::read_to_string(&input).expect("read mixed-import fixture");
         let reversed_source = source.replacen(
-            "import hew::testffi;\nimport \"mixed_import_impl_collision_lib.hew\";",
-            "import \"mixed_import_impl_collision_lib.hew\";\nimport hew::testffi;",
+            "import hew.testffi;\nimport \"mixed_import_impl_collision_lib.hew\";",
+            "import \"mixed_import_impl_collision_lib.hew\";\nimport hew.testffi;",
             1,
         );
         assert_ne!(
@@ -2089,9 +2247,10 @@ mod tests {
         )
         .expect("copy mixed-import library");
 
-        let root_tag = hew_types::DefId::new("Result::<impl ResultMethods for Result>::tag");
+        let root_tag =
+            hew_types::DefId::new("TestResult::<impl TestResultMethods for TestResult>::tag");
         let package_rows = hew_types::DefId::new(
-            "hew.testffi.Result::<impl hew.testffi.ResultMethods for hew.testffi.Result>::rows",
+            "hew.testffi.TestResult::<impl hew.testffi.TestResultMethods for hew.testffi.TestResult>::rows",
         );
 
         for fixture in [
@@ -2113,13 +2272,13 @@ mod tests {
                 .expect("type checking was enabled");
 
             assert_eq!(
-                tco.impl_method_declaration_ids.get("Result::tag"),
+                tco.impl_method_declaration_ids.get("TestResult::tag"),
                 Some(&root_tag),
                 "the flattened file-import implementation must retain a root declaration ID"
             );
             assert_eq!(
                 tco.impl_method_declaration_ids
-                    .get("hew.testffi.Result::rows"),
+                    .get("hew.testffi.TestResult::rows"),
                 Some(&package_rows),
                 "the package implementation must retain its package-qualified declaration ID"
             );
@@ -2131,7 +2290,7 @@ mod tests {
                         ..
                     } if declaration == &root_tag
                 )),
-                "local Result.tag() must select the root file-import declaration: {:#?}",
+                "local TestResult.tag() must select the root file-import declaration: {:#?}",
                 tco.method_call_rewrites
             );
             assert!(
@@ -2142,7 +2301,7 @@ mod tests {
                         ..
                     } if declaration == &package_rows
                 )),
-                "package Result.rows() must select the package declaration: {:#?}",
+                "package TestResult.rows() must select the package declaration: {:#?}",
                 tco.method_call_rewrites
             );
 
@@ -2158,17 +2317,20 @@ mod tests {
                 hir.diagnostics
             );
             let symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
-            assert_eq!(symbols.get(&root_tag), Some(&"Result::tag".to_string()));
+            assert_eq!(
+                symbols.get(&root_tag),
+                Some(&"mixed_import_impl_collision_lib.TestResult::tag".to_string())
+            );
             assert_eq!(
                 symbols.get(&package_rows),
-                Some(&"hew.testffi.Result::rows".to_string())
+                Some(&"hew.testffi.TestResult::rows".to_string())
             );
         }
     }
 
     #[test]
     fn imported_generic_impl_bodies_publish_each_checker_owned_declaration() {
-        // `privslot` deliberately combines all three conditions that used to
+        // `privslot` deliberately combines all three conditions that
         // make a body lookup tempting to recover from a leaf spelling: its
         // module-private generic `Slot<T>` is nested in a public `Store<T>`,
         // and the consumer dispatches two inherent methods after the root body
@@ -2266,7 +2428,7 @@ mod tests {
             impl ActorMsg for Echo { type Msg = i64; type Reply = i64; }
             actor Client {
                 receive fn go(unused: i64) {
-                    let found: Result<RemotePid<Echo>, LookupError> = Node::lookup("echo");
+                    let found: Result<RemotePid<Echo>, LookupError> = Node.lookup("echo");
                     match found {
                         Ok(peer) => { let reply = peer.ask(7, 1000); },
                         Err(_) => {},
@@ -2346,9 +2508,9 @@ mod tests {
             "main.hew",
             r#"
 import "file_helpers.hew";
-import hew::genhelpers;
+import hew.genhelpers;
 import alpha as flat_alpha;
-import beta::alpha as nested_alpha;
+import beta.alpha as nested_alpha;
 
 fn root_first<T>(xs: [T]) -> T { xs[0] }
 
@@ -2560,8 +2722,8 @@ fn main() {
         let input = fixture_dir.join("samename_reply_reject.hew");
         let source = fs::read_to_string(&input).expect("read same-name reply fixture");
         let reversed = source.replacen(
-            "import hew::replysend;\n\nimport hew::replynonsend;",
-            "import hew::replynonsend;\n\nimport hew::replysend;",
+            "import hew.replysend;\n\nimport hew.replynonsend;",
+            "import hew.replynonsend;\n\nimport hew.replysend;",
             1,
         );
         assert_ne!(reversed, source, "fixture must contain both imports");
@@ -3381,13 +3543,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "helper.hew",
-            "import std::net;\n\npub fn marker() -> i64 { 1 }\n",
+            "import std.net;\n\npub fn marker() -> i64 { 1 }\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
             "import helper;\n\
-             import std::net::{Connection};\n\n\
+             import std.net.{Connection};\n\n\
              fn close_connection(conn: Connection) { conn.close(); }\n\
              fn main() { let _ = helper.marker(); }\n",
         );
@@ -3412,7 +3574,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import alpha;\nimport beta::alpha;\n\nfn main() -> i64 { 0 }\n",
+            "import alpha;\nimport beta.alpha;\n\nfn main() -> i64 { 0 }\n",
         );
 
         let failure = check_file(&input, &FrontendOptions::default())
@@ -3441,7 +3603,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             dir.path(),
             "main.hew",
             "import alpha as flat_alpha;\n\
-             import beta::alpha as nested_alpha;\n\n\
+             import beta.alpha as nested_alpha;\n\n\
              fn main() -> i64 { flat_alpha.val() + nested_alpha.val() }\n",
         );
 
@@ -3464,7 +3626,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import hew::db::sqlite;\n\nfn main() -> i64 { sqlite.marker() }\n",
+            "import hew.db.sqlite;\n\nfn main() -> i64 { sqlite.marker() }\n",
         );
 
         check_file(
@@ -3505,7 +3667,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std::bogus;\n\nfn main() {}\n",
+            "import std.bogus;\n\nfn main() {}\n",
         );
 
         let failure = check_file(
@@ -3516,17 +3678,17 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 ..Default::default()
             },
         )
-        .expect_err("std::bogus must not resolve from --pkg-path/bogus.hew");
+        .expect_err("std.bogus must not resolve from --pkg-path/bogus.hew");
 
         assert!(
-            failure.message.contains("module `std::bogus` not found"),
-            "expected std::bogus to fail closed, got: {}",
+            failure.message.contains("module `std.bogus` not found"),
+            "expected std.bogus to fail closed, got: {}",
             failure.message
         );
         let stripped_pkg_candidate = pkg_root.join("bogus.hew").display().to_string();
         assert!(
             !failure.message.contains(&stripped_pkg_candidate),
-            "std:: imports must not try stripped --pkg-path tail candidate `{stripped_pkg_candidate}`: {}",
+            "std. imports must not try stripped --pkg-path tail candidate `{stripped_pkg_candidate}`: {}",
             failure.message
         );
     }
@@ -3541,7 +3703,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std::bogus;\n\nfn main() {}\n",
+            "import std.bogus;\n\nfn main() {}\n",
         );
 
         let failure = check_file(
@@ -3552,17 +3714,17 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 ..Default::default()
             },
         )
-        .expect_err("std::bogus must not resolve from --pkg-path/std/bogus.hew");
+        .expect_err("std.bogus must not resolve from --pkg-path/std/bogus.hew");
 
         assert!(
-            failure.message.contains("module `std::bogus` not found"),
-            "expected std::bogus to fail closed, got: {}",
+            failure.message.contains("module `std.bogus` not found"),
+            "expected std.bogus to fail closed, got: {}",
             failure.message
         );
         let fake_std_candidate = fake_std_dir.join("bogus.hew").display().to_string();
         assert!(
             !failure.message.contains(&fake_std_candidate),
-            "std:: imports must not try --pkg-path std-root candidate `{fake_std_candidate}`: {}",
+            "std. imports must not try --pkg-path std-root candidate `{fake_std_candidate}`: {}",
             failure.message
         );
     }
@@ -3576,7 +3738,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std::bogus;\n\nfn main() {}\n",
+            "import std.bogus;\n\nfn main() {}\n",
         );
 
         let failure = check_file(
@@ -3587,17 +3749,17 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 ..Default::default()
             },
         )
-        .expect_err("std::bogus must not resolve from .hew/packages/std/bogus.hew");
+        .expect_err("std.bogus must not resolve from .hew/packages/std/bogus.hew");
 
         assert!(
-            failure.message.contains("module `std::bogus` not found"),
-            "expected std::bogus to fail closed, got: {}",
+            failure.message.contains("module `std.bogus` not found"),
+            "expected std.bogus to fail closed, got: {}",
             failure.message
         );
         let fake_std_candidate = pkg_std_dir.join("bogus.hew").display().to_string();
         assert!(
             !failure.message.contains(&fake_std_candidate),
-            "std:: imports must not try .hew std-root candidate `{fake_std_candidate}`: {}",
+            "std. imports must not try .hew std-root candidate `{fake_std_candidate}`: {}",
             failure.message
         );
     }
@@ -3612,7 +3774,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let pkg_root = dir.path().join("packages");
         fs::create_dir_all(&pkg_root).expect("create package root");
         write_source(&pkg_root, "fs.hew", "pub fn marker() -> i64 { 1 }\n");
-        let input = write_source(dir.path(), "main.hew", "import std::fs;\n\nfn main() {}\n");
+        let input = write_source(dir.path(), "main.hew", "import std.fs;\n\nfn main() {}\n");
 
         let (_output, state) = check_file_with_state(
             &input,
@@ -3653,6 +3815,49 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     #[test]
+    fn explicit_module_search_paths_do_not_fall_back_to_process_layout() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let stdlib_root = dir.path().join("compiler-resources");
+        let stdlib_dir = stdlib_root.join("std");
+        fs::create_dir_all(&stdlib_dir).expect("create explicit stdlib root");
+        write_source(&stdlib_dir, "builtins.hew", "// explicit stdlib marker\n");
+        let expected = Path::new(&write_source(
+            &stdlib_dir,
+            "fs.hew",
+            "pub fn explicit_marker() -> i64 { 1 }\n",
+        ))
+        .canonicalize()
+        .expect("canonical explicit stdlib module");
+        let project_dir = dir.path().join("external-project");
+        fs::create_dir(&project_dir).expect("create external project");
+        let input = write_source(&project_dir, "main.hew", "import std.fs;\n\nfn main() {}\n");
+
+        let (_output, state) = check_file_with_state(
+            &input,
+            &FrontendOptions {
+                no_typecheck: true,
+                project_dir: Some(project_dir),
+                module_search_paths: Some(vec![stdlib_root]),
+                ..Default::default()
+            },
+        )
+        .expect("the explicit stdlib root should resolve independently of cwd");
+
+        let resolved = state
+            .program
+            .items
+            .iter()
+            .find_map(|item| match &item.0 {
+                Item::Import(import) if import.path == ["std", "fs"] => {
+                    import.resolved_source_paths.first()
+                }
+                _ => None,
+            })
+            .expect("std::fs should resolve from the explicit root");
+        assert_eq!(resolved, &expected);
+    }
+
+    #[test]
     fn non_builtin_import_still_uses_pkg_path_tail_fallback() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let pkg_root = dir.path().join("packages");
@@ -3664,11 +3869,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         ))
         .canonicalize()
         .expect("canonical package file");
-        let input = write_source(
-            dir.path(),
-            "main.hew",
-            "import mypkg::fs;\n\nfn main() {}\n",
-        );
+        let input = write_source(dir.path(), "main.hew", "import mypkg.fs;\n\nfn main() {}\n");
 
         let (_output, state) = check_file_with_state(
             &input,
@@ -3712,7 +3913,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import hew::db::sqlite;\n\nfn main() {}\n",
+            "import hew.db.sqlite;\n\nfn main() {}\n",
         );
 
         let (_output, state) = check_file_with_state(
@@ -3757,7 +3958,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import ecosystem::db::postgres;\n\nfn main() {}\n",
+            "import ecosystem.db.postgres;\n\nfn main() {}\n",
         );
 
         let (_output, state) = check_file_with_state(
@@ -3797,7 +3998,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import actor::monitor;\n\nfn main() -> i64 { 0 }\n",
+            "import actor.monitor;\n\nfn main() -> i64 { 0 }\n",
         );
 
         let (_output, state) = check_file_with_state(
@@ -4065,7 +4266,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
 
         // Use a user-space module (no std::/hew::/ecosystem:: prefix) so
         // validate_imports_against_manifest actually checks it.
-        let source = "import mylib::utils;\nfn main() {}\n";
+        let source = "import mylib.utils;\nfn main() {}\n";
         let program = parse_source(source, "main.hew").expect("source should parse");
         let options = FrontendOptions {
             project_dir: Some(dir.path().to_path_buf()),
@@ -4260,6 +4461,101 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     #[test]
+    fn state_constructor_error_in_peer_routes_to_its_source_line() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let workflow_dir = dir.path().join("workflow");
+        fs::create_dir(&workflow_dir).expect("create workflow dir");
+        let main = write_source(
+            dir.path(),
+            "main.hew",
+            "import workflow.{Workflow};\nfn main() {}\n",
+        );
+        write_source(
+            &workflow_dir,
+            "workflow.hew",
+            "pub type Marker { value: i64; }\n",
+        );
+        let peer_source = concat!(
+            "pub machine Workflow {\n",
+            "    events { Crash; }\n",
+            "    state Ready;\n",
+            "    state Faulted { code: i64; }\n",
+            "    on Crash: Ready => Faulted {\n",
+            "        Workflow.Faulted { wrong: 1 }\n",
+            "    }\n",
+            "    default { state }\n",
+            "}\n",
+            "\n",
+            "pub fn deferred_error() {\n",
+            "    let value: Vec<_> = [];\n",
+            "}\n",
+        );
+        write_source(&workflow_dir, "state.hew", peer_source);
+        let peer_suffix = Path::new("workflow").join("state.hew");
+
+        let failure = check_file(&main, &FrontendOptions::default())
+            .expect_err("the deliberate state-field error must reject the fixture");
+        let diagnostic = failure
+            .diagnostics
+            .iter()
+            .find_map(|diagnostic| match &diagnostic.kind {
+                FrontendDiagnosticKind::Type(error)
+                    if error.message.contains("no field `wrong`") =>
+                {
+                    Some((diagnostic, error))
+                }
+                _ => None,
+            })
+            .expect("state constructor field diagnostic");
+        assert!(
+            diagnostic
+                .0
+                .filename
+                .as_deref()
+                .is_some_and(|filename| Path::new(filename).ends_with(&peer_suffix)),
+            "diagnostic must name the declaring peer, got {:?}",
+            diagnostic.0.filename
+        );
+        let line = peer_source[..diagnostic.1.span.start]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1;
+        assert_eq!(line, 6, "diagnostic must point at the deliberate error");
+
+        let inference = failure
+            .diagnostics
+            .iter()
+            .find_map(|diagnostic| match &diagnostic.kind {
+                FrontendDiagnosticKind::Type(error)
+                    if error.message.contains("cannot infer type") =>
+                {
+                    Some((diagnostic, error))
+                }
+                _ => None,
+            })
+            .expect("deferred inference diagnostic");
+        assert!(
+            inference
+                .0
+                .filename
+                .as_deref()
+                .is_some_and(|filename| Path::new(filename).ends_with(&peer_suffix)),
+            "deferred diagnostic must name the declaring peer, got {:?}",
+            inference.0.filename
+        );
+        let inference_line = peer_source[..inference.1.span.start]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1;
+        assert_eq!(
+            inference_line, 12,
+            "deferred diagnostic must point at the inference error"
+        );
+    }
+
+    #[test]
     fn hir_diagnostic_routes_to_imported_module_source() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let main = write_source(
@@ -4331,9 +4627,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
 
     /// `std::misc::log` ships `pub const JSON: i64 = 1` and `pub const TEXT: i64 = 0`
     /// in its Hew source layer.  The stdlib registration path routes these through
-    /// `register_stdlib_hew_items`, which previously had no `Item::Const` arm and
-    /// silently dropped them so `log.JSON` / `log.TEXT` were unknown to the type
-    /// checker.
+    /// `register_stdlib_hew_items` registers these constants so `log.JSON` /
+    /// `log.TEXT` are available to the type checker.
     ///
     /// This test verifies the real stdlib const resolution works end-to-end: the
     /// source goes through import resolution (which populates `resolved_items` on
@@ -4350,7 +4645,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
 
         let dir = tempfile::tempdir().expect("create temp dir");
         let source = concat!(
-            "import std::misc::log;\n",
+            "import std.misc.log;\n",
             "fn main() {\n",
             "    log.set_format(log.JSON);\n",
             "    log.set_format(log.TEXT);\n",
@@ -4372,8 +4667,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         );
     }
 
-    /// Importing `std::fs` and `std::path` together previously produced two
-    /// defects caused by `SpanKey` lacking a per-module discriminator:
+    /// Importing `std::fs` and `std::path` together uses a per-module
+    /// discriminator in `SpanKey`:
     ///
     /// * Defect A — `hew check`: `unsupported unary - for operand i64 -> string`
     ///   at `std/path.hew:227` (ordinary `return -1;`).  The negation was
@@ -4430,7 +4725,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         // Source file lives inside the fake root.
         let src_dir = fake_root.path().join("examples");
         fs::create_dir_all(&src_dir).expect("create examples dir");
-        let source = "import std::fs;\n\nfn main() -> i64 { 0 }\n";
+        let source = "import std.fs;\n\nfn main() -> i64 { 0 }\n";
         let input = write_source(&src_dir, "prog.hew", source);
 
         let options = FrontendOptions {
@@ -4482,7 +4777,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         // Source file lives inside the fake root.
         let src_dir = fake_root.path().join("examples");
         fs::create_dir_all(&src_dir).expect("create examples dir");
-        let source = "import std::fs;\n\nfn main() -> i64 { 0 }\n";
+        let source = "import std.fs;\n\nfn main() -> i64 { 0 }\n";
         let input = write_source(&src_dir, "prog.hew", source);
 
         // A separate tempdir that also contains std/fs.hew but is NOT a Hew
@@ -4558,8 +4853,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         // A plain function call exercises path resolution without needing
         // full stdlib ABI support for the imported functions.
         let source = concat!(
-            "import std::path;\n",
-            "import std::fs;\n",
+            "import std.path;\n",
+            "import std.fs;\n",
             "\n",
             "fn main() -> i64 { 0 }\n",
         );
@@ -4575,6 +4870,31 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             result.is_ok(),
             "importing std::path and std::fs together must not produce \
              cross-module SpanKey collisions; got: {:#?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn std_concurrency_peer_bodies_accept_dotted_import_spelling() {
+        let dir = tempfile::tempdir().expect("create temp project");
+        let import = "import std.concurrency.{ScopeError};";
+        let source = format!(
+            "{import}\n\
+                 \n\
+                 fn main() {{\n\
+                     let error: ScopeError<i64> = ScopeError {{\n\
+                         primary: 1,\n\
+                         also_failed: [],\n\
+                         cancelled_count: 0,\n\
+                     }};\n\
+                     let _ = error;\n\
+                 }}\n"
+        );
+        let input = write_source(dir.path(), "dotted.hew", &source);
+        let result = check_file(&input, &FrontendOptions::default());
+        assert!(
+            result.is_ok(),
+            "{import} must check the assembled std.concurrency peer bodies: {:#?}",
             result.err()
         );
     }
@@ -4613,7 +4933,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let imported_input = write_source(
             dir.path(),
             "main.hew",
-            "import std::concurrency::{ScopeError};\n\
+            "import std.concurrency.{ScopeError};\n\
              fn main() {\n\
                  let error: ScopeError<i64> = ScopeError {\n\
                      primary: 1, also_failed: [], cancelled_count: 0\n\
@@ -4652,7 +4972,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let foreign_input = write_source(
             dir.path(),
             "foreign_main.hew",
-            "import spoofed::{LambdaActorHandle};\n\
+            "import spoofed.{LambdaActorHandle};\n\
              fn main() { let _ = LambdaActorHandle {}; }\n",
         );
         let foreign = lower_to_mir(&foreign_input);
@@ -4680,5 +5000,67 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "the foreign same-leaf handle must remain fail-closed instead of inheriting the bundled resource class: {:#?}",
             foreign.diagnostics
         );
+    }
+
+    #[test]
+    fn imported_stdlib_function_can_spawn_and_wire_public_module_actors() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below repository root");
+        let dir = tempfile::tempdir().expect("create temp project");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import std.pipeline;\n\
+             fn main() {\n\
+                 let chain = pipeline.run(pipeline.from(1));\n\
+                 let item: pipeline.PipelineItemI64 = PipelineItemI64 {\n\
+                     value: 21, label: \"probe\", crash_stage: false\n\
+                 };\n\
+                 match await chain.push(item) { Ok(_) => {}, Err(_) => {} }\n\
+             }\n",
+        );
+        let state = run_file_frontend_to_typecheck(
+            &input,
+            &FrontendOptions {
+                project_dir: Some(repo_root.to_path_buf()),
+                ..FrontendOptions::default()
+            },
+        )
+        .unwrap_or_else(|failure| panic!("frontend failed: {failure:#?}"));
+        let typecheck = state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("fixture must typecheck");
+        let hir = hew_hir::lower_program(
+            &state.program,
+            typecheck,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            hir.diagnostics.is_empty(),
+            "imported pipeline bodies must lower: {:#?}",
+            hir.diagnostics
+        );
+        let mir = hew_mir::lower_hir_module(&hir.module);
+        assert!(
+            mir.diagnostics.is_empty(),
+            "imported pipeline actor layouts and calls must lower: {:#?}",
+            mir.diagnostics
+        );
+        for actor in [
+            "std.pipeline.AdmissionControlI64",
+            "std.pipeline.SinkI64",
+            "std.pipeline.StageI64",
+            "std.pipeline.SourceI64",
+        ] {
+            assert!(
+                mir.actor_layouts.iter().any(|layout| layout.name == actor),
+                "missing imported actor layout `{actor}`: {:#?}",
+                mir.actor_layouts
+            );
+        }
     }
 }

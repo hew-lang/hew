@@ -27,6 +27,15 @@ on:
       - 'release-*'
   workflow_dispatch:
 
+# A push to a branch makes any run still going for that same ref obsolete:
+# its verdict can no longer gate anything, because a newer commit exists.
+# Those runs were still holding runners, so 15 open pull requests could
+# starve the queue and nothing scheduled at all. Never cancel on main —
+# a push there must complete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
   checks: write
@@ -206,6 +215,7 @@ jobs:
           make test-opaque-resource-lifecycle-matrix-external
           make test-vertical-slice
           make test-hew-ratchet
+          make test-migrate-corpus
           make test-stdlib-ratchet
           make test-stdlib-execution-proofs
 
@@ -216,20 +226,13 @@ jobs:
         run: make mqtt-broker-e2e
 
       # Browser-analysis WASM gate — Linux x86_64 only.
-      # Installs wasm-pack + wasm32-unknown-unknown and runs the full playground
+      # Installs wasm-pack + Binaryen + wasm32-unknown-unknown and runs the full
+      # playground
       # check: manifest freshness, full hew-wasm test suite (lib + fixture-coverage
       # integration), and the wasm-pack release build.  Scoped to x86_64 to avoid
       # multiplying wasm-pack installs across aarch64/macOS/Windows lanes.
-      - name: Install wasm-pack v0.13.1 (browser-analysis gate)
-        run: |
-          set -euo pipefail
-          WASM_PACK_VERSION=0.13.1
-          TARBALL="wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          curl -fsSL "https://github.com/rustwasm/wasm-pack/releases/download/v${WASM_PACK_VERSION}/${TARBALL}" \
-            -o "/tmp/${TARBALL}"
-          tar -xzf "/tmp/${TARBALL}" -C /tmp
-          echo "/tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
-          /tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl/wasm-pack --version
+      - name: Install wasm-pack v0.13.1 and Binaryen 117 (browser-analysis gate)
+        uses: ./.github/actions/setup-wasm-pack
 
       - name: Add wasm32-unknown-unknown target
         run: rustup target add wasm32-unknown-unknown

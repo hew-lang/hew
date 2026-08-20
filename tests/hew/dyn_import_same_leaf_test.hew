@@ -1,0 +1,21 @@
+//! Two imported traits share the same leaf name and both implement that trait
+//! for a same-leaf concrete type. Dynamic calls must retain each declaration's
+//! canonical trait and impl owner.
+
+import "dyn_import_same_leaf_support/file_render.hew";
+
+import tests.hew.dyn_import_same_leaf_support.package_render.{
+    render_package_box,
+};
+
+import std.testing;
+
+fn render_file(value: dyn Render) -> string {
+    value.render()
+}
+
+#[test]
+fn same_leaf_imported_traits_dispatch_to_their_own_impls() {
+    testing.assert_eq_str(render_file(make_file_box()), "file:left");
+    testing.assert_eq_str(render_package_box(), "package:right");
+}

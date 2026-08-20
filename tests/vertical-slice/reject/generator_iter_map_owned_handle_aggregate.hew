@@ -6,7 +6,7 @@
 // emit a double-free — full aggregate-extraction support for owned handles
 // is tracked separately (v0.5.1 ownership work), not part of the Iterator
 // trait completion this fixture pins.
-import std::iter;
+import std.iter;
 
 gen fn counter(n: i64) -> i64 {
     var i: i64 = 0;
@@ -18,6 +18,6 @@ gen fn counter(n: i64) -> i64 {
 
 fn main() {
     let g = counter(3);
-    let doubled = iter::collect(iter::map(g, |x: i64| x * 2));
+    let doubled = iter.collect(iter.map(g, |x: i64| x * 2));
     println(doubled.len());
 }

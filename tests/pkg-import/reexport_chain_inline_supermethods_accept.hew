@@ -7,7 +7,7 @@
 // transitive method set is KNOWN and each inline method's signature is checked
 // against its origin (`reexbase.Base::base -> i64`, `reexmid.Mid::mid -> i64`).
 // Run e2e so every level dispatches.
-import hew::reexchaina::{Top};
+import hew.reexchaina.{Top};
 
 type W {
     id: i64;

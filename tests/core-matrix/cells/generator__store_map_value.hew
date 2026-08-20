@@ -3,10 +3,10 @@ fn main() {
         yield 1;
         yield 2;
     };
-    let m: HashMap<string, Generator<i64, ()>> = HashMap::new();
+    let m: HashMap<string, Generator<i64, ()>> = HashMap.new();
     m.insert("k", x);
     match m.get("k") {
-        Some(e) => {
+        Option.Some(e) => {
             var e_sum = 0;
             for e_y in e {
                 e_sum = e_sum + e_y;

@@ -71,11 +71,9 @@ fn run_hew_source(repo: &Path, stem: &str, source: &str) -> String {
     let path = dir.join(format!("{stem}.hew"));
     std::fs::write(&path, source).expect("write temp Hew source");
 
-    let output = hew_command(repo)
-        .arg("run")
-        .arg(&path)
-        .output()
-        .expect("spawn hew run");
+    let mut command = hew_command(repo);
+    command.arg("run").arg(&path);
+    let output = super::run_hew_command(&mut command, format!("hew run {}", path.display()));
     assert!(
         output.status.success(),
         "hew run {} exited non-zero (status={:?}); stderr:\n{}",
@@ -97,10 +95,10 @@ fn bytes_index_sugar_reads_pushed_bytes() {
         &repo,
         "bytes_index_sugar",
         r#"
-        import std::io;
+        import std.io;
 
         fn main() {
-            var b: bytes = bytes::new();
+            var b: bytes = bytes.new();
             b.push(65);
             b.push(66);
             b.push(67);
@@ -129,7 +127,7 @@ fn bytes_get_method_returns_option() {
         "bytes_get_method",
         r#"
         fn main() {
-            var b: bytes = bytes::new();
+            var b: bytes = bytes.new();
             b.push(200);
             b.push(1);
             match b.get(0) {

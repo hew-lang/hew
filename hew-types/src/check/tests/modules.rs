@@ -119,6 +119,83 @@ fn source_owned_bare_variant_surface_matches_full_scrutinee_owner_only() {
 }
 
 #[test]
+fn private_imported_result_cannot_rename_the_builtin_in_another_module() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.current_module = Some("std.string".to_string());
+    checker.type_defs.insert(
+        "hew.testffi.Result".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Result".to_string(),
+            type_params: vec![],
+            bounds: HashMap::new(),
+            fields: HashMap::new(),
+            field_order: vec![],
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        },
+    );
+    checker.known_types.insert("hew.testffi.Result".to_string());
+
+    assert_eq!(checker.source_nominal_declaration("Result"), None);
+    let builtin_result = Ty::Named {
+        name: "hew.testffi.Result".to_string(),
+        args: vec![Ty::I64, Ty::String],
+        builtin: Some(BuiltinType::Result),
+    };
+    assert_eq!(
+        checker.normalize_for_use(&builtin_result),
+        Ty::result(Ty::I64, Ty::String),
+        "builtin authority must repair a foreign source owner leaked into its presentation"
+    );
+}
+
+#[test]
+fn aliased_and_full_stdlib_builtin_spellings_normalize_to_one_nominal() {
+    // The F4 identity split: an actor field declared through the module alias
+    // (`stream.Stream<string>` after `import std::stream`) compared at spawn
+    // against a factory value spelled with the full source owner
+    // (`std.stream.Stream<string>`). Two dotted spellings are DISTINCT to
+    // `names_match_qualified`, so both must normalize to the one canonical
+    // owner before any unify boundary.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .canonical_std_module_sources
+        .insert("std.stream".to_string());
+    checker
+        .module_import_bindings
+        .insert((None, 0, "stream".to_string()), "std.stream".to_string());
+
+    let aliased = Ty::Named {
+        name: "stream.Stream".to_string(),
+        args: vec![Ty::String],
+        builtin: Some(BuiltinType::Stream),
+    };
+    let full = Ty::Named {
+        name: "std.stream.Stream".to_string(),
+        args: vec![Ty::String],
+        builtin: Some(BuiltinType::Stream),
+    };
+    let aliased_normalized = checker.normalize_for_use(&aliased);
+    assert_eq!(
+        aliased_normalized,
+        checker.normalize_for_use(&full),
+        "an actor field spelled through the module alias must carry the factory's canonical nominal"
+    );
+    assert_eq!(
+        aliased_normalized,
+        Ty::Named {
+            name: "std.stream.Stream".to_string(),
+            args: vec![Ty::String],
+            builtin: Some(BuiltinType::Stream),
+        },
+        "the canonical source owner is the one surviving spelling, builtin authority intact"
+    );
+}
+
+#[test]
 fn canonical_std_module_binding_projects_bare_enum_identity_without_leaf_retry() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.current_module = Some("std.net.tls".to_string());
@@ -127,7 +204,7 @@ fn canonical_std_module_binding_projects_bare_enum_identity_without_leaf_retry()
         .canonical_std_module_sources
         .insert("std.net".to_string());
     checker.module_import_bindings.insert(
-        (Some("std.net.tls".to_string()), "net".to_string()),
+        (Some("std.net.tls".to_string()), 0, "net".to_string()),
         "std.net".to_string(),
     );
     checker.known_types.insert("net.NetError".to_string());
@@ -166,7 +243,7 @@ fn canonical_std_module_binding_projects_bare_enum_identity_without_leaf_retry()
     checker.local_type_defs.remove("NetError");
 
     checker.module_import_bindings.insert(
-        (Some("std.net.tls".to_string()), "sibling".to_string()),
+        (Some("std.net.tls".to_string()), 0, "sibling".to_string()),
         "acme.net".to_string(),
     );
     checker.known_types.insert("acme.net.NetError".to_string());
@@ -409,7 +486,7 @@ fn module_qualified_call_rejects_private_body_only_signature() {
         checker
             .errors
             .iter()
-            .any(|err| matches!(err.kind, TypeErrorKind::UndefinedMethod)),
+            .any(|err| matches!(err.kind, TypeErrorKind::PathMemberNotFound)),
         "module-qualified calls must not resolve against non-exported private signatures: {:?}",
         checker.errors
     );
@@ -1466,7 +1543,7 @@ mod module_body_diagnostic_envelope {
     fn deferred_channel_rewrite_refreshes_result_and_argument_ownership() {
         let parsed = hew_parser::parse(
             r#"
-                import std::channel::channel;
+                import std.channel.channel;
 
                 fn relay() {
                     let (tx, rx) = channel.new(1);
@@ -1537,8 +1614,8 @@ mod module_body_diagnostic_envelope {
     #[test]
     fn assign_target_shapes_populated_for_while_loop_with_import() {
         // Reproduces the eval_large_stderr CI failure:
-        // synthesized source for `fn spam_err` eval step with `import std::io`
-        let source = "import std::io;\nfn spam_err() {\n    var i = 0;\n    while i < 20000 {\n        io.write_err(\"line\\n\");\n        i = i + 1;\n    }\n}\nfn main() {\n}\n";
+        // synthesized source for `fn spam_err` eval step with `import std.io`
+        let source = "import std.io;\nfn spam_err() {\n    var i = 0;\n    while i < 20000 {\n        io.write_err(\"line\\n\");\n        i = i + 1;\n    }\n}\nfn main() {\n}\n";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1550,10 +1627,10 @@ mod module_body_diagnostic_envelope {
         ));
         let tco = checker.check_program(&parse_result.program);
         // `i` in `i = i + 1` must appear in assign_target_shapes
-        let has_shape = tco.assign_target_shapes.iter().any(|(k, _)| k.start == 109);
+        let has_shape = tco.assign_target_shapes.iter().any(|(k, _)| k.start == 108);
         assert!(
             has_shape,
-            "assign_target_shapes missing entry for i at ~109; got: {:?}",
+            "assign_target_shapes missing entry for i at ~108; got: {:?}",
             tco.assign_target_shapes.keys().collect::<Vec<_>>()
         );
     }
@@ -1579,6 +1656,7 @@ mod warning_source_attribution {
         ImportDecl {
             path: vec!["fakemod".to_string()],
             spec: None,
+            selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
             resolved_items: Some(vec![]),
@@ -1861,6 +1939,7 @@ mod warning_source_attribution {
         ImportDecl {
             path: vec![short_name.to_string()],
             spec: None,
+            selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
             resolved_items: Some(vec![]),
@@ -2035,6 +2114,7 @@ mod warning_source_attribution {
         let import_a_with_items = ImportDecl {
             path: vec!["fakemod".to_string()],
             spec: None,
+            selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
             resolved_items: Some(vec![(Item::Function(helper_fn), 0..30)]),
@@ -2151,6 +2231,7 @@ mod warning_source_attribution {
         let import_b = ImportDecl {
             path: vec!["fakemod".to_string()],
             spec: None,
+            selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
             resolved_items: Some(vec![(Item::Trait(fake_trait.clone()), 0..30)]),
@@ -2454,7 +2535,7 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
         // PR #923 bypasses the `?` context diagnostic for genuinely unknown named
         // return annotations. Builtin named types like Vec must still report the
         // context error even though they are not registered in type_defs/type_aliases.
-        let source = r"fn foo() -> Vec<i32> { let r: Result<i64, string> = Ok(1); let x: i64 = r?; Vec::new() }";
+        let source = r"fn foo() -> Vec<i32> { let r: Result<i64, string> = Ok(1); let x: i64 = r?; Vec.new() }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),

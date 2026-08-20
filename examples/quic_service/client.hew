@@ -1,7 +1,7 @@
 // client.hew — Minimal QUIC remote service client
 //
 // Demonstrates:
-//   - Using std::net::quic public API to create a QUIC client endpoint
+//   - Using std.net.quic public API to create a QUIC client endpoint
 //   - Dialing a remote QUIC server
 //   - Opening a stream and sending UTF-8 string messages
 //   - Preserving the finish/recv/close ordering used by the working loopback test
@@ -12,16 +12,16 @@
 //
 // Optional:
 //   HEW_QUIC_SERVICE_PORT=4545 hew run examples/quic_service/client.hew
-import std::net;
+import std.net;
 
-import std::net::quic;
+import std.net.quic;
 
-import std::os;
+import std.os;
 
 fn assert_ok(result: Result<(), net.NetError>) {
     match result {
-        Ok(_) => assert(true),
-        Err(e) => panic("quic operation failed: " + net.net_error_message(e)),
+        .Ok(_) => assert(true),
+        .Err(e) => panic("quic operation failed: " + net.net_error_message(e)),
     }
 }
 

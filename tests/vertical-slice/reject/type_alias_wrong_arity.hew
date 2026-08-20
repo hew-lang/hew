@@ -1,0 +1,5 @@
+type Pair<T> = (T, T);
+
+fn main() {
+    let pair: Pair<i64, string> = (1, 2);
+}

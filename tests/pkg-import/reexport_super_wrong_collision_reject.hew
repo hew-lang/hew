@@ -9,9 +9,9 @@
 // REJECTED with `TraitImplSignatureMismatch`. The collision-unsafe fail-open is
 // that `qualify_super_trait_edge` fell back to the bare `Base` (binding the
 // final importer's `wrongbase.Base`) when `reexsub.Base` was unregistered.
-import hew::reexsub::{Sub};
+import hew.reexsub.{Sub};
 
-import hew::wrongbase::{Base};
+import hew.wrongbase.{Base};
 
 type W {
     id: i64;

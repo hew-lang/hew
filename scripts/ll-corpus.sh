@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ll-oracle corpus driver — `ll-golden` and `ll-diff` make targets.
 #
-# Compiles every fixture under tests/ll-oracle/corpus/ with `hew compile
-# --emit-dir` for both the native and wasm32 targets, then either:
+# Compiles every fixture under tests/ll-oracle/corpus/ with `hew build
+# --emit-obj` for both the native and wasm32 targets, then either:
 #
 #   golden  — writes the normalised per-fn corpus into tests/ll-oracle/corpus/golden/
 #   verify  — recompiles and diffs against the committed golden; exits non-zero
@@ -39,6 +39,9 @@ if [[ ! -x "$HEW_BIN" ]]; then
   echo "build it first (make hew) or set HEW_BIN=<path>" >&2
   exit 2
 fi
+if [[ "$HEW_BIN" != /* ]]; then
+  HEW_BIN="$(cd "$(dirname "$HEW_BIN")" && pwd)/$(basename "$HEW_BIN")"
+fi
 
 # Collect corpus fixtures
 fixtures=()
@@ -55,7 +58,7 @@ fi
 # selection and pass the selected size to the oracle as its comparison minimum.
 corpus_nonempty_assert "ll-oracle-fixtures" "${#fixtures[@]}" || exit 1
 
-# Compile one fixture to a target-specific directory, return the .ll path.
+# Emit one fixture's object and LLVM IR to a target-specific directory.
 # compile_fixture <fixture-path> <out-dir> [wasm32]
 compile_fixture() {
   local fixture="$1"
@@ -63,10 +66,15 @@ compile_fixture() {
   local target="${3:-}"
   mkdir -p "$out"
   if [[ "$target" == "wasm32" ]]; then
-    "$HEW_BIN" compile "$fixture" --emit-dir "$out" \
-      --target wasm32-unknown-unknown 2>&1 || true
+    (
+      cd "$out"
+      "$HEW_BIN" build --emit-obj "$fixture" --target wasm32-unknown-unknown
+    )
   else
-    "$HEW_BIN" compile "$fixture" --emit-dir "$out" 2>&1 || true
+    (
+      cd "$out"
+      "$HEW_BIN" build --emit-obj "$fixture"
+    )
   fi
 }
 

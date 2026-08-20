@@ -58,19 +58,19 @@ fn main() {
     let letter: char = 'A';
     println(letter as u32);
     match try_result_ok() {
-        Ok(value) => println(value),
-        Err(error) => println(error),
+        .Ok(value) => println(value),
+        .Err(error) => println(error),
     }
     match try_result_err() {
-        Ok(value) => println(value),
-        Err(error) => println(error),
+        .Ok(value) => println(value),
+        .Err(error) => println(error),
     }
     match try_option_some() {
-        Some(value) => println(value),
-        None => println("none"),
+        .Some(value) => println(value),
+        .None => println("none"),
     }
     match try_option_none() {
-        Some(value) => println(value),
-        None => println("none"),
+        .Some(value) => println(value),
+        .None => println("none"),
     }
 }

@@ -40,7 +40,7 @@ fn vec_generic_trait_method_projects_output() {
         r"
         trait Acc {
             type Output;
-            fn fetch(self, key: i64) -> Option<Self::Output>;
+            fn fetch(self, key: i64) -> Option<Self.Output>;
         }
         impl<T> Acc for Vec<T> {
             type Output = T;
@@ -67,7 +67,7 @@ fn user_record_control_still_projects() {
         r"
         trait Acc {
             type Output;
-            fn fetch(self, key: i64) -> Option<Self::Output>;
+            fn fetch(self, key: i64) -> Option<Self.Output>;
         }
         type Box2<T> { inner: T; }
         impl<T> Acc for Box2<T> {
@@ -95,7 +95,7 @@ fn hashmap_generic_trait_method_projects_value() {
         r#"
         trait Lookup {
             type Output;
-            fn grab(self, key: string) -> Option<Self::Output>;
+            fn grab(self, key: string) -> Option<Self.Output>;
         }
         impl<K, V> Lookup for HashMap<K, V> {
             type Output = V;
@@ -103,7 +103,7 @@ fn hashmap_generic_trait_method_projects_value() {
         }
         fn takes_int(x: i64) {}
         fn main() {
-            let m: HashMap<string, i64> = HashMap::new();
+            let m: HashMap<string, i64> = HashMap.new();
             match m.grab("a") {
                 Some(x) => takes_int(x),
                 None => {}
@@ -122,7 +122,7 @@ fn vec_string_element_projects() {
         r#"
         trait Acc {
             type Output;
-            fn fetch(self, key: i64) -> Option<Self::Output>;
+            fn fetch(self, key: i64) -> Option<Self.Output>;
         }
         impl<T> Acc for Vec<T> {
             type Output = T;
@@ -149,7 +149,7 @@ fn vec_owned_record_element_projects() {
         r"
         trait Acc {
             type Output;
-            fn fetch(self, key: i64) -> Option<Self::Output>;
+            fn fetch(self, key: i64) -> Option<Self.Output>;
         }
         impl<T> Acc for Vec<T> {
             type Output = T;
@@ -179,7 +179,7 @@ fn unresolvable_element_fails_closed() {
         r"
         trait Acc {
             type Output;
-            fn fetch(self, key: i64) -> Option<Self::Output>;
+            fn fetch(self, key: i64) -> Option<Self.Output>;
         }
         impl<T> Acc for Vec<T> {
             type Output = T;
@@ -213,7 +213,7 @@ fn concrete_self_impl_not_overapplied_to_mismatched_element() {
         r#"
         trait Acc {
             type Output;
-            fn fetch(self, key: i64) -> Option<Self::Output>;
+            fn fetch(self, key: i64) -> Option<Self.Output>;
         }
         impl Acc for Vec<i64> {
             type Output = i64;
@@ -244,14 +244,14 @@ fn constrained_key_impl_not_overapplied_to_mismatched_key() {
         r"
         trait Lookup {
             type Output;
-            fn grab(self, key: i64) -> Option<Self::Output>;
+            fn grab(self, key: i64) -> Option<Self.Output>;
         }
         impl<V> Lookup for HashMap<string, V> {
             type Output = V;
             fn grab(self, key: i64) -> Option<V> { None }
         }
         fn main() {
-            let m: HashMap<i64, bool> = HashMap::new();
+            let m: HashMap<i64, bool> = HashMap.new();
             let r = m.grab(0);
         }
         ",
@@ -276,7 +276,7 @@ fn nested_self_constructor_mismatch_does_not_bind() {
         r"
         trait Acc {
             type Output;
-            fn fetch(self, key: i64) -> Option<Self::Output>;
+            fn fetch(self, key: i64) -> Option<Self.Output>;
         }
         impl<T> Acc for Vec<Vec<T>> {
             type Output = T;
@@ -307,7 +307,7 @@ fn concrete_self_impl_projects_for_matching_receiver() {
         r"
         trait Acc {
             type Output;
-            fn fetch(self, key: i64) -> Option<Self::Output>;
+            fn fetch(self, key: i64) -> Option<Self.Output>;
         }
         impl Acc for Vec<i64> {
             type Output = i64;
@@ -340,7 +340,7 @@ fn overlapping_builtin_impls_rejected() {
         r"
         trait Acc {
             type Output;
-            fn fetch(self, key: i64) -> Option<Self::Output>;
+            fn fetch(self, key: i64) -> Option<Self.Output>;
         }
         impl<T> Acc for Vec<T> {
             type Output = T;
@@ -376,7 +376,7 @@ fn overlapping_user_record_impls_rejected() {
         r"
         trait Acc {
             type Output;
-            fn fetch(self, key: i64) -> Option<Self::Output>;
+            fn fetch(self, key: i64) -> Option<Self.Output>;
         }
         type Box2<T> { inner: T; }
         impl<T> Acc for Box2<T> {

@@ -1,10 +1,10 @@
 //! Tests for the std::result helper functions.
 
-import std::result;
-import std::testing;
+import std.result;
+
+import std.testing;
 
 // ── Predicates ─────────────────────────────────────────────────────────
-
 #[test]
 fn test_is_ok_int() {
     let x: Result<i64, i64> = Ok(42);
@@ -20,7 +20,6 @@ fn test_is_err_int() {
 }
 
 // ── Unwrap ─────────────────────────────────────────────────────────────
-
 #[test]
 fn test_unwrap_int_ok() {
     let x: Result<i64, i64> = Ok(42);
@@ -60,7 +59,6 @@ fn test_unwrap_or_int_err() {
 }
 
 // ── Contains ───────────────────────────────────────────────────────────
-
 #[test]
 fn test_contains_int_match() {
     let x: Result<i64, i64> = Ok(42);
@@ -80,7 +78,6 @@ fn test_contains_int_err() {
 }
 
 // ── string variants ────────────────────────────────────────────────────
-
 #[test]
 fn test_is_ok_str() {
     let x: Result<string, string> = Ok("success");
@@ -118,7 +115,6 @@ fn test_contains_str_err() {
 }
 
 // ── unwrap_str / unwrap_err_str ────────────────────────────────────────
-
 #[test]
 fn test_unwrap_str_ok() {
     let x: Result<string, string> = Ok("value");

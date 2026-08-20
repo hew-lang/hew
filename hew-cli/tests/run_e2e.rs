@@ -203,6 +203,38 @@ fn run_program_with_simple_arithmetic_succeeds() {
 }
 
 #[test]
+fn qualified_variant_tuple_payload_binds_nested_values() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("qualified_variant_tuple_payload.hew");
+    std::fs::write(
+        &path,
+        r"
+enum Pair { Both((i64, i64)); None }
+
+fn main() {
+    let pair = Pair.Both((19, 23));
+    match pair {
+        Pair.Both((a, b)) => println(a * 100 + b),
+        Pair.None => println(0),
+    }
+}
+",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&path, dir.path());
+    assert!(
+        output.status.success(),
+        "qualified aggregate payload must compile and run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1923\n");
+}
+
+#[test]
 fn tcp_loopback_read_string_roundtrip_returns_written_bytes() {
     require_codegen();
 
@@ -213,7 +245,7 @@ fn tcp_loopback_read_string_roundtrip_returns_written_bytes() {
         &path,
         format!(
             r#"
-import std::net;
+import std.net;
 
 actor EchoServer {{
     receive fn connect_send_and_read(unused: i64) {{
@@ -354,15 +386,15 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
         }
 
         fn main() {
-            Node::set_transport("quic-mesh");
-            Node::load_keys("node.key");
-            let me = Node::identity_key();
-            Node::allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
-            Node::start("127.0.0.1:0");
+            Node.set_transport("quic-mesh");
+            Node.load_keys("node.key");
+            let me = Node.identity_key();
+            Node.allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
+            Node.start("127.0.0.1:0");
             let counter = spawn Counter(count: 0);
-            Node::register("counter", counter);
+            Node.register("counter", counter);
             counter.increment(5);
-            Node::shutdown();
+            Node.shutdown();
             println(f"peer-auth ok id={me}");
         }
         "#,
@@ -427,9 +459,9 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
         &path,
         r#"
         fn main() {
-            Node::set_transport("quic-mesh");
-            Node::allow_peer(2, "zznothexzz");
-            Node::start("127.0.0.1:0");
+            Node.set_transport("quic-mesh");
+            Node.allow_peer(2, "zznothexzz");
+            Node.start("127.0.0.1:0");
             println("after-start");
         }
         "#,
@@ -471,9 +503,9 @@ fn run_node_load_keys_corrupt_keyfile_is_surfaced_and_start_fails_closed() {
         &path,
         r#"
         fn main() {
-            Node::set_transport("quic-mesh");
-            Node::load_keys("node.key");
-            Node::start("127.0.0.1:0");
+            Node.set_transport("quic-mesh");
+            Node.load_keys("node.key");
+            Node.start("127.0.0.1:0");
             println("after-start");
         }
         "#,
@@ -512,9 +544,9 @@ fn run_node_start_fails_closed_when_identity_cannot_be_established() {
         &path,
         r#"
         fn main() {
-            Node::set_transport("quic-mesh");
-            Node::load_keys("no_such_dir/node.key");
-            Node::start("127.0.0.1:0");
+            Node.set_transport("quic-mesh");
+            Node.load_keys("no_such_dir/node.key");
+            Node.start("127.0.0.1:0");
             println("after-start");
         }
         "#,
@@ -559,7 +591,7 @@ fn run_generic_vec_into_iter_static_dispatch_outputs_first_value() {
         }
 
         fn main() {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             v.push(42);
             println(first_or_zero(v.into_iter()));
         }
@@ -1179,7 +1211,7 @@ fn var_self_cowvalue_receiver_survives_storeback_without_double_drop() {
         &source,
         r#"
 fn main() {
-    let words: Vec<string> = Vec::new();
+    let words: Vec<string> = Vec.new();
     words.push("first");
     words.push("second");
     var it = words.into_iter();
@@ -1308,7 +1340,7 @@ pub type Slot<T> { x: T; n: i64; }
 
 trait Tick {
     type Item;
-    fn next(var self) -> Option<Self::Item>;
+    fn next(var self) -> Option<Self.Item>;
 }
 
 impl<T> Tick for Slot<T> {
@@ -1401,7 +1433,7 @@ fn second_or_zero<I>(var it: I) -> i64 where I: Iterator<Item = i64> {
 }
 
 fn main() {
-    let values: Vec<i64> = Vec::new();
+    let values: Vec<i64> = Vec.new();
     values.push(1);
     values.push(2);
     println(second_or_zero(values.into_iter()));
@@ -2671,7 +2703,7 @@ fn run_imports_std_io_and_round_trips_stdin_to_stdout() {
     let hew_src = dir.path().join("echo_stdin.hew");
     std::fs::write(
         &hew_src,
-        "import std::io;\n\
+        "import std.io;\n\
          \n\
          fn main() {\n\
          \x20   let line = io.read_line();\n\
@@ -2714,7 +2746,7 @@ fn run_fstring_interpolates_primitives_via_display() {
     let hew_src = dir.path().join("fstring_primitives.hew");
     std::fs::write(
         &hew_src,
-        "import std::io;\n\
+        "import std.io;\n\
          \n\
          fn main() {\n\
          \x20   let x: i64 = 42;\n\
@@ -2752,7 +2784,7 @@ fn run_fstring_interpolates_bool_and_int() {
     let hew_src = dir.path().join("fstring_bool_int.hew");
     std::fs::write(
         &hew_src,
-        "import std::io;\n\
+        "import std.io;\n\
          \n\
          fn main() {\n\
          \x20   let b: bool = true;\n\
@@ -2836,7 +2868,7 @@ fn run_fstring_dispatches_user_defined_display() {
     let hew_src = dir.path().join("fstring_user_display.hew");
     std::fs::write(
         &hew_src,
-        "import std::io;\n\
+        "import std.io;\n\
          \n\
          type Point { x: i64; }\n\
          \n\
@@ -4091,7 +4123,7 @@ fn owned_record_vec_field_by_value_round_trips() {
         }
 
         fn build() -> Histogram {
-            let v: Vec<i64> = Vec::new();
+            let v: Vec<i64> = Vec.new();
             v.push(10);
             v.push(20);
             Histogram { counts: v, total: 30 }
@@ -4177,7 +4209,7 @@ fn run_imports_json_opaque_handle_round_trips() {
     let hew_src = dir.path().join("json_opaque.hew");
     std::fs::write(
         &hew_src,
-        "import std::encoding::json;\n\
+        "import std.encoding.json;\n\
          \n\
          fn main() -> i32 {\n\
          \x20   let v = json.from_int(42);\n\
@@ -4218,7 +4250,7 @@ fn run_imports_json_fluent_builders_round_trip() {
     let hew_src = dir.path().join("json_builders.hew");
     std::fs::write(
         &hew_src,
-        "import std::encoding::json;\n\
+        "import std.encoding.json;\n\
          \n\
          fn main() -> i32 {\n\
          \x20   let obj = json.object()\n\
@@ -4279,7 +4311,7 @@ fn run_tuple_of_owned_handles_returns_and_drops_exactly_once() {
     let hew_src = dir.path().join("tuple_handle_drop.hew");
     std::fs::write(
         &hew_src,
-        "import std::stream;\n\
+        "import std.stream.{ Sink, Stream };\n\
          \n\
          fn make_pair() -> (Sink<string>, Stream<string>) {\n\
          \x20   stream.pipe(8)\n\
@@ -4319,7 +4351,7 @@ fn run_whole_tuple_of_handles_drops_each_member_once() {
     let hew_src = dir.path().join("whole_tuple_handle_drop.hew");
     std::fs::write(
         &hew_src,
-        "import std::stream;\n\
+        "import std.stream.{ Sink, Stream };\n\
          \n\
          fn main() {\n\
          \x20   let pair = stream.pipe(8);\n\
@@ -4345,7 +4377,7 @@ fn run_whole_tuple_of_handles_drops_each_member_once() {
 // The exactly-once ORACLE these tests use is the cheap authoritative one the
 // independent review used: a callee that RETURNS an aggregate of owned
 // handles must elaborate an EMPTY drop-plan for that return — no
-// `Stream::close` / `Sink::close` — because the caller (who received the
+// `Stream.close` / `Sink.close` — because the caller (who received the
 // byte-copied aggregate) now owns the members. A non-empty plan IS the
 // double-free: two `Box::from_raw` of one allocation (the runtime close is an
 // unguarded free; see the codegen Stream/Sink drop comment). `leaks --atExit`
@@ -4471,7 +4503,7 @@ fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
 fn returned_let_bound_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
-        "import std::stream;\n\
+        "import std.stream.{ Sink, Stream };\n\
          fn make_pair() -> (Sink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let pair = (s, r);\n\
@@ -4497,7 +4529,7 @@ fn returned_let_bound_tuple_callee_does_not_drop_members() {
 fn returned_if_tail_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
-        "import std::stream;\n\
+        "import std.stream.{ Sink, Stream };\n\
          fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   if c { (s, r) } else { (s, r) }\n\
@@ -4521,7 +4553,7 @@ fn returned_if_tail_tuple_callee_does_not_drop_members() {
 fn returned_match_tail_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
-        "import std::stream;\n\
+        "import std.stream.{ Sink, Stream };\n\
          fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   match c {\n\
@@ -4582,7 +4614,7 @@ fn suspending_stream_recv_send_flip_in_execution_context() {
         // `stream.StreamPair`, not a private opaque, and the free consumes it.
         // A private handle type or a borrowing free is a real contract
         // disagreement and the checker rejects it.
-        "import std::stream;\n\
+        "import std.stream.{ Sink, Stream };\n\
          extern \"C\" {\n\
          \x20   fn hew_stream_channel(capacity: i64) -> stream.StreamPair;\n\
          \x20   fn hew_stream_pair_sink_bytes(pair: stream.StreamPair) -> Sink<bytes>;\n\
@@ -4624,7 +4656,7 @@ fn suspending_stream_recv_send_flip_in_execution_context() {
 #[test]
 fn suspending_listener_accept_flip_in_execution_context() {
     let dump = mir_checked_dump(
-        "import std::net;\n\
+        "import std.net;\n\
          actor Acceptor {\n\
          \x20   let addr: string;\n\
          \x20   receive fn go(unused: i64) {\n\
@@ -4655,7 +4687,7 @@ fn suspending_listener_accept_flip_in_execution_context() {
 #[test]
 fn blocking_listener_accept_in_main_keeps_blocking_call() {
     let dump = mir_checked_dump(
-        "import std::net;\n\
+        "import std.net;\n\
          fn main() {\n\
          \x20   let listener = net.listen(\"127.0.0.1:0\");\n\
          \x20   let conn = await listener.accept();\n\
@@ -4690,7 +4722,7 @@ fn suspending_remote_ask_flip_in_execution_context() {
          }\n\
          actor Client {\n\
          \x20   receive fn go(unused: i64) {\n\
-         \x20       let found: Result<RemotePid<Echo>, LookupError> = Node::lookup(\"echo\");\n\
+         \x20       let found: Result<RemotePid<Echo>, LookupError> = Node.lookup(\"echo\");\n\
          \x20       match found {\n\
          \x20           Ok(peer) => { let _ = peer.ask(7, 1000); },\n\
          \x20           Err(_) => {},\n\
@@ -4723,7 +4755,7 @@ fn blocking_remote_ask_in_main_keeps_blocking_terminator() {
          \x20   type Reply = i64;\n\
          }\n\
          fn main() {\n\
-         \x20   let found: Result<RemotePid<Echo>, LookupError> = Node::lookup(\"echo\");\n\
+         \x20   let found: Result<RemotePid<Echo>, LookupError> = Node.lookup(\"echo\");\n\
          \x20   match found {\n\
          \x20       Ok(peer) => { let _ = peer.ask(7, 1000); },\n\
          \x20       Err(_) => {},\n\
@@ -4746,7 +4778,7 @@ fn blocking_remote_ask_in_main_keeps_blocking_terminator() {
 fn returned_nested_tuple_callee_does_not_drop_members() {
     require_codegen();
     let closes = callee_handle_close_drops(
-        "import std::stream;\n\
+        "import std.stream.{ Sink, Stream };\n\
          fn make_nested() -> ((Sink<string>,), Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let inner = (s,);\n\
@@ -4774,7 +4806,7 @@ fn returned_nested_tuple_callee_does_not_drop_members() {
 fn returned_record_of_handles_callee_does_not_drop_fields() {
     require_codegen();
     let closes = callee_handle_close_drops(
-        "import std::stream;\n\
+        "import std.stream.{ Sink, Stream };\n\
          type Pipe { sink: Sink<string>, input: Stream<string> }\n\
          fn make_pipe() -> Pipe {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
@@ -4897,7 +4929,7 @@ fn run_let_bound_tuple_return_no_double_free() {
     let hew_src = dir.path().join("let_bound_return.hew");
     std::fs::write(
         &hew_src,
-        "import std::stream;\n\
+        "import std.stream.{ Sink, Stream };\n\
          fn make_pair() -> (Sink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   let pair = (s, r);\n\
@@ -4931,7 +4963,7 @@ fn run_if_tail_tuple_return_no_double_free() {
     let hew_src = dir.path().join("if_tail_return.hew");
     std::fs::write(
         &hew_src,
-        "import std::stream;\n\
+        "import std.stream.{ Sink, Stream };\n\
          fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
          \x20   if c { (s, r) } else { (s, r) }\n\
@@ -4967,7 +4999,7 @@ fn run_record_of_handles_return_drops_each_field_once() {
     let hew_src = dir.path().join("record_handle_return.hew");
     std::fs::write(
         &hew_src,
-        "import std::stream;\n\
+        "import std.stream.{ Sink, Stream };\n\
          type Pipe { sink: Sink<string>, input: Stream<string> }\n\
          fn make_pipe() -> Pipe {\n\
          \x20   let (s, r) = stream.pipe(8);\n\
@@ -5011,11 +5043,11 @@ fn clone_string_survives_consuming_send() {
     let path = dir.path().join("clone_string_send.hew");
     std::fs::write(
         &path,
-        "actor Sink { let id: i64; receive fn take(s: string) -> i64 { s.len() } }\n\
+        "actor ProbeSink { let id: i64; receive fn take(s: string) -> i64 { s.len() } }\n\
          fn main() {\n\
          \x20   let s: string = \"hello\";\n\
          \x20   let dup = clone s;\n\
-         \x20   let sink = spawn Sink(id: 0);\n\
+         \x20   let sink = spawn ProbeSink(id: 0);\n\
          \x20   let n = await sink.take(dup);\n\
          \x20   match n { Ok(len) => println(f\"len={len}\"), Err(_) => println(\"ask failed\") }\n\
          \x20   println(f\"original still usable: {s}\");\n\
@@ -5080,7 +5112,7 @@ fn clone_vec_is_independent_copy() {
     std::fs::write(
         &path,
         "fn main() {\n\
-         \x20   let xs: Vec<i64> = Vec::new();\n\
+         \x20   let xs: Vec<i64> = Vec.new();\n\
          \x20   xs.push(1); xs.push(2);\n\
          \x20   let dup = clone xs;\n\
          \x20   dup.push(99);\n\
@@ -5112,7 +5144,7 @@ fn existing_vec_method_clone_still_runs() {
     std::fs::write(
         &path,
         "fn main() {\n\
-         \x20   let xs: Vec<i64> = Vec::new();\n\
+         \x20   let xs: Vec<i64> = Vec.new();\n\
          \x20   xs.push(1); xs.push(2);\n\
          \x20   let b = xs.clone();\n\
          \x20   b.push(99);\n\
@@ -5254,6 +5286,108 @@ fn run_file_imported_actor_spawns_and_calls() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "bumped: 1\n");
 }
 
+/// A selectively-imported pub const must bind bare at root exactly like a
+/// selectively-imported pub fn from the same module. The HIR pre-pass
+/// registers imported consts only under the qualified `{module}.{CONST}` key;
+/// the importer-visible binding aliases to the same entry. Before the alias,
+/// `import m::{MAX_RETRIES};` + bare `MAX_RETRIES` failed with
+/// `E_HIR: identifier has no binding in resolved HIR` while the sibling fn
+/// import and the dotted spelling both worked.
+#[test]
+fn run_selectively_imported_const_binds_bare_like_fn() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    std::fs::create_dir_all(dir.path().join("src/reasons")).unwrap();
+    std::fs::write(
+        dir.path().join("src/reasons/reasons.hew"),
+        "pub const MAX_RETRIES: i64 = 5;\n\
+         pub fn retries_label() -> string {\n\
+         \x20   \"retries\"\n\
+         }\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import src.reasons.reasons.{MAX_RETRIES, retries_label};\n\
+         fn main() {\n\
+         \x20   println(retries_label());\n\
+         \x20   println(f\"max: {MAX_RETRIES}\");\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        output.status.success(),
+        "selectively-imported const and fn should both bind bare; \
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "retries\nmax: 5\n");
+}
+
+/// A record reaching root through a string-path import (`import "file.hew";`)
+/// is spelled bare at the surface but keyed by its defining file's module
+/// identity in the MIR layout registries. The bare parameter annotation was
+/// the failing site: construction and inferred locals resolved, while
+/// `fn f(w: WorkflowState)` froze a bare binding type that missed the
+/// qualified field-order/value-class entries (doubled
+/// `E_NOT_YET_IMPLEMENTED … field access on unregistered record type` +
+/// `E_MIR: unknown type`). Root annotations now project through the
+/// flat-file bare→qualified alias table, so field access through an
+/// annotated parameter, construction, and a defining-module factory all
+/// agree on one identity.
+#[test]
+fn run_string_path_imported_record_annotated_param_field_access() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    std::fs::create_dir_all(dir.path().join("src/workflow")).unwrap();
+    std::fs::write(
+        dir.path().join("src/workflow/machine.hew"),
+        "pub type WorkflowState {\n\
+         \x20   name: string,\n\
+         \x20   count: i64,\n\
+         }\n\
+         pub fn make_state(name: string, count: i64) -> WorkflowState {\n\
+         \x20   WorkflowState { name: name, count: count }\n\
+         }\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import \"src/workflow/machine.hew\";\n\
+         fn read_name(w: WorkflowState) -> string {\n\
+         \x20   w.name\n\
+         }\n\
+         fn main() {\n\
+         \x20   let annotated = WorkflowState { name: \"annotated\", count: 3 };\n\
+         \x20   println(read_name(annotated));\n\
+         \x20   let made = make_state(\"made\", 7);\n\
+         \x20   println(made.name);\n\
+         \x20   println(f\"count: {made.count}\");\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        output.status.success(),
+        "string-path-imported record through an annotated parameter should run; \
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "annotated\nmade\ncount: 7\n"
+    );
+}
+
 /// Revision-2 regression: a FILE-IMPORTED actor whose receive body exercises
 /// checker-owned `SpanKey`-keyed facts that are consumed during HIR body
 /// lowering — a closure literal (`closure_capture_facts` / `closure_escape_facts`)
@@ -5373,7 +5507,7 @@ fn run_package_module_actor_spawns_and_calls() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::bank;\n\
+        "import hew.bank;\n\
          \n\
          fn report(label: string, r: Result<i64, AskError>) {\n\
          \x20   match r {\n\
@@ -5443,7 +5577,7 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::conn::{Inner, Outer};\n\
+        "import hew.conn.{Inner, Outer};\n\
          fn main() {\n\
          \x20   let i = spawn Inner();\n\
          \x20   let o = spawn Outer(inner: i);\n\
@@ -5494,7 +5628,7 @@ fn run_local_record_shadows_imported_actor_short_name() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::m;\n\
+        "import hew.m;\n\
          \n\
          type Inner { x: i64 }\n\
          \n\
@@ -5551,7 +5685,7 @@ fn run_non_pub_imported_actor_fails_closed() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::secret;\n\
+        "import hew.secret;\n\
          fn main() {\n\
          \x20   let c = spawn secret.Hidden();\n\
          \x20   match await c.bump() {\n\
@@ -5609,8 +5743,8 @@ fn run_two_packages_same_actor_name_both_spawn_and_ask() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::bank;\n\
-         import hew::store;\n\
+        "import hew.bank;\n\
+         import hew.store;\n\
          fn main() {\n\
          \x20   let a = spawn bank.Account();\n\
          \x20   let s = spawn store.Account();\n\
@@ -5663,7 +5797,7 @@ fn run_root_and_package_same_actor_name_route_independently() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::bank;\n\
+        "import hew.bank;\n\
          actor Account {\n\
          \x20   var n: i64 = 0;\n\
          \x20   receive fn who() -> i64 { 111 }\n\
@@ -5727,8 +5861,8 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::bank;\n\
-         import hew::store;\n\
+        "import hew.bank;\n\
+         import hew.store;\n\
          supervisor Pair {\n\
          \x20   strategy: one_for_one;\n\
          \x20   intensity: 5 within 60s;\n\
@@ -5953,7 +6087,7 @@ fn run_private_imported_actor_does_not_route_to_root_actor() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::secret;\n\
+        "import hew.secret;\n\
          actor Account {\n\
          \x20   var n: i64 = 0;\n\
          \x20   receive fn id() -> i64 { 111 }\n\
@@ -6018,7 +6152,7 @@ fn run_non_actor_export_does_not_route_to_root_actor() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import hew::secret;\n\
+        "import hew.secret;\n\
          actor Account {\n\
          \x20   var n: i64 = 0;\n\
          \x20   receive fn id() -> i64 { 111 }\n\

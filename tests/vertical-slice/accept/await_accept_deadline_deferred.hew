@@ -5,7 +5,7 @@
 // compiles and runs cleanly under v0.5.
 //
 // Harness: compile + run (HEW_WORKERS=1). Expected exit: 7 (timeout path).
-import std::net;
+import std.net;
 
 actor Server {
     receive fn go() {

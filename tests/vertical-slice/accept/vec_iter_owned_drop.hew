@@ -15,7 +15,7 @@
 // `leaks` tool. Lens 2+3+4 = 9 per pass, two passes → exit 18.
 
 pub fn main() -> i64 {
-    let v: Vec<string> = Vec::new();
+    let v: Vec<string> = Vec.new();
     v.push("aa");
     v.push("bbb");
     v.push("cccc");

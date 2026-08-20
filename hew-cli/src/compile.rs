@@ -35,6 +35,8 @@ pub struct CompileOptions {
     /// Anchor an in-memory compile to a specific project directory so that
     /// manifest-aware import resolution matches `compile_file` behaviour.
     pub project_dir: Option<PathBuf>,
+    /// Exact standard-library and global-module roots for synthetic sources.
+    pub module_search_paths: Option<Vec<PathBuf>>,
     /// Compile a synthetic `hew eval` REPL fragment rather than a finished
     /// program, suppressing the whole-program completeness lints. See
     /// [`hew_compile::FrontendOptions::repl_fragment`]. Only the eval paths
@@ -54,6 +56,7 @@ pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) ->
         enable_wasm_target: target.is_wasm(),
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
+        module_search_paths: options.module_search_paths.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
     }
@@ -72,6 +75,7 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
         enable_wasm_target: false,
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
+        module_search_paths: options.module_search_paths.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
     }
@@ -273,6 +277,7 @@ mod tests {
         let decl = hew_parser::ast::ImportDecl {
             path: path.iter().map(ToString::to_string).collect(),
             spec: None,
+            selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
             resolved_items: None,
@@ -286,6 +291,7 @@ mod tests {
         let decl = hew_parser::ast::ImportDecl {
             path: vec![],
             spec: None,
+            selection_trailing_comma: false,
             module_alias: None,
             file_path: Some(file.to_string()),
             resolved_items: None,
@@ -376,13 +382,13 @@ mod tests {
         let deps: Vec<String> = vec!["mylib::other".to_string()];
         let errs = validate_imports_against_manifest(&items, &deps, None);
         assert_eq!(errs.len(), 1);
-        assert!(errs[0].contains("mylib::utils"));
+        assert!(errs[0].contains("mylib.utils"));
         assert!(errs[0].contains("hew add"));
     }
 
     #[test]
     fn validate_stdlib_import_is_always_ok() {
-        // std::fs is a known stdlib module
+        // std.fs is a known stdlib module
         let items = vec![make_module_import(&["std", "fs"])];
         let deps: Vec<String> = vec![];
         let errs = validate_imports_against_manifest(&items, &deps, None);
@@ -550,6 +556,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
+            module_search_paths: None,
         };
 
         let module_graph = build_module_graph(
@@ -637,6 +644,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
+            module_search_paths: None,
         };
 
         let module_graph = build_module_graph(
@@ -692,6 +700,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
+            module_search_paths: None,
         };
         let module_graph = build_module_graph(
             &root_path,
@@ -749,6 +758,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
+            module_search_paths: None,
         };
         let module_graph = build_module_graph(
             &root_path,
@@ -808,6 +818,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
+            module_search_paths: None,
         };
         let module_graph = build_module_graph(
             &root_path,
@@ -865,6 +876,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
+            module_search_paths: None,
         };
         let module_graph = build_module_graph(
             &root_path,

@@ -9,16 +9,16 @@ enum Shape {
 
 fn area(shape: Shape) -> i64 {
     match shape {
-        Circle(r) => r * r * 3,
-        Rectangle(w, h) => w * h,
-        Triangle(b, h) => b * h / 2,
+        .Circle(r) => r * r * 3,
+        .Rectangle(w, h) => w * h,
+        .Triangle(b, h) => b * h / 2,
     }
 }
 
 fn main() {
-    let c = Circle(5);
-    let r = Rectangle(4, 6);
-    let t = Triangle(3, 8);
+    let c = Shape.Circle(5);
+    let r = Shape.Rectangle(4, 6);
+    let t = Shape.Triangle(3, 8);
     print("Circle area: ");
     println(area(c));
     print("Rectangle area: ");

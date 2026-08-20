@@ -27,7 +27,12 @@ REPL commands:
 
 /// The Hew programming language compiler.
 #[derive(Debug, Parser)]
-#[command(name = "hew", version, about, propagate_version = true)]
+#[command(
+    name = "hew",
+    version = env!("HEW_VERSION"),
+    about,
+    propagate_version = true
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -392,7 +397,7 @@ pub struct CheckArgs {
     ///
     /// Shows whether each `actor.method(arg)` call crossed the mailbox
     /// boundary via a refcount-bumped alias (no copy) or a deep-copy
-    /// (the legacy path). Default off; opt-in for Phase α.
+    /// (the compatibility path). Default off; enable it explicitly.
     #[arg(long)]
     pub explain_cow: bool,
     /// Target triple.
@@ -625,6 +630,12 @@ pub struct TestArgs {
     /// Exit 0 when no test files or functions are discovered.
     #[arg(long)]
     pub allow_empty: bool,
+    /// Maximum number of tests to compile or execute concurrently.
+    ///
+    /// Defaults to the host's physical core count, capped to avoid excessive
+    /// memory pressure from concurrent compilation tasks.
+    #[arg(long, short = 'j', value_name = "N")]
+    pub jobs: Option<std::num::NonZeroUsize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -749,6 +760,12 @@ pub struct FmtArgs {
     /// Check formatting without writing (files or stdin; exit 1 if unformatted).
     #[arg(long)]
     pub check: bool,
+    /// Rewrite legacy path and variant syntax before formatting.
+    #[arg(long, conflicts_with = "stdin")]
+    pub migrate: bool,
+    /// Recursively migrate every Hew source below this directory.
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["stdin", "files"])]
+    pub root: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------

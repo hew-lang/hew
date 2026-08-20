@@ -174,8 +174,17 @@ struct HandlerMetaEntry {
     return_size: u32,
 }
 
-// live on wasm32 + test; dead on native non-test; caller tracing.rs:854 (cfg(any(wasm32,test)))
-#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+// KEEP: this is the wasm32/test arm of `tracing::drain_events_json`, which is
+// itself `#[cfg(feature = "profiler")]`. The arm is selected by
+// `cfg(any(target_arch = "wasm32", test))`, so `cargo test -p hew-runtime`
+// compiles and runs it on native (profiler is in the default feature set) —
+// `test` is a live target here, not just wasm. The fields are read by
+// `resolve_actor_trace_attribution` below. It is genuinely uncalled only where
+// that arm is not compiled: native non-test, or any build without `profiler`.
+#[cfg_attr(
+    not(all(any(target_arch = "wasm32", test), feature = "profiler")),
+    allow(dead_code)
+)]
 #[derive(Clone)]
 struct ActorTraceAttribution {
     actor_type_id: u64,
@@ -243,8 +252,13 @@ pub(crate) fn register_bridge_reset_hook() {
 /// NOTE: last-registered wins on `msg_type` collision across actor types.
 /// This is a pre-existing ambiguity in the AOT model — see the `handler_names`
 /// field documentation on [`MetaState`] for details.
-// live on wasm32 + test; dead on native non-test; caller tracing.rs:857 (cfg(any(wasm32,test)))
-#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+// KEEP: same seam as `ActorTraceAttribution` above — reached from the
+// `cfg(any(wasm32, test))` arm of the profiler-gated `drain_events_json`, and
+// covered by the drain_events_json_includes_handler_name test.
+#[cfg_attr(
+    not(all(any(target_arch = "wasm32", test), feature = "profiler")),
+    allow(dead_code)
+)]
 pub(crate) fn resolve_handler_name(msg_type: i32) -> Option<String> {
     meta_state().handler_names.get(&msg_type).cloned()
 }
@@ -273,8 +287,14 @@ fn wasm_actor_type_id(actor_name: &str) -> u64 {
 ///
 /// NOTE: last-registered wins on flat `msg_type` collisions, matching
 /// [`resolve_handler_name`] and the current AOT bridge model.
-// live on wasm32 + test; dead on native non-test; caller tracing.rs:856 (cfg(any(wasm32,test)))
-#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+// KEEP: same seam as `ActorTraceAttribution` above — the only coverage proving
+// wasm-side trace JSON carries the same attribution shape as native
+// (drain_events_json_includes_wasm_registered_actor_type, plus the bridge
+// registration and session-reset tests).
+#[cfg_attr(
+    not(all(any(target_arch = "wasm32", test), feature = "profiler")),
+    allow(dead_code)
+)]
 pub(crate) fn resolve_actor_trace_attribution(
     msg_type: i32,
 ) -> Option<(u64, String, Option<String>)> {

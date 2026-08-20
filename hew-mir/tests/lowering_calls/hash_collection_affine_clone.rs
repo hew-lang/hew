@@ -181,14 +181,14 @@ fn generic_hashmap_clone_rejects_resource_value_after_substitution() {
             values.clone()
         }}
         fn main() {{
-            var values: HashMap<string, Token> = HashMap::new();
+            var values: HashMap<string, Token> = HashMap.new();
             values.insert("live", Token {{ id: 1 }});
             let _copy = duplicate(values);
         }}
         "#
     );
     let pipeline = pipeline_allowing_mir_diagnostics(&source);
-    assert_affine_rejection(&pipeline, "HashMap::clone()");
+    assert_affine_rejection(&pipeline, "HashMap.clone()");
 }
 
 #[test]
@@ -197,20 +197,20 @@ fn hashmap_get_and_index_reject_resource_clone_out() {
         r#"
         {RESOURCE_TYPE}
         fn main() {{
-            var values: HashMap<string, Token> = HashMap::new();
+            var values: HashMap<string, Token> = HashMap.new();
             values.insert("live", Token {{ id: 2 }});
             let _copy = values.get("live");
         }}
         "#
     );
     let get_pipeline = pipeline_allowing_mir_diagnostics(&get_source);
-    assert_affine_rejection(&get_pipeline, "HashMap::get()");
+    assert_affine_rejection(&get_pipeline, "HashMap.get()");
 
     let index_source = format!(
         r#"
         {RESOURCE_TYPE}
         fn main() -> i64 {{
-            var values: HashMap<string, Token> = HashMap::new();
+            var values: HashMap<string, Token> = HashMap.new();
             values.insert("live", Token {{ id: 3 }});
             let copy = values["live"];
             copy.id
@@ -237,7 +237,7 @@ fn mir_guards_affine_hash_projections_and_set_elements_if_upstream_admission_cha
             TyPattern::Primitive("i64".to_string()),
         ],
     );
-    assert_affine_rejection(&keys, "HashMap::keys()");
+    assert_affine_rejection(&keys, "HashMap.keys()");
 
     let hashmap_i64_token = ResolvedTy::named_builtin(
         "HashMap",
@@ -253,18 +253,51 @@ fn mir_guards_affine_hash_projections_and_set_elements_if_upstream_admission_cha
             TyPattern::Primitive("Token".to_string()),
         ],
     );
-    assert_affine_rejection(&values, "HashMap::values()");
+    assert_affine_rejection(&values, "HashMap.values()");
+
+    // `entries()` clones BOTH halves into the tuple, so an affine key or an
+    // affine value must each be rejected on its own. Two cases, because a gate
+    // wired with only one role set would still pass a single-sided probe.
+    let entries_affine_key = constructed_affine_collection_call(
+        ResolvedTy::named_builtin(
+            "HashMap",
+            BuiltinType::HashMap,
+            vec![token_ty(), ResolvedTy::I64],
+        ),
+        "hew_hashmap_entries_layout",
+        MethodTargetFamily::HashMap(HashMapMethod::Entries),
+        vec![
+            TyPattern::Primitive("Token".to_string()),
+            TyPattern::Primitive("i64".to_string()),
+        ],
+    );
+    assert_affine_rejection(&entries_affine_key, "HashMap.entries()");
+
+    let entries_affine_value = constructed_affine_collection_call(
+        ResolvedTy::named_builtin(
+            "HashMap",
+            BuiltinType::HashMap,
+            vec![ResolvedTy::I64, token_ty()],
+        ),
+        "hew_hashmap_entries_layout",
+        MethodTargetFamily::HashMap(HashMapMethod::Entries),
+        vec![
+            TyPattern::Primitive("i64".to_string()),
+            TyPattern::Primitive("Token".to_string()),
+        ],
+    );
+    assert_affine_rejection(&entries_affine_value, "HashMap.entries()");
 
     for (target_symbol, method, operation) in [
         (
             "hew_hashset_clone_layout",
             HashSetMethod::Clone,
-            "HashSet::clone()",
+            "HashSet.clone()",
         ),
         (
             "hew_hashset_to_vec_layout",
             HashSetMethod::ToVec,
-            "HashSet::to_vec()",
+            "HashSet.to_vec()",
         ),
     ] {
         let hashset_token =
@@ -288,7 +321,7 @@ fn legal_hash_collection_clone_out_and_remove_paths_remain_admitted() {
         }
 
         fn main() -> i64 {
-            var values: HashMap<string, i64> = HashMap::new();
+            var values: HashMap<string, i64> = HashMap.new();
             values.insert("live", 9);
             let copy = duplicate(values);
             let got = copy.get("live");
@@ -297,7 +330,7 @@ fn legal_hash_collection_clone_out_and_remove_paths_remain_admitted() {
             let vals = copy.values();
             let removed = copy.remove("live");
 
-            var set: HashSet<i64> = HashSet::new();
+            var set: HashSet<i64> = HashSet.new();
             set.insert(10);
             let set_copy = set.clone();
             var total = indexed + keys.len() + vals.len() + set_copy.len();

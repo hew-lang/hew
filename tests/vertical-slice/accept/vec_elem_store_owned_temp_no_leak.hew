@@ -12,14 +12,14 @@ record Holder {
 }
 
 fn mkItems(i: i64) -> Vec<string> {
-    var xs: Vec<string> = Vec::new();
+    var xs: Vec<string> = Vec.new();
     xs.push("deep-elem-a");
     xs.push("deep-elem-b");
     return xs;
 }
 
 fn main() {
-    var v: Vec<Holder> = Vec::new();
+    var v: Vec<Holder> = Vec.new();
     v.push(Holder { items: mkItems(0) });
     var i: i64 = 0;
     while i < 16 {

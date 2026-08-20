@@ -41,13 +41,6 @@ fn mint(local: u32) -> Instr {
     }
 }
 
-fn mint_enum(local: u32) -> Instr {
-    Instr::ConstI64 {
-        dest: Place::EnumTag(local),
-        value: 0,
-    }
-}
-
 fn plain_drop(place: Place) -> ElabDrop {
     ElabDrop {
         place,
@@ -655,7 +648,7 @@ fn move_out_arm_without_neutralize_rejects_over_release() {
     let blocks = vec![block(
         0,
         vec![
-            mint_enum(1),
+            mint(1),
             Instr::Move {
                 dest: Place::Local(2),
                 src: variant_place(1),
@@ -749,7 +742,7 @@ fn move_out_arm_with_neutralize_accepts() {
     let blocks = vec![block(
         0,
         vec![
-            mint_enum(1),
+            mint(1),
             Instr::Move {
                 dest: Place::Local(2),
                 src: variant_place(1),
@@ -772,6 +765,48 @@ fn move_out_arm_with_neutralize_accepts() {
     assert!(
         findings.is_empty(),
         "neutralized transfer balances: {findings:?}"
+    );
+}
+
+#[test]
+fn empty_enum_tag_does_not_remint_a_discharged_call_scrutinee() {
+    // `Option<string>` terminal helpers re-use their call-scrutinee slot for
+    // the exhausted `None` result. The runtime already consumed the prior
+    // `Some(string)` payload through the closure call; writing only the `None`
+    // tag does not allocate another string and must not erase that discharge.
+    let blocks = vec![
+        block(
+            0,
+            vec![
+                mint(1),
+                Instr::CallClosure {
+                    callee: Place::Local(8),
+                    args: vec![Place::Local(1)],
+                    dest: Some(Place::Local(9)),
+                    ret_ty: ResolvedTy::Bool,
+                },
+            ],
+            Terminator::Goto { target: 1 },
+        ),
+        block(
+            1,
+            vec![Instr::ConstI64 {
+                dest: Place::EnumTag(1),
+                value: 1,
+            }],
+            Terminator::Return,
+        ),
+    ];
+    let plans = vec![(
+        ExitPath::Return { block: 1 },
+        DropPlan {
+            drops: vec![plain_drop(Place::Local(1))],
+        },
+    )];
+    let findings = run(blocks, plans, &[(1, "__hew_call_scrutinee")]);
+    assert!(
+        findings.is_empty(),
+        "a tag-only empty variant must preserve the existing discharge: {findings:?}"
     );
 }
 

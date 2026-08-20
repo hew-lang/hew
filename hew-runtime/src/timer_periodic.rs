@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use std::thread::JoinHandle;
 
 use crate::lifetime::PoisonSafe;
@@ -40,6 +40,8 @@ static GLOBAL_WHEEL: PoisonSafe<WheelSlot> = PoisonSafe::new(WheelSlot(ptr::null
 pub(crate) static TICKER_RUNNING: AtomicBool = AtomicBool::new(false);
 static TICKER_STOP: AtomicBool = AtomicBool::new(false);
 static TICKER_HANDLE: OnceLock<Mutex<Option<JoinHandle<()>>>> = OnceLock::new();
+static PERIODIC_ADMISSION: RwLock<()> = RwLock::new(());
+static PERIODIC_ACCEPTING: AtomicBool = AtomicBool::new(true);
 
 // ---------------------------------------------------------------------------
 // Ticker park primitive (tickless idle — no spin when wheel is empty)
@@ -340,6 +342,64 @@ pub(crate) fn cancel_all_timers_for_actor(actor: *mut HewActor) {
     // reference was reclaimed above now reaches refcount zero and is freed.
 }
 
+/// Close periodic-timer admission and cancel every timer already registered.
+///
+/// A periodic tick becomes live work only when the ticker claims it for
+/// callback delivery. Shutdown closes admission, waits for callbacks already
+/// claimed, and cancels every pending entry, including entries that are due but
+/// not yet claimed.
+///
+/// Shutdown calls this before observing scheduler quiescence. The admission
+/// lock orders a concurrent schedule against the registry drain: a schedule
+/// either publishes its wheel entry and registry reference before the close
+/// (and is cancelled here), or observes the closed gate and publishes nothing.
+/// Existing callbacks are waited out, so after this function returns no
+/// periodic callback can enqueue actor work.
+///
+/// Registry references stay published until every callback has drained. This
+/// lets a concurrent actor-local teardown find its timers and perform the same
+/// cancel/wait/reclaim protocol; absence from the registry therefore continues
+/// to mean that another path has already made the timer safe.
+///
+/// The shared timer wheel and ticker remain alive because suspended `sleep`
+/// activations still need them during the drain and parked-frame retirement.
+pub(crate) fn quiesce_periodic_timers() {
+    let all: Vec<Arc<PeriodicCtx>> = {
+        let _admission = PERIODIC_ADMISSION
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        PERIODIC_ACCEPTING.store(false, Ordering::Release);
+        ACTOR_TIMERS.access(|lock| {
+            lock.as_ref()
+                .map(|map| map.values().flatten().cloned().collect())
+                .unwrap_or_default()
+        })
+    };
+
+    for ctx in &all {
+        ctx.cancelled.store(true, Ordering::SeqCst);
+    }
+    for ctx in &all {
+        while ctx.in_flight.load(Ordering::SeqCst) {
+            std::hint::spin_loop();
+        }
+    }
+    for ctx in &all {
+        reclaim_pending_wheel_ref(ctx);
+    }
+    for ctx in &all {
+        unregister_timer(ctx.actor, Arc::as_ptr(ctx) as usize);
+    }
+}
+
+/// Open periodic-timer admission for a newly installed runtime generation.
+pub(crate) fn reset_periodic_admission() {
+    let _admission = PERIODIC_ADMISSION
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    PERIODIC_ACCEPTING.store(true, Ordering::Release);
+}
+
 /// Returns the number of active (registered) periodic timers for an actor.
 #[cfg(test)]
 pub(crate) fn timer_count_for_actor(actor: *mut HewActor) -> usize {
@@ -347,6 +407,18 @@ pub(crate) fn timer_count_for_actor(actor: *mut HewActor) -> usize {
         lock.as_ref()
             .and_then(|map| map.get(&(actor as usize)))
             .map_or(0, Vec::len)
+    })
+}
+
+/// Returns the total number of active (registered) periodic timers across all
+/// actors. Used by the debug-only ticker-liveness diagnostics in
+/// `shutdown_ticker`; not gated on `cfg(test)` because it is also needed in
+/// ordinary debug-profile builds (which is what CI's e2e suite links).
+#[cfg(debug_assertions)]
+fn registered_periodic_timer_count() -> usize {
+    ACTOR_TIMERS.access(|lock| {
+        lock.as_ref()
+            .map_or(0, |map| map.values().map(Vec::len).sum())
     })
 }
 
@@ -505,6 +577,13 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
         return ptr::null_mut();
     }
 
+    let _admission = PERIODIC_ADMISSION
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !PERIODIC_ACCEPTING.load(Ordering::Acquire) {
+        return ptr::null_mut();
+    }
+
     let tw = global_wheel();
     if tw.is_null() {
         return ptr::null_mut();
@@ -512,7 +591,7 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
 
     // SAFETY: `actor` and `tw` were validated above; hew_now_ms has no
     // preconditions on native targets.
-    unsafe {
+    let handle = unsafe {
         schedule_periodic_on_wheel(
             actor,
             msg_type,
@@ -520,7 +599,26 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
             tw,
             crate::io_time::hew_now_ms(),
         )
+    };
+
+    // Debug-only liveness check (see `assert_ticker_alive` doc comment): a
+    // ticker that died between `start_ticker_thread` returning and this first
+    // insert would otherwise leave the freshly-armed entry silently dead —
+    // the wheel holds it, but nothing will ever tick it. This traps at the
+    // arm site, with a file:line-precise diagnostic, instead of surfacing
+    // later as a program that exits cleanly having fired zero times. Gated
+    // to the real FFI entry point (not `schedule_periodic_on_wheel` itself)
+    // because unit tests call that helper directly against a bare test
+    // wheel with no ticker thread ever started, by design.
+    #[cfg(debug_assertions)]
+    if !handle.is_null() {
+        // SAFETY: `tw` was validated above and is still live.
+        unsafe {
+            assert_ticker_alive("hew_actor_schedule_periodic: after first insert", tw);
+        }
     }
+
+    handle
 }
 
 /// Schedule one native periodic timer on a specific wheel and clock sample.
@@ -575,6 +673,48 @@ unsafe fn schedule_periodic_on_wheel(
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wheel_handle);
 
     handle_ptr
+}
+
+/// Debug-only liveness assertion for the periodic-timer ticker thread.
+///
+/// Verifies both that `TICKER_RUNNING` is still `true` and, when the ticker's
+/// `JoinHandle` is available, that the thread has not already finished.
+/// Gated on `cfg(debug_assertions)` because this is the profile CI's e2e
+/// suite actually links (`cargo nextest run` with no `--release`, producing
+/// `target/debug/libhew_runtime.a` — see `hew-cli/src/link.rs`), so the check
+/// is live exactly where the single-witness failure was observed, and adds
+/// no cost to a release-profile user binary.
+///
+/// On failure, includes the wheel's seeded `current_ms` against a fresh
+/// wall-clock read so a large clock/scheduling discontinuity (a residual
+/// hypothesis distinct from ticker death) is distinguishable in the panic
+/// message rather than collapsed into the same diagnostic.
+///
+/// # Safety
+///
+/// `tw` must be a valid pointer returned by `hew_timer_wheel_new`.
+#[cfg(debug_assertions)]
+unsafe fn assert_ticker_alive(context: &str, tw: *mut HewTimerWheel) {
+    let ticker_running = TICKER_RUNNING.load(Ordering::SeqCst);
+    let handle_finished = TICKER_HANDLE.get().and_then(|handle_mutex| {
+        handle_mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(JoinHandle::is_finished)
+    });
+    if !ticker_running || handle_finished == Some(true) {
+        // SAFETY: caller guarantees `tw` is valid.
+        let wheel_cursor_ms = unsafe { timer_wheel_cursor_ms(tw) };
+        let wall_clock_ms = crate::io_time::hew_now_ms();
+        panic!(
+            "hew periodic-timer liveness check failed ({context}): TICKER_RUNNING={ticker_running}, \
+             ticker thread finished={handle_finished:?} — the ticker thread is not alive right \
+             after arming a periodic timer; wheel cursor current_ms={wheel_cursor_ms}, wall-clock \
+             now_ms={wall_clock_ms} (delta={delta}ms)",
+            delta = wall_clock_ms.abs_diff(wheel_cursor_ms),
+        );
+    }
 }
 
 /// Cancel a periodic timer previously started by [`hew_actor_schedule_periodic`].
@@ -644,6 +784,50 @@ fn report_ticker_join_result(join_result: std::thread::Result<()>) {
 /// Sets the stop flag, waits for the thread to join, then resets the flag
 /// for potential re-initialisation. Safe to call multiple times.
 pub(crate) fn shutdown_ticker() {
+    // Debug-only: `report_ticker_join_result` below only fires on a *panic*
+    // observed at join time. A ticker thread that instead returned early —
+    // an unanticipated exit from its loop, distinct from a panic — is
+    // otherwise invisible: it is *only* ever supposed to finish after this
+    // function sets `TICKER_STOP` and notifies it, so a handle that is
+    // already finished before that happens is a bug on its own, independent
+    // of whether any periodic timer registration is still live at this
+    // exact instant (actor drain commonly cancels/unregisters timers ahead
+    // of this call in the healthy path, so registration count alone is not
+    // a reliable signal here — an already-dead handle is). This converts
+    // the exact silent-zero-tick shape under investigation into a loud
+    // diagnostic instead of a clean exit. Detect this *before* this
+    // function's own stop request makes a finished handle look expected.
+    #[cfg(debug_assertions)]
+    {
+        let already_finished = TICKER_HANDLE.get().is_some_and(|handle_mutex| {
+            handle_mutex
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(JoinHandle::is_finished)
+        });
+        if already_finished {
+            let live_registrations = registered_periodic_timer_count();
+            // SAFETY: the wheel is still live; shutdown_ticker runs before
+            // hew_periodic_shutdown frees it. hew_now_ms has no
+            // preconditions on native targets.
+            let (wheel_cursor_ms, wall_clock_ms) = unsafe {
+                (
+                    timer_wheel_cursor_ms(global_wheel()),
+                    crate::io_time::hew_now_ms(),
+                )
+            };
+            eprintln!(
+                "hew: periodic timer ticker thread exited before shutdown was requested \
+                 ({live_registrations} periodic timer(s) still registered at this point; any \
+                 timer already unregistered by then — e.g. via actor drain — could still have \
+                 missed every tick before that); wheel cursor current_ms={wheel_cursor_ms}, \
+                 wall-clock now_ms={wall_clock_ms} (delta={delta}ms)",
+                delta = wall_clock_ms.abs_diff(wheel_cursor_ms),
+            );
+        }
+    }
+
     // Set the stop flag first so the ticker exits after its next wakeup.
     TICKER_STOP.store(true, Ordering::Release);
 
@@ -685,20 +869,9 @@ pub unsafe extern "C" fn hew_periodic_shutdown() {
     // pending one-shot references.
     shutdown_ticker();
 
-    // Drain every tracked periodic ctx: reclaim its pending wheel reference and
-    // drop its registry reference. Without this the wheel's pending references
-    // would be silently dropped by `hew_timer_wheel_free` (which frees entry
-    // nodes but not their `data`), leaking the PeriodicCtx allocations.
-    let all: Vec<Arc<PeriodicCtx>> = ACTOR_TIMERS.access(|lock| {
-        lock.take()
-            .map(|map| map.into_values().flatten().collect())
-            .unwrap_or_default()
-    });
-    for ctx in &all {
-        ctx.cancelled.store(true, Ordering::SeqCst);
-        reclaim_pending_wheel_ref(ctx);
-    }
-    drop(all);
+    // Drain every tracked periodic ctx before freeing the wheel. Without this
+    // the wheel would free entry nodes but not their `data` references.
+    quiesce_periodic_timers();
 
     GLOBAL_WHEEL.access(|guard| {
         let tw = guard.0;
@@ -778,11 +951,15 @@ mod tests {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
     #[test]
     fn late_fire_skips_missed_slots_at_anchored_cadence() {
+        let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut actor = create_test_actor(50_050);
         actor
             .actor_state
@@ -822,6 +999,9 @@ mod tests {
 
     #[test]
     fn cursor_stall_drops_missed_intervals_without_losing_phase() {
+        let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut actor = create_test_actor(50_051);
         actor
             .actor_state
@@ -1057,6 +1237,9 @@ mod tests {
 
     #[test]
     fn cancel_all_timers_marks_contexts_cancelled() {
+        let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut actor = create_test_actor(50_100);
         let actor_ptr = &raw mut actor;
 
@@ -1113,6 +1296,7 @@ mod tests {
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_periodic_admission();
 
         let mut actor = create_test_actor(50_400);
         let actor_ptr = &raw mut actor;
@@ -1136,7 +1320,161 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_quiescence_closes_periodic_admission_without_stopping_shared_timers() {
+        let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // SAFETY: this test serializes ownership of the process-wide timer state.
+        unsafe { hew_periodic_shutdown() };
+        reset_periodic_admission();
+
+        let mut actor = create_test_actor(50_401);
+        let actor_ptr = &raw mut actor;
+        // SAFETY: actor_ptr remains live until the timer subsystem is reset.
+        let handle = unsafe { hew_actor_schedule_periodic(actor_ptr, 7, 60_000) };
+        assert!(!handle.is_null());
+        assert_eq!(timer_count_for_actor(actor_ptr), 1);
+
+        quiesce_periodic_timers();
+
+        assert_eq!(timer_count_for_actor(actor_ptr), 0);
+        assert!(
+            TICKER_RUNNING.load(Ordering::Acquire),
+            "shutdown quiescence must leave the shared sleep-timer ticker alive"
+        );
+        // SAFETY: actor_ptr is still live, but the shutdown admission gate must
+        // reject a timer that races after periodic quiescence.
+        let rejected = unsafe { hew_actor_schedule_periodic(actor_ptr, 8, 60_000) };
+        assert!(
+            rejected.is_null(),
+            "periodic scheduling must stay closed after shutdown quiescence"
+        );
+
+        // A complete timer shutdown followed by wheel recreation starts a fresh
+        // runtime generation and reopens admission.
+        // SAFETY: this test serializes ownership of the process-wide timer state.
+        unsafe { hew_periodic_shutdown() };
+        reset_periodic_admission();
+        // SAFETY: actor_ptr remains live through cancellation below.
+        let restarted = unsafe { hew_actor_schedule_periodic(actor_ptr, 9, 60_000) };
+        assert!(!restarted.is_null());
+        // SAFETY: restarted is the live handle returned immediately above.
+        unsafe { hew_actor_cancel_periodic(restarted) };
+        // SAFETY: final serialized cleanup for this test.
+        unsafe { hew_periodic_shutdown() };
+    }
+
+    #[test]
+    fn shutdown_cancels_due_but_unclaimed_periodic_entry() {
+        let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // Start from a fresh global wheel and leave the ticker parked on a far
+        // deadline. The test advances only the wheel cursor, so the entry can
+        // be made due without letting the ticker claim it.
+        // SAFETY: this test serializes ownership of the process-wide timer state.
+        unsafe { hew_periodic_shutdown() };
+        reset_periodic_admission();
+
+        let mut actor = create_test_actor(50_403);
+        let actor_ptr = &raw mut actor;
+        // SAFETY: actor_ptr remains live through the serialized shutdown.
+        let handle = unsafe { hew_actor_schedule_periodic(actor_ptr, 7, 60_000) };
+        assert!(!handle.is_null());
+
+        let ctx = ACTOR_TIMERS.access(|lock| {
+            Arc::clone(
+                lock.as_ref()
+                    .and_then(|map| map.get(&(actor_ptr as usize)))
+                    .and_then(|timers| timers.first())
+                    .expect("scheduled timer must be registered"),
+            )
+        });
+        let wheel = ctx.wheel;
+        let first_fire = ctx.next_fire_ms.load(Ordering::SeqCst);
+        // SAFETY: `wheel` is the live wheel owned by the periodic context.
+        let cursor = unsafe { timer_wheel_cursor_ms(wheel) };
+        assert!(first_fire > cursor);
+
+        // Let the ticker settle into its far-deadline park before making the
+        // entry due. No insertion notification occurs for this cursor change.
+        std::thread::sleep(Duration::from_millis(20));
+        // SAFETY: the ticker is parked and the test owns the wheel cursor.
+        unsafe {
+            crate::timer_wheel::timer_wheel_advance_cursor_for_test(
+                wheel,
+                first_fire.saturating_sub(cursor).saturating_add(1),
+            );
+        }
+        // SAFETY: `wheel` remains live until the serialized shutdown below.
+        assert_eq!(unsafe { hew_timer_wheel_next_deadline_ms(wheel) }, 0);
+        assert_eq!(ctx.next_fire_ms.load(Ordering::SeqCst), first_fire);
+
+        // The due entry is still pending and unclaimed. Shutdown must cancel
+        // it rather than silently delivering the callback.
+        // SAFETY: this test owns the process-wide timer state.
+        unsafe { hew_periodic_shutdown() };
+
+        assert_eq!(ctx.next_fire_ms.load(Ordering::SeqCst), first_fire);
+        assert!(ctx.cancelled.load(Ordering::SeqCst));
+        assert_eq!(timer_count_for_actor(actor_ptr), 0);
+        assert_eq!(Arc::strong_count(&ctx), 1, "pending wheel reference leaked");
+    }
+
+    #[test]
+    fn shutdown_quiescence_keeps_registry_visible_until_callbacks_drain() {
+        let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // SAFETY: this test serializes ownership of the process-wide timer state.
+        unsafe { hew_periodic_shutdown() };
+        reset_periodic_admission();
+
+        let mut actor = create_test_actor(50_402);
+        let actor_ptr = &raw mut actor;
+        // SAFETY: actor_ptr remains live until the quiescer and final cleanup join.
+        let handle = unsafe { hew_actor_schedule_periodic(actor_ptr, 7, 60_000) };
+        assert!(!handle.is_null());
+        let ctx = ACTOR_TIMERS.access(|lock| {
+            Arc::clone(
+                lock.as_ref()
+                    .and_then(|map| map.get(&(actor_ptr as usize)))
+                    .and_then(|timers| timers.first())
+                    .expect("scheduled timer must be registered"),
+            )
+        });
+
+        // Model a callback that passed its cancellation check and still owns the
+        // actor pointer. Global quiescence must keep the registry entry published
+        // until this in-flight guard clears, so actor-local teardown cannot mistake
+        // the timer for already-safe.
+        ctx.in_flight.store(true, Ordering::SeqCst);
+        let quiescer = std::thread::spawn(quiesce_periodic_timers);
+        while PERIODIC_ACCEPTING.load(Ordering::Acquire) {
+            std::hint::spin_loop();
+        }
+        let visible_while_draining = timer_count_for_actor(actor_ptr) == 1;
+
+        ctx.in_flight.store(false, Ordering::SeqCst);
+        quiescer.join().expect("periodic quiescer must finish");
+
+        assert!(
+            visible_while_draining,
+            "registry absence must never precede callback cancellation and drain"
+        );
+        assert_eq!(timer_count_for_actor(actor_ptr), 0);
+        // SAFETY: final serialized cleanup for this test.
+        unsafe { hew_periodic_shutdown() };
+    }
+
+    #[test]
     fn cancel_all_timers_no_timers_does_not_panic() {
+        let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut actor = create_test_actor(50_200);
         let actor_ptr = &raw mut actor;
         // Should be a no-op, not panic.
@@ -1154,6 +1492,7 @@ mod tests {
         unsafe {
             hew_periodic_shutdown();
         }
+        reset_periodic_admission();
         crate::hew_clear_error();
 
         FAIL_TICKER_SPAWN.with(|fail| fail.set(true));

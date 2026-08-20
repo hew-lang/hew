@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 struct MachineFixture {
     stem: &'static str,
@@ -179,13 +180,18 @@ fn compile_fixture(repo: &Path, fixture: &MachineFixture) -> String {
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).expect("create compile output dir");
 
-    let output = hew_command(repo)
+    let mut command = hew_command(repo);
+    command
         .arg("compile")
         .arg(fixture_path(repo, fixture.stem))
         .arg("--emit-dir")
-        .arg(&out_dir)
-        .output()
-        .expect("spawn hew compile");
+        .arg(&out_dir);
+    let output = hew_testutil::run_command_bounded(
+        &mut command,
+        format!("hew compile {}", fixture.stem),
+        Duration::from_mins(2),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
@@ -221,11 +227,9 @@ fn compile_fixture(repo: &Path, fixture: &MachineFixture) -> String {
 
 /// Compile and link a fixture to a standalone native binary via `hew build`,
 /// returning the temp dir (the caller keeps it alive until after the run) and
-/// the binary path. The compile+link step uses `.output()` — unbounded here and
-/// backstopped by the nextest envelope, matching `compile_fixture` and
-/// `machine_lifecycle` — so the per-run exec deadline in `run_prebuilt` covers
-/// only native execution, which is contention-immune. Binding compile under a
-/// tight wall-clock is exactly the defect this harness removes.
+/// the binary path. The compile+link step gets a wider process-tree deadline
+/// than native execution so hosted-runner load cannot be confused with a hung
+/// fixture while descendants still remain bounded.
 fn build_fixture_binary(repo: &Path, source: &Path, stem: &str) -> (tempfile::TempDir, PathBuf) {
     ensure_hew_runtime_lib(repo);
     let dir = tempfile::tempdir().expect("create machine-exec build dir");
@@ -233,13 +237,14 @@ fn build_fixture_binary(repo: &Path, source: &Path, stem: &str) -> (tempfile::Te
         .path()
         .join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
 
-    let output = hew_command(repo)
-        .arg("build")
-        .arg("-o")
-        .arg(&bin)
-        .arg(source)
-        .output()
-        .expect("spawn hew build");
+    let mut command = hew_command(repo);
+    command.arg("build").arg("-o").arg(&bin).arg(source);
+    let output = hew_testutil::run_command_bounded(
+        &mut command,
+        format!("hew build {stem}"),
+        Duration::from_mins(2),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),

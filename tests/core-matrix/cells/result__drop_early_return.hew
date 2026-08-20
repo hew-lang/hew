@@ -10,7 +10,7 @@ impl Tok {
 }
 
 fn run(early: bool) -> i64 {
-    let h: Result<Tok, string> = Ok(Tok { id: 1 });
+    let h: Result<Tok, string> = Result.Ok(Tok { id: 1 });
     if early {
         println("early");
         return 1;

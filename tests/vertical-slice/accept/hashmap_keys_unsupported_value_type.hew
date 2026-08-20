@@ -11,8 +11,8 @@
 // `hashmap_values_managed_record.hew` reject fixture, which covers exactly
 // that (unchanged by this fix). One key inserted → keys().len() == 1. Exit 1.
 fn main() -> i64 {
-    let values: HashMap<i64, Vec<i64>> = HashMap::new();
-    let xs: Vec<i64> = Vec::new();
+    let values: HashMap<i64, Vec<i64>> = HashMap.new();
+    let xs: Vec<i64> = Vec.new();
     xs.push(42);
     values.insert(1, xs);
     let projected = values.keys();

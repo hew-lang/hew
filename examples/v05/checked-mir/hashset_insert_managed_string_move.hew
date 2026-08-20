@@ -17,7 +17,7 @@ fn add_renamed(words: HashSet<string>, var member: string) {
 }
 
 fn main() {
-    let words: HashSet<string> = HashSet::new();
+    let words: HashSet<string> = HashSet.new();
     let word = "behaviour";
     words.insert(word);
     add_member(words, "colour");

@@ -2,7 +2,7 @@
 // Layout: [capacity, head, tail, count, data...]
 // Data starts at index 4
 fn cb_new(capacity: i64) -> Vec<i64> {
-    let buf: Vec<i64> = Vec::new();
+    let buf: Vec<i64> = Vec.new();
     buf.push(capacity); // index 0: capacity
     buf.push(0); // index 1: head
     buf.push(0); // index 2: tail

@@ -10,7 +10,7 @@ type Outer {
 }
 
 fn make_outer() -> Outer {
-    let s: HashSet<i64> = HashSet::new();
+    let s: HashSet<i64> = HashSet.new();
     s.insert(10);
     s.insert(20);
     s.insert(30);

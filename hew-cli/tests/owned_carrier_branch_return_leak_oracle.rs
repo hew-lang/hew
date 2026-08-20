@@ -38,7 +38,7 @@ fn step(items: Vec<string>, i: i64) -> (Vec<string>, Slot) {{
 }}
 
 fn run_case(frame: i64) -> i64 {{
-    var items: Vec<string> = Vec::new();
+    var items: Vec<string> = Vec.new();
     items.push(f"left-{{frame}}");
     items.push(f"right-{{frame}}");
 

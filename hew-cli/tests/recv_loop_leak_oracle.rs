@@ -192,7 +192,7 @@ fn for_await_source(frames: usize) -> String {
         acc
     });
     format!(
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor ForAwaitRecv {{\n\
          \x20   receive fn run(unused: i64) {{\n\
@@ -248,7 +248,7 @@ fn parked_for_await_receiver_handoff_source(frames: usize) -> String {
     });
 
     format!(
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor ParkedReceiver {{\n\
          \x20   receive fn run(index: i64) {{\n\
@@ -329,7 +329,7 @@ fn receiver_vec_drop_only_source(frames: usize) -> String {
         acc
     });
     format!(
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          fn drop_receiver_vec() {{\n\
          \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
@@ -396,7 +396,7 @@ fn sender_vec_clone_drop_source(frames: usize) -> String {
         acc
     });
     format!(
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          fn clone_and_drop_sender_vec() {{\n\
          \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
@@ -450,7 +450,7 @@ fn await_recv_source(frames: usize) -> String {
         acc
     });
     format!(
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor AwaitRecv {{\n\
          \x20   receive fn run(unused: i64) {{\n\
@@ -486,7 +486,7 @@ fn try_recv_source(frames: usize) -> String {
         acc
     });
     format!(
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor TryRecv {{\n\
          \x20   receive fn run(unused: i64) {{\n\
@@ -526,7 +526,7 @@ fn try_recv_continue_source(frames: usize) -> String {
         acc
     });
     format!(
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor TryRecvContinue {{\n\
          \x20   receive fn run(unused: i64) {{\n\
@@ -569,7 +569,7 @@ fn await_recv_continue_source(frames: usize) -> String {
         acc
     });
     format!(
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor AwaitRecvContinue {{\n\
          \x20   receive fn run(unused: i64) {{\n\
@@ -610,7 +610,7 @@ fn await_recv_continue_source(frames: usize) -> String {
 /// the borrow contract failed to balance) shows up as 1.0 leak / frame.
 fn owned_send_source(frames: usize) -> String {
     format!(
-        "import std::channel::channel;\n\
+        "import std.channel.channel;\n\
          \n\
          actor OwnedSend {{\n\
          \x20   receive fn run(unused: i64) {{\n\
@@ -1034,7 +1034,7 @@ fn owned_payload_send_loop_no_per_frame_leak_slope() {
 /// send-count note above the shape rationale.
 fn for_await_stream_bytes_source(frames: usize) -> String {
     format!(
-        "import std::stream;\n\
+        "import std.stream;\n\
          \n\
          actor ForAwaitStreamBytes {{\n\
          \x20   receive fn run(unused: i64) {{\n\
@@ -1129,7 +1129,7 @@ fn for_await_stream_bytes_loop_no_per_frame_leak_slope() {
 /// regression in the escape-scan that admitted the back-edge drop for
 /// Bytes would print empty / poisoned bytes here.
 fn carry_for_await_bytes_escape_source() -> String {
-    "import std::stream;\n\
+    "import std.stream;\n\
      \n\
      actor CarryStreamBytesEscape {\n\
      \x20   receive fn run(unused: i64) {\n\
@@ -1211,7 +1211,7 @@ fn carry_for_await_bytes_payload_escape_no_uaf() {
 /// scan sees `item → carry` as an unbound-destination escape → root
 /// excluded → no back-edge drop → no UAF.
 fn carry_continue_escape_source() -> String {
-    "import std::channel::channel;\n\
+    "import std.channel.channel;\n\
      \n\
      actor CarryContinueEscape {\n\
      \x20   receive fn run(unused: i64) {\n\
@@ -1252,7 +1252,7 @@ fn carry_continue_escape_source() -> String {
 /// both — the propagation step runs once and feeds both back-edge
 /// registrations identically.
 fn carry_fallthrough_escape_source() -> String {
-    "import std::channel::channel;\n\
+    "import std.channel.channel;\n\
      \n\
      actor CarryFallEscape {\n\
      \x20   receive fn run(unused: i64) {\n\

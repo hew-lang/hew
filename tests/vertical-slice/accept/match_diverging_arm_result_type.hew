@@ -23,20 +23,20 @@ fn parse(input: string, fail: bool) -> Status {
     // First arm diverges; second arm produces `Status` — the match result type.
     let result = match fail {
         true => {
-            return Status::Bad;
+            return Status.Bad;
         },
-        false => Status::Good(input),
+        false => Status.Good(input),
     };
     result
 }
 
 fn main() {
     match parse("hello", false) {
-        Status::Good(s) => println(s),
-        Status::Bad => println("bad"),
+        Status.Good(s) => println(s),
+        Status.Bad => println("bad"),
     }
     match parse("ignored", true) {
-        Status::Good(_) => println("unexpected"),
-        Status::Bad => println("ok"),
+        Status.Good(_) => println("unexpected"),
+        Status.Bad => println("ok"),
     }
 }

@@ -16,7 +16,7 @@
 // indexing (xs.len() = 3) to prove it was not consumed.
 //   a.len() + c.len() + xs.len() = 5 + 5 + 3 = 13  →  exit 13
 fn main() -> i64 {
-    let xs: Vec<string> = Vec::new();
+    let xs: Vec<string> = Vec.new();
     xs.push("alpha");
     xs.push("be");
     xs.push("gamma");

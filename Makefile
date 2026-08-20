@@ -43,7 +43,10 @@
 #   make licenses-check            — verify THIRD-PARTY-LICENSES is current (used in CI)
 #   make check-gate-reachability   — verify every gate target/crate/exclusion is reached by CI,
 #                                    and every documented make target exists
-#   make ci-preflight              — dispatch a conservative local preflight from the current diff
+#   make preflight                 — STANDARD per-branch gate: dispatcher-routed checks for the
+#                                    current diff, fail-fast; hosted CI remains the backstop
+#   make ci-preflight              — run-all dispatcher preflight; for integration/release
+#                                    moments (merge trains, RC cuts), not routine branch gating
 #   make ci-preflight-smoke        — fast smoke tier: fmt + in-process tests (<5 min)
 #   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
@@ -68,8 +71,8 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew hew-native observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
+.PHONY: all build bootstrap install-hooks hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
+.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -206,7 +209,7 @@ RUNTIME_MIRI_TARGET_DIR := target/miri-runtime
 
 # ── Default target ──────────────────────────────────────────────────────────
 
-all: hew-native observe runtime stdlib wasm-runtime assemble
+all: hew-native hew-lsp observe runtime stdlib wasm-runtime assemble
 
 # Convenience alias — rebuilds all debug artifacts including libhew.a.
 # Equivalent to `make all`; exists so that `make build` behaves as expected.
@@ -229,6 +232,10 @@ hew: hew-native
 # Windows hosts use the same build graph as Linux/macOS.
 hew-native: libhew-debug
 	cargo build -p hew-cli $(CARGO_TARGET_FLAG)
+
+# Build the language server (debug).
+hew-lsp:
+	cargo build -p hew-lsp $(CARGO_TARGET_FLAG)
 
 # Build the TUI actor observer (debug).
 # hew-observe is a sibling binary: `hew observe` delegates to it when it is
@@ -367,19 +374,36 @@ playground-wasi-check:
 	cargo test -p hew-cli --test wasi_run_e2e curated_playground_examples_run_under_wasi -- --exact
 	cargo test -p hew-cli --test wasi_run_e2e supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi -- --exact
 
-# Conservative diff-based local preflight dispatcher.
+# Standard per-branch gate: the dispatcher classifies the current diff and
+# runs the narrowest sufficient checks for its file classes, stopping at the
+# first failure for quick iteration.  This is THE routine gate before pushing a
+# branch — hosted CI is the backstop for cross-cutting fallout the routing cannot
+# foresee.  Escape classes observed while gating by hand-picked per-crate tests
+# (structural ratchets outside the cargo dependency graph, cross-crate exec
+# fallout from resolver changes, ll-oracle golden drift from emission reorders)
+# are routed by the dispatcher itself, so use this target rather than an ad-hoc
+# test selection.
+# Usage: make preflight            (classify + run, fail-fast)
+#        make preflight ARGS="--dry-run"   (print the routing only)
+preflight:
+	scripts/ci-preflight-dispatcher.sh --fail-fast $(ARGS)
+
+# Conservative diff-based local preflight dispatcher, run-all failure policy.
+# Reserve for integration/release moments (merge trains, RC cuts, post-squash
+# re-verification) where the complete failure report is worth the wall clock;
+# routine branch gating uses make preflight above.
 # Usage: make ci-preflight ARGS="--dry-run" or ARGS="--base origin/main"
 ci-preflight:
 	scripts/ci-preflight-dispatcher.sh $(ARGS)
 
 # Fast smoke preflight: Rust fmt + the workspace's deterministic in-process
-# tests (nextest smoke profile).  Designed to complete in <5 min and surface
-# format and fast oracle failures before the full heavy tier is invoked.
-# Clippy runs in the lint target; the fallback lane runs both sequentially.
+# tests (nextest smoke profile). Designed to complete in <5 min and surface
+# format and fast oracle failures during local iteration. Clippy remains in
+# the lint target and is not duplicated here.
 #
-# This target is invoked by the dispatcher as the first step of the fallback/heavy
-# lane; the full suite (make test) still runs on smoke pass.  Run it directly for
-# a quick sanity pass on any diff without waiting for E2E compilation.
+# Run this target directly for a quick sanity pass on any diff without waiting
+# for E2E compilation. The comprehensive dispatcher reserves it for that local
+# opt-in because its full workspace run already includes the smoke test.
 #
 # The smoke nextest profile excludes subprocess-intensive tests (eval_e2e,
 # test_runner_e2e, parity) and hew-wasm; see .config/nextest.toml [profile.smoke].
@@ -574,7 +598,7 @@ wasm-dist: wasm
 
 # Create symlinks from build/ into the real output locations.
 # This gives you one stable directory to point PATH at during development.
-assemble: | hew-native observe runtime stdlib wasm-runtime
+assemble: | hew-native hew-lsp observe runtime stdlib wasm-runtime
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
 	@# assemble-release makes build/std a symlink to ../std; reset it so the
 	@# flat std stub loop below cannot rewrite tracked std/*.hew files in root.
@@ -582,6 +606,8 @@ assemble: | hew-native observe runtime stdlib wasm-runtime
 	@mkdir -p $(BUILD_DIR)/std
 	@# Compiler driver
 	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew"                "$(BUILD_DIR)/bin/hew"
+	@# Language server
+	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew-lsp"            "$(BUILD_DIR)/bin/hew-lsp"
 	@# TUI actor observer (sibling binary — `hew observe` delegates here)
 	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew-observe"        "$(BUILD_DIR)/bin/hew-observe"
 	@# Combined Hew library (runtime + all stdlib packages)
@@ -1275,6 +1301,40 @@ hew-fmt-check: hew
 	    | xargs -0 "$(DEBUG_DIR)/hew" fmt --check \
 	    && echo "hew-fmt-check passed: all $$total .hew sources are formatted." \
 	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
+
+# Exercise representative migration inputs in an isolated copy so the proof
+# never edits the checkout. The second pass must leave the first-pass snapshot
+# byte-identical.
+test-migrate-corpus: hew
+	@set -e; migration_root=$$(mktemp -d); migration_fixed=$$(mktemp -d); \
+	trap 'rm -rf "$$migration_root" "$$migration_fixed"' 0; \
+	cp -R tests/corpus/migrate/. "$$migration_root/"; \
+	echo "1/6 migrate accepted representative sources"; \
+	"$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_root/accept"; \
+	echo "2/6 compare exact migrated sources"; \
+	for migration_source in "$$migration_root"/accept/*.hew; do \
+		migration_expected="$${migration_source%.hew}.expected"; \
+		diff -u "$$migration_expected" "$$migration_source"; \
+	done; \
+	echo "3/6 require the unresolvable source to fail loudly"; \
+	migration_refusal="$$migration_root/refusal.log"; \
+	if "$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_root/reject" >"$$migration_refusal" 2>&1; then \
+		cat "$$migration_refusal"; \
+		echo "error: migration accepted the unresolvable representative site" >&2; \
+		exit 1; \
+	fi; \
+	grep -F 'unresolvable.hew:24-35: type checking failed: undefined function `Missing`' "$$migration_refusal"; \
+	diff -u tests/corpus/migrate/reject/unresolvable.hew "$$migration_root/reject/unresolvable.hew"; \
+	echo "4/6 prove the migrated snapshot reaches a successful typecheck"; \
+	for migration_source in "$$migration_root"/accept/*.hew; do \
+		"$(DEBUG_DIR)/hew" check "$$migration_source"; \
+	done; \
+	echo "5/6 require a byte-identical second migration pass"; \
+	cp -R "$$migration_root/accept/." "$$migration_fixed/"; \
+	"$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_root/accept"; \
+	diff -ru "$$migration_fixed" "$$migration_root/accept"; \
+	echo "6/6 require check mode to recognize the fixed point"; \
+	"$(DEBUG_DIR)/hew" fmt --migrate --check --root "$$migration_root/accept"
 
 # Derive the compilable corpus from the tracked source roots, format a private
 # path-preserving mirror, then require the result to check and reach a fixed point.

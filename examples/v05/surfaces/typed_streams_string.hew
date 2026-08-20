@@ -3,7 +3,7 @@
 //! pipe, including an empty `""` item to lock the empty-item invariant.
 //!
 //! Companion to `typed_streams.hew` (which drains a `Stream<bytes>` with
-//! single `await stream.recv()`). `Stream<string>::recv` resolves to the
+//! single `await stream.recv()`). `Stream<string>.recv` resolves to the
 //! layout-witness runtime entry `hew_stream_next_layout` (one symbol for
 //! every describable element type). Each `await input.recv()`
 //! lowers to `Terminator::SuspendingStreamNext`;
@@ -12,12 +12,12 @@
 //! `Some("")` and the loop continues — the empty-item drain here is the
 //! regression for that invariant.
 //!
-//! `Sink<string>::send` is now on the suspending-sink-send path too (every
+//! `Sink<string>.send` is now on the suspending-sink-send path too (every
 //! describable element suspends, not just `Sink<bytes>`): each
 //! `await sink.send(item)` writes a frame, suspending on a full ring
 //! (backpressure-aware). The `Sink`/`Stream` halves are locals in this handler.
 
-import std::stream;
+import std.stream;
 
 actor StringPipeline {
     receive fn run(unused: i64) {
@@ -35,11 +35,11 @@ actor StringPipeline {
         while !done {
             let item = await input.recv();
             match item {
-                Some(frame) => {
+                .Some(frame) => {
                     println(f"recv [{frame}]");
                     received = received + 1;
                 },
-                None => {
+                .None => {
                     done = true;
                 },
             }

@@ -1,5 +1,5 @@
-import ambiguity::function_left::{clash_fn};
-import ambiguity::function_right::{clash_fn};
+import ambiguity.function_left.{clash_fn};
+import ambiguity.function_right.{clash_fn};
 
 fn main() {
     println(clash_fn());

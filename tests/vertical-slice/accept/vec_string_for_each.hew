@@ -1,5 +1,5 @@
 fn main() {
-    let words: Vec<string> = Vec::new();
+    let words: Vec<string> = Vec.new();
     words.push("red");
     words.push("blue");
     var count: i64 = 0;

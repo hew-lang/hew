@@ -34,8 +34,8 @@ actor Coordinator {
         };
         match r {
             // `bias` is read after the await + fork — also from the live context.
-            Ok(v) => v + bias,
-            Err(_) => -1,
+            .Ok(v) => v + bias,
+            .Err(_) => -1,
         }
     }
 }
@@ -46,7 +46,7 @@ fn main() {
     let r = await c.run(7);
     match r {
         // compute(7) = 42; + bias(100) = 142
-        Ok(v) => println(f"result={v}"),
-        Err(_) => println("ask failed"),
+        .Ok(v) => println(f"result={v}"),
+        .Err(_) => println("ask failed"),
     }
 }

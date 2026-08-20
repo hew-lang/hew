@@ -4,23 +4,23 @@
 //! The `Server` actor opens a listener and serves a fixed number of requests:
 //! for each it `await`s a connection, drives an `await conn.read_string()` loop
 //! until the request is fully buffered, parses it with the
-//! `std::net::http::http_async_server` codec, and dispatches on the path —
+//! `std.net.http.http_async_server` codec, and dispatches on the path —
 //! `/hello` returns plain text, `/health` returns JSON, anything else 404s.
 //! The `Client` actor issues two sequential requests with the
-//! `std::net::http::http_async_client` codec, `await`ing each response to close.
+//! `std.net.http.http_async_client` codec, `await`ing each response to close.
 //!
 //! Every `await` suspends the handler rather than blocking the worker, so a
 //! single worker (`HEW_WORKERS=1`) can both serve and fetch on the same thread.
 //! The `Listener` / `Connection` handles are handler LOCALS — an opaque handle
 //! in actor state is rejected by the supervisor-restart clone gate.
 
-import std::net;
+import std.net;
 
-import std::net::http::http_async_server;
+import std.net.http.http_async_server;
 
-import std::net::http::http_async_client;
+import std.net.http.http_async_client;
 
-import std::string;
+import std.string;
 
 actor Server {
     let addr: string;

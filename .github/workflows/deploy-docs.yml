@@ -8,11 +8,9 @@ on:
 
 jobs:
   deploy:
-    # Disabled until CLOUDFLARE_API_TOKEN secret is configured in repository
-    # settings and the operator has verified the deploy command against the
-    # hew-docs Cloudflare Pages project.  Remove this guard and the comment
-    # above to enable; see docs/release-runbook.md Phase 7 for the checklist.
-    if: false
+    # Deploys the standard-library reference to the Pages project serving
+    # docs.hew.sh. Requires the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID
+    # repository secrets.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
@@ -23,9 +21,27 @@ jobs:
         run: cargo build -p hew-cli --bin hew --release
       - name: Generate stdlib docs
         run: ./target/release/hew doc std/ --output-dir target/doc/
+      - name: Validate generated docs
+        run: |
+          source_modules="$(find std -type f -name '*.hew' | wc -l | tr -d ' ')"
+          generated_modules="$(find target/doc -maxdepth 1 -type f -name 'std.*.html' | wc -l | tr -d ' ')"
+          if [ "$source_modules" -eq 0 ] || [ "$generated_modules" -ne "$source_modules" ]; then
+            echo "::error::Expected $source_modules generated module pages, found $generated_modules"
+            exit 1
+          fi
+          if [ ! -s target/doc/index.html ]; then
+            echo "::error::Generated documentation index is missing or empty"
+            exit 1
+          fi
+          empty_file="$(find target/doc -type f -empty -print -quit)"
+          if [ -n "$empty_file" ]; then
+            echo "::error::Generated documentation contains an empty file: $empty_file"
+            exit 1
+          fi
       - name: Install wrangler
         run: npm install -g wrangler
       - name: Deploy to Cloudflare Pages
         env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: wrangler pages deploy target/doc/ --project-name hew-docs

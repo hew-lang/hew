@@ -1,0 +1,6 @@
+type Loop = Loop;
+
+fn main() {
+    let x: Loop = 1;
+    println(x);
+}

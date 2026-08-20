@@ -1100,7 +1100,7 @@ type Inner { lifecycle: Lifecycle<i64> }
 type Outer { inner: Inner }
 
 fn main() {
-    let outer = Outer { inner: Inner { lifecycle: Lifecycle::Start } };
+    let outer = Outer { inner: Inner { lifecycle: Lifecycle.Start } };
     println(1);
 }
 

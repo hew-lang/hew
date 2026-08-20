@@ -9,7 +9,7 @@
 //
 // Exit-code contract: timeout Err(TimedOut) -> 7; unexpected Ok -> 42;
 // wrong NetError variant -> 8; no actor exit -> main fallback 99.
-import std::net;
+import std.net;
 
 actor Server {
     receive fn go() {
@@ -18,7 +18,7 @@ actor Server {
             Ok(_conn) => 42,
             Err(e) => {
                 match e {
-                    NetError::TimedOut(_code) => 7,
+                    NetError.TimedOut(_code) => 7,
                     _ => 8,
                 }
             },

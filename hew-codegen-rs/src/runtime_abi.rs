@@ -3844,6 +3844,7 @@ pub(crate) fn lower_call_runtime_abi(
         | F::HashMapGetLayout
         | F::HashMapInsertLayout
         | F::HashMapKeysLayout
+        | F::HashMapEntriesLayout
         | F::HashMapLenLayout
         | F::HashMapNew
         | F::HashMapNewWithLayout
@@ -3943,6 +3944,7 @@ pub(crate) fn lower_call_runtime_abi(
         | F::TaskSetResult
         | F::VecCloneLayout
         | F::VecCloneOwned
+        | F::VecTakeAll
         | F::VecAppend
         | F::VecClear
         | F::VecClone
@@ -3951,7 +3953,7 @@ pub(crate) fn lower_call_runtime_abi(
         | F::VecContainsScalar(_)
         // Descriptor-backed clone-out is an intercepted `Terminator::Call`,
         // never an `Instr::CallRuntimeAbi`.
-        | F::VecGet(VecGetElem::Clone)
+        | F::VecGet(VecGetElem::Clone | VecGetElem::Take)
         | F::VecIsEmpty
         | F::VecJoinStr
         | F::VecNew
@@ -4791,6 +4793,10 @@ pub(crate) fn intern_runtime_decl<'ctx>(
             .bool_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into(), size_ty.into()], false),
         "hew_sched_init" => i32_ty.fn_type(&[], false),
+        // hew_exit(code: i64) -> void (`hew-runtime/src/lib.rs:175`).
+        // Used by the generated main-exit shutdown epilogue only on the
+        // failure branch, after bounded drains have reported abandoned work.
+        "hew_exit" => ctx.void_type().fn_type(&[i64_ty.into()], false),
         // Native lifecycle tail entry points. `hew_sched_shutdown` closes and
         // joins scheduler workers; `hew_runtime_cleanup_after_main` then checks
         // that post-worker cleanup is safe before entering the canonical runtime
@@ -4820,9 +4826,9 @@ pub(crate) fn intern_runtime_decl<'ctx>(
             ctx.void_type().fn_type(&[i64_ty.into()], false)
         }
         // hew_shutdown_wait() -> i32
-        // (`hew-runtime/src/shutdown.rs:231`). Blocks until `PHASE_DONE`
-        // (returns 0). Returns -1 if shutdown was never initiated and -2
-        // if the shutdown worker panicked. Paired with
+        // (`hew-runtime/src/shutdown.rs:231`). Blocks until shutdown completes
+        // (returns 0) or fails. Returns -1 if shutdown was never initiated and
+        // -2 if the drain timed out or the shutdown worker panicked. Paired with
         // either initiate entry point; emitted by the implicit main-exit drain
         // epilogue immediately after its implicit initiate call.
         "hew_shutdown_wait" => i32_ty.fn_type(&[], false),
@@ -5442,6 +5448,19 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // if Done, null otherwise. Called after hew_task_await_blocking
         // when the producer needs to read the result separately.
         "hew_task_get_result" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_task_take_result" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_task_set_result_drop_fn" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_task_result_publication_checkpoint" => {
+            ctx.void_type().fn_type(&[ptr_ty.into()], false)
+        }
+        "hew_reply_channel_publish_cancelled" => {
+            ctx.void_type().fn_type(&[ptr_ty.into()], false)
+        }
+        "hew_reply_channel_publish_task_failed" => {
+            ctx.void_type().fn_type(&[ptr_ty.into()], false)
+        }
         "hew_task_completion_observe" => i32_ty.fn_type(
             &[ptr_ty.into(), ptr_ty.into(), ptr_ty.into(), ptr_ty.into()],
             false,

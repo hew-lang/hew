@@ -1,11 +1,11 @@
 fn main() {
-    let x: Vec<i64> = Vec::new();
+    let x: Vec<i64> = Vec.new();
     x.push(10);
     x.push(20);
-    let y: Vec<i64> = Vec::new();
+    let y: Vec<i64> = Vec.new();
     y.push(11);
     y.push(21);
-    let v: Vec<Vec<i64>> = Vec::new();
+    let v: Vec<Vec<i64>> = Vec.new();
     v.push(x);
     v.push(y);
     let n = v.len();

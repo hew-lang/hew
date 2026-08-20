@@ -1,0 +1,21 @@
+#[resource]
+type RawConnection {
+    id: i64
+}
+
+impl RawConnection {
+    fn close(self) {
+        println("closed");
+    }
+}
+
+type Conn = RawConnection;
+
+fn open() -> Conn {
+    RawConnection { id: 7 }
+}
+
+fn main() {
+    let _connection: Conn = open();
+    println("opened");
+}

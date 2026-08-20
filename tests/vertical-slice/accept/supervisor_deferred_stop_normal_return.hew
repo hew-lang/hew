@@ -4,7 +4,7 @@
 // With one worker, the handler queues sibling work, calls supervisor_stop,
 // signals main, and remains Running briefly. Main therefore starts its exit
 // tail before the worker can activate the Runnable sibling.
-import std::channel::channel;
+import std.channel.channel;
 
 extern "C" {
     fn usleep(usec: i32) -> i32;

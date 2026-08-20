@@ -1,0 +1,19 @@
+pub machine FileLifecycle {
+    events {
+        Finish;
+    }
+
+    state Running;
+    state Completed;
+
+    on Finish: Running => Completed {
+        Completed
+    }
+    default {
+        state
+    }
+}
+
+pub fn initial_file_lifecycle() -> FileLifecycle {
+    FileLifecycle.Running
+}

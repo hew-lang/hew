@@ -18,7 +18,7 @@ struct IndexConfig {
 /// A single version entry in the package index.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IndexEntry {
-    /// Fully qualified package name (e.g. `"alice::router"`).
+    /// Fully qualified package name (e.g. `"alice.router"`).
     pub name: String,
     /// Exact version string.
     pub vers: String,
@@ -180,15 +180,21 @@ impl From<std::io::Error> for IndexError {
 
 /// Convert a package name to its index file path relative to the index root.
 ///
-/// Namespace `::` segments become directory components.
-/// `"alice::router"` → `"alice/router"`.
+/// Dotted package names are valid path components and map directly to files.
+/// `"alice.router"` → `"alice.router"`.
 #[must_use]
 pub fn index_path(package_name: &str) -> PathBuf {
-    let mut path = PathBuf::new();
-    for segment in package_name.split("::") {
-        path = path.join(segment);
-    }
-    path
+    PathBuf::from(package_name)
+}
+
+/// Return the package-level deprecation sidecar beside its index file.
+///
+/// `Path::with_extension` cannot be used for dotted package names because it
+/// would turn `alice.router` into `alice.deprecated`, discarding the final
+/// namespace segment. The sidecar appends its suffix instead.
+#[must_use]
+pub fn deprecation_path(package_name: &str) -> PathBuf {
+    PathBuf::from(format!("{package_name}.deprecated"))
 }
 
 // ── Reading / writing ───────────────────────────────────────────────────────
@@ -345,13 +351,25 @@ mod tests {
     }
 
     #[test]
-    fn index_path_simple() {
-        assert_eq!(index_path("alice::router"), PathBuf::from("alice/router"));
+    fn index_path_preserves_dotted_name() {
+        assert_eq!(index_path("alice.router"), PathBuf::from("alice.router"));
     }
 
     #[test]
-    fn index_path_deep() {
-        assert_eq!(index_path("std::net::http"), PathBuf::from("std/net/http"));
+    fn index_path_preserves_deep_dotted_name() {
+        assert_eq!(index_path("std.net.http"), PathBuf::from("std.net.http"));
+    }
+
+    #[test]
+    fn deprecation_path_preserves_every_dotted_segment() {
+        assert_eq!(
+            deprecation_path("alice.router"),
+            PathBuf::from("alice.router.deprecated")
+        );
+        assert_eq!(
+            deprecation_path("std.net.http"),
+            PathBuf::from("std.net.http.deprecated")
+        );
     }
 
     #[test]
@@ -361,17 +379,17 @@ mod tests {
 
     #[test]
     fn roundtrip_json_line() {
-        let entry = sample_entry("alice::router", "1.0.0");
+        let entry = sample_entry("alice.router", "1.0.0");
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: IndexEntry = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.name, "alice::router");
+        assert_eq!(parsed.name, "alice.router");
         assert_eq!(parsed.vers, "1.0.0");
         assert!(!parsed.yanked.is_yanked());
     }
 
     #[test]
     fn parse_yanked_entry() {
-        let json = r#"{"name":"evil::pkg","vers":"1.0.0","deps":[],"features":{},"cksum":"sha256:x","sig":"ed25519:y","key_fp":"SHA256:z","yanked":true,"yanked_reason":"CVE-2026-1234"}"#;
+        let json = r#"{"name":"evil.pkg","vers":"1.0.0","deps":[],"features":{},"cksum":"sha256:x","sig":"ed25519:y","key_fp":"SHA256:z","yanked":true,"yanked_reason":"CVE-2026-1234"}"#;
         let entry: IndexEntry = serde_json::from_str(json).unwrap();
         assert!(entry.yanked.is_yanked());
         assert!(!entry.yanked.is_tombstoned());
@@ -380,7 +398,7 @@ mod tests {
 
     #[test]
     fn parse_tombstoned_entry() {
-        let json = r#"{"name":"evil::pkg","vers":"1.0.0","deps":[],"features":{},"cksum":"sha256:x","sig":"ed25519:y","key_fp":"SHA256:z","yanked":"tombstone","yanked_reason":"malware","tombstoned_at":"2026-02-22T00:00:00Z"}"#;
+        let json = r#"{"name":"evil.pkg","vers":"1.0.0","deps":[],"features":{},"cksum":"sha256:x","sig":"ed25519:y","key_fp":"SHA256:z","yanked":"tombstone","yanked_reason":"malware","tombstoned_at":"2026-02-22T00:00:00Z"}"#;
         let entry: IndexEntry = serde_json::from_str(json).unwrap();
         assert!(entry.yanked.is_yanked());
         assert!(entry.yanked.is_tombstoned());
@@ -389,13 +407,13 @@ mod tests {
     #[test]
     fn write_and_read_index() {
         let dir = tempfile::tempdir().unwrap();
-        let entry1 = sample_entry("alice::router", "1.0.0");
-        let entry2 = sample_entry("alice::router", "1.1.0");
+        let entry1 = sample_entry("alice.router", "1.0.0");
+        let entry2 = sample_entry("alice.router", "1.1.0");
 
         append_index_entry(dir.path(), &entry1).unwrap();
         append_index_entry(dir.path(), &entry2).unwrap();
 
-        let entries = read_index_entries(dir.path(), "alice::router").unwrap();
+        let entries = read_index_entries(dir.path(), "alice.router").unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].vers, "1.0.0");
         assert_eq!(entries[1].vers, "1.1.0");
@@ -417,7 +435,7 @@ mod tests {
     #[test]
     fn read_nonexistent_package_returns_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let entries = read_index_entries(dir.path(), "no::such::pkg").unwrap();
+        let entries = read_index_entries(dir.path(), "no.such.pkg").unwrap();
         assert!(entries.is_empty());
     }
 
@@ -465,9 +483,9 @@ mod tests {
 
     #[test]
     fn entry_with_deps() {
-        let mut entry = sample_entry("alice::router", "1.0.0");
+        let mut entry = sample_entry("alice.router", "1.0.0");
         entry.deps.push(IndexDep {
-            name: "std::net::http".to_string(),
+            name: "std.net.http".to_string(),
             req: "^2.0".to_string(),
             features: vec![],
             optional: false,
@@ -478,7 +496,7 @@ mod tests {
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: IndexEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.deps.len(), 1);
-        assert_eq!(parsed.deps[0].name, "std::net::http");
+        assert_eq!(parsed.deps[0].name, "std.net.http");
         assert_eq!(parsed.deps[0].req, "^2.0");
         assert!(parsed.deps[0].default_features);
     }
@@ -492,25 +510,25 @@ mod tests {
         entry.features.insert("json".to_string(), vec![]);
         entry
             .features
-            .insert("tls".to_string(), vec!["std::crypto".to_string()]);
+            .insert("tls".to_string(), vec!["std.crypto".to_string()]);
 
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: IndexEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.features["default"], vec!["json"]);
         assert!(parsed.features["json"].is_empty());
-        assert_eq!(parsed.features["tls"], vec!["std::crypto"]);
+        assert_eq!(parsed.features["tls"], vec!["std.crypto"]);
     }
 
     #[test]
     fn deprecation_info_serialization() {
         let info = DeprecationInfo {
             deprecated: true,
-            message: Some("Use alice::router instead".to_string()),
-            successor: Some("alice::router".to_string()),
+            message: Some("Use alice.router instead".to_string()),
+            successor: Some("alice.router".to_string()),
         };
         let json = serde_json::to_string(&info).unwrap();
         let parsed: DeprecationInfo = serde_json::from_str(&json).unwrap();
         assert!(parsed.deprecated);
-        assert_eq!(parsed.successor.as_deref(), Some("alice::router"));
+        assert_eq!(parsed.successor.as_deref(), Some("alice.router"));
     }
 }

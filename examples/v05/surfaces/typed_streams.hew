@@ -20,7 +20,7 @@
 //! Frames are built from text with the public `string.to_bytes()` surface — no
 //! raw extern, no `unsafe`.
 
-import std::stream;
+import std.stream;
 
 actor Drainer {
     let input: stream.Stream<bytes>;
@@ -31,11 +31,11 @@ actor Drainer {
         var done = false;
         while !done {
             match await input.recv() {
-                Some(frame) => {
+                .Some(frame) => {
                     println(f"recv {frame.to_string()}");
                     received = received + 1;
                 },
-                None => {
+                .None => {
                     done = true;
                 },
             }

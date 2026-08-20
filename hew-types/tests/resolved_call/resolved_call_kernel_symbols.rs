@@ -65,6 +65,11 @@ extern "C" {
     fn hew_hashmap_len_layout(m: *const c_void) -> i64;
     fn hew_hashmap_keys_layout(m: *const c_void) -> *mut c_void;
     fn hew_hashmap_values_layout(m: *const c_void) -> *mut c_void;
+    fn hew_hashmap_entries_layout(
+        m: *const c_void,
+        pair_layout: *const c_void,
+        v_offset: u64,
+    ) -> *mut c_void;
     fn hew_hashmap_clone_layout(m: *const c_void) -> *mut c_void;
     fn hew_hashmap_clear_layout(m: *mut c_void);
     fn hew_hashset_insert_layout(s: *mut c_void, elem: *const c_void) -> bool;
@@ -115,6 +120,10 @@ fn known_linked_kernel_symbols() -> HashMap<&'static str, *const ()> {
     m.insert(
         "hew_hashmap_values_layout",
         hew_hashmap_values_layout as *const (),
+    );
+    m.insert(
+        "hew_hashmap_entries_layout",
+        hew_hashmap_entries_layout as *const (),
     );
     m.insert(
         "hew_hashmap_clone_layout",
@@ -300,8 +309,8 @@ fn every_stage_b_method_target_symbol_is_link_resolved() {
         checked.len(),
     );
 
-    // Defensive lower-bound: the Stage B registry seeds 8 HashMap methods
-    // (insert, get, contains_key, remove, len, keys, values, clone)
+    // Defensive lower-bound: the Stage B registry seeds 9 HashMap methods
+    // (insert, get, contains_key, remove, len, keys, values, entries, clone)
     // + 6 HashSet methods (insert, contains, remove, len, is_empty, clone)
     // = 14 symbols. A drift below this means the registry shrank silently;
     // the gate forces an explicit reckoning.

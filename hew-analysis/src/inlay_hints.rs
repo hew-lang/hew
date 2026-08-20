@@ -338,6 +338,32 @@ fn collect_inlay_hints_from_expr(
     hints: &mut Vec<InlayHint>,
 ) {
     match expr {
+        Expr::ContextVariant(context) => {
+            if let Some(record) = &context.record {
+                for (_, value) in &record.fields {
+                    collect_inlay_hints_from_expr(source, &value.0, tc, hints);
+                }
+                if let Some(base) = &record.base {
+                    collect_inlay_hints_from_expr(source, &base.0, tc, hints);
+                }
+            }
+        }
+        Expr::GenericApplySuffix { target, .. } => {
+            collect_inlay_hints_from_expr(source, &target.0, tc, hints);
+        }
+        Expr::RecordInitSuffix {
+            target,
+            fields,
+            base,
+        } => {
+            collect_inlay_hints_from_expr(source, &target.0, tc, hints);
+            for (_, value) in fields {
+                collect_inlay_hints_from_expr(source, &value.0, tc, hints);
+            }
+            if let Some(base) = base {
+                collect_inlay_hints_from_expr(source, &base.0, tc, hints);
+            }
+        }
         Expr::Binary { left, right, .. } => {
             collect_inlay_hints_from_expr(source, &left.0, tc, hints);
             collect_inlay_hints_from_expr(source, &right.0, tc, hints);
@@ -514,6 +540,7 @@ fn collect_inlay_hints_from_expr(
         }
         Expr::Literal(_)
         | Expr::Identifier(_)
+        | Expr::QualifiedAssoc(_)
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)

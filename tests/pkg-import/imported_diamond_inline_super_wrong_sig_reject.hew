@@ -5,7 +5,7 @@
 // i64`). The declaring-trait walk dedups the two branch paths and rejects the
 // mismatch against `supertraits.Base` — the diamond does not double-count or
 // mask the signature defect.
-import hew::supertraits::{ Diamond };
+import hew.supertraits.{ Diamond };
 
 type DM {
     id: i64;

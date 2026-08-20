@@ -3,8 +3,8 @@ use super::{
     ty_is_indirect_enum, BasicBlock, BindingId, Builder, CaptureEnvOwnedLoad, Disposition,
     FieldLoadClass, HashMap, HashSet, HirBinding, HirExpr, HirExprKind, Instr, MirDiagnostic,
     MirDiagnosticKind, MirStatement, OwnedCarrierNeutralizeTarget, OwnedCarrierParam,
-    PendingOwnedCallArg, PendingOwnedCallSite, Place, ResolvedRef, ResolvedTy, SiteId,
-    SnapshotFieldKind, SuspendKind,
+    PendingOwnedCallArg, PendingOwnedCallSite, Place, ProjectedPayloadOrigin, ResolvedRef,
+    ResolvedTy, SiteId, SnapshotFieldKind, SuspendKind,
 };
 
 /// Whether a scope-exit tuple can safely have one of its projected ownership
@@ -55,10 +55,10 @@ impl Builder {
     ///
     /// This consults the machines-ONLY `machine_decl_layout_names`, never the
     /// combined `machine_layout_names`. The latter also carries every user enum
-    /// layout key so `is_known_actor_runtime_ty` can classify inline tagged
-    /// unions as `BitCopy`; consulting it here would misread an ordinary inline
-    /// user enum (`Payload`, `Mixed`) as a machine and wrongly deny it the
-    /// carrier protocol it must enter.
+    /// canonical classification key so `is_known_actor_runtime_ty` can classify
+    /// inline tagged unions as `BitCopy`; consulting it here would misread an
+    /// ordinary inline user enum (`Payload`, `Mixed`) as a machine and wrongly
+    /// deny it the carrier protocol it must enter.
     pub(crate) fn ty_is_machine(&self, ty: &hew_types::ResolvedTy) -> bool {
         matches!(
             ty,
@@ -299,16 +299,26 @@ impl Builder {
             // let-share of the param then double-frees. Aggregate roots
             // (records, tuples, enums, Vec) have no competing ownership
             // spine and stay on the carrier protocol.
+            // A `dyn Trait` parameter joins the carrier protocol MOVE-ONLY:
+            // the value is already a heap-boxed two-word fat pointer, so the
+            // caller's transfer moves the existing box (never a rebox and
+            // never a clone — `is_clone_total` is structurally `false` for
+            // an erased concrete type). The guarded terminal drop below
+            // releases the box on paths that keep it; a return/move-out
+            // flips the guard and neutralizes the slot, handing the caller
+            // the one live owner. A non-last-use caller argument fails
+            // closed in `prepare_owned_call_carriers` (no clone path).
             Ok(plan)
                 if !super::snapshot_root_outside_carrier_protocol(plan.root())
-                    && plan
-                        .is_clone_total(
-                            &record_layouts,
-                            &self.enum_layouts,
-                            &self.opaque_handle_names,
-                            &self.lifecycle_registry,
-                        )
-                        .unwrap_or(false) =>
+                    && (matches!(plan.root(), SnapshotFieldKind::TraitObject)
+                        || plan
+                            .is_clone_total(
+                                &record_layouts,
+                                &self.enum_layouts,
+                                &self.opaque_handle_names,
+                                &self.lifecycle_registry,
+                            )
+                            .unwrap_or(false)) =>
             {
                 // Every admitted carrier gets an explicit transfer guard.
                 // Heap-only carrier shapes happen to make their zeroed
@@ -420,7 +430,7 @@ impl Builder {
     /// create a second drop authority. Borrow and projection roots bypass this
     /// funnel and continue through `lower_value`.
     pub(crate) fn lower_value_for_move(&mut self, expr: &HirExpr) -> Option<Place> {
-        self.lower_value_with_vec_iter_transfer(expr, true)
+        self.lower_value_with_vec_iter_transfer(expr, true, false)
     }
 
     /// Lower a `VecIter<T>` value for a non-owning read context while retaining
@@ -428,7 +438,7 @@ impl Builder {
     /// and keep their source owner bit; fresh leaves are marked owned so a
     /// discarded result can release its temporary snapshot.
     pub(crate) fn lower_vec_iter_value_for_read(&mut self, expr: &HirExpr) -> Option<Place> {
-        self.lower_value_with_vec_iter_transfer(expr, false)
+        self.lower_value_with_vec_iter_transfer(expr, false, false)
     }
 
     /// Lower a composite arm or block tail under the ownership mode established
@@ -443,14 +453,43 @@ impl Builder {
         {
             self.lower_vec_iter_value_for_read(expr)
         } else {
-            self.lower_value_for_move(expr)
+            self.lower_value_with_vec_iter_transfer(expr, true, true)
         }
+    }
+
+    fn is_direct_projected_resource_handoff(
+        &self,
+        expr: &HirExpr,
+        requested_transfer: bool,
+        composite_result_handoff: bool,
+    ) -> bool {
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            ..
+        } = &expr.kind
+        else {
+            return false;
+        };
+        requested_transfer
+            && composite_result_handoff
+            && expr.intent != hew_hir::IntentKind::Consume
+            && self
+                .projected_payload_provenance
+                .get(binding)
+                .is_some_and(|provenance| {
+                    !matches!(provenance.origin, ProjectedPayloadOrigin::Reject(_))
+                })
+            && matches!(
+                super::drop_plan::resource_drop_fn(&self.subst_ty(&expr.ty), &self.type_classes),
+                Some(crate::model::DropFnSpec::UserClose(_))
+            )
     }
 
     fn lower_value_with_vec_iter_transfer(
         &mut self,
         expr: &HirExpr,
         requested_transfer: bool,
+        composite_result_handoff: bool,
     ) -> Option<Place> {
         if requested_transfer {
             if let HirExprKind::BindingRef {
@@ -515,10 +554,21 @@ impl Builder {
         let direct_binding = vec_iter_move
             && effective_transfer
             && matches!(expr.kind, HirExprKind::BindingRef { .. });
+        let direct_projected_resource = self.is_direct_projected_resource_handoff(
+            expr,
+            requested_transfer,
+            composite_result_handoff,
+        );
         if direct_binding {
             self.vec_iter_direct_move_sites.push(expr.site);
         }
+        if direct_projected_resource {
+            self.projected_resource_direct_move_sites.push(expr.site);
+        }
         let value = self.lower_value(expr);
+        if direct_projected_resource {
+            self.projected_resource_direct_move_sites.pop();
+        }
         if direct_binding {
             self.vec_iter_direct_move_sites.pop();
         }

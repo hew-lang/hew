@@ -96,7 +96,7 @@ fn vec_copy_record_new_constructor_typechecks() {
         type Point { x: i64, y: i64 }
 
         fn main() {
-            let points: Vec<Point> = Vec::new();
+            let points: Vec<Point> = Vec.new();
             let _ = points.len();
         }
         ",
@@ -114,7 +114,7 @@ fn vec_tuple_string_new_constructor_preserves_existing_typecheck_behavior() {
     let output = check_source(
         r"
         fn main() {
-            let headers: Vec<(string, string)> = Vec::new();
+            let headers: Vec<(string, string)> = Vec.new();
             let _ = headers.len();
         }
         ",
@@ -134,7 +134,7 @@ fn hashmap_new_turbofish_typechecks() {
         record Key { id: i64 }
 
         fn main() {
-            let _m = HashMap::<Key, i64>::new();
+            let _m = HashMap<Key, i64>.new();
         }
         ",
     );
@@ -151,7 +151,7 @@ fn hashset_new_turbofish_typechecks() {
     let output = check_source(
         r"
         fn main() {
-            let _s = HashSet::<i64>::new();
+            let _s = HashSet<i64>.new();
         }
         ",
     );
@@ -168,7 +168,7 @@ fn hashmap_new_turbofish_arity_mismatch_is_rejected() {
     let output = check_source(
         r"
         fn main() {
-            let _m = HashMap::<i64>::new();
+            let _m = HashMap<i64>.new();
         }
         ",
     );
@@ -184,7 +184,7 @@ fn hashset_new_turbofish_arity_mismatch_is_rejected() {
     let output = check_source(
         r"
         fn main() {
-            let _s = HashSet::<i64, i64>::new();
+            let _s = HashSet<i64, i64>.new();
         }
         ",
     );
@@ -200,7 +200,7 @@ fn hashmap_clear_extra_arg_is_rejected_at_check_time() {
     let output = check_source(
         r"
         fn main() {
-            var m: HashMap<string, i64> = HashMap::new();
+            var m: HashMap<string, i64> = HashMap.new();
             m.clear(123);
         }
         ",
@@ -211,8 +211,8 @@ fn hashmap_clear_extra_arg_is_rejected_at_check_time() {
             .errors
             .iter()
             .any(|error| error.kind == TypeErrorKind::ArityMismatch
-                && error.message.contains("HashMap::clear")),
-        "HashMap::clear with an extra argument must be rejected at check time \
+                && error.message.contains("HashMap.clear")),
+        "HashMap.clear with an extra argument must be rejected at check time \
          with an arity diagnostic, got {:#?}",
         output.errors
     );
@@ -223,7 +223,7 @@ fn hashmap_clear_no_args_typechecks() {
     let output = check_source(
         r"
         fn main() {
-            var m: HashMap<string, i64> = HashMap::new();
+            var m: HashMap<string, i64> = HashMap.new();
             m.clear();
         }
         ",
@@ -241,7 +241,7 @@ fn hashset_clear_extra_arg_is_rejected_at_check_time() {
     let output = check_source(
         r"
         fn main() {
-            var s: HashSet<i64> = HashSet::new();
+            var s: HashSet<i64> = HashSet.new();
             s.clear(456);
         }
         ",
@@ -252,8 +252,8 @@ fn hashset_clear_extra_arg_is_rejected_at_check_time() {
             .errors
             .iter()
             .any(|error| error.kind == TypeErrorKind::ArityMismatch
-                && error.message.contains("HashSet::clear")),
-        "HashSet::clear with an extra argument must be rejected at check time \
+                && error.message.contains("HashSet.clear")),
+        "HashSet.clear with an extra argument must be rejected at check time \
          with an arity diagnostic, got {:#?}",
         output.errors
     );
@@ -264,7 +264,7 @@ fn hashset_clear_no_args_typechecks() {
     let output = check_source(
         r"
         fn main() {
-            var s: HashSet<i64> = HashSet::new();
+            var s: HashSet<i64> = HashSet.new();
             s.clear();
         }
         ",
@@ -432,7 +432,7 @@ fn vec_owned_record_new_admitted_via_owned_abi() {
         type Person { name: string }
 
         fn main() {
-            let people: Vec<Person> = Vec::new();
+            let people: Vec<Person> = Vec.new();
             let _ = people.len();
         }
         ",
@@ -468,7 +468,7 @@ fn vec_layout_unsupported_method_remains_fail_closed() {
 
     assert!(
         output.errors.iter().any(|error| {
-            error.message.contains("`Vec::clear`")
+            error.message.contains("`Vec.clear`")
                 && error.message.contains("not")
                 && error.message.contains("runtime-backed yet")
         }),
@@ -779,11 +779,11 @@ fn builtin_container_clone_rejects_affine_payloads() {
         }
 
         fn main() {
-            var resources: Vec<ResourceToken> = Vec::new();
+            var resources: Vec<ResourceToken> = Vec.new();
             resources.push(ResourceToken { id: 1 });
             let _resources_copy = resources.clone();
 
-            var tickets: HashMap<string, LinearTicket> = HashMap::new();
+            var tickets: HashMap<string, LinearTicket> = HashMap.new();
             tickets.insert("one", LinearTicket { id: 2 });
             let _tickets_copy = clone tickets;
 
@@ -800,7 +800,7 @@ fn builtin_container_clone_rejects_affine_payloads() {
             // clone arm is checked while `late_values` is still Vec<Var>, but
             // the first runtime iteration populates it through the else arm
             // before the second iteration clones it.
-            var late_values = Vec::new();
+            var late_values = Vec.new();
             var i = 0;
             while i < 2 {
                 if i == 1 {
@@ -811,7 +811,7 @@ fn builtin_container_clone_rejects_affine_payloads() {
                 i = i + 1;
             }
 
-            var late_tickets = HashMap::new();
+            var late_tickets = HashMap.new();
             let _ = late_tickets.contains_key("seed");
             i = 0;
             while i < 2 {
@@ -856,7 +856,7 @@ fn deferred_builtin_clone_admission_preserves_cloneable_payloads() {
     let output = check_source(
         r#"
         fn main() {
-            var values = Vec::new();
+            var values = Vec.new();
             var i = 0;
             while i < 2 {
                 if i == 1 {
@@ -867,7 +867,7 @@ fn deferred_builtin_clone_admission_preserves_cloneable_payloads() {
                 i = i + 1;
             }
 
-            var labels = HashMap::new();
+            var labels = HashMap.new();
             let _ = labels.contains_key("seed");
             i = 0;
             while i < 2 {
@@ -1275,7 +1275,7 @@ fn vec_contains_f64_typechecks() {
     let output = check_source(
         r"
         fn main() {
-            let values: Vec<f64> = Vec::new();
+            let values: Vec<f64> = Vec.new();
             let _ = values.contains(1.5);
         }
         ",
@@ -1308,7 +1308,7 @@ fn vec_contains_float_record_now_typechecks() {
         type Measurement { value: f32 }
 
         fn main() {
-            let values: Vec<Measurement> = Vec::new();
+            let values: Vec<Measurement> = Vec.new();
             let needle = Measurement { value: 1.0 };
             let _ = values.contains(needle);
         }
@@ -1336,7 +1336,7 @@ fn vec_contains_layout_managed_record_rejected_with_eq_eligibility_diagnostic() 
 
     assert!(
         output.errors.iter().any(|error| {
-            error.message.contains("`Vec::contains`")
+            error.message.contains("`Vec.contains`")
                 && error.message.contains("layout-managed/non-Copy")
                 && error.message.contains("bytes")
         }),
@@ -1460,7 +1460,7 @@ fn vec_local_pid_push_routes_to_pointer_abi() {
         }
 
         fn main() {
-            let v: Vec<LocalPid<Worker>> = Vec::new();
+            let v: Vec<LocalPid<Worker>> = Vec.new();
             let w = spawn Worker;
             v.push(w);
             let _ = v.len();
@@ -1501,7 +1501,7 @@ fn vec_self_recursive_enum_push_routes_to_owned_abi() {
 
         fn main() {
             var v: Vec<RedisReply> = [];
-            v.push(RedisReply::Int(7));
+            v.push(RedisReply.Int(7));
         }
         ",
     );
@@ -1575,12 +1575,12 @@ fn vec_iter_admits_recursive_enum_through_its_vec_field() {
 
         fn main() {
             var replies: Vec<RedisReply> = [];
-            replies.push(RedisReply::Int(7));
+            replies.push(RedisReply.Int(7));
             for reply in replies {
                 match reply {
-                    RedisReply::Nil => {},
-                    RedisReply::Int(_) => {},
-                    RedisReply::Array(_) => {},
+                    RedisReply.Nil => {},
+                    RedisReply.Int(_) => {},
+                    RedisReply.Array(_) => {},
                 }
             }
         }
@@ -1657,6 +1657,14 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
             doc_comment: None,
             is_indirect: false,
         },
+    );
+    checker.type_defs.insert(
+        "pkg.Wrap".to_string(),
+        checker
+            .type_defs
+            .get("Wrap")
+            .expect("local fixture definition")
+            .clone(),
     );
     let ty = Ty::Named {
         name: "pkg.Wrap".to_string(),
@@ -1745,7 +1753,7 @@ fn vec_record_hashmap_field_push_admitted() {
 
         fn main() {
             var xs: Vec<M> = [];
-            xs.push(M { rows: HashMap::new() });
+            xs.push(M { rows: HashMap.new() });
         }
         ",
     );
@@ -1888,7 +1896,7 @@ fn array_repeat_collection_bearing_record_is_admitted() {
         type Shared { handle: Rc<i64> }
 
         fn main() {
-            let s = Shared { handle: Rc::new(7) };
+            let s = Shared { handle: Rc.new(7) };
             let ss = [s; 3];
         }
         ",
@@ -1984,7 +1992,7 @@ fn vec_iter_clone_totality_defers_genuine_function_type_parameter() {
         }
 
         fn main() {
-            let items: Vec<i64> = Vec::new();
+            let items: Vec<i64> = Vec.new();
             let _ = count(items);
         }
         ",
@@ -2037,6 +2045,32 @@ fn bare_vec_iter_annotation_matches_the_compiler_cursor_without_a_source_shadow(
         "the public cursor spelling must denote the compiler cursor when no \
          source declaration owns it: {:#?}",
         output.errors
+    );
+}
+
+#[test]
+fn vec_into_iter_publishes_its_builtin_lowering_rewrite() {
+    let output = check_source(
+        r"
+        fn consume(values: Vec<i64>) -> VecIter<i64> {
+            values.into_iter()
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "Vec::into_iter must type-check cleanly: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::BuiltinVecIntoIter { elem_ty }
+                if *elem_ty == ResolvedTy::I64
+        )),
+        "Vec::into_iter must publish its builtin lowering rewrite: {:#?}",
+        output.method_call_rewrites
     );
 }
 
@@ -2241,7 +2275,7 @@ fn vec_indirect_enum_element_rejected_at_checker_boundary() {
         }
 
         fn main() {
-            let nodes: Vec<StrNode> = Vec::new();
+            let nodes: Vec<StrNode> = Vec.new();
             let _ = nodes.len();
         }
         ",
@@ -2261,15 +2295,7 @@ fn vec_indirect_enum_element_rejected_at_checker_boundary() {
 }
 
 #[test]
-fn vec_trait_object_element_rejected_at_checker_boundary() {
-    // A `dyn Trait` element behind an opaque vtable pointer has no clone/drop
-    // thunk, scalar-index path, or push-rewrite entry, so `Vec<dyn Trait>`
-    // used to type-check clean and fail three different ways deep in
-    // codegen/HIR (VecIter clone, MethodCallNoRewrite on `.push`,
-    // VecIndexElementTypeUnsupported on `v[i]`) with internal-looking
-    // diagnostics instead of one clear checker-level reject. `dyn Trait`
-    // itself (a function parameter) is unaffected — only the `Vec` element
-    // position is rejected.
+fn vec_trait_object_element_is_admitted_at_checker_boundary() {
     let output = check_source(
         r"
         trait Speaker {
@@ -2277,28 +2303,107 @@ fn vec_trait_object_element_rejected_at_checker_boundary() {
         }
 
         fn main() {
-            let v: Vec<dyn Speaker> = Vec::new();
+            let v: Vec<dyn Speaker> = Vec.new();
             let _ = v.len();
         }
         ",
     );
 
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}
+
+#[test]
+fn vec_trait_object_clone_dependent_surfaces_remain_refused() {
+    let output = check_source(
+        r"
+        trait Speaker {
+            fn speak(val: Self) -> i64;
+        }
+
+        fn clone_vec(values: Vec<dyn Speaker>) {
+            let copied = values.clone();
+        }
+
+        fn clone_element(values: Vec<dyn Speaker>) {
+            let copied = values.get(0);
+        }
+
+        fn repeat_element(value: dyn Speaker) {
+            let copied = [value; 2];
+        }
+
+        fn iter_vec(values: Vec<dyn Speaker>) {
+            let cursor = values.iter();
+        }
+
+        fn for_vec(values: Vec<dyn Speaker>) {
+            for value in values {
+                let _ = value;
+            }
+        }
+
+        fn map_vec(values: Vec<dyn Speaker>) {
+            let mapped = values.map(|value| value);
+        }
+        ",
+    );
+
+    let messages = output
+        .errors
+        .iter()
+        .map(|error| error.message.as_str())
+        .collect::<Vec<_>>();
     assert!(
-        output
-            .errors
+        messages
             .iter()
-            .any(|e| e.message.contains("cannot be a `Vec` element")
-                && e.message
-                    .contains("trait-object elements are not supported")),
-        "Vec<dyn Speaker> must be rejected AT the checker with the \
-         trait-object reason: {:#?}",
+            .any(|message| message.contains("Vec<dyn Trait>.clone()")
+                && message.contains("no semantic clone")),
+        "Vec clone must fail with the trait-object clone diagnostic: {:#?}",
+        output.errors
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("Vec<dyn Trait>.get()")
+                && message.contains("semantic trait-object clone")),
+        "Vec get must fail with the trait-object clone diagnostic: {:#?}",
+        output.errors
+    );
+    assert!(
+        messages.iter().any(|message| message
+            .contains("array repeat requires the element type to be Clone")
+            && message.contains("no clone path")),
+        "array repeat must not duplicate a trait-object owner: {:#?}",
+        output.errors
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("Vec<dyn Trait>.iter()")
+                && message.contains("into_iter()")),
+        "Vec iter() must fail with the trait-object clone diagnostic naming into_iter(): {:#?}",
+        output.errors
+    );
+    assert!(
+        messages.iter().any(
+            |message| message.contains("direct `for` over `Vec<dyn Trait>`")
+                && message.contains("into_iter()")
+        ),
+        "direct for over Vec<dyn Trait> must fail naming into_iter(): {:#?}",
+        output.errors
+    );
+    assert!(
+        messages.iter().any(|message| message
+            .contains("`Vec.map` is not supported for trait-object elements")
+            && message.contains("into_iter()")),
+        "Vec::map on trait-object elements must fail naming into_iter(): {:#?}",
         output.errors
     );
 }
 
 #[test]
 fn dyn_trait_function_parameter_still_admitted() {
-    // Control case for `vec_trait_object_element_rejected_at_checker_boundary`:
+    // Control case for `vec_trait_object_element_is_admitted_at_checker_boundary`:
     // `dyn Trait` as a bare function parameter (not wrapped in `Vec`) is a
     // supported, monomorphised-per-call-site shape and must not be caught by
     // the `Vec`-scoped trait-object reject.
@@ -2393,7 +2498,7 @@ fn remote_pid_raw_constructor_is_not_public() {
         }
 
         fn main() {
-            let p: RemotePid<Counter> = RemotePid::<Counter>::$CONSTRUCTOR(1, 42);
+            let p: RemotePid<Counter> = RemotePid<Counter>.$CONSTRUCTOR(1, 42);
         }
         "
     .replace("$CONSTRUCTOR", &removed_constructor);
@@ -2420,7 +2525,7 @@ fn turbofish_arity_mismatch_is_rejected() {
         }
 
         fn main() {
-            let p = RemotePid::<Counter, Counter>::$CONSTRUCTOR(1, 42);
+            let p = RemotePid<Counter, Counter>.$CONSTRUCTOR(1, 42);
         }
         "
     .replace("$CONSTRUCTOR", &removed_constructor);
@@ -2563,7 +2668,7 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
     // then fails with `found i64`. Confining the lookup to the stdlib snapshot
     // for builtin `Result`/`Option` receivers selects the builtin method for
     // ALL method names.
-    let output = check_source(
+    let output = check_source_allowing_prelude_redeclaration(
         r"
         type Result { handle: i64; }
         impl Result {
@@ -2666,7 +2771,7 @@ fn builtin_option_extractors_publish_transfer_ownership() {
 
 #[test]
 fn user_option_and_result_methods_do_not_get_builtin_rewrites() {
-    let output = check_source(
+    let output = check_source_allowing_prelude_redeclaration(
         r"
         type Option { value: i64; }
         impl Option {
@@ -2702,20 +2807,20 @@ fn user_option_and_result_methods_do_not_get_builtin_rewrites() {
 
 #[test]
 fn user_generic_option_variant_constructors_preserve_source_nominal_identity() {
-    let output = check_source(
+    let output = check_source_allowing_prelude_redeclaration(
         r"
         enum Option<T> { Some(T); None }
 
         fn main() -> i64 {
-            let inferred = Option::Some(6);
-            let inner: Option<i64> = Option::Some(5);
-            let outer: Option<Option<i64>> = Option::Some(inner);
+            let inferred = Option.Some(6);
+            let inner: Option<i64> = Option.Some(5);
+            let outer: Option<Option<i64>> = Option.Some(inner);
             match outer {
-                Option::Some(v) => match v {
-                    Option::Some(n) => n,
-                    Option::None => 0,
+                Option.Some(v) => match v {
+                    Option.Some(n) => n,
+                    Option.None => 0,
                 },
-                Option::None => -1,
+                Option.None => -1,
             }
         }
         ",
@@ -2867,7 +2972,7 @@ fn supervisor_wired_to_rejects_remote_pid_by_role() {
 
 #[test]
 fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
-    let output = check_source(
+    let output = check_source_allowing_prelude_redeclaration(
         r"
         machine MachineState {
             events {
@@ -3026,7 +3131,7 @@ fn free_call_len_on_hashset_records_lowering_fact() {
     let parsed = hew_parser::parse(
         r"
         fn main() -> i64 {
-            let s: HashSet<i64> = HashSet::new();
+            let s: HashSet<i64> = HashSet.new();
             len(s)
         }
         ",
@@ -3139,8 +3244,8 @@ fn non_root_private_rc_record_is_admitted_during_body_checking() {
         }
 
         fn helper() {
-            var v = Vec::new();
-            let h = Holder { value: Rc::new(1) };
+            var v = Vec.new();
+            let h = Holder { value: Rc.new(1) };
             v.push(h);
         }",
     );
@@ -3400,7 +3505,7 @@ fn vec_new_with_deferred_element_type_publishes_its_runtime_target() {
         type Bag<T> { items: Vec<T>; }
 
         fn main() {
-            let b = Bag { items: Vec::new() };
+            let b = Bag { items: Vec.new() };
             b.items.push(7);
         }
         ",
@@ -3434,7 +3539,7 @@ fn nested_generic_record_vec_new_publishes_its_runtime_target() {
         type Outer<T> { inner: Inner<T>; }
 
         fn main() {
-            let o = Outer { inner: Inner { xs: Vec::new() } };
+            let o = Outer { inner: Inner { xs: Vec.new() } };
             o.inner.xs.push(3);
         }
         ",

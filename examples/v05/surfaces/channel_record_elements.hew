@@ -1,4 +1,4 @@
-//! Status: runnable (v0.5 record elements over std::channel)
+//! Status: runnable (v0.5 record elements over std.channel)
 //! Description: Round-trips a heap-owning record through a channel and
 //! breaks out of a `for await` drain early with items still queued.
 //!
@@ -10,7 +10,7 @@
 //! `break` below exercises that queue-drop path: two `Tagged` envelopes are
 //! still queued when `rx` goes out of scope.
 
-import std::channel::channel;
+import std.channel.channel;
 
 type Tagged {
     label: string;
@@ -44,11 +44,11 @@ fn main() {
     tx.send(Tagged { label: "polled", value: 9 });
     tx.close();
     match rx.try_recv() {
-        Some(item) => println(item.label),
-        None => println("empty"),
+        .Some(item) => println(item.label),
+        .None => println("empty"),
     }
     match rx.try_recv() {
-        Some(item) => println(item.value),
-        None => println("drained"),
+        .Some(item) => println(item.value),
+        .None => println("drained"),
     }
 }

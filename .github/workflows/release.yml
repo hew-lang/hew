@@ -19,9 +19,9 @@
 #   APPLE_API_KEY_ID            — App Store Connect API key ID
 #   APPLE_API_ISSUER_ID         — App Store Connect API issuer ID
 #
-# Required secret for the required playground dispatch:
-#   PLAYGROUND_DISPATCH_TOKEN — purpose-scoped token with the minimum permission
-#     needed to dispatch hew-lang/playground's build.yml workflow
+# Required variable and secret for the required playground dispatch:
+#   secrets.PLAYGROUND_APP_ID — GitHub App ID for the playground dispatch App
+#   secrets.PLAYGROUND_APP_PRIVATE_KEY — Private key for the playground dispatch App
 #
 # Homebrew tap updates use a separate optional credential and are skipped for
 # prereleases:
@@ -52,10 +52,168 @@ env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
+  validate-release-version:
+    name: Validate release tag version
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Assert release tag matches Cargo version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_TAG}" ]]; then
+            echo "::error::release tag is empty; refusing to build"
+            exit 1
+          fi
+          cargo_version="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
+          if [[ -z "${cargo_version}" ]]; then
+            echo "::error::workspace Cargo version could not be read; refusing to build"
+            exit 1
+          fi
+          expected_tag="v${cargo_version}"
+          if [[ "${RELEASE_TAG}" != "${expected_tag}" ]]; then
+            echo "::error::release tag ${RELEASE_TAG} does not match Cargo version ${cargo_version} (expected ${expected_tag}); refusing to build"
+            exit 1
+          fi
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Cross-built release libraries — proved by their target-native consumers
+  # ─────────────────────────────────────────────────────────────────────────
+  build-cross-release-libs:
+    needs: validate-release-version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rust_target: x86_64-unknown-freebsd
+            builder: zig
+            archive: libhew.a
+            build_std: false
+          - rust_target: x86_64-pc-windows-msvc
+            builder: xwin
+            archive: hew.lib
+            build_std: false
+          - rust_target: aarch64-unknown-freebsd
+            builder: zig
+            archive: libhew.a
+            build_std: true
+            zig_target: aarch64-freebsd
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Checkout release machinery
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: release-machinery
+
+      - name: Install archive inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends llvm
+
+      - name: Install Rust target
+        if: ${{ !matrix.build_std }}
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+        with:
+          toolchain: "1.96.0"
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install Rust sources
+        if: matrix.build_std
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+        with:
+          toolchain: "1.96.0"
+          components: rust-src
+
+      - name: Install Zig
+        if: matrix.builder == 'zig'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29  # v2
+        with:
+          version: 0.16.0
+
+      - name: Install cargo-zigbuild
+        if: matrix.builder == 'zig'
+        run: cargo install cargo-zigbuild --locked --version 0.22.3
+
+      - name: Install cargo-xwin
+        if: matrix.builder == 'xwin'
+        run: cargo install cargo-xwin --locked --version 0.23.0
+
+      - name: Build FreeBSD release library
+        if: matrix.builder == 'zig' && !matrix.build_std
+        run: cargo zigbuild -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+
+      - name: Build FreeBSD release library with standard library
+        if: matrix.build_std
+        env:
+          RUSTC_BOOTSTRAP: "1"
+        run: cargo zigbuild -Zbuild-std=std,panic_abort -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+
+      - name: Build aarch64 FreeBSD release consumer
+        if: matrix.build_std
+        env:
+          CARGO_TARGET_DIR: cross-release-consumer-target
+          RUSTC_BOOTSTRAP: "1"
+        run: >-
+          cargo zigbuild -Zbuild-std=std,panic_abort
+          --manifest-path release-machinery/scripts/fixtures/release-lib-link/Cargo.toml
+          --release --target ${{ matrix.rust_target }}
+
+      - name: Build Windows release library
+        if: matrix.builder == 'xwin'
+        env:
+          AWS_LC_SYS_PREBUILT_NASM: "1"
+        run: cargo xwin build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+
+      - name: Record FreeBSD ABI baseline
+        if: matrix.build_std
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'int main(void) { return 0; }' > freebsd-abi-probe.c
+          zig cc -target "${{ matrix.zig_target }}" freebsd-abi-probe.c -o freebsd-abi-probe
+          abi=$(file freebsd-abi-probe)
+          echo "${abi}" | tee -a "${GITHUB_STEP_SUMMARY}"
+          echo "${abi}" | grep -q 'for FreeBSD 14.0 (1400500)'
+
+      - name: Verify and stage cross-built archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="target/${{ matrix.rust_target }}/release-lib/${{ matrix.archive }}"
+          release-machinery/scripts/verify-cross-release-lib.sh "${{ matrix.rust_target }}" "${archive}"
+
+          destination="cross-release-libs/${{ matrix.rust_target }}"
+          mkdir -p "${destination}"
+          cp "${archive}" "${destination}/${{ matrix.archive }}"
+
+          if [[ "${{ matrix.build_std }}" == "true" ]]; then
+            cp "cross-release-consumer-target/${{ matrix.rust_target }}/release/libhew_release_link_probe.a" \
+              "${destination}/libhew_release_link_probe.a"
+          fi
+
+      - name: Upload cross-built archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: libhew-${{ matrix.rust_target }}
+          path: cross-release-libs/${{ matrix.rust_target }}/
+          if-no-files-found: error
+
   # ─────────────────────────────────────────────────────────────────────────
   # Build — macOS and Windows release artifacts
   # ─────────────────────────────────────────────────────────────────────────
   build:
+    needs: build-cross-release-libs
     strategy:
       fail-fast: false
       matrix:
@@ -81,6 +239,13 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           ref: ${{ env.RELEASE_TAG }}
+
+      - name: Download cross-built release library (Windows)
+        if: startsWith(matrix.target, 'windows')
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: libhew-${{ matrix.rust_target }}
+          path: cross-release-libs/${{ matrix.rust_target }}
 
       # ── LLVM toolchain installation ─────────────────────────────────────
 
@@ -261,6 +426,7 @@ jobs:
         run: cargo build -p hew-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
+        if: startsWith(matrix.target, 'darwin')
         # The shipped archive builds under the non-LTO release-lib profile:
         # external Rust staticlibs (--link-lib packages) cannot dedupe their
         # verbatim libstd members against a fat-LTO archive.
@@ -279,7 +445,7 @@ jobs:
         run: |
           ./scripts/test-release-lib-link.ps1 `
             -Hew "target/${{ matrix.rust_target }}/release/hew.exe" `
-            -Archive "target/${{ matrix.rust_target }}/release-lib/hew.lib"
+            -Archive "cross-release-libs/${{ matrix.rust_target }}/hew.lib"
 
       - name: Smoke test hew-lsp and hew-observe (Unix)
         if: "!startsWith(matrix.target, 'windows')"
@@ -381,7 +547,7 @@ jobs:
 
           $Version = $env:RELEASE_TAG.TrimStart("v")
           $ArchiveName = "hew-v${Version}-${{ matrix.target }}"
-          $ReleaseLibDir = "target/${{ matrix.rust_target }}/release-lib"
+          $ReleaseLibDir = "cross-release-libs/${{ matrix.rust_target }}"
 
           New-Item -ItemType Directory -Path "${ArchiveName}/bin", "${ArchiveName}/lib", "${ArchiveName}/std", "${ArchiveName}/completions" -Force | Out-Null
 
@@ -392,6 +558,11 @@ jobs:
           # The executable consumer proof above is the authority for the
           # release library contract. Copy-Item fails closed if it is absent.
           Copy-Item "${ReleaseLibDir}/hew.lib"                                   "${ArchiveName}/lib/"
+
+          # Keep the full Rust triple in the installed layout so target-aware
+          # lookup chooses the proved archive before the native fallback.
+          New-Item -ItemType Directory -Path "${ArchiveName}/lib/${{ matrix.rust_target }}" -Force | Out-Null
+          Copy-Item "${ReleaseLibDir}/hew.lib" "${ArchiveName}/lib/${{ matrix.rust_target }}/"
 
           # Standard library sources (all .hew files, including subdirectories)
           Copy-Item "std" "${ArchiveName}/std" -Recurse
@@ -625,6 +796,7 @@ jobs:
   # Linux build — glibc baseline artifacts built inside Ubuntu 22.04
   # ─────────────────────────────────────────────────────────────────────────
   build-linux:
+    needs: validate-release-version
     strategy:
       fail-fast: false
       matrix:
@@ -800,6 +972,7 @@ jobs:
   # FreeBSD build — x86_64 via QEMU VM (tier-1, required release gate)
   # ─────────────────────────────────────────────────────────────────────────
   build-freebsd:
+    needs: build-cross-release-libs
     runs-on: ubuntu-24.04
     timeout-minutes: 180
 
@@ -816,6 +989,12 @@ jobs:
           echo "name=hew-v${VERSION}-freebsd-x86_64" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
+      - name: Download cross-built release library
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: libhew-x86_64-unknown-freebsd
+          path: cross-release-libs/x86_64-unknown-freebsd
+
       - name: Build on FreeBSD
         uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
         with:
@@ -825,14 +1004,12 @@ jobs:
             mkdir -p /usr/local/etc/pkg/repos
             printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest", mirror_type: "srv", enabled: yes }\n' \
               > /usr/local/etc/pkg/repos/FreeBSD.conf
-            pkg update -f
-            # Pin to the FreeBSD repo written above. Without -r, pkg resolves across
-            # every configured repo, decides it must upgrade itself first, finds
-            # nothing to upgrade, and retries forever: the v0.6.0-rc1 tag build spent
-            # 50 minutes emitting "New version of pkg detected" until the VM's ssh
-            # channel died. release-gate.yml and freebsd.yml already pass -U -r
-            # FreeBSD; this is the copy that drifted.
-            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git bash pkgconf libffi libxml2
+            # Bootstrap pkg through the base utility before reading package catalogues.
+            # Without this, pkg self-upgrades mid-install and the new binary cannot
+            # read the catalogue the old one wrote, so every package reports missing.
+            /usr/sbin/pkg bootstrap -fy -r FreeBSD
+            pkg update -f -r FreeBSD
+            pkg install -y -r FreeBSD llvm22 rustup-init cmake ninja git bash pkgconf libffi libxml2
 
           run: |
             set -eux
@@ -843,6 +1020,13 @@ jobs:
             # binaries report `unknown` for their commit hash.
             git config --global --add safe.directory "$(pwd)"
 
+            # Build with the repository-pinned Rust release instead of the
+            # moving version published by the FreeBSD package repository.
+            /usr/local/bin/rustup-init -y --no-modify-path --profile minimal \
+              --default-toolchain 1.96.0
+            export PATH="$HOME/.cargo/bin:$PATH"
+            rustup run 1.96.0 rustc --version | grep -q '^rustc 1\.96\.0 '
+
             # ── LLVM ───────────────────────────────────────────────────────
             # LLVM 22 comes from pkg on FreeBSD 15.0 (llvm22-22.1.2).
             export LLVM_SYS_221_PREFIX=/usr/local/llvm22
@@ -850,10 +1034,9 @@ jobs:
 
             # ── Rust builds (release) ──────────────────────────────────────
             cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --profile release-lib
             bash scripts/test-release-lib-link.sh \
               --hew target/release/hew \
-              --archive target/release-lib/libhew.a
+              --archive cross-release-libs/x86_64-unknown-freebsd/libhew.a
 
             # ── Third-party license attribution ────────────────────────────
             cargo install cargo-about --locked --features cli --version 0.9.0
@@ -873,7 +1056,10 @@ jobs:
 
             # The executable consumer proof above is the authority; cp fails
             # closed if the validated archive is absent.
-            cp target/release-lib/libhew.a "${ARCHIVE_NAME}/lib/"
+            cp cross-release-libs/x86_64-unknown-freebsd/libhew.a "${ARCHIVE_NAME}/lib/"
+            mkdir -p "${ARCHIVE_NAME}/lib/x86_64-unknown-freebsd"
+            cp cross-release-libs/x86_64-unknown-freebsd/libhew.a \
+              "${ARCHIVE_NAME}/lib/x86_64-unknown-freebsd/"
 
             # Standard library sources (all .hew files, including subdirectories)
             cp -r std/. "${ARCHIVE_NAME}/std/"
@@ -929,6 +1115,7 @@ jobs:
   # locally; CI is the proving gate for this toolchain asset.
   # ─────────────────────────────────────────────────────────────────────────
   build-freebsd-aarch64:
+    needs: build-cross-release-libs
     runs-on: ubuntu-24.04
     timeout-minutes: 300
 
@@ -938,12 +1125,24 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
+      - name: Checkout release machinery
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: release-machinery
+
       - name: Compute archive name
         id: archive
         run: |
           VERSION="${RELEASE_TAG#v}"
           echo "name=hew-v${VERSION}-freebsd-aarch64" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download cross-built release library
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: libhew-aarch64-unknown-freebsd
+          path: cross-release-libs/aarch64-unknown-freebsd
 
       - name: Build on FreeBSD aarch64
         uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
@@ -955,14 +1154,12 @@ jobs:
             mkdir -p /usr/local/etc/pkg/repos
             printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest", mirror_type: "srv", enabled: yes }\n' \
               > /usr/local/etc/pkg/repos/FreeBSD.conf
-            pkg update -f
-            # Pin to the FreeBSD repo written above. Without -r, pkg resolves across
-            # every configured repo, decides it must upgrade itself first, finds
-            # nothing to upgrade, and retries forever: the v0.6.0-rc1 tag build spent
-            # 50 minutes emitting "New version of pkg detected" until the VM's ssh
-            # channel died. release-gate.yml and freebsd.yml already pass -U -r
-            # FreeBSD; this is the copy that drifted.
-            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git bash pkgconf libffi libxml2
+            # Bootstrap pkg through the base utility before reading package catalogues.
+            # Without this, pkg self-upgrades mid-install and the new binary cannot
+            # read the catalogue the old one wrote, so every package reports missing.
+            /usr/sbin/pkg bootstrap -fy -r FreeBSD
+            pkg update -f -r FreeBSD
+            pkg install -y -r FreeBSD llvm22 rust cmake ninja git bash pkgconf libffi libxml2
 
           run: |
             set -eux
@@ -980,10 +1177,14 @@ jobs:
 
             # ── Rust builds (release) ──────────────────────────────────────
             cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --profile release-lib
-            bash scripts/test-release-lib-link.sh \
+            # Rustup does not publish an aarch64 FreeBSD host toolchain. The
+            # consumer archive was cross-built with the pinned release
+            # toolchain and build-std settings; this VM links and runs it on
+            # the target hardware while pkg Rust builds only the Hew binaries.
+            bash release-machinery/scripts/test-release-lib-link.sh \
               --hew target/release/hew \
-              --archive target/release-lib/libhew.a
+              --archive cross-release-libs/aarch64-unknown-freebsd/libhew.a \
+              --consumer-archive cross-release-libs/aarch64-unknown-freebsd/libhew_release_link_probe.a
 
             # ── Third-party license attribution ────────────────────────────
             cargo install cargo-about --locked --features cli --version 0.9.0
@@ -1003,7 +1204,10 @@ jobs:
 
             # The executable consumer proof above is the authority; cp fails
             # closed if the validated archive is absent.
-            cp target/release-lib/libhew.a "${ARCHIVE_NAME}/lib/"
+            cp cross-release-libs/aarch64-unknown-freebsd/libhew.a "${ARCHIVE_NAME}/lib/"
+            mkdir -p "${ARCHIVE_NAME}/lib/aarch64-unknown-freebsd"
+            cp cross-release-libs/aarch64-unknown-freebsd/libhew.a \
+              "${ARCHIVE_NAME}/lib/aarch64-unknown-freebsd/"
 
             # Standard library sources (all .hew files, including subdirectories)
             cp -r std/. "${ARCHIVE_NAME}/std/"
@@ -1390,18 +1594,36 @@ jobs:
           fi
           echo "hew_sha=${HEW_SHA}" >> "${GITHUB_OUTPUT}"
 
+      - name: Validate playground GitHub App configuration
+        shell: bash
+        env:
+          PLAYGROUND_APP_ID: ${{ secrets.PLAYGROUND_APP_ID }}
+          PLAYGROUND_APP_PRIVATE_KEY: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${PLAYGROUND_APP_ID}" || -z "${PLAYGROUND_APP_PRIVATE_KEY}" ]]; then
+            echo "::error::Playground dispatch requires secrets.PLAYGROUND_APP_ID and secrets.PLAYGROUND_APP_PRIVATE_KEY; configure both before running a release"
+            exit 1
+          fi
+
+      - name: Mint playground GitHub App token
+        id: playground-app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349  # v2.2.2
+        with:
+          app-id: ${{ secrets.PLAYGROUND_APP_ID }}
+          private-key: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}
+          owner: hew-lang
+          repositories: playground
+
       - name: Trigger playground image rebuild
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.PLAYGROUND_DISPATCH_TOKEN }}
+          GH_TOKEN: ${{ steps.playground-app-token.outputs.token }}
           HEW_SHA: ${{ steps.release-commit.outputs.hew_sha }}
         run: |
           set -euo pipefail
 
-          if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::PLAYGROUND_DISPATCH_TOKEN secret is required for the playground dispatch"
-            exit 1
-          fi
           if ! [[ "${HEW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::release commit identity is not an exact lowercase 40-character commit SHA"
             exit 1

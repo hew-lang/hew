@@ -268,7 +268,7 @@ fn nested_self_in_vec_return_i64_typechecks() {
 
         impl Dup for i64 {
             fn dup(a: i64) -> Vec<i64> {
-                Vec::new()
+                Vec.new()
             }
         }
         ",

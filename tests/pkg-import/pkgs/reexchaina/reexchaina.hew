@@ -7,7 +7,7 @@
 //! importer of `Top` providing `base`/`mid`/`top` inline must have each
 //! inherited method's signature checked against its ORIGINAL owner.
 
-import hew::reexmid::{Mid};
+import hew.reexmid.{Mid};
 
 /// Apex over a two-hop re-exported super chain (Top -> Mid -> Base).
 pub trait Top: Mid {

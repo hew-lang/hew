@@ -16,6 +16,8 @@ pub struct TestCase {
     pub ignored: bool,
     /// Whether the test has `#[should_panic]`.
     pub should_panic: bool,
+    /// Whether the test must run exclusively with other serial tests.
+    pub serial: bool,
 }
 
 /// The result of inspecting a single source file for tests.
@@ -52,11 +54,13 @@ pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
             if is_test {
                 let ignored = f.attributes.iter().any(|a| a.name == "ignore");
                 let should_panic = f.attributes.iter().any(|a| a.name == "should_panic");
+                let serial = f.attributes.iter().any(|a| a.name == "serial");
                 tests.push(TestCase {
                     name: f.name.clone(),
                     file: file.to_string(),
                     ignored,
                     should_panic,
+                    serial,
                 });
             }
         }
@@ -172,12 +176,23 @@ fn test_panic() {
         assert_eq!(tests[0].name, "test_basic");
         assert!(!tests[0].ignored);
         assert!(!tests[0].should_panic);
+        assert!(!tests[0].serial);
 
         assert_eq!(tests[1].name, "test_ignored");
         assert!(tests[1].ignored);
 
         assert_eq!(tests[2].name, "test_panic");
         assert!(tests[2].should_panic);
+    }
+
+    #[test]
+    fn discover_serial_test() {
+        let source = "#[test]\n#[serial]\nfn touches_shared_state() {}\n";
+        let result = hew_parser::parse(source);
+        let tests = discover_tests(&result.program, "test.hew");
+
+        assert_eq!(tests.len(), 1);
+        assert!(tests[0].serial);
     }
 
     #[test]

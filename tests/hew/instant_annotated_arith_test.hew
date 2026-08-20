@@ -11,14 +11,13 @@
 //! Each test pairs a concrete repro shape with an exact-value assertion via
 //! `.duration_since`/`.nanos` so a garbage-path regression fails loudly.
 
-import std::testing;
+import std.testing;
 
 // ── helpers returning instant via an explicit return-type annotation ──────────
 //
 // This is the canonical "utility function" shape that the defect broke.
 // A param typed `instant` arrived at `binary_ty` as Named{Instant}; the fix
 // makes it canonicalise to I64 so `+` and `-` fire the integer path.
-
 fn add_timeout(base: instant, d: duration) -> instant {
     return base + d;
 }
@@ -30,7 +29,7 @@ fn sub_timeout(base: instant, d: duration) -> instant {
 // ── repro (a): let x: instant used as an arithmetic operand (+ side) ─────────
 #[test]
 fn annotated_instant_plus_duration_compiles_and_runs() {
-    let anchor: instant = instant::now();
+    let anchor: instant = instant.now();
     let later: instant = anchor + 100ms;
     // later must be 100ms ahead of anchor: duration_since gives the gap.
     let gap: duration = later.duration_since(anchor);
@@ -40,7 +39,7 @@ fn annotated_instant_plus_duration_compiles_and_runs() {
 // ── repro (b): typed function parameter as arithmetic operand (+ side) ────────
 #[test]
 fn param_typed_instant_plus_duration_compiles_and_runs() {
-    let base: instant = instant::now();
+    let base: instant = instant.now();
     let later: instant = add_timeout(base, 200ms);
     let gap: duration = later.duration_since(base);
     testing.assert_eq(gap.nanos(), 200000000);
@@ -49,7 +48,7 @@ fn param_typed_instant_plus_duration_compiles_and_runs() {
 // ── repro (c): let x: instant used as an arithmetic operand (- side) ─────────
 #[test]
 fn annotated_instant_minus_duration_compiles_and_runs() {
-    let anchor: instant = instant::now();
+    let anchor: instant = instant.now();
     let earlier: instant = anchor - 50ms;
     // anchor is 50ms ahead of earlier.
     let gap: duration = anchor.duration_since(earlier);
@@ -59,7 +58,7 @@ fn annotated_instant_minus_duration_compiles_and_runs() {
 // ── typed parameter: subtract duration ───────────────────────────────────────
 #[test]
 fn param_typed_instant_minus_duration_compiles_and_runs() {
-    let base: instant = instant::now();
+    let base: instant = instant.now();
     let earlier: instant = sub_timeout(base, 75ms);
     let gap: duration = base.duration_since(earlier);
     testing.assert_eq(gap.nanos(), 75000000);
@@ -70,7 +69,7 @@ fn param_typed_instant_minus_duration_compiles_and_runs() {
 // checker-promotion path that recovers Duration from i64-minus-i64.
 #[test]
 fn annotated_instant_minus_annotated_instant_yields_duration() {
-    let a: instant = instant::now();
+    let a: instant = instant.now();
     // Displace b by 30ms using the fixed arithmetic path.
     let b: instant = a + 30ms;
     let diff: duration = b.duration_since(a);

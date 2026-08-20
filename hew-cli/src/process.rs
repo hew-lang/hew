@@ -1,6 +1,6 @@
 //! Bounded child-process execution helpers for native Hew binaries.
 
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread::JoinHandle;
@@ -12,6 +12,23 @@ use std::time::{Duration, Instant};
 /// child from growing the CLI or test process without bound before timeout.
 const MAX_CAPTURED_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const OUTPUT_READ_CHUNK_BYTES: usize = 8 * 1024;
+const SPAWN_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
+const SPAWN_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Retry only the kernel spawn operation when temporary process-table pressure
+/// reports `EAGAIN`/`WouldBlock`. The child command is never re-run after a
+/// successful spawn, so program failures remain program failures.
+fn spawn_with_retry(mut spawn: impl FnMut() -> std::io::Result<Child>) -> std::io::Result<Child> {
+    let deadline = Instant::now() + SPAWN_RETRY_TIMEOUT;
+    loop {
+        match spawn() {
+            Err(error) if error.kind() == ErrorKind::WouldBlock && Instant::now() < deadline => {
+                std::thread::sleep(SPAWN_RETRY_INTERVAL);
+            }
+            result => return result,
+        }
+    }
+}
 
 /// Result of running a native binary under a timeout.
 #[derive(Debug)]
@@ -100,8 +117,7 @@ impl BoundedChild {
             });
         }
 
-        let child = command
-            .spawn()
+        let child = spawn_with_retry(|| command.spawn())
             .map_err(|e| format!("cannot spawn child process: {e}"))?;
         Ok(Self { child })
     }
@@ -129,17 +145,15 @@ impl BoundedChild {
         match windows_job::WindowsJob::new() {
             Err(_) => {
                 // Job creation failed: spawn normally and rely on taskkill fallback.
-                let child = command
-                    .spawn()
+                let child = spawn_with_retry(|| command.spawn())
                     .map_err(|e| format!("cannot spawn child process: {e}"))?;
                 return Ok(Self { child, job: None });
             }
             Ok(job) => {
                 // Spawn suspended: the child holds no locks and has spawned no
                 // descendants, so the assignment window is truly race-free.
-                let mut child = command
-                    .creation_flags(CREATE_SUSPENDED)
-                    .spawn()
+                command.creation_flags(CREATE_SUSPENDED);
+                let mut child = spawn_with_retry(|| command.spawn())
                     .map_err(|e| format!("cannot spawn child process: {e}"))?;
 
                 // Assign while suspended — this is the race-free moment.
@@ -162,8 +176,7 @@ impl BoundedChild {
 
     #[cfg(not(any(unix, windows)))]
     pub(crate) fn spawn(command: &mut Command) -> Result<Self, String> {
-        let child = command
-            .spawn()
+        let child = spawn_with_retry(|| command.spawn())
             .map_err(|e| format!("cannot spawn child process: {e}"))?;
         Ok(Self { child })
     }
@@ -745,64 +758,48 @@ mod windows_job {
 #[cfg(unix)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::io::{BufRead, BufReader};
     use std::os::unix::fs::PermissionsExt;
 
     /// Verify that [`BoundedChild::wait_with_timeout`] kills the full process
     /// GROUP on timeout, not just the direct child process.
     ///
-    /// The shell script spawns a grandchild `sleep 999`, writes its PID to a
-    /// temp file, then spins forever.  After the timeout fires, both the shell
-    /// script (direct child) and the grandchild sleep must be dead — proving
-    /// that `killpg` is used rather than `kill(child_pid)`.
+    /// The shell script spawns a grandchild `sleep 999` and writes its PID to
+    /// stdout. The inherited stdout pipe is the kernel handshake: the PID line
+    /// proves startup, and EOF after the timeout proves both the shell and its
+    /// grandchild closed their descriptors. Killing only the direct child would
+    /// leave the pipe open in `sleep` and this test would hang at the outer test
+    /// deadline.
     #[test]
     fn bounded_child_timeout_kills_grandchild_process_group() {
         let dir = tempfile::tempdir().unwrap();
-        let pid_file = dir.path().join("grandchild.pid");
-        let pid_file_str = pid_file.to_str().unwrap();
 
-        // Shell script: start a grandchild sleep, record its PID, then wait.
+        // Shell script: start a grandchild sleep, publish its PID, then wait.
         // `wait` blocks with zero CPU until the backgrounded sleep exits (when
-        // killpg fires), avoiding CPU saturation that can delay the echo under
-        // nextest parallel load and cause the PID-file poll to time out.
+        // killpg fires). The sleep inherits stdout, so EOF is a process-tree
+        // termination event rather than a scheduler-sensitive liveness poll.
         let script = dir.path().join("tree_spinner.sh");
-        std::fs::write(
-            &script,
-            format!("#!/bin/sh\nsleep 999 & echo $! > {pid_file_str}\nwait\n"),
-        )
-        .unwrap();
+        std::fs::write(&script, "#!/bin/sh\nsleep 999 & echo $!\nwait\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let mut cmd = Command::new(&script);
+        cmd.stdout(Stdio::piped());
         let mut bounded = BoundedChild::spawn(&mut cmd).expect("failed to spawn tree_spinner.sh");
-
-        // Poll for the grandchild PID file to exist, rather than assuming a fixed
-        // sleep window. Under concurrent test load, 200ms may be insufficient.
-        // Allow up to 5 seconds (200 × 25ms) for the shell script to start the
-        // grandchild and write its PID.
-        let pid_file_exists = {
-            let mut retries = 0;
-            loop {
-                if pid_file.exists() {
-                    break true;
-                }
-                if retries >= 200 {
-                    break false;
-                }
-                retries += 1;
-                std::thread::sleep(Duration::from_millis(25));
-            }
-        };
-        assert!(
-            pid_file_exists,
-            "grandchild should have written its PID before the timeout fired"
-        );
-
-        let pid_str = std::fs::read_to_string(&pid_file)
-            .expect("grandchild should have written its PID before the timeout fired");
+        let stdout = bounded
+            .child
+            .stdout
+            .take()
+            .expect("tree spinner stdout should be piped");
+        let mut stdout = BufReader::new(stdout);
+        let mut pid_str = String::new();
+        stdout
+            .read_line(&mut pid_str)
+            .expect("grandchild PID handshake should be readable");
         let grandchild_pid: u32 = pid_str
             .trim()
             .parse()
-            .expect("grandchild PID file should contain a numeric PID");
+            .expect("grandchild PID handshake should contain a numeric PID");
 
         let outcome = bounded
             .wait_with_timeout(Duration::from_secs(1))
@@ -812,31 +809,35 @@ mod tests {
             "expected Timeout outcome, got: {outcome:?}"
         );
 
-        // Poll for the grandchild to be fully reaped by the OS rather than
-        // assuming a fixed sleep window. SIGKILL delivery is asynchronous;
-        // under full nextest load the scheduler may take longer than 200ms to
-        // reap. Allow up to 5 seconds (200 × 25ms), but exit early as soon as
-        // the OS reports the process is gone.
-        #[allow(
-            clippy::cast_possible_wrap,
-            reason = "PIDs fit in i32 on all supported Unix platforms"
-        )]
-        let alive = {
-            let mut alive = true;
-            for _ in 0..200 {
-                // SAFETY: `kill(pid, 0)` is a POSIX liveness probe — no signal is sent.
-                alive = unsafe { libc::kill(grandchild_pid as libc::pid_t, 0) } == 0;
-                if !alive {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            alive
-        };
+        let mut trailing_output = Vec::new();
+        stdout
+            .read_to_end(&mut trailing_output)
+            .unwrap_or_else(|error| {
+                panic!("grandchild PID {grandchild_pid} pipe did not reach EOF: {error}")
+            });
         assert!(
-            !alive,
-            "grandchild PID {grandchild_pid} should be dead after process-group kill on timeout"
+            trailing_output.is_empty(),
+            "tree spinner emitted unexpected output after PID {grandchild_pid}: {:?}",
+            String::from_utf8_lossy(&trailing_output)
         );
+    }
+
+    #[test]
+    fn transient_spawn_pressure_is_retried_before_child_execution() {
+        let attempts = Cell::new(0);
+        let mut command = Command::new("true");
+        let mut child = spawn_with_retry(|| {
+            let attempt = attempts.get();
+            attempts.set(attempt + 1);
+            if attempt < 2 {
+                Err(std::io::Error::from(ErrorKind::WouldBlock))
+            } else {
+                command.spawn()
+            }
+        })
+        .expect("transient spawn pressure should recover");
+        assert!(child.wait().expect("reap true child").success());
+        assert_eq!(attempts.get(), 3);
     }
 
     #[test]

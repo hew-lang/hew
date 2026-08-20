@@ -51,11 +51,9 @@ fn run_hew_source(repo: &Path, stem: &str, source: &str) -> String {
     let path = dir.join(format!("{stem}.hew"));
     std::fs::write(&path, source).expect("write temp Hew source");
 
-    let output = hew_command(repo)
-        .arg("run")
-        .arg(&path)
-        .output()
-        .expect("spawn hew run");
+    let mut command = hew_command(repo);
+    command.arg("run").arg(&path);
+    let output = super::run_hew_command(&mut command, format!("hew run {}", path.display()));
     assert!(
         output.status.success(),
         "hew run {} exited non-zero (status={:?}); stderr:\n{}",
@@ -77,7 +75,7 @@ fn from_char_returns_char_without_crashing() {
         &repo,
         "from_char",
         r#"
-        import std::string;
+        import std.string;
 
         fn main() {
             let h = string.from_char(72);
@@ -102,7 +100,7 @@ fn split_preserves_last_element() {
         &repo,
         "split_last",
         r#"
-        import std::string;
+        import std.string;
 
         fn main() {
             let parts = string.split("a,b,c", ",");
@@ -131,7 +129,7 @@ fn lines_has_no_phantom_empty_and_keeps_last() {
         &repo,
         "lines_no_phantom",
         r#"
-        import std::string;
+        import std.string;
 
         fn main() {
             let ls = string.lines("l1\nl2\nl3");
@@ -161,7 +159,7 @@ fn find_not_found_round_trips_negative_one() {
         &repo,
         "find_sentinel",
         r#"
-        import std::string;
+        import std.string;
 
         fn main() {
             let s = "hello";
@@ -201,7 +199,7 @@ fn unicode_codepoint_at_oob_round_trips_negative_one() {
         &repo,
         "unicode_codepoint_oob",
         r#"
-        import std::text::unicode;
+        import std.text.unicode;
 
         fn main() {
             let s = "café";

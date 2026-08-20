@@ -10,7 +10,7 @@ impl Tok {
 }
 
 fn run(early: bool) -> i64 {
-    let h: Vec<Tok> = Vec::new();
+    let h: Vec<Tok> = Vec.new();
     h.push(Tok { id: 1 });
     if early {
         println("early");

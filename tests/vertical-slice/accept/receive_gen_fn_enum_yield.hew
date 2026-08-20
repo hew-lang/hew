@@ -7,8 +7,8 @@ enum Shape {
 
 actor Shaper {
     receive gen fn shapes() -> Shape {
-        yield Shape::Circle(5);
-        yield Shape::Square(7);
+        yield Shape.Circle(5);
+        yield Shape.Square(7);
     }
 }
 
@@ -16,8 +16,8 @@ fn main() {
     let s = spawn Shaper;
     for await sh in s.shapes() {
         match sh {
-            Shape::Circle(r) => println(f"circle {r}"),
-            Shape::Square(w) => println(f"square {w}"),
+            Shape.Circle(r) => println(f"circle {r}"),
+            Shape.Square(w) => println(f"square {w}"),
         }
     }
 }

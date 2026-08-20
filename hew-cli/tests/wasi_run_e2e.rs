@@ -285,7 +285,7 @@ fn toml_encoding_round_trips_under_wasi() {
     let source = dir.path().join("toml_wasi.hew");
     fs::write(
         &source,
-        "import std::encoding::toml;\n\
+        "import std.encoding.toml;\n\
          \n\
          fn main() {\n\
          \x20   let doc = toml.parse(\"[package]\\nname = \\\"hew\\\"\");\n\
@@ -318,7 +318,7 @@ fn wasm_channel_send_full_traps_instead_of_dropping() {
     let source = dir.path().join("channel_send_full_traps_wasi.hew");
     fs::write(
         &source,
-        r#"import std::channel::channel;
+        r#"import std.channel.channel;
 
 fn main() {
     let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(2);
@@ -373,7 +373,7 @@ const HASHMAP_HASHSET_LAYOUT_SOURCE: &str = r#"record Point {
 }
 
 fn main() {
-    let m: HashMap<Point, i64> = HashMap::new();
+    let m: HashMap<Point, i64> = HashMap.new();
     m.insert(Point { x: 1, y: 2 }, 10);
     m.insert(Point { x: 3, y: 4 }, 20);
     let n = m.len();
@@ -403,7 +403,7 @@ fn main() {
     let n2 = m.len();
     println(f"len_after_remove={n2}");
 
-    let s: HashSet<string> = HashSet::new();
+    let s: HashSet<string> = HashSet.new();
     s.insert("alpha");
     s.insert("beta");
     s.insert("alpha");
@@ -502,7 +502,7 @@ fn native_hashmap_hashset_layout_matches_wasi_output() {
 // double-free / use-after-free of a released string buffer would trap under
 // wasmtime and fail this run. Native and wasm stdout must match byte-for-byte.
 const HASHMAP_HASHSET_OWNERSHIP_SOURCE: &str = r#"fn main() {
-    let m: HashMap<string, string> = HashMap::new();
+    let m: HashMap<string, string> = HashMap.new();
     m.insert("alpha", "first");
     m.insert("beta", "second");
 
@@ -535,7 +535,7 @@ const HASHMAP_HASHSET_OWNERSHIP_SOURCE: &str = r#"fn main() {
     println(f"map_len={n}");
 
     // String set: insert/remove exercise hew_string_drop on the element.
-    let s: HashSet<string> = HashSet::new();
+    let s: HashSet<string> = HashSet.new();
     s.insert("x");
     s.insert("y");
     s.insert("z");
@@ -695,7 +695,7 @@ fn native_cooperative_sleep_matches_wasi_output() {
 }
 
 // An actor with an `#[every]` periodic handler. No `await` is used: awaiting
-// inside an actor is still gated on wasm (WASM-TODO(#1451)), so an ask-based
+// inside an actor is still gated on wasm (see backlog #1451), so an ask-based
 // variant would fail at codegen and prove nothing about the timer.
 const COOPERATIVE_PERIODIC_SOURCE: &str = r#"actor Pulse {
     var count: i64 = 0;
@@ -711,6 +711,32 @@ fn main() {
     let p = spawn Pulse(count: 0);
     println("spawned");
     sleep(120ms);
+    println("done");
+}
+"#;
+
+// The native probe must synchronize with the first delivery instead of using a
+// wall-clock sleep: under scheduler pressure, main can wake and begin shutdown
+// before the periodic ticker thread runs, cancelling the still-pending first tick.
+const NATIVE_PERIODIC_HANDSHAKE_SOURCE: &str = r#"import std.channel.channel;
+
+actor Pulse {
+    let ready: channel.Sender<i64>;
+    var count: i64 = 0;
+
+    #[every(20ms)]
+    receive fn tick() {
+        count += 1;
+        println(f"tick {count}");
+        ready.send(count);
+    }
+}
+
+fn main() {
+    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    let _p = spawn Pulse(ready: ready_tx, count: 0);
+    println("spawned");
+    let _ = ready_rx.recv();
     println("done");
 }
 "#;
@@ -763,17 +789,17 @@ fn wasm_actor_periodic_timer_fires_but_never_reaches_quiescence() {
     );
 }
 
-// The native half: the same periodic-timer program terminates on its own.
-// Pinning this is what makes the wasm probe above a *parity* statement rather
-// than an isolated observation — it is the side that behaves, and the contrast
-// is the thing under test.
+// The native half uses the same periodic handler and interval, plus a channel
+// handshake that makes first delivery a precondition for main returning. Native
+// blocking receive is unavailable on WASM, so the WASM half keeps its cooperative
+// sleep probe while this half avoids racing wall-clock sleep against shutdown.
 #[test]
 fn native_actor_periodic_timer_reaches_quiescence() {
     support::require_codegen();
 
     let dir = support::tempdir();
     let source = dir.path().join("cooperative_periodic_native.hew");
-    fs::write(&source, COOPERATIVE_PERIODIC_SOURCE)
+    fs::write(&source, NATIVE_PERIODIC_HANDSHAKE_SOURCE)
         .expect("write cooperative periodic native source");
 
     let output = support::run_bounded_hew_run(&source, dir.path());

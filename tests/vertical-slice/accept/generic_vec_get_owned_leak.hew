@@ -23,7 +23,7 @@ fn first<T>(v: Vec<T>) -> Option<T> {
 }
 
 fn roundtrip(print_it: bool) -> i64 {
-    let vn: Vec<Name> = Vec::new();
+    let vn: Vec<Name> = Vec.new();
     vn.push(Name { label: "owned-ok" });
     match first(vn) {
         Some(got) => {

@@ -5,7 +5,6 @@
 // through the monomorphized callee symbol (fn$$T) via the TaskEntry adapter.
 //
 // Exit 0 on success. Non-zero on any assertion failure.
-
 fn compute<T>() -> i64 {
     return 42;
 }
@@ -21,8 +20,8 @@ actor Runner {
     // Asserts the exact computed value from both tasks.
     receive fn run_value() -> i64 {
         scope {
-            fork t1 = compute::<i64>();
-            fork t2 = compute::<string>();
+            fork t1 = compute<i64>();
+            fork t2 = compute<string>();
             let v1 = await t1;
             let v2 = await t2;
             total = v1 + v2;
@@ -33,8 +32,12 @@ actor Runner {
     // ForkBlock no-arg unit at two type args.
     receive fn run_unit() -> i64 {
         scope {
-            fork { unit_worker::<i64>(); }
-            fork { unit_worker::<string>(); }
+            fork {
+                unit_worker<i64>();
+            };
+            fork {
+                unit_worker<string>();
+            };
         };
         return 7;
     }
@@ -42,8 +45,12 @@ actor Runner {
     // ForkBlock arg-bearing unit at two type args.
     receive fn run_args() -> i64 {
         scope {
-            fork { side_work::<i64>(20, 22); }
-            fork { side_work::<string>(10, 32); }
+            fork {
+                side_work<i64>(20, 22);
+            };
+            fork {
+                side_work<string>(10, 32);
+            };
         };
         return 55;
     }
@@ -51,25 +58,21 @@ actor Runner {
 
 fn main() -> i64 {
     let r = spawn Runner(total: 0);
-
     // Value task: compute$$i64 + compute$$string both return 42 → sum 84
     let v = match await r.run_value() {
-        Ok(n) => n,
-        Err(_) => -1,
+        .Ok(n) => n,
+        .Err(_) => -1,
     };
-
     // Unit fork: no values, just join-all correctness → sentinel 7
     let u = match await r.run_unit() {
-        Ok(n) => n,
-        Err(_) => -1,
+        .Ok(n) => n,
+        .Err(_) => -1,
     };
-
     // Arg fork: shim packs args into env, callee runs → sentinel 55
     let a = match await r.run_args() {
-        Ok(n) => n,
-        Err(_) => -1,
+        .Ok(n) => n,
+        .Err(_) => -1,
     };
-
     // Total should be 84 + 7 + 55 = 146.
     // Return 0 for success, non-zero for any mismatch.
     v + u + a - 146

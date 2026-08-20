@@ -21,7 +21,7 @@ fn main() {
     let fibber = spawn FibPrinter;
     let r = await fibber.print_fib(10);
     match r {
-        Ok(v) => println(f"awaited fib(10) = {v}"),
-        Err(_) => println("ask failed"),
+        .Ok(v) => println(f"awaited fib(10) = {v}"),
+        .Err(_) => println("ask failed"),
     }
 }

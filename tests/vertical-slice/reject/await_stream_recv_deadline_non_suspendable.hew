@@ -4,7 +4,7 @@
 //
 // Harness verb: hew compile (must fail)
 // Expected diagnostic substring: "non-suspendable context"
-import std::stream;
+import std.stream;
 
 fn helper(input: stream.Stream<string>) -> Result<Option<string>, TimeoutError> {
     await input.recv() | after 50ms

@@ -1,5 +1,5 @@
 fn make() -> Vec<i64> {
-    let m: Vec<i64> = Vec::new();
+    let m: Vec<i64> = Vec.new();
     m.push(10);
     m.push(20);
     m

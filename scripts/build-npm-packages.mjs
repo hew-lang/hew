@@ -9,6 +9,7 @@
  *
  * Environment:
  *   NPM_WASM_PROFILE=dev   — use debug wasm-pack profile (fast local builds)
+ *   HEW_SOURCE_ROOT=<path>  — build a checkout other than the script's checkout
  *
  * Usage:
  *   node scripts/build-npm-packages.mjs
@@ -19,7 +20,8 @@ import { mkdirSync, readFileSync, writeFileSync, cpSync, rmSync } from "node:fs"
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPO_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
+const SCRIPT_REPO_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
+const REPO_ROOT = resolve(process.env.HEW_SOURCE_ROOT ?? SCRIPT_REPO_ROOT);
 const GITHUB_PACKAGES_REGISTRY = "https://npm.pkg.github.com";
 
 // Honour NPM_WASM_PROFILE=dev for fast local builds.

@@ -96,6 +96,33 @@ impl Parser<'_> {
     }
 
     #[expect(
+        clippy::option_option,
+        reason = "outer None is parse failure; inner None is a valid unit nominal pattern"
+    )]
+    fn parse_nominal_pattern_payload(&mut self) -> Option<Option<NominalPatternPayload>> {
+        if self.eat(&Token::LeftParen) {
+            let mut patterns = Vec::new();
+            while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+                if self.reject_positional_rest_pattern() {
+                    self.eat(&Token::Comma);
+                    continue;
+                }
+                patterns.push(self.parse_pattern()?);
+                if !self.eat(&Token::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Token::RightParen)?;
+            Some(Some(NominalPatternPayload::Tuple(patterns)))
+        } else if self.eat(&Token::LeftBrace) {
+            let (fields, rest) = self.parse_record_pattern_fields()?;
+            Some(Some(NominalPatternPayload::Record { fields, rest }))
+        } else {
+            Some(None)
+        }
+    }
+
+    #[expect(
         clippy::too_many_lines,
         reason = "recursive descent parser requires sequential case handling"
     )]
@@ -133,82 +160,71 @@ impl Parser<'_> {
                             return None;
                         }
                     }
-                    _ => unreachable!(),
+                    _ => unreachable!("negative literal arm accepts only integer or float tokens"),
                 }
             }
-            // Leading-dot variant pattern: `.Variant`, `.Variant(p, ..)`, or
-            // `.Variant { f: p }`. The enum type is left implicit — the
-            // type-checker resolves the bare short name against the match
-            // scrutinee's type (`resolve_variant_match`), exactly as it does for
-            // a leading-dot constructor expression. Fires only when the dot is
-            // immediately followed by an identifier, so `..` range patterns
-            // (a distinct `Token::DotDot`) are untouched. Emits the SAME
-            // `Pattern::Constructor` / `Pattern::Struct` / `Pattern::Identifier`
-            // a bare (unqualified) name would, so downstream resolution and HIR
-            // lowering need no new pattern variant.
+            // Leading-dot variants retain their contextual origin in the AST.
+            // `DotDot` is a distinct lexer token and never enters this arm.
             Some(Token::Dot)
                 if matches!(self.peek_at(self.pos + 1), Some(Token::Identifier(_))) =>
             {
                 self.advance(); // consume '.'
                 let name = self.expect_ident()?;
-                if self.eat(&Token::LeftParen) {
-                    let mut patterns = Vec::new();
-                    while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                        if self.reject_positional_rest_pattern() {
-                            self.eat(&Token::Comma);
-                            continue;
-                        }
-                        patterns.push(self.parse_pattern()?);
-                        if !self.eat(&Token::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(&Token::RightParen)?;
-                    Pattern::Constructor { name, patterns }
-                } else if self.eat(&Token::LeftBrace) {
-                    let (fields, rest) = self.parse_record_pattern_fields()?;
-                    Pattern::Struct { name, fields, rest }
-                } else {
-                    Pattern::Identifier(name)
-                }
+                let payload = self.parse_nominal_pattern_payload()?;
+                Pattern::ContextVariant(ContextVariantPattern { name, payload })
             }
             Some(Token::Identifier(name)) => {
-                let mut name = name.to_string();
+                let first = name.to_string();
                 self.advance();
-                // Wildcard pattern
-                if name == "_" {
+                if first == "_" {
                     Pattern::Wildcard
                 } else {
-                    // Handle qualified names like Colour::Red
-                    while self.eat(&Token::DoubleColon) {
-                        if let Some(segment) = self.expect_ident() {
-                            name = format!("{name}::{segment}");
-                        } else {
-                            break;
+                    let mut segments = vec![first.clone()];
+                    loop {
+                        match self.peek() {
+                            Some(Token::Dot)
+                                if self.peek_at(self.pos + 1).is_some_and(Self::is_ident_token) => {
+                            }
+                            _ => break,
                         }
+                        self.advance();
+                        segments.push(self.expect_ident()?);
                     }
 
-                    if self.eat(&Token::LeftParen) {
-                        // Constructor pattern
-                        let mut patterns = Vec::new();
-                        while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                            if self.reject_positional_rest_pattern() {
-                                self.eat(&Token::Comma);
-                                continue;
+                    if segments.len() == 1 {
+                        if self.eat(&Token::LeftParen) {
+                            let mut patterns = Vec::new();
+                            while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+                                if self.reject_positional_rest_pattern() {
+                                    self.eat(&Token::Comma);
+                                    continue;
+                                }
+                                patterns.push(self.parse_pattern()?);
+                                if !self.eat(&Token::Comma) {
+                                    break;
+                                }
                             }
-                            patterns.push(self.parse_pattern()?);
-                            if !self.eat(&Token::Comma) {
-                                break;
+                            self.expect(&Token::RightParen)?;
+                            Pattern::Constructor {
+                                name: first,
+                                patterns,
                             }
+                        } else if self.eat(&Token::LeftBrace) {
+                            let (fields, rest) = self.parse_record_pattern_fields()?;
+                            Pattern::Struct {
+                                name: first,
+                                fields,
+                                rest,
+                            }
+                        } else {
+                            Pattern::Identifier(first)
                         }
-                        self.expect(&Token::RightParen)?;
-                        Pattern::Constructor { name, patterns }
-                    } else if self.eat(&Token::LeftBrace) {
-                        // Struct pattern
-                        let (fields, rest) = self.parse_record_pattern_fields()?;
-                        Pattern::Struct { name, fields, rest }
                     } else {
-                        Pattern::Identifier(name)
+                        let payload = self.parse_nominal_pattern_payload()?;
+                        Pattern::NominalPath {
+                            path: Path { segments },
+                            payload,
+                        }
                     }
                 }
             }

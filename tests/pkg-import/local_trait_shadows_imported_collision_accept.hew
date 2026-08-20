@@ -6,8 +6,8 @@
 // Conformance must resolve `Source` to the LOCAL trait — NOT the imported sig
 // leaked into the bare key — so the local `i64` impl is valid. Run e2e so the
 // accepted impl is exercised through codegen + receiver dispatch.
-import hew::srccollidea::{ Source as A };
-import hew::srccollideb;
+import hew.srccollidea.{ Source as A };
+import hew.srccollideb;
 
 pub trait Source {
     fn close(val: Self) -> i64;

@@ -39,9 +39,25 @@ declare ptr @hew_string_clone(ptr)
 
 declare ptr @hew_string_concat(ptr, ptr)
 
+declare void @hew_assert_eq_i8(i8, i8)
+
+declare void @hew_assert_eq_i16(i16, i16)
+
+declare void @hew_assert_eq_i32(i32, i32)
+
 declare void @hew_assert_eq_i64(i64, i64)
 
+declare void @hew_assert_eq_isize(i64, i64)
+
 declare void @hew_assert_eq_u8(i8, i8)
+
+declare void @hew_assert_eq_u16(i16, i16)
+
+declare void @hew_assert_eq_u32(i32, i32)
+
+declare void @hew_assert_eq_u64(i64, i64)
+
+declare void @hew_assert_eq_usize(i64, i64)
 
 declare void @hew_assert_eq_str(ptr, ptr)
 
@@ -49,9 +65,25 @@ declare void @hew_assert_eq_f64(double, double)
 
 declare void @hew_assert_eq_bool(i8, i8)
 
+declare void @hew_assert_ne_i8(i8, i8)
+
+declare void @hew_assert_ne_i16(i16, i16)
+
+declare void @hew_assert_ne_i32(i32, i32)
+
 declare void @hew_assert_ne_i64(i64, i64)
 
+declare void @hew_assert_ne_isize(i64, i64)
+
 declare void @hew_assert_ne_u8(i8, i8)
+
+declare void @hew_assert_ne_u16(i16, i16)
+
+declare void @hew_assert_ne_u32(i32, i32)
+
+declare void @hew_assert_ne_u64(i64, i64)
+
+declare void @hew_assert_ne_usize(i64, i64)
 
 declare void @hew_assert_ne_str(ptr, ptr)
 
@@ -430,8 +462,8 @@ helper_crash_cleanup_retire_rejected:             ; preds = %helper_crash_cleanu
 
 helper_crash_cleanup_return_merge_2:              ; preds = %helper_crash_cleanup_return_retire_2_accepted, %helper_crash_cleanup_retire_merge
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
-  %ret_val = load i64, ptr %return_slot, align 8
-  ret i64 %ret_val
+  %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
+  br i1 %hew_lambda_drain_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 helper_crash_cleanup_return_retire_2:             ; preds = %helper_crash_cleanup_retire_merge
   %helper_crash_cleanup_return_retire_2_call = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_return_token_2)
@@ -446,6 +478,14 @@ helper_crash_cleanup_return_retire_2_rejected:    ; preds = %helper_crash_cleanu
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
+
+hew_shutdown_exit_failed:                         ; preds = %helper_crash_cleanup_return_merge_2
+  call void @hew_exit(i64 1)
+  br label %hew_shutdown_exit_continue
+
+hew_shutdown_exit_continue:                       ; preds = %hew_shutdown_exit_failed, %helper_crash_cleanup_return_merge_2
+  %ret_val = load i64, ptr %return_slot, align 8
+  ret i64 %ret_val
 }
 
 define internal ptr @"i8::fmt"(i8 %0) {

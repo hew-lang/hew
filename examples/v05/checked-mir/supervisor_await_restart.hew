@@ -26,7 +26,7 @@ fn main() -> i64 {
     // hew_supervisor_restart_await_blocking (CallRuntimeAbi).
     let w2 = await_restart sup.w;
     match await w2.ping() {
-        Ok(v) => v,
-        Err(_) => 0,
+        .Ok(v) => v,
+        .Err(_) => 0,
     }
 }

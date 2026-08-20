@@ -109,9 +109,9 @@ fn explicit_handler_impl_without_receive_fns_is_rejected_early() {
 #[test]
 fn user_transport_short_names_keep_user_attach_dispatch() {
     for (module_import, type_name) in [
-        ("import std::net;", "Connection"),
-        ("import std::net::tls;", "TlsStream"),
-        ("import std::net::websocket;", "Conn"),
+        ("import std.net;", "Connection"),
+        ("import std.net.tls;", "TlsStream"),
+        ("import std.net.websocket;", "Conn"),
     ] {
         let output = typecheck(&format!(
             r"

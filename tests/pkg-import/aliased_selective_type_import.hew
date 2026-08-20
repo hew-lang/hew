@@ -1,0 +1,8 @@
+import ambiguity.type_left.{ ClashType as LeftType };
+import ambiguity.type_right.{ ClashType as RightType };
+
+fn main() {
+    let left: LeftType = LeftType { value: 1 };
+    let right: RightType = RightType { value: 2 };
+    println(left.value + right.value);
+}

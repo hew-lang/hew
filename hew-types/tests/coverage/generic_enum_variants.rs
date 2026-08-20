@@ -16,7 +16,7 @@ fn struct_variant_init_infers_type_args() {
         }
 
         fn main() {
-            let e: Event<i64> = Event::Move { x: 10, y: 20 };
+            let e: Event<i64> = Event.Move { x: 10, y: 20 };
             let _ = e;
         }
         ",
@@ -42,7 +42,7 @@ fn struct_variant_init_mismatched_field_type_is_an_error() {
         fn main() {
             // Annotate T=i64 via first field; passing a bool for the second
             // field is a mismatch because T must be consistent.
-            let e: Event<i64> = Event::Move { x: 1, y: true };
+            let e: Event<i64> = Event.Move { x: 1, y: true };
             let _ = e;
         }
         ",
@@ -66,8 +66,8 @@ fn struct_variant_pattern_binds_concrete_field_types() {
 
         fn add(w: Wrapper<i64>) -> i64 {
             match w {
-                Wrapper::Pair { first, second } => first + second,
-                Wrapper::Empty => 0,
+                Wrapper.Pair { first, second } => first + second,
+                Wrapper.Empty => 0,
             }
         }
         ",
@@ -92,8 +92,8 @@ fn struct_variant_pattern_wrong_field_use_is_an_error() {
         fn broken(w: Wrapper<i64>) -> bool {
             match w {
                 // first is i64, but we return it as bool — type error
-                Wrapper::Pair { first, second } => first,
-                Wrapper::Empty => true,
+                Wrapper.Pair { first, second } => first,
+                Wrapper.Empty => true,
             }
         }
         ",
@@ -145,7 +145,7 @@ fn struct_variant_init_nested_generic_field_with_expected_type() {
         }
 
         fn main() {
-            let w: Wrap<i64> = Wrap::Boxed { inner: Box { value: 1 } };
+            let w: Wrap<i64> = .Boxed { inner: Box { value: 1 } };
             let _ = w;
         }
         ",
@@ -207,10 +207,10 @@ fn tuple_variant_pattern_binds_concrete_payload_for_bound_resolution() {
         }
 
         fn main() -> i64 {
-            let e: Either<i64, string> = Either::Left(42);
+            let e: Either<i64, string> = Either.Left(42);
             match e {
-                Either::Left(n) => println(n),
-                Either::Right(s) => println(s),
+                Either.Left(n) => println(n),
+                Either.Right(s) => println(s),
             }
             0
         }
@@ -239,14 +239,14 @@ fn generic_fn_type_param_bound_satisfies_display_via_enum_payload() {
 
         fn show<T: Display>(f: Foo<T>) {
             match f {
-                Foo::Item(x) => println(x),
-                Foo::Nothing => println("nothing"),
+                Foo.Item(x) => println(x),
+                Foo.Nothing => println("nothing"),
             }
         }
 
         fn main() -> i64 {
-            show(Foo::Item(42));
-            show(Foo::Item("hello"));
+            show(Foo.Item(42));
+            show(Foo.Item("hello"));
             0
         }
         "#,

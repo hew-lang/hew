@@ -97,6 +97,35 @@ pub enum BuiltinType {
     TimeoutError,
 }
 
+/// One constructor variant registered by a compiler-known generic enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuiltinEnumVariant {
+    pub name: &'static str,
+    pub payload_arity: usize,
+}
+
+const OPTION_VARIANTS: &[BuiltinEnumVariant] = &[
+    BuiltinEnumVariant {
+        name: "Some",
+        payload_arity: 1,
+    },
+    BuiltinEnumVariant {
+        name: "None",
+        payload_arity: 0,
+    },
+];
+
+const RESULT_VARIANTS: &[BuiltinEnumVariant] = &[
+    BuiltinEnumVariant {
+        name: "Ok",
+        payload_arity: 1,
+    },
+    BuiltinEnumVariant {
+        name: "Err",
+        payload_arity: 1,
+    },
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuiltinTypeInfo {
     pub kind: BuiltinType,
@@ -226,6 +255,17 @@ builtin_types! {
 }
 
 impl BuiltinType {
+    /// Look up a constructor variant registered for this generic builtin enum.
+    #[must_use]
+    pub fn enum_variant(self, name: &str) -> Option<&'static BuiltinEnumVariant> {
+        let variants = match self {
+            Self::Option => OPTION_VARIANTS,
+            Self::Result => RESULT_VARIANTS,
+            _ => return None,
+        };
+        variants.iter().find(|variant| variant.name == name)
+    }
+
     /// Whether cloning this builtin duplicates only its outer handle and treats
     /// type arguments as protocol/identity tags rather than stored payloads.
     ///
@@ -642,6 +682,19 @@ pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
                 .map(|info| info.kind)
         })
         .flatten()
+}
+
+/// Test an associated-item key through the builtin discriminator carried by
+/// its canonical owner, rather than comparing the rendered qualified key.
+#[must_use]
+pub fn has_builtin_associated_item_identity(
+    identity: &str,
+    builtin: BuiltinType,
+    member: &str,
+) -> bool {
+    identity
+        .rsplit_once("::")
+        .is_some_and(|(owner, leaf)| leaf == member && lookup_builtin_type(owner) == Some(builtin))
 }
 
 /// One stdlib module that declares source-imported lifecycle types.

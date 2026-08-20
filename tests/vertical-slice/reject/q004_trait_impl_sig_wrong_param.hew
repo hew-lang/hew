@@ -11,7 +11,7 @@
 
 pub trait Indexer {
     type Output;
-    fn at(self, key: i32) -> Self::Output;
+    fn at(self, key: i32) -> Self.Output;
 }
 
 pub type Bag {

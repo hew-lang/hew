@@ -3,7 +3,7 @@
 //! half `.close()` graceful EOF, the asymmetric `S != R` pair, and the
 //! unified-handle channel-mode `.recv()`.
 
-import std::testing;
+import std.testing;
 
 /// Split a symmetric pair, send on the send-half, receive on the paired
 /// recv-half, and assert the exact value crossed the split intact.
@@ -13,12 +13,12 @@ fn test_split_roundtrip_delivers_exact_value() {
     let tx = a.send_half();
     let rx = b.recv_half();
     match tx.send(7) {
-        Ok(_) => {},
-        Err(_) => panic("send on SendHalf should succeed"),
+        .Ok(_) => {},
+        .Err(_) => panic("send on SendHalf should succeed"),
     }
     match rx.recv() {
-        Ok(v) => testing.assert_eq(v, 7),
-        Err(_) => panic("recv on RecvHalf should deliver the sent value"),
+        .Ok(v) => testing.assert_eq(v, 7),
+        .Err(_) => panic("recv on RecvHalf should deliver the sent value"),
     }
 }
 
@@ -32,12 +32,12 @@ fn test_asymmetric_split_delivers_exact_value() {
     let tx = a.send_half();
     let rx = b.recv_half();
     match tx.send(42) {
-        Ok(_) => {},
-        Err(_) => panic("send on asymmetric SendHalf should succeed"),
+        .Ok(_) => {},
+        .Err(_) => panic("send on asymmetric SendHalf should succeed"),
     }
     match rx.recv() {
-        Ok(v) => testing.assert_eq(v, 42),
-        Err(_) => panic("recv on asymmetric RecvHalf should deliver the value"),
+        .Ok(v) => testing.assert_eq(v, 42),
+        .Err(_) => panic("recv on asymmetric RecvHalf should deliver the value"),
     }
 }
 
@@ -51,20 +51,20 @@ fn test_half_close_signals_paired_eof() {
     let tx = a.send_half();
     let rx = b.recv_half();
     match tx.send(5) {
-        Ok(_) => {},
-        Err(_) => panic("send before close should succeed"),
+        .Ok(_) => {},
+        .Err(_) => panic("send before close should succeed"),
     }
     match rx.recv() {
-        Ok(v) => testing.assert_eq(v, 5),
-        Err(_) => panic("recv before close should deliver the value"),
+        .Ok(v) => testing.assert_eq(v, 5),
+        .Err(_) => panic("recv before close should deliver the value"),
     }
     match tx.close() {
-        Ok(_) => {},
-        Err(_) => panic("graceful close of SendHalf should succeed"),
+        .Ok(_) => {},
+        .Err(_) => panic("graceful close of SendHalf should succeed"),
     }
     match rx.recv() {
-        Ok(_) => panic("recv after the send-half closed must report EOF"),
-        Err(_) => testing.assert_true(true),
+        .Ok(_) => panic("recv after the send-half closed must report EOF"),
+        .Err(_) => testing.assert_true(true),
     }
 }
 
@@ -77,12 +77,12 @@ fn test_empty_payload_is_valid_data_not_eof() {
     let tx = a.send_half();
     let rx = b.recv_half();
     match tx.send(0) {
-        Ok(_) => {},
-        Err(_) => panic("send of zero should succeed"),
+        .Ok(_) => {},
+        .Err(_) => panic("send of zero should succeed"),
     }
     match rx.recv() {
-        Ok(v) => testing.assert_eq(v, 0),
-        Err(_) => panic("a zero value is valid data, not EOF"),
+        .Ok(v) => testing.assert_eq(v, 0),
+        .Err(_) => panic("a zero value is valid data, not EOF"),
     }
 }
 
@@ -94,12 +94,12 @@ fn test_unified_recv_delivers_exact_value() {
     let (a, b) = duplex_pair<i64, i64>(4);
     let tx = a.send_half();
     match tx.send(55) {
-        Ok(_) => {},
-        Err(_) => panic("send on SendHalf should succeed"),
+        .Ok(_) => {},
+        .Err(_) => panic("send on SendHalf should succeed"),
     }
     match b.recv() {
-        Ok(v) => testing.assert_eq(v, 55),
-        Err(_) => panic("unified Duplex recv should deliver the sent value"),
+        .Ok(v) => testing.assert_eq(v, 55),
+        .Err(_) => panic("unified Duplex recv should deliver the sent value"),
     }
 }
 
@@ -111,11 +111,11 @@ fn test_try_send_try_recv_roundtrip() {
     let tx = a.send_half();
     let rx = b.recv_half();
     match tx.try_send(11) {
-        Ok(_) => {},
-        Err(_) => panic("try_send into an empty bounded queue should succeed"),
+        .Ok(_) => {},
+        .Err(_) => panic("try_send into an empty bounded queue should succeed"),
     }
     match rx.try_recv() {
-        Ok(v) => testing.assert_eq(v, 11),
-        Err(_) => panic("try_recv with a ready item should deliver it"),
+        .Ok(v) => testing.assert_eq(v, 11),
+        .Err(_) => panic("try_recv with a ready item should deliver it"),
     }
 }

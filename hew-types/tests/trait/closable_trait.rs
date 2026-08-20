@@ -28,7 +28,7 @@ use hew_types::error::TypeErrorKind;
 fn closable_close_triggers_use_after_move_on_second_call() {
     let output = typecheck_inline(
         r#"
-        import std::io::closable;
+        import std.io.closable;
 
         type Widget { name: string; }
 
@@ -62,7 +62,7 @@ fn closable_close_triggers_use_after_move_on_second_call() {
 fn closable_single_close_typechecks_cleanly() {
     let output = typecheck_inline(
         r#"
-        import std::io::closable;
+        import std.io.closable;
 
         type Widget { name: string; }
 
@@ -91,7 +91,7 @@ fn closable_single_close_typechecks_cleanly() {
 fn closable_close_records_per_call_site_flag_via_stdlib() {
     let output = typecheck_inline(
         r#"
-        import std::io::closable;
+        import std.io.closable;
 
         type Pipe { tag: string; }
 
@@ -137,7 +137,7 @@ fn closable_close_records_per_call_site_flag_via_stdlib() {
 fn child_drop_not_in_consume_receiver_set() {
     let output = typecheck_inline(
         r#"
-        import std::process;
+        import std.process;
 
         fn main() {
             let child = process.start("sleep 1");

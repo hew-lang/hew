@@ -158,20 +158,20 @@ impl WasmUnsupportedFeature {
             Self::PeriodicTimers => "Timer operations",
             Self::Streams => "Stream operations",
             Self::FilesystemStreams => "File-backed stream operations",
-            Self::HttpClient => "std::net::http::http_client operations",
-            Self::Smtp => "std::net::smtp operations",
-            Self::WebSocket => "std::net::websocket operations",
+            Self::HttpClient => "std.net.http.http_client operations",
+            Self::Smtp => "std.net.smtp operations",
+            Self::WebSocket => "std.net.websocket operations",
             Self::HttpServer => "HTTP server operations",
             Self::TcpNetworking => "TCP networking operations",
             Self::ProcessExecution => "Process execution operations",
-            Self::Tls => "std::net::tls operations",
-            Self::Quic => "std::net::quic operations",
-            Self::Dns => "std::net::dns resolver operations",
-            Self::OsEnv => "std::os environment and path operations",
+            Self::Tls => "std.net.tls operations",
+            Self::Quic => "std.net.quic operations",
+            Self::Dns => "std.net.dns resolver operations",
+            Self::OsEnv => "std.os environment and path operations",
             Self::Distributed => "Distributed node and remote-actor operations",
-            Self::CryptoRandom => "std::crypto::crypto.random_bytes operations",
-            Self::CryptoEncrypt => "std::crypto::encrypt operations",
-            Self::CryptoSign => "std::crypto::sign operations",
+            Self::CryptoRandom => "std.crypto.crypto.random_bytes operations",
+            Self::CryptoEncrypt => "std.crypto.encrypt operations",
+            Self::CryptoSign => "std.crypto.sign operations",
         }
     }
 
@@ -183,26 +183,26 @@ impl WasmUnsupportedFeature {
             Self::LinkMonitor => "they rely on OS threads to watch linked actors and propagate exits",
             Self::StructuredConcurrency => "the wasm32 scheduler has no cooperative task executor or non-blocking scope join",
             Self::Tasks => "task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32",
-            Self::BlockingChannelRecv => "Receiver<T>::recv still requires cooperative scheduler yield/resume on wasm32; use try_recv or the actor ask pattern instead",
-            Self::BlockingSemaphoreAcquire => "Semaphore::acquire and Semaphore::acquire_timeout still require a blocking permit wait that has no cooperative wasm32 implementation; use try_acquire or actor coordination instead",
+            Self::BlockingChannelRecv => "Receiver<T>.recv still requires cooperative scheduler yield/resume on wasm32; use try_recv or the actor ask pattern instead",
+            Self::BlockingSemaphoreAcquire => "Semaphore.acquire and Semaphore.acquire_timeout still require a blocking permit wait that has no cooperative wasm32 implementation; use try_acquire or actor coordination instead",
             Self::Timers => "timers are cooperative on wasm32: sleep parks at the message boundary, and #[every(duration)] handlers fire only when the host drives the timer queue",
             Self::PeriodicTimers => "timers are cooperative on wasm32: sleep parks at the message boundary, and #[every(duration)] handlers fire only when the host drives the timer queue",
             Self::Streams => "I/O streams require the OS threading and networking stack; the stream runtime module is not compiled for wasm32",
             Self::FilesystemStreams => "the FileReadStream runtime and stream collector are not compiled for wasm32; reject before code generation rather than leaving unresolved native symbols",
-            Self::HttpClient => "the std::net::http::http_client wrappers are still native-only; no wasm32 networking bridge exists yet",
-            Self::Smtp => "the std::net::smtp transport is still native-only; no wasm32 SMTP bridge exists yet",
-            Self::WebSocket => "the std::net::websocket transport uses native sockets and OS threads; no wasm32 WebSocket bridge exists yet",
-            Self::HttpServer => "the std::net::http server is backed by native sockets and tiny_http; no cooperative wasm32 server implementation exists yet",
+            Self::HttpClient => "the std.net.http.http_client wrappers are still native-only; no wasm32 networking bridge exists yet",
+            Self::Smtp => "the std.net.smtp transport is still native-only; no wasm32 SMTP bridge exists yet",
+            Self::WebSocket => "the std.net.websocket transport uses native sockets and OS threads; no wasm32 WebSocket bridge exists yet",
+            Self::HttpServer => "the std.net.http server is backed by native sockets and tiny_http; no cooperative wasm32 server implementation exists yet",
             Self::TcpNetworking => "hew_tcp_listen / hew_tcp_connect require the native OS socket layer; the transport runtime module is not compiled for wasm32",
             Self::ProcessExecution => "hew_process_run / hew_process_spawn require the native OS process model; the process runtime module is not compiled for wasm32",
-            Self::Tls => "the std::net::tls transport is backed by rustls over native sockets; no wasm32 TLS bridge exists yet",
-            Self::Quic => "the std::net::quic transport is backed by quinn over native sockets; no wasm32 QUIC bridge exists yet",
-            Self::Dns => "the std::net::dns resolver uses the native OS resolver; no wasm32 implementation exists yet",
-            Self::OsEnv => "the std::os helpers rely on native POSIX APIs; the os runtime layer is not compiled for wasm32",
-            Self::Distributed => "the Node:: cluster API and RemotePid messaging route through the native mesh transport (hew_node_api_* / hew_remote_pid_send), which is not compiled for wasm32; no wasm32 distributed runtime exists yet",
-            Self::CryptoRandom => "the std::crypto.random_bytes secure entropy source (ring::SystemRandom) is native-only and absent from the wasm32 link set; no cryptographically secure wasm32 implementation exists yet; generating key material on wasm32 would not be secure",
-            Self::CryptoEncrypt => "the std::crypto::encrypt module is backed by a native-only staticlib companion crate (std/crypto/encrypt) that is absent from the wasm32 link set; no wasm32 AES-GCM seal/open implementation exists yet",
-            Self::CryptoSign => "the std::crypto::sign module is backed by a native-only staticlib companion crate (std/crypto/sign) that is absent from the wasm32 link set; no wasm32 Ed25519 implementation exists yet",
+            Self::Tls => "the std.net.tls transport is backed by rustls over native sockets; no wasm32 TLS bridge exists yet",
+            Self::Quic => "the std.net.quic transport is backed by quinn over native sockets; no wasm32 QUIC bridge exists yet",
+            Self::Dns => "the std.net.dns resolver uses the native OS resolver; no wasm32 implementation exists yet",
+            Self::OsEnv => "the std.os helpers rely on native POSIX APIs; the os runtime layer is not compiled for wasm32",
+            Self::Distributed => "the Node cluster API and RemotePid messaging route through the native mesh transport (hew_node_api_* / hew_remote_pid_send), which is not compiled for wasm32; no wasm32 distributed runtime exists yet",
+            Self::CryptoRandom => "the std.crypto.random_bytes secure entropy source (ring::SystemRandom) is native-only and absent from the wasm32 link set; no cryptographically secure wasm32 implementation exists yet; generating key material on wasm32 would not be secure",
+            Self::CryptoEncrypt => "the std.crypto.encrypt module is backed by a native-only staticlib companion crate (std/crypto/encrypt) that is absent from the wasm32 link set; no wasm32 AES-GCM seal/open implementation exists yet",
+            Self::CryptoSign => "the std.crypto.sign module is backed by a native-only staticlib companion crate (std/crypto/sign) that is absent from the wasm32 link set; no wasm32 Ed25519 implementation exists yet",
         }
     }
 }
@@ -226,7 +226,6 @@ pub mod wasm_capability_ids {
     pub const DISTRIBUTED: WasmCapabilityId = WasmCapabilityId("distributed");
     pub const DNS: WasmCapabilityId = WasmCapabilityId("dns");
     pub const DUPLEX: WasmCapabilityId = WasmCapabilityId("duplex");
-    pub const DYN_TRAIT_RETURNS: WasmCapabilityId = WasmCapabilityId("dyn-trait-returns");
     pub const FILESYSTEM_STREAMS: WasmCapabilityId = WasmCapabilityId("filesystem-streams");
     pub const HTTP_CLIENT: WasmCapabilityId = WasmCapabilityId("http-client");
     pub const HTTP_SERVER: WasmCapabilityId = WasmCapabilityId("http-server");

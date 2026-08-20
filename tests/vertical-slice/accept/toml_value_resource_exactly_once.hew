@@ -1,6 +1,6 @@
 // A captured fluent chain transfers one TOML array owner, while array_get
 // creates an independent deep owner that survives closing the root.
-import std::encoding::toml;
+import std.encoding.toml;
 
 fn early_exit(flag: bool) {
     let value = toml.table();

@@ -3,17 +3,17 @@ actor Holder {
 
     receive fn hold(v: Result<i64, string>) -> i64 {
         sleep(2ms);
-        match v { Ok(v_v) => println(f"ok {v_v}"), Err(v_e) => println(f"err {v_e}"), }
+        match v { Result.Ok(v_v) => println(f"ok {v_v}"), Err(v_e) => println(f"err {v_e}"), }
         ready = true;
         1
     }
 }
 
 fn main() {
-    let x: Result<i64, string> = Ok(6);
+    let x: Result<i64, string> = Result.Ok(6);
     let h = spawn Holder(ready: false);
     match await h.hold(x) {
-        Ok(n) => println(f"held {n}"),
+        Result.Ok(n) => println(f"held {n}"),
         Err(_) => println("err"),
     }
 }

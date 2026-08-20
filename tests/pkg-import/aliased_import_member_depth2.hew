@@ -18,7 +18,7 @@
 //
 // Harness verb: hew run
 // Expected: 33 -- both depth-2 member positions resolved end-to-end.
-import hew::aliasmember;
+import hew.aliasmember;
 
 fn main() {
     println(aliasmember.member_score());

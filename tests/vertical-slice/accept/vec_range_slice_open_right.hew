@@ -5,7 +5,7 @@
 // xs = [10, 20, 30, 40, 50]
 // xs[1..] = [20, 30, 40, 50]  →  len = 4  →  exit 4
 fn main() -> i64 {
-    let xs: Vec<i32> = Vec::new();
+    let xs: Vec<i32> = Vec.new();
     xs.push(10);
     xs.push(20);
     xs.push(30);

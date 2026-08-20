@@ -1,4 +1,4 @@
-//! End-to-end execution tests for `HashMap.keys()` and `HashMap.values()`.
+//! End-to-end execution tests for HashMap Vec snapshot methods.
 //!
 //! Verifies the full pipeline: checker wiring → MIR passthrough → codegen
 //! → runtime execution.  The grounding oracle is the values-sum fixture:
@@ -44,6 +44,10 @@ fn hew_command() -> Command {
 /// Writing to a temp file so the hew binary gets a real path. A `timeout`
 /// of 20 s bounds the run; the child is killed on expiry.
 fn run_hew_source(stem: &str, source: &str) -> Output {
+    run_hew_source_env(stem, source, false)
+}
+
+fn run_hew_source_env(stem: &str, source: &str, poison_allocator: bool) -> Output {
     let dir = std::env::temp_dir().join(format!("hew-hashmap-kv-{}-{}", std::process::id(), stem));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create temp source dir");
@@ -52,6 +56,11 @@ fn run_hew_source(stem: &str, source: &str) -> Output {
 
     let mut cmd = hew_command();
     cmd.arg("run").arg(&path);
+    if poison_allocator {
+        cmd.env("MallocScribble", "1")
+            .env("MallocPreScribble", "1")
+            .env("MallocGuardEdges", "1");
+    }
     hew_testutil::run_command_bounded(
         &mut cmd,
         format!("hew run {}", path.display()),
@@ -122,7 +131,7 @@ fn hashmap_values_sum_oracle_exits_42() {
     let output = run_hew_source(
         "hashmap_values_sum",
         r#"fn main() -> i64 {
-    var m: HashMap<string, i64> = HashMap::new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("a", 10);
     m.insert("b", 20);
     m.insert("c", 12);
@@ -144,7 +153,7 @@ fn hashmap_keys_len_is_map_size() {
     let output = run_hew_source(
         "hashmap_keys_len",
         r#"fn main() -> i64 {
-    var m: HashMap<string, i64> = HashMap::new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("x", 1);
     m.insert("y", 2);
     m.insert("z", 3);
@@ -175,7 +184,7 @@ fn hashmap_values_get_layout_path_copy_record_returns_correct_fields() {
         r#"record Point { x: i64, y: i64 }
 
 fn main() -> i64 {
-    var m: HashMap<i64, Point> = HashMap::new();
+    var m: HashMap<i64, Point> = HashMap.new();
     m.insert(1, Point { x: 10, y: 20 });
     let vs = m.values();
     let got = vs[0];
@@ -204,7 +213,7 @@ fn hashmap_keys_get_layout_path_copy_record_returns_correct_fields() {
         r#"record Point { x: i64, y: i64 }
 
 fn main() -> i64 {
-    var m: HashMap<Point, i64> = HashMap::new();
+    var m: HashMap<Point, i64> = HashMap.new();
     m.insert(Point { x: 3, y: 7 }, 99);
     let ks = m.keys();
     let got = ks[0];
@@ -251,7 +260,7 @@ fn hashmap_keys_values_empty_map_returns_empty_vecs() {
     let output = run_hew_source(
         "hashmap_kv_empty",
         r#"fn main() -> i64 {
-    var m: HashMap<string, i64> = HashMap::new();
+    var m: HashMap<string, i64> = HashMap.new();
     let ks = m.keys();
     let vs = m.values();
     ks.len() + vs.len()
@@ -259,4 +268,72 @@ fn hashmap_keys_values_empty_map_returns_empty_vecs() {
 "#,
     );
     assert_exit_code(&output, 0, "empty-map keys()+values() len oracle");
+}
+
+/// `entries()` snapshots exact key/value associations without relying on slot
+/// order. The scalar value side also pins the tuple V offset supplied by
+/// codegen: a wrong offset cannot produce the expected three-bit set.
+#[test]
+fn hashmap_entries_scalar_map_has_exact_set_equality() {
+    let output = run_hew_source(
+        "hashmap_entries_scalar_set",
+        r#"fn main() -> i64 {
+    var m: HashMap<string, i64> = HashMap.new();
+    m.insert("alpha", 11);
+    m.insert("beta", 22);
+    m.insert("gamma", 33);
+    let entries = m.entries();
+    var seen: i64 = 0;
+    for pair in entries {
+        if pair.0 == "alpha" && pair.1 == 11 { seen = seen | 1; }
+        if pair.0 == "beta" && pair.1 == 22 { seen = seen | 2; }
+        if pair.0 == "gamma" && pair.1 == 33 { seen = seen | 4; }
+    }
+    if seen == 7 { 0 } else { 91 }
+}
+"#,
+    );
+    assert_exit_code(&output, 0, "entries() scalar set-equality oracle");
+}
+
+/// Both tuple fields own heap. Returning the snapshot drops the source map
+/// first; iterating it afterwards proves the cloned tuple remains independent.
+/// Poisoned allocator knobs make an over-release/double-free crash eagerly.
+#[test]
+fn hashmap_entries_owned_pair_survives_map_drop_without_double_free() {
+    let output = run_hew_source_env(
+        "hashmap_entries_owned_after_map_drop",
+        r#"fn snapshot() -> Vec<(string, string)> {
+    var m: HashMap<string, string> = HashMap.new();
+    m.insert("one", "first");
+    m.insert("two", "second");
+    m.entries()
+}
+
+fn main() -> i64 {
+    let entries = snapshot();
+    var seen: i64 = 0;
+    for pair in entries {
+        if pair.0 == "one" && pair.1 == "first" { seen = seen | 1; }
+        if pair.0 == "two" && pair.1 == "second" { seen = seen | 2; }
+    }
+    if seen == 3 { 0 } else { 92 }
+}
+"#,
+        true,
+    );
+    assert_exit_code(&output, 0, "owned entries after source-map drop oracle");
+}
+
+#[test]
+fn hashmap_entries_empty_map_returns_empty_vec() {
+    let output = run_hew_source(
+        "hashmap_entries_empty",
+        r#"fn main() -> i64 {
+    let m: HashMap<string, string> = HashMap.new();
+    m.entries().len()
+}
+"#,
+    );
+    assert_exit_code(&output, 0, "empty entries() len oracle");
 }

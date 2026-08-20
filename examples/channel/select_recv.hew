@@ -4,7 +4,7 @@
 //! the loser arm's poll is cancelled at the dispatch site, and the after-timer
 //! never fires. A correct run prints the winning channel's value.
 
-import std::channel::channel;
+import std.channel.channel;
 
 actor Worker {
     receive fn run() {
@@ -14,14 +14,14 @@ actor Worker {
         select {
             a from rxa.recv() => {
                 match a {
-                    Some(s) => println(f"a:{s}"),
-                    None => println("a:none"),
+                    .Some(s) => println(f"a:{s}"),
+                    .None => println("a:none"),
                 }
             },
             b from rxb.recv() => {
                 match b {
-                    Some(n) => println(f"b:{n}"),
-                    None => println("b:none"),
+                    .Some(n) => println(f"b:{n}"),
+                    .None => println("b:none"),
                 }
             },
             after 1s => println("timeout"),

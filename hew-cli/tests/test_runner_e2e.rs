@@ -25,6 +25,63 @@ fn run_suite(files: &[(&str, &str)], extra_args: &[&str]) -> std::process::Outpu
 }
 
 #[test]
+fn package_native_ffi_is_built_and_linked() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    for (path, contents) in [
+        (
+            "hew.toml",
+            include_str!("fixtures/test_ffi_package/hew.toml"),
+        ),
+        (
+            "Cargo.toml",
+            include_str!("fixtures/test_ffi_package/Cargo.toml"),
+        ),
+        (
+            "src/lib.rs",
+            include_str!("fixtures/test_ffi_package/src/lib.rs"),
+        ),
+        (
+            "ffi_test.hew",
+            include_str!("fixtures/test_ffi_package/ffi_test.hew"),
+        ),
+    ] {
+        write_file(dir.path(), path, contents);
+    }
+
+    let output = Command::new(hew_binary())
+        .args(["test", "ffi_test.hew", "--no-color", "--jobs", "1"])
+        .env("CARGO_TARGET_DIR", dir.path().join("target"))
+        .current_dir(dir.path())
+        .output()
+        .expect("run package FFI test");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("test native_ffi_is_linked ... ok"));
+    assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
+    assert!(dir.path().join("target/release-lib").is_dir());
+    let archive = if cfg!(target_os = "windows") {
+        dir.path()
+            .join("target/release-lib/hew_test_ffi_package.lib")
+    } else {
+        dir.path()
+            .join("target/release-lib/libhew_test_ffi_package.a")
+    };
+    assert!(
+        archive.is_file(),
+        "declared native library was not built at {}",
+        archive.display()
+    );
+}
+
+#[test]
 fn passing_suite_exits_zero() {
     require_codegen();
 
@@ -37,6 +94,11 @@ fn passing_suite_exits_zero() {
     );
 
     assert!(output.status.success());
+    assert!(
+        output.stderr.is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("test passes ... ok"));
     assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
@@ -83,6 +145,79 @@ fn mixed_suite_reports_each_test_and_exits_non_zero() {
     assert!(stdout.contains("test alpha ... ok"));
     assert!(stdout.contains("test beta ... FAILED"));
     assert!(stdout.contains("1 passed; 1 failed; 0 ignored"));
+}
+
+#[test]
+fn parallel_suite_reports_in_discovery_order() {
+    require_codegen();
+
+    let output = run_suite(
+        &[(
+            "ordered_test.hew",
+            "#[test]\nfn slow_first() {\n    sleep(100ms);\n}\n\n#[test]\nfn fast_second() {\n    assert(true);\n}\n",
+        )],
+        &["--no-color", "--jobs", "2"],
+    );
+
+    assert!(output.status.success());
+    assert!(
+        output.stderr.is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let first = stdout.find("test slow_first ... ok").unwrap();
+    let second = stdout.find("test fast_second ... ok").unwrap();
+    assert!(first < second, "stdout: {stdout}");
+}
+
+#[test]
+fn serial_tests_do_not_overlap() {
+    require_codegen();
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let source = format!(
+        "import std.net;\n\n\
+         fn hold_port() {{\n\
+             match net.try_listen(\"127.0.0.1:{port}\") {{\n\
+                 Ok(listener) => {{\n\
+                     sleep(200ms);\n\
+                     listener.close();\n\
+                 }},\n\
+                 Err(_) => panic(\"serial tests overlapped\"),\n\
+             }}\n\
+         }}\n\n\
+         #[test]\n#[serial]\nfn serial_one() {{ hold_port(); }}\n\n\
+         #[test]\n#[serial]\nfn serial_two() {{ hold_port(); }}\n"
+    );
+
+    let output = run_suite(
+        &[("serial_test.hew", source.as_str())],
+        &["--no-color", "--jobs", "2"],
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn zero_jobs_is_rejected() {
+    let output = run_suite(
+        &[("ignored_test.hew", "#[test]\n#[ignore]\nfn ignored() {}\n")],
+        &["--jobs", "0"],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid value '0'"), "stderr: {stderr}");
 }
 
 #[test]
@@ -397,7 +532,7 @@ fn test_runner_relative_path_invocation_discovers_same_tests_as_absolute_path() 
     write_file(
         dir.path(),
         "suite/relative_discovery_test.hew",
-        "#[test]\n#[ignore]\nfn before_import() {\n    assert(true);\n}\n\nimport std::testing;\n\n#[test]\n#[ignore]\nfn after_import() {\n    assert(true);\n}\n",
+        "#[test]\n#[ignore]\nfn before_import() {\n    assert(true);\n}\n\nimport std.testing;\n\n#[test]\n#[ignore]\nfn after_import() {\n    assert(true);\n}\n",
     );
     let absolute_path = dir.path().join("suite").join("relative_discovery_test.hew");
 

@@ -1,4 +1,4 @@
-import std::channel::channel;
+import std.channel.channel;
 
 actor Responder {
     receive fn ask(value: i32) -> i32 {

@@ -7,6 +7,12 @@ on:
       - 'scripts/lint-stdlib-int-surface.sh'
       - 'docs/stdlib-style-contract.md'
 
+# A superseded run on the same ref cannot gate anything, because a newer
+# commit already exists. Cancel it so it stops holding a runner.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   stdlib-int-surface:
     runs-on: ubuntu-latest

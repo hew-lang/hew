@@ -2,7 +2,7 @@
 // Pushes 10,20,30; sets index 1 to 99; asserts b[0]==10 (unchanged), b[1]==99
 // (overwritten), b[2]==30 (unchanged). Exits 0 only when all three match.
 fn main() -> i64 {
-    let b: bytes = bytes::new();
+    let b: bytes = bytes.new();
     b.push(10);
     b.push(20);
     b.push(30);

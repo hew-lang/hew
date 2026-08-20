@@ -21,15 +21,15 @@ impl Conn {
     }
 }
 
-actor Sink {
+actor TestSink {
     receive fn ping(n: i64) -> i64 {
         n
     }
 }
 
 fn select_bodies_are_alternatives(held: Conn) -> i64 {
-    let a = spawn Sink;
-    let b = spawn Sink;
+    let a = spawn TestSink;
+    let b = spawn TestSink;
     let _winner = select {
         x from a.ping(1) => {
             held.close();

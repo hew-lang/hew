@@ -35,7 +35,7 @@ pub machine Toggle {
 ";
     let root_src = r"
 fn main() {
-    var t = Toggle::Off;
+    var t = Toggle.Off;
     t.step(Flip);
 }
 ";
@@ -178,8 +178,8 @@ pub machine Lifecycle<T> {
 import m;
 
 fn main() {
-    var lifecycle: m.Lifecycle<i64> = m.Lifecycle::Created;
-    lifecycle.step(m.LifecycleEvent::Stop);
+    var lifecycle: m.Lifecycle<i64> = m.Lifecycle.Created;
+    lifecycle.step(m.LifecycleEvent.Stop);
 }
 ";
     let program = support::checker_pipeline::program_with_imported_module(imported_src, root_src);
@@ -219,4 +219,103 @@ fn main() {
         event.ty,
         hew_types::ResolvedTy::Named { ref name, .. } if name == "m.LifecycleEvent"
     ));
+}
+
+#[test]
+fn private_imported_machine_retains_runtime_layout() {
+    let imported_src = r"
+machine RunLifecycle {
+    events { Finish; }
+    state Running;
+    state Completed;
+    on Finish: Running => Completed { Completed }
+    default { state }
+}
+
+pub fn initial() -> RunLifecycle { RunLifecycle.Running }
+";
+    let root_src = "import m; fn main() {}";
+    let program = support::checker_pipeline::program_with_imported_module(imported_src, root_src);
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    assert!(
+        output.module.items.iter().any(
+            |item| matches!(item, HirItem::Machine(machine) if machine.name == "RunLifecycle")
+        ),
+        "a private machine escaping through a public factory still needs its runtime layout"
+    );
+}
+
+#[test]
+fn dotted_imported_constructor_uses_the_source_owner() {
+    let imported_src = r"
+pub machine Toggle {
+    events { Flip; }
+    state Off;
+    state On;
+    on Flip: Off => On { On }
+    on Flip: On => Off { Off }
+}
+";
+    let root_src = r"
+import m;
+
+fn main() { let _value = m.Toggle.Off; }
+";
+    let program = support::checker_pipeline::program_with_imported_module(imported_src, root_src);
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    let main = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("root main must be lowered");
+    assert!(matches!(
+        &main.body.statements[0].kind,
+        HirStmtKind::Let(
+            _,
+            Some(hew_hir::HirExpr {
+                kind: HirExprKind::MachineVariantCtor {
+                    machine_name,
+                    state_idx: 0,
+                    ..
+                },
+                ..
+            })
+        ) if machine_name == "m.Toggle"
+    ));
+}
+
+#[test]
+fn module_qualified_pattern_uses_the_source_owner() {
+    let imported_src = r"
+pub machine Toggle {
+    events { Flip; }
+    state Off;
+    state On;
+    on Flip: Off => On { On }
+    on Flip: On => Off { Off }
+}
+
+pub fn initial() -> Toggle { Toggle.Off }
+";
+    let root_src = r"
+import m;
+
+fn tag(value: m.Toggle) -> i64 {
+    match value {
+        m.Toggle.Off => 0,
+        m.Toggle.On => 1,
+    }
+}
+
+fn main() { let _tag = tag(m.initial()); }
+";
+    let program = support::checker_pipeline::program_with_imported_module(imported_src, root_src);
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
 }

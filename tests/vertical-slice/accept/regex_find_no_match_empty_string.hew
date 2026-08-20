@@ -1,5 +1,5 @@
 // Regression for the regex no-match-vs-empty-string equality boundary.
-import std::text::regex;
+import std.text.regex;
 
 fn main() {
     let pat = regex.new("[0-9]+");

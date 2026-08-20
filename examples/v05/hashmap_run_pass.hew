@@ -27,7 +27,7 @@ record Point {
 fn main() {
     let _p = Point { x: 0, y: 0 };
     // ── HashMap<Point, i64> surface ─────────────────────────────────
-    let m: HashMap<Point, i64> = HashMap::new();
+    let m: HashMap<Point, i64> = HashMap.new();
     m.insert(Point { x: 1, y: 2 }, 10);
     let _v = m.get(Point { x: 1, y: 2 }); // Option<i64>
     let _has = m.contains_key(Point { x: 1, y: 2 }); // bool
@@ -35,7 +35,7 @@ fn main() {
     let _n = m.len(); // i64
 
     // ── HashSet<Point> surface ──────────────────────────────────────
-    let s: HashSet<Point> = HashSet::new();
+    let s: HashSet<Point> = HashSet.new();
     s.insert(Point { x: 3, y: 4 });
     let _has_p = s.contains(Point { x: 3, y: 4 }); // bool
     let _rm = s.remove(Point { x: 3, y: 4 }); // bool

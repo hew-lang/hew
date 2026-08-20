@@ -6,9 +6,9 @@ enum Shape {
 }
 
 fn main() {
-    let c1: Shape = Shape::Circle(3);
-    let c2: Shape = Shape::Circle(3);
-    let r1: Shape = Shape::Rect(3, 3);
+    let c1: Shape = Shape.Circle(3);
+    let c2: Shape = Shape.Circle(3);
+    let r1: Shape = Shape.Rect(3, 3);
     let some1: Option<i64> = Some(1);
     let some1b: Option<i64> = Some(1);
     let some2: Option<i64> = Some(2);

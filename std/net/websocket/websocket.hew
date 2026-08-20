@@ -45,7 +45,7 @@
 //! }
 //! ```
 
-import std::net;
+import std.net;
 
 fn checked_recv_deadline(deadline_ms: i64) -> Result<i64, net.NetError> {
     if deadline_ms <= 0 {
@@ -319,7 +319,7 @@ pub fn connect(url: string) -> Result<Conn, net.NetError> {
         let detail = unsafe {
             hew_ws_last_error()
         };
-        return Err(net.NetError::InvalidArgument(detail));
+        return Err(net.NetError.InvalidArgument(detail));
     }
     Err(net.net_error_from_errno(errno))
 }
@@ -354,7 +354,7 @@ pub fn listen(addr: string) -> Result<Server, net.NetError> {
         let detail = unsafe {
             hew_ws_last_error()
         };
-        return Err(net.NetError::InvalidArgument(detail));
+        return Err(net.NetError.InvalidArgument(detail));
     }
     Err(net.net_error_from_errno(errno))
 }

@@ -308,6 +308,12 @@ pub struct HewTask {
     pub result: *mut c_void,
     /// Size of `result` in bytes.
     pub result_size: usize,
+    /// True only after the worker explicitly publishes a result.
+    result_written: bool,
+    /// True after an awaiter moves the published representation out.
+    result_consumed: bool,
+    /// Typed destructor for an unconsumed published result.
+    result_drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
     /// Parent scope (structured lifetime).
     pub scope: *mut HewTaskScope,
     /// Cancellation token owned by this task.
@@ -634,6 +640,9 @@ pub unsafe extern "C" fn hew_task_new() -> *mut HewTask {
         error: HewTaskError::None,
         result: ptr::null_mut(),
         result_size: 0,
+        result_written: false,
+        result_consumed: false,
+        result_drop_fn: None,
         scope: ptr::null_mut(),
         cancel_token: ptr::null_mut(),
         next: ptr::null_mut(),
@@ -658,6 +667,13 @@ pub unsafe extern "C" fn hew_task_free(task: *mut HewTask) {
     // SAFETY: Caller guarantees `task` was Box-allocated.
     let t = unsafe { Box::from_raw(task) };
     if !t.result.is_null() {
+        if t.result_written && !t.result_consumed {
+            if let Some(drop_fn) = t.result_drop_fn {
+                // SAFETY: the callback was registered for the result's exact
+                // representation and the buffer has not been consumed.
+                unsafe { drop_fn(t.result) };
+            }
+        }
         // SAFETY: result was malloc'd by hew_task_set_result.
         unsafe { libc::free(t.result) };
     }
@@ -743,6 +759,27 @@ pub unsafe extern "C" fn hew_task_get_result(task: *mut HewTask) -> *mut c_void 
     if t.load_state() != HewTaskState::Done {
         return ptr::null_mut();
     }
+    t.result
+}
+
+/// Move a completed task's result representation to its awaiter.
+///
+/// The returned buffer remains task-owned and is freed with the task. Calling
+/// this function only transfers ownership of values embedded in its bytes, so
+/// task teardown does not run the registered typed destructor afterward.
+///
+/// # Safety
+///
+/// `task` must be a valid pointer returned by [`hew_task_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_take_result(task: *mut HewTask) -> *mut c_void {
+    cabi_guard!(task.is_null(), ptr::null_mut());
+    // SAFETY: caller guarantees `task` is valid.
+    let t = unsafe { &mut *task };
+    if t.load_state() != HewTaskState::Done || !t.result_written || t.result_consumed {
+        return ptr::null_mut();
+    }
+    t.result_consumed = true;
     t.result
 }
 
@@ -1267,7 +1304,28 @@ pub unsafe extern "C" fn hew_task_set_result(task: *mut HewTask, result: *mut c_
         unsafe { ptr::copy_nonoverlapping(result.cast::<u8>(), buf.cast::<u8>(), size) };
         t.result = buf;
         t.result_size = size;
+        t.result_written = true;
     }
+}
+
+/// Register the typed destructor for a published task result.
+///
+/// The destructor runs at task teardown only when the result was written but
+/// never consumed by an awaiter. Passing null clears the destructor for a
+/// bit-copy result.
+///
+/// # Safety
+///
+/// - `task` must be a valid pointer returned by [`hew_task_new`].
+/// - `drop_fn`, when present, must accept the exact result representation.
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_set_result_drop_fn(
+    task: *mut HewTask,
+    drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+) {
+    cabi_guard!(task.is_null());
+    // SAFETY: caller guarantees `task` is valid.
+    unsafe { (*task).result_drop_fn = drop_fn };
 }
 
 /// Get the task's error code.
@@ -1862,6 +1920,7 @@ mod forced_cancel_test_hook {
     /// spawn consumes only the entry whose scope address matches its own
     /// task's owning scope; an unrelated scope's spawn leaves it untouched.
     static ARMED: Mutex<Vec<(usize, u64)>> = Mutex::new(Vec::new());
+    static RESULT_ARMED: Mutex<Vec<(usize, u64)>> = Mutex::new(Vec::new());
 
     /// Paused spawns waiting for release: `(scope address, generation,
     /// open)`. `release_paused_spawn(scope)` opens only entries whose scope
@@ -1884,6 +1943,17 @@ mod forced_cancel_test_hook {
         ARMED.lock_or_recover().push((scope as usize, generation));
     }
 
+    /// Arm a pause after the next task in the current scope publishes its
+    /// result but before it marks itself terminal.
+    #[no_mangle]
+    pub extern "C" fn hew_test_pause_next_task_result_until_scope_cancel() {
+        let scope = super::current_task_scope();
+        let generation = NEXT_GENERATION.fetch_add(1, Ordering::SeqCst);
+        RESULT_ARMED
+            .lock_or_recover()
+            .push((scope as usize, generation));
+    }
+
     /// Consume the arm registered for `child_scope`, if any, and publish its
     /// paused-spawn gate to `GATES` before returning — this always runs on
     /// the spawning (parent) thread, strictly before the new worker thread
@@ -1892,6 +1962,16 @@ mod forced_cancel_test_hook {
     pub(super) fn consume_pause_arm(child_scope: *mut HewTaskScope) -> Option<u64> {
         let key = child_scope as usize;
         let mut armed = ARMED.lock_or_recover();
+        let index = armed.iter().position(|&(scope, _)| scope == key)?;
+        let (_, generation) = armed.swap_remove(index);
+        drop(armed);
+        GATES.lock_or_recover().push((key, generation, false));
+        Some(generation)
+    }
+
+    pub(super) fn consume_result_pause(child_scope: *mut HewTaskScope) -> Option<u64> {
+        let key = child_scope as usize;
+        let mut armed = RESULT_ARMED.lock_or_recover();
         let index = armed.iter().position(|&(scope, _)| scope == key)?;
         let (_, generation) = armed.swap_remove(index);
         drop(armed);
@@ -1950,7 +2030,30 @@ mod forced_cancel_test_hook {
 }
 
 #[cfg(any(test, feature = "forced-cancel-test"))]
+pub use forced_cancel_test_hook::hew_test_pause_next_task_result_until_scope_cancel;
+#[cfg(any(test, feature = "forced-cancel-test"))]
 pub use forced_cancel_test_hook::hew_test_pause_next_task_spawn_until_scope_cancel;
+
+/// Test checkpoint immediately after a task result is published.
+///
+/// Production builds are a no-op. The forced-cancellation proving build can
+/// pause the selected task here until its owning scope is cancelled.
+///
+/// # Safety
+///
+/// `task` must be null or a valid pointer returned by [`hew_task_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_result_publication_checkpoint(task: *mut HewTask) {
+    cabi_guard!(task.is_null());
+    #[cfg(any(test, feature = "forced-cancel-test"))]
+    {
+        // SAFETY: caller guarantees `task` is valid.
+        let scope = unsafe { (*task).scope };
+        if let Some(generation) = forced_cancel_test_hook::consume_result_pause(scope) {
+            forced_cancel_test_hook::wait_for_release(scope as usize, generation);
+        }
+    }
+}
 
 /// Cancel all non-terminal tasks in the scope.
 ///
@@ -4160,6 +4263,96 @@ mod tests {
             assert_eq!((*task).load_state(), HewTaskState::Done);
 
             hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn zero_result_is_written_and_consumed_as_success() {
+        // SAFETY: the test owns the task and its copied result buffer.
+        unsafe {
+            let task = hew_task_new();
+            (*task).store_state(HewTaskState::Running, Ordering::Relaxed);
+            let zero = 0_i64;
+            hew_task_set_result(task, (&raw const zero).cast_mut().cast(), size_of::<i64>());
+            hew_task_complete_threaded(task);
+
+            assert_eq!((*task).error, HewTaskError::None);
+            assert!((*task).result_written);
+            let result = hew_task_take_result(task);
+            assert!(!result.is_null());
+            assert_eq!(*result.cast::<i64>(), 0);
+            assert!(hew_task_take_result(task).is_null());
+            hew_task_free(task);
+        }
+    }
+
+    #[test]
+    fn cancelled_published_owned_result_drops_exactly_once() {
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn drop_boxed_word(slot: *mut c_void) {
+            // SAFETY: `slot` points to the copied pointer representation and
+            // this callback is invoked only for its one unconsumed owner.
+            let owned = unsafe { *slot.cast::<*mut usize>() };
+            if !owned.is_null() {
+                // SAFETY: the test minted this pointer with Box::into_raw.
+                drop(unsafe { Box::from_raw(owned) });
+                DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        DROPS.store(0, Ordering::SeqCst);
+        // SAFETY: the test owns the task, token, and boxed result.
+        unsafe {
+            let task = hew_task_new();
+            (*task).store_state(HewTaskState::Running, Ordering::Relaxed);
+            hew_task_set_result_drop_fn(task, Some(drop_boxed_word));
+            let owned = Box::into_raw(Box::new(41_usize));
+            hew_task_set_result(
+                task,
+                (&raw const owned).cast_mut().cast(),
+                size_of::<*mut usize>(),
+            );
+            let token = hew_cancel_token_new_child(ptr::null_mut());
+            hew_task_set_cancel_token(task, token);
+            hew_cancel_token_cancel(token, HewTaskError::Cancelled as i32);
+            hew_task_complete_threaded(task);
+
+            assert_eq!((*task).error, HewTaskError::Cancelled);
+            assert!((*task).result_written);
+            assert_eq!(DROPS.load(Ordering::SeqCst), 0);
+            hew_task_free(task);
+            assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn consumed_owned_result_is_not_dropped_by_task_teardown() {
+        static TASK_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn count_task_drop(_slot: *mut c_void) {
+            TASK_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        TASK_DROPS.store(0, Ordering::SeqCst);
+        // SAFETY: the test owns the task and manually consumes the moved box.
+        unsafe {
+            let task = hew_task_new();
+            (*task).store_state(HewTaskState::Running, Ordering::Relaxed);
+            hew_task_set_result_drop_fn(task, Some(count_task_drop));
+            let owned = Box::into_raw(Box::new(73_usize));
+            hew_task_set_result(
+                task,
+                (&raw const owned).cast_mut().cast(),
+                size_of::<*mut usize>(),
+            );
+            hew_task_complete_threaded(task);
+            let result = hew_task_take_result(task);
+            let moved = *result.cast::<*mut usize>();
+            hew_task_free(task);
+            assert_eq!(TASK_DROPS.load(Ordering::SeqCst), 0);
+            assert_eq!(*moved, 73);
+            drop(Box::from_raw(moved));
         }
     }
 

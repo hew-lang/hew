@@ -6,11 +6,11 @@
 //! directions: `pump` awaits inbound frames, `say` writes outbound lines.
 //! `main` owns the terminal and forwards typed lines as messages.
 
-import std::net::{Connection};
+import std.net.{Connection};
 
-import std::io;
+import std.io;
 
-import std::os;
+import std.os;
 
 extern "C" {
     fn hew_bytes_to_string(data: bytes) -> string;
@@ -41,8 +41,8 @@ actor ChatLink {
     /// Outbound write. Only this actor touches the connection.
     receive fn say(line: string) {
         match conn.write_string(line) {
-            Ok(_) => {},
-            Err(_) => println("[client] send failed"),
+            .Ok(_) => {},
+            .Err(_) => println("[client] send failed"),
         }
     }
 }
@@ -62,8 +62,8 @@ fn main() {
     let connect_timeout_usec: i64 = 0;
     let conn = net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec);
     match conn.set_read_timeout(-1) {
-        Ok(_) => {},
-        Err(_) => {
+        .Ok(_) => {},
+        .Err(_) => {
             let err = f"[client] failed to set read timeout on connection to {addr}";
             panic(err);
         },

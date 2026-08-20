@@ -7,7 +7,7 @@
 //! module graph — the required-associated-type check keys off the impl's
 //! OWNER-qualified trait identity, not the poison-prone bare `trait_defs` entry.
 
-import hew::assocreq::{Source};
+import hew.assocreq.{Source};
 
 pub type W {
     id: i64;

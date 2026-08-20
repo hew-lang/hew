@@ -1,13 +1,38 @@
 use crate::common;
 
 use common::typecheck;
-use hew_types::error::TypeErrorKind;
+use hew_types::{error::TypeErrorKind, Ty};
+
+#[test]
+fn regex_literal_close_uses_canonical_resource_identity() {
+    let output = typecheck(
+        r#"
+        import std.text.regex;
+
+        fn main() {
+            let pattern = re"a+";
+            pattern.close();
+        }
+        "#,
+    );
+
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(
+        output
+            .expr_types
+            .values()
+            .any(|ty| { matches!(ty, Ty::Named { name, .. } if name == "std.text.regex.Pattern") }),
+        "regex literal must use the canonical pattern identity: {:#?}",
+        output.expr_types
+    );
+    assert_eq!(output.method_call_discharges_receiver.len(), 1);
+}
 
 #[test]
 fn regex_pattern_clone_preserves_pattern_type_via_registry_fallback() {
     let output = typecheck(
         r#"
-        import std::text::regex;
+        import std.text.regex;
 
         fn main() {
             let re = regex.new("a+");
@@ -29,7 +54,7 @@ fn regex_pattern_clone_preserves_pattern_type_via_registry_fallback() {
 fn regex_pattern_is_match_rejects_non_string_argument_via_registry_fallback() {
     let output = typecheck(
         r#"
-        import std::text::regex;
+        import std.text.regex;
 
         fn main() {
             let re = regex.new("a+");
@@ -52,7 +77,7 @@ fn regex_pattern_is_match_rejects_non_string_argument_via_registry_fallback() {
 fn regex_pattern_replace_rejects_non_string_replacement_via_registry_fallback() {
     let output = typecheck(
         r#"
-        import std::text::regex;
+        import std.text.regex;
 
         fn main() {
             let re = regex.new("[0-9]+");
@@ -75,7 +100,7 @@ fn regex_pattern_replace_rejects_non_string_replacement_via_registry_fallback() 
 fn regex_pattern_unknown_method_reports_undefined_method_via_registry_fallback() {
     let output = typecheck(
         r#"
-        import std::text::regex;
+        import std.text.regex;
 
         fn main() {
             let re = regex.new("a+");

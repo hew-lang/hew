@@ -1,4 +1,4 @@
-import std::text::regex;
+import std.text.regex;
 
 fn main() -> i64 {
     let re = regex.new("[");

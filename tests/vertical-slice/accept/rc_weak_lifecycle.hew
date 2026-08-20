@@ -4,7 +4,7 @@ type Node {
 }
 
 fn expired() -> Weak<i64> {
-    let rc = Rc::new(1);
+    let rc = Rc.new(1);
     rc.downgrade()
 }
 
@@ -16,7 +16,7 @@ fn upgraded_value(weak: Weak<i64>) -> i64 {
 }
 
 fn graph_replacement_counts() -> i64 {
-    let root = Rc::new(Node { label: "root", parent: None });
+    let root = Rc.new(Node { label: "root", parent: None });
     let weak = root.downgrade();
     root.set(Node { label: "back-edge", parent: Some(weak.clone()) });
     let before = root.weak_count();
@@ -25,7 +25,7 @@ fn graph_replacement_counts() -> i64 {
 }
 
 fn main() {
-    let rc = Rc::new(7);
+    let rc = Rc.new(7);
     print(rc.strong_count());
     print(rc.weak_count());
 
@@ -42,7 +42,7 @@ fn main() {
     print(if rc.is_unique() { 1 } else { 0 });
     print(graph_replacement_counts());
 
-    let empty = Rc::new(());
+    let empty = Rc.new(());
     print(empty.strong_count());
 
     let dead = expired();

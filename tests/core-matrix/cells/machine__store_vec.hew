@@ -14,7 +14,7 @@ fn main() {
     var y = Zero;
     y.step(Inc);
     y.step(Inc);
-    let v: Vec<Counter> = Vec::new();
+    let v: Vec<Counter> = Vec.new();
     v.push(x);
     v.push(y);
     let n = v.len();

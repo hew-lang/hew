@@ -59,11 +59,9 @@ fn run_hew_source(repo: &Path, stem: &str, source: &str) -> String {
     let path = dir.join(format!("{stem}.hew"));
     std::fs::write(&path, source).expect("write temp Hew source");
 
-    let output = hew_command(repo)
-        .arg("run")
-        .arg(&path)
-        .output()
-        .expect("spawn hew run");
+    let mut command = hew_command(repo);
+    command.arg("run").arg(&path);
+    let output = super::run_hew_command(&mut command, format!("hew run {}", path.display()));
     assert!(
         output.status.success(),
         "hew run {} exited non-zero (status={:?}); stderr:\n{}",
@@ -82,11 +80,11 @@ fn vec_i32_get_and_set_accept_i32_index_values() {
         "vec_i32_get_set_i32_index",
         r#"
         fn main() {
-            let queue: Vec<i32> = Vec::new();
+            let queue: Vec<i32> = Vec.new();
             queue.push(1);
             queue.push(2);
 
-            let offsets: Vec<i32> = Vec::new();
+            let offsets: Vec<i32> = Vec.new();
             offsets.push(10);
             offsets.push(20);
             offsets.push(30);

@@ -20,8 +20,8 @@ actor Mid {
     receive fn step(n: i64) -> i64 {
         let r = await bottom.leaf(n);
         match r {
-            Ok(v) => v * 2,
-            Err(_) => -1,
+            .Ok(v) => v * 2,
+            .Err(_) => -1,
         }
     }
 }
@@ -31,8 +31,8 @@ actor Top {
     receive fn run(n: i64) -> i64 {
         let r = await mid.step(n);
         match r {
-            Ok(v) => v + 1,
-            Err(_) => -1,
+            .Ok(v) => v + 1,
+            .Err(_) => -1,
         }
     }
 }
@@ -43,7 +43,7 @@ fn main() {
     let t = spawn Top(mid: m);
     let r = await t.run(5);
     match r {
-        Ok(v) => println(f"result={v}"),
-        Err(_) => println("chain failed"),
+        .Ok(v) => println(f"result={v}"),
+        .Err(_) => println("chain failed"),
     }
 }

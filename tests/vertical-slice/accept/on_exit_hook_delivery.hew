@@ -3,7 +3,7 @@
 // the canonical std::failure provenance path; stdout is emitted only by the
 // hook, so a successful run proves delivery as well as LLVM verification.
 
-import std::failure::{CrashNotification};
+import std.failure.{CrashNotification};
 
 actor Crasher {
     receive fn crash() {

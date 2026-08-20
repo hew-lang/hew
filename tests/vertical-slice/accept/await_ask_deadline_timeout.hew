@@ -9,7 +9,7 @@
 // process never hangs.
 //
 // Exit-code contract: the `after 60ms` deadline fires first → `Err(_)` arm → 7.
-import std::channel::channel;
+import std.channel.channel;
 
 actor Slow {
     receive fn block() -> i64 {

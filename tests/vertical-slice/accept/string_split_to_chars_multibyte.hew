@@ -4,7 +4,7 @@
 // yield 4 elements, with "é" (U+00E9, two UTF-8 bytes) as a single element —
 // never split into its raw bytes. Each element must be a well-formed UTF-8
 // string; the test asserts both count and exact element values.
-import std::string;
+import std.string;
 
 fn main() {
     let parts = string.split("café", "");

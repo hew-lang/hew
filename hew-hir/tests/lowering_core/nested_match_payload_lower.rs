@@ -271,6 +271,48 @@ fn arm_body_prelude_binding_names(arm: &hew_hir::HirMatchArm) -> Vec<String> {
         .collect()
 }
 
+#[test]
+fn qualified_tuple_variant_aggregate_binds_nested_names() {
+    let output = lower_checked(
+        r"
+enum Pair { Both((i64, i64)); None }
+
+fn sum(pair: Pair) -> i64 {
+    match pair {
+        Pair.Both((a, b)) => a + b,
+        Pair.None => 0,
+    }
+}",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+
+    let HirExprKind::Match { arms, .. } = find_match_in_fn(&output, "sum") else {
+        panic!("expected match expression")
+    };
+    let both_arm = &arms[0];
+    assert!(
+        both_arm
+            .bindings
+            .iter()
+            .any(|binding| binding.name.starts_with("__payload_")),
+        "qualified aggregate arm must retain its payload projection: {:?}",
+        both_arm.bindings
+    );
+    let nested = arm_body_prelude_binding_names(both_arm);
+    assert!(
+        nested.iter().any(|name| name == "a"),
+        "missing `a`: {nested:?}"
+    );
+    assert!(
+        nested.iter().any(|name| name == "b"),
+        "missing `b`: {nested:?}"
+    );
+}
+
 // Regression for hew-lang/hew#2354: a tuple sub-pattern in enum struct-variant
 // field position (`Data { value: (a, b) }`) passed the checker but failed HIR
 // lowering with `E_HIR: identifier has no binding` because the aggregate
@@ -405,5 +447,58 @@ fn sum(b: Box<i64>) -> i64 {
     assert_eq!(
         temp.ty,
         ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64])
+    );
+}
+
+#[test]
+fn struct_variant_tuple_field_let_else_binds_inner_names() {
+    let output = lower_checked(
+        r"
+enum Packet {
+    Data { pair: (i64, i64) };
+    Empty;
+}
+
+fn sum(value: Packet) -> i64 {
+    let Packet.Data { pair: (a, b) } = value else { return 0 };
+    a + b
+}",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+
+    let HirItem::Function(function) = output
+        .module
+        .items
+        .iter()
+        .find(|item| matches!(item, HirItem::Function(function) if function.name == "sum"))
+        .expect("sum function present")
+    else {
+        unreachable!()
+    };
+    let let_else = function
+        .body
+        .statements
+        .iter()
+        .find_map(|statement| match &statement.kind {
+            hew_hir::HirStmtKind::LetElse {
+                success_prelude, ..
+            } => Some(success_prelude),
+            _ => None,
+        })
+        .expect("struct-variant let-else present");
+    let nested: Vec<&str> = let_else
+        .iter()
+        .filter_map(|statement| match &statement.kind {
+            hew_hir::HirStmtKind::Let(binding, _) => Some(binding.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        nested.contains(&"a") && nested.contains(&"b"),
+        "inner binders `a`/`b` missing from let-else success prelude: {nested:?}"
     );
 }

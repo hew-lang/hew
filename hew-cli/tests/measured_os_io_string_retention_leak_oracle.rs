@@ -13,9 +13,9 @@ mod support;
 use support::leak_slope::assert_frame_slope_below_tolerance_exact_lines;
 
 const SOURCE: &str = r#"
-import std::encoding::compress;
-import std::os;
-import std::process;
+import std.encoding.compress;
+import std.os;
+import std.process;
 
 fn one_frame() -> i64 {
     let arg = os.args(0);

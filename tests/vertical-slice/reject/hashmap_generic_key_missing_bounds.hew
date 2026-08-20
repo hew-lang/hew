@@ -5,6 +5,6 @@ fn has_key<K, V>(m: HashMap<K, V>, k: K) -> bool {
 }
 
 fn main() {
-    let m: HashMap<string, i64> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap.new();
     let _ = has_key(m, "hello");
 }

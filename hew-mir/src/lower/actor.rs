@@ -1459,10 +1459,10 @@ impl Builder {
             // because its direction discriminant is not a drop-ritual concern.
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: format!("explicit Duplex::close() on a raw handle ({recv_place:?})"),
+                    construct: format!("explicit Duplex.close() on a raw handle ({recv_place:?})"),
                     site,
                 },
-                note: "explicit `Duplex::close()` on a raw `Duplex<S,R>` binding is closed \
+                note: "explicit `Duplex.close()` on a raw `Duplex<S,R>` binding is closed \
                        implicitly at scope exit by drop elaboration; remove the explicit \
                        `.close()` call. Split the handle and close a half \
                        (`SendHalf`/`RecvHalf`) for an explicit per-direction close."

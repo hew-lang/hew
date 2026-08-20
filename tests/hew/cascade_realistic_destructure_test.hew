@@ -8,7 +8,7 @@
 //! All tests assert EXACT field values — a runtime-green exit alone is not
 //! evidence (a garbage codegen path can produce exit 0 with wrong field data).
 
-import std::testing;
+import std.testing;
 
 type Point {
     x: i64;

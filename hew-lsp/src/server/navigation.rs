@@ -1242,7 +1242,7 @@ fn scan_disk_importers_for_conflicts(
         let parse_result = hew_parser::parse(&source);
 
         // Only proceed if this file imports `renamed_name` (non-aliased) from
-        // `definition_uri`.  Aliased importers (`import foo::{ x as y }`) only
+        // `definition_uri`. Aliased importers (`import foo.{ x as y }`) only
         // rewrite the imported token — the visible binding remains the alias, so
         // they cannot introduce a `renamed_name`-visible conflict (#1285 quality).
         let imports_target_nonaliased =
@@ -1399,9 +1399,8 @@ fn find_cross_file_definition_impl(
                 };
                 &entry.name // search target file by the *original* name
             }
-            Some(ImportSpec::Glob) => word, // glob: any name may come from here
             None => {
-                // Bare path import (`import foo::bar`).  The last path segment
+                // Bare path import (`import foo.bar`).  The last path segment
                 // is itself a navigable target (e.g. cursor on `bar`).
                 if import.path.last().map(String::as_str) == Some(word)
                     && (documents.contains_key(&target_uri) || path.exists())
@@ -1498,10 +1497,9 @@ fn load_navigation_target(path: &std::path::Path) -> Option<(String, Vec<usize>,
 /// no workspace root exists or when the symbol is a Rust-registered type-method
 /// builtin with no `.hew` source.
 ///
-/// SHIM: `O(#workspace_files)` per goto-def miss. Acceptable for now — goto-def
-/// misses are rare in practice and `collect_hew_files` already exists for
-/// rename. A proper solution would add a workspace-level symbol index populated
-/// at startup.
+/// SHIM: `O(#workspace_files)` per goto-def miss. Replace the file scan with a
+/// workspace-level symbol index populated at startup when navigation latency
+/// requires indexed lookup.
 pub(super) fn find_stdlib_definition(
     current_uri: &Url,
     imports: &[hew_parser::ast::ImportDecl],
@@ -1560,9 +1558,8 @@ pub(super) fn find_stdlib_definition(
 /// confirmed to have a definition somewhere in the workspace (checked by the
 /// caller).
 ///
-/// SHIM: `O(#files × #tokens)` per call. Acceptable for now — references is
-/// user-initiated and infrequent. A proper solution would maintain an inverted
-/// index at startup.
+/// SHIM: `O(#files × #tokens)` per call. Replace the scan with an inverted index
+/// populated at startup when reference-search latency requires indexed lookup.
 fn collect_workspace_references(
     current_uri: &Url,
     name: &str,
@@ -1721,7 +1718,7 @@ mod tests {
 
     #[test]
     fn importer_fanout_helper_includes_usage_spans_for_non_aliased_imports() {
-        let source = "import util::{ greet };\nfn main() -> i32 { greet() }";
+        let source = "import util.{ greet };\nfn main() -> i32 { greet() }";
         let source_uri = make_test_uri("/project/main.hew");
         let target_uri = make_test_uri("/project/util.hew");
         let importer = first_named_import_match(source, &source_uri, &target_uri);
@@ -1735,7 +1732,7 @@ mod tests {
 
     #[test]
     fn importer_fanout_helper_skips_usage_spans_for_aliased_imports() {
-        let source = "import util::{ greet as hello };\nfn main() -> i32 { hello() }";
+        let source = "import util.{ greet as hello };\nfn main() -> i32 { hello() }";
         let source_uri = make_test_uri("/project/main.hew");
         let target_uri = make_test_uri("/project/util.hew");
         let importer = first_named_import_match(source, &source_uri, &target_uri);
@@ -1747,7 +1744,7 @@ mod tests {
 
     #[test]
     fn import_originated_rename_conflicts_detect_definition_file_clash() {
-        let main_source = "import util::{ greet };\nfn main() -> i32 { greet() }";
+        let main_source = "import util.{ greet };\nfn main() -> i32 { greet() }";
         let util_source = "pub fn greet() -> i32 { 1 }\npub fn hello() -> i32 { 2 }";
         let main_uri = make_test_uri("/project/main.hew");
         let util_uri = make_test_uri("/project/util.hew");
@@ -1978,7 +1975,7 @@ mod tests {
     fn definition_originated_rename_conflicts_detect_importer_shadow() {
         let util_source = "pub fn foo() -> i32 { 1 }";
         let main_source =
-            "import util::{ foo };\nimport other::{ bar };\nfn main() -> i32 { foo() + bar() }";
+            "import util.{ foo };\nimport other.{ bar };\nfn main() -> i32 { foo() + bar() }";
         let other_source = "pub fn bar() -> i32 { 2 }";
         let util_uri = make_test_uri("/project/util.hew");
         let main_uri = make_test_uri("/project/main.hew");

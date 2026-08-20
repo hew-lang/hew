@@ -3531,6 +3531,29 @@ impl Builder {
                                 Some(&expr.ty),
                             );
                         }
+                        if family == &hew_types::runtime_call::RuntimeCallFamily::StructuralFormat {
+                            if args.len() != 1 {
+                                self.diagnostics.push(MirDiagnostic {
+                                    kind: MirDiagnosticKind::NotYetImplemented {
+                                        construct: "structural format arity".to_string(),
+                                        site: expr.site,
+                                    },
+                                    note: format!(
+                                        "structural formatting expects one argument, got {}",
+                                        args.len()
+                                    ),
+                                });
+                                return None;
+                            }
+                            let value = self.lower_value(&args[0])?;
+                            let dest = self.alloc_local(ResolvedTy::String);
+                            self.push_runtime_call(
+                                "hew_structural_format",
+                                vec![value],
+                                Some(dest),
+                            );
+                            return Some(dest);
+                        }
                         // `runtime_symbol_for_call_expr` handled the ABI subset
                         // above.  The remaining typed families are the explicit
                         // direct/codegen-intercept partition.

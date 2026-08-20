@@ -631,6 +631,15 @@ stable = [
   "hew_stream_take",
   "hew_string_abort_index_oob",
   "hew_string_abort_oob",
+  "hew_string_builder_append_bool",
+  "hew_string_builder_append_char",
+  "hew_string_builder_append_cstr",
+  "hew_string_builder_append_f64",
+  "hew_string_builder_append_i64",
+  "hew_string_builder_append_identity",
+  "hew_string_builder_append_u64",
+  "hew_string_builder_finish",
+  "hew_string_builder_new",
   "hew_string_byte_length",
   "hew_string_char_at",
   "hew_string_char_at_utf8",
@@ -668,6 +677,9 @@ stable = [
   "hew_string_to_lowercase",
   "hew_string_to_uppercase",
   "hew_string_trim",
+  "hew_structural_format",
+  "hew_structural_format_hashmap",
+  "hew_structural_format_vec",
   "hew_supervisor_add_child_supervisor",
   "hew_supervisor_add_child_supervisor_with_init",
   "hew_supervisor_child_count",
@@ -2633,6 +2645,93 @@ params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_builder_append_bool"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_builder_append_char"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_builder_append_cstr"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_builder_append_f64"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_builder_append_i64"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_builder_append_identity"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_builder_append_u64"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_builder_finish"
+result = "fresh"
+params = ["consume"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_builder_new"
+result = "fresh"
+params = []
+release-symbol = "hew_string_builder_finish"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_structural_format"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_structural_format_hashmap"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_structural_format_vec"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_unicode_is_alnum"

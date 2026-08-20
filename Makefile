@@ -1064,10 +1064,10 @@ test-example-expectations-selftest:
 	@python3 scripts/tests/test_example_expectations.py
 
 # Check ```hew fenced blocks in docs/ against hew check.
-# Extracts each fence from docs/hew-language-guide.md and docs/specs/HEW-SPEC-2026.md
-# into .tmp/doc-fences/, runs `hew check` on each, and applies the ratchet
-# from scripts/doc-test-expected-failures.txt so known-failing fences do not
-# block the gate while new failures always do.
+# Extracts each fence from the Markdown guides and docs/language/*.hew module
+# doc blocks into .tmp/doc-fences/, runs `hew check` on each, and applies the
+# ratchet from scripts/doc-test-expected-failures.txt so known-failing fences
+# do not block the gate while new failures always do.
 #
 # Skip-annotated fences (<!-- doctest: skip --> or preceding NYI callout) are
 # never compiled — they describe aspirational or not-yet-implemented surfaces.

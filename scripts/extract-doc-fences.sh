@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # extract-doc-fences.sh — Extract and typecheck ```hew fenced blocks from docs/.
 #
-# Walks docs/hew-language-guide.md and docs/specs/HEW-SPEC-2026.md, emits each
+# Walks the Markdown guides and every docs/language/*.hew module, emits each
 # ```hew fence to .tmp/doc-fences/<source>-<n>.hew, then runs `hew check` on
 # each one and applies the ratchet against scripts/doc-test-expected-failures.txt.
 #
@@ -63,12 +63,35 @@ HEW_BIN="${HEW_BIN:-$(cargo_debug_dir "$REPO_ROOT")/hew}"
 DOCS=(
     "docs/hew-language-guide.md:guide"
     "docs/specs/HEW-SPEC-2026.md:spec"
-    "docs/language/actors.hew:lang-actors"
-    "docs/language/concurrency.hew:lang-concurrency"
-    "docs/language/machines.hew:lang-machines"
-    "docs/language/resources.hew:lang-resources"
-    "docs/language/supervision.hew:lang-supervision"
 )
+LANGUAGE_DOC_DIR="$REPO_ROOT/docs/language"
+
+add_language_docs() {
+    local language_doc
+    local language_name
+    local relative_path
+    local found=0
+
+    [[ -d "$LANGUAGE_DOC_DIR" ]] || {
+        echo "error: language documentation directory not found: $LANGUAGE_DOC_DIR" >&2
+        exit 1
+    }
+
+    while IFS= read -r language_doc; do
+        found=1
+        relative_path="${language_doc#"$REPO_ROOT"/}"
+        language_name="${language_doc##*/}"
+        language_name="${language_name%.hew}"
+        DOCS+=("$relative_path:lang-$language_name")
+    done < <(find "$LANGUAGE_DOC_DIR" -maxdepth 1 -type f -name '*.hew' -print | LC_ALL=C sort)
+
+    (( found )) || {
+        echo "error: no language documentation modules found in $LANGUAGE_DOC_DIR" >&2
+        exit 1
+    }
+}
+
+add_language_docs
 
 usage() {
     cat <<'EOF'

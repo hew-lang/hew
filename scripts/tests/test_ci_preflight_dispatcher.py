@@ -416,11 +416,17 @@ def test_rust_diff_derives_its_warmup_artifacts_before_commands() -> None:
     result = run_dispatcher("hew-parser/src/lib.rs")
 
     assert result.returncode == 0, result.stderr
+    packages = (
+        "-p hew-analysis -p hew-cli -p hew-codegen-rs -p hew-compile -p hew-hir "
+        "-p hew-lsp -p hew-mir -p hew-parser -p hew-sandbox-wasm -p hew-types "
+        "-p hew-wasm -p xtask"
+    )
     warmup = result.stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
     assert warmup == (
-        "  - cargo build --workspace --all-targets\n"
+        f"  - cargo clippy {packages} --tests\n"
         "  - make hew\n"
         "  - make wasm-runtime\n"
+        f"  - cargo nextest run --profile ci {packages} --no-run\n"
     ), result.stdout
     assert result.stdout.index("Warm-up:\n") < result.stdout.index("Commands:\n")
 
@@ -430,6 +436,46 @@ def test_docs_diff_has_no_warmup_block() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "Warm-up:\n" not in result.stdout, result.stdout
+
+
+def test_no_lane_warms_test_targets_with_all_targets() -> None:
+    """`cargo build --all-targets` cannot build a test harness under panic=abort.
+
+    The root `[profile.dev] panic = "abort"` makes a combined lib+test build
+    fail ("requires panic strategy abort which is incompatible with this
+    crate's strategy of unwind"), which is how this warm-up turned main red.
+    Test binaries are warmed the way `make test` builds them: `--no-run`.
+    """
+    for path in (
+        "hew-parser/src/lib.rs",
+        "hew-runtime/src/lib.rs",
+        "hew-codegen-rs/src/lib.rs",
+        "hew-observe/src/lib.rs",
+        "Makefile",
+    ):
+        result = run_dispatcher(path)
+        assert result.returncode == 0, result.stderr
+        warmup = result.stdout.split("Warm-up:\n", 1)
+        if len(warmup) == 1:
+            continue
+        warmup = warmup[1].split("Commands:\n", 1)[0]
+        assert "--all-targets" not in warmup, (path, result.stdout)
+
+
+def test_comprehensive_warms_clippy_and_nextest_the_way_the_gates_build() -> None:
+    """The comprehensive lane warms `make lint`'s clippy and `make test`'s binaries."""
+    result = run_dispatcher("Makefile")
+
+    assert result.returncode == 0, result.stderr
+    warmup = result.stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
+    assert "  - cargo clippy --workspace --tests\n" in warmup, result.stdout
+    assert (
+        "  - cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run\n"
+        in warmup
+    ), result.stdout
+    assert "  - cargo nextest run --profile ci-cabi -p hew-cabi --no-run\n" in warmup, (
+        result.stdout
+    )
 
 
 def test_scripts_config_budget_annotation() -> None:
@@ -1098,6 +1144,8 @@ _TESTS = [
     test_compile_warmup_runs_first_and_has_a_summary_row,
     test_rust_diff_derives_its_warmup_artifacts_before_commands,
     test_docs_diff_has_no_warmup_block,
+    test_no_lane_warms_test_targets_with_all_targets,
+    test_comprehensive_warms_clippy_and_nextest_the_way_the_gates_build,
     test_scripts_config_budget_annotation,
     test_runtime_net_lane_budget_annotation,
     test_runtime_net_lane_rebuilds_libhew,

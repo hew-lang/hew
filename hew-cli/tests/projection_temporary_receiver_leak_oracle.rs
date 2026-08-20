@@ -36,7 +36,7 @@ fn projection_shapes_source(frames: usize) -> String {
          \x20       + map.values().len()\n\
          \x20       + set.clone().len()\n\
          \x20       + values[..].len()\n\
-         \x20       + make_vec(seed).len();\n\
+         \x20       + make_vec(seed).clone().len();\n\
          \x20   var iterated = 0;\n\
          \x20   for key in map.keys() {{\n\
          \x20       if key.len() > 0 {{ iterated = iterated + 1; }}\n\

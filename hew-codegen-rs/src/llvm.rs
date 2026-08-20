@@ -22347,6 +22347,9 @@ fn call_destination_has_specialized_crash_cleanup_lifecycle(
             matches!(
                 family,
                 Family::VecGet(hew_types::runtime_call::VecGetElem::Clone)
+                    | Family::VecClone
+                    | Family::VecCloneLayout
+                    | Family::VecCloneOwned
             ) || matches!(
                 family.abi_shape(),
                 Shape::HashCollectionLayoutOp | Shape::HashMapLayoutGet

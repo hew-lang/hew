@@ -18,6 +18,6 @@ fn main() -> i64 {
         + map.values().len()
         + set.clone().len()
         + values[..].len()
-        + make_vec(7).len();
+        + make_vec(7).clone().len();
     if total == 15 { 0 } else { 91 }
 }

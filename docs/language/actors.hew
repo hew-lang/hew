@@ -20,8 +20,8 @@
 //!     c.increment(20);
 //!     let result = await c.total();
 //!     match result {
-//!         Ok(value) => println(f"total={value}"),
-//!         Err(_) => println("ask failed"),
+//!         .Ok(value) => println(f"total={value}"),
+//!         .Err(_) => println("ask failed"),
 //!     }
 //! }
 //! ```
@@ -46,8 +46,8 @@
 //!     receive fn run(n: i64) -> i64 {
 //!         let reply = await worker.compute(n);
 //!         match reply {
-//!             Ok(value) => value,
-//!             Err(_) => -1,
+//!             .Ok(value) => value,
+//!             .Err(_) => -1,
 //!         }
 //!     }
 //! }
@@ -55,8 +55,8 @@
 //!     let worker = spawn Worker(factor: 6);
 //!     let coordinator = spawn Coordinator(worker: worker);
 //!     match await coordinator.run(7) {
-//!         Ok(value) => println(value),
-//!         Err(_) => println("failed"),
+//!         .Ok(value) => println(value),
+//!         .Err(_) => println("failed"),
 //!     }
 //! }
 //! ```

@@ -19,9 +19,9 @@
 //! }
 //!
 //! fn main() {
-//!     var counter = Counter::Zero;
-//!     counter.step(CounterEvent::Inc);
-//!     counter.step(CounterEvent::Inc);
+//!     var counter = Counter.Zero;
+//!     counter.step(CounterEvent.Inc);
+//!     counter.step(CounterEvent.Inc);
 //!     println(counter.state_name());
 //! }
 //! ```

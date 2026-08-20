@@ -5753,6 +5753,12 @@ impl Builder {
                 // COPY-IN param embeds stay caller-borrowed; only the source
                 // temp's independently retained string share gains an owner.
                 self.finalize_vec_copy_in_source_owner(&callee, args, &arg_places);
+                let receiver_contract = crate::runtime_symbols::callee_ownership_contract(&callee);
+                if receiver_contract.borrows_vec_receiver()
+                    || receiver_contract.borrows_collection_receiver()
+                {
+                    self.finalize_borrowed_receiver_owner(receiver, receiver_place);
+                }
                 let dest = if matches!(ret_ty, ResolvedTy::Unit) {
                     None
                 } else {

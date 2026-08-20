@@ -1214,10 +1214,11 @@ run_accept_expect_stdout "resource_nonreceiver_method_arg_drops_once"
 # A fluent builder transfers a consumed child into its receiver while returning
 # that receiver, matching the standard encoding value-tree contract. The accept
 # fixture also pins both explicit release spellings: compiler-visible `close()`
-# and its consuming `free()` compatibility alias.
-"${HEW}" check \
-    "${ROOT}/tests/vertical-slice/accept/consume_param_transfer_builder.hew" \
-    >"${accept_output}" 2>&1
+# and its consuming `free()` compatibility alias. It goes through `compile`, not
+# `check`: its `extern "C"` sinks are the runtime's real json ownership entry
+# points, so link failure is a regression this fixture must surface here rather
+# than only in the fuzz oracle that compiles and runs the whole accept corpus.
+compile_accept "consume_param_transfer_builder"
 
 # Reusing the transferred child must fail at checked MIR with main's concrete
 # consume-parameter diagnostic.

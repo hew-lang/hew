@@ -1,10 +1,22 @@
+// Accept fixture: consume_param_transfer_builder — a user-defined `#[resource]`
+// wrapper whose fluent builder consumes a child and returns its consuming
+// receiver, matching the shipped encoding value-tree contract. `free()` is a
+// consuming compatibility alias of the compiler-visible `close()` disposer, and
+// the resource is also returned through a `Result` payload so aggregate
+// ownership is exercised.
+//
+// The native handle is a real json value tree, so the transfer sink
+// (`hew_json_array_push`) and the disposer (`hew_json_free`) are the runtime's
+// own ownership-taking entry points: the fixture links and runs, and a
+// double-free or leak of a transferred child is a live abort, not a
+// type-check-only claim.
+//
+// Harness verb: hew check (compile guard) + fuzz-oracle compile & run.
+// Expected: clean check, clean run, exit 0.
 #[opaque]
 type Handle {
 }
-// Model the shipped value-tree contract with an explicit native-handle field:
-// builders consume a child while returning their consuming receiver, and
-// `free()` remains a consuming compatibility alias of `close()`. Returning the
-// resource through a Result payload also exercises aggregate ownership.
+
 #[resource]
 type Value {
     handle: Handle;
@@ -28,7 +40,7 @@ impl ValueMethods for Value {
     #[returns_receiver]
     fn push(consuming self, consume child: Value) -> Value {
         unsafe {
-            hpush(self.handle, child.release())
+            hew_json_array_push(self.handle, child.release())
         };
         self
     }
@@ -37,7 +49,7 @@ impl ValueMethods for Value {
 impl Value {
     fn close(consuming self) {
         unsafe {
-            hclose(self.handle)
+            hew_json_free(self.handle)
         };
     }
     fn release(consuming self) -> Handle {
@@ -46,44 +58,44 @@ impl Value {
 }
 
 extern "C" {
-    fn hclose(consume handle: Handle);
-    fn hpush(handle: Handle, consume child: Handle);
-    fn hmake() -> Handle;
-    fn hkind(handle: Handle) -> i32;
+    fn hew_json_free(consume handle: Handle);
+    fn hew_json_array_push(handle: Handle, consume child: Handle);
+    fn hew_json_array_new() -> Handle;
+    fn hew_json_type(handle: Handle) -> i32;
 }
 
 fn try_build() -> Result<Value, BuildError> {
     let value = Value { handle: unsafe {
-        hmake()
+        hew_json_array_new()
     } };
     if unsafe {
-        hkind(value.handle)
+        hew_json_type(value.handle)
     } >= 0 {
         let child = Value { handle: unsafe {
-            hmake()
+            hew_json_array_new()
         } };
         Ok(value.push(child))
     } else {
         value.close();
-        Err(BuildError::Failed("bad handle"))
+        Err(BuildError.Failed("bad handle"))
     }
 }
 
 fn close_canonical() {
     match try_build() {
-        Ok(value) => {
+        .Ok(value) => {
             value.close();
         },
-        Err(BuildError::Failed(_)) => {},
+        .Err(BuildError.Failed(_)) => {},
     }
 }
 
 fn close_compatibility_alias() {
     match try_build() {
-        Ok(value) => {
+        .Ok(value) => {
             value.free();
         },
-        Err(BuildError::Failed(_)) => {},
+        .Err(BuildError.Failed(_)) => {},
     }
 }
 

@@ -30,7 +30,7 @@
 mod support;
 
 use support::leak_slope::{
-    assert_frame_slope_below_tolerance, compile_to_native, run_under_malloc_scribble,
+    assert_frame_slope_below_tolerance_exact_lines, compile_to_native, run_under_malloc_scribble,
 };
 use support::{describe_output, require_codegen};
 
@@ -46,7 +46,7 @@ use support::{describe_output, require_codegen};
 fn transfer_loop_source(frames: usize) -> String {
     let expected_total = frames * frames.saturating_sub(1) / 2;
     format!(
-        "import std::encoding::json;\n\
+        "import std.encoding.json;\n\
          fn build(n: i64) -> i64 {{\n\
          \x20   let arr = json.array().push(json.from_int(n)).push(json.from_int(n + 1));\n\
          \x20   let obj = json.object().with(\"items\", arr).with_int(\"tag\", n);\n\
@@ -58,7 +58,7 @@ fn transfer_loop_source(frames: usize) -> String {
          }}\n\
          fn run_loop(frames: i64) -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
-         \x20   for i in 0..frames {{ total = total + build(i); }}\n\
+         \x20   for i in 0..frames {{ let got = build(i); println(got); total = total + got; }}\n\
          \x20   total\n\
          }}\n\
          fn main() -> i64 {{\n\
@@ -101,11 +101,21 @@ fn consume_param_transfer_no_double_free_under_malloc_scribble() {
 /// LOW vs HIGH iteration counts. A transferred child (and the object root) is
 /// freed exactly once per iteration; a leaked child or a leaked root shows a
 /// positive slope.
+///
+/// The probe prints the read-back tag once per iteration, so the exact-lines
+/// witness pins the printed line count at `frames` for BOTH probes. A flat leak
+/// delta is only trusted when the loop demonstrably ran to completion — a probe
+/// that trapped, bailed on the running-total check, or never entered the loop
+/// prints fewer lines and fails the witness before any leak number is read.
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "the leak-slope oracle requires macOS leaks(1)"
 )]
 #[test]
 fn consume_param_transfer_leak_slope_below_tolerance() {
-    assert_frame_slope_below_tolerance("consume_param_transfer", transfer_loop_source);
+    assert_frame_slope_below_tolerance_exact_lines(
+        "consume_param_transfer",
+        transfer_loop_source,
+        |frames| frames,
+    );
 }

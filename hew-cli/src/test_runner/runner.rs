@@ -4,8 +4,6 @@ use super::discovery::TestCase;
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -580,24 +578,33 @@ mod tests {
     use std::sync::OnceLock;
 
     fn require_codegen() -> bool {
-        ensure_test_toolchain()
+        test_toolchain_lib().is_some()
     }
 
-    /// Ensure the full native test toolchain is available before tests that
-    /// exercise `hew test` end-to-end.
-    fn ensure_test_toolchain() -> bool {
-        static BUILD_OK: OnceLock<bool> = OnceLock::new();
-        *BUILD_OK.get_or_init(|| {
-            Command::new("make")
-                .current_dir(
-                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                        .parent()
-                        .expect("hew-cli should have a workspace parent"),
-                )
-                .arg("stdlib")
-                .status()
-                .is_ok_and(|status| status.success())
-        })
+    /// Build the native test toolchain and resolve the `libhew.a` these tests
+    /// link against, serialized across every concurrent test process.
+    ///
+    /// This MUST go through [`hew_testutil::ensure_hew_lib_built`] rather than
+    /// shelling `make stdlib`. Under nextest each test is its own process, so a
+    /// process-local `OnceLock` serializes nothing across the suite: an
+    /// unlocked `cargo build -p hew-lib` here is simultaneously an unlocked
+    /// WRITER (Cargo uplifts `libhew.a` non-atomically) and an unlocked READER
+    /// (the link below `open()`s that same archive). Either role can land
+    /// inside another participant's uplift window, and the link then fails with
+    /// the `libhew.a`-absence signature -- which this module reports as a
+    /// `compile error` and a 0-passed summary, i.e. a spurious failure of an
+    /// `assert(true)` test. The shared `fd_lock` + `NEXTEST_RUN_ID` stamp is
+    /// the project-wide authority for that window; see
+    /// `hew-testutil/tests/libhew_link_race.rs` for the multi-process proof.
+    ///
+    /// Returning the archive path that was actually built (instead of
+    /// re-deriving one from `OUT_DIR`) keeps "the archive we built" and "the
+    /// archive we link" the same object by construction.
+    fn test_toolchain_lib() -> Option<&'static PathBuf> {
+        static HEW_LIB: OnceLock<Option<PathBuf>> = OnceLock::new();
+        HEW_LIB
+            .get_or_init(|| hew_testutil::ensure_hew_lib_built().ok())
+            .as_ref()
     }
 
     fn cargo_test_compile_paths() -> &'static TestCompilePaths {
@@ -607,18 +614,11 @@ mod tests {
                 .parent()
                 .expect("hew-cli should have a workspace parent")
                 .to_path_buf();
-            let cargo_profile_dir = Path::new(env!("OUT_DIR"))
-                .ancestors()
-                .nth(3)
-                .expect("OUT_DIR should be below the Cargo profile directory");
-            let target = crate::target::TargetSpec::from_requested(None)
-                .expect("the test host target should resolve");
-            TestCompilePaths::from_explicit(
-                workspace_root.clone(),
-                vec![workspace_root],
-                cargo_profile_dir.join(target.hew_lib_name()),
-            )
-            .expect("make stdlib should provide explicit test compiler paths")
+            let hew_lib = test_toolchain_lib()
+                .expect("require_codegen must gate every caller of this helper")
+                .clone();
+            TestCompilePaths::from_explicit(workspace_root.clone(), vec![workspace_root], hew_lib)
+                .expect("the serialized toolchain build should provide test compiler paths")
         })
     }
 
@@ -658,6 +658,39 @@ mod tests {
             error.contains(&archive.display().to_string()),
             "error: {error}"
         );
+    }
+
+    /// Render every non-passing outcome so a count assertion reports WHY it
+    /// failed, not just `left: 0, right: 1`.
+    ///
+    /// A toolchain-level fault (a link against a half-written `libhew.a`, a
+    /// missing archive) surfaces here as a compile error on a test whose body
+    /// is `assert(true)`. Without this the CI log carries the count and
+    /// discards the cause, so the mechanism has to be re-derived by hand.
+    fn describe(summary: &TestSummary) -> String {
+        let detail = summary
+            .results
+            .iter()
+            .filter_map(|result| match &result.outcome {
+                TestOutcome::Failed(reason) => {
+                    Some(format!("{} FAILED: {reason}", result.test.name))
+                }
+                TestOutcome::Ignored => Some(format!("{} ignored", result.test.name)),
+                TestOutcome::Passed => None,
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "passed={} failed={} ignored={}{}",
+            summary.passed,
+            summary.failed,
+            summary.ignored,
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(" [{detail}]")
+            }
+        )
     }
 
     /// Helper to run tests from inline source.
@@ -706,8 +739,8 @@ fn test_pass() {
 }
 ",
         );
-        assert_eq!(summary.passed, 1);
-        assert_eq!(summary.failed, 0);
+        assert_eq!(summary.passed, 1, "{}", describe(&summary));
+        assert_eq!(summary.failed, 0, "{}", describe(&summary));
     }
 
     #[test]
@@ -723,8 +756,8 @@ fn test_fail() {
 }
 ",
         );
-        assert_eq!(summary.passed, 0);
-        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.passed, 0, "{}", describe(&summary));
+        assert_eq!(summary.failed, 1, "{}", describe(&summary));
     }
 
     #[test]
@@ -742,7 +775,7 @@ fn test_add() {
 }
 ",
         );
-        assert_eq!(summary.passed, 1);
+        assert_eq!(summary.passed, 1, "{}", describe(&summary));
     }
 
     #[test]
@@ -758,7 +791,7 @@ fn test_bad_eq() {
 }
 ",
         );
-        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.failed, 1, "{}", describe(&summary));
         if let TestOutcome::Failed(msg) = &summary.results[0].outcome {
             assert!(msg.contains("assert_eq"), "error message: {msg}");
         }
@@ -778,7 +811,7 @@ fn test_expected_panic() {
 }
 ",
         );
-        assert_eq!(summary.passed, 1);
+        assert_eq!(summary.passed, 1, "{}", describe(&summary));
     }
 
     #[test]
@@ -795,7 +828,7 @@ fn test_no_panic() {
 }
 ",
         );
-        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.failed, 1, "{}", describe(&summary));
     }
 
     #[test]
@@ -812,9 +845,9 @@ fn test_skip() {
 }
 ",
         );
-        assert_eq!(summary.ignored, 1);
-        assert_eq!(summary.passed, 0);
-        assert_eq!(summary.failed, 0);
+        assert_eq!(summary.ignored, 1, "{}", describe(&summary));
+        assert_eq!(summary.passed, 0, "{}", describe(&summary));
+        assert_eq!(summary.failed, 0, "{}", describe(&summary));
     }
 
     #[test]
@@ -833,7 +866,7 @@ fn test_timeout() {
 "#,
             Duration::from_millis(100),
         );
-        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.failed, 1, "{}", describe(&summary));
         match &summary.results[0].outcome {
             TestOutcome::Failed(message) => assert!(message.contains("timed out after 100ms")),
             outcome => panic!("expected timeout failure, got {outcome:?}"),

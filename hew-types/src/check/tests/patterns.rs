@@ -1272,6 +1272,61 @@ fn foo(s: Shape) -> i64 {
 
 // ── Generic machine transition-body inference (Lane B S8 prerequisite) ────
 
+#[test]
+fn composite_machine_transition_accepts_contextual_target() {
+    let output = check_source(
+        r"
+        machine Connection {
+            events { Connect; }
+
+            state Disconnected;
+            state Connected {
+                initial state Authenticating;
+                state Active;
+            }
+
+            on Connect: Disconnected => .Authenticating;
+            on Connect: Authenticating => .Active;
+            on Connect: Active => Disconnected;
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "contextual composite transition targets must type-check: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn machine_transition_contextual_target_rejects_unknown_state() {
+    // A contextual target resolves against the machine's state enum. A name
+    // that is not a state must be a hard error, not a silently-accepted
+    // identifier.
+    let output = check_source(
+        r"
+        machine Switch {
+            events { Toggle; }
+
+            state Off;
+            state On;
+
+            on Toggle: Off => .Nope;
+            on Toggle: On => .Off;
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::PathMemberNotFound && error.message.contains("`Nope`")
+        }),
+        "an unknown contextual target must report E_PATH_MEMBER_NOT_FOUND: {:#?}",
+        output.errors
+    );
+}
+
 /// Bare struct-state constructor in a generic machine transition body must
 /// type-check when the machine has type params and the state has a generic
 /// field.  `Faulted { error: event.error }` must resolve without errors.
@@ -1491,6 +1546,110 @@ fn generic_machine_step_bare_event_propagates_receiver_args() {
         "step() with bare unit event on generic machine must type-check; \
          got errors: {:#?}",
         output.errors
+    );
+}
+
+#[test]
+fn machine_transition_block_body_types_let_binding_and_contextual_tail() {
+    // The machine-enum expectation belongs to the value the transition
+    // produces -- the block's tail -- and must not disturb what the block's
+    // interior statements infer. `step` is i64 from its initializer; the tail
+    // `.Busy` still resolves through the expectation.
+    let source = concat!(
+        "fn compute() -> i64 { 42 }\n",
+        "machine Counter {\n",
+        "    events { Tick; }\n",
+        "    state Idle;\n",
+        "    state Busy;\n",
+        "    on Tick: Idle => .Busy {\n",
+        "        let step = compute();\n",
+        "        let _ = step;\n",
+        "        .Busy\n",
+        "    }\n",
+        "    on Tick: Busy => .Idle;\n",
+        "}\n",
+        "fn main() {}\n",
+    );
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "a contextual tail in a block-bodied transition must type-check: {:#?}",
+        output.errors
+    );
+
+    let init = source.find("compute();").expect("initializer present");
+    let init_span = init..init + "compute()".len();
+    assert_eq!(
+        output.expr_types.get(&SpanKey::from(&init_span)),
+        Some(&Ty::I64),
+        "the let initializer inside the transition body must keep its inferred type"
+    );
+
+    let tail = source.find(".Busy\n").expect("tail present");
+    let tail_ty = output
+        .expr_types
+        .iter()
+        .find(|(key, _)| key.start == tail)
+        .map(|(_, ty)| ty);
+    assert!(
+        matches!(tail_ty, Some(Ty::Named { name, .. }) if name == "Counter"),
+        "the contextual tail must resolve to the machine type, got {tail_ty:?}"
+    );
+}
+
+#[test]
+fn machine_transition_block_body_publishes_tail_type_not_error_placeholder() {
+    // An ill-typed tail is reported once, on the tail, and the block recovers
+    // with the tail's type. Publishing the error placeholder for the block
+    // while the tail keeps `i64` breaks the produced-value graph's identity
+    // invariant and leaks the placeholder to consumers that read published
+    // types.
+    let source = concat!(
+        "fn compute() -> i64 { 42 }\n",
+        "machine Counter {\n",
+        "    events { Tick; }\n",
+        "    state Idle;\n",
+        "    state Busy;\n",
+        "    on Tick: Idle => Idle {\n",
+        "        let result = compute();\n",
+        "        result\n",
+        "    }\n",
+        "    on Tick: Busy => .Idle;\n",
+        "}\n",
+        "fn main() {}\n",
+    );
+    let output = check_source(source);
+    let mismatches: Vec<&crate::error::TypeError> = output
+        .errors
+        .iter()
+        .filter(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. }))
+        .collect();
+    assert_eq!(
+        mismatches.len(),
+        1,
+        "the tail mismatch must be reported exactly once: {:#?}",
+        output.errors
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("produced-value graph is incomplete")),
+        "the block and its tail must agree on a published type: {:#?}",
+        output.errors
+    );
+
+    let block = source.find("{\n        let result").expect("block present");
+    let block_ty = output
+        .expr_types
+        .iter()
+        .find(|(key, _)| key.start == block)
+        .map(|(_, ty)| ty);
+    assert_eq!(
+        block_ty,
+        Some(&Ty::I64),
+        "the block must recover with its tail's type, not the error placeholder"
     );
 }
 

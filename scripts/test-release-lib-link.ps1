@@ -1,3 +1,14 @@
+<#
+.SYNOPSIS
+    Prove a shipped Hew library archive actually links a compiled program.
+
+.DESCRIPTION
+    The Windows counterpart of scripts/test-release-lib-link.sh. A release
+    archive that builds is not the same claim as a release archive that links:
+    a missing symbol, a mismatched CRT, or a stale archive only surfaces at the
+    link step of a real `hew build --link-lib`. Run against the staged
+    candidate before a tag, and by release.yml on the built artifact.
+#>
 param(
     [Parameter(Mandatory = $true)]
     [string]$Hew,

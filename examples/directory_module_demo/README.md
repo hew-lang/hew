@@ -22,8 +22,11 @@ examples/directory_module_demo/
 
 Because both `hello()` and `target()` are reached through `greeting.*`, this
 example exercises peer-file merging instead of a simpler single-file import.
-Run CLI commands against `main.hew`; its `import greeting;` pulls in the
-directory-form module and peer file automatically.
+In an application package, leave `[package] main` unset for this conventional
+`main.hew` layout and use bare `hew check`, `hew run`, and `hew build`. This
+checked-in directory is a documentation fixture without its own `hew.toml`, so
+the commands below name `main.hew` explicitly; its `import greeting;` pulls in
+the directory-form module and peer file automatically.
 
 ## Run from the repo root
 

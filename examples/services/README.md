@@ -17,6 +17,11 @@ that Go and Rust developers write by hand.
 
 ## Running
 
+An application package normally names its service entry in `[package] main` and
+runs it with `hew check`, `hew run`, or `hew build` from anywhere inside the
+package. This directory is a catalogue of independent entry files, so select a
+specific fixture explicitly:
+
 ```sh
 hew run examples/services/circuit_breaker.hew
 ```

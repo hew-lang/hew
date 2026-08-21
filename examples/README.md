@@ -4,6 +4,19 @@ A collection of examples demonstrating the Hew programming language.
 
 ## Running Examples
 
+For an application, the idiomatic form is a package created by `hew init`.
+From anywhere inside that package, Hew finds `hew.toml` and its entry point:
+
+```sh
+hew check
+hew run
+hew build
+```
+
+`hew build .` is the equivalent explicit directory form. Most files in this
+repository directory are deliberately standalone snippets rather than separate
+packages, so name one explicitly when exploring them:
+
 ```sh
 hew run examples/fibonacci.hew
 ```
@@ -34,8 +47,10 @@ this progression:
 4. [`multifile/README.md`](multifile/README.md) / `03_text_stats/` — nested
    modules where `import parent;` and `import parent.child;` are distinct.
 
-Whichever layout you use, point `hew check`, `hew build`, and `hew run` at the
-example's `main.hew` entry file; imports resolve the rest.
+In an application package, set `[package] main` when the entry is not
+`main.hew`, then use bare `hew check`, `hew build`, and `hew run`; imports
+resolve the rest. The explicit `main.hew` paths in these fixture collections
+remain useful for selecting among several examples in one directory.
 
 ## Expected Output Files
 

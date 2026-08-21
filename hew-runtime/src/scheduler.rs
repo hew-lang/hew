@@ -506,17 +506,55 @@ fn get_scheduler() -> Option<&'static Scheduler> {
     runtime::rt_default().map(|rt| &rt.scheduler)
 }
 
+/// Work that has LEFT a queue but has not yet reached an activation.
+///
+/// `ACTIVE_WORKERS` alone cannot answer "is the scheduler idle?": a worker pops
+/// an actor and only increments that counter later, inside
+/// `activate_queued_actor`. In the gap the actor is on no queue and in no
+/// activation, so an observer sees empty queues and zero active workers while a
+/// dispatch — possibly a CRASHING one — is about to run. Shutdown read that as
+/// idle and joined the workers.
+///
+/// A worker CLAIMS before it looks for work and releases after the activation
+/// returns, so anything that leaves a queue does so while this count is
+/// non-zero. The claim is held across the probe as well, which costs a
+/// spuriously non-idle sample for a worker that finds nothing — it drops the
+/// claim and parks immediately after, so the condition settles.
+static PENDING_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
+
+/// RAII claim over the pop-to-activation handoff. See [`PENDING_ACTIVATIONS`].
+struct ActivationClaim;
+
+impl ActivationClaim {
+    fn new() -> Self {
+        PENDING_ACTIVATIONS.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for ActivationClaim {
+    fn drop(&mut self) {
+        PENDING_ACTIVATIONS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Whether any worker holds the pop-to-activation handoff.
+fn activation_handoff_in_flight() -> bool {
+    PENDING_ACTIVATIONS.load(Ordering::Acquire) != 0
+}
+
 /// Return `true` when the native scheduler has no observable work left to drain.
 ///
 /// This is used by graceful shutdown to stop waiting once the runtime is
 /// already idle, rather than always sleeping until the full wall-clock drain
-/// timeout expires.
+/// timeout expires. Idle means no queued work AND no dispatch in flight,
+/// including the pop-to-activation handoff — see [`PENDING_ACTIVATIONS`].
 pub(crate) fn drain_is_idle() -> bool {
     let Some(sched) = get_scheduler() else {
         return true;
     };
 
-    if ACTIVE_WORKERS.load(Ordering::Acquire) != 0 {
+    if ACTIVE_WORKERS.load(Ordering::Acquire) != 0 || activation_handoff_in_flight() {
         return false;
     }
     if !sched.global_queue.is_empty() {
@@ -534,7 +572,9 @@ pub(crate) fn drain_is_idle() -> bool {
         return false;
     }
 
-    ACTIVE_WORKERS.load(Ordering::Acquire) == 0
+    // Trailing sample, paired with the leading one above: an activation that
+    // started inside this window is visible to one of the two reads.
+    ACTIVE_WORKERS.load(Ordering::Acquire) == 0 && !activation_handoff_in_flight()
 }
 
 /// The scheduler owns the shared global queue, per-worker stealers,
@@ -1701,22 +1741,30 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
         if sched.shutdown.load(Ordering::Acquire) {
             break;
         }
-        // 1. Pop from local deque (LIFO — cache-friendly).
-        if let Some(ptr) = local.pop() {
-            activate_queued_actor(ptr.cast::<HewActor>());
-            continue;
-        }
+        // Claim the pop-to-activation handoff BEFORE looking for work, so no
+        // observer can see an actor that has left a queue but has not yet
+        // entered an activation. Dropped on every exit from this block,
+        // including the `continue`s.
+        {
+            let _handoff = ActivationClaim::new();
 
-        // 2. Steal from a random peer.
-        if let Some(actor) = try_steal_from_peers(sched, id, &mut rng) {
-            activate_queued_actor(actor);
-            continue;
-        }
+            // 1. Pop from local deque (LIFO — cache-friendly).
+            if let Some(ptr) = local.pop() {
+                activate_queued_actor(ptr.cast::<HewActor>());
+                continue;
+            }
 
-        // 3. Try global queue (batch steal into local deque).
-        if let Some(ptr) = sched.global_queue.steal_batch_and_pop(local) {
-            activate_queued_actor(ptr.cast::<HewActor>());
-            continue;
+            // 2. Steal from a random peer.
+            if let Some(actor) = try_steal_from_peers(sched, id, &mut rng) {
+                activate_queued_actor(actor);
+                continue;
+            }
+
+            // 3. Try global queue (batch steal into local deque).
+            if let Some(ptr) = sched.global_queue.steal_batch_and_pop(local) {
+                activate_queued_actor(ptr.cast::<HewActor>());
+                continue;
+            }
         }
 
         // 4. Check if a signal-initiated shutdown needs to be started.
@@ -8376,6 +8424,81 @@ mod tests {
 
         // SAFETY: both threads joined and the actor will no longer use its
         // test-owned mailbox.
+        unsafe { mailbox::hew_mailbox_free(mailbox) };
+    }
+
+    /// An actor that a worker has POPPED but not yet activated is not idle.
+    ///
+    /// The window is real and was reachable: `local.pop()` takes the actor off
+    /// the queue, and `ACTIVE_WORKERS` is only incremented later, inside the
+    /// dispatch. An observer in between saw empty queues and zero active
+    /// workers — "idle" — while a dispatch that may CRASH an actor was about to
+    /// run, and shutdown joined the workers on that answer.
+    ///
+    /// The pre-claim handoff hook parks a REAL worker in exactly that window,
+    /// so this is a deterministic rendezvous rather than a repeated-attempt
+    /// probe. Without the pop-to-activation claim the assertion below fails on
+    /// the first run.
+    #[test]
+    fn a_popped_actor_awaiting_activation_is_not_idle() {
+        let _rt = crate::runtime_test_guard();
+        init_real_scheduler_for_test();
+
+        // SAFETY: fresh mailbox, owned through the end of the test.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        // SAFETY: `mailbox` is live and the empty payload has no ownership.
+        let sent = unsafe { mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0) };
+        assert_eq!(sent, 0);
+
+        let mut actor = stub_actor();
+        actor.id = 0x5EED_0001;
+        actor.dispatch = Some(noop_dispatch);
+        actor.mailbox = mailbox.cast();
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        actor.budget.store(1, Ordering::Release);
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+
+        let (hook, entered, release) =
+            SchedulerQueueHandoffHookGuard::install_activate_pre_claim(actor.id);
+
+        // Publish through the production enqueue so a real worker pops it.
+        sched_enqueue(actor_ptr);
+
+        // The worker is now inside `activate_queued_actor`, past the pop and
+        // before the claim: the actor is on no queue and in no activation.
+        entered.wait();
+        assert!(
+            activation_handoff_in_flight(),
+            "a worker holding a popped actor must be counted in flight"
+        );
+        assert!(
+            !drain_is_idle(),
+            "the scheduler is not idle while a popped actor has not reached its \
+             activation; reading idle here is what let shutdown join the workers \
+             over a queued crash"
+        );
+
+        release.wait();
+        drop(hook);
+
+        // The counterfactual: once the activation completes, the same probe
+        // reports idle. Without it, a permanently-false `drain_is_idle` would
+        // pass the assertion above while breaking every drain.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut idle = drain_is_idle();
+        while !idle && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            idle = drain_is_idle();
+        }
+        assert!(
+            idle,
+            "the scheduler must return to idle once the activation completes"
+        );
+
+        // SAFETY: the worker has finished with the test-owned mailbox.
         unsafe { mailbox::hew_mailbox_free(mailbox) };
     }
 

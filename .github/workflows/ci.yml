@@ -286,8 +286,8 @@ jobs:
             | tee clippy-results.sarif \
             | sarif-fmt
 
-      - name: Verify JIT host ABI classification
-        run: make verify-ffi test-verify-ffi test-python310-toml-compat
+      - name: Verify C ABI surface and JIT host ABI classification
+        run: make cabi-surface-check test-cabi-surface verify-ffi test-verify-ffi test-python310-toml-compat
 
       - name: Legacy path syntax lint
         run: make legacy-path-syntax-lint

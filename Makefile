@@ -1163,7 +1163,7 @@ test-stdlib-execution-proofs:
 # The proof runner shells out to a hew-parser example for the production
 # import validation; build it here rather than inside the timed gate.
 test-stdlib-execution-proofs-build:
-	@:
+	cargo build --locked -p hew-parser --example stdlib_import_authority
 
 # Run every examples/ux and examples/progressive tutorial against its paired
 # .expected file. The shared runner fails closed on missing/orphan expectations,
@@ -1613,7 +1613,8 @@ test-release-binary:
 # (scripts/test-release-binary.sh); the release profile is a cold build and
 # does not belong inside a timed gate.
 test-release-binary-build:
-	@:
+	cargo build --release -p hew-cli
+	cargo build -p hew-lib --profile release-lib
 
 stdlib-errno-gate:
 	@bash -euo pipefail -c '\

@@ -645,6 +645,83 @@ def test_no_warmup_carries_a_flag_its_gate_does_not() -> None:
                 assert token in gate_flags, (path, warmup, token)
 
 
+def _make_plan(*targets: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["make", "--always-make", "--dry-run", *targets],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _dispatchable_make_targets() -> set[str]:
+    source = SCRIPT.read_text()
+    return {
+        target
+        for command in re.findall(r'add_command "make ([^"]+)"', source)
+        for target in command.split()
+    }
+
+
+_COMPILING_COMMAND = re.compile(r"\bcargo\s+(?:build|run|test|nextest|clippy)\b")
+_SHELL_SCRIPT = re.compile(r"(?:^|[\s\"'=])((?:scripts|tests)/[\w./-]+\.sh)")
+
+
+def _script_compiles(path: Path) -> str | None:
+    """The first line of a shell script that actually invokes a cargo build.
+
+    Message text is not an invocation: every one of these scripts ends its
+    "binary missing" branch with `echo "Run: cargo build -p hew-cli"`, and a
+    scan that counted those would flag every gate in the tree.
+    """
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or "echo" in stripped or "printf" in stripped:
+            continue
+        if _COMPILING_COMMAND.search(stripped):
+            return stripped
+    return None
+
+
+def test_no_gate_compiles_behind_an_empty_build_form() -> None:
+    """A gate that compiles must warm that compile, wherever the compile hides.
+
+    `make test-stdlib-execution-proofs` builds nothing in its own recipe and
+    then shells out to a script that runs `cargo run -p hew-parser --example
+    stdlib_import_authority`. Declaring the build form empty on the strength of
+    the recipe alone puts that build back inside the timed gate — the same
+    reading error as the warm-up that diverged from its gate.
+    """
+    for target in sorted(_dispatchable_make_targets()):
+        gate = _make_plan(target)
+        assert gate.returncode == 0, (target, gate.stderr)
+        compiles = _COMPILING_COMMAND.search(gate.stdout)
+        evidence = f"{target}'s own recipe"
+        if not compiles:
+            for script in sorted(set(_SHELL_SCRIPT.findall(gate.stdout))):
+                path = ROOT / script
+                if not path.exists():
+                    continue
+                line = _script_compiles(path)
+                if line is not None:
+                    compiles, evidence = line, f"{script}: {line}"
+                    break
+        if not compiles:
+            continue
+        build = _make_plan(f"{target}-build")
+        assert build.returncode == 0, (target, build.stderr)
+        work = [
+            line
+            for line in build.stdout.splitlines()
+            if line.strip() not in ("", ":") and not line.startswith("make")
+        ]
+        assert work, (
+            f"make {target} compiles ({evidence}) but {target}-build declares "
+            f"that it builds nothing"
+        )
+
+
 def test_no_warmup_names_a_non_ci_nextest_profile() -> None:
     """A3a of the reachability gate scans this dry-run text for fast-tier profiles.
 
@@ -1422,6 +1499,7 @@ _TESTS = [
     test_a_fmt_gate_warms_nothing,
     test_every_dispatched_make_target_exists_in_the_makefile,
     test_no_warmup_carries_a_flag_its_gate_does_not,
+    test_no_gate_compiles_behind_an_empty_build_form,
     test_a_nextest_older_than_the_pin_stops_the_preflight,
     test_the_preflight_reads_its_pin_from_the_tool_pin_contract,
     test_no_warmup_names_a_non_ci_nextest_profile,

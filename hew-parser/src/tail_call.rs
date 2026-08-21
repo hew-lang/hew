@@ -222,7 +222,9 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         }
         Expr::InterpolatedString(parts) => parts.iter().any(|part| match part {
             StringPart::Literal(_) => false,
-            StringPart::Expr((expr, _)) => expr_contains_defer(expr),
+            StringPart::Expr((expr, _)) | StringPart::StructuralExpr((expr, _)) => {
+                expr_contains_defer(expr)
+            }
         }),
         Expr::Call { function, args, .. } => {
             expr_contains_defer(&function.0)
@@ -458,7 +460,7 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let StringPart::Expr((expr, _)) = part {
+                if let StringPart::Expr((expr, _)) | StringPart::StructuralExpr((expr, _)) = part {
                     mark_expr(expr, false);
                 }
             }

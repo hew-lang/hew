@@ -856,7 +856,7 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let StringPart::Expr(expr) = part {
+                if let StringPart::Expr(expr) | StringPart::StructuralExpr(expr) = part {
                     collect_locals_from_spanned_expr(expr, offset, locals);
                 }
             }

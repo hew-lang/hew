@@ -22,7 +22,7 @@ checker-hir-fact-relation	checker-relation-use	hew-hir/src/lower.rs	7	stage-2	re
 checker-hir-fact-relation	checker-relation-use	hew-types/src/check/expressions.rs	11	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	checker-relation-use	hew-types/src/check/mod.rs	15	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	checker-relation-variant	hew-types/src/check/types.rs	6	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	367	stage-2	rc1-F1 stage F reads plus canonical flat-file trait default owner harvest, its unambiguous root file-import projection, and four impl_method_declaration_ids reads that register lang-item Display bodies ahead of the third pass (direct primitive .fmt() dispatch, mirrors plan_imported_impl_bodies); plus one closure_capture_facts read materializing multi-statement fork block captures (mirrors the existing closure-literal capture read)
+checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	371	stage-2	rc1-F1 stage F reads plus canonical flat-file trait default owner harvest, its unambiguous root file-import projection, and four impl_method_declaration_ids reads that register lang-item Display bodies ahead of the third pass, the explicit interpolation Display-selection handoff including alias identity, and one closure_capture_facts read materializing multi-statement fork block captures (direct primitive .fmt() dispatch, mirrors plan_imported_impl_bodies and the existing closure-literal capture read)
 checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/node.rs	5	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-consumer	hew-hir/src/verify.rs	8	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-consumer	hew-mir/src/lower/ownership.rs	4	stage-2	real checker/HIR produced-value carrier inventory
@@ -30,7 +30,7 @@ checker-hir-fact-relation	hir-relation-use	hew-hir/src/lower.rs	2	stage-2	real c
 checker-hir-fact-relation	hir-relation-use	hew-hir/src/verify.rs	22	stage-2	real checker/HIR produced-value carrier inventory; +3 for the subsumption-spine guardrail (Subsumes/Identity edge-skip check publishing CheckerBoundaryViolation)
 checker-hir-fact-relation	hir-relation-use	hew-mir/src/lower/ownership.rs	8	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-variant	hew-hir/src/node.rs	6	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	produced-fact-field	hew-types/src/check/types.rs	63	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	produced-fact-field	hew-types/src/check/types.rs	64	stage-2	real checker/HIR produced-value carrier inventory plus interpolation Display-selection identity
 checker-hir-publication	checker-insert-call	hew-types/src/check/expressions.rs	1	stage-2	RC1 syntax-node authority inventory
 checker-hir-publication	checker-insert-call	hew-types/src/check/methods.rs	2	stage-2	RC1 syntax-node authority inventory
 checker-hir-publication	checker-insert-call	hew-types/src/check/resolution.rs	3	stage-2	RC1 syntax-node authority inventory; +1 for the range-bound identifier declaration-site expr_types re-record
@@ -64,7 +64,7 @@ runtime-call-authority	runtime-call-family-use	hew-mir/src/lower/closure_gen.rs	
 runtime-call-authority	runtime-call-family-use	hew-mir/src/lower/vec_index.rs	2	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-use	hew-mir/src/runtime_symbols.rs	3	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-use	hew-types/src/runtime_call.rs	16	stage-4	typed runtime-family dispatch carrier
-runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	229	stage-4	typed runtime-family dispatch carrier
+runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	230	stage-4	typed runtime-family dispatch carrier including structural formatting
 semantic-owner-shortening-sink	registry-key	hew-types/src/check/registration.rs	8	stage-1	reviewed remaining owner-shortening sink
 string-method-identity	qualified-format-macro	hew-analysis/src/hover.rs	5	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-analysis/src/inlay_hints.rs	5	stage-1	reviewed qualified string identity construction

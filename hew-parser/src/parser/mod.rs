@@ -542,7 +542,14 @@ pub(crate) fn parse_string_parts(
                 idx += 1;
             }
 
-            let expr_text = &inner[expr_start_byte..expr_end_byte];
+            let raw_expr_text = &inner[expr_start_byte..expr_end_byte];
+            let trimmed_expr_text = raw_expr_text.trim_end();
+            let (expr_text, structural) = if let Some(value) = trimmed_expr_text.strip_suffix(":?")
+            {
+                (value.trim_end(), true)
+            } else {
+                (raw_expr_text, false)
+            };
             if expr_text.trim().is_empty() {
                 errors.push(ParseError {
                     message: "empty interpolation expression".to_string(),
@@ -561,7 +568,11 @@ pub(crate) fn parse_string_parts(
                 let parsed = sub_parser.parse_expr();
                 errors.extend(sub_parser.errors);
                 if let Some(spanned_expr) = parsed {
-                    parts.push(StringPart::Expr(spanned_expr));
+                    parts.push(if structural {
+                        StringPart::StructuralExpr(spanned_expr)
+                    } else {
+                        StringPart::Expr(spanned_expr)
+                    });
                 } else {
                     errors.push(ParseError {
                         message: "failed to parse interpolation expression".to_string(),

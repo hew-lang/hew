@@ -124,6 +124,8 @@ pub enum StringPart {
     Literal(String),
     /// Expression to be evaluated and converted to string.
     Expr(Spanned<Expr>),
+    /// Expression requesting explicit structural/debug rendering (`{expr:?}`).
+    StructuralExpr(Spanned<Expr>),
 }
 
 /// A function call argument — either positional or named (`name: expr`).

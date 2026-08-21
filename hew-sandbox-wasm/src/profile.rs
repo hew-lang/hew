@@ -824,7 +824,9 @@ impl<'a> ProfileChecker<'a> {
             ),
             Expr::InterpolatedString(parts) => {
                 for part in parts {
-                    if let hew_parser::ast::StringPart::Expr(expr) = part {
+                    if let hew_parser::ast::StringPart::Expr(expr)
+                    | hew_parser::ast::StringPart::StructuralExpr(expr) = part
+                    {
                         self.check_expr(expr);
                     }
                 }

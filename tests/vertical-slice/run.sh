@@ -413,6 +413,7 @@ if [[ "${arith_status}" -ne 5 ]]; then
 fi
 
 run_accept_expect_stdout "hello_println"
+run_accept_expect_stdout "structural_rendering"
 
 run_accept_expect_status "assert" 0
 

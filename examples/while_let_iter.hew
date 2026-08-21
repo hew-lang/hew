@@ -1,5 +1,5 @@
 //! Status: stable (Hew roadmap: v0.5 while-let substrate)
-//! Description: Exercises the `while let Some(_) = …` HIR/MIR lowering.
+//! Description: Exercises the `while let .Some(_) = …` HIR/MIR lowering.
 
 //
 // Demonstrates the canonical iteration substrate: a `var` scrutinee

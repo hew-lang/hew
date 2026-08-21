@@ -1380,6 +1380,590 @@ fn eq_struct_field_resolved_tys<'ctx>(
         .cloned()
 }
 
+fn structural_append_literal<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    builder: PointerValue<'ctx>,
+    text: &str,
+    label: &str,
+) -> CodegenResult<()> {
+    let encoded = text
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let key = format!("__hew_structural_text_{encoded}");
+    let value = build_const_string_ptr(fn_ctx.ctx, fn_ctx.llvm_mod, text, &key)?;
+    let append = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_string_builder_append_cstr",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(append, &[builder.into(), value.into()], label)
+        .llvm_ctx("structural format append literal")?;
+    Ok(())
+}
+
+fn structural_record_key(ty: &ResolvedTy) -> Option<String> {
+    let ResolvedTy::Named { name, args, .. } = ty else {
+        return None;
+    };
+    Some(if args.is_empty() {
+        name.clone()
+    } else {
+        mangle_with_shortened_args(name, args)
+    })
+}
+
+pub(crate) fn get_or_emit_structural_format_thunk<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value_ty: BasicTypeEnum<'ctx>,
+    resolved_ty: &ResolvedTy,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let key = eq_thunk_resolved_key(Some(resolved_ty));
+    let name = format!("__hew_structural_format_{key}");
+    if let Some(existing) = fn_ctx.llvm_mod.get_function(&name) {
+        return Ok(existing);
+    }
+
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let fn_ty = fn_ctx
+        .ctx
+        .void_type()
+        .fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+    let func = fn_ctx
+        .llvm_mod
+        .add_function(&name, fn_ty, Some(Linkage::Internal));
+    let saved_block = fn_ctx.builder.get_insert_block();
+    let entry = fn_ctx.ctx.append_basic_block(func, "entry");
+    fn_ctx.builder.position_at_end(entry);
+    let builder = func
+        .get_nth_param(0)
+        .ok_or_else(|| CodegenError::FailClosed("structural formatter missing builder".into()))?
+        .into_pointer_value();
+    let value = func
+        .get_nth_param(1)
+        .ok_or_else(|| CodegenError::FailClosed("structural formatter missing value".into()))?
+        .into_pointer_value();
+    emit_structural_format_body(fn_ctx, builder, value, value_ty, resolved_ty)?;
+    fn_ctx
+        .builder
+        .build_return(None)
+        .llvm_ctx("structural formatter return")?;
+    if let Some(block) = saved_block {
+        fn_ctx.builder.position_at_end(block);
+    }
+    Ok(func)
+}
+
+fn emit_structural_scalar<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    builder: PointerValue<'ctx>,
+    value: PointerValue<'ctx>,
+    value_ty: BasicTypeEnum<'ctx>,
+    resolved_ty: &ResolvedTy,
+) -> CodegenResult<bool> {
+    let runtime = |symbol: &str| {
+        intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            symbol,
+        )
+    };
+    match resolved_ty {
+        ResolvedTy::String => {
+            let loaded = fn_ctx
+                .builder
+                .build_load(value_ty, value, "structural_string")
+                .llvm_ctx("structural string load")?;
+            let append = runtime("hew_string_builder_append_cstr")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    append,
+                    &[builder.into(), loaded.into()],
+                    "structural_append_string",
+                )
+                .llvm_ctx("structural append string")?;
+        }
+        ResolvedTy::Bool => {
+            let loaded = fn_ctx
+                .builder
+                .build_load(value_ty, value, "structural_bool")
+                .llvm_ctx("structural bool load")?;
+            let append = runtime("hew_string_builder_append_bool")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    append,
+                    &[builder.into(), loaded.into()],
+                    "structural_append_bool",
+                )
+                .llvm_ctx("structural append bool")?;
+        }
+        ResolvedTy::Char => {
+            let loaded = fn_ctx
+                .builder
+                .build_load(value_ty, value, "structural_char")
+                .llvm_ctx("structural char load")?;
+            let append = runtime("hew_string_builder_append_char")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    append,
+                    &[builder.into(), loaded.into()],
+                    "structural_append_char",
+                )
+                .llvm_ctx("structural append char")?;
+        }
+        ResolvedTy::F32 | ResolvedTy::F64 => {
+            let loaded = fn_ctx
+                .builder
+                .build_load(value_ty, value, "structural_float")
+                .llvm_ctx("structural float load")?
+                .into_float_value();
+            let loaded = if matches!(resolved_ty, ResolvedTy::F32) {
+                fn_ctx
+                    .builder
+                    .build_float_ext(loaded, fn_ctx.ctx.f64_type(), "structural_f32_ext")
+                    .llvm_ctx("structural f32 extend")?
+            } else {
+                loaded
+            };
+            let append = runtime("hew_string_builder_append_f64")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    append,
+                    &[builder.into(), loaded.into()],
+                    "structural_append_float",
+                )
+                .llvm_ctx("structural append float")?;
+        }
+        ResolvedTy::Unit => structural_append_literal(fn_ctx, builder, "()", "structural_unit")?,
+        ResolvedTy::I8
+        | ResolvedTy::I16
+        | ResolvedTy::I32
+        | ResolvedTy::I64
+        | ResolvedTy::Isize
+        | ResolvedTy::Duration => {
+            let loaded = fn_ctx
+                .builder
+                .build_load(value_ty, value, "structural_int")
+                .llvm_ctx("structural int load")?
+                .into_int_value();
+            let widened = if loaded.get_type().get_bit_width() < 64 {
+                fn_ctx
+                    .builder
+                    .build_int_s_extend(loaded, fn_ctx.ctx.i64_type(), "structural_int_ext")
+                    .llvm_ctx("structural int extend")?
+            } else {
+                loaded
+            };
+            let append = runtime("hew_string_builder_append_i64")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    append,
+                    &[builder.into(), widened.into()],
+                    "structural_append_int",
+                )
+                .llvm_ctx("structural append int")?;
+        }
+        ResolvedTy::U8
+        | ResolvedTy::U16
+        | ResolvedTy::U32
+        | ResolvedTy::U64
+        | ResolvedTy::Usize => {
+            let loaded = fn_ctx
+                .builder
+                .build_load(value_ty, value, "structural_uint")
+                .llvm_ctx("structural uint load")?
+                .into_int_value();
+            let widened = if loaded.get_type().get_bit_width() < 64 {
+                fn_ctx
+                    .builder
+                    .build_int_z_extend(loaded, fn_ctx.ctx.i64_type(), "structural_uint_ext")
+                    .llvm_ctx("structural uint extend")?
+            } else {
+                loaded
+            };
+            let append = runtime("hew_string_builder_append_u64")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    append,
+                    &[builder.into(), widened.into()],
+                    "structural_append_uint",
+                )
+                .llvm_ctx("structural append uint")?;
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+fn emit_structural_format_body<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    builder: PointerValue<'ctx>,
+    value: PointerValue<'ctx>,
+    value_ty: BasicTypeEnum<'ctx>,
+    resolved_ty: &ResolvedTy,
+) -> CodegenResult<()> {
+    if emit_structural_scalar(fn_ctx, builder, value, value_ty, resolved_ty)? {
+        return Ok(());
+    }
+    match resolved_ty {
+        ResolvedTy::Tuple(fields) => {
+            let BasicTypeEnum::StructType(st) = value_ty else {
+                return Err(CodegenError::FailClosed(
+                    "structural tuple formatter received non-struct LLVM type".into(),
+                ));
+            };
+            structural_append_literal(fn_ctx, builder, "(", "structural_tuple_open")?;
+            for (index, field_ty) in fields.iter().enumerate() {
+                if index != 0 {
+                    structural_append_literal(fn_ctx, builder, ", ", "structural_tuple_sep")?;
+                }
+                let field_ptr = fn_ctx
+                    .builder
+                    .build_struct_gep(st, value, index as u32, "structural_tuple_field")
+                    .llvm_ctx("structural tuple field gep")?;
+                let field_llvm = st.get_field_type_at_index(index as u32).ok_or_else(|| {
+                    CodegenError::FailClosed("structural tuple field missing".into())
+                })?;
+                let thunk = get_or_emit_structural_format_thunk(fn_ctx, field_llvm, field_ty)?;
+                fn_ctx
+                    .builder
+                    .build_call(
+                        thunk,
+                        &[builder.into(), field_ptr.into()],
+                        "structural_tuple_field_format",
+                    )
+                    .llvm_ctx("structural tuple field format")?;
+            }
+            if fields.len() == 1 {
+                structural_append_literal(fn_ctx, builder, ",", "structural_tuple_singleton")?;
+            }
+            structural_append_literal(fn_ctx, builder, ")", "structural_tuple_close")?;
+        }
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Vec),
+            args,
+            ..
+        } if args.len() == 1 => {
+            let handle = fn_ctx
+                .builder
+                .build_load(value_ty, value, "structural_vec")
+                .llvm_ctx("structural vec load")?
+                .into_pointer_value();
+            let elem_llvm = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                &args[0],
+                fn_ctx.record_layouts,
+            )?;
+            let elem_format = get_or_emit_structural_format_thunk(fn_ctx, elem_llvm, &args[0])?;
+            let runtime = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_structural_format_vec",
+            )?;
+            fn_ctx
+                .builder
+                .build_call(
+                    runtime,
+                    &[
+                        builder.into(),
+                        handle.into(),
+                        elem_format.as_global_value().as_pointer_value().into(),
+                    ],
+                    "structural_vec_format",
+                )
+                .llvm_ctx("structural vec format")?;
+        }
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::HashMap),
+            args,
+            ..
+        } if args.len() == 2 => {
+            let handle = fn_ctx
+                .builder
+                .build_load(value_ty, value, "structural_hashmap")
+                .llvm_ctx("structural hashmap load")?
+                .into_pointer_value();
+            let key_llvm = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                &args[0],
+                fn_ctx.record_layouts,
+            )?;
+            let value_llvm = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                &args[1],
+                fn_ctx.record_layouts,
+            )?;
+            let key_format = get_or_emit_structural_format_thunk(fn_ctx, key_llvm, &args[0])?;
+            let value_format = get_or_emit_structural_format_thunk(fn_ctx, value_llvm, &args[1])?;
+            let runtime = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_structural_format_hashmap",
+            )?;
+            fn_ctx
+                .builder
+                .build_call(
+                    runtime,
+                    &[
+                        builder.into(),
+                        handle.into(),
+                        key_format.as_global_value().as_pointer_value().into(),
+                        value_format.as_global_value().as_pointer_value().into(),
+                    ],
+                    "structural_hashmap_format",
+                )
+                .llvm_ctx("structural hashmap format")?;
+        }
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin: Some(BuiltinType::Option | BuiltinType::Result),
+            ..
+        } => emit_structural_enum(fn_ctx, builder, value, name, args)?,
+        ResolvedTy::Named { name, .. } => {
+            let Some(key) = structural_record_key(resolved_ty) else {
+                unreachable!()
+            };
+            let fields = fn_ctx
+                .record_field_resolved_tys
+                .get(&key)
+                .or_else(|| fn_ctx.record_field_resolved_tys.get(name));
+            let BasicTypeEnum::StructType(st) = value_ty else {
+                return emit_structural_identity(fn_ctx, builder, value, value_ty, name);
+            };
+            let Some(fields) = fields else {
+                return emit_structural_identity(fn_ctx, builder, value, value_ty, name);
+            };
+            let field_names = fn_ctx
+                .record_field_names
+                .get(&key)
+                .or_else(|| fn_ctx.record_field_names.get(name));
+            structural_append_literal(
+                fn_ctx,
+                builder,
+                &format!("{name} {{ "),
+                "structural_record_open",
+            )?;
+            for (index, field_ty) in fields.iter().enumerate() {
+                if index != 0 {
+                    structural_append_literal(fn_ctx, builder, ", ", "structural_record_sep")?;
+                }
+                let field_name = field_names
+                    .and_then(|names| names.get(index))
+                    .cloned()
+                    .unwrap_or_else(|| index.to_string());
+                structural_append_literal(
+                    fn_ctx,
+                    builder,
+                    &format!("{field_name}: "),
+                    "structural_record_field_name",
+                )?;
+                let field_llvm = st.get_field_type_at_index(index as u32).ok_or_else(|| {
+                    CodegenError::FailClosed("structural record field missing".into())
+                })?;
+                let field_ptr = fn_ctx
+                    .builder
+                    .build_struct_gep(st, value, index as u32, "structural_record_field")
+                    .llvm_ctx("structural record field gep")?;
+                let thunk = get_or_emit_structural_format_thunk(fn_ctx, field_llvm, field_ty)?;
+                fn_ctx
+                    .builder
+                    .build_call(
+                        thunk,
+                        &[builder.into(), field_ptr.into()],
+                        "structural_record_field_format",
+                    )
+                    .llvm_ctx("structural record field format")?;
+            }
+            structural_append_literal(fn_ctx, builder, " }", "structural_record_close")?;
+        }
+        _ => emit_structural_identity(
+            fn_ctx,
+            builder,
+            value,
+            value_ty,
+            &resolved_ty.user_facing().to_string(),
+        )?,
+    }
+    Ok(())
+}
+
+fn emit_structural_identity<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    builder: PointerValue<'ctx>,
+    value: PointerValue<'ctx>,
+    value_ty: BasicTypeEnum<'ctx>,
+    type_name: &str,
+) -> CodegenResult<()> {
+    let key = format!("__hew_structural_type_{}", sanitize_symbol(type_name));
+    let name = build_const_string_ptr(fn_ctx.ctx, fn_ctx.llvm_mod, type_name, &key)?;
+    let append = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_string_builder_append_identity",
+    )?;
+    let identity = if matches!(value_ty, BasicTypeEnum::PointerType(_)) {
+        fn_ctx
+            .builder
+            .build_load(value_ty, value, "structural_identity_value")
+            .llvm_ctx("structural identity load")?
+            .into_pointer_value()
+    } else {
+        value
+    };
+    fn_ctx
+        .builder
+        .build_call(
+            append,
+            &[builder.into(), name.into(), identity.into()],
+            "structural_identity",
+        )
+        .llvm_ctx("structural identity format")?;
+    Ok(())
+}
+
+fn emit_structural_enum<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    builder: PointerValue<'ctx>,
+    value: PointerValue<'ctx>,
+    name: &str,
+    args: &[ResolvedTy],
+) -> CodegenResult<()> {
+    let layout_key = if args.is_empty() {
+        name.to_string()
+    } else {
+        hew_hir::mangle_layout_key(name, args)
+    };
+    let enum_layout = fn_ctx
+        .enum_layouts
+        .iter()
+        .find(|layout| layout.name == layout_key || layout.name == name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "structural formatter has no enum layout for {name}<{args:?}>"
+            ))
+        })?;
+    let layout = fn_ctx
+        .machine_layouts
+        .get(&enum_layout.name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "structural formatter has no LLVM enum layout for {}",
+                enum_layout.name
+            ))
+        })?;
+    let func = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed("structural enum missing function".into()))?;
+    let tag_ptr = fn_ctx
+        .builder
+        .build_struct_gep(layout.outer_struct, value, 0, "structural_enum_tag_ptr")
+        .llvm_ctx("structural enum tag gep")?;
+    let tag = fn_ctx
+        .builder
+        .build_load(layout.tag_int_ty, tag_ptr, "structural_enum_tag")
+        .llvm_ctx("structural enum tag load")?
+        .into_int_value();
+    let merge = fn_ctx.ctx.append_basic_block(func, "structural_enum_merge");
+    let trap = fn_ctx
+        .ctx
+        .append_basic_block(func, "structural_enum_invalid");
+    let mut blocks = Vec::with_capacity(enum_layout.variants.len());
+    let mut cases = Vec::with_capacity(enum_layout.variants.len());
+    for index in 0..enum_layout.variants.len() {
+        let block = fn_ctx
+            .ctx
+            .append_basic_block(func, &format!("structural_enum_variant_{index}"));
+        blocks.push(block);
+        cases.push((layout.tag_int_ty.const_int(index as u64, false), block));
+    }
+    fn_ctx
+        .builder
+        .build_switch(tag, trap, &cases)
+        .llvm_ctx("structural enum switch")?;
+    fn_ctx.builder.position_at_end(trap);
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "structural_enum_invalid",
+    )?;
+    for (index, variant) in enum_layout.variants.iter().enumerate() {
+        fn_ctx.builder.position_at_end(blocks[index]);
+        structural_append_literal(
+            fn_ctx,
+            builder,
+            &variant.name,
+            "structural_enum_variant_name",
+        )?;
+        if !variant.field_tys.is_empty() {
+            structural_append_literal(fn_ctx, builder, "(", "structural_enum_payload_open")?;
+            let payload = fn_ctx
+                .builder
+                .build_struct_gep(layout.outer_struct, value, 1, "structural_enum_payload")
+                .llvm_ctx("structural enum payload gep")?;
+            let variant_struct = layout.variant_struct_tys[index];
+            for (field_index, field_ty) in variant.field_tys.iter().enumerate() {
+                if field_index != 0 {
+                    structural_append_literal(
+                        fn_ctx,
+                        builder,
+                        ", ",
+                        "structural_enum_payload_sep",
+                    )?;
+                }
+                let field_llvm = variant_struct
+                    .get_field_type_at_index(field_index as u32)
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("structural enum field missing".into())
+                    })?;
+                let field_ptr = fn_ctx
+                    .builder
+                    .build_struct_gep(
+                        variant_struct,
+                        payload,
+                        field_index as u32,
+                        "structural_enum_field",
+                    )
+                    .llvm_ctx("structural enum field gep")?;
+                let thunk = get_or_emit_structural_format_thunk(fn_ctx, field_llvm, field_ty)?;
+                fn_ctx
+                    .builder
+                    .build_call(
+                        thunk,
+                        &[builder.into(), field_ptr.into()],
+                        "structural_enum_field_format",
+                    )
+                    .llvm_ctx("structural enum field format")?;
+            }
+            structural_append_literal(fn_ctx, builder, ")", "structural_enum_payload_close")?;
+        }
+        fn_ctx
+            .builder
+            .build_unconditional_branch(merge)
+            .llvm_ctx("structural enum merge branch")?;
+    }
+    fn_ctx.builder.position_at_end(merge);
+    Ok(())
+}
 fn resolved_vec_elem_ty(resolved_ty: Option<&ResolvedTy>) -> CodegenResult<&ResolvedTy> {
     match resolved_ty {
         Some(ResolvedTy::Named {

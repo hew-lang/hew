@@ -30,12 +30,12 @@ fn main() {
     var t = Filling;
     println(t.state_name());
     // Unhandled (Filling, Fill): stays in Filling.
-    t.step(Fill);
+    t.step(.Fill);
     println(t.state_name());
     // Handled (Filling, Drain): transitions to Draining.
-    t.step(Drain);
+    t.step(.Drain);
     println(t.state_name());
     // Unhandled (Draining, Drain): stays in Draining.
-    t.step(Drain);
+    t.step(.Drain);
     println(t.state_name());
 }

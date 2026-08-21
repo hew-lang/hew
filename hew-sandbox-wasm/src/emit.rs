@@ -1971,7 +1971,10 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                             );
                             local
                         }
-                        hew_parser::ast::StringPart::Expr(expr) => self.lower_expr(expr)?,
+                        hew_parser::ast::StringPart::Expr(expr)
+                        | hew_parser::ast::StringPart::StructuralExpr(expr) => {
+                            self.lower_expr(expr)?
+                        }
                     };
                     current = Some(if let Some(current) = current {
                         let local = self.temp_local(&Ty::String, Some(span.clone()));

@@ -380,7 +380,9 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
             .any(|(_, v)| ast_expr_has_break(&v.0, query, depth)),
         Expr::InterpolatedString(parts) => parts.iter().any(|p| match p {
             crate::ast::StringPart::Literal(_) => false,
-            crate::ast::StringPart::Expr(e) => ast_expr_has_break(&e.0, query, depth),
+            crate::ast::StringPart::Expr(e) | crate::ast::StringPart::StructuralExpr(e) => {
+                ast_expr_has_break(&e.0, query, depth)
+            }
         }),
 
         // ── Call / field / index ──────────────────────────────────────────

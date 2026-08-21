@@ -798,6 +798,14 @@ test-leak-oracle-selftest:
 test-cabi:
 	cargo nextest run --profile ci-cabi -p hew-cabi
 
+# Build test-cabi's binaries without running them. The preflight warm-up
+# calls this instead of spelling the nextest invocation out, so the profile
+# name lives in exactly one place: scripts/check-gate-reachability.py A3a
+# scans the dispatcher's own dry-run output for `--profile <fast-tier>` and
+# a second literal there would read as CI running a non-`ci` profile.
+test-cabi-build:
+	cargo nextest run --profile ci-cabi -p hew-cabi --no-run
+
 # Build the combined runtime+stdlib static lib and the WASM runtime before
 # running the compiler-pipeline tests.  Several hew-cli integration tests
 # (eval_e2e, eval_wasm_*) call `hew eval` which needs both libs at link time.

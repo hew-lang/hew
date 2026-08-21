@@ -25,9 +25,19 @@
 //! * BINDER-FIRST — the aggregate is returned to the caller, so the callee's
 //!   exit sees only the binder and the caller's frame releases the aggregate.
 //!
-//! The CONDITIONAL shape is the one a path-insensitive fix gets wrong in the
-//! other direction: only one arm places the handle into the aggregate, so the
-//! transfer record has to be path-local or the not-taken arm leaks.
+//! The CONDITIONAL shapes are the ones a path-insensitive answer gets wrong,
+//! in both directions at once. Only one arm places the handle, so the transfer
+//! record has to be path-local or the not-taken arm leaks — and if the record is
+//! missing entirely, the join meets `Live` with the moved state, yields
+//! `MaybeConsumed`, and the drop filter admits it as live, releasing a handle the
+//! aggregate already owns.
+//!
+//! The shapes span both transfer ROUTES, because they are different code paths:
+//! the aggregate-alias funnel (tuple, `Option`/`Result`, record, nested record,
+//! machine payload) and the general consume seam (the array-literal desugar's
+//! owned-move element push). Reassignment is covered separately as a generation
+//! boundary: the record is path-local runtime state and must retire when the slot
+//! takes a fresh value, or the replacement handle is never released.
 
 #![cfg(unix)]
 
@@ -324,12 +334,175 @@ fn main() -> i64 {{
         total = total + frame(seed % 2 == 0);
         println("frame");
     }}
-    match total >= 0 {{
-        true => 0,
-        false => 1,
+    total - {expected}
+}}
+"#,
+        expected = 3 * frames.div_ceil(2)
+    )
+}
+
+/// ARRAY-LITERAL element ingress. The array-literal desugar binds a synthetic
+/// `__hew_array_N` Vec and pushes each element through the owned-move ABI, a
+/// DIFFERENT transfer route from the tuple/record funnel: it records the move as
+/// a dataflow `Consume` via `mark_binding_moved` rather than an aggregate alias.
+fn array_element_source(frames: usize) -> String {
+    format!(
+        r#"
+type Node {{ id: i64; }}
+
+fn frame(seed: i64) -> i64 {{
+    let shared: Rc<Node> = Rc.new(Node {{ id: seed }});
+    let holders: Vec<Rc<Node>> = [shared];
+    holders.len()
+}}
+
+fn main() -> i64 {{
+    var total: i64 = 0;
+    for seed in 0..{frames} {{
+        total = total + frame(seed);
+        println("frame");
     }}
+    total - {frames}
 }}
 "#
+    )
+}
+
+/// CONDITIONAL array-literal element ingress — the shape a straight-line
+/// transfer record gets wrong.
+///
+/// A dataflow `Consume` alone suffices when the move dominates the exit
+/// (`filter_drops_by_state` excludes a `Consumed` binding), but on a join with
+/// an arm that did NOT move, the meet is `MaybeConsumed`, which the same filter
+/// admits as LIVE. The binder's guarded release then fires on the arm that
+/// already handed the handle to the Vec. Before the transfer record moved onto
+/// the general consume seam this aborted with `Rc double-free`.
+fn conditional_array_element_source(frames: usize) -> String {
+    format!(
+        r#"
+type Node {{ id: i64; }}
+
+fn frame(flag: bool) -> i64 {{
+    let shared: Rc<Node> = Rc.new(Node {{ id: 7 }});
+    match flag {{
+        true => {{
+            let holders: Vec<Rc<Node>> = [shared];
+            holders.len()
+        }}
+        false => 0,
+    }}
+}}
+
+fn main() -> i64 {{
+    var total: i64 = 0;
+    for seed in 0..{frames} {{
+        total = total + frame(seed % 2 == 0);
+        println("frame");
+    }}
+    total - {expected}
+}}
+"#,
+        expected = frames.div_ceil(2)
+    )
+}
+
+/// MACHINE-PAYLOAD ingress: the handle is placed into a state payload through
+/// `Place::MachineVariant`.
+///
+/// Over-release only. The leak half is deliberately NOT asserted for this shape:
+/// the machine LOCAL itself has no scope-exit composite drop here — the compiler
+/// says so, with an `ObligationUnderReleased` advisory naming `c` — so the whole
+/// state value leaks once per frame no matter what its payload is. Measured, not
+/// assumed: the identical machine with a `string` payload leaks at the same rate.
+/// That is a machine-composite drop gap, not a refcount-ownership defect, and
+/// pinning it here would ratchet an unrelated lane's debt into this oracle.
+fn machine_payload_source(frames: usize) -> String {
+    format!(
+        r#"
+type Node {{ id: i64; }}
+
+machine Cell {{
+    events {{ Fill; Drain; }}
+    state Empty;
+    state Full {{ r: Rc<Node>; }}
+    on Fill: Empty => Full {{
+        let shared: Rc<Node> = Rc.new(Node {{ id: 7 }});
+        Full {{ r: shared }}
+    }}
+    on Drain: Full => Empty {{ Empty }}
+    default {{ state }}
+}}
+
+fn main() -> i64 {{
+    var total: i64 = 0;
+    for _seed in 0..{frames} {{
+        var c = Empty;
+        c.step(Fill);
+        match c {{
+            Empty => {{ total = total + 0; }}
+            Full {{ r }} => {{ total = total + r.get().id; }}
+        }}
+        println("frame");
+    }}
+    total - {expected}
+}}
+"#,
+        expected = frames * 7
+    )
+}
+
+/// REASSIGNMENT after ingress — a generation boundary.
+///
+/// The transfer record is path-local runtime state, so it has to be retired when
+/// the slot receives a fresh value: the replacement handle is owned by this frame
+/// outright and must be released at scope exit. Left at 1 by the ingress, the
+/// guard suppressed the replacement's release and this leaked one handle per
+/// frame.
+fn reassign_after_ingress_source(frames: usize) -> String {
+    format!(
+        r#"
+type Node {{ id: i64; }}
+
+fn frame(seed: i64) -> i64 {{
+    var shared: Rc<Node> = Rc.new(Node {{ id: seed }});
+    let pair: (Rc<Node>, string) = (shared, "tag");
+    shared = Rc.new(Node {{ id: seed + 1 }});
+    pair.1.len() + shared.get().id - seed - 1
+}}
+
+fn main() -> i64 {{
+    var total: i64 = 0;
+    for seed in 0..{frames} {{
+        total = total + frame(seed);
+        println("frame");
+    }}
+    total - {expected}
+}}
+"#,
+        expected = frames * 3
+    )
+}
+
+/// The same generation boundary crossed once per loop iteration, so a flag that
+/// latches at 1 leaks every iteration rather than once.
+fn reassign_in_loop_source(frames: usize) -> String {
+    format!(
+        r#"
+type Node {{ id: i64; }}
+
+fn main() -> i64 {{
+    var total: i64 = 0;
+    var shared: Rc<Node> = Rc.new(Node {{ id: 0 }});
+    for seed in 0..{frames} {{
+        let pair: (Rc<Node>, string) = (shared, "tag");
+        shared = Rc.new(Node {{ id: seed }});
+        total = total + pair.1.len();
+        println("frame");
+    }}
+    total - {expected}
+}}
+"#,
+        expected = frames * 3
     )
 }
 
@@ -459,3 +632,39 @@ aggregate_ingress_shape!(
     "conditional_ingress",
     conditional_ingress_source
 );
+
+aggregate_ingress_shape!(
+    array_literal_element_does_not_over_release,
+    array_literal_element_does_not_under_release,
+    "array_element",
+    array_element_source
+);
+
+aggregate_ingress_shape!(
+    conditional_array_literal_element_does_not_over_release,
+    conditional_array_literal_element_does_not_under_release,
+    "conditional_array_element",
+    conditional_array_element_source
+);
+
+aggregate_ingress_shape!(
+    reassign_after_ingress_does_not_over_release,
+    reassign_after_ingress_does_not_under_release,
+    "reassign_after_ingress",
+    reassign_after_ingress_source
+);
+
+aggregate_ingress_shape!(
+    reassign_in_loop_does_not_over_release,
+    reassign_in_loop_does_not_under_release,
+    "reassign_in_loop",
+    reassign_in_loop_source
+);
+
+/// Machine-payload ingress carries the over-release half only; see
+/// [`machine_payload_source`] for the measured reason the leak half is not
+/// pinned on this shape.
+#[test]
+fn machine_state_payload_does_not_over_release() {
+    assert_shape_does_not_over_release("machine_payload", machine_payload_source);
+}

@@ -5730,55 +5730,90 @@ pub fn validate_outbound_actor_modes(raw: &RawMirFunction) -> Vec<MirCheck> {
         .collect()
 }
 
+/// Locals released by an inline `Instr::Drop` naming the string or bytes
+/// release symbol. Used to take a before/after reading around the nested-temp
+/// splices so publication-owner retirement pairs with the releases those
+/// splices placed rather than with any release that happens to be present.
+fn inline_string_or_bytes_release_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
+    blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::Drop {
+                place: Place::Local(local),
+                drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+                ..
+            } if matches!(*symbol, "hew_string_drop" | "hew_bytes_drop") => Some(*local),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Phase one of [`finalize_body`]: splice the RELEASES the per-binding drop
 /// provers cannot see — nested fresh string/bytes temporaries, the share-intent
 /// finalisation, and the non-escaped sibling fields of an escaped record.
 ///
 /// These run before the checker statement snapshot because each adds a
 /// checker-visible read of the value it discharges.
-fn splice_body_ownership_releases(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
-    let nested_temp_binding_locals: HashMap<BindingId, Place> = builder
-        .binding_locals
-        .iter()
-        .filter(|(binding, _)| {
-            !builder
-                .synthetic_owner_publication_sites
-                .contains_key(binding)
-        })
-        .map(|(binding, place)| (*binding, *place))
-        .collect();
-    apply_nested_fresh_string_temp_drops(
-        &mut *blocks,
-        &mut builder.suspend_kinds,
-        &builder.locals,
-        &nested_temp_binding_locals,
-        &builder
-            .call_scrutinee_provenance
-            .owned_string_return_carrier_symbols,
-        &mut builder.suspend_abandon_extra_drops,
-        &mut builder.instr_spans,
-    );
-    // #2542 — release nested fresh-owned `bytes` user-call-result temporaries
-    // (`mk().len()`, `mk().to_string()`, discarded `mk();`) that
-    // `derive_local_bytes_drop_allowed` (binding-scoped) cannot see. Same
-    // pre-`check_function` ordering rationale as the string splice above.
-    apply_nested_fresh_bytes_temp_drops(
-        &mut *blocks,
-        &builder.suspend_kinds,
-        &builder.locals,
-        &nested_temp_binding_locals,
-        &mut builder.instr_spans,
-    );
-    // Inline string/bytes releases consume the exact typed-publication
-    // generation for their local.  This keeps concat/f-string and bytes
-    // temporaries on the checker-owned carrier without a second scope-exit
-    // drop authority, while persistent publications remain ledger-owned.
-    builder.consume_typed_publication_owners_at_inline_release(&*blocks);
+fn splice_body_ownership_releases(
+    blocks: &mut Vec<BasicBlock>,
+    builder: &mut Builder,
+    nested_fresh_temp_releases: bool,
+) {
+    if nested_fresh_temp_releases {
+        // Inline string/bytes releases this body's own lowering already
+        // emitted. The retirement below pairs with the releases the nested-temp
+        // splices are about to add, so anything already present is excluded.
+        let released_before_splices = inline_string_or_bytes_release_locals(blocks);
+        let nested_temp_binding_locals: HashMap<BindingId, Place> = builder
+            .binding_locals
+            .iter()
+            .filter(|(binding, _)| {
+                !builder
+                    .synthetic_owner_publication_sites
+                    .contains_key(binding)
+            })
+            .map(|(binding, place)| (*binding, *place))
+            .collect();
+        apply_nested_fresh_string_temp_drops(
+            &mut *blocks,
+            &mut builder.suspend_kinds,
+            &builder.locals,
+            &nested_temp_binding_locals,
+            &builder
+                .call_scrutinee_provenance
+                .owned_string_return_carrier_symbols,
+            &mut builder.suspend_abandon_extra_drops,
+            &mut builder.instr_spans,
+        );
+        // #2542 — release nested fresh-owned `bytes` user-call-result temporaries
+        // (`mk().len()`, `mk().to_string()`, discarded `mk();`) that
+        // `derive_local_bytes_drop_allowed` (binding-scoped) cannot see. Same
+        // pre-`check_function` ordering rationale as the string splice above.
+        apply_nested_fresh_bytes_temp_drops(
+            &mut *blocks,
+            &builder.suspend_kinds,
+            &builder.locals,
+            &nested_temp_binding_locals,
+            &mut builder.instr_spans,
+        );
+        // Inline string/bytes releases consume the exact typed-publication
+        // generation for their local.  This keeps concat/f-string and bytes
+        // temporaries on the checker-owned carrier without a second scope-exit
+        // drop authority, while persistent publications remain ledger-owned.
+        builder
+            .consume_typed_publication_owners_at_inline_release(&*blocks, &released_before_splices);
+    }
     finalize_string_local_share_intents(&mut *blocks, builder);
-    // The scope-exit-live owned-locals view, materialised once for the
-    // escaped-sibling emitter and the double-free gate below — the same
-    // `(binding, name, ty)` tuples they read before the ledger carried richer
-    // facts.
+    splice_escaped_record_sibling_field_drops(blocks, builder);
+}
+
+/// #2212 — an owned record whose field escapes through a binder loses its
+/// composite scope-exit drop (the sole-owner prover excludes it); the record's
+/// NON-escaped owned sibling fields still need their release. Where the value
+/// flow proves the escape's root, field, and last-use position, splice one
+/// `FieldDropInPlace` per dischargeable sibling right after the escape.
+fn splice_escaped_record_sibling_field_drops(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     let owned_locals_snapshot = builder.owned_locals_snapshot();
     // #2212 — an owned record whose field escapes through a binder loses its
     // composite scope-exit drop (the sole-owner prover excludes it); the
@@ -5822,12 +5857,6 @@ fn splice_body_ownership_releases(blocks: &mut Vec<BasicBlock>, builder: &mut Bu
         );
         builder.instr_spans = instr_spans;
     }
-    // THIR's `statements` is the union of every block's checker stream
-    // in CFG-construction order — the THIR snapshot's job is preserving
-    // the pre-CFG flat-stream shape for diagnostic readers that haven't
-    // been ported to block-aware iteration yet. Slice 3's per-block
-    // dataflow consumes `RawMirFunction.blocks` directly and doesn't
-    // touch this snapshot.
 }
 
 /// Phase two of [`finalize_body`]: prepare the OPERANDS — name locals for the
@@ -5893,6 +5922,20 @@ pub(in crate::lower) struct BodyFinalizeSpec {
     /// Bracket the body with `EnterContext` / `ExitContext` — only for a call
     /// convention that carries the hidden execution-context argument.
     pub bracket_execution_context: bool,
+    /// Splice inline releases for nested fresh string/bytes temporaries and
+    /// retire the publication owners those releases discharge.
+    ///
+    /// This pair has a PRECONDITION the lambda-actor handler body does not
+    /// meet. That body arrives with its own message and reply teardown spine
+    /// and derives its string ownership separately afterwards
+    /// (`finalize_string_ownership`); running the pair over it withdraws
+    /// releases the body still owes. Measured on `examples/lambda_actors.hew`:
+    /// `__hew_lambda_body_main_6` emitted 28 `hew_string_drop` calls without
+    /// the pair and 12 with it, and every `__hew_lambda_body_*` in the example
+    /// corpus lost its full scope-exit release count. Fail closed — that body
+    /// keeps the posture it had, and the seam still carries every other pass to
+    /// it.
+    pub nested_fresh_temp_releases: bool,
 }
 
 impl BodyFinalizeSpec {
@@ -5903,6 +5946,16 @@ impl BodyFinalizeSpec {
         Self {
             owned_carrier_param_drops: false,
             bracket_execution_context: false,
+            nested_fresh_temp_releases: true,
+        }
+    }
+
+    /// The lambda-actor handler body: everything except the nested fresh-temp
+    /// release pair, whose precondition it does not meet (see the field).
+    pub(in crate::lower) fn lambda_actor_body() -> Self {
+        Self {
+            nested_fresh_temp_releases: false,
+            ..Self::nested_body()
         }
     }
 }
@@ -5983,7 +6036,7 @@ pub(in crate::lower) fn finalize_body(
             }
         }
     }
-    splice_body_ownership_releases(&mut blocks, builder);
+    splice_body_ownership_releases(&mut blocks, builder, spec.nested_fresh_temp_releases);
     let thir_statements: Vec<MirStatement> = blocks
         .iter()
         .flat_map(|b| b.statements.iter().cloned())
@@ -6147,6 +6200,7 @@ pub(crate) fn lower_function(
         BodyFinalizeSpec {
             owned_carrier_param_drops: true,
             bracket_execution_context: call_conv.carries_execution_context(),
+            nested_fresh_temp_releases: true,
         },
     );
     let thir = ThirFunction {

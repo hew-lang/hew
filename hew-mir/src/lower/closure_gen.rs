@@ -1449,7 +1449,7 @@ impl Builder {
         } = super::finalize_body(
             &mut body_builder,
             super::BodySeal::Cursor(Terminator::Return),
-            super::BodyFinalizeSpec::nested_body(),
+            super::BodyFinalizeSpec::lambda_actor_body(),
         );
         let body_locals = body_builder.locals.clone();
         let body_user_return_ty = if matches!(shape, crate::model::LambdaActorShape::Ask) {

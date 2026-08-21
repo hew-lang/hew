@@ -2182,7 +2182,7 @@ impl Builder {
     /// A bare `loop` has no condition: the sole way out is `break`, so
     /// `exit_bb` has no predecessor unless the body contains one. We start it
     /// unconditionally anyway (Risk 4) so the post-loop cursor always has a
-    /// home and `finalize_blocks` can drop it if it stays empty/unreachable.
+    /// home and `seal_body_blocks` can drop it if it stays empty/unreachable.
     /// `continue` targets `body_bb` directly — there is no header to re-check.
     ///
     /// Always returns `None`: `loop {}` is `Unit`-typed at the MIR boundary

@@ -169,6 +169,18 @@ REGISTRY: tuple[Baseline, ...] = (
         check="make verify-ffi",
     ),
     Baseline(
+        id="cabi-surface",
+        summary="generated C ABI manifest and C header census",
+        tier="fast",
+        paths=(
+            "scripts/cabi-surface.json",
+            "hew-cabi/include/hew_cabi_surface.h",
+        ),
+        gates=("cabi-surface-check",),
+        regen="make cabi-surface",
+        check="make cabi-surface-check",
+    ),
+    Baseline(
         id="core-matrix-truth-table",
         summary="recorded outcome class of every core-matrix cell",
         tier="compiler",

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use serde::Deserialize;
-use support::{hew_binary, repo_root, require_wasi_runner, run_hew_in};
+use support::{hew_binary, repo_root, require_codegen, require_wasi_runner, run_hew_in, tempdir};
 
 #[derive(Debug, Deserialize)]
 struct Capabilities {
@@ -35,6 +35,53 @@ fn run_wasi_example(source: &Path) -> Output {
         .to_str()
         .expect("wasi example path must be valid UTF-8");
     run_hew_in(repo_root(), &["run", source, "--target", "wasm32-wasi"])
+}
+
+#[test]
+fn yaml_bytes_ffi_return_runs_natively_and_under_wasi() {
+    let dir = tempdir();
+    let source = dir.path().join("yaml_bytes_ffi_return.hew");
+    fs::write(
+        &source,
+        r#"#[opaque]
+type YamlValue {}
+
+extern "C" {
+    fn hew_yaml_parse(s: string) -> YamlValue;
+    fn hew_yaml_get_bytes(val: YamlValue) -> bytes;
+    fn hew_yaml_free(consume val: YamlValue);
+}
+
+fn main() {
+    let value = unsafe { hew_yaml_parse("'aGV3'") };
+    let decoded: bytes = unsafe { hew_yaml_get_bytes(value) };
+    println(decoded.to_string());
+    unsafe { hew_yaml_free(value) };
+}
+"#,
+    )
+    .expect("write YAML bytes FFI program");
+    let source = source.to_str().expect("source path must be valid UTF-8");
+
+    require_codegen();
+    let native = run_hew_in(repo_root(), &["run", source]);
+    assert!(
+        native.status.success(),
+        "native YAML bytes FFI program failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&native.stdout),
+        String::from_utf8_lossy(&native.stderr),
+    );
+    assert_eq!(native.stdout, b"hew\n");
+
+    require_wasi_runner();
+    let wasm = run_hew_in(repo_root(), &["run", source, "--target", "wasm32-wasi"]);
+    assert!(
+        wasm.status.success(),
+        "Wasm YAML bytes FFI program failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&wasm.stdout),
+        String::from_utf8_lossy(&wasm.stderr),
+    );
+    assert_eq!(wasm.stdout, b"hew\n");
 }
 
 #[test]

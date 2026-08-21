@@ -437,7 +437,6 @@ CHANGED_FILES=()
 CHANGED_CRATE_DIRS=()
 COMMANDS=()
 WARMUP_COMMANDS=()
-WARMUP_NOTES=()
 PROFILE_JSON_PATH=""
 GITHUB_OUTPUT_PATH=""
 SHARD_INDEX=0
@@ -459,6 +458,8 @@ Dispatch a conservative local CI preflight based on changed files.
 - By default, all selected commands run and failures are reported together at the end.
 - --fail-fast           Stop after the first failed command.
 - If the first-slice routing is unclear, the script runs the broader local check profile.
+- --explain-warmup <cmd> Print the warm-up derived from <cmd> and exit; fails when <cmd>
+                        has no derivable warm-up.
 - --shard K/N           Run only shard K of N.  The selected profile's command list is
                         partitioned into N duration-balanced groups; every command appears
                         in exactly one shard and ordering-dependent commands stay together.
@@ -812,6 +813,192 @@ is_scripts_config_path() {
     return 1
 }
 
+# Warm artifact construction, ahead of the per-command watchdog budgets, so
+# one-time compilation is not measured against a timed gate's hang ceiling.
+#
+# Every warm-up is DERIVED from the gate it warms; a second, hand-written list
+# of build commands is what turned main red for four hours, when a `cargo build
+# --workspace --all-targets` warm-up sat beside a `cargo nextest run --workspace
+# --exclude hew-cabi` gate and the two builds put incompatible units in one
+# target dir (the root `panic = "abort"` cannot apply to a libtest harness).
+#
+#   cargo fmt ...            nothing (rustfmt parses source)
+#   cargo clippy ... -- ...  the same invocation without the trailing
+#                            `-- -D warnings`, so a lint failure is the timed
+#                            gate's verdict and not an aborted warm-up
+#   cargo nextest run ...    the same invocation plus --no-run
+#   cargo test ...           the same invocation plus --no-run
+#   make <target>...         make <target>-build..., declared NEXT TO <target>
+#                            in the Makefile (the test-cabi-build precedent)
+#
+# A gate with no derivable warm-up is fatal: the fallback that warmed the whole
+# artifact set let a new gate reopen the divergence without anyone deciding to.
+add_warmup_command() {
+    local candidate="$1"
+    local existing
+    for existing in "${WARMUP_COMMANDS[@]+"${WARMUP_COMMANDS[@]}"}"; do
+        [[ "$existing" == "$candidate" ]] && return 0
+    done
+    WARMUP_COMMANDS+=("$candidate")
+}
+
+# Resolve every warm-up build form through make itself, in one pass.
+# `make --always-make --dry-run` prints the commands make WOULD run, with the
+# Makefile's own conditionals applied and freshness taken out of the answer.
+# Reading the Makefile text instead cannot answer this: `test-hew-ratchet-build`
+# and `test-o2-differential-build` are each declared twice, once in a
+# shard-aggregate branch that builds nothing, and a first-match text scan reads
+# that branch's empty recipe as the answer for the branch that builds the
+# compiler.  A missing rule makes the pass fail, so an undeclared build form
+# cannot pass as an empty one.
+#
+# The pass interleaves a marker goal before each build form and splits its
+# output on the marker, so one make invocation answers for every gate.  make
+# builds each target once per invocation, so a form whose only work is a
+# prerequisite an earlier form already covers reports no work of its own — and
+# is left out of the warm-up, which the earlier form has already warmed.
+PLAN_TARGETS_WITH_WORK=""
+
+collect_make_build_targets() {
+    local cmd target
+    local -a targets=()
+    for cmd in "${COMMANDS[@]}"; do
+        [[ "$cmd" == "make "* ]] || continue
+        read -r -a targets <<< "${cmd#make }"
+        for target in "${targets[@]}"; do
+            if [[ "$target" == -* || "$target" == *=* ]]; then
+                die "warm-up derivation for '$cmd' is undefined: only bare make targets are derivable, got '$target'"
+            fi
+            printf '%s\n' "${target}-build"
+        done
+    done
+}
+
+# make --question exits 2 for a target it has no rule for, 0 or 1 otherwise,
+# and runs nothing either way.  Only reached when the plan pass has already
+# failed, so the cost of one invocation per target does not matter.
+make_has_no_rule_for() {
+    local status=0
+    make --question "$1" >/dev/null 2>&1 || status=$?
+    [[ "$status" -eq 2 ]]
+}
+
+diagnose_missing_build_form() {
+    local cmd target
+    local -a targets=()
+    for cmd in "${COMMANDS[@]}"; do
+        [[ "$cmd" == "make "* ]] || continue
+        read -r -a targets <<< "${cmd#make }"
+        for target in "${targets[@]}"; do
+            if make_has_no_rule_for "$target"; then
+                die "gate '$cmd' names an undeclared make target '$target'"
+            fi
+            if make_has_no_rule_for "${target}-build"; then
+                die "gate '$cmd' has no derivable warm-up: declare '${target}-build' next to '${target}' in the Makefile (see test-cabi-build), building what '${target}' needs and running nothing"
+            fi
+        done
+    done
+    die "make could not plan the warm-up for the selected gates"
+}
+
+plan_make_build_forms() {
+    local -a goals=()
+    local target plan line section=""
+    while IFS= read -r target; do
+        [[ -n "$target" ]] || continue
+        case " ${goals[*]-} " in
+            *" $target "*) continue ;;
+        esac
+        goals+=("preflight-plan-mark-${target}" "$target")
+    done < <(collect_make_build_targets)
+    [[ ${#goals[@]} -gt 0 ]] || return 0
+
+    plan="$(make --always-make --dry-run "${goals[@]}" 2>&1)" || diagnose_missing_build_form
+
+    while IFS= read -r line; do
+        case "$line" in
+            *"==preflight-plan=="*)
+                section="${line##*==preflight-plan==}"
+                section="${section%\"}"
+                continue
+                ;;
+        esac
+        [[ -n "$section" ]] || continue
+        [[ -z "${line//[[:space:]]/}" || "$line" == ":" || "$line" == make* ]] && continue
+        PLAN_TARGETS_WITH_WORK="$PLAN_TARGETS_WITH_WORK $section"
+        section=""
+    done <<< "$plan"
+}
+
+derive_make_warmup() {
+    local cmd="$1"
+    local -a targets=()
+    local -a build_targets=()
+    local target
+    read -r -a targets <<< "${cmd#make }"
+    for target in "${targets[@]}"; do
+        case " $PLAN_TARGETS_WITH_WORK " in
+            *" ${target}-build "*) build_targets+=("${target}-build") ;;
+        esac
+    done
+    [[ ${#build_targets[@]} -gt 0 ]] || return 0
+    add_warmup_command "make ${build_targets[*]}"
+}
+
+# Clippy warms through clippy: its check artifacts carry a different
+# fingerprint from rustc's.  Only the lint arguments after `--` are dropped, so
+# a lint failure is the timed gate's verdict rather than an aborted warm-up.
+# Everything else after `--` is a rustc argument that changes what is compiled,
+# and dropping it would make the warm-up build something other than the gate --
+# the divergence this derivation exists to prevent.
+derive_clippy_warmup() {
+    local cmd="$1"
+    local -a kept=()
+    local head="${cmd%% -- *}"
+    local rest="" token skip=0
+    [[ "$cmd" == *" -- "* ]] && rest="${cmd#* -- }"
+    for token in $rest; do
+        if (( skip == 1 )); then
+            skip=0
+            continue
+        fi
+        case "$token" in
+            -D|-W|-A|-F) skip=1 ;;
+            -D*|-W*|-A*|-F*) ;;
+            *) kept+=("$token") ;;
+        esac
+    done
+    if [[ ${#kept[@]} -gt 0 ]]; then
+        add_warmup_command "$head -- ${kept[*]}"
+    else
+        add_warmup_command "$head"
+    fi
+}
+
+derive_warmup() {
+    local cmd="$1"
+    case "$cmd" in
+        "cargo fmt "*)
+            ;;
+        "cargo clippy "*)
+            derive_clippy_warmup "$cmd"
+            ;;
+        "cargo nextest run "*|"cargo test "*)
+            if [[ "$cmd" == *" --no-run"* ]]; then
+                add_warmup_command "$cmd"
+            else
+                add_warmup_command "$cmd --no-run"
+            fi
+            ;;
+        "make "*)
+            derive_make_warmup "$cmd"
+            ;;
+        *)
+            die "gate '$cmd' has no derivable warm-up: express it as a make target with a '<target>-build' form, or as a cargo invocation with a no-execute flag"
+            ;;
+    esac
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)
@@ -821,6 +1008,15 @@ while [[ $# -gt 0 ]]; do
         --fail-fast)
             FAIL_FAST=1
             shift
+            ;;
+        --explain-warmup)
+            shift
+            [[ $# -gt 0 ]] || die "--explain-warmup requires a command"
+            COMMANDS=("$1")
+            plan_make_build_forms
+            derive_warmup "$1"
+            [[ ${#WARMUP_COMMANDS[@]} -eq 0 ]] || printf '%s\n' "${WARMUP_COMMANDS[@]}"
+            exit 0
             ;;
         --base)
             shift
@@ -1196,8 +1392,12 @@ case "$LANE" in
         add_command "make check-counterfactual-output"
         ;;
     grammar)
+        # The ANTLR mirror target was deleted with the rest of the
+        # never-in-CI targets (#2811) and this dispatch survived it, so every
+        # grammar-spec diff since has died on "No rule to make target". The
+        # spec has no automated gate today (LESSONS: grammar-mirror); this lane
+        # runs what covers a spec diff and claims nothing more.
         add_command "cargo fmt --all -- --check"
-        add_command "make grammar"
         ;;
     parser)
         add_command "cargo fmt --all -- --check"
@@ -1285,7 +1485,7 @@ case "$LANE" in
         add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
         if (( needs_runtime_compiled_suite == 1 )); then
             add_command "make stdlib"
-            add_command "scripts/check-libhew-fresh.sh"
+            add_command "make check-libhew-fresh"
         # Runtime ABI changes (e.g. HewCont layout / continuation resume protocol)
         # are invisible to rlib unit tests alone — a Rust unit test can pass over a
         # garbage codegen path.  Run the compiled .hew suites so a local preflight
@@ -1619,132 +1819,14 @@ case "$LANE" in
         ;;
 esac
 
-# Warm artifact construction before applying per-command watchdog budgets.  The
-# timed checks retain their finite hang ceilings; this separates one-time
-# compilation from the gate measurements those ceilings are calibrated for.
-#
-# Keep this list derived from the chosen commands rather than from a lane-wide
-# superset: a parser diff needs the native compiler and WASM runtime, while a
-# documentation diff needs neither.  An unrecognised command falls back to the
-# complete artifact set and leaves a visible note so its mapping can be added.
-#
-# A warm-up must build the artifacts its command needs THE SAME WAY the command
-# builds them.  `cargo build --all-targets` is not that way: the root
-# `[profile.dev] panic = "abort"` cannot apply to a libtest harness, so mixing
-# lib and test targets in one invocation fails outright
-# ("requires panic strategy abort which is incompatible with this crate's
-# strategy of unwind" on hew-sandbox-wasm, plus a duplicate-unit serde mismatch
-# in xtask).  Test-target warm-ups therefore mirror the real gate: the same
-# nextest/cargo-test invocation with `--no-run`, exactly as `make test` builds
-# its binaries.  Clippy warms through clippy — its check artifacts are a
-# separate fingerprint from rustc's — with the trailing `-- -D warnings` dropped
-# so a lint failure surfaces as the timed gate's failure, not as an aborted
-# warm-up.  Dropping the deny flag does not cost the warm: it only re-checks the
-# top-level packages, dependencies stay cached.
-WORKSPACE_TEST_WARMUP="cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run"
-
-add_warmup_command() {
-    local candidate="$1"
-    local existing
-    for existing in "${WARMUP_COMMANDS[@]+"${WARMUP_COMMANDS[@]}"}"; do
-        [[ "$existing" == "$candidate" ]] && return 0
+# The command override replaces the gate list with synthetic commands for the
+# failure-policy tests; those are not gates and have nothing to warm.
+if [[ -z "${PREFLIGHT_TEST_COMMANDS:-}" ]]; then
+    plan_make_build_forms
+    for cmd in "${COMMANDS[@]}"; do
+        derive_warmup "$cmd"
     done
-    WARMUP_COMMANDS+=("$candidate")
-}
-
-add_full_warmup() {
-    local cmd="$1"
-    add_warmup_command "$WORKSPACE_TEST_WARMUP"
-    add_warmup_command "make hew"
-    add_warmup_command "make runtime"
-    add_warmup_command "make stdlib"
-    add_warmup_command "make wasm-runtime"
-    WARMUP_NOTES+=("$cmd has no artifact mapping; using the full warm-up set")
-}
-
-map_warmup_artifacts() {
-    local cmd="$1"
-    case "$cmd" in
-        "cargo fmt "*)
-            ;;
-        "cargo clippy "*)
-            add_warmup_command "${cmd%% -- *}"
-            ;;
-        "cargo nextest run "*)
-            add_warmup_command "$cmd --no-run"
-            ;;
-        "make test-cabi")
-            add_warmup_command "make test-cabi-build"
-            ;;
-        "make test-runtime-unit")
-            add_warmup_command "cargo nextest run --profile ci -p hew-runtime --no-default-features --no-run"
-            ;;
-        "make playground-check")
-            add_warmup_command "cargo test -p hew-wasm --no-run"
-            ;;
-        "make grammar")
-            add_warmup_command "$WORKSPACE_TEST_WARMUP"
-            ;;
-        "make structural-lint")
-            add_warmup_command "scripts/ast-grep-lint.sh --bootstrap --install-only"
-            ;;
-        "make lint")
-            # `make lint` bootstraps ast-grep and then runs
-            # `cargo clippy --workspace --tests -- -D warnings`; warm both.
-            add_warmup_command "scripts/ast-grep-lint.sh --bootstrap --install-only"
-            add_warmup_command "cargo clippy --workspace --tests"
-            ;;
-        "make hew-native wasm-runtime")
-            add_warmup_command "make hew"
-            add_warmup_command "make wasm-runtime"
-            ;;
-        "make hew"|"make test-doc-examples"|"make test-stdlib-ratchet"|"make checked-mir-verify"|"make ll-diff"|"make hew-check-all"|"make hew-fmt-property")
-            add_warmup_command "make hew"
-            ;;
-        "make runtime")
-            add_warmup_command "make runtime"
-            ;;
-        "make stdlib"|"scripts/check-libhew-fresh.sh")
-            add_warmup_command "make stdlib"
-            ;;
-        "make wasm-runtime")
-            add_warmup_command "make wasm-runtime"
-            ;;
-        "make test-compiler-pipeline"|"make test-opaque-resource-lifecycle-matrix"|"make test-opaque-resource-lifecycle-matrix-external")
-            add_warmup_command "make hew"
-            add_warmup_command "make stdlib"
-            add_warmup_command "make wasm-runtime"
-            ;;
-        "make test-vertical-slice"|"make test-pkg-import"|"make test-package-install"|"make fuzz-oracle"|"make fuzz-oracle-selftest"|"make test-hew-ratchet"|"make test-core-matrix"|"make test-o2-differential"|"make test-ux-examples"|"make test-surface-examples"|"make observe-functional-test"|"make mqtt-broker-e2e"|"make libhew-link-race-test"|"make sandbox-parity")
-            add_warmup_command "make hew"
-            add_warmup_command "make runtime"
-            add_warmup_command "make stdlib"
-            ;;
-        "make checked-mir-run")
-            add_warmup_command "make hew"
-            add_warmup_command "make runtime"
-            add_warmup_command "make stdlib"
-            ;;
-        "make leak-scan"|"make check-counterfactual-output"|"make freebsd-workflow-contract-check"|"make test-release-workflow-contract"|"make test-stdlib-execution-proofs"|"make o2-differential-selftest"|"make doc-ratchet-selftest"|"make check-sanitizer-gate"|"make check-gate-reachability"|"make test-leak-oracle-selftest"|"make ll-identity-selftest")
-            ;;
-        "make test")
-            # Mirror the target's own order: wasm-runtime/runtime/libhew first,
-            # then the nextest binary build.
-            add_warmup_command "make hew"
-            add_warmup_command "make runtime"
-            add_warmup_command "make stdlib"
-            add_warmup_command "make wasm-runtime"
-            add_warmup_command "$WORKSPACE_TEST_WARMUP"
-            ;;
-        *)
-            add_full_warmup "$cmd"
-            ;;
-    esac
-}
-
-for cmd in "${COMMANDS[@]+"${COMMANDS[@]}"}"; do
-    map_warmup_artifacts "$cmd"
-done
+fi
 
 # Test-only warm-up replacement.  Keep this behind the same explicit sentinel
 # as command replacement so normal preflight invocations always warm real
@@ -1755,7 +1837,6 @@ if [[ -n "${PREFLIGHT_TEST_WARMUP_COMMANDS:-}" ]]; then
     fi
     echo "warning: PREFLIGHT_TEST_WARMUP_COMMANDS override active (test-only); replacing warm-up commands." >&2
     WARMUP_COMMANDS=()
-    WARMUP_NOTES=()
     while IFS= read -r test_cmd; do
         [[ -n "$test_cmd" ]] || continue
         WARMUP_COMMANDS+=("$test_cmd")
@@ -1852,9 +1933,6 @@ if [[ ${#WARMUP_COMMANDS[@]} -gt 0 ]]; then
     echo "Warm-up:"
     for cmd in "${WARMUP_COMMANDS[@]}"; do
         echo "  - $cmd"
-    done
-    for note in "${WARMUP_NOTES[@]+"${WARMUP_NOTES[@]}"}"; do
-        echo "  ! $note"
     done
 fi
 
@@ -2011,6 +2089,31 @@ run_timed_command() {
 
     return "$status"
 }
+
+# Toolchain pin. The workflows once installed whatever taiki-e/install-action
+# resolved that hour, so `--no-pager` (a recent nextest release) was
+# accepted or rejected by the same commit on different days: three reds, each after a full
+# job. scripts/tests/test_tool_pin_contract.py now holds the pin for the whole
+# build system and proves every installer matches it; this reads that same
+# value rather than declaring a second one, and refuses to run gates on an
+# older build.
+assert_nextest_pin() {
+    local contract="scripts/tests/test_tool_pin_contract.py"
+    local pin installed oldest reported
+    pin="$(sed -n 's/^[[:space:]]*"NEXTEST": ("cargo-nextest", "\([0-9][0-9.]*\)").*/\1/p' "$contract")"
+    [[ -n "$pin" ]] || die "no cargo-nextest pin in $contract (PINS[\"NEXTEST\"])"
+    reported="$(cargo nextest --version 2>/dev/null)"
+    installed="$(printf '%s\n' "$reported" | sed -n 's/^cargo-nextest \([0-9][0-9.]*\).*/\1/p' | head -1)"
+    [[ -n "$installed" ]] || die "cargo-nextest is not installed; every test gate runs through it (cargo install cargo-nextest --locked)"
+    oldest="$(printf '%s\n%s\n' "$pin" "$installed" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)"
+    [[ "$installed" == "$pin" || "$oldest" == "$pin" ]] ||
+        die "cargo-nextest $installed is older than the pinned $pin; it rejects flags the gates pass (cargo install cargo-nextest --locked)"
+    echo "cargo-nextest $installed satisfies the pinned $pin"
+}
+
+if [[ "$REQUIRES_COMPILE" == "true" ]]; then
+    assert_nextest_pin
+fi
 
 PREFLIGHT_FAILURES=()
 PREFLIGHT_EXECUTED_COMMANDS=()

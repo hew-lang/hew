@@ -44,10 +44,65 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
+  # Trunk health — a red main must not broadcast into every open branch
+  # ─────────────────────────────────────────────────────────────────────────
+  main-health:
+    name: main is green
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # On 2026-08-20 a warm-up defect landed on main and the same failure was
+      # reported by eleven branch runs over four hours: every one of them ran
+      # the trunk defect, not their own diff, and every one of them cost a full
+      # runner. A pull request cannot fix main from its own CI, so branch runs
+      # wait for main to be green instead of re-discovering its break.
+      #
+      # The escape is deliberate and visible: label the pull request `fix-main`
+      # and its run proceeds. Without an escape, a red main is a repository-wide
+      # deadlock, which is worse than the broadcast.
+      - name: Refuse to run branch gates while main is red
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -uo pipefail
+          # This gate blocks 13 jobs, so it fails OPEN on anything that is not
+          # a confirmed red main. An API error, a token problem, an empty
+          # response: none of those are evidence about main, and treating them
+          # as evidence would take the whole repository down on a 404.
+          if ! gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=1" > main-run.json; then
+            echo "::warning::could not read main's CI status; running branch gates anyway."
+            exit 0
+          fi
+          conclusion=$(jq -r '.workflow_runs[0].conclusion // "unknown"' main-run.json 2>/dev/null || echo unknown)
+          head_sha=$(jq -r '.workflow_runs[0].head_sha // "unknown"' main-run.json 2>/dev/null || echo unknown)
+          run_url=$(jq -r '.workflow_runs[0].html_url // ""' main-run.json 2>/dev/null || echo "")
+          echo "Last completed CI run on main: ${conclusion} at ${head_sha}"
+          # Only a run that FAILED is evidence that main is broken. A cancelled
+          # run is what the concurrency group does when a newer commit lands,
+          # and a repository that blocked every branch on one of those would
+          # deadlock on routine traffic rather than on a defect.
+          case "${conclusion}" in
+            failure|timed_out) ;;
+            *) exit 0 ;;
+          esac
+          if printf '%s' "${PR_LABELS}" | jq -e 'index("fix-main")' > /dev/null 2>&1; then
+            echo "::notice::main is ${conclusion} at ${head_sha}; running anyway because this pull request is labelled fix-main."
+            exit 0
+          fi
+          echo "::error::main is red at ${head_sha}; fix main first (${run_url}). Label this pull request fix-main if it is the fix."
+          exit 1
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Path change detection — gates Windows/macOS and playground jobs
   # ─────────────────────────────────────────────────────────────────────────
   changes:
     name: Detect changes
+    # Every job that runs anything needs this one, so the trunk-health gate
+    # hangs here rather than on a hand-kept list of jobs: a job added later
+    # inherits it by construction.
+    needs: main-health
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -187,7 +242,13 @@ jobs:
 
       - name: Run change-scoped checks
         if: needs.changes.outputs.selected_compile != 'true' && (needs.changes.outputs.docs == 'true' || needs.changes.outputs.scripts == 'true')
-        run: scripts/ci-preflight-dispatcher.sh --base origin/main
+        run: |
+          set -euo pipefail
+          args=(--base origin/main)
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            args+=(--fail-fast)
+          fi
+          scripts/ci-preflight-dispatcher.sh "${args[@]}"
 
   # ─────────────────────────────────────────────────────────────────────────
   # Lint — code quality plus 1,778-file formatter preservation
@@ -286,8 +347,8 @@ jobs:
             | tee clippy-results.sarif \
             | sarif-fmt
 
-      - name: Verify JIT host ABI classification
-        run: make verify-ffi test-verify-ffi test-python310-toml-compat
+      - name: Verify C ABI surface and JIT host ABI classification
+        run: make cabi-surface-check test-cabi-surface verify-ffi test-verify-ffi test-python310-toml-compat
 
       - name: Legacy path syntax lint
         run: make legacy-path-syntax-lint
@@ -363,6 +424,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   license-check:
     name: License policy (cargo deny + THIRD-PARTY-LICENSES freshness)
+    needs: main-health
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -768,10 +830,9 @@ jobs:
           CI_PREFLIGHT_BASE: origin/main
           COMPILED_HEW_GATE_OWNER: aggregate
           HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
-        # --fail-fast matches `make preflight`: a red shard stops instead of
-        # spending another 25 min producing a verdict the first failure already
-        # decided. Sharding is what keeps this from narrowing the report —
-        # strategy.fail-fast is false, so the other three shards run to
+        # A push to main broadcasts failures to every branch; stop its affected
+        # shard at the first failure. Sharding keeps that from narrowing the
+        # report — strategy.fail-fast is false, so the other three shards run to
         # completion and a broken change still surfaces up to four independent
         # first failures.
         #
@@ -779,7 +840,13 @@ jobs:
         # result, first failure line) to $GITHUB_STEP_SUMMARY and emits an
         # ::error annotation per failed command, so a red shard reports the
         # failing line at the top of the job instead of only "exit 1".
-        run: scripts/ci-preflight-dispatcher.sh --base origin/main --fail-fast --shard ${{ matrix.shard }}/4
+        run: |
+          set -euo pipefail
+          args=(--base origin/main --shard ${{ matrix.shard }}/4)
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            args+=(--fail-fast)
+          fi
+          scripts/ci-preflight-dispatcher.sh "${args[@]}"
 
       - name: Upload test reports
         if: always() && env.RUN_CODE_PATH == 'true'

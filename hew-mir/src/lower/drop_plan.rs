@@ -2812,7 +2812,7 @@ fn apply_balance_instr(
 /// Write (def) slots of a terminator that mint a tracked local: a call's
 /// result dest, ask reply slots, generator/lambda-actor handle dests,
 /// select-arm bindings, a join's result tuple.
-fn terminator_mint_places(term: &Terminator) -> Vec<Place> {
+pub(super) fn terminator_mint_places(term: &Terminator) -> Vec<Place> {
     match term {
         Terminator::Call { dest, .. } => dest.iter().copied().collect(),
         Terminator::Ask {
@@ -5027,24 +5027,12 @@ fn move_component_root(parent: &mut HashMap<u32, u32>, x: u32) -> u32 {
     parent.insert(x, root);
     root
 }
-fn dedup_whole_value_handoff(
-    blocks: &[BasicBlock],
-    binding_locals: &HashMap<BindingId, Place>,
-    allowed: &mut HashSet<BindingId>,
-    guarded: &HashMap<BindingId, Place>,
-) {
-    let admitted_locals: HashMap<u32, BindingId> = allowed
-        .iter()
-        .filter_map(|b| {
-            binding_locals
-                .get(b)
-                .and_then(|p| base_local(*p))
-                .map(|l| (l, *b))
-        })
-        .collect();
-    if admitted_locals.is_empty() {
-        return;
-    }
+/// The whole-value `Move` graph [`dedup_whole_value_handoff`] walks: an edge
+/// `(src_local, dest_local)` for every move that leaves both slots holding the
+/// same live payload. Ownership TRANSFERS — moves whose source slot is nulled
+/// immediately afterwards — are not edges, because after them the two locals
+/// do not overlap and neither defers to the other.
+fn whole_value_handoff_move_edges(blocks: &[BasicBlock]) -> Vec<(u32, u32)> {
     let mut move_edges: Vec<(u32, u32)> = Vec::new();
     // #2523 — an interior-projection move whose source slot is NEUTRALIZED
     // (`Instr::NeutralizePayloadSlot`) is an ownership TRANSFER, not a
@@ -5065,9 +5053,18 @@ fn dedup_whole_value_handoff(
         })
         .collect();
     for block in blocks {
-        for instr in &block.instructions {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
             if let Instr::Move { dest, src } = instr {
                 if place_is_interior_projection(*src) && neutralized_sources.contains(src) {
+                    continue;
+                }
+                // A divergent-arm selection transfer nulls the whole source
+                // local right after the move, so source and destination never
+                // hold the same live payload: it is a transfer edge, not a
+                // hand-off alias. Keeping it would make the source "handed
+                // off" to the join slot and strip the release it still owes on
+                // the paths that took a different arm.
+                if super::split_consume::is_divergent_selection_transfer_move(block, instr_index) {
                     continue;
                 }
                 if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
@@ -5078,6 +5075,28 @@ fn dedup_whole_value_handoff(
             }
         }
     }
+    move_edges
+}
+
+fn dedup_whole_value_handoff(
+    blocks: &[BasicBlock],
+    binding_locals: &HashMap<BindingId, Place>,
+    allowed: &mut HashSet<BindingId>,
+    guarded: &HashMap<BindingId, Place>,
+) {
+    let admitted_locals: HashMap<u32, BindingId> = allowed
+        .iter()
+        .filter_map(|b| {
+            binding_locals
+                .get(b)
+                .and_then(|p| base_local(*p))
+                .map(|l| (l, *b))
+        })
+        .collect();
+    if admitted_locals.is_empty() {
+        return;
+    }
+    let move_edges = whole_value_handoff_move_edges(blocks);
     for (&start_local, start_binding) in &admitted_locals {
         // BFS the Move graph from this admitted local; if the handle
         // reaches another admitted binding's slot, the downstream

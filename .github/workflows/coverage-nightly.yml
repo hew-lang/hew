@@ -412,10 +412,20 @@ jobs:
         run: cargo build -p hew-cli --release
 
       - name: Install WASI runner prerequisites
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           rustup target add wasm32-wasip1
-          brew install wasmtime
-          wasmtime --version
+          # The release tag, not `brew install wasmtime`: a nightly measuring a
+          # different wasmtime than CI is measuring a different program.
+          WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-aarch64-macos"
+          .github/scripts/retry-download.sh \
+            gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
+            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
+          tar -xJf "${WASMTIME_DIR}.tar.xz"
+          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "./${WASMTIME_DIR}/wasmtime" --version
           command -v wasm-ld
           wasm-ld --version
 

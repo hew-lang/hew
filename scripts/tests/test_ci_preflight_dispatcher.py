@@ -1,8 +1,13 @@
+import ast
+import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
+import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -489,18 +494,20 @@ def test_rust_diff_derives_its_warmup_artifacts_before_commands() -> None:
     warmup = result.stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
     assert warmup == (
         f"  - cargo clippy {packages} --tests\n"
-        "  - make hew\n"
-        "  - make wasm-runtime\n"
+        "  - make hew-native-build wasm-runtime-build\n"
         f"  - cargo nextest run --profile ci {packages} --no-run\n"
     ), result.stdout
     assert result.stdout.index("Warm-up:\n") < result.stdout.index("Commands:\n")
 
 
 def test_docs_diff_has_no_warmup_block() -> None:
+    """The docs gates declare an empty build form, so nothing is warmed."""
     result = run_dispatcher("docs/hew-language-guide.md")
 
     assert result.returncode == 0, result.stderr
     assert "Warm-up:\n" not in result.stdout, result.stdout
+    makefile = (ROOT / "Makefile").read_text()
+    assert "\ndoc-ratchet-selftest-build:\n\t@:\n" in makefile, makefile
 
 
 def test_no_lane_warms_test_targets_with_all_targets() -> None:
@@ -527,18 +534,579 @@ def test_no_lane_warms_test_targets_with_all_targets() -> None:
         assert "--all-targets" not in warmup, (path, result.stdout)
 
 
-def test_comprehensive_warms_clippy_and_nextest_the_way_the_gates_build() -> None:
-    """The comprehensive lane warms `make lint`'s clippy and `make test`'s binaries."""
+def test_comprehensive_warms_every_gate_through_its_own_build_form() -> None:
+    """The comprehensive lane warms `make lint` and `make test` by name.
+
+    The warm-up is the gate's own `<target>-build`, so the clippy and nextest
+    invocations live once each, next to the gate that runs them.
+    """
     result = run_dispatcher("Makefile")
 
     assert result.returncode == 0, result.stderr
     warmup = result.stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
-    assert "  - cargo clippy --workspace --tests\n" in warmup, result.stdout
-    assert (
-        "  - cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run\n"
-        in warmup
-    ), result.stdout
+    assert "  - make lint-build\n" in warmup, result.stdout
+    assert "  - make test-build\n" in warmup, result.stdout
     assert "  - make test-cabi-build\n" in warmup, result.stdout
+    assert "  - make test-compiler-pipeline-build\n" in warmup, result.stdout
+    assert "  - make sandbox-parity-build\n" in warmup, result.stdout
+
+    makefile = (ROOT / "Makefile").read_text()
+    assert (
+        "\ntest-build: wasm-runtime runtime $(LIBHEW_READY)\n\tcargo nextest run --workspace --exclude hew-cabi --profile ci --no-run\n"
+        in makefile
+    ), "make test's build form must build its binaries the way make test does"
+    assert (
+        "\nlint-build: structural-lint-bootstrap-install\n\tcargo clippy --workspace --tests\n"
+        in makefile
+    ), "make lint's build form must warm through clippy, without -D warnings"
+
+
+def _selected_commands(stdout: str) -> list[str]:
+    body = stdout.split("Commands:\n", 1)[1]
+    commands = []
+    for line in body.splitlines():
+        if not line.startswith("  - "):
+            break
+        commands.append(line[len("  - ") :].split("  (budget:")[0])
+    return commands
+
+
+def _warmup_commands(stdout: str) -> list[str]:
+    if "Warm-up:\n" not in stdout:
+        return []
+    body = stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
+    return [
+        line[len("  - ") :] for line in body.splitlines() if line.startswith("  - ")
+    ]
+
+
+# One representative changed path per routing lane. Every lane must derive a
+# warm-up for every command it selects; a lane that cannot is a dispatcher that
+# dies before running anything, which is the point of the derivation being
+# fail-closed.
+LANE_PROBES = {
+    "docs-only": "docs/hew-language-guide.md",
+    "scripts-config": "scripts/foo.sh",
+    "grammar": "docs/specs/Hew.g4",
+    "parser": "hew-parser/src/lib.rs",
+    "types": "hew-types/src/lib.rs",
+    "cli": "hew-cli/src/main.rs",
+    "compiler-pipeline": "hew-mir/src/lib.rs",
+    "vertical-slice": "tests/vertical-slice/accept/foo.hew",
+    "observe": "hew-observe/src/lib.rs",
+    "runtime-testkit": "hew-runtime-testkit/src/lib.rs",
+    "hew-tests": "tests/hew/foo.hew",
+    "runtime-net": "hew-runtime/src/lib.rs",
+    "wasm": "hew-wasm/src/lib.rs",
+    "comprehensive": "Cargo.toml",
+}
+
+
+def test_every_lane_derives_a_warmup_for_every_command_it_selects() -> None:
+    for profile, path in LANE_PROBES.items():
+        result = run_dispatcher(path)
+        assert result.returncode == 0, (profile, path, result.stderr)
+        assert f"Selected profile: {profile}" in result.stdout, (path, result.stdout)
+
+
+def explain_warmup(command: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(SCRIPT), "--explain-warmup", command],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_a_gate_with_no_derivable_warmup_is_fatal() -> None:
+    """The fallback used to warm everything and print a note; it now dies.
+
+    Warming the full artifact set for an unmapped command is how a warm-up
+    build diverged from its gate's build in the first place: the fallback was
+    reached silently, so nothing forced the new gate to declare how it builds.
+    """
+    result = explain_warmup("scripts/some-new-gate.sh")
+
+    assert result.returncode != 0, result.stdout
+    assert "has no derivable warm-up" in result.stderr, result.stderr
+    assert "full warm-up set" not in result.stdout, result.stdout
+
+
+def test_a_make_gate_without_a_build_form_is_fatal() -> None:
+    result = explain_warmup("make hew-lsp")
+
+    assert result.returncode != 0, result.stdout
+    assert "declare 'hew-lsp-build' next to 'hew-lsp'" in result.stderr, result.stderr
+
+
+def test_a_make_gate_naming_an_undeclared_target_is_fatal() -> None:
+    """The `grammar` target was dispatched for months after it was deleted."""
+    result = explain_warmup("make grammar")
+
+    assert result.returncode != 0, result.stdout
+    assert "undeclared make target 'grammar'" in result.stderr, result.stderr
+
+
+def test_a_nextest_gate_derives_its_own_invocation_with_no_run() -> None:
+    result = explain_warmup("cargo nextest run --profile ci -p hew-mir")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "cargo nextest run --profile ci -p hew-mir --no-run\n", (
+        result.stdout
+    )
+
+
+def test_a_clippy_gate_derives_its_own_invocation_without_the_deny_flag() -> None:
+    """A lint failure must be the timed gate's verdict, not an aborted warm-up."""
+    result = explain_warmup("cargo clippy -p hew-mir --tests -- -D warnings")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "cargo clippy -p hew-mir --tests\n", result.stdout
+
+
+def test_a_fmt_gate_warms_nothing() -> None:
+    result = explain_warmup("cargo fmt --all -- --check")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "", result.stdout
+
+
+def test_every_dispatched_make_target_exists_in_the_makefile() -> None:
+    makefile = (ROOT / "Makefile").read_text()
+    declared = set()
+    for line in makefile.splitlines():
+        match = re.match(r"^([A-Za-z0-9_][A-Za-z0-9_ .$()-]*):([^=]|$)", line)
+        if match:
+            declared.update(match.group(1).split())
+    for path in LANE_PROBES.values():
+        result = run_dispatcher(path)
+        assert result.returncode == 0, (path, result.stderr)
+        for command in _selected_commands(result.stdout):
+            if not command.startswith("make "):
+                continue
+            for target in command[len("make ") :].split():
+                assert target in declared, (path, command, target)
+
+
+def test_no_warmup_carries_a_flag_its_gate_does_not() -> None:
+    """A warm-up is its gate's command, minus execution — never a second build.
+
+    The 2026-08-20 outage was a warm-up that carried `--all-targets` while its
+    gate carried `--exclude hew-cabi`: two builds, one target dir, two
+    incompatible `serde_core` rlibs. Only `--no-run` may be added.
+    """
+    for path in LANE_PROBES.values():
+        result = run_dispatcher(path)
+        assert result.returncode == 0, (path, result.stderr)
+        gate_flags = set()
+        for command in _selected_commands(result.stdout):
+            gate_flags.update(
+                token for token in command.split() if token.startswith("-")
+            )
+        for warmup in _warmup_commands(result.stdout):
+            if warmup.startswith("make "):
+                continue
+            for token in warmup.split():
+                if not token.startswith("-") or token == "--no-run":
+                    continue
+                assert token in gate_flags, (path, warmup, token)
+
+
+def _make_plan(*targets: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["make", "--always-make", "--dry-run", *targets],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _dispatchable_make_targets() -> set[str]:
+    source = SCRIPT.read_text()
+    return {
+        target
+        for command in re.findall(r'add_command "make ([^"]+)"', source)
+        for target in command.split()
+    }
+
+
+def _gates_with_a_build_form() -> set[str]:
+    """Every gate the Makefile declares a warm-up form for.
+
+    Wider than the set the dispatcher selects today: a form is declared before
+    its gate is dispatched by name, and an undeclared-but-wrong form is exactly
+    what these checks exist to catch before it warms anything.
+    """
+    makefile = (ROOT / "Makefile").read_text()
+    return set(re.findall(r"^([A-Za-z0-9][\w.-]*)-build:", makefile, re.MULTILINE))
+
+
+def _checkable_gates() -> list[str]:
+    return sorted(_dispatchable_make_targets() | _gates_with_a_build_form())
+
+
+_COMPILING_COMMAND = re.compile(r"\bcargo\s+(?:build|run|test|nextest|clippy)\b")
+_SCRIPT_REF = re.compile(r"(?:^|[\s\"'=])((?:scripts|tests)/[\w./-]+\.(?:sh|py))")
+_MAKE_CALL = re.compile(r"(?:^|[\s;&|(\"'])(?:\$\(MAKE\)|make)\s+([A-Za-z][\w.-]*)")
+_RUNS_A_SUBPROCESS = re.compile(
+    r"subprocess\.|check_call|check_output|os\.system|Popen"
+)
+_PYTHON_CARGO = re.compile(r"\bcargo\b[\s\"',\]]*\b(?:build|run|test|nextest|clippy)\b")
+
+
+def _dotted_name(node: ast.AST) -> str | None:
+    """`subprocess.run` for the call `subprocess.run(...)`, else None."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _literal_argv(call: ast.Call) -> list[str] | None:
+    """The argv a subprocess call hands out, as far as it is written literally.
+
+    A non-literal element (an f-string, a variable, a path built at runtime)
+    becomes `...`: the command's shape is what the walk reads, and losing one
+    argument must not lose the `cargo build` in front of it.
+    """
+    if not call.args:
+        return None
+    first = call.args[0]
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        try:
+            return shlex.split(first.value)
+        except ValueError:
+            return first.value.split()
+    if not isinstance(first, (ast.List, ast.Tuple)):
+        return None
+    argv: list[str] = []
+    for element in first.elts:
+        if isinstance(element, ast.Constant) and isinstance(element.value, str):
+            argv.append(element.value)
+        elif isinstance(element, ast.Constant):
+            argv.append(str(element.value))
+        else:
+            argv.append("...")
+    return argv
+
+
+def _python_commands(text: str) -> list[str]:
+    """Every subprocess argv a Python script writes out, as a command line.
+
+    Reading a Python gate line by line only ever sees a compile that fits on
+    one line. An argv past a few arguments is written over several — the
+    `subprocess.run([` opener on one line and `"cargo",` on the next — so
+    neither line carries both halves the line rule asks for and the compile is
+    invisible. Parsing the source recovers the argv whatever its layout, and
+    the recovered argv is a command line like any other: the shell rules for
+    compiles, scripts, and `make` targets then apply to it unchanged.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    commands: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _dotted_name(node.func)
+        if name is None or not _RUNS_A_SUBPROCESS.search(name):
+            continue
+        argv = _literal_argv(node)
+        if argv:
+            commands.append(shlex.join(argv))
+    return commands
+
+
+def _is_message(line: str) -> bool:
+    """Text a script prints is not a command a script runs.
+
+    Every one of these scripts ends its "binary missing" branch with
+    `echo "Run: cargo build -p hew-cli"`; counting those would flag every gate
+    in the tree and the check would mean nothing.
+    """
+    return line.startswith("#") or "echo" in line or "printf" in line
+
+
+def compiling_evidence(
+    plan: str,
+    read_plan: "Callable[[str], str | None]",
+    read_script: "Callable[[str], str | None]",
+) -> str | None:
+    """The first compile reachable from a gate's plan, at any depth.
+
+    A gate's own `make --dry-run` plan shows its recipe and its prerequisites'
+    recipes; it does not show what the scripts in that recipe do, and it does
+    not show what a `make` those scripts run would do. Both hide compiles:
+    `test-stdlib-execution-proofs` reaches a `cargo run` one script deep, and
+    nothing stops the next one from reaching it through a script that calls
+    another target. The walk follows plan -> script -> `make <target>` -> that target's plan
+    until it runs out of new nodes.
+
+    For a shell script a bare cargo line is an invocation. For a Python script
+    it is usually data — a fixture, an error message, an assertion — so the
+    source is parsed and the argv it hands to a subprocess is what counts,
+    however many lines that argv is spread over.
+    """
+    seen_scripts: set[str] = set()
+    seen_targets: set[str] = set()
+    queue: list[tuple[str, str, bool]] = [("plan", plan, False)]
+
+    def follow(line: str) -> None:
+        for script in _SCRIPT_REF.findall(line):
+            if script in seen_scripts:
+                continue
+            seen_scripts.add(script)
+            body = read_script(script)
+            if body is not None:
+                queue.append((script, body, script.endswith(".py")))
+        for target in _MAKE_CALL.findall(line):
+            if target in seen_targets:
+                continue
+            seen_targets.add(target)
+            body = read_plan(target)
+            if body is not None:
+                queue.append((f"make {target}", body, False))
+
+    while queue:
+        origin, text, python = queue.pop(0)
+        if python:
+            # An argv recovered from the source is a command line, whatever its
+            # layout, so it is read with the shell rules. The line rule below
+            # cannot see a multi-line argv at all: `subprocess.run([` and
+            # `"cargo",` are different lines and neither one satisfies it.
+            for command in _python_commands(text):
+                if _COMPILING_COMMAND.search(command):
+                    return f"{origin}: {command}"
+                follow(command)
+        for raw in text.splitlines():
+            line = raw.strip()
+            if _is_message(line):
+                continue
+            if python:
+                # In a Python gate a cargo string is usually data — a fixture,
+                # an assertion, an error message. Only a line that hands work
+                # to a subprocess is running anything, and the same rule
+                # applies to a `make` it names.
+                if not _RUNS_A_SUBPROCESS.search(line):
+                    continue
+                if _PYTHON_CARGO.search(line):
+                    return f"{origin}: {line}"
+            elif _COMPILING_COMMAND.search(line):
+                return f"{origin}: {line}"
+            follow(line)
+    return None
+
+
+def _repo_plan_reader(target: str) -> str | None:
+    result = _make_plan(target)
+    return result.stdout if result.returncode == 0 else None
+
+
+def _repo_script_reader(script: str) -> str | None:
+    path = ROOT / script
+    return path.read_text() if path.exists() else None
+
+
+def _plans_work(target: str) -> bool:
+    result = _make_plan(target)
+    assert result.returncode == 0, (target, result.stderr)
+    return any(
+        line.strip() not in ("", ":") and not line.startswith("make")
+        for line in result.stdout.splitlines()
+    )
+
+
+def test_no_gate_compiles_behind_an_empty_build_form() -> None:
+    """A gate that compiles must warm that compile, however deep it hides.
+
+    `make test-stdlib-execution-proofs` builds nothing in its own recipe and
+    then shells out to a script that runs `cargo run -p hew-parser --example
+    stdlib_import_authority`. Declaring the build form empty on the strength of
+    the recipe alone puts that build back inside the timed gate — the same
+    reading error as the warm-up that diverged from its gate.
+    """
+    for target in _checkable_gates():
+        plan = _make_plan(target)
+        assert plan.returncode == 0, (target, plan.stderr)
+        evidence = compiling_evidence(
+            plan.stdout, _repo_plan_reader, _repo_script_reader
+        )
+        if evidence is None:
+            continue
+        assert _plans_work(f"{target}-build"), (
+            f"make {target} compiles ({evidence}) but {target}-build declares "
+            f"that it builds nothing"
+        )
+
+
+_BUILD_SELECTOR = re.compile(r"--(?:test|bin|example)[= ]([A-Za-z0-9_-]+)")
+
+
+def _named_binaries(plan: str) -> set[str]:
+    return {
+        name
+        for line in plan.splitlines()
+        if not _is_message(line.strip())
+        for name in _BUILD_SELECTOR.findall(line)
+    }
+
+
+def test_a_build_form_names_every_binary_its_gate_runs() -> None:
+    """Naming one of a gate's two test binaries leaves the other to the gate.
+
+    A gate whose recipe runs two nextest binaries, with a build form that
+    spells out only the first, warms half of itself: the second compiles inside
+    the timed budget while the summary reports a warm run. A partial warm-up
+    reads as a warm one, which is the failure mode this derivation removes.
+    """
+    for target in _checkable_gates():
+        gate = _make_plan(target)
+        assert gate.returncode == 0, (target, gate.stderr)
+        build = _make_plan(f"{target}-build")
+        assert build.returncode == 0, (target, build.stderr)
+        missing = _named_binaries(gate.stdout) - _named_binaries(build.stdout)
+        assert not missing, (
+            f"make {target} runs {sorted(missing)}, which {target}-build does not build"
+        )
+
+
+def test_the_binary_check_sees_a_half_named_build_form() -> None:
+    gate = "\tcargo nextest run -p hew-cli --test first --test second\n"
+    form = "\tcargo nextest run -p hew-cli --test first --no-run\n"
+    assert _named_binaries(gate) - _named_binaries(form) == {"second"}
+
+
+def test_the_compile_walk_sees_a_compile_one_script_deep() -> None:
+    scripts = {"scripts/proof.sh": "cargo run -p hew-parser --example authority\n"}
+    evidence = compiling_evidence(
+        "\tscripts/proof.sh --check\n",
+        lambda target: None,
+        scripts.get,
+    )
+    assert (
+        evidence == "scripts/proof.sh: cargo run -p hew-parser --example authority"
+    ), evidence
+
+
+def test_the_compile_walk_sees_a_compile_two_levels_deep() -> None:
+    """A script that calls make whose target runs another script that compiles."""
+    scripts = {
+        "scripts/outer.sh": "make inner-gate\n",
+        "scripts/inner.sh": "cargo build -p hew-lib\n",
+    }
+    plans = {"inner-gate": "\tscripts/inner.sh\n"}
+    evidence = compiling_evidence(
+        "\tscripts/outer.sh\n",
+        plans.get,
+        scripts.get,
+    )
+    assert evidence == "scripts/inner.sh: cargo build -p hew-lib", evidence
+
+
+def test_the_compile_walk_does_not_count_printed_text() -> None:
+    scripts = {"scripts/hint.sh": '  echo "Run: cargo build -p hew-cli" >&2\n'}
+    assert (
+        compiling_evidence("\tscripts/hint.sh\n", lambda target: None, scripts.get)
+        is None
+    )
+
+
+def test_the_compile_walk_reads_python_data_as_data() -> None:
+    scripts = {
+        "scripts/fixture.py": '    RECIPES = {"lint": "cargo clippy --workspace"}\n',
+        "scripts/runner.py": '    subprocess.run(["cargo", "build", "-p", "hew-lib"])\n',
+    }
+    assert (
+        compiling_evidence("\tscripts/fixture.py\n", lambda target: None, scripts.get)
+        is None
+    )
+    assert (
+        compiling_evidence("\tscripts/runner.py\n", lambda target: None, scripts.get)
+        is not None
+    )
+
+
+def test_the_compile_walk_sees_a_multiline_python_subprocess() -> None:
+    """An argv past a few arguments is written over several lines.
+
+    `subprocess.run([` and `"cargo",` land on different lines, so a rule that
+    asks one line for both the subprocess call and the cargo command finds
+    neither and the gate reads as compiling nothing.
+    """
+    scripts = {
+        "scripts/runner.py": (
+            "subprocess.run(\n"
+            '    [\n        "cargo",\n        "build",\n'
+            '        "-p",\n        "hew-lib",\n    ],\n'
+            "    check=True,\n)\n"
+        )
+    }
+    evidence = compiling_evidence(
+        "\tscripts/runner.py\n", lambda target: None, scripts.get
+    )
+    assert evidence == "scripts/runner.py: cargo build -p hew-lib", evidence
+
+
+def test_the_compile_walk_sees_a_python_compile_behind_a_runtime_argument() -> None:
+    """One argument built at runtime must not hide the compile in front of it."""
+    scripts = {
+        "scripts/runner.py": (
+            "subprocess.check_call(\n"
+            '    ["cargo", "run", "-p", "hew-cli", "--example", name]\n'
+            ")\n"
+        )
+    }
+    evidence = compiling_evidence(
+        "\tscripts/runner.py\n", lambda target: None, scripts.get
+    )
+    assert evidence == "scripts/runner.py: cargo run -p hew-cli --example ...", evidence
+
+
+def test_the_compile_walk_follows_a_multiline_python_make_call() -> None:
+    scripts = {
+        "scripts/runner.py": (
+            'subprocess.run(\n    [\n        "make",\n        "inner-gate",\n    ]\n)\n'
+        )
+    }
+    plans = {"inner-gate": "\tcargo build -p hew-lib\n"}
+    evidence = compiling_evidence("\tscripts/runner.py\n", plans.get, scripts.get)
+    assert evidence == "make inner-gate: cargo build -p hew-lib", evidence
+
+
+def test_the_compile_walk_reads_a_multiline_python_list_as_data() -> None:
+    """Parsing must not turn every cargo string in a Python file into a compile."""
+    scripts = {
+        "scripts/fixture.py": (
+            "RECIPES = [\n"
+            '    "cargo",\n    "clippy",\n    "--workspace",\n'
+            "]\n"
+            'MESSAGE = "run cargo build -p hew-cli first"\n'
+        )
+    }
+    assert (
+        compiling_evidence("\tscripts/fixture.py\n", lambda target: None, scripts.get)
+        is None
+    )
+
+
+def test_the_compile_walk_still_reads_an_unparsable_python_script() -> None:
+    """A file the parser rejects falls back to the line rule, not to silence."""
+    scripts = {
+        "scripts/broken.py": (
+            'def gate(:\n    subprocess.run(["cargo", "build", "-p", "hew-lib"])\n'
+        )
+    }
+    evidence = compiling_evidence(
+        "\tscripts/broken.py\n", lambda target: None, scripts.get
+    )
+    assert evidence is not None, evidence
 
 
 def test_no_warmup_names_a_non_ci_nextest_profile() -> None:
@@ -561,6 +1129,68 @@ def test_scripts_config_budget_annotation() -> None:
     assert result.returncode == 0, result.stderr
     assert "(budget: 600s)" in result.stdout, (
         f"Expected '(budget: 600s)' for scripts-config lane.\nstdout:\n{result.stdout}"
+    )
+
+
+def run_with_fake_nextest(version: str) -> subprocess.CompletedProcess[str]:
+    """Run a compiling lane with `cargo nextest --version` reporting `version`."""
+    with tempfile.TemporaryDirectory() as bin_dir:
+        fake_cargo = Path(bin_dir) / "cargo"
+        fake_cargo.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "nextest" ] && [ "$2" = "--version" ]; then\n'
+            f"  printf 'cargo-nextest {version} (deadbeef 2026-01-01)\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            'if [ "$1" = "metadata" ]; then\n'
+            '  printf \'{"packages":[],"target_directory":"target"}\\n\'\n'
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        fake_cargo.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        env["PREFLIGHT_TEST_ALLOW_OVERRIDE"] = "1"
+        env["PREFLIGHT_TEST_COMMANDS"] = "true"
+        return subprocess.run(
+            ["bash", str(SCRIPT), "--", "hew-parser/src/lib.rs"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+
+
+def pinned_nextest_version() -> str:
+    """The build system's one cargo-nextest pin, from the tool-pin contract."""
+    contract = (ROOT / "scripts/tests/test_tool_pin_contract.py").read_text()
+    match = re.search(r'"NEXTEST": \("cargo-nextest", "([0-9.]+)"\)', contract)
+    assert match, contract
+    return match.group(1)
+
+
+def test_a_nextest_older_than_the_pin_stops_the_preflight() -> None:
+    """Three reds were an unpinned nextest rejecting a flag the gates pass."""
+    result = run_with_fake_nextest("0.9.99")
+
+    assert result.returncode != 0, result.stdout
+    assert "older than the pinned" in result.stderr, result.stderr
+    assert "==> true" not in result.stdout, result.stdout
+
+
+def test_the_preflight_reads_its_pin_from_the_tool_pin_contract() -> None:
+    """One declaration for the whole build system, not a second copy here."""
+    pinned = pinned_nextest_version()
+    result = run_with_fake_nextest(pinned)
+
+    assert result.returncode == 0, result.stderr
+    assert f"satisfies the pinned {pinned}" in result.stdout, result.stdout
+    assert pinned not in SCRIPT.read_text(), (
+        "the dispatcher must read the pin, not restate it"
     )
 
 
@@ -590,14 +1220,15 @@ def test_runtime_net_lane_rebuilds_libhew() -> None:
             f"Expected 'make stdlib' in runtime-net commands for {path}.\n"
             f"stdout:\n{result.stdout}"
         )
-        assert "scripts/check-libhew-fresh.sh" in result.stdout, (
-            f"Expected 'scripts/check-libhew-fresh.sh' in runtime-net commands for {path}.\n"
+        assert "make check-libhew-fresh" in result.stdout, (
+            f"Expected 'make check-libhew-fresh' in runtime-net commands for {path}.\n"
             f"stdout:\n{result.stdout}"
         )
         # Freshness gate must appear before the test command.
-        stdlib_pos = result.stdout.index("make stdlib")
-        fresh_pos = result.stdout.index("scripts/check-libhew-fresh.sh")
-        test_pos = result.stdout.index("make test")
+        commands = _selected_commands(result.stdout)
+        stdlib_pos = commands.index("make stdlib")
+        fresh_pos = commands.index("make check-libhew-fresh")
+        test_pos = next(i for i, c in enumerate(commands) if c.startswith("make test"))
         assert stdlib_pos < fresh_pos < test_pos, (
             f"Expected order: make stdlib < check-libhew-fresh < test.\n"
             f"stdout:\n{result.stdout}"
@@ -906,13 +1537,17 @@ def test_parser_path_runs_formatter_property() -> None:
     result = run_dispatcher("hew-parser/src/fmt.rs")
     assert result.returncode == 0, result.stderr
     assert "Selected profile: parser" in result.stdout, result.stdout
-    assert result.stdout.count("make hew-fmt-property") == 1, result.stdout
+    assert _selected_commands(result.stdout).count("make hew-fmt-property") == 1, (
+        result.stdout
+    )
 
 
 def test_vertical_slice_source_runs_formatter_property() -> None:
     result = run_dispatcher("tests/vertical-slice/accept/example.hew")
     assert result.returncode == 0, result.stderr
-    assert result.stdout.count("make hew-fmt-property") == 1, result.stdout
+    assert _selected_commands(result.stdout).count("make hew-fmt-property") == 1, (
+        result.stdout
+    )
 
 
 def test_std_hew_file_adds_hew_suite_addon() -> None:
@@ -949,12 +1584,15 @@ def test_fallback_lane_includes_hew_suite_ratchets() -> None:
     assert "make test-stdlib-ratchet" in result.stdout, (
         f"Expected 'make test-stdlib-ratchet' in fallback lane.\nstdout:\n{result.stdout}"
     )
-    assert result.stdout.count("make hew-fmt-property") == 1, result.stdout
+    assert _selected_commands(result.stdout).count("make hew-fmt-property") == 1, (
+        result.stdout
+    )
     # Ratchets must appear after make test (Rust suite runs first).
     # The budget annotation "(budget: Xs)" may appear on the same line in dry-run.
-    test_pos = result.stdout.index("  - make test")
-    hew_pos = result.stdout.index("make test-hew-ratchet")
-    stdlib_pos = result.stdout.index("make test-stdlib-ratchet")
+    commands = _selected_commands(result.stdout)
+    test_pos = commands.index("make test")
+    hew_pos = commands.index("make test-hew-ratchet")
+    stdlib_pos = commands.index("make test-stdlib-ratchet")
     assert test_pos < hew_pos, (
         f"Expected make test before make test-hew-ratchet.\nstdout:\n{result.stdout}"
     )
@@ -1137,8 +1775,148 @@ def test_analysis_change_runs_known_dependents_without_workspace() -> None:
 
 def test_hosted_linux_executes_the_dispatcher_directly() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-    assert "run: scripts/ci-preflight-dispatcher.sh --base origin/main" in workflow
+    assert 'scripts/ci-preflight-dispatcher.sh "${args[@]}"' in workflow
     assert "run: make test-hew-ratchet" not in workflow
+
+
+def _trunk_health_step() -> str:
+    """The trunk-health step's shell body, read out of the workflow it runs in."""
+    spec = importlib.util.spec_from_file_location(
+        "check_gate_reachability", ROOT / "scripts" / "check-gate-reachability.py"
+    )
+    assert spec and spec.loader
+    reachability = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = reachability
+    spec.loader.exec_module(reachability)
+    workflow = reachability.parse_yaml(
+        (ROOT / ".github/workflows/ci.yml").read_text(), "ci.yml"
+    )
+    steps = workflow["jobs"]["main-health"]["steps"]
+    bodies = [step["run"] for step in steps if "run" in step]
+    assert len(bodies) == 1, bodies
+    return bodies[0]
+
+
+def _run_trunk_health(
+    gh_stdout: str, gh_status: int, labels: str = "[]"
+) -> subprocess.CompletedProcess[str]:
+    """Run the step with a stubbed `gh`, the way the runner would."""
+    with tempfile.TemporaryDirectory() as work:
+        bin_dir = Path(work) / "bin"
+        bin_dir.mkdir()
+        stub = bin_dir / "gh"
+        stub.write_text(
+            f"#!/bin/sh\ncat <<'STUB_JSON'\n{gh_stdout}\nSTUB_JSON\nexit {gh_status}\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        script = Path(work) / "step.sh"
+        script.write_text(_trunk_health_step(), encoding="utf-8")
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        env["GITHUB_REPOSITORY"] = "hew-lang/hew"
+        env["PR_LABELS"] = labels
+        return subprocess.run(
+            ["bash", str(script)],
+            cwd=work,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+
+_RED_MAIN = (
+    '{"workflow_runs":[{"conclusion":"failure","head_sha":"deadbeef",'
+    '"html_url":"https://example.invalid/run"}]}'
+)
+_GREEN_MAIN = (
+    '{"workflow_runs":[{"conclusion":"success","head_sha":"cafebabe",'
+    '"html_url":"https://example.invalid/run"}]}'
+)
+
+
+def test_trunk_health_blocks_on_a_confirmed_red_main() -> None:
+    result = _run_trunk_health(_RED_MAIN, 0)
+
+    assert result.returncode == 1, result.stdout
+    assert "main is red at deadbeef" in result.stdout, result.stdout
+
+
+def test_trunk_health_passes_on_a_green_main() -> None:
+    result = _run_trunk_health(_GREEN_MAIN, 0)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_trunk_health_fails_open_when_the_api_call_fails() -> None:
+    """This gate stands in front of every job; an API error is not evidence.
+
+    A 404, an expired token or a transient 502 would otherwise skip all
+    thirteen jobs through `needs` — the whole repository down on a read that
+    says nothing about main.
+    """
+    result = _run_trunk_health("gh: not found", 1)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "could not read main's CI status" in result.stdout, result.stdout
+
+
+def test_trunk_health_fails_open_on_an_unreadable_response() -> None:
+    result = _run_trunk_health("<html>502 Bad Gateway</html>", 0)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_labelled_fix_for_main_runs_against_a_red_main() -> None:
+    result = _run_trunk_health(_RED_MAIN, 0, labels='["fix-main"]')
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "labelled fix-main" in result.stdout, result.stdout
+
+
+def test_a_push_to_main_stops_at_the_first_failing_gate() -> None:
+    """A red main broadcasts; finishing the other 37 commands proves nothing."""
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert workflow.count('if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then') == 2, (
+        workflow
+    )
+    assert workflow.count("args+=(--fail-fast)") == 2, workflow
+
+
+def test_every_job_waits_for_a_green_main() -> None:
+    """A red main must not reach any job, including ones added later.
+
+    On 2026-08-20 eleven branch runs reported one defect on main. The gate
+    hangs off `changes`, which every job that runs anything already needs, so
+    the fan-out is structural rather than a list somebody has to remember.
+    """
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "main is red at ${head_sha}; fix main first" in workflow, workflow
+    # Blocking on anything but a failed run deadlocks the repository on the
+    # cancellations the concurrency group produces as a matter of course.
+    assert "failure|timed_out" in workflow, workflow
+
+    # The reachability gate's stdlib-only workflow parser: no Python gate in
+    # scripts/ may need a pip step to run on a fresh checkout.
+    spec = importlib.util.spec_from_file_location(
+        "check_gate_reachability", ROOT / "scripts" / "check-gate-reachability.py"
+    )
+    assert spec and spec.loader
+    reachability = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = reachability
+    spec.loader.exec_module(reachability)
+    document = reachability.parse_yaml(workflow, "ci.yml")
+    jobs = document["jobs"]
+    assert "main-health" in jobs, sorted(jobs)
+
+    def waits(name: str) -> bool:
+        needs = jobs[name].get("needs") or []
+        needs = [needs] if isinstance(needs, str) else needs
+        return "main-health" in needs or any(waits(dep) for dep in needs)
+
+    ungated = sorted(name for name in jobs if name != "main-health" and not waits(name))
+    assert not ungated, ungated
 
 
 def test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts() -> None:
@@ -1355,7 +2133,7 @@ def test_shard_warmup_is_scoped_to_that_shard_commands() -> None:
     """A shard warms only the artifacts its own commands need."""
     paths = _PROFILE_PROBES["comprehensive"]
     plan = shard_plan(paths, 4)
-    workspace_warmup = "cargo nextest run --workspace --exclude hew-cabi"
+    workspace_warmup = "make test-build"
     for index in range(1, 5):
         result = run_dispatcher(*paths, extra_args=["--shard", f"{index}/4"])
         assert result.returncode == 0, result.stderr
@@ -1363,7 +2141,7 @@ def test_shard_warmup_is_scoped_to_that_shard_commands() -> None:
         warmup = warmup[1].split("\nCommands:\n", 1)[0] if len(warmup) == 2 else ""
         if "make test" not in plan[index]:
             assert workspace_warmup not in warmup, (
-                f"shard {index} warms the full workspace nextest without make test"
+                f"shard {index} warms the full workspace test build without make test"
             )
         else:
             assert workspace_warmup in warmup, warmup
@@ -1451,6 +2229,12 @@ def test_hosted_linux_matrix_matches_the_dispatcher_shard_denominator() -> None:
         r"--shard \$\{\{ matrix\.shard \}\}/(\d+)",
         job,
     )
+    if not denominators:
+        denominators = re.findall(
+            r"args=\(--base origin/main --shard "
+            r"\$\{\{ matrix\.shard \}\}/(\d+)\)",
+            job,
+        )
     assert denominators, job
     assert {int(value) for value in denominators} == {len(shards)}, denominators
 
@@ -1829,7 +2613,30 @@ _TESTS = [
     test_rust_diff_derives_its_warmup_artifacts_before_commands,
     test_docs_diff_has_no_warmup_block,
     test_no_lane_warms_test_targets_with_all_targets,
-    test_comprehensive_warms_clippy_and_nextest_the_way_the_gates_build,
+    test_comprehensive_warms_every_gate_through_its_own_build_form,
+    test_every_lane_derives_a_warmup_for_every_command_it_selects,
+    test_a_gate_with_no_derivable_warmup_is_fatal,
+    test_a_make_gate_without_a_build_form_is_fatal,
+    test_a_make_gate_naming_an_undeclared_target_is_fatal,
+    test_a_nextest_gate_derives_its_own_invocation_with_no_run,
+    test_a_clippy_gate_derives_its_own_invocation_without_the_deny_flag,
+    test_a_fmt_gate_warms_nothing,
+    test_every_dispatched_make_target_exists_in_the_makefile,
+    test_no_warmup_carries_a_flag_its_gate_does_not,
+    test_no_gate_compiles_behind_an_empty_build_form,
+    test_a_build_form_names_every_binary_its_gate_runs,
+    test_the_binary_check_sees_a_half_named_build_form,
+    test_the_compile_walk_sees_a_compile_one_script_deep,
+    test_the_compile_walk_sees_a_compile_two_levels_deep,
+    test_the_compile_walk_does_not_count_printed_text,
+    test_the_compile_walk_reads_python_data_as_data,
+    test_the_compile_walk_sees_a_multiline_python_subprocess,
+    test_the_compile_walk_sees_a_python_compile_behind_a_runtime_argument,
+    test_the_compile_walk_follows_a_multiline_python_make_call,
+    test_the_compile_walk_reads_a_multiline_python_list_as_data,
+    test_the_compile_walk_still_reads_an_unparsable_python_script,
+    test_a_nextest_older_than_the_pin_stops_the_preflight,
+    test_the_preflight_reads_its_pin_from_the_tool_pin_contract,
     test_no_warmup_names_a_non_ci_nextest_profile,
     test_scripts_config_budget_annotation,
     test_runtime_net_lane_budget_annotation,
@@ -1862,6 +2669,13 @@ _TESTS = [
     test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts,
     test_selected_commands_are_unique,
     test_selector_exports_fail_closed_compile_requirement,
+    test_a_push_to_main_stops_at_the_first_failing_gate,
+    test_every_job_waits_for_a_green_main,
+    test_trunk_health_blocks_on_a_confirmed_red_main,
+    test_trunk_health_passes_on_a_green_main,
+    test_trunk_health_fails_open_when_the_api_call_fails,
+    test_trunk_health_fails_open_on_an_unreadable_response,
+    test_a_labelled_fix_for_main_runs_against_a_red_main,
     # Shard partitioning
     test_shard_plan_is_exhaustive_and_disjoint_for_every_profile,
     test_shard_partition_preserves_relative_command_order,

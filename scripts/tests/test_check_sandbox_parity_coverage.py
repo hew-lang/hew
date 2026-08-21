@@ -441,8 +441,11 @@ def test_script_stays_python_3_10_compatible_with_no_new_dependency() -> None:
 
 
 def _assert_sandbox_target_runs_schema_conformance(makefile: str) -> None:
+    # `.` must not cross the rule line: with re.DOTALL a `.*?` here walks past
+    # sandbox-parity's own recipe into the next rule's, and then reads that
+    # rule's commands as this gate's.
     match = re.search(
-        r"(?ms)^sandbox-parity:.*?\n(?P<body>(?:^\t.*\n)+)",
+        r"(?m)^sandbox-parity:[^\n]*\n(?P<body>(?:^\t.*\n)+)",
         makefile,
     )
     assert match is not None

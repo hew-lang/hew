@@ -170,3 +170,81 @@ pub(super) fn blocks_reachable_from(blocks: &[BasicBlock], start: u32) -> HashSe
     }
     seen
 }
+
+/// Dominator sets over a function's reachable blocks: `dominators[b]` is every
+/// block that lies on EVERY path from the entry block to `b` (including `b`
+/// itself). The classic iterative intersection fixpoint, seeded with the full
+/// reachable set and narrowed to a fixed point.
+///
+/// Unreachable blocks carry no entry at all, and a reachable block whose
+/// predecessor set is empty or unresolvable is dropped rather than reported
+/// with a partial answer — a caller asking "does X dominate Y" about a block
+/// with no entry gets `false`, which is the fail-closed direction for every
+/// current consumer (a transfer is treated as CONDITIONAL, an alias as
+/// unproven).
+///
+/// Returns an empty map when the block list is empty or carries duplicate ids,
+/// so a malformed CFG can never yield a dominance claim.
+pub(super) fn block_dominators(blocks: &[BasicBlock]) -> HashMap<u32, HashSet<u32>> {
+    let Some(entry) = blocks.first().map(|block| block.id) else {
+        return HashMap::new();
+    };
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|block| (block.id, block)).collect();
+    if by_id.len() != blocks.len() {
+        return HashMap::new();
+    }
+
+    let mut reachable = blocks_reachable_from(blocks, entry);
+    reachable.insert(entry);
+    let mut predecessors: HashMap<u32, HashSet<u32>> = HashMap::new();
+    for block in blocks {
+        for successor in block.successors() {
+            if reachable.contains(&block.id) && reachable.contains(&successor) {
+                predecessors.entry(successor).or_default().insert(block.id);
+            }
+        }
+    }
+
+    let mut dominators: HashMap<u32, HashSet<u32>> = reachable
+        .iter()
+        .copied()
+        .map(|block| {
+            if block == entry {
+                (block, HashSet::from([entry]))
+            } else {
+                (block, reachable.clone())
+            }
+        })
+        .collect();
+    loop {
+        let mut changed = false;
+        for &block in &reachable {
+            if block == entry {
+                continue;
+            }
+            let Some(preds) = predecessors.get(&block) else {
+                dominators.remove(&block);
+                continue;
+            };
+            let mut pred_dominators = preds
+                .iter()
+                .filter_map(|pred| dominators.get(pred).cloned());
+            let Some(mut next) = pred_dominators.next() else {
+                dominators.remove(&block);
+                continue;
+            };
+            for pred_doms in pred_dominators {
+                next.retain(|dominator| pred_doms.contains(dominator));
+            }
+            next.insert(block);
+            if dominators.get(&block) != Some(&next) {
+                dominators.insert(block, next);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    dominators
+}

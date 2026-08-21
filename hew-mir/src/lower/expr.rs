@@ -9296,7 +9296,7 @@ impl Builder {
             // Unlike the `return`-seeded dead block this convention mirrors,
             // THIS dead block's id is already referenced by the `Call`
             // terminator just sealed above (`next`). Flag it so
-            // `finalize_blocks` seals rather than drops it if it ends up
+            // `seal_body_blocks` seals rather than drops it if it ends up
             // empty at true function end (hew-lang/hew#2425) — see that
             // field's doc comment for the full mechanism.
             self.dead_cursor_is_call_continuation = true;

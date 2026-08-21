@@ -698,6 +698,36 @@ pub(super) fn base_local(place: Place) -> Option<u32> {
 /// (the caller owns and frees the returned handle) — not merely a safe leak.
 ///
 /// LESSONS: `drop-allowset-from-value-flow`, `boundary-fail-closed`.
+/// True when the instruction at `instr_index` is a whole-local `Move` whose
+/// source slot the very next instruction NULLS under
+/// [`NeutralizeAuthority::DivergentSelectionTransfer`], naming this move's
+/// destination as the transferee.
+///
+/// Such a pair is an ownership TRANSFER, not a shared-bits alias: after it the
+/// source local holds a null/zeroed slot and the destination is the sole owner
+/// of the payload. Every whole-value alias and escape scan must therefore skip
+/// the move — folding the destination into the source's alias group (or
+/// recording the move as an escape of the source) would attribute one live
+/// allocation to two slots and strip a release the source still owes on the
+/// paths where the move never executed.
+///
+/// The fact is read off the MIR rather than re-derived from surrounding shape
+/// (D159/U229: the authority travels as data on the instruction).
+#[must_use]
+pub(super) fn is_divergent_selection_transfer_move(block: &BasicBlock, instr_index: usize) -> bool {
+    let Some(Instr::Move { dest, src }) = block.instructions.get(instr_index) else {
+        return false;
+    };
+    matches!(
+        block.instructions.get(instr_index + 1),
+        Some(Instr::NeutralizePayloadSlot {
+            place,
+            transferee: Some(transferee),
+            authority: crate::model::NeutralizeAuthority::DivergentSelectionTransfer,
+        }) if place == src && transferee == dest
+    )
+}
+
 pub(super) fn propagate_whole_value_alias_roots(
     blocks: &[BasicBlock],
     candidate_locals: impl IntoIterator<Item = u32>,
@@ -724,7 +754,9 @@ pub(super) fn propagate_whole_value_alias_roots_excluding_moves(
         for block in blocks {
             for (instr_index, instr) in block.instructions.iter().enumerate() {
                 if let Instr::Move { dest, src } = instr {
-                    if excluded_moves.contains(&(block.id, instr_index)) {
+                    if excluded_moves.contains(&(block.id, instr_index))
+                        || is_divergent_selection_transfer_move(block, instr_index)
+                    {
                         continue;
                     }
                     if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {

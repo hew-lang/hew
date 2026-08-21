@@ -43,6 +43,10 @@ permissions:
 env:
   LLVM_VERSION: "22"
   LLVM_FULL_VERSION: "22.1.5"
+  # Pinned wasmtime release tag; every job here provisions the runner from
+  # THIS tag's assets (x86_64-linux, aarch64-linux, aarch64-macos, x86_64-macos,
+  # x86_64-windows), so the gate measures the same runtime CI measured. The one
+  # exception is the FreeBSD guest, which takes what pkg serves and says so.
   WASMTIME_VERSION: "v47.0.2"
   CARGO_TERM_COLOR: always
 
@@ -184,12 +188,21 @@ jobs:
         run: rm -rf target/release/deps target/release/build target/release/incremental target/release/.fingerprint
 
       - name: Install WASI prerequisites
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WASMTIME_ARCH: x86_64
         run: |
-          curl https://wasmtime.dev/install.sh -sSf | bash
-          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.wasmtime/bin:$PATH"
-          command -v wasmtime
-          wasmtime --version
+          set -euo pipefail
+          # The release tag, not wasmtime.dev/install.sh, which serves latest:
+          # a release gate that runs against a different wasmtime than CI is
+          # measuring a different program.
+          WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-${WASMTIME_ARCH}-linux"
+          .github/scripts/retry-download.sh \
+            gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
+            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
+          tar -xJf "${WASMTIME_DIR}.tar.xz"
+          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "./${WASMTIME_DIR}/wasmtime" --version
 
       - name: Run Rust workspace tests
         # line-tables-only: the release build + debug test workspace + WASM +
@@ -323,12 +336,21 @@ jobs:
         run: rm -rf target/release/deps target/release/build target/release/incremental target/release/.fingerprint
 
       - name: Install WASI prerequisites
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WASMTIME_ARCH: aarch64
         run: |
-          curl https://wasmtime.dev/install.sh -sSf | bash
-          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.wasmtime/bin:$PATH"
-          command -v wasmtime
-          wasmtime --version
+          set -euo pipefail
+          # The release tag, not wasmtime.dev/install.sh, which serves latest:
+          # a release gate that runs against a different wasmtime than CI is
+          # measuring a different program.
+          WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-${WASMTIME_ARCH}-linux"
+          .github/scripts/retry-download.sh \
+            gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
+            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
+          tar -xJf "${WASMTIME_DIR}.tar.xz"
+          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "./${WASMTIME_DIR}/wasmtime" --version
 
       - name: Run Rust workspace tests
         env:
@@ -414,14 +436,25 @@ jobs:
           echo "$OUTPUT" | grep -q "smoke-ok" && echo "✅ Smoke test passed"
 
       - name: Install WASI prerequisites
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WASMTIME_ARCH: ${{ matrix.arch }}
         run: |
+          set -euo pipefail
           rustup target add wasm32-wasip1
-          brew install wasmtime
+          # The release tag, not `brew install wasmtime`, which serves whatever
+          # the formula points at today: a release gate that runs against a
+          # different wasmtime than CI is measuring a different program.
+          WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-${WASMTIME_ARCH}-macos"
+          .github/scripts/retry-download.sh \
+            gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
+            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
+          tar -xJf "${WASMTIME_DIR}.tar.xz"
+          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "./${WASMTIME_DIR}/wasmtime" --version
           LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm@${{ env.LLVM_VERSION }})}"
           LLD_PREFIX="${LLD_PREFIX:-$(brew --prefix lld@${{ env.LLVM_VERSION }})}"
           export PATH="${LLD_PREFIX}/bin:${LLVM_PREFIX}/bin:$PATH"
-          command -v wasmtime
-          wasmtime --version
           command -v wasm-ld
           wasm-ld --version
 
@@ -559,6 +592,11 @@ jobs:
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
+            # unpinned-by-design(wasmtime): the guest installs from pkg, which serves
+            # one wasmtime per quarterly branch and takes no version selector. The
+            # alternative is building wasmtime from source inside a VM step that
+            # already runs near its time limit. Every other runner takes the pinned
+            # release asset.
             pkg install -y -r FreeBSD llvm22 gdb rustup-init python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
             pw useradd -n hew-ci -m -s /bin/sh
 
@@ -712,6 +750,11 @@ jobs:
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
+            # unpinned-by-design(wasmtime): the guest installs from pkg, which serves
+            # one wasmtime per quarterly branch and takes no version selector. The
+            # alternative is building wasmtime from source inside a VM step that
+            # already runs near its time limit. Every other runner takes the pinned
+            # release asset.
             pkg install -y -r FreeBSD llvm22 gdb rust python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
 
           run: |

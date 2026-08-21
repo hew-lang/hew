@@ -230,8 +230,157 @@ warmup_timeout() {
     scale_timeout_budget "$PREFLIGHT_TIMEOUT_WARMUP"
 }
 
+# First-failure extraction.
+#
+# A failed CI step used to hand back only "exit 1" plus tens of thousands of
+# log lines (--log-failed alone is 6-7 MB).  These patterns cover the concrete
+# failure shapes this repo's gates actually emit:
+#   nextest         "        FAIL [   1.234s] hew-cli::suite test_name"
+#   make            "make[1]: *** [Makefile:759: test] Error 2"
+#   rustc/clippy    "error[E0382]: ..." / "error: ..."
+#   python          "AssertionError: ..." / "ValueError: ..."
+#   hew ratchets    "RATCHET FAIL: ..." / "==> Ratchet: FAILED"
+#   fuzz oracle     "ORACLE gate: FAIL"
+#   O2 differential "==> Differential gate: FAILED — ..."
+#   corpus drift    "NOW-FAILS: tests/hew/x.hew" / "NOW-PASSES: ..."
+#   watchdog        "==> TIMEOUT: 'make test' exceeded 1530s budget"
+#   rust panics     "thread 'main' panicked at ..."
+# A log with none of these still reports its exit status rather than nothing.
+PREFLIGHT_FAILURE_LINE_RE='(^|[[:space:]])FAIL \[|^[[:space:]]*FAILED?([[:space:]]|:)|^make(\[[0-9]+\])?: \*\*\* |^[[:space:]]*error(\[[A-Za-z0-9_]+\])?:|^[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*Error:|RATCHET FAIL|Ratchet: FAILED|ORACLE gate: FAIL|Differential gate: FAILED|NOW-FAILS|NOW-PASSES|^==> TIMEOUT:|^thread .* panicked|^[[:space:]]*assert(ion)?.*failed'
+
+# Counterfactual marker.  A self-test proves its gate has teeth by RUNNING that
+# gate against deliberately broken input, so a PASSING self-test log is full of
+# real-looking failure text — "ORACLE gate: FAIL", "error: ...", a bare "FAIL".
+# Grepping such a log for the first failure line reports the counterfactual, not
+# the defect.  Every deliberately-provoked failure is therefore emitted through
+# scripts/lib/counterfactual.sh, which prefixes each line with this marker;
+# extraction skips marked lines, and --check-counterfactual-output below proves
+# no rostered gate emits an unmarked match while exiting 0.
+PREFLIGHT_COUNTERFACTUAL_MARKER='CF-'
+
+extract_first_failure() {
+    local log="$1"
+    local status="$2"
+    local line=""
+
+    if [[ -s "$log" ]]; then
+        line="$(
+            sed $'s/\033\\[[0-9;?]*[a-zA-Z]//g' "$log" \
+                | grep -v -F "$PREFLIGHT_COUNTERFACTUAL_MARKER" \
+                | grep -m1 -E "$PREFLIGHT_FAILURE_LINE_RE" || true
+        )"
+    fi
+    line="${line//$'\r'/}"
+    line="${line//$'\t'/ }"
+    # Trim surrounding whitespace without spawning another process.
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+
+    if [[ -z "$line" ]]; then
+        line="exited $status with no recognised failure line; see the step log"
+    fi
+    if (( ${#line} > 300 )); then
+        line="${line:0:297}..."
+    fi
+    printf '%s\n' "$line"
+}
+
+# GitHub Actions workflow-command escaping.  A raw '%' or newline in a message
+# truncates or corrupts the annotation, and ':' / ',' terminate a property.
+escape_annotation_data() {
+    local text="$1"
+    text="${text//'%'/%25}"
+    text="${text//$'\r'/%0D}"
+    text="${text//$'\n'/%0A}"
+    printf '%s' "$text"
+}
+
+escape_annotation_property() {
+    local text
+    text="$(escape_annotation_data "$1")"
+    text="${text//:/%3A}"
+    text="${text//,/%2C}"
+    printf '%s' "$text"
+}
+
+emit_failure_annotation() {
+    local cmd="$1"
+    local failure="$2"
+    [[ "${GITHUB_ACTIONS:-}" == "true" ]] || return 0
+    printf '::error file=%s,title=%s::%s\n' \
+        "scripts/ci-preflight-dispatcher.sh" \
+        "$(escape_annotation_property "$cmd")" \
+        "$(escape_annotation_data "$failure")"
+}
+
+# Counterfactual-output gate.
+#
+# First-failure extraction is only sound if a PASSING gate emits no
+# failure-shaped line.  Gate self-tests break exactly that property by design:
+# they prove a gate has teeth by RUNNING it against deliberately broken input,
+# so a green self-test log carries "ORACLE gate: FAIL" or "error: ..." long
+# before any real defect would appear.
+#
+# This mode runs the rostered counterfactual-carrying gates and fails if a zero
+# exit carries an unmarked match of PREFLIGHT_FAILURE_LINE_RE.  It lives here
+# rather than in a checker of its own so the pattern and the marker are the same
+# two variables the extractor uses — there is nothing to keep in sync.
+#
+# The roster covers the gates that need no compiler build, keeping this a fast
+# check rather than a second preflight.  A gate that needs `make hew` is proved
+# by the preflight run itself: its first-failure line is only ever consulted
+# once it has already failed.
+COUNTERFACTUAL_ROSTER=(
+    "make ll-identity-selftest"
+    "make o2-differential-selftest"
+    "make doc-ratchet-selftest"
+    "make check-sanitizer-gate"
+    "make test-release-workflow-contract"
+    "make test-stdlib-execution-proofs"
+    "make freebsd-workflow-contract-check"
+    "make test-leak-oracle-selftest"
+)
+
+run_counterfactual_output_check() {
+    local cmd output offenders
+    local status=0
+    local failures=0
+
+    echo "==> counterfactual-output check (${#COUNTERFACTUAL_ROSTER[@]} gate(s))"
+    for cmd in "${COUNTERFACTUAL_ROSTER[@]}"; do
+        status=0
+        output="$(bash -c "$cmd" 2>&1)" || status=$?
+        if (( status != 0 )); then
+            echo "    UNPROVABLE $cmd — exited $status; a rostered gate must be green before its output can be judged" >&2
+            failures=$(( failures + 1 ))
+            continue
+        fi
+        offenders="$(
+            printf '%s\n' "$output" \
+                | sed $'s/\033\\[[0-9;?]*[a-zA-Z]//g' \
+                | grep -v -F "$PREFLIGHT_COUNTERFACTUAL_MARKER" \
+                | grep -E "$PREFLIGHT_FAILURE_LINE_RE" || true
+        )"
+        if [[ -n "$offenders" ]]; then
+            echo "    OFFENDS $cmd — passed while printing failure-shaped line(s):" >&2
+            printf '        %s\n' "$offenders" >&2
+            echo "        Route the provoked output through a CF- marked replay so extraction skips it." >&2
+            failures=$(( failures + 1 ))
+        else
+            echo "    ok $cmd"
+        fi
+    done
+
+    if (( failures > 0 )); then
+        echo "counterfactual-output check: FAIL ($failures gate(s))" >&2
+        return 1
+    fi
+    echo "counterfactual-output check: PASS"
+}
+
 DRY_RUN=0
 FAIL_FAST=0
+CHECK_COUNTERFACTUAL_OUTPUT=0
 BASE_REF=""
 EXPLICIT_PATHS=0
 LANE=""
@@ -268,6 +417,10 @@ Dispatch a conservative local CI preflight based on changed files.
                         K and N must be positive integers with 1 <= K <= N.
 - --shard-plan N        Print the full shard assignment for N shards and exit without
                         running anything.
+- --check-counterfactual-output
+                        Run the rostered self-tests and fail if a PASSING one prints a
+                        line the first-failure extractor would report; exit without
+                        dispatching a preflight.
 - --profile-json <path> Write command and warm-up timing as a JSON array to <path> (one
                         object per step, with "cmd", "elapsed_s", "status", "phase" fields).
 - --github-output <path> Append the selected profile and compile requirement as
@@ -627,6 +780,10 @@ while [[ $# -gt 0 ]]; do
             BASE_REF="$1"
             shift
             ;;
+        --check-counterfactual-output)
+            CHECK_COUNTERFACTUAL_OUTPUT=1
+            shift
+            ;;
         --shard)
             shift
             [[ $# -gt 0 ]] || die "--shard requires a K/N spec"
@@ -681,6 +838,11 @@ fi
 
 if (( SHARD_PLAN_ONLY == 1 && SHARD_INDEX != 0 )); then
     die "--shard and --shard-plan are mutually exclusive"
+fi
+
+if (( CHECK_COUNTERFACTUAL_OUTPUT == 1 )); then
+    run_counterfactual_output_check
+    exit $?
 fi
 
 ci_preflight_base_unresolved=0
@@ -983,6 +1145,7 @@ case "$LANE" in
         add_command "make freebsd-workflow-contract-check"
         add_command "make o2-differential-selftest"
         add_command "make doc-ratchet-selftest"
+        add_command "make check-counterfactual-output"
         ;;
     grammar)
         add_command "cargo fmt --all -- --check"
@@ -1139,6 +1302,7 @@ case "$LANE" in
         add_command "make test-cabi"
         add_command "make check-sanitizer-gate"
         add_command "make check-gate-reachability"
+        add_command "make check-counterfactual-output"
         add_command "make test-leak-oracle-selftest"
         add_command "make test-ux-examples"
         add_command "make test-surface-examples"
@@ -1655,6 +1819,7 @@ PREFLIGHT_OVERALL_START=$SECONDS
 _json_entries=()
 
 _elapsed_s=0
+_failure_line=""
 
 append_profile_entry() {
     local cmd="$1"
@@ -1666,6 +1831,8 @@ append_profile_entry() {
 
 PREFLIGHT_WARMUP_ELAPSED=0
 PREFLIGHT_WARMUP_STATUS=0
+PREFLIGHT_WARMUP_FAILED_COMMAND=""
+PREFLIGHT_WARMUP_FAILURE_LINE=""
 
 run_warmup() {
     local cmd
@@ -1674,6 +1841,8 @@ run_warmup() {
     local command_elapsed
     local cmd_timeout
     local status=0
+    local log
+    local pipe_status
 
     echo ""
     echo "==> warm-up"
@@ -1682,13 +1851,26 @@ run_warmup() {
         command_start=$SECONDS
         cmd_timeout="$(warmup_timeout)"
         status=0
-        run_in_pgroup_with_timeout "$cmd_timeout" "$cmd" || status=$?
+        log="$(mktemp "${TMPDIR:-/tmp}/hew-preflight-warmup.XXXXXX")"
+        set +e
+        run_in_pgroup_with_timeout "$cmd_timeout" "$cmd" 2>&1 | tee "$log"
+        pipe_status="${PIPESTATUS[0]}"
+        set -e
+        status="$pipe_status"
         command_elapsed=$(( SECONDS - command_start ))
         append_profile_entry "$cmd" "$command_elapsed" "$status" "warm-up"
+        if [[ "$status" -ne 0 ]]; then
+            PREFLIGHT_WARMUP_FAILED_COMMAND="$cmd"
+            PREFLIGHT_WARMUP_FAILURE_LINE="$(extract_first_failure "$log" "$status")"
+        fi
+        rm -f "$log"
         if [[ "$status" -eq 137 || "$status" -eq 143 ]]; then
             echo "==> TIMEOUT: '$cmd' exceeded ${cmd_timeout}s warm-up budget and was killed."
+            PREFLIGHT_WARMUP_FAILURE_LINE="exceeded the ${cmd_timeout}s warm-up budget and was killed (exit $status)"
         fi
         if [[ "$status" -ne 0 ]]; then
+            echo "    first failure: $PREFLIGHT_WARMUP_FAILURE_LINE"
+            emit_failure_annotation "warm-up: $cmd" "$PREFLIGHT_WARMUP_FAILURE_LINE"
             break
         fi
     done
@@ -1710,24 +1892,45 @@ run_timed_command() {
     local cmd_timeout
     local start=$SECONDS
     local status=0
+    local log
+    local pipe_status
     cmd_timeout="$(command_timeout "$cmd")"
 
     echo ""
     echo "==> $cmd"
 
-    run_in_pgroup_with_timeout "$cmd_timeout" "$cmd" || status=$?
+    log="$(mktemp "${TMPDIR:-/tmp}/hew-preflight-cmd.XXXXXX")"
+    # tee, not a redirect: the log is only a diagnostic side-channel; the
+    # command's output must still stream to the job log in real time so a
+    # hung gate is visible before its watchdog fires.  PIPESTATUS[0] carries
+    # the command's real exit code — tee's status must never stand in for it.
+    set +e
+    run_in_pgroup_with_timeout "$cmd_timeout" "$cmd" 2>&1 | tee "$log"
+    pipe_status="${PIPESTATUS[0]}"
+    set -e
+    status="$pipe_status"
 
     _elapsed_s=$(( SECONDS - start ))
+    _failure_line=""
+    if [[ "$status" -ne 0 ]]; then
+        _failure_line="$(extract_first_failure "$log" "$status")"
+    fi
+    rm -f "$log"
 
     # Timeout exit codes from the watchdog:
     #   143 = SIGTERM (128+15): watchdog's initial soft kill reached the child
     #   137 = SIGKILL (128+9): watchdog's hard-kill fallback fired
     if [[ "$status" -eq 137 || "$status" -eq 143 ]]; then
         echo "==> TIMEOUT: '$cmd' exceeded ${cmd_timeout}s budget and was killed."
+        # The watchdog verdict outranks whatever the truncated log happened to
+        # contain: a killed gate did not fail on that line, it ran out of time.
+        _failure_line="exceeded the ${cmd_timeout}s budget and was killed (exit $status)"
     fi
 
     if [[ "$status" -ne 0 ]]; then
         echo "<-- $cmd  elapsed ${_elapsed_s}s  FAILED (exit $status)"
+        echo "    first failure: $_failure_line"
+        emit_failure_annotation "$cmd" "$_failure_line"
     else
         echo "<-- $cmd  elapsed ${_elapsed_s}s  ok"
     fi
@@ -1741,12 +1944,13 @@ PREFLIGHT_FAILURES=()
 PREFLIGHT_EXECUTED_COMMANDS=()
 PREFLIGHT_CMD_ELAPSED=()
 PREFLIGHT_CMD_STATUS=()
+PREFLIGHT_CMD_FAILURE=()
 STOPPED_EARLY=0
 if [[ ${#WARMUP_COMMANDS[@]} -gt 0 ]] && ! run_warmup; then
     PREFLIGHT_FAILURES+=("warm-up")
     STOPPED_EARLY=1
 else
-    for cmd in "${COMMANDS[@]}"; do
+    for cmd in "${COMMANDS[@]+"${COMMANDS[@]}"}"; do
         status=0
         if run_timed_command "$cmd"; then
             status=0
@@ -1758,6 +1962,7 @@ else
         PREFLIGHT_EXECUTED_COMMANDS+=("$cmd")
         PREFLIGHT_CMD_ELAPSED+=("$_elapsed_s")
         PREFLIGHT_CMD_STATUS+=("$status")
+        PREFLIGHT_CMD_FAILURE+=("$_failure_line")
 
         if (( status != 0 && FAIL_FAST == 1 )); then
             STOPPED_EARLY=1
@@ -1793,6 +1998,87 @@ done
 
 if (( STOPPED_EARLY == 1 )); then
     echo "    ... remaining commands not run"
+fi
+
+# ── Result table ──────────────────────────────────────────────────────────────
+#
+# The same table goes to three destinations so a local run and a hosted shard
+# hand back identical information: the job's step summary (GitHub renders it
+# above the log), a file under .tmp/ for local reads and log capture, and — for
+# failures — one ::error annotation per command, emitted at failure time above.
+# A literal backtick in a printf format string reads as a command
+# substitution to shellcheck; keep it as data.
+MD_CODE_TICK='`'
+
+escape_markdown_cell() {
+    local text="$1"
+    text="${text//|/\\|}"
+    text="${text//$'\n'/ }"
+    printf '%s' "$text"
+}
+
+render_result_table() {
+    local heading="Hew CI preflight — $PROFILE_LABEL profile"
+    if (( SHARD_INDEX > 0 )); then
+        heading="$heading (shard $SHARD_INDEX/$SHARD_COUNT)"
+    fi
+    printf '### %s\n\n' "$heading"
+    printf '%ss total, %s failure(s).\n\n' \
+        "$PREFLIGHT_OVERALL_ELAPSED" "${#PREFLIGHT_FAILURES[@]}"
+    printf '| Command | Elapsed | Result | First failure |\n'
+    printf '| --- | ---: | --- | --- |\n'
+
+    if [[ ${#WARMUP_COMMANDS[@]} -gt 0 ]]; then
+        local warmup_label="ok"
+        local warmup_detail=""
+        local warmup_cmd="warm-up"
+        if [[ "$PREFLIGHT_WARMUP_STATUS" -ne 0 ]]; then
+            warmup_label="FAILED"
+            warmup_cmd="warm-up: $PREFLIGHT_WARMUP_FAILED_COMMAND"
+            warmup_detail="$PREFLIGHT_WARMUP_FAILURE_LINE"
+        fi
+        printf '| %s%s%s | %ss | %s | %s |\n' \
+            "$MD_CODE_TICK" \
+            "$(escape_markdown_cell "$warmup_cmd")" \
+            "$MD_CODE_TICK" \
+            "$PREFLIGHT_WARMUP_ELAPSED" \
+            "$warmup_label" \
+            "$(escape_markdown_cell "$warmup_detail")"
+    fi
+
+    local index=0
+    local entry entry_elapsed entry_status entry_label entry_failure
+    for entry in "${PREFLIGHT_EXECUTED_COMMANDS[@]+"${PREFLIGHT_EXECUTED_COMMANDS[@]}"}"; do
+        entry_elapsed="${PREFLIGHT_CMD_ELAPSED[$index]:-?}"
+        entry_status="${PREFLIGHT_CMD_STATUS[$index]:-0}"
+        entry_failure="${PREFLIGHT_CMD_FAILURE[$index]:-}"
+        entry_label="ok"
+        if [[ "$entry_status" -ne 0 ]]; then
+            entry_label="FAILED (exit $entry_status)"
+        fi
+        printf '| %s%s%s | %ss | %s | %s |\n' \
+            "$MD_CODE_TICK" \
+            "$(escape_markdown_cell "$entry")" \
+            "$MD_CODE_TICK" \
+            "$entry_elapsed" \
+            "$entry_label" \
+            "$(escape_markdown_cell "$entry_failure")"
+        index=$(( index + 1 ))
+    done
+
+    if (( STOPPED_EARLY == 1 )); then
+        printf '\nRemaining commands were not run.\n'
+    fi
+}
+
+PREFLIGHT_RESULT_TABLE="$(render_result_table)"
+
+mkdir -p "$(dirname "$PREFLIGHT_SUMMARY_FILE")"
+printf '%s\n' "$PREFLIGHT_RESULT_TABLE" > "$PREFLIGHT_SUMMARY_FILE"
+echo "Result table written to: $PREFLIGHT_SUMMARY_FILE"
+
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    printf '%s\n\n' "$PREFLIGHT_RESULT_TABLE" >> "$GITHUB_STEP_SUMMARY"
 fi
 
 # Write --profile-json if requested.

@@ -42,6 +42,31 @@ trap 'rm -rf "${TMPDIR_BASE}"' EXIT
 EMPTY_DIR="${TMPDIR_BASE}/empty"
 mkdir -p "${EMPTY_DIR}"
 
+# Counterfactual marker.  Every invocation below drives the REAL oracle against
+# deliberately broken input, so this self-test PASSES while its output carries
+# "ORACLE gate: FAIL", "UNEXPECTED FAILURES" and "error: ...".  Anything that
+# reads a log for the first concrete failure line — the preflight dispatcher
+# reduces a 6-7 MB failed-step log to one annotation exactly that way — would
+# report this bait instead of a real defect.  run_counterfactual replays the
+# provoked output behind the marker so it stays readable and unmistakable, and
+# preserves the exit code the assertions below depend on.
+# `ci-preflight-dispatcher.sh --check-counterfactual-output` fails if a rostered
+# gate stops doing this.
+COUNTERFACTUAL_MARKER="CF-"
+
+run_counterfactual() {
+    local label="$1"
+    shift
+    local output=""
+    local status=0
+
+    output="$("$@" 2>&1)" || status=$?
+    if [[ -n "$output" ]]; then
+        printf '%s\n' "$output" | sed "s/^/${COUNTERFACTUAL_MARKER}[${label}] /"
+    fi
+    return "$status"
+}
+
 pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1: $2" >&2; exit 1; }
 
@@ -76,14 +101,14 @@ printf '# empty\n' > "${T1_EF}"
 echo "--- Test 1: oracle-flags-a-known-crash ---"
 # Oracle must exit 1 (unexpected failure — crash not listed in expected-failures).
 rc=0
-python3 "${ORACLE}" \
+run_counterfactual "t1-known-crash" python3 "${ORACLE}" \
     --hew "${HEW}" \
     --repo-root "${ROOT}" \
     --regressions-dir "${T1_DIR}" \
     --expected-failures "${T1_EF}" \
     --vertical-slice-dir "${EMPTY_DIR}" \
     --min-candidates 1 \
-    2>&1 || rc=$?
+    || rc=$?
 if [[ "${rc}" -ne 1 ]]; then
     fail "oracle-flags-a-known-crash" "expected oracle exit 1, got ${rc}"
 fi
@@ -91,7 +116,7 @@ fi
 # Capture report to verify the verdict token.
 T1_REPORT="${TMPDIR_BASE}/t1_report.json"
 rc=0
-python3 "${ORACLE}" \
+run_counterfactual "t1-report" python3 "${ORACLE}" \
     --hew "${HEW}" \
     --repo-root "${ROOT}" \
     --regressions-dir "${T1_DIR}" \
@@ -99,7 +124,7 @@ python3 "${ORACLE}" \
     --vertical-slice-dir "${EMPTY_DIR}" \
     --min-candidates 1 \
     --report "${T1_REPORT}" \
-    2>&1 || rc=$?
+    || rc=$?
 
 # The JSON report must contain runtime-abort or runtime-crash for the fixture.
 if ! python3 -c "
@@ -131,14 +156,14 @@ T2_EF="${TMPDIR_BASE}/t2_expected_failures.txt"
 printf 'crash_fixture.hew  # known crash; issue: #test\n' > "${T2_EF}"
 
 rc=0
-python3 "${ORACLE}" \
+run_counterfactual "t2a-listed-crash" python3 "${ORACLE}" \
     --hew "${HEW}" \
     --repo-root "${ROOT}" \
     --regressions-dir "${T2_DIR}" \
     --expected-failures "${T2_EF}" \
     --vertical-slice-dir "${EMPTY_DIR}" \
     --min-candidates 1 \
-    2>&1 || rc=$?
+    || rc=$?
 if [[ "${rc}" -ne 0 ]]; then
     fail "oracle-honours-expected-failure (2a: listed crash tolerated)" \
          "expected oracle exit 0, got ${rc}"
@@ -183,14 +208,14 @@ printf '# empty\n' > "${T3_EF}"
 printf '// EXPECT: 7\nfn main() { println(7); }\n' > "${T3_DIR}/clean_fixture.hew"
 
 rc=0
-python3 "${ORACLE}" \
+run_counterfactual "t3a-clean-program" python3 "${ORACLE}" \
     --hew "${HEW}" \
     --repo-root "${ROOT}" \
     --regressions-dir "${T3_DIR}" \
     --expected-failures "${T3_EF}" \
     --vertical-slice-dir "${EMPTY_DIR}" \
     --min-candidates 1 \
-    2>&1 || rc=$?
+    || rc=$?
 if [[ "${rc}" -ne 0 ]]; then
     fail "oracle-passes-clean-program (3a: clean program passes)" \
          "expected oracle exit 0, got ${rc}"

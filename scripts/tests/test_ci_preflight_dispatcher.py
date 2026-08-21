@@ -1377,6 +1377,226 @@ def test_hosted_linux_matrix_matches_the_dispatcher_shard_denominator() -> None:
     assert "needs.build-and-test.result" in required, required
 
 
+# ---------------------------------------------------------------------------
+# Failure diagnostics
+# ---------------------------------------------------------------------------
+
+
+def first_failure_cells(summary: str) -> list[str]:
+    """The First failure column of every FAILED row of the result table."""
+    cells = []
+    for line in summary.splitlines():
+        if not line.startswith("| `") or "FAILED" not in line:
+            continue
+        cells.append(line.rsplit("|", 2)[1].strip())
+    return cells
+
+
+def run_failing_commands(commands: str) -> tuple[subprocess.CompletedProcess[str], str]:
+    """Run synthetic failing commands under GitHub Actions; return the summary."""
+    with tempfile.TemporaryDirectory() as scratch:
+        step_summary = Path(scratch) / "step-summary.md"
+        local_summary = Path(scratch) / "preflight-summary.md"
+        result = run_dispatcher(
+            "some-unclassified-root-file.txt",
+            env={
+                "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+                "PREFLIGHT_TEST_COMMANDS": commands,
+                "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_STEP_SUMMARY": str(step_summary),
+                "PREFLIGHT_SUMMARY_FILE": str(local_summary),
+            },
+            dry_run=False,
+            timeout=60,
+        )
+        local_text = local_summary.read_text()
+        step_text = step_summary.read_text()
+    assert local_text == step_text.rstrip("\n") + "\n", (
+        "the local table and the GitHub step summary must be the same table"
+    )
+    return result, local_text
+
+
+def test_failing_command_emits_an_annotation_and_a_result_table() -> None:
+    result, summary = run_failing_commands(
+        "printf 'ok\\n'\nprintf 'boom\\nerror: cannot find value x\\n' >&2; exit 4\n"
+    )
+    assert result.returncode == 1, result.stdout
+
+    annotations = [
+        line for line in result.stdout.splitlines() if line.startswith("::error ")
+    ]
+    assert len(annotations) == 1, result.stdout
+    assert annotations[0].startswith(
+        "::error file=scripts/ci-preflight-dispatcher.sh,title="
+    ), annotations[0]
+    assert annotations[0].endswith("::error: cannot find value x"), annotations[0]
+
+    assert "| Command | Elapsed | Result | First failure |" in summary, summary
+    assert "| `printf 'ok\\n'` | 0s | ok |  |" in summary, summary
+    failing = next(line for line in summary.splitlines() if "FAILED (exit 4)" in line)
+    assert "error: cannot find value x" in failing, failing
+    assert "0 failure" not in summary, summary
+    assert "1 failure(s)." in summary, summary
+
+
+def test_first_failure_extraction_covers_every_gate_failure_shape() -> None:
+    """nextest, make, python and ratchet failures each yield their own line."""
+    cases = {
+        'printf "        FAIL [   1.234s] hew-cli::suite maps_ok\\n"; exit 1': (
+            "FAIL [   1.234s] hew-cli::suite maps_ok"
+        ),
+        'printf "warming\\nmake[1]: *** [Makefile:759: test] Error 2\\n"; exit 2': (
+            "make[1]: *** [Makefile:759: test] Error 2"
+        ),
+        'printf "Traceback\\nAssertionError: union missing 3 tests\\n"; exit 1': (
+            "AssertionError: union missing 3 tests"
+        ),
+        'printf "NOW-FAILS: tests/hew/actor.hew\\n"; exit 3': (
+            "NOW-FAILS: tests/hew/actor.hew"
+        ),
+        'printf "NOW-PASSES: tests/hew/actor.hew\\n"; exit 3': (
+            "NOW-PASSES: tests/hew/actor.hew"
+        ),
+        'printf "silent\\n"; exit 9': (
+            "exited 9 with no recognised failure line; see the step log"
+        ),
+    }
+    result, summary = run_failing_commands("\n".join(cases) + "\n")
+    assert result.returncode == 1, result.stdout
+    for command, expected in cases.items():
+        assert f"::{expected}" in result.stdout, (
+            f"no annotation carrying {expected!r} for {command!r}:\n{result.stdout}"
+        )
+        assert expected.replace("|", "\\|") in summary, summary
+
+
+def test_timeout_reports_the_budget_not_a_stray_log_line() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        local_summary = Path(scratch) / "preflight-summary.md"
+        result = run_dispatcher(
+            "some-unclassified-root-file.txt",
+            env={
+                "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+                "PREFLIGHT_TEST_COMMANDS": "printf 'error: red herring\\n'; sleep 30",
+                "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
+                "PREFLIGHT_TIMEOUT_FALLBACK": "1",
+                "GITHUB_ACTIONS": "true",
+                "PREFLIGHT_SUMMARY_FILE": str(local_summary),
+            },
+            dry_run=False,
+            timeout=60,
+        )
+        summary = local_summary.read_text()
+    assert result.returncode != 0, result.stdout
+    assert first_failure_cells(summary) == [
+        "exceeded the 1s budget and was killed (exit 143)"
+    ], summary
+    annotation = next(
+        line for line in result.stdout.splitlines() if line.startswith("::error ")
+    )
+    assert "budget and was killed" in annotation, annotation
+
+
+def test_counterfactual_output_never_becomes_the_reported_failure() -> None:
+    """A self-test's provoked bait must not outrank the real failure line.
+
+    A green self-test log carries "ORACLE gate: FAIL" and "error: ..." from
+    running the real gate against broken input. Those lines come FIRST, so an
+    unguarded first-match grep names the counterfactual instead of the defect.
+    """
+    bait = (
+        "CF-[t1-known-crash] ORACLE gate: FAIL\\n"
+        "CF-[t1-known-crash] error: provoked on purpose\\n"
+        "PASS oracle-flags-a-known-crash\\n"
+        "RATCHET FAIL: tests/hew/actor.hew regressed\\n"
+    )
+    result, summary = run_failing_commands(f"printf '{bait}'; exit 1\n")
+    assert result.returncode == 1, result.stdout
+    annotation = next(
+        line for line in result.stdout.splitlines() if line.startswith("::error ")
+    )
+    assert annotation.endswith("::RATCHET FAIL: tests/hew/actor.hew regressed"), (
+        annotation
+    )
+    assert first_failure_cells(summary) == [
+        "RATCHET FAIL: tests/hew/actor.hew regressed"
+    ], summary
+
+
+def test_counterfactual_marker_is_shared_by_every_producer() -> None:
+    """One marker string across the extractor and every counterfactual site."""
+    dispatcher = (ROOT / "scripts/ci-preflight-dispatcher.sh").read_text()
+    oracle = (ROOT / "scripts/fuzz/oracle-selftest.sh").read_text()
+    consumer = (ROOT / "scripts/tests/test_cargo_output_dir.py").read_text()
+    assert "PREFLIGHT_COUNTERFACTUAL_MARKER='CF-'" in dispatcher, dispatcher
+    assert 'COUNTERFACTUAL_MARKER="CF-"' in oracle, oracle
+    assert 'COUNTERFACTUAL_MARKER = "CF-"' in consumer, consumer
+    assert oracle.count('run_counterfactual "') == 4, (
+        "every unredirected oracle invocation must replay behind the marker"
+    )
+
+    makefile = (ROOT / "Makefile").read_text()
+    assert re.search(
+        r"^check-counterfactual-output:\n"
+        r"\tscripts/ci-preflight-dispatcher\.sh --check-counterfactual-output$",
+        makefile,
+        re.MULTILINE,
+    ), "the counterfactual-output gate must have a Makefile port"
+
+    selection = run_dispatcher("some-unclassified-root-file.txt")
+    assert "  - make check-counterfactual-output " in selection.stdout, (
+        "the comprehensive profile must run the counterfactual-output gate"
+    )
+
+
+def test_counterfactual_output_check_reuses_the_extractor_authority() -> None:
+    """The gate must judge output with the same pattern extraction uses.
+
+    A second copy of the pattern would let a gate pass this check and still
+    mislead the annotation, which is the whole failure it exists to prevent.
+    """
+    dispatcher = (ROOT / "scripts/ci-preflight-dispatcher.sh").read_text()
+    body = dispatcher.split("run_counterfactual_output_check() {", 1)[1]
+    body = body.split("\nDRY_RUN=0", 1)[0]
+    assert "$PREFLIGHT_FAILURE_LINE_RE" in body, body
+    assert "$PREFLIGHT_COUNTERFACTUAL_MARKER" in body, body
+    assert dispatcher.count("PREFLIGHT_FAILURE_LINE_RE='") == 1, (
+        "the failure pattern must have exactly one definition"
+    )
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--check-counterfactual-output"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "counterfactual-output check: PASS" in result.stdout, result.stdout
+
+
+def test_no_annotation_is_emitted_outside_github_actions() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        result = run_dispatcher(
+            "some-unclassified-root-file.txt",
+            env={
+                "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+                "PREFLIGHT_TEST_COMMANDS": "exit 5",
+                "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
+                "GITHUB_ACTIONS": "",
+                "PREFLIGHT_SUMMARY_FILE": str(Path(scratch) / "summary.md"),
+            },
+            dry_run=False,
+            timeout=30,
+        )
+        summary = (Path(scratch) / "summary.md").read_text()
+    assert result.returncode == 1, result.stdout
+    assert "::error" not in result.stdout, result.stdout
+    assert "FAILED (exit 5)" in summary, summary
+
+
 _TESTS = [
     test_makefile_routes_to_scripts_config_profile,
     test_scripts_path_routes_to_scripts_config_profile,
@@ -1448,6 +1668,14 @@ _TESTS = [
     test_shard_plan_prints_the_full_assignment_and_runs_nothing,
     test_help_documents_the_shard_flags,
     test_hosted_linux_matrix_matches_the_dispatcher_shard_denominator,
+    # Failure diagnostics
+    test_failing_command_emits_an_annotation_and_a_result_table,
+    test_first_failure_extraction_covers_every_gate_failure_shape,
+    test_timeout_reports_the_budget_not_a_stray_log_line,
+    test_counterfactual_output_never_becomes_the_reported_failure,
+    test_counterfactual_marker_is_shared_by_every_producer,
+    test_counterfactual_output_check_reuses_the_extractor_authority,
+    test_no_annotation_is_emitted_outside_github_actions,
 ]
 
 if __name__ == "__main__":

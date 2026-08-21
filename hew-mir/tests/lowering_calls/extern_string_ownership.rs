@@ -62,8 +62,8 @@ fn extern_item(
     provenance: ExternProvenance,
 ) -> HirItem {
     let declaration = match &provenance {
-        ExternProvenance::Root => DefId::new(name),
-        ExternProvenance::Module(module) => DefId::new(format!("{module}.{name}")),
+        ExternProvenance::Root => DefId::for_test(name),
+        ExternProvenance::Module(module) => DefId::for_test(format!("{module}.{name}")),
     };
     HirItem::ExternFn(HirExternFn {
         id: ids.item(),

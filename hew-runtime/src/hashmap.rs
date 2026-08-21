@@ -112,6 +112,53 @@ pub struct HewLayoutHashMap {
     pub val_layout: HewMapValueLayout,
 }
 
+/// Borrow each occupied entry in slot order and append its structural rendering.
+///
+/// # Safety
+///
+/// `builder` must be a live structural string builder, `m` must be null or a
+/// live layout map, and both callbacks must accept pointers to the map's
+/// borrowed key/value blobs without retaining or mutating them.
+#[no_mangle]
+#[expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "the boundary validates the map and keeps all borrowed slot pointers within the callback"
+)]
+pub unsafe extern "C" fn hew_structural_format_hashmap(
+    builder: *mut c_void,
+    m: *const HewLayoutHashMap,
+    key_format: Option<crate::string::HewStructuralFormatFn>,
+    value_format: Option<crate::string::HewStructuralFormatFn>,
+) {
+    let (Some(key_format), Some(value_format)) = (key_format, value_format) else {
+        unsafe { libc::abort() };
+    };
+    unsafe { crate::string::structural_builder_append(builder, b"{") };
+    if !m.is_null() {
+        unsafe { validate_op_map(m) };
+        let map = unsafe { &*m };
+        let mut first = true;
+        for index in 0..map.cap {
+            let state = unsafe { *slot_state(map.entries, index, map.stride) };
+            if state != OCCUPIED {
+                continue;
+            }
+            if !first {
+                unsafe { crate::string::structural_builder_append(builder, b", ") };
+            }
+            first = false;
+            let key = unsafe { slot_key(map.entries, index, map.stride, map.key_offset) };
+            let value = unsafe { slot_val(map.entries, index, map.stride, map.val_offset) };
+            unsafe {
+                key_format(builder, key.cast());
+                crate::string::structural_builder_append(builder, b": ");
+                value_format(builder, value.cast());
+            }
+        }
+    }
+    unsafe { crate::string::structural_builder_append(builder, b"}") };
+}
+
 /// Round `offset` up to the next multiple of `align`. `align` must be a
 /// non-zero power of two. Returns `None` on overflow.
 #[inline]

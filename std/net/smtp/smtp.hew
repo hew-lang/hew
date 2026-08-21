@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::net::smtp;
+//! import std.net.smtp;
 //!
 //! fn main() {
 //!     smtp.send(

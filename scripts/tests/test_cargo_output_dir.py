@@ -3,10 +3,36 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import os
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
+
+# Mirrors run_counterfactual in scripts/fuzz/oracle-selftest.sh.  The
+# counterfactuals below drive
+# cargo-output-dir.py into its fail-closed paths, and those paths print
+# "error: ..." to stderr before exiting.  On a PASSING run that text is bait:
+# anything reading the log for a first failure line — the preflight
+# dispatcher's annotation extractor does exactly that — would report this
+# test's own provoked diagnostic as the defect.  Replaying it behind the
+# marker keeps it readable and unmistakable.
+# `ci-preflight-dispatcher.sh --check-counterfactual-output` fails if this
+# stops happening.
+COUNTERFACTUAL_MARKER = "CF-"
+
+
+@contextlib.contextmanager
+def counterfactual(label: str) -> Iterator[None]:
+    buffer = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(buffer):
+            yield
+    finally:
+        for line in buffer.getvalue().splitlines():
+            print(f"{COUNTERFACTUAL_MARKER}[{label}] {line}")
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -111,7 +137,8 @@ def test_metadata_failure_fails_closed() -> None:
     )
     try:
         try:
-            cargo_output_dir.target_root()
+            with counterfactual("metadata-failure"):
+                cargo_output_dir.target_root()
         except SystemExit as exc:
             assert exc.code == 1
         else:
@@ -134,7 +161,8 @@ def test_missing_cargo_fails_closed() -> None:
     cargo_output_dir.subprocess.run = missing_cargo
     try:
         try:
-            cargo_output_dir.target_root()
+            with counterfactual("missing-cargo"):
+                cargo_output_dir.target_root()
         except SystemExit as exc:
             assert exc.code == 1
         else:
@@ -163,7 +191,8 @@ def test_malformed_metadata_fails_closed() -> None:
                 )
             )
             try:
-                cargo_output_dir.target_root()
+                with counterfactual("malformed-metadata"):
+                    cargo_output_dir.target_root()
             except SystemExit as exc:
                 assert exc.code == 1
             else:

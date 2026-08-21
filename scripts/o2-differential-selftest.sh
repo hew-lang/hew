@@ -27,6 +27,16 @@ TESTS_DIR="$TMPDIR_BASE/tests"
 STUB="$TMPDIR_BASE/hew-stub"
 mkdir -p "$TESTS_DIR"
 
+# Counterfactual marker.  Every case below drives the REAL differential gate
+# against a stub runner rigged to diverge, crash, or under-report — so this
+# self-test PASSES while its cases produce genuine gate-failure text.  The log
+# was written to a file and only dumped on failure, which hid it from readers
+# and left no evidence in a green log that the bait path ran.  Replaying it
+# behind the marker keeps it readable, keeps the preflight's first-failure
+# extractor from reporting it as a verdict, and is what
+# `ci-preflight-dispatcher.sh --check-counterfactual-output` looks for.
+COUNTERFACTUAL_MARKER="CF-"
+
 pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1: $2" >&2; exit 1; }
 
@@ -73,10 +83,12 @@ run_case() {
   O2_DIFF_SELFTEST_CASE="$stub_case" HEW_BIN="$STUB" \
     bash "$GATE" --tests-dir "$TESTS_DIR" "${@:4}" > "$log" 2>&1 || rc=$?
 
+  printf '%s\n' "${COUNTERFACTUAL_MARKER}[${name}] exit ${rc}"
+  sed "s|^|${COUNTERFACTUAL_MARKER}[${name}] |" "$log"
+
   if [[ "$rc" -eq "$expected_rc" ]]; then
     pass "$name"
   else
-    sed 's/^/  /' "$log" >&2
     fail "$name" "gate exited $rc (expected $expected_rc)"
   fi
 }

@@ -8,7 +8,7 @@
 //!
 //! The `put_*` functions return a new `bytes` buffer containing the encoded
 //! integer.  Callers that need to concatenate multiple values build each
-//! buffer separately; a future `bytes::append` primitive will enable
+//! buffer separately; a future `bytes.append` primitive will enable
 //! zero-copy assembly once it is available.
 //!
 //! The `get_*` functions read from offset 0 of the supplied buffer; the
@@ -18,7 +18,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::encoding::binary;
+//! import std.encoding.binary;
 //!
 //! fn main() {
 //!     let buf = binary.put_u32_le(0x01020304);

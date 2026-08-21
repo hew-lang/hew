@@ -39,6 +39,7 @@ set -euo pipefail
 #   HEW_MACOS_LLVM_PREFIX=/opt/homebrew/opt/llvm@22
 #   HEW_WINDOWS_LLVM_PREFIX='C:\llvm-22'
 #   HEW_WINDOWS_STAGE_ROOT='P:/hew-pre-release-stages'
+#   HEW_WINDOWS_CANDIDATE_ARCHIVE='/path/to/target/hew-windows-candidate.tar.gz'
 #   HEW_WINDOWS_CC=cl
 #   HEW_WINDOWS_CXX=cl
 #
@@ -61,6 +62,7 @@ MACOS_LLVM_PREFIX="${HEW_MACOS_LLVM_PREFIX:-${MACOS_LLVM_PREFIX:-}}"
 WINDOWS_LLVM_PREFIX="${HEW_WINDOWS_LLVM_PREFIX:-C:\\llvm-22}"
 WINDOWS_LLVM_CONFIG="${HEW_WINDOWS_LLVM_CONFIG:-${WINDOWS_LLVM_PREFIX}\\lib\\cmake\\llvm\\LLVMConfig.cmake}"
 WINDOWS_STAGE_ROOT="${HEW_WINDOWS_STAGE_ROOT:-${WINDOWS_STAGE_ROOT:-}}"
+WINDOWS_CANDIDATE_ARCHIVE="${HEW_WINDOWS_CANDIDATE_ARCHIVE:-${WINDOWS_CANDIDATE_ARCHIVE:-}}"
 # Normalize the optional root before validating/interpolating it.
 WINDOWS_STAGE_ROOT="${WINDOWS_STAGE_ROOT//\\//}"
 WINDOWS_CC="${HEW_WINDOWS_CC:-cl}"
@@ -193,11 +195,13 @@ run_windows_staged_build() {
 # Keep every high-volume write on the already space-checked candidate drive.
 # These process-local values deliberately override a full host TEMP/TMP or an
 # inherited Cargo target directory without requiring persistent host changes.
+# Keep the provisioned Cargo cache in place, but never let validation fetch
+# dependencies or update it.
 \$env:TEMP = '${remote_stage}/.tmp'
 \$env:TMP = \$env:TEMP
 \$env:CARGO_TARGET_DIR = '${remote_stage}/target'
-\$env:CARGO_HOME = '${remote_stage}/.cargo-home'
-New-Item -ItemType Directory -Force -Path \$env:TEMP, \$env:CARGO_TARGET_DIR, \$env:CARGO_HOME | Out-Null
+\$env:CARGO_NET_OFFLINE = 'true'
+New-Item -ItemType Directory -Force -Path \$env:TEMP, \$env:CARGO_TARGET_DIR | Out-Null
 \$Utf8 = [System.Text.Encoding]::UTF8
 \$env:HEW_WINDOWS_LLVM_CONFIG = \$Utf8.GetString([Convert]::FromBase64String('${llvm_config_b64}'))
 \$env:HEW_WINDOWS_LLVM_PREFIX = \$Utf8.GetString([Convert]::FromBase64String('${llvm_prefix_b64}'))
@@ -696,6 +700,14 @@ validate_windows() {
         fail "windows" "HEW_WINDOWS_STAGE_ROOT is not a safe absolute Windows path"
         return 1
     fi
+    if [[ -z "$WINDOWS_CANDIDATE_ARCHIVE" ]]; then
+        fail "windows" "HEW_WINDOWS_CANDIDATE_ARCHIVE not configured"
+        return 1
+    fi
+    if [[ ! -f "$WINDOWS_CANDIDATE_ARCHIVE" || ! -r "$WINDOWS_CANDIDATE_ARCHIVE" ]]; then
+        fail "windows" "HEW_WINDOWS_CANDIDATE_ARCHIVE is not a readable regular file"
+        return 1
+    fi
     if ! run_windows_powershell "${SSH_CHECK_TIMEOUT}" \
         "\$ErrorActionPreference = 'Stop'; Write-Output 'reachable'" >/dev/null 2>&1; then
         fail "windows" "${WINDOWS_HOST} unreachable"
@@ -711,13 +723,8 @@ validate_windows() {
             exit 1
         fi
         trap 'remove_windows_remote_stage "${remote_stage}"' EXIT
-        candidate_archive="${LOG_DIR}/windows-candidate.tar.gz"
-        echo "==> Staging local candidate on Windows: ${remote_stage}"
-        tar -czf "${candidate_archive}" \
-            --exclude='./target' --exclude='./.git' --exclude='./build' --exclude='./.tmp' \
-            --exclude='node_modules' \
-            --exclude='*.o' --exclude='*.a' --exclude='*.d' .
-        run_with_timeout "${SYNC_TIMEOUT}" scp "${candidate_archive}" \
+        echo "==> Staging Windows candidate archive: ${remote_stage}"
+        run_with_timeout "${SYNC_TIMEOUT}" scp "${WINDOWS_CANDIDATE_ARCHIVE}" \
             "${WINDOWS_HOST}:${remote_stage}/candidate.tar.gz"
         run_windows_powershell "${SYNC_TIMEOUT}" "
 \$ErrorActionPreference = 'Stop'

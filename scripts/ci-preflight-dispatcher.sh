@@ -16,6 +16,10 @@ source "${REPO_ROOT}/scripts/lib/timeout.sh"
 PREFLIGHT_TIMEOUT_DOCS="${PREFLIGHT_TIMEOUT_DOCS:-30}"
 PREFLIGHT_TIMEOUT_NARROW="${PREFLIGHT_TIMEOUT_NARROW:-180}"
 PREFLIGHT_TIMEOUT_FALLBACK="${PREFLIGHT_TIMEOUT_FALLBACK:-600}"
+# Cold artifact construction is intentionally outside the command-tier budgets.
+# Keep its watchdog independent and generous, while applying the same
+# host-parallelism scaling as every timed preflight step.
+PREFLIGHT_TIMEOUT_WARMUP="${PREFLIGHT_TIMEOUT_WARMUP:-900}"
 
 TIMEOUT_CALIBRATION_PARALLELISM=16
 HOST_PARALLELISM=1
@@ -68,14 +72,21 @@ print_timeout_scaling() {
 # Per-command stuck ceilings from the local preflight timing audit.  These are
 # measurement-only hang budgets, not coverage skips or bypasses.  The effective
 # timeout is max(command floor, lane tier), so narrow lanes get enough time for
-# known-long suites while the fallback's 600s ceiling remains unchanged.
+# known-long suites while retaining finite stuck ceilings for every command.
 command_timeout_floor() {
     local cmd="$1"
     case "$cmd" in
         "make ci-preflight-smoke") echo 420 ;;
-        "make lint") echo 90 ;;
+        # A warm lint run measured 698 s on the 16-core developer machine.
+        # Add roughly 35% cache and host-load headroom, rounded to 945 s, while
+        # retaining a finite stuck ceiling.
+        "make lint") echo 945 ;;
         "make playground-check") echo 150 ;;
-        "make test") echo 360 ;;
+        # A warm workspace make test run measured 1129 s for 14,050 nextest
+        # tests on the 16-core developer machine.  Add roughly 35% cache and
+        # host-load headroom, rounded to 1530 s, while retaining a finite stuck
+        # ceiling.
+        "make test") echo 1530 ;;
         # test-compiler-pipeline carries the hew-cli consumer corpus (compiled
         # leak/drop oracles + e2e suites).  The 600 s figure came from ~234 s
         # on a warm 16-core developer machine; hosted runners have far fewer
@@ -115,6 +126,93 @@ command_timeout_floor() {
     esac
 }
 
+# Balance weight (seconds) used to partition a profile into shards.
+#
+# The weight is a MEASURED duration, not a hang ceiling: command_timeout_floor
+# carries deliberate 35%-and-more headroom (test-compiler-pipeline's 1800 s
+# ceiling bounds a ~1243 s gate), so packing against floors would mis-rank the
+# long tail.  The values below are the per-command elapsed times from a hosted
+# ubuntu-24.04 Linux-gates run of the comprehensive profile: 7823 s total, of
+# which 754 s was warm-up and the nine commands named here were 5283 s.  The
+# remaining 29 commands each measured at or under 200 s and average about 60 s,
+# which is the default; anything with no entry and no floor takes that default.
+#
+# SHIM SEAM: these are point measurements, refreshed by hand from a
+# --profile-json run.  They become obsolete when the dispatcher reads a
+# committed timing corpus; until then a drifted weight costs balance, never
+# coverage — the partition is exhaustive and disjoint regardless of the weights.
+PREFLIGHT_DEFAULT_COMMAND_WEIGHT=60
+
+command_weight() {
+    local cmd="$1"
+    local floor
+    case "$cmd" in
+        # Measured on the hosted Linux gates job.
+        "make test-compiler-pipeline") echo 1243 ;;
+        "make test") echo 1104 ;;
+        "make hew-check-all") echo 633 ;;
+        "make fuzz-oracle") echo 580 ;;
+        "make hew-fmt-property") echo 567 ;;
+        "make lint") echo 435 ;;
+        "make test-vertical-slice") echo 429 ;;
+        "make sandbox-parity") echo 292 ;;
+        # Not present in the hosted profile (the compiled-Hew aggregate owns
+        # both), so no hosted measurement exists.  Local isolated warm timings
+        # were 1105 s for the ratchet and 1988 s for the two-pass differential.
+        "make test-hew-ratchet") echo 1105 ;;
+        "make test-o2-differential") echo 1988 ;;
+        *)
+            floor="$(command_timeout_floor "$cmd")"
+            if (( floor > 0 && floor < PREFLIGHT_DEFAULT_COMMAND_WEIGHT )); then
+                echo "$floor"
+            else
+                echo "$PREFLIGHT_DEFAULT_COMMAND_WEIGHT"
+            fi
+            ;;
+    esac
+}
+
+# Ordering-dependency groups.  Commands that share a group key are ATOMIC for
+# sharding: they always land in the same shard, in their original relative
+# order, because splitting them would split a producer from its consumer or a
+# gate from the self-test that proves the gate has teeth.
+#
+# Every membership here is a real dependency, not a stylistic pairing:
+#   hew-suites   test-hew-ratchet emits HEW_O0_OUTCOMES_FILE, which
+#                test-o2-differential consumes as its O0 baseline; the
+#                selftest proves that differential gate is falsifiable.
+#   fuzz-oracle  the selftest proves run-oracle.py flags real crashes.
+#   ll-oracle    ll-identity-selftest proves the ll-diff normaliser is not a
+#                no-op that would pass any IR.
+#   checked-mir  verify diffs the golden corpus, run executes it; the run
+#                verdict is only meaningful next to the byte diff.
+#   doc-ratchet  doc-ratchet-selftest proves the doc-example ratchet is
+#                falsifiable.
+#   libhew       check-libhew-fresh.sh certifies the archive `make stdlib`
+#                just produced.
+#   lane-nextest `make hew-native wasm-runtime` builds the compiler and WASM
+#                runtime that the lane's nextest invocations link against.
+command_shard_group() {
+    case "$1" in
+        "make test-hew-ratchet"|"make test-o2-differential"|"make o2-differential-selftest")
+            echo "group:hew-suites" ;;
+        "make fuzz-oracle"|"make fuzz-oracle-selftest")
+            echo "group:fuzz-oracle" ;;
+        "make ll-diff"|"make ll-identity-selftest")
+            echo "group:ll-oracle" ;;
+        "make checked-mir-verify"|"make checked-mir-run")
+            echo "group:checked-mir" ;;
+        "make test-doc-examples"|"make doc-ratchet-selftest")
+            echo "group:doc-ratchet" ;;
+        "make stdlib"|"scripts/check-libhew-fresh.sh")
+            echo "group:libhew" ;;
+        "make hew-native wasm-runtime"|"cargo nextest run "*)
+            echo "group:lane-nextest" ;;
+        *)
+            echo "cmd:$1" ;;
+    esac
+}
+
 command_timeout() {
     local cmd="$1"
     local baseline
@@ -128,8 +226,209 @@ command_timeout() {
     scale_timeout_budget "$baseline"
 }
 
+warmup_timeout() {
+    scale_timeout_budget "$PREFLIGHT_TIMEOUT_WARMUP"
+}
+
+# First-failure extraction.
+#
+# A failed CI step used to hand back only "exit 1" plus tens of thousands of
+# log lines (--log-failed alone is 6-7 MB).  These patterns cover the concrete
+# failure shapes this repo's gates actually emit:
+#   nextest         "        FAIL [   1.234s] hew-cli::suite test_name"
+#   make            "make[1]: *** [Makefile:759: test] Error 2"
+#   rustc/clippy    "error[E0382]: ..." / "error: ..."
+#   python          "AssertionError: ..." / "ValueError: ..."
+#   hew ratchets    "RATCHET FAIL: ..." / "==> Ratchet: FAILED"
+#   fuzz oracle     "ORACLE gate: FAIL"
+#   O2 differential "==> Differential gate: FAILED — ..."
+#   corpus drift    "NOW-FAILS: tests/hew/x.hew" / "NOW-PASSES: ..."
+#   watchdog        "==> TIMEOUT: 'make test' exceeded 1530s budget"
+#   rust panics     "thread 'main' panicked at ..."
+#   signal deaths   "Illegal instruction (core dumped)" / "Segmentation fault" /
+#                   "Aborted" / "Bus error" / "Trace/breakpoint trap" /
+#                   "zsh: trace trap" / "Abort trap: 6", the SIG* spellings
+#                   cargo and nextest use ("signal: 4, SIGILL"), and nextest's
+#                   "killed by signal 11" form
+# A compiled-Hew gate that dies on a trap is the failure mode this repo cares
+# most about, and the shell reports it as a bare "Illegal instruction" line with
+# no "error" or "FAIL" token anywhere — without these patterns that whole class
+# fell through to the generic exit-status fallback.
+# A log with none of these still reports its exit status rather than nothing.
+PREFLIGHT_FAILURE_LINE_RE='(^|[[:space:]])FAIL \[|^[[:space:]]*FAILED?([[:space:]]|:)|^make(\[[0-9]+\])?: \*\*\* |^[[:space:]]*error(\[[A-Za-z0-9_]+\])?:|^[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*Error:|RATCHET FAIL|Ratchet: FAILED|ORACLE gate: FAIL|Differential gate: FAILED|NOW-FAILS|NOW-PASSES|^==> TIMEOUT:|^thread .* panicked|^[[:space:]]*assert(ion)?.*failed|(^|[[:space:]])SIG(ILL|TRAP|SEGV|ABRT|BUS|FPE|KILL)([[:space:]:,)]|$)|Illegal instruction|Segmentation fault|Bus error|Floating point exception|Trace/breakpoint trap|Trace/BPT trap|trace trap|Abort trap|^[[:space:]]*Aborted([[:space:]]|$)|killed by signal[[:space:]]+[0-9]+|core dumped'
+
+# Counterfactual marker.  A self-test proves its gate has teeth by RUNNING that
+# gate against deliberately broken input, so a PASSING self-test log is full of
+# real-looking failure text — "ORACLE gate: FAIL", "error: ...", a bare "FAIL".
+# Grepping such a log for the first failure line reports the counterfactual, not
+# the defect.  Every deliberately-provoked failure is therefore replayed with
+# this marker at the START of the line, and extraction skips lines that carry it
+# there.  The position is load-bearing: matching the marker anywhere in the line
+# would let a real failure that merely mentions it — a diff of this protocol, a
+# path like tests/CF-cases — hide itself from the extractor.  Marked replay is a
+# gate's own choice about its own output; nothing a gate under test emits can
+# claim the prefix by accident.
+# --check-counterfactual-output below proves no rostered gate emits an unmarked
+# match while exiting 0, and that each one still emits marked lines at all.
+PREFLIGHT_COUNTERFACTUAL_MARKER='CF-'
+
+extract_first_failure() {
+    local log="$1"
+    local status="$2"
+    local line=""
+
+    if [[ -s "$log" ]]; then
+        line="$(
+            sed $'s/\033\\[[0-9;?]*[a-zA-Z]//g' "$log" \
+                | grep -v -E "^${PREFLIGHT_COUNTERFACTUAL_MARKER}" \
+                | grep -m1 -E "$PREFLIGHT_FAILURE_LINE_RE" || true
+        )"
+    fi
+    line="${line//$'\r'/}"
+    line="${line//$'\t'/ }"
+    # Trim surrounding whitespace without spawning another process.
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+
+    if [[ -z "$line" ]]; then
+        line="exited $status with no recognised failure line; see the step log"
+    fi
+    if (( ${#line} > 300 )); then
+        line="${line:0:297}..."
+    fi
+    printf '%s\n' "$line"
+}
+
+# GitHub Actions workflow-command escaping.  A raw '%' or newline in a message
+# truncates or corrupts the annotation, and ':' / ',' terminate a property.
+escape_annotation_data() {
+    local text="$1"
+    text="${text//'%'/%25}"
+    text="${text//$'\r'/%0D}"
+    text="${text//$'\n'/%0A}"
+    printf '%s' "$text"
+}
+
+escape_annotation_property() {
+    local text
+    text="$(escape_annotation_data "$1")"
+    text="${text//:/%3A}"
+    text="${text//,/%2C}"
+    printf '%s' "$text"
+}
+
+emit_failure_annotation() {
+    local cmd="$1"
+    local failure="$2"
+    [[ "${GITHUB_ACTIONS:-}" == "true" ]] || return 0
+    printf '::error file=%s,title=%s::%s\n' \
+        "scripts/ci-preflight-dispatcher.sh" \
+        "$(escape_annotation_property "$cmd")" \
+        "$(escape_annotation_data "$failure")"
+}
+
+# Counterfactual-output gate.
+#
+# First-failure extraction is only sound if a PASSING gate emits no
+# failure-shaped line.  Gate self-tests break exactly that property by design:
+# they prove a gate has teeth by RUNNING it against deliberately broken input,
+# so a green self-test log carries "ORACLE gate: FAIL" or "error: ..." long
+# before any real defect would appear.
+#
+# This mode runs the rostered counterfactual-carrying gates and fails if a zero
+# exit carries an unmarked match of PREFLIGHT_FAILURE_LINE_RE.  It lives here
+# rather than in a checker of its own so the pattern and the marker are the same
+# two variables the extractor uses — there is nothing to keep in sync.
+#
+# Membership is earned, not declared: a rostered gate must emit at least one
+# CF-marked line.  Without that the check passes vacuously — a self-test whose
+# counterfactual was deleted, disabled, or silently redirected away prints
+# nothing, offends nothing, and reports ok while proving nothing.  The marked
+# replay IS the evidence that the bait path ran, so a gate that produces none is
+# either gutted or was never counterfactual-carrying and does not belong here.
+#
+# The roster covers the gates that need no compiler build, keeping this a fast
+# check rather than a second preflight.  A gate that needs `make hew` is proved
+# by the preflight run itself: its first-failure line is only ever consulted
+# once it has already failed.
+# test-stdlib-execution-proofs and freebsd-workflow-contract-check are
+# deliberately absent: both are plain assertion gates that never drive a tool
+# against rigged input, so they carry no counterfactual to mark and nothing here
+# could prove about them.  Listing them would have been the vacuous pass this
+# check exists to reject.
+COUNTERFACTUAL_ROSTER=(
+    "make ll-identity-selftest"
+    "make o2-differential-selftest"
+    "make doc-ratchet-selftest"
+    "make check-sanitizer-gate"
+    "make test-release-workflow-contract"
+    "make test-leak-oracle-selftest"
+)
+
+run_counterfactual_output_check() {
+    local cmd output offenders marked
+    local status=0
+    local failures=0
+    local roster=("${COUNTERFACTUAL_ROSTER[@]}")
+
+    # Test-only roster replacement, behind the same explicit sentinel every
+    # other command override uses.  The three verdicts below (OFFENDS, SILENT,
+    # UNPROVABLE) are only credible if they can be provoked, and the real roster
+    # is green by construction.
+    if [[ -n "${PREFLIGHT_TEST_COUNTERFACTUAL_ROSTER:-}" ]]; then
+        if [[ "${PREFLIGHT_TEST_ALLOW_OVERRIDE:-}" != "1" ]]; then
+            die "PREFLIGHT_TEST_COUNTERFACTUAL_ROSTER requires PREFLIGHT_TEST_ALLOW_OVERRIDE=1 for test-only use."
+        fi
+        echo "warning: PREFLIGHT_TEST_COUNTERFACTUAL_ROSTER override active (test-only)." >&2
+        roster=()
+        while IFS= read -r cmd; do
+            [[ -n "$cmd" ]] || continue
+            roster+=("$cmd")
+        done <<< "$PREFLIGHT_TEST_COUNTERFACTUAL_ROSTER"
+    fi
+
+    echo "==> counterfactual-output check (${#roster[@]} gate(s))"
+    for cmd in "${roster[@]}"; do
+        status=0
+        output="$(bash -c "$cmd" 2>&1)" || status=$?
+        if (( status != 0 )); then
+            echo "    UNPROVABLE $cmd — exited $status; a rostered gate must be green before its output can be judged" >&2
+            failures=$(( failures + 1 ))
+            continue
+        fi
+        offenders="$(
+            printf '%s\n' "$output" \
+                | sed $'s/\033\\[[0-9;?]*[a-zA-Z]//g' \
+                | grep -v -E "^${PREFLIGHT_COUNTERFACTUAL_MARKER}" \
+                | grep -E "$PREFLIGHT_FAILURE_LINE_RE" || true
+        )"
+        marked="$(printf '%s\n' "$output" | grep -c -E "^${PREFLIGHT_COUNTERFACTUAL_MARKER}" || true)"
+        if [[ -n "$offenders" ]]; then
+            echo "    OFFENDS $cmd — passed while printing failure-shaped line(s):" >&2
+            printf '        %s\n' "$offenders" >&2
+            echo "        Route the provoked output through a CF- marked replay so extraction skips it." >&2
+            failures=$(( failures + 1 ))
+        elif (( marked == 0 )); then
+            echo "    SILENT $cmd — passed without emitting a single ${PREFLIGHT_COUNTERFACTUAL_MARKER}marked line." >&2
+            echo "        A rostered gate proves its counterfactual ran by replaying it marked." >&2
+            echo "        Replay the provoked output instead of discarding it, or drop this gate" >&2
+            echo "        from COUNTERFACTUAL_ROSTER because it carries no counterfactual." >&2
+            failures=$(( failures + 1 ))
+        else
+            echo "    ok $cmd ($marked marked line(s))"
+        fi
+    done
+
+    if (( failures > 0 )); then
+        echo "counterfactual-output check: FAIL ($failures gate(s))" >&2
+        return 1
+    fi
+    echo "counterfactual-output check: PASS"
+}
+
 DRY_RUN=0
 FAIL_FAST=0
+CHECK_COUNTERFACTUAL_OUTPUT=0
 BASE_REF=""
 EXPLICIT_PATHS=0
 LANE=""
@@ -137,12 +436,21 @@ LANE_REASON=""
 CHANGED_FILES=()
 CHANGED_CRATE_DIRS=()
 COMMANDS=()
+WARMUP_COMMANDS=()
+WARMUP_NOTES=()
 PROFILE_JSON_PATH=""
 GITHUB_OUTPUT_PATH=""
+SHARD_INDEX=0
+SHARD_COUNT=0
+SHARD_PLAN_ONLY=0
+SHARD_PLAN_LINES=""
+PREFLIGHT_SUMMARY_FILE="${PREFLIGHT_SUMMARY_FILE:-.tmp/preflight-summary.md}"
 
 usage() {
     cat <<'EOF'
-Usage: scripts/ci-preflight-dispatcher.sh [--dry-run] [--fail-fast] [--base <ref>] [--profile-json <path>] [--github-output <path>] [--] [path...]
+Usage: scripts/ci-preflight-dispatcher.sh [--dry-run] [--fail-fast] [--base <ref>] [--shard K/N]
+                                         [--shard-plan N] [--profile-json <path>]
+                                         [--github-output <path>] [--] [path...]
 
 Dispatch a conservative local CI preflight based on changed files.
 
@@ -151,16 +459,53 @@ Dispatch a conservative local CI preflight based on changed files.
 - By default, all selected commands run and failures are reported together at the end.
 - --fail-fast           Stop after the first failed command.
 - If the first-slice routing is unclear, the script runs the broader local check profile.
-- --profile-json <path> Write per-command timing as a JSON array to <path> (one object per
-                        command, with "cmd", "elapsed_s", "status" fields).
+- --shard K/N           Run only shard K of N.  The selected profile's command list is
+                        partitioned into N duration-balanced groups; every command appears
+                        in exactly one shard and ordering-dependent commands stay together.
+                        K and N must be positive integers with 1 <= K <= N.
+- --shard-plan N        Print the full shard assignment for N shards and exit without
+                        running anything.
+- --check-counterfactual-output
+                        Run the rostered self-tests and fail if a PASSING one prints a
+                        line the first-failure extractor would report; exit without
+                        dispatching a preflight.
+- --profile-json <path> Write command and warm-up timing as a JSON array to <path> (one
+                        object per step, with "cmd", "elapsed_s", "status", "phase" fields).
 - --github-output <path> Append the selected profile and compile requirement as
                          GitHub Actions outputs.
+
+Diagnostics: every run writes a per-command result table (command, elapsed, result, first
+failure line) to $PREFLIGHT_SUMMARY_FILE (default .tmp/preflight-summary.md), and, under
+GitHub Actions, to $GITHUB_STEP_SUMMARY plus one ::error annotation per failed command.
 EOF
 }
 
 die() {
     echo "error: $*" >&2
     exit 1
+}
+
+# Reject any shard spec that could silently drop coverage.  A malformed K/N, a
+# zero denominator, or an out-of-range index means the caller's shard set does
+# not partition the command list — fail before a single command runs rather
+# than report a green verdict over an unrun remainder.
+parse_shard_spec() {
+    local spec="$1"
+    [[ "$spec" =~ ^([0-9]+)/([0-9]+)$ ]] \
+        || die "--shard expects K/N with positive integers, got '$spec'"
+    SHARD_INDEX="$((10#${BASH_REMATCH[1]}))"
+    SHARD_COUNT="$((10#${BASH_REMATCH[2]}))"
+    (( SHARD_COUNT >= 1 )) || die "--shard denominator must be >= 1, got '$spec'"
+    (( SHARD_INDEX >= 1 && SHARD_INDEX <= SHARD_COUNT )) \
+        || die "--shard index must satisfy 1 <= K <= N, got '$spec'"
+}
+
+parse_shard_count() {
+    local count="$1"
+    [[ "$count" =~ ^[0-9]+$ ]] \
+        || die "--shard-plan expects a positive integer shard count, got '$count'"
+    SHARD_COUNT="$((10#$count))"
+    (( SHARD_COUNT >= 1 )) || die "--shard-plan count must be >= 1, got '$count'"
 }
 
 append_unique_path() {
@@ -483,6 +828,23 @@ while [[ $# -gt 0 ]]; do
             BASE_REF="$1"
             shift
             ;;
+        --check-counterfactual-output)
+            CHECK_COUNTERFACTUAL_OUTPUT=1
+            shift
+            ;;
+        --shard)
+            shift
+            [[ $# -gt 0 ]] || die "--shard requires a K/N spec"
+            parse_shard_spec "$1"
+            shift
+            ;;
+        --shard-plan)
+            shift
+            [[ $# -gt 0 ]] || die "--shard-plan requires a shard count"
+            parse_shard_count "$1"
+            SHARD_PLAN_ONLY=1
+            shift
+            ;;
         --profile-json)
             shift
             [[ $# -gt 0 ]] || die "--profile-json requires a path"
@@ -520,6 +882,15 @@ done
 
 if [[ -n "$BASE_REF" ]] && ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
     die "unknown base ref: $BASE_REF"
+fi
+
+if (( SHARD_PLAN_ONLY == 1 && SHARD_INDEX != 0 )); then
+    die "--shard and --shard-plan are mutually exclusive"
+fi
+
+if (( CHECK_COUNTERFACTUAL_OUTPUT == 1 )); then
+    run_counterfactual_output_check
+    exit $?
 fi
 
 ci_preflight_base_unresolved=0
@@ -822,6 +1193,7 @@ case "$LANE" in
         add_command "make freebsd-workflow-contract-check"
         add_command "make o2-differential-selftest"
         add_command "make doc-ratchet-selftest"
+        add_command "make check-counterfactual-output"
         ;;
     grammar)
         add_command "cargo fmt --all -- --check"
@@ -978,6 +1350,7 @@ case "$LANE" in
         add_command "make test-cabi"
         add_command "make check-sanitizer-gate"
         add_command "make check-gate-reachability"
+        add_command "make check-counterfactual-output"
         add_command "make test-leak-oracle-selftest"
         add_command "make test-ux-examples"
         add_command "make test-surface-examples"
@@ -1089,6 +1462,98 @@ if [[ -n "${PREFLIGHT_TEST_COMMANDS:-}" ]]; then
     done <<< "$PREFLIGHT_TEST_COMMANDS"
 fi
 
+# ── Shard partitioning ────────────────────────────────────────────────────────
+#
+# The selected profile's command list is partitioned into SHARD_COUNT groups by
+# longest-processing-time-first bin packing over duration-weighted dependency
+# groups.  The partition is a pure function of (command list, SHARD_COUNT), so
+# every shard job computes the same plan from the same diff without exchanging
+# state, and it is exhaustive and disjoint by construction: each dependency
+# group is placed in exactly one bin, and every command belongs to exactly one
+# group.  Within a shard, commands keep their original relative order, so every
+# ordering constraint that held in the unsharded list still holds.
+compute_shard_plan() {
+    local cmd
+    {
+        for cmd in "${COMMANDS[@]}"; do
+            printf '%s\t%s\t%s\n' "$(command_shard_group "$cmd")" "$(command_weight "$cmd")" "$cmd"
+        done
+    } | python3 -c '
+import sys
+
+shard_count = int(sys.argv[1])
+commands = []
+for line in sys.stdin.read().splitlines():
+    if not line:
+        continue
+    group, weight, cmd = line.split("\t", 2)
+    commands.append((group, int(weight), cmd))
+
+order = []
+weights = {}
+for index, (group, weight, _cmd) in enumerate(commands):
+    if group not in weights:
+        weights[group] = 0
+        order.append(group)
+    weights[group] += weight
+
+first_index = {group: order.index(group) for group in order}
+# Longest-processing-time-first: heaviest group to the emptiest bin, ties
+# broken by first appearance then by lowest bin index, so the plan is stable.
+loads = [0] * shard_count
+assignment = {}
+for group in sorted(order, key=lambda g: (-weights[g], first_index[g])):
+    target = min(range(shard_count), key=lambda b: (loads[b], b))
+    assignment[group] = target + 1
+    loads[target] += weights[group]
+
+counts = [0] * shard_count
+for group, weight, cmd in commands:
+    shard = assignment[group]
+    counts[shard - 1] += 1
+    print("ASSIGN\t%d\t%d\t%s" % (shard, weight, cmd))
+for index in range(shard_count):
+    print("TOTAL\t%d\t%d\t%d" % (index + 1, loads[index], counts[index]))
+' "$SHARD_COUNT"
+}
+
+print_shard_plan() {
+    local shard total count line assign_shard weight cmd marker
+    echo "Shard plan: $SHARD_COUNT shard(s), LPT bin packing over duration-weighted dependency groups"
+    for shard in $(seq 1 "$SHARD_COUNT"); do
+        total="$(printf '%s\n' "$SHARD_PLAN_LINES" | awk -F'\t' -v s="$shard" '$1=="TOTAL" && $2==s {print $3}')"
+        count="$(printf '%s\n' "$SHARD_PLAN_LINES" | awk -F'\t' -v s="$shard" '$1=="TOTAL" && $2==s {print $4}')"
+        marker=""
+        if (( SHARD_INDEX == shard )); then
+            marker="  <- selected"
+        fi
+        printf '  shard %s/%s  ~%s min estimated  %s command(s)%s\n' \
+            "$shard" "$SHARD_COUNT" "$(( (total + 30) / 60 ))" "$count" "$marker"
+        while IFS=$'\t' read -r line assign_shard weight cmd; do
+            [[ "$line" == "ASSIGN" && "$assign_shard" == "$shard" ]] || continue
+            printf '      - %s  (weight: %ss)\n' "$cmd" "$weight"
+        done <<< "$SHARD_PLAN_LINES"
+    done
+}
+
+select_shard_commands() {
+    local line assign_shard weight cmd
+    local selected=()
+    while IFS=$'\t' read -r line assign_shard weight cmd; do
+        [[ "$line" == "ASSIGN" && "$assign_shard" == "$SHARD_INDEX" ]] || continue
+        selected+=("$cmd")
+    done <<< "$SHARD_PLAN_LINES"
+    COMMANDS=("${selected[@]+"${selected[@]}"}")
+}
+
+if (( SHARD_COUNT > 0 )) && has_commands; then
+    SHARD_PLAN_LINES="$(compute_shard_plan)"
+fi
+
+if (( SHARD_INDEX > 0 )); then
+    select_shard_commands
+fi
+
 echo "==> Hew CI preflight dispatcher"
 if (( EXPLICIT_PATHS == 1 )); then
     echo "Source: explicit paths"
@@ -1152,6 +1617,149 @@ case "$LANE" in
         ;;
 esac
 
+# Warm artifact construction before applying per-command watchdog budgets.  The
+# timed checks retain their finite hang ceilings; this separates one-time
+# compilation from the gate measurements those ceilings are calibrated for.
+#
+# Keep this list derived from the chosen commands rather than from a lane-wide
+# superset: a parser diff needs the native compiler and WASM runtime, while a
+# documentation diff needs neither.  An unrecognised command falls back to the
+# complete artifact set and leaves a visible note so its mapping can be added.
+#
+# A warm-up must build the artifacts its command needs THE SAME WAY the command
+# builds them.  `cargo build --all-targets` is not that way: the root
+# `[profile.dev] panic = "abort"` cannot apply to a libtest harness, so mixing
+# lib and test targets in one invocation fails outright
+# ("requires panic strategy abort which is incompatible with this crate's
+# strategy of unwind" on hew-sandbox-wasm, plus a duplicate-unit serde mismatch
+# in xtask).  Test-target warm-ups therefore mirror the real gate: the same
+# nextest/cargo-test invocation with `--no-run`, exactly as `make test` builds
+# its binaries.  Clippy warms through clippy — its check artifacts are a
+# separate fingerprint from rustc's — with the trailing `-- -D warnings` dropped
+# so a lint failure surfaces as the timed gate's failure, not as an aborted
+# warm-up.  Dropping the deny flag does not cost the warm: it only re-checks the
+# top-level packages, dependencies stay cached.
+WORKSPACE_TEST_WARMUP="cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run"
+
+add_warmup_command() {
+    local candidate="$1"
+    local existing
+    for existing in "${WARMUP_COMMANDS[@]+"${WARMUP_COMMANDS[@]}"}"; do
+        [[ "$existing" == "$candidate" ]] && return 0
+    done
+    WARMUP_COMMANDS+=("$candidate")
+}
+
+add_full_warmup() {
+    local cmd="$1"
+    add_warmup_command "$WORKSPACE_TEST_WARMUP"
+    add_warmup_command "make hew"
+    add_warmup_command "make runtime"
+    add_warmup_command "make stdlib"
+    add_warmup_command "make wasm-runtime"
+    WARMUP_NOTES+=("$cmd has no artifact mapping; using the full warm-up set")
+}
+
+map_warmup_artifacts() {
+    local cmd="$1"
+    case "$cmd" in
+        "cargo fmt "*)
+            ;;
+        "cargo clippy "*)
+            add_warmup_command "${cmd%% -- *}"
+            ;;
+        "cargo nextest run "*)
+            add_warmup_command "$cmd --no-run"
+            ;;
+        "make test-cabi")
+            add_warmup_command "make test-cabi-build"
+            ;;
+        "make test-runtime-unit")
+            add_warmup_command "cargo nextest run --profile ci -p hew-runtime --no-default-features --no-run"
+            ;;
+        "make playground-check")
+            add_warmup_command "cargo test -p hew-wasm --no-run"
+            ;;
+        "make grammar")
+            add_warmup_command "$WORKSPACE_TEST_WARMUP"
+            ;;
+        "make structural-lint")
+            add_warmup_command "scripts/ast-grep-lint.sh --bootstrap --install-only"
+            ;;
+        "make lint")
+            # `make lint` bootstraps ast-grep and then runs
+            # `cargo clippy --workspace --tests -- -D warnings`; warm both.
+            add_warmup_command "scripts/ast-grep-lint.sh --bootstrap --install-only"
+            add_warmup_command "cargo clippy --workspace --tests"
+            ;;
+        "make hew-native wasm-runtime")
+            add_warmup_command "make hew"
+            add_warmup_command "make wasm-runtime"
+            ;;
+        "make hew"|"make test-doc-examples"|"make test-stdlib-ratchet"|"make checked-mir-verify"|"make ll-diff"|"make hew-check-all"|"make hew-fmt-property")
+            add_warmup_command "make hew"
+            ;;
+        "make runtime")
+            add_warmup_command "make runtime"
+            ;;
+        "make stdlib"|"scripts/check-libhew-fresh.sh")
+            add_warmup_command "make stdlib"
+            ;;
+        "make wasm-runtime")
+            add_warmup_command "make wasm-runtime"
+            ;;
+        "make test-compiler-pipeline"|"make test-opaque-resource-lifecycle-matrix"|"make test-opaque-resource-lifecycle-matrix-external")
+            add_warmup_command "make hew"
+            add_warmup_command "make stdlib"
+            add_warmup_command "make wasm-runtime"
+            ;;
+        "make test-vertical-slice"|"make test-pkg-import"|"make test-package-install"|"make fuzz-oracle"|"make fuzz-oracle-selftest"|"make test-hew-ratchet"|"make test-core-matrix"|"make test-o2-differential"|"make test-ux-examples"|"make test-surface-examples"|"make observe-functional-test"|"make mqtt-broker-e2e"|"make libhew-link-race-test"|"make sandbox-parity")
+            add_warmup_command "make hew"
+            add_warmup_command "make runtime"
+            add_warmup_command "make stdlib"
+            ;;
+        "make checked-mir-run")
+            add_warmup_command "make hew"
+            add_warmup_command "make runtime"
+            add_warmup_command "make stdlib"
+            ;;
+        "make leak-scan"|"make check-counterfactual-output"|"make freebsd-workflow-contract-check"|"make test-release-workflow-contract"|"make test-stdlib-execution-proofs"|"make o2-differential-selftest"|"make doc-ratchet-selftest"|"make check-sanitizer-gate"|"make check-gate-reachability"|"make test-leak-oracle-selftest"|"make ll-identity-selftest")
+            ;;
+        "make test")
+            # Mirror the target's own order: wasm-runtime/runtime/libhew first,
+            # then the nextest binary build.
+            add_warmup_command "make hew"
+            add_warmup_command "make runtime"
+            add_warmup_command "make stdlib"
+            add_warmup_command "make wasm-runtime"
+            add_warmup_command "$WORKSPACE_TEST_WARMUP"
+            ;;
+        *)
+            add_full_warmup "$cmd"
+            ;;
+    esac
+}
+
+for cmd in "${COMMANDS[@]+"${COMMANDS[@]}"}"; do
+    map_warmup_artifacts "$cmd"
+done
+
+# Test-only warm-up replacement.  Keep this behind the same explicit sentinel
+# as command replacement so normal preflight invocations always warm real
+# artifacts.
+if [[ -n "${PREFLIGHT_TEST_WARMUP_COMMANDS:-}" ]]; then
+    if [[ "${PREFLIGHT_TEST_ALLOW_OVERRIDE:-}" != "1" ]]; then
+        die "PREFLIGHT_TEST_WARMUP_COMMANDS requires PREFLIGHT_TEST_ALLOW_OVERRIDE=1 for test-only use; unset PREFLIGHT_TEST_WARMUP_COMMANDS to run the normal preflight."
+    fi
+    echo "warning: PREFLIGHT_TEST_WARMUP_COMMANDS override active (test-only); replacing warm-up commands." >&2
+    WARMUP_COMMANDS=()
+    WARMUP_NOTES=()
+    while IFS= read -r test_cmd; do
+        [[ -n "$test_cmd" ]] || continue
+        WARMUP_COMMANDS+=("$test_cmd")
+    done <<< "$PREFLIGHT_TEST_WARMUP_COMMANDS"
+fi
+
 if [[ -n "$GITHUB_OUTPUT_PATH" ]]; then
     {
         printf 'profile=%s\n' "$PROFILE_LABEL"
@@ -1190,12 +1798,41 @@ for path in "${CHANGED_FILES[@]}"; do
     echo "  - $path"
 done
 
+if [[ -n "$SHARD_PLAN_LINES" ]]; then
+    print_shard_plan
+elif (( SHARD_COUNT > 0 )); then
+    echo "Shard plan: no commands to partition across $SHARD_COUNT shard(s)"
+fi
+
+if (( SHARD_PLAN_ONLY == 1 )); then
+    echo "Shard plan only: no commands executed."
+    exit 0
+fi
+
+if (( SHARD_INDEX > 0 )); then
+    echo "Shard: $SHARD_INDEX/$SHARD_COUNT"
+fi
+
 if ! has_commands; then
-    echo "Commands: none (docs-only)"
+    if (( SHARD_INDEX > 0 )); then
+        echo "Commands: none (this shard's partition is empty)"
+    else
+        echo "Commands: none (docs-only)"
+    fi
     if (( DRY_RUN == 1 )); then
         echo "Dry run: no commands executed."
     fi
     exit 0
+fi
+
+if [[ ${#WARMUP_COMMANDS[@]} -gt 0 ]]; then
+    echo "Warm-up:"
+    for cmd in "${WARMUP_COMMANDS[@]}"; do
+        echo "  - $cmd"
+    done
+    for note in "${WARMUP_NOTES[@]+"${WARMUP_NOTES[@]}"}"; do
+        echo "  ! $note"
+    done
 fi
 
 echo "Commands:"
@@ -1230,36 +1867,123 @@ PREFLIGHT_OVERALL_START=$SECONDS
 _json_entries=()
 
 _elapsed_s=0
+_failure_line=""
+
+append_profile_entry() {
+    local cmd="$1"
+    local elapsed="$2"
+    local status="$3"
+    local phase="$4"
+    _json_entries+=("{\"cmd\":$(printf '%s' "$cmd" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),\"elapsed_s\":${elapsed},\"status\":${status},\"phase\":$(printf '%s' "$phase" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}")
+}
+
+PREFLIGHT_WARMUP_ELAPSED=0
+PREFLIGHT_WARMUP_STATUS=0
+PREFLIGHT_WARMUP_FAILED_COMMAND=""
+PREFLIGHT_WARMUP_FAILURE_LINE=""
+
+run_warmup() {
+    local cmd
+    local start=$SECONDS
+    local command_start
+    local command_elapsed
+    local cmd_timeout
+    local status=0
+    local log
+    local pipe_status
+
+    echo ""
+    echo "==> warm-up"
+    for cmd in "${WARMUP_COMMANDS[@]}"; do
+        echo "    $cmd"
+        command_start=$SECONDS
+        cmd_timeout="$(warmup_timeout)"
+        status=0
+        log="$(mktemp "${TMPDIR:-/tmp}/hew-preflight-warmup.XXXXXX")"
+        set +e
+        run_in_pgroup_with_timeout "$cmd_timeout" "$cmd" 2>&1 | tee "$log"
+        pipe_status="${PIPESTATUS[0]}"
+        set -e
+        status="$pipe_status"
+        command_elapsed=$(( SECONDS - command_start ))
+        append_profile_entry "$cmd" "$command_elapsed" "$status" "warm-up"
+        if [[ "$status" -ne 0 ]]; then
+            PREFLIGHT_WARMUP_FAILED_COMMAND="$cmd"
+            PREFLIGHT_WARMUP_FAILURE_LINE="$(extract_first_failure "$log" "$status")"
+        fi
+        rm -f "$log"
+        if [[ "$status" -eq 137 || "$status" -eq 143 ]]; then
+            echo "==> TIMEOUT: '$cmd' exceeded ${cmd_timeout}s warm-up budget and was killed."
+            PREFLIGHT_WARMUP_FAILURE_LINE="exceeded the ${cmd_timeout}s warm-up budget and was killed (exit $status)"
+        fi
+        if [[ "$status" -ne 0 ]]; then
+            echo "    first failure: $PREFLIGHT_WARMUP_FAILURE_LINE"
+            emit_failure_annotation "warm-up: $cmd" "$PREFLIGHT_WARMUP_FAILURE_LINE"
+            break
+        fi
+    done
+
+    PREFLIGHT_WARMUP_ELAPSED=$(( SECONDS - start ))
+    PREFLIGHT_WARMUP_STATUS="$status"
+
+    if [[ "$status" -ne 0 ]]; then
+        echo "<-- warm-up  elapsed ${PREFLIGHT_WARMUP_ELAPSED}s  FAILED (exit $status)"
+    else
+        echo "<-- warm-up  elapsed ${PREFLIGHT_WARMUP_ELAPSED}s  ok"
+    fi
+
+    return "$status"
+}
 
 run_timed_command() {
     local cmd="$1"
     local cmd_timeout
     local start=$SECONDS
     local status=0
+    local log
+    local pipe_status
     cmd_timeout="$(command_timeout "$cmd")"
 
     echo ""
     echo "==> $cmd"
 
-    run_in_pgroup_with_timeout "$cmd_timeout" "$cmd" || status=$?
+    log="$(mktemp "${TMPDIR:-/tmp}/hew-preflight-cmd.XXXXXX")"
+    # tee, not a redirect: the log is only a diagnostic side-channel; the
+    # command's output must still stream to the job log in real time so a
+    # hung gate is visible before its watchdog fires.  PIPESTATUS[0] carries
+    # the command's real exit code — tee's status must never stand in for it.
+    set +e
+    run_in_pgroup_with_timeout "$cmd_timeout" "$cmd" 2>&1 | tee "$log"
+    pipe_status="${PIPESTATUS[0]}"
+    set -e
+    status="$pipe_status"
 
     _elapsed_s=$(( SECONDS - start ))
+    _failure_line=""
+    if [[ "$status" -ne 0 ]]; then
+        _failure_line="$(extract_first_failure "$log" "$status")"
+    fi
+    rm -f "$log"
 
     # Timeout exit codes from the watchdog:
     #   143 = SIGTERM (128+15): watchdog's initial soft kill reached the child
     #   137 = SIGKILL (128+9): watchdog's hard-kill fallback fired
     if [[ "$status" -eq 137 || "$status" -eq 143 ]]; then
         echo "==> TIMEOUT: '$cmd' exceeded ${cmd_timeout}s budget and was killed."
+        # The watchdog verdict outranks whatever the truncated log happened to
+        # contain: a killed gate did not fail on that line, it ran out of time.
+        _failure_line="exceeded the ${cmd_timeout}s budget and was killed (exit $status)"
     fi
 
     if [[ "$status" -ne 0 ]]; then
         echo "<-- $cmd  elapsed ${_elapsed_s}s  FAILED (exit $status)"
+        echo "    first failure: $_failure_line"
+        emit_failure_annotation "$cmd" "$_failure_line"
     else
         echo "<-- $cmd  elapsed ${_elapsed_s}s  ok"
     fi
 
-    # Accumulate JSON entry.
-    _json_entries+=("{\"cmd\":$(printf '%s' "$cmd" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),\"elapsed_s\":${_elapsed_s},\"status\":${status}}")
+    append_profile_entry "$cmd" "$_elapsed_s" "$status" "command"
 
     return "$status"
 }
@@ -1268,32 +1992,46 @@ PREFLIGHT_FAILURES=()
 PREFLIGHT_EXECUTED_COMMANDS=()
 PREFLIGHT_CMD_ELAPSED=()
 PREFLIGHT_CMD_STATUS=()
+PREFLIGHT_CMD_FAILURE=()
 STOPPED_EARLY=0
-for cmd in "${COMMANDS[@]}"; do
-    status=0
-    if run_timed_command "$cmd"; then
+if [[ ${#WARMUP_COMMANDS[@]} -gt 0 ]] && ! run_warmup; then
+    PREFLIGHT_FAILURES+=("warm-up")
+    STOPPED_EARLY=1
+else
+    for cmd in "${COMMANDS[@]+"${COMMANDS[@]}"}"; do
         status=0
-    else
-        status=$?
-        PREFLIGHT_FAILURES+=("$cmd")
-    fi
+        if run_timed_command "$cmd"; then
+            status=0
+        else
+            status=$?
+            PREFLIGHT_FAILURES+=("$cmd")
+        fi
 
-    PREFLIGHT_EXECUTED_COMMANDS+=("$cmd")
-    PREFLIGHT_CMD_ELAPSED+=("$_elapsed_s")
-    PREFLIGHT_CMD_STATUS+=("$status")
+        PREFLIGHT_EXECUTED_COMMANDS+=("$cmd")
+        PREFLIGHT_CMD_ELAPSED+=("$_elapsed_s")
+        PREFLIGHT_CMD_STATUS+=("$status")
+        PREFLIGHT_CMD_FAILURE+=("$_failure_line")
 
-    if (( status != 0 && FAIL_FAST == 1 )); then
-        STOPPED_EARLY=1
-        echo "==> Stopping after first failed command (--fail-fast)."
-        break
-    fi
-done
+        if (( status != 0 && FAIL_FAST == 1 )); then
+            STOPPED_EARLY=1
+            echo "==> Stopping after first failed command (--fail-fast)."
+            break
+        fi
+    done
+fi
 
 PREFLIGHT_OVERALL_ELAPSED=$(( SECONDS - PREFLIGHT_OVERALL_START ))
 
 # Summary table.
 echo ""
 echo "==> Preflight summary (${PREFLIGHT_OVERALL_ELAPSED}s total)"
+if [[ ${#WARMUP_COMMANDS[@]} -gt 0 ]]; then
+    warmup_status_label="ok"
+    if [[ "$PREFLIGHT_WARMUP_STATUS" -ne 0 ]]; then
+        warmup_status_label="FAILED"
+    fi
+    printf "    warm-up  %ss  [%s]\n" "$PREFLIGHT_WARMUP_ELAPSED" "$warmup_status_label"
+fi
 i=0
 for cmd in "${PREFLIGHT_EXECUTED_COMMANDS[@]+"${PREFLIGHT_EXECUTED_COMMANDS[@]}"}"; do
     elapsed="${PREFLIGHT_CMD_ELAPSED[$i]:-?}"
@@ -1308,6 +2046,87 @@ done
 
 if (( STOPPED_EARLY == 1 )); then
     echo "    ... remaining commands not run"
+fi
+
+# ── Result table ──────────────────────────────────────────────────────────────
+#
+# The same table goes to three destinations so a local run and a hosted shard
+# hand back identical information: the job's step summary (GitHub renders it
+# above the log), a file under .tmp/ for local reads and log capture, and — for
+# failures — one ::error annotation per command, emitted at failure time above.
+# A literal backtick in a printf format string reads as a command
+# substitution to shellcheck; keep it as data.
+MD_CODE_TICK='`'
+
+escape_markdown_cell() {
+    local text="$1"
+    text="${text//|/\\|}"
+    text="${text//$'\n'/ }"
+    printf '%s' "$text"
+}
+
+render_result_table() {
+    local heading="Hew CI preflight — $PROFILE_LABEL profile"
+    if (( SHARD_INDEX > 0 )); then
+        heading="$heading (shard $SHARD_INDEX/$SHARD_COUNT)"
+    fi
+    printf '### %s\n\n' "$heading"
+    printf '%ss total, %s failure(s).\n\n' \
+        "$PREFLIGHT_OVERALL_ELAPSED" "${#PREFLIGHT_FAILURES[@]}"
+    printf '| Command | Elapsed | Result | First failure |\n'
+    printf '| --- | ---: | --- | --- |\n'
+
+    if [[ ${#WARMUP_COMMANDS[@]} -gt 0 ]]; then
+        local warmup_label="ok"
+        local warmup_detail=""
+        local warmup_cmd="warm-up"
+        if [[ "$PREFLIGHT_WARMUP_STATUS" -ne 0 ]]; then
+            warmup_label="FAILED"
+            warmup_cmd="warm-up: $PREFLIGHT_WARMUP_FAILED_COMMAND"
+            warmup_detail="$PREFLIGHT_WARMUP_FAILURE_LINE"
+        fi
+        printf '| %s%s%s | %ss | %s | %s |\n' \
+            "$MD_CODE_TICK" \
+            "$(escape_markdown_cell "$warmup_cmd")" \
+            "$MD_CODE_TICK" \
+            "$PREFLIGHT_WARMUP_ELAPSED" \
+            "$warmup_label" \
+            "$(escape_markdown_cell "$warmup_detail")"
+    fi
+
+    local index=0
+    local entry entry_elapsed entry_status entry_label entry_failure
+    for entry in "${PREFLIGHT_EXECUTED_COMMANDS[@]+"${PREFLIGHT_EXECUTED_COMMANDS[@]}"}"; do
+        entry_elapsed="${PREFLIGHT_CMD_ELAPSED[$index]:-?}"
+        entry_status="${PREFLIGHT_CMD_STATUS[$index]:-0}"
+        entry_failure="${PREFLIGHT_CMD_FAILURE[$index]:-}"
+        entry_label="ok"
+        if [[ "$entry_status" -ne 0 ]]; then
+            entry_label="FAILED (exit $entry_status)"
+        fi
+        printf '| %s%s%s | %ss | %s | %s |\n' \
+            "$MD_CODE_TICK" \
+            "$(escape_markdown_cell "$entry")" \
+            "$MD_CODE_TICK" \
+            "$entry_elapsed" \
+            "$entry_label" \
+            "$(escape_markdown_cell "$entry_failure")"
+        index=$(( index + 1 ))
+    done
+
+    if (( STOPPED_EARLY == 1 )); then
+        printf '\nRemaining commands were not run.\n'
+    fi
+}
+
+PREFLIGHT_RESULT_TABLE="$(render_result_table)"
+
+mkdir -p "$(dirname "$PREFLIGHT_SUMMARY_FILE")"
+printf '%s\n' "$PREFLIGHT_RESULT_TABLE" > "$PREFLIGHT_SUMMARY_FILE"
+echo "Result table written to: $PREFLIGHT_SUMMARY_FILE"
+
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    printf '%s\n\n' "$PREFLIGHT_RESULT_TABLE" >> "$GITHUB_STEP_SUMMARY"
 fi
 
 # Write --profile-json if requested.

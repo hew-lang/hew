@@ -9,6 +9,7 @@ use crate::check::admissibility::{
 };
 use crate::check::calls::SignatureArgApplication;
 use crate::check::dispatch::resolve_method_call;
+use crate::check::types::GenericCallee;
 use crate::check::types::{BareActorResolution, DeferredBuiltinCloneAdmission};
 use crate::hash_eligibility::{ty_is_hash_eligible, HashEligibility};
 use crate::lowering_facts::{
@@ -124,9 +125,16 @@ pub(super) enum RecordCloneAdmissibility {
     AffineValue {
         type_name: String,
         marker: hew_parser::ast::ResourceMarker,
+        member: String,
     },
     /// The record (or a transitive field) contains an opaque handle; fail closed.
-    OpaqueField { opaque_name: String },
+    OpaqueField { opaque_name: String, member: String },
+    /// A stored member has no semantic clone capability.
+    MissingClone { member: String, member_ty: Ty },
+    /// A stored member is a refcounted shared handle (`Rc`/`Weak`) whose
+    /// aggregate-ingress retain is missing, so the composite drop plan
+    /// over-releases. See `CloneCapabilityBlocker::UnbalancedSharedHandle`.
+    UnbalancedSharedHandle { type_name: String, member: String },
     /// The record has un-substituted generic type parameters; not yet supported.
     GenericRecord,
     /// The receiver is a bare type parameter (`x: T`) carrying a `Clone` bound
@@ -143,6 +151,45 @@ pub(super) enum RecordCloneAdmissibility {
     EnumClone { enum_name: String },
     /// The named type is not a clone-eligible record kind (actor, machine).
     NotARecord,
+}
+
+#[derive(Debug)]
+enum CloneCapabilityBlocker {
+    Affine {
+        type_name: String,
+        marker: hew_parser::ast::ResourceMarker,
+        member: String,
+    },
+    Opaque {
+        type_name: String,
+        member: String,
+    },
+    Missing {
+        member: String,
+        member_ty: Ty,
+    },
+    /// A refcounted shared handle (`Rc`/`Weak`) sitting INSIDE an aggregate.
+    ///
+    /// Cloning the handle itself is a retain and is fine; the aggregate is not,
+    /// because aggregate ingress of an `Rc` emits no retain while both the
+    /// source binder and the aggregate's composite drop release it (see
+    /// `alias_moved_owned_operand` in `hew-mir/src/lower/ownership.rs`, which
+    /// exempts only `string`/`bytes` from the `AggregateAlias` marker because
+    /// only those have an ingress-retain derivation). Admitting the clone would
+    /// hand codegen a plan whose inverse drop over-releases.
+    ///
+    /// WHY a refusal rather than a fix here: the missing ingress retain is not
+    /// a clone bug — `let pair = (shared, "tag");` aborts with
+    /// `Rc double-free` on `origin/main` with no `clone` in the program at all.
+    /// WHEN obsolete: when `Rc`/`Weak` gain an aggregate-ingress retain
+    /// derivation alongside `StringRetain`, at which point this arm is deleted
+    /// and the member walks through as a plain retain-on-clone leaf.
+    /// WHAT the real solution looks like: an `RcRetain` ingress instruction
+    /// with the same prover/codegen treatment `StringRetain` already has.
+    UnbalancedSharedHandle {
+        type_name: String,
+        member: String,
+    },
 }
 
 /// Pure-data shape of a single collection-method argument slot.
@@ -1021,14 +1068,38 @@ impl Checker {
             if resolved.contains_error() || resolved.has_inference_var() {
                 continue;
             }
-            let Some((type_name, marker)) = self
-                .ty_clone_contains_affine_value(&resolved, &mut std::collections::HashSet::new())
-            else {
+            let Some(blocker) = self.structural_clone_blocker(&resolved) else {
                 continue;
             };
             let receiver_name = resolved.user_facing().to_string();
-            let message =
-                Self::affine_record_clone_error_message(&receiver_name, &type_name, marker);
+            let message = match blocker {
+                CloneCapabilityBlocker::Affine {
+                    type_name,
+                    marker,
+                    member,
+                } => Self::affine_record_clone_error_message(
+                    &receiver_name,
+                    &type_name,
+                    marker,
+                    &member,
+                ),
+                CloneCapabilityBlocker::Opaque { type_name, member } => format!(
+                    "type `{receiver_name}` cannot be cloned because member `{member}` contains \
+                     opaque value `{type_name}`"
+                ),
+                CloneCapabilityBlocker::Missing { member, member_ty } => format!(
+                    "type `{receiver_name}` cannot be cloned because member `{member}` of type \
+                     `{}` has no Clone capability",
+                    member_ty.user_facing()
+                ),
+                CloneCapabilityBlocker::UnbalancedSharedHandle { type_name, member } => {
+                    Self::unbalanced_shared_handle_clone_error_message(
+                        &receiver_name,
+                        &type_name,
+                        &member,
+                    )
+                }
+            };
             let mut err =
                 crate::error::TypeError::new(TypeErrorKind::InvalidOperation, check.span, message);
             if let Some(module) = check.source_module {
@@ -1643,7 +1714,9 @@ impl Checker {
             span,
             MethodCallRewrite::RewriteToFunction {
                 target: CallTarget::Extern {
-                    declaration: crate::DefId::new(extern_identity.signature_key.clone()),
+                    declaration: crate::identity::mint_def_id(
+                        extern_identity.signature_key.clone(),
+                    ),
                     endpoint: extern_identity.endpoint.clone(),
                     trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
                 },
@@ -1959,6 +2032,11 @@ impl Checker {
                 arity_context: format!("method `{method}`"),
             },
             true,
+            Some(GenericCallee::Method {
+                type_name: receiver_type_name,
+                method,
+                owner_type_args: type_args,
+            }),
         );
         self.record_monomorphic_extern_symbol_rewrite_if_any(&sig, &method_key, span);
         Some(applied_sig.return_type)
@@ -2040,7 +2118,7 @@ impl Checker {
         let c_symbol = c_symbol.into();
         let source_declaration = source_declaration.into();
         let target = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol).map_or_else(
-            || CallTarget::User(crate::DefId::new(source_declaration)),
+            || CallTarget::User(crate::identity::mint_def_id(source_declaration)),
             CallTarget::Runtime,
         );
         self.record_method_call_rewrite(
@@ -2812,6 +2890,11 @@ impl Checker {
                     arity_context: format!("method `{method}`"),
                 },
                 true,
+                Some(GenericCallee::Method {
+                    type_name: &canonical_name,
+                    method,
+                    owner_type_args: type_args,
+                }),
             )
             .return_type;
         // The successful signature lookup and the emitted impl body must use
@@ -3276,24 +3359,55 @@ impl Checker {
                         }
                         return record_ty;
                     }
-                    RecordCloneAdmissibility::OpaqueField { opaque_name } => {
+                    RecordCloneAdmissibility::OpaqueField {
+                        opaque_name,
+                        member,
+                    } => {
                         // Synthesize args (none here) for error-recovery symmetry.
                         self.report_error(
                             TypeErrorKind::UndefinedMethod,
                             span,
                             format!(
-                                "type `{name}` contains an opaque field `{opaque_name}` \
-                                 and cannot be cloned"
+                                "type `{name}` cannot be cloned because member `{member}` contains \
+                                 opaque value `{opaque_name}`"
                             ),
                         );
                         return Ty::Error;
                     }
-                    RecordCloneAdmissibility::AffineValue { type_name, marker } => {
+                    RecordCloneAdmissibility::AffineValue {
+                        type_name,
+                        marker,
+                        member,
+                    } => {
                         let receiver_name = receiver_ty.user_facing().to_string();
                         self.report_affine_record_clone_error(
                             &receiver_name,
                             &type_name,
                             marker,
+                            &member,
+                            span,
+                        );
+                        return Ty::Error;
+                    }
+                    RecordCloneAdmissibility::MissingClone { member, member_ty } => {
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!(
+                                "type `{}` cannot be cloned because member `{member}` of type `{}` \
+                                 has no Clone capability",
+                                receiver_ty.user_facing(),
+                                member_ty.user_facing()
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                    RecordCloneAdmissibility::UnbalancedSharedHandle { type_name, member } => {
+                        let receiver_name = receiver_ty.user_facing().to_string();
+                        self.report_unbalanced_shared_handle_clone_error(
+                            &receiver_name,
+                            &type_name,
+                            &member,
                             span,
                         );
                         return Ty::Error;
@@ -3483,10 +3597,19 @@ impl Checker {
             args: type_args.to_vec(),
             builtin: None,
         };
-        if let Some((type_name, marker)) =
-            self.ty_clone_contains_affine_value(&receiver_ty, &mut std::collections::HashSet::new())
-        {
-            return RecordCloneAdmissibility::AffineValue { type_name, marker };
+        if self.registry.is_resource(name) {
+            return RecordCloneAdmissibility::AffineValue {
+                type_name: name.to_string(),
+                marker: hew_parser::ast::ResourceMarker::Resource,
+                member: "value".to_string(),
+            };
+        }
+        if self.registry.is_linear(name) {
+            return RecordCloneAdmissibility::AffineValue {
+                type_name: name.to_string(),
+                marker: hew_parser::ast::ResourceMarker::Linear,
+                member: "value".to_string(),
+            };
         }
         let Some(type_def) = self.type_defs.get(name) else {
             // A bare type parameter (`x: T`) has no `type_defs` entry. When it
@@ -3503,30 +3626,39 @@ impl Checker {
             }
             return RecordCloneAdmissibility::NotARecord;
         };
+        if !type_def.type_params.is_empty() && type_args.iter().any(|arg| matches!(arg, Ty::Var(_)))
+        {
+            return RecordCloneAdmissibility::GenericRecord;
+        }
+        if let Some(blocker) = self.structural_clone_blocker(&receiver_ty) {
+            return match blocker {
+                CloneCapabilityBlocker::Affine {
+                    type_name,
+                    marker,
+                    member,
+                } => RecordCloneAdmissibility::AffineValue {
+                    type_name,
+                    marker,
+                    member,
+                },
+                CloneCapabilityBlocker::Opaque { type_name, member } => {
+                    RecordCloneAdmissibility::OpaqueField {
+                        opaque_name: type_name,
+                        member,
+                    }
+                }
+                CloneCapabilityBlocker::Missing { member, member_ty } => {
+                    RecordCloneAdmissibility::MissingClone { member, member_ty }
+                }
+                CloneCapabilityBlocker::UnbalancedSharedHandle { type_name, member } => {
+                    RecordCloneAdmissibility::UnbalancedSharedHandle { type_name, member }
+                }
+            };
+        }
         // An enum is clone-eligible via the enum twin of the record thunk. It is
         // checked BEFORE the Record/Struct gate because the two paths diverge:
         // an enum's owned leaves live in variant payloads, not declared fields.
         if matches!(type_def.kind, Enum) {
-            // A generic enum with still-unresolved type params (`Maybe<_>`) is
-            // not yet monomorphisable here — fail closed (NYI). A concrete
-            // instantiation (`Maybe<i64>`, args = [i64]) carries no `Ty::Var`
-            // and proceeds, exactly as the record arm below.
-            if !type_def.type_params.is_empty() && type_args.iter().any(|a| matches!(a, Ty::Var(_)))
-            {
-                return RecordCloneAdmissibility::GenericRecord;
-            }
-            // Fail closed on a transitively-reachable opaque payload — an
-            // unclonable leaf inside an enum variant must reject the whole
-            // clone, never silently shallow-copy a handle
-            // (`unclonable-leaf-fails-closed-transitively`).
-            if let Some(opaque_name) = self.enum_variant_contains_opaque(
-                name,
-                type_args,
-                &mut std::collections::HashSet::new(),
-                false,
-            ) {
-                return RecordCloneAdmissibility::OpaqueField { opaque_name };
-            }
             return RecordCloneAdmissibility::EnumClone {
                 enum_name: name.to_string(),
             };
@@ -3534,25 +3666,6 @@ impl Checker {
         // Only Record and Struct (value-type) kinds are clone-eligible.
         if !matches!(type_def.kind, Record | Struct) {
             return RecordCloneAdmissibility::NotARecord;
-        }
-        // Generic records (un-substituted type params) are not yet supported.
-        // The caller passes the `type_args` from the `Ty::Named`; if the type has
-        // declared params but the call-site args are still unresolved vars, reject.
-        if !type_def.type_params.is_empty() && type_args.iter().any(|a| matches!(a, Ty::Var(_))) {
-            return RecordCloneAdmissibility::GenericRecord;
-        }
-        // Check each field transitively for opaque handles.
-        // Re-derives the checker-side `ty_contains_owned_handle` walk inline to
-        // avoid importing hew-mir (wrong dependency direction). The authoritative
-        // MIR-side `ty_contains_unclonable_opaque` is mirrored here at the checker
-        // boundary; the two must agree but are structurally independent.
-        if let Some(opaque_name) = self.record_field_contains_opaque(
-            name,
-            type_args,
-            &mut std::collections::HashSet::new(),
-            false,
-        ) {
-            return RecordCloneAdmissibility::OpaqueField { opaque_name };
         }
         RecordCloneAdmissibility::Admissible
     }
@@ -3562,9 +3675,11 @@ impl Checker {
         receiver_name: &str,
         affine_name: &str,
         marker: hew_parser::ast::ResourceMarker,
+        member: &str,
         span: &Span,
     ) {
-        let message = Self::affine_record_clone_error_message(receiver_name, affine_name, marker);
+        let message =
+            Self::affine_record_clone_error_message(receiver_name, affine_name, marker, member);
         self.report_error(TypeErrorKind::InvalidOperation, span, message);
     }
 
@@ -3572,6 +3687,7 @@ impl Checker {
         receiver_name: &str,
         affine_name: &str,
         marker: hew_parser::ast::ResourceMarker,
+        member: &str,
     ) -> String {
         let (attribute, contract) = match marker {
             hew_parser::ast::ResourceMarker::Resource => (
@@ -3591,125 +3707,362 @@ impl Checker {
         } else {
             format!("type `{receiver_name}` contains `{attribute}` value `{affine_name}`")
         };
-        format!("{subject} and cannot be cloned: `{affine_name}` {contract}")
+        format!(
+            "{subject} and cannot be cloned: member `{member}` contains `{affine_name}`, which \
+             {contract}"
+        )
     }
 
-    /// Return the first `#[resource]` / `#[linear]` value reachable from a
-    /// structural record-clone receiver.
+    /// Diagnostic for a refcounted shared handle sitting inside an aggregate.
     ///
-    /// Explicit record clone is a non-consuming read that creates a second
-    /// owner. That is valid only when every stored value has a semantic clone.
-    /// Resource/linear markers veto the operation even when their physical
-    /// fields are all bit-copy, and the veto descends through unmarked
-    /// records/enums/tuples/arrays so an affine value cannot hide in a wrapper.
-    fn ty_clone_contains_affine_value(
+    /// Names the exact member path so the programmer can see which leaf blocks
+    /// the clone, and states the mechanism rather than a bare "not supported".
+    fn unbalanced_shared_handle_clone_error_message(
+        receiver_name: &str,
+        type_name: &str,
+        member: &str,
+    ) -> String {
+        format!(
+            "type `{receiver_name}` cannot be cloned because member `{member}` of type \
+             `{type_name}` is a shared refcounted handle with no aggregate-ingress retain: \
+             the composite drop would release it once per owner"
+        )
+    }
+
+    fn report_unbalanced_shared_handle_clone_error(
+        &mut self,
+        receiver_name: &str,
+        type_name: &str,
+        member: &str,
+        span: &Span,
+    ) {
+        let message =
+            Self::unbalanced_shared_handle_clone_error_message(receiver_name, type_name, member);
+        // Deliberately NO workaround: cloning the handle on its own and
+        // rebuilding the aggregate re-enters the same ingress path and aborts
+        // at `hew-runtime/src/rc.rs` `Rc double-free`. Suggesting it would hand
+        // the programmer a crash. State the limitation instead.
+        self.report_error_with_suggestions(
+            TypeErrorKind::UndefinedMethod,
+            span,
+            message,
+            vec![format!(
+                "this is a known gap in shared-handle ownership, not a property of \
+                 `{receiver_name}`; a fix is pending. Until then keep the `{type_name}` handle \
+                 out of a cloned aggregate — pass the aggregate by move, or hold the handle in a \
+                 collection (`Vec<{type_name}>`), whose element clone retains correctly"
+            )],
+        );
+    }
+
+    fn clone_member_path(parent: &str, member: &str) -> String {
+        if parent.is_empty() {
+            member.to_string()
+        } else {
+            format!("{parent}.{member}")
+        }
+    }
+
+    /// Look through an opaque carrier's type arguments for an affine payload.
+    ///
+    /// Only `Affine` blockers are propagated: a `Missing`/`Opaque` result from
+    /// inside an opaque carrier says nothing new (the carrier itself is already
+    /// unclonable), whereas an affine payload changes both the reason and the
+    /// advice given to the programmer.
+    fn affine_blocker_in_type_args(
+        &self,
+        args: &[Ty],
+        path: &str,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> Option<CloneCapabilityBlocker> {
+        args.iter().enumerate().find_map(|(index, arg)| {
+            let label = if args.len() == 1 {
+                "element".to_string()
+            } else {
+                index.to_string()
+            };
+            let member = Self::clone_member_path(path, &label);
+            match self.structural_clone_blocker_inner(arg, &member, false, visiting) {
+                Some(blocker @ CloneCapabilityBlocker::Affine { .. }) => Some(blocker),
+                _ => None,
+            }
+        })
+    }
+
+    fn structural_clone_blocker(&self, ty: &Ty) -> Option<CloneCapabilityBlocker> {
+        self.structural_clone_blocker_inner(ty, "", false, &mut std::collections::HashSet::new())
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the closed member walk keeps clone refusal paths aligned with every stored shape"
+    )]
+    /// `in_value_aggregate` is true only when this position is a member of a
+    /// VALUE aggregate — a tuple element, an `Option`/`Result` payload, a record
+    /// field, or an enum variant payload. It is deliberately NOT inherited: a
+    /// builtin heap container resets it for its own elements, because a
+    /// container clones its elements through the owned-element thunk (which
+    /// retains) rather than by bit-copying a shared handle into a second
+    /// composite drop plan. `clone Vec<Rc<T>>` is balanced today and must stay
+    /// admitted; `clone (Rc<T>, string)` is not.
+    fn structural_clone_blocker_inner(
         &self,
         ty: &Ty,
+        path: &str,
+        in_value_aggregate: bool,
         visiting: &mut std::collections::HashSet<String>,
-    ) -> Option<(String, hew_parser::ast::ResourceMarker)> {
+    ) -> Option<CloneCapabilityBlocker> {
         use hew_parser::ast::ResourceMarker;
 
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         match &resolved {
+            Ty::Tuple(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    let member = Self::clone_member_path(path, &index.to_string());
+                    if let Some(blocker) =
+                        self.structural_clone_blocker_inner(item, &member, true, visiting)
+                    {
+                        return Some(blocker);
+                    }
+                }
+            }
             Ty::Named {
                 name,
                 args,
                 builtin,
             } => {
-                // These wrappers duplicate the OUTER handle semantically and
-                // do not clone their protocol/payload type argument. Keep them
-                // terminal, matching MIR's value-snapshot affine-marker proof.
+                if in_value_aggregate
+                    && matches!(builtin, Some(BuiltinType::Rc | BuiltinType::Weak))
+                {
+                    return Some(CloneCapabilityBlocker::UnbalancedSharedHandle {
+                        type_name: resolved.user_facing().to_string(),
+                        member: path.to_string(),
+                    });
+                }
                 if builtin.is_some_and(BuiltinType::is_affine_clone_terminal) {
                     return None;
                 }
+                let member = if path.is_empty() { "value" } else { path };
+                // Type-parameter capability inside a generic template comes
+                // from the parameter's declared BOUND, never from a concrete
+                // type (there is none yet). `T: Clone` makes every `T`-shaped
+                // member clonable in the template; an unbounded `T` is not.
+                // The concrete capability is decided at instantiation, where
+                // `enforce_type_param_bounds` rejects an argument that does not
+                // satisfy the bound — so an affine resource can never reach a
+                // `T: Clone` position. This is the single template-capability
+                // authority; structural equality applies the same split from
+                // the other side (see `finalize_generic_structural_eq`), where
+                // the checker re-runs the eligibility walk per instantiation
+                // because a semantic `Eq` bound does not imply a structural
+                // compare path.
+                if let Some(capability) = self.type_param_template_clone_capability(&resolved) {
+                    return if capability {
+                        None
+                    } else {
+                        Some(CloneCapabilityBlocker::Missing {
+                            member: member.to_string(),
+                            member_ty: resolved.clone(),
+                        })
+                    };
+                }
                 if self.registry.is_resource(name) {
-                    return Some((name.clone(), ResourceMarker::Resource));
+                    return Some(CloneCapabilityBlocker::Affine {
+                        type_name: name.clone(),
+                        marker: ResourceMarker::Resource,
+                        member: member.to_string(),
+                    });
                 }
                 if self.registry.is_linear(name) {
-                    return Some((name.clone(), ResourceMarker::Linear));
+                    return Some(CloneCapabilityBlocker::Affine {
+                        type_name: name.clone(),
+                        marker: ResourceMarker::Linear,
+                        member: member.to_string(),
+                    });
                 }
-                // Built-in value containers (for example `Option<T>`,
-                // `Result<T, E>`, and `Vec<T>`) store their type arguments, so
-                // descend through them. User records are different: a generic
-                // argument may be a phantom tag (for example `Key<T>`), and
-                // only the instantiated declared fields/variants below are
-                // authoritative for whether a value is actually contained.
+                if self.canonical_owned_handle_type_name(name).is_some()
+                    || self.user_opaque_type_names.contains(name.as_str())
+                {
+                    // An opaque carrier can still transport an affine payload
+                    // (`channel.Receiver<Token>` where `Token` is `#[resource]`).
+                    // Affine is the stronger, more actionable refusal and is the
+                    // one the builtin-clone gate keeps, so look through the
+                    // carrier's arguments for it before short-circuiting on
+                    // opacity. Returning `Opaque` first here downgraded the
+                    // diagnostic all the way to a MIR `E_NOT_YET_IMPLEMENTED`.
+                    if let Some(affine) = self.affine_blocker_in_type_args(args, path, visiting) {
+                        return Some(affine);
+                    }
+                    return Some(CloneCapabilityBlocker::Opaque {
+                        type_name: name.clone(),
+                        member: member.to_string(),
+                    });
+                }
+                if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
+                    for (index, arg) in args.iter().enumerate() {
+                        let label = if args.len() == 1 {
+                            "Some"
+                        } else if index == 0 {
+                            "Ok"
+                        } else {
+                            "Err"
+                        };
+                        let member = Self::clone_member_path(path, label);
+                        if let Some(blocker) =
+                            self.structural_clone_blocker_inner(arg, &member, true, visiting)
+                        {
+                            return Some(blocker);
+                        }
+                    }
+                    return None;
+                }
                 if builtin.is_some() {
-                    for arg in args {
-                        if let Some(blocker) = self.ty_clone_contains_affine_value(arg, visiting) {
+                    for (index, arg) in args.iter().enumerate() {
+                        let label = if args.len() == 1 {
+                            "element".to_string()
+                        } else {
+                            index.to_string()
+                        };
+                        let member = Self::clone_member_path(path, &label);
+                        if let Some(blocker) =
+                            self.structural_clone_blocker_inner(arg, &member, false, visiting)
+                        {
                             return Some(blocker);
                         }
                     }
                 }
-                let type_def = self.lookup_type_def(name)?;
-                // Cycle detection is about the declared layout edge, not the
-                // instantiated spelling. A polymorphic recursive definition
-                // such as `Grow<T> { Node(Vec<Grow<Vec<T>>>) }` makes that
-                // spelling grow forever (`Grow<i64>`,
-                // `Grow<Vec<i64>>`, ...), so using it as the key never closes
-                // the walk and can overflow the checker stack. Re-visiting the
-                // same nominal declaration is already an active recursive
-                // layout edge; its fields are being checked by the outer frame.
-                let visit_key = type_def.name.clone();
-                if !visiting.insert(visit_key.clone()) {
-                    return None;
-                }
-                let blocker = type_def
-                    .fields
-                    .values()
-                    .map(|field_ty| {
-                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args)
-                    })
-                    .find_map(|field_ty| self.ty_clone_contains_affine_value(&field_ty, visiting))
-                    .or_else(|| {
-                        self.tuple_record_constructor_fields(name, &type_def)
-                            .iter()
-                            .find_map(|field_ty| {
-                                let field_ty = Self::instantiate_type_def_member(
-                                    field_ty,
-                                    &type_def.type_params,
-                                    args,
-                                );
-                                self.ty_clone_contains_affine_value(&field_ty, visiting)
-                            })
-                    })
-                    .or_else(|| {
-                        type_def
+                if let Some(type_def) = self.lookup_type_def(name) {
+                    let visit_key = type_def.name.clone();
+                    if !visiting.insert(visit_key.clone()) {
+                        return None;
+                    }
+                    let mut field_names: Vec<&String> = type_def.fields.keys().collect();
+                    field_names.sort();
+                    for field_name in field_names {
+                        let field_ty = type_def
+                            .fields
+                            .get(field_name)
+                            .expect("field name came from this type definition");
+                        let field_ty = Self::instantiate_type_def_member(
+                            field_ty,
+                            &type_def.type_params,
+                            args,
+                        );
+                        let member = Self::clone_member_path(path, field_name);
+                        if let Some(blocker) =
+                            self.structural_clone_blocker_inner(&field_ty, &member, true, visiting)
+                        {
+                            visiting.remove(&visit_key);
+                            return Some(blocker);
+                        }
+                    }
+                    for (index, field_ty) in self
+                        .tuple_record_constructor_fields(name, &type_def)
+                        .iter()
+                        .enumerate()
+                    {
+                        let field_ty = Self::instantiate_type_def_member(
+                            field_ty,
+                            &type_def.type_params,
+                            args,
+                        );
+                        let member = Self::clone_member_path(path, &index.to_string());
+                        if let Some(blocker) =
+                            self.structural_clone_blocker_inner(&field_ty, &member, true, visiting)
+                        {
+                            visiting.remove(&visit_key);
+                            return Some(blocker);
+                        }
+                    }
+                    let mut variant_names: Vec<&String> = type_def.variants.keys().collect();
+                    variant_names.sort();
+                    for variant_name in variant_names {
+                        let variant = type_def
                             .variants
-                            .values()
-                            .find_map(|variant| match variant {
-                                VariantDef::Unit => None,
-                                VariantDef::Tuple(fields) => fields.iter().find_map(|field_ty| {
+                            .get(variant_name)
+                            .expect("variant name came from this type definition");
+                        let blocker = match variant {
+                            VariantDef::Unit => None,
+                            VariantDef::Tuple(fields) => {
+                                fields.iter().enumerate().find_map(|(index, field_ty)| {
                                     let field_ty = Self::instantiate_type_def_member(
                                         field_ty,
                                         &type_def.type_params,
                                         args,
                                     );
-                                    self.ty_clone_contains_affine_value(&field_ty, visiting)
-                                }),
-                                VariantDef::Struct(fields) => {
-                                    fields.iter().find_map(|(_, field_ty)| {
-                                        let field_ty = Self::instantiate_type_def_member(
-                                            field_ty,
-                                            &type_def.type_params,
-                                            args,
-                                        );
-                                        self.ty_clone_contains_affine_value(&field_ty, visiting)
-                                    })
-                                }
-                            })
-                    });
-                visiting.remove(&visit_key);
-                blocker
+                                    let member = Self::clone_member_path(
+                                        path,
+                                        &format!("{variant_name}.{index}"),
+                                    );
+                                    self.structural_clone_blocker_inner(
+                                        &field_ty, &member, true, visiting,
+                                    )
+                                })
+                            }
+                            VariantDef::Struct(fields) => {
+                                fields.iter().find_map(|(field_name, field_ty)| {
+                                    let field_ty = Self::instantiate_type_def_member(
+                                        field_ty,
+                                        &type_def.type_params,
+                                        args,
+                                    );
+                                    let member = Self::clone_member_path(
+                                        path,
+                                        &format!("{variant_name}.{field_name}"),
+                                    );
+                                    self.structural_clone_blocker_inner(
+                                        &field_ty, &member, true, visiting,
+                                    )
+                                })
+                            }
+                        };
+                        if blocker.is_some() {
+                            visiting.remove(&visit_key);
+                            return blocker;
+                        }
+                    }
+                    visiting.remove(&visit_key);
+                    return None;
+                }
             }
-            Ty::Tuple(items) => items
-                .iter()
-                .find_map(|item| self.ty_clone_contains_affine_value(item, visiting)),
-            Ty::Array(elem, _) | Ty::Slice(elem) => {
-                self.ty_clone_contains_affine_value(elem, visiting)
+            Ty::Array(elem, _) => {
+                let member = Self::clone_member_path(path, "element");
+                if let Some(blocker) =
+                    self.structural_clone_blocker_inner(elem, &member, false, visiting)
+                {
+                    return Some(blocker);
+                }
             }
-            _ => None,
+            _ => {}
         }
+
+        if self
+            .registry
+            .implements_marker(&resolved, MarkerTrait::Clone)
+        {
+            return None;
+        }
+        // The template-capability authority applies at EVERY position a type
+        // parameter appears, not just at a bare `T`. Reaching here means the
+        // structural walk above found no blocker, so every type-parameter
+        // position inside `resolved` was already decided by its declared bound.
+        // The marker registry cannot answer for a partially abstract type — it
+        // has no impl for `Vec<T>` — so letting it veto here rejected
+        // `fn dup<T: Clone>(v: Option<Vec<T>>)` even though every leaf was
+        // clonable. An unbounded parameter still refuses, with a member path,
+        // from the recursive call that examined it.
+        let in_scope: Vec<String> = self.current_type_param_names().into_iter().collect();
+        if Self::ty_mentions_type_params(&resolved, &in_scope) {
+            return None;
+        }
+        Some(CloneCapabilityBlocker::Missing {
+            member: if path.is_empty() {
+                "value".to_string()
+            } else {
+                path.to_string()
+            },
+            member_ty: resolved,
+        })
     }
 
     /// Transitive, substitution-aware walk of a (possibly generic) record's
@@ -4850,6 +5203,33 @@ impl Checker {
             } if args.is_empty() && self.is_type_param_in_scope(&name) => Some(name),
             _ => None,
         }
+    }
+
+    /// The single template-capability authority for `clone`.
+    ///
+    /// Returns `None` when `ty` is not a bare in-scope type parameter (the
+    /// caller then continues its structural walk). Returns `Some(true)` when
+    /// the parameter's declared bounds grant `Clone`, `Some(false)` when they
+    /// do not.
+    ///
+    /// Inside a generic template there is no concrete type to interrogate, so
+    /// the bound *is* the capability. Instantiation then decides the concrete
+    /// capability: `enforce_type_param_bounds` refuses a type argument that
+    /// does not satisfy `T: Clone`, which is what keeps affine resources
+    /// non-clonable through a generic seam.
+    pub(super) fn type_param_template_clone_capability(&self, ty: &Ty) -> Option<bool> {
+        let Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } = ty
+        else {
+            return None;
+        };
+        if !args.is_empty() || !self.is_type_param_in_scope(name) {
+            return None;
+        }
+        Some(self.type_param_has_marker_bound(name, MarkerTrait::Clone))
     }
 
     pub(super) fn type_param_has_marker_bound(
@@ -6875,6 +7255,11 @@ impl Checker {
                 arity_context: format!("method `{method}`"),
             },
             true,
+            Some(GenericCallee::Method {
+                type_name: &canonical,
+                method,
+                owner_type_args: &[],
+            }),
         );
         let method_key = format!("{canonical}::{method}");
         // Concrete-specialised primitive impl (#2270): when the builtin receiver
@@ -7233,6 +7618,11 @@ impl Checker {
                 arity_context: format!("method `{trait_name}.{method_name}`"),
             },
             true,
+            Some(GenericCallee::Method {
+                type_name: &canonical,
+                method: method_name,
+                owner_type_args: &[],
+            }),
         );
         self.record_method_call_receiver_kind(
             span,
@@ -7845,6 +8235,7 @@ impl Checker {
                             module_qualified: true,
                         },
                         true,
+                        Some(GenericCallee::Function { key: &key }),
                     );
                     // Channel constructor: inject a shared type variable so
                     // Sender<T> and Receiver<T> from the same `new` call are
@@ -8105,21 +8496,28 @@ impl Checker {
                 }
             }
         }
-        // Built-in container methods resolve before the user-record fallback
-        // below, so their `clone` implementations must consult the same affine
-        // payload authority explicitly. Without this gate, `Vec<Resource>` or
-        // `HashMap<K, Linear>` can duplicate an exact-once value even though a
-        // record containing that same container is correctly rejected.
+        // Structural clone admission is member-wise for tuples and built-in
+        // value enums. Collection clones keep their existing runtime rewrites,
+        // but pass through the same affine/member gate first.
         if method == "clone"
             && args.is_empty()
             && matches!(
                 &resolved,
-                Ty::Named {
-                    builtin: Some(_),
-                    ..
-                }
+                Ty::Tuple(_)
+                    | Ty::Named {
+                        builtin: Some(_),
+                        ..
+                    }
             )
         {
+            let is_structural_value = matches!(
+                &resolved,
+                Ty::Tuple(_)
+                    | Ty::Named {
+                        builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                        ..
+                    }
+            );
             if resolved.has_inference_var()
                 && matches!(
                     &resolved,
@@ -8137,12 +8535,72 @@ impl Checker {
                         source_module: self.current_module.clone(),
                     });
             }
-            if let Some((type_name, marker)) = self
-                .ty_clone_contains_affine_value(&resolved, &mut std::collections::HashSet::new())
-            {
+            if let Some(blocker) = self.structural_clone_blocker(&resolved) {
                 let receiver_name = resolved.user_facing().to_string();
-                self.report_affine_record_clone_error(&receiver_name, &type_name, marker, span);
-                return Ty::Error;
+                let rejected = match blocker {
+                    CloneCapabilityBlocker::Affine {
+                        type_name,
+                        marker,
+                        member,
+                    } => {
+                        self.report_affine_record_clone_error(
+                            &receiver_name,
+                            &type_name,
+                            marker,
+                            &member,
+                            span,
+                        );
+                        true
+                    }
+                    CloneCapabilityBlocker::Opaque { type_name, member } if is_structural_value => {
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!(
+                                "type `{receiver_name}` cannot be cloned because member `{member}` \
+                                 contains opaque value `{type_name}`"
+                            ),
+                        );
+                        true
+                    }
+                    CloneCapabilityBlocker::Missing { member, member_ty }
+                        if is_structural_value =>
+                    {
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!(
+                                "type `{receiver_name}` cannot be cloned because member `{member}` \
+                                 of type `{}` has no Clone capability",
+                                member_ty.user_facing()
+                            ),
+                        );
+                        true
+                    }
+                    CloneCapabilityBlocker::UnbalancedSharedHandle { type_name, member } => {
+                        self.report_unbalanced_shared_handle_clone_error(
+                            &receiver_name,
+                            &type_name,
+                            &member,
+                            span,
+                        );
+                        true
+                    }
+                    CloneCapabilityBlocker::Opaque { .. }
+                    | CloneCapabilityBlocker::Missing { .. } => false,
+                };
+                if rejected {
+                    return Ty::Error;
+                }
+            }
+            if is_structural_value {
+                self.record_method_call_rewrite(
+                    span,
+                    MethodCallRewrite::RecordCloneInplace {
+                        record_name: resolved.user_facing().to_string(),
+                    },
+                );
+                return resolved;
             }
         }
 
@@ -8630,6 +9088,11 @@ impl Checker {
                                     arity_context: format!("method `{method}`"),
                                 },
                                 true,
+                                Some(GenericCallee::Method {
+                                    type_name: crate::BuiltinType::LocalPid.canonical_name(),
+                                    method,
+                                    owner_type_args: receiver_args,
+                                }),
                             );
                             if method == "send"
                                 && !self.checking_canonical_stdlib_source("std.builtins")
@@ -8689,15 +9152,35 @@ impl Checker {
                         return Ty::Error;
                     }
                     if let Some(sig) = self.fn_sigs.get(&method_key).cloned() {
-                        for (i, arg) in args.iter().enumerate() {
-                            let (expr, sp) = arg.expr();
-                            let ty = if let Some(param_ty) = sig.params.get(i) {
-                                self.check_against(expr, sp, param_ty)
-                            } else {
-                                self.synthesize(expr, sp)
-                            };
-                            self.enforce_actor_boundary_send(expr, sp, sp, &ty);
-                        }
+                        // Route through the one application authority rather
+                        // than checking args against `sig.params` directly: a
+                        // generic `receive fn keep<T>(..)` needs its type
+                        // parameters freshened and inferred from the arguments,
+                        // and its instantiation recorded so structural-equality
+                        // obligations raised in the handler body are discharged.
+                        // The hand-rolled loop that used to live here skipped
+                        // both, so a generic handler reported `expected T` at
+                        // every call site.
+                        let applied_sig = self.apply_instantiated_call_signature(
+                            &sig,
+                            None,
+                            args,
+                            span,
+                            SignatureArgApplication::PositionalOnly {
+                                arity_context: format!("method `{method}`"),
+                            },
+                            true,
+                            Some(GenericCallee::Method {
+                                type_name: &actor_identity,
+                                method,
+                                owner_type_args: &[],
+                            }),
+                        );
+                        // Every argument crosses the mailbox boundary. This is
+                        // the funnel-compatible pairing (it reads the per-arg
+                        // types the application just published) used by the bare
+                        // actor-instance dispatch arm.
+                        self.enforce_actor_method_send_args(args);
                         self.record_method_call_receiver_kind(
                             span,
                             MethodCallReceiverKind::ActorInstance {
@@ -8707,7 +9190,7 @@ impl Checker {
                         // Ask-without-await guard: ask-shaped receive fn must be
                         // awaited. Generator methods (`receive gen fn`) use `for
                         // await` at the call site and are exempt from this guard.
-                        let resolved_ret = self.subst.resolve(&sig.return_type);
+                        let resolved_ret = self.subst.resolve(&applied_sig.return_type);
                         if !matches!(resolved_ret, Ty::Unit)
                             && !self.receive_generator_methods.contains(&method_key)
                             && !self.inside_await_expr
@@ -8725,9 +9208,9 @@ impl Checker {
                         self.record_actor_method_dispatch(
                             span,
                             method_key,
-                            sig.return_type.clone(),
+                            applied_sig.return_type.clone(),
                         );
-                        return sig.return_type;
+                        return applied_sig.return_type;
                     }
                 }
                 for arg in args {
@@ -8766,6 +9249,11 @@ impl Checker {
                                 arity_context: format!("method `{method}`"),
                             },
                             true,
+                            Some(GenericCallee::Method {
+                                type_name: crate::BuiltinType::RemotePid.canonical_name(),
+                                method,
+                                owner_type_args: receiver_args,
+                            }),
                         );
                         let return_type = if method == "ask" {
                             self.project_assoc_types(&applied_sig.return_type)
@@ -9502,6 +9990,11 @@ impl Checker {
                             arity_context: format!("method `{method}`"),
                         },
                         true,
+                        Some(GenericCallee::Method {
+                            type_name: &canonical_receiver_name,
+                            method,
+                            owner_type_args: type_args,
+                        }),
                     );
                     // Actor receive-method dispatch on a bare actor-typed
                     // receiver — e.g. an actor field holding a reference
@@ -10108,6 +10601,11 @@ impl Checker {
                                 arity_context: format!("method `{method}`"),
                             },
                             true,
+                            Some(GenericCallee::Method {
+                                type_name: &declaring_trait,
+                                method,
+                                owner_type_args: &[],
+                            }),
                         );
                         if declaring_trait == "std.builtins.Pid" && method == "send" {
                             // TODO(A640): replace this fail-closed branch with
@@ -10229,23 +10727,57 @@ impl Checker {
                                 }
                                 return resolved;
                             }
-                            RecordCloneAdmissibility::OpaqueField { opaque_name } => {
+                            RecordCloneAdmissibility::OpaqueField {
+                                opaque_name,
+                                member,
+                            } => {
                                 self.report_error(
                                     TypeErrorKind::UndefinedMethod,
                                     span,
                                     format!(
-                                        "type `{name}` contains an opaque field \
-                                         `{opaque_name}` and cannot be cloned"
+                                        "type `{name}` cannot be cloned because member `{member}` \
+                                         contains opaque value `{opaque_name}`"
                                     ),
                                 );
                                 return Ty::Error;
                             }
-                            RecordCloneAdmissibility::AffineValue { type_name, marker } => {
+                            RecordCloneAdmissibility::AffineValue {
+                                type_name,
+                                marker,
+                                member,
+                            } => {
                                 let receiver_name = resolved.user_facing().to_string();
                                 self.report_affine_record_clone_error(
                                     &receiver_name,
                                     &type_name,
                                     marker,
+                                    &member,
+                                    span,
+                                );
+                                return Ty::Error;
+                            }
+                            RecordCloneAdmissibility::MissingClone { member, member_ty } => {
+                                self.report_error(
+                                    TypeErrorKind::UndefinedMethod,
+                                    span,
+                                    format!(
+                                        "type `{}` cannot be cloned because member `{member}` of \
+                                         type `{}` has no Clone capability",
+                                        resolved.user_facing(),
+                                        member_ty.user_facing()
+                                    ),
+                                );
+                                return Ty::Error;
+                            }
+                            RecordCloneAdmissibility::UnbalancedSharedHandle {
+                                type_name,
+                                member,
+                            } => {
+                                let receiver_name = resolved.user_facing().to_string();
+                                self.report_unbalanced_shared_handle_clone_error(
+                                    &receiver_name,
+                                    &type_name,
+                                    &member,
                                     span,
                                 );
                                 return Ty::Error;
@@ -10455,6 +10987,9 @@ impl Checker {
                             arity_context: format!("method `{method}`"),
                         },
                         true,
+                        // Dynamic vtable dispatch pins no static instantiation; the concrete
+                        // impl is selected at run time, so there is nothing to discharge here.
+                        None,
                     );
                     if pid_send_dispatch {
                         self.enforce_actor_method_send_args(args);
@@ -10951,8 +11486,8 @@ mod tests {
             .or_default()
             .insert("left.Render".to_string());
 
-        let wrong_trait = crate::DefId::new("right.Render");
-        let wrong_method = crate::DefId::new("right.Render::render");
+        let wrong_trait = crate::DefId::for_test("right.Render");
+        let wrong_method = crate::DefId::for_test("right.Render::render");
         checker
             .trait_method_ids
             .insert("Render::render".to_string(), (wrong_trait, wrong_method));
@@ -10963,8 +11498,8 @@ mod tests {
             "a canonical lookup miss must not retry the first-write-wins bare key",
         );
 
-        let canonical_trait = crate::DefId::new("left.Render");
-        let canonical_method = crate::DefId::new("left.Render::render");
+        let canonical_trait = crate::DefId::for_test("left.Render");
+        let canonical_method = crate::DefId::for_test("left.Render::render");
         checker.trait_method_ids.insert(
             "left.Render::render".to_string(),
             (canonical_trait.clone(), canonical_method.clone()),

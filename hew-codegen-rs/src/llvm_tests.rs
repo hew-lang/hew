@@ -5665,6 +5665,7 @@ struct CompositeHelperHarness<'ctx> {
     /// the composite-helper unit tests, so no bool-field defence path is
     /// taken. Carried so the FnCtx field stays populated.
     record_field_resolved_tys: HashMap<String, Vec<ResolvedTy>>,
+    record_field_names: HashMap<String, Vec<String>>,
     const_globals: ConstGlobalMap<'ctx>,
     lifecycle_registry: hew_hir::LifecycleRegistry,
 }
@@ -5901,6 +5902,7 @@ fn build_harness_with_target_data<'ctx>(
         param_boundary_modes: HashMap::new(),
         actor_layouts: Vec::new(),
         record_field_resolved_tys: HashMap::new(),
+        record_field_names: HashMap::new(),
         const_globals: HashMap::new(),
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
@@ -5970,6 +5972,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
         enum_layouts: &[],
         indirect_enum_owned_locals: HashSet::new(),
         record_field_resolved_tys: &harness.record_field_resolved_tys,
+        record_field_names: &harness.record_field_names,
         // Composite-helper unit tests never lower an
         // `Instr::CoerceToDynTrait`; carry an empty slice so the
         // FnCtx field stays populated. The dyn-trait
@@ -7403,9 +7406,9 @@ fn owned_vec_resource_descriptor_is_drop_only_and_uses_exact_close() {
     let mut harness = build_harness(&ctx, &[], &[]);
     let resource_ty = ResolvedTy::named_opaque("std.net.Connection", vec![]);
     let lifecycle = hew_hir::OpaqueResourceLifecycle {
-        resource_declaration: hew_types::DefId::new("std.net.Connection"),
-        close_declaration: hew_types::DefId::new("std.net.Connection::close"),
-        release_declaration: hew_types::DefId::new("std.net.hew_tcp_close"),
+        resource_declaration: hew_types::DefId::for_test("std.net.Connection"),
+        close_declaration: hew_types::DefId::for_test("std.net.Connection::close"),
+        release_declaration: hew_types::DefId::for_test("std.net.hew_tcp_close"),
         close_symbol: "std__net__Connection::close".to_string(),
         release_symbol: "hew_tcp_close".to_string(),
         discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
@@ -7464,9 +7467,9 @@ fn owned_vec_resource_descriptor_rejects_non_unit_close_abi() {
     let mut harness = build_harness(&ctx, &[], &[]);
     let resource_ty = ResolvedTy::named_opaque("std.net.Connection", vec![]);
     let lifecycle = hew_hir::OpaqueResourceLifecycle {
-        resource_declaration: hew_types::DefId::new("std.net.Connection"),
-        close_declaration: hew_types::DefId::new("std.net.Connection::close"),
-        release_declaration: hew_types::DefId::new("std.net.hew_tcp_close"),
+        resource_declaration: hew_types::DefId::for_test("std.net.Connection"),
+        close_declaration: hew_types::DefId::for_test("std.net.Connection::close"),
+        release_declaration: hew_types::DefId::for_test("std.net.hew_tcp_close"),
         close_symbol: "std__net__Connection::close".to_string(),
         release_symbol: "hew_tcp_close".to_string(),
         discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
@@ -15840,9 +15843,9 @@ fn empty_drop_witnesses<'a, 'ctx>(
 
 fn test_user_close(name: &str, symbol: &str) -> ResourceCloseAuthority {
     ResourceCloseAuthority::User(Box::new(hew_hir::OpaqueResourceLifecycle {
-        resource_declaration: hew_types::DefId::new(name),
-        close_declaration: hew_types::DefId::new(symbol),
-        release_declaration: hew_types::DefId::new(symbol),
+        resource_declaration: hew_types::DefId::for_test(name),
+        close_declaration: hew_types::DefId::for_test(symbol),
+        release_declaration: hew_types::DefId::for_test(symbol),
         close_symbol: symbol.to_string(),
         release_symbol: symbol.to_string(),
         discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,

@@ -56,6 +56,7 @@ use crate::ownership::VecElementRelease;
 use crate::state_clone::StateFieldCloneKind as SnapshotFieldKind;
 
 mod actor;
+mod actor_state_handle;
 mod assign;
 mod borrowed_argument_owner;
 mod cfg_util;
@@ -96,6 +97,10 @@ pub(crate) use self::owner_mint::OwnerMintWarrant;
 pub(crate) use self::facts::mangle_layout_key;
 
 #[cfg(not(test))]
+use self::actor_state_handle::{
+    detect_actor_state_handle_consume, detect_actor_state_resource_overwrite,
+};
+#[cfg(not(test))]
 use self::cfg_util::{
     block_by_id, blocks_reachable_from, call_terminator_next,
     local_is_rewritten_after_current_iteration, local_is_used_after, shift_instr_spans_on_insert,
@@ -109,7 +114,6 @@ use self::composite_own::{
     derive_owned_record_drop_allowed, derive_owned_tuple_handle_projection_bindings,
     derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
     derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
-    detect_actor_state_handle_consume, detect_actor_state_resource_overwrite,
     detect_builtin_handle_record_field_overwrite, detect_opaque_resource_field_misuse,
     detect_unproven_aggregate_handle_double_free,
 };
@@ -325,6 +329,10 @@ const SYNTHETIC_DISCARDED_CALL_RESULT_NAME: &str = "__hew_discarded_call_result"
 /// once at caller scope exit. Gated on the target param being BORROW (a CONSUME
 /// target's temporary is the callee's obligation — no caller drop).
 const SYNTHETIC_TEMP_ARG_NAME: &str = "__hew_temp_arg";
+/// Name for a provisional owned result completed when a resolved method borrows
+/// it as an anonymous receiver. Named receivers keep their ordinary binding;
+/// specialised cursor rewrites keep their dedicated transfer authority.
+const SYNTHETIC_TEMP_RECEIVER_NAME: &str = "__hew_temp_receiver";
 /// Name for the owner minted over a fresh Vec COPY-IN element temporary when
 /// every whole by-value parameter embedded in it is a retained string share.
 /// The binding owns the temporary's retained share only; the parameter remains
@@ -600,6 +608,12 @@ struct Builder {
     /// initialiser. Cluster 1 reads the slot directly; later clusters add
     /// drop-cleanup and rebinding semantics.
     pub(crate) binding_locals: HashMap<BindingId, Place>,
+    /// Owned match-like payload bindings whose lexical mapping is restored
+    /// when their body ends, but whose concrete backend place must remain
+    /// available to scope-exit drop elaboration. Ownership finalization runs
+    /// against the lexical map first; this side table is merged immediately
+    /// afterward so it cannot create a spurious live alias or retain.
+    pub(crate) deferred_drop_binding_locals: HashMap<BindingId, Place>,
     /// Count of anonymous caller-owned temp bindings minted so far in this
     /// function. The next mint is
     /// `BindingId(SYNTHETIC_OWNED_TEMP_BINDING_BASE - count)` — a
@@ -5791,6 +5805,8 @@ pub(crate) fn lower_function(
 
     let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
     let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+    let deferred_drop_binding_locals = std::mem::take(&mut builder.deferred_drop_binding_locals);
+    builder.binding_locals.extend(deferred_drop_binding_locals);
 
     // Compute cooperate-check sites from the CFG. Empty for leaf functions
     // (< 10 MIR statements, no calls, no loops). Codegen reads
@@ -7594,6 +7610,6 @@ const ENTRY_BLOCK_ID: u32 = 0;
 
 #[cfg(test)]
 use self::{
-    cfg_util::*, composite_own::*, consts::*, drop_plan::*, machine_synth::*, split_consume::*,
-    suspend_places::*, temp_drop::*,
+    actor_state_handle::*, cfg_util::*, composite_own::*, consts::*, drop_plan::*,
+    machine_synth::*, split_consume::*, suspend_places::*, temp_drop::*,
 };

@@ -10,9 +10,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 AUDIT = ROOT / "scripts/structural-authority-audit.py"
 INVENTORY_HEADER = "group\tform\tpath\tcount\tretirement_stage\treason\n"
-PRESENTATION_HEADER = (
-    "path\tline\tcolumn\tform\tcontext_form\tcategory\tretirement_stage\treason\n"
-)
 
 
 def run(
@@ -28,15 +25,11 @@ def set_inventory(root: Path, body: str = "") -> None:
     (root / "scripts/structural-authority-inventory.tsv").write_text(
         INVENTORY_HEADER + body
     )
-    presentation = root / "scripts/structural-authority-presentation.tsv"
 
 
 with tempfile.TemporaryDirectory() as temp:
     work = Path(temp)
     (work / "scripts").mkdir()
-    (work / "scripts/structural-authority-presentation.tsv").write_text(
-        PRESENTATION_HEADER
-    )
     source = work / "hew-mir/src/lower"
     source.mkdir(parents=True)
     target = source / "new_authority.rs"
@@ -71,10 +64,8 @@ with tempfile.TemporaryDirectory() as temp:
         "comments and strings must not create findings: " + result.stderr
     )
 
-    target.write_text("fn authority() { let _ = short_name(name); }\n")
-    result = run(work)
-    assert result.returncode != 0, "a new semantic short-name use must fail"
-    assert "short-name-identifier" in result.stderr
+    target.write_text('fn display(name: &str) { eprintln!("{}", short_name(name)); }\n')
+    assert run(work).returncode == 0, "presentation leaf extraction must stay ungated"
 
     target.write_text(
         "fn bad() { let _ = ResolvedTy::Named {\n"
@@ -144,48 +135,44 @@ with tempfile.TemporaryDirectory() as temp:
         "];\n"
     )
 
-    # Macro token trees are not call-expression ASTs, but their parsed
-    # identifier/field-identifier nodes remain mandatory inventory findings.
+    # Presentation leaf extraction remains outside the identity guard, including
+    # macro token trees.
     target.write_text('fn authority() { format!("{}", short_name(name)); }\n')
-    result = run(work)
-    assert result.returncode != 0, "short_name inside a production macro must fail"
-    assert "short-name-identifier" in result.stderr
+    assert run(work).returncode == 0
     target.write_text(
         'fn authority() { format!("{}", name.rsplit("::").next().unwrap_or(name)); }\n'
     )
-    result = run(work)
-    assert result.returncode != 0, "rsplit leaf extraction inside a macro must fail"
-    assert "leaf-rsplit-" in result.stderr
+    assert run(work).returncode == 0
 
     # Parsed cfg(test) module and item ranges are excluded, including macro
     # token trees and forbidden-looking type syntax nested inside them.
     target.write_text(
         "#[cfg(test)]\n"
         "mod tests {\n"
-        '    fn macro_authority() { format!("{}", short_name(name)); }\n'
-        '    fn macro_leaf() { format!("{}", name.rsplit("::").next()); }\n'
+        "    fn macro_authority() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
+        '    fn macro_leaf() { let leaf = name.rsplit("::").next().unwrap(); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n'
         "    fn scalar() { let _: HashMap<SpanKey, SiteId> = HashMap::new(); }\n"
         "}\n"
         "#[cfg(test)]\n"
-        'fn item_macro() { format!("{}", short_name(name)); }\n'
+        "fn item_macro() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
         "fn production() {}\n"
     )
     assert run(work).returncode == 0, "parsed test-only module/items must be excluded"
 
     target.write_text(
         "#[cfg(all(test))]\n"
-        "fn all_single() { let _ = short_name(name); }\n"
+        "fn all_single() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
         '#[cfg(all(feature = "x", test))]\n'
-        "fn all_reordered() { let _ = short_name(name); }\n"
+        "fn all_reordered() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
     )
     assert run(work).returncode == 0, "all(...) test guards must be order-independent"
     target.write_text(
         '#[cfg(any(test, feature = "x"))]\n'
-        "fn any_guard() { let _ = short_name(name); }\n"
+        "fn any_guard() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
     )
     assert run(work).returncode != 0, "cfg(any(test, feature)) is production-capable"
     target.write_text(
-        "#[cfg(not(test))]\nfn non_test_guard() { let _ = short_name(name); }\n"
+        "#[cfg(not(test))]\nfn non_test_guard() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
     )
     assert run(work).returncode != 0, "cfg(not(test)) is production authority"
 
@@ -462,12 +449,17 @@ with tempfile.TemporaryDirectory() as temp:
     )
     assert run(work).returncode == 0, "test-only RC1 carriers must be excluded"
 
-    # hew-analysis is an audited production root, not a display-shaped escape.
+    # hew-analysis remains an audited production root for identity construction.
     target.write_text("fn production() {}\n")
     analysis = work / "hew-analysis/src/new_display.rs"
     analysis.parent.mkdir(parents=True)
-    analysis.write_text('fn display() { format!("{}", short_name(name)); }\n')
-    assert run(work).returncode != 0, "hew-analysis leaf-name seams must be audited"
+    analysis.write_text(
+        "fn authority(name: &str) {\n"
+        "    let leaf = short_name(name);\n"
+        "    let _ = DefId::legacy_reconstruct_from_full_path(leaf);\n"
+        "}\n"
+    )
+    assert run(work).returncode != 0, "hew-analysis identity sinks must be audited"
     analysis.unlink()
 
     # Leaf ownership is forbidden when it flows into an executable identity
@@ -513,19 +505,19 @@ with tempfile.TemporaryDirectory() as temp:
     target.write_text(
         "fn authority(module_path: &str, name: &str) {\n"
         '    let owner = module_path.rsplit("::").next().unwrap();\n'
-        '    let _ = DefId::new(format!("{}.{}", owner, name));\n'
+        '    let _ = DefId::legacy_reconstruct_from_full_path(format!("{}.{}", owner, name));\n'
         "}\n"
     )
     set_inventory(work)
     result = run(work)
-    assert result.returncode != 0, "a leaf owner must not mint a DefId"
+    assert result.returncode != 0, "a leaf owner must not reconstruct a DefId"
     assert "semantic-owner-shortening-sink/def-id" in result.stderr
 
     target.write_text(
         "fn authority(current_module: &str, name: &str) {\n"
         "    let owner = short_name(current_module);\n"
-        '    let _ = CallTarget::User(DefId::new(format!("{}.{}", owner, name)));\n'
-        '    let _ = NominalId::new(format!("{}.{}", owner, name));\n'
+        '    let _ = CallTarget::User(DefId::legacy_reconstruct_from_full_path(format!("{}.{}", owner, name)));\n'
+        '    let _ = NominalId::legacy_reconstruct_from_full_path(format!("{}.{}", owner, name));\n'
         "}\n"
     )
     set_inventory(work)
@@ -558,29 +550,17 @@ with tempfile.TemporaryDirectory() as temp:
     target.write_text(
         'fn display(current_module: &str) { eprintln!("{}", short_name(current_module)); }\n'
     )
-    display_inventory = (
-        "semantic-leaf-name\tshort-name-identifier\t"
-        "hew-mir/src/lower/new_authority.rs\t1\tstage-4\t"
-        "display-only short name fixture\n"
-    )
-    set_inventory(work, display_inventory)
-    assert run(work).returncode == 0, (
-        "an inventoried display-only short_name must not become an executable sink"
-    )
+    set_inventory(work)
+    assert run(work).returncode == 0, "display-only short_name must stay ungated"
 
     target.write_text(
         "fn canonical(declaring_module: &str, signature_key: &str) {\n"
         "    let name = signature_key.rsplit('.').next().unwrap();\n"
         '    let declaration = format!("{declaring_module}.{name}");\n'
-        "    let _ = DefId::new(declaration);\n"
+        "    let _ = DefId::legacy_reconstruct_from_full_path(declaration);\n"
         "}\n"
     )
-    canonical_inventory = (
-        "semantic-leaf-name\tleaf-rsplit-field\t"
-        "hew-mir/src/lower/new_authority.rs\t1\tstage-4\t"
-        "canonical owner reattachment fixture\n"
-    )
-    set_inventory(work, canonical_inventory)
+    set_inventory(work)
     assert run(work).returncode == 0, (
         "an item leaf reattached to a resolved full owner must remain canonical"
     )
@@ -626,78 +606,17 @@ with tempfile.TemporaryDirectory() as temp:
             f"source-to-sites collection {collection_value} must remain allowed"
         )
 
-    # Presentation is exempt only under the exact parsed debug-builder call
-    # context. A same-location substitution of an authority call is debt.
+    # A leaf may be displayed freely, but it may not mint compiler identity.
     target.write_text(
-        "fn f() { dctx.di_builder.create_enumerator(short_name(name), 0, false); }\n"
-    )
-    (work / "scripts/structural-authority-presentation.tsv").write_text(
-        PRESENTATION_HEADER
-        + "hew-mir/src/lower/new_authority.rs\t1\t44\tshort-name-identifier\t"
-        "debug-enumerator-argument\tdebug-metadata\tpost-stage-5\t"
-        "test debug display\n"
+        "fn bad(name: &str) {\n"
+        "    let leaf = short_name(name);\n"
+        "    let _ = DefId::legacy_reconstruct_from_full_path(leaf);\n"
+        "}\n"
     )
     set_inventory(work)
-    assert run(work).returncode == 0, "an exact debug AST context may be exempted"
-    target.write_text(
-        "fn f() { dctx.di_builder.semantic_resolver(short_name(name), 0, false); }\n"
-    )
     result = run(work)
-    assert result.returncode != 0, "same-location semantic substitution must fail"
-    assert "presentation AST context disappeared" in result.stderr
-    assert "short-name-identifier" in result.stderr
-
-    # An exact presentation finding cannot hide a semantic sibling on its line.
-    target.write_text(
-        "fn f() { dctx.di_builder.create_enumerator(short_name(name), 0, false); let _ = short_name(key); }\n"
-    )
-    result = run(work)
-    assert result.returncode != 0, "same-line presentation must not exempt semantic use"
-    assert "expected 0, found 1" in result.stderr
-
-    # The exemption binds the exact designated debug argument expression. A
-    # nested semantic sibling elsewhere in that same debug call remains debt.
-    target.write_text(
-        "fn f() { dctx.di_builder.create_enumerator(short_name(name), semantic(short_name(key)), false); }\n"
-    )
-    result = run(work)
-    assert result.returncode != 0, (
-        "a nested sibling in one debug call must remain semantic"
-    )
-    assert "expected 0, found 1" in result.stderr
-
-    # Restore an empty presentation baseline and prove syntax-form drift,
-    # corpus shrink, count drift, and arbitrary retirement-stage edits fail.
-    (work / "scripts/structural-authority-presentation.tsv").write_text(
-        PRESENTATION_HEADER
-    )
-    target.write_text("fn authority() { let _ = short_name(name); }\n")
-    inventory_row = (
-        "semantic-leaf-name\tshort-name-identifier\t"
-        "hew-mir/src/lower/new_authority.rs\t1\tstage-4\ttest fixture\n"
-    )
-    set_inventory(work, inventory_row)
-    assert run(work).returncode == 0, "a fully explicit current inventory must pass"
-    target.write_text(
-        'fn authority() { let _ = name.rsplit("::").next().unwrap_or(name); }\n'
-    )
-    result = run(work)
-    assert result.returncode != 0, "short_name-to-rsplit form drift must fail"
-    assert (
-        "short-name-identifier" in result.stderr
-        and "leaf-rsplit-field" in result.stderr
-    )
-    target.write_text("fn authority() {}\n")
-    assert run(work).returncode != 0, "inventory shrink must fail"
-    target.write_text("fn authority() { let _ = short_name(name); }\n")
-    drifted_row = inventory_row.replace("\t1\tstage-4", "\t2\tstage-4")
-    set_inventory(work, drifted_row)
-    assert run(work).returncode != 0, "inventory count drift must fail"
-    wrong_stage = inventory_row.replace("\tstage-4\t", "\tstage-5\t")
-    set_inventory(work, wrong_stage)
-    result = run(work)
-    assert result.returncode != 0, "non-canonical retirement stages must fail"
-    assert "requires stage-4" in result.stderr
+    assert result.returncode != 0, "a leaf-derived DefId must fail"
+    assert "semantic-owner-shortening-sink/def-id" in result.stderr
 
     # Preserve qualified-string identity under every binding/assignment form;
     # the authority is the parsed format macro, not a particular let shape.
@@ -761,5 +680,314 @@ with tempfile.TemporaryDirectory() as temp:
     assert run(work).returncode == 0, (
         "whitespace-qualified non-format macro paths must remain controls"
     )
+
+    # Every argument-check primitive call under hew-types/src/ is inventoried by
+    # its ENCLOSING FUNCTION's exact name. There is no allowlist to defeat: the
+    # authority's own calls are a reviewed row like any other.
+    application_file = work / "hew-types/src/check/methods.rs"
+    application_file.parent.mkdir(parents=True, exist_ok=True)
+    expression_file = work / "hew-types/src/check/expressions.rs"
+    target.write_text("")
+    for source_text, expected_form, description in (
+        (
+            "fn apply_one_arg() { self.check_against(expr, sp, param_ty); }\n",
+            "apply_one_arg",
+            "direct parameter application",
+        ),
+        (
+            "fn launder(&mut self, expr: &Expr, sp: &Span, expected: &Ty) {\n"
+            "    self.check_against(expr, sp, expected);\n"
+            "}\n",
+            "launder",
+            "helper laundering the parameter as `expected`",
+        ),
+        (
+            "fn ufcs_apply() { Self::check_against(self, expr, sp, param_ty); }\n",
+            "ufcs_apply",
+            "UFCS spelling of the primitive",
+        ),
+        (
+            "fn path_apply() { Checker::check_expr_with_expected(self, expr, sp, p); }\n",
+            "path_apply",
+            "fully-pathed spelling of the other primitive",
+        ),
+        (
+            "fn apply_instantiated_call_signature_with_assoc_renamed() {\n"
+            "    self.check_against(expr, sp, param_ty);\n"
+            "}\n",
+            "apply_instantiated_call_signature_with_assoc_renamed",
+            "a name that merely CONTAINS the authority's name",
+        ),
+        (
+            "fn parenthesized_callee() {\n"
+            "    (Checker::check_against)(self, expr, sp, param_ty);\n"
+            "}\n",
+            "parenthesized_callee",
+            "a parenthesized callee, whose call text does not reduce by splitting",
+        ),
+        (
+            "fn commented_callee() {\n"
+            "    Checker::check_against /* still the callee */ (self, e, s, p);\n"
+            "}\n",
+            "commented_callee",
+            "a comment between callee and arguments",
+        ),
+        (
+            "fn nested_in_argument() {\n"
+            "    outer(self.check_against(expr, sp, param_ty));\n"
+            "}\n",
+            "nested_in_argument",
+            "a call nested inside another call's arguments",
+        ),
+        (
+            "fn nested_two_deep() {\n"
+            "    outer(middle(Self::check_against(self, expr, sp, param_ty)));\n"
+            "}\n",
+            "nested_two_deep",
+            "a UFCS call nested two argument lists deep",
+        ),
+    ):
+        application_file.write_text(source_text)
+        set_inventory(work)
+        result = run(work)
+        assert result.returncode != 0, (
+            f"a new {description} must fail the signature-application ratchet"
+        )
+        assert f"signature-application/{expected_form} " in result.stderr, (
+            f"{description} must be attributed to its enclosing function: {result.stderr}"
+        )
+
+    # A nested function owns its own row rather than being absorbed by the
+    # function it sits inside.
+    application_file.write_text(
+        "fn outer_listed() {\n"
+        "    fn inner_helper() { self.check_against(expr, sp, param_ty); }\n"
+        "}\n"
+    )
+    set_inventory(work)
+    result = run(work)
+    assert result.returncode != 0
+    assert "signature-application/inner_helper " in result.stderr, (
+        "the innermost enclosing function must own the finding: " + result.stderr
+    )
+
+    # An extra call inside an ALREADY-reviewed function still fails, because the
+    # inventory records a count and not merely a name.
+    application_file.write_text(
+        "fn reviewed_site() { self.check_against(expr, sp, param_ty); }\n"
+    )
+    set_inventory(
+        work,
+        "signature-application\treviewed_site\thew-types/src/check/methods.rs\t1"
+        "\tstage-1\treviewed\n",
+    )
+    assert run(work).returncode == 0, "a matching reviewed count must pass"
+    application_file.write_text(
+        "fn reviewed_site() {\n"
+        "    self.check_against(expr, sp, param_ty);\n"
+        "    self.check_against(other, sp, param_ty);\n"
+        "}\n"
+    )
+    result = run(work)
+    assert result.returncode != 0, (
+        "a second call inside a reviewed function must move the count and fail"
+    )
+
+    # Callee POSITION is structural too: the primitive named as an argument, or
+    # bound as a value, is not an application.
+    application_file.write_text(
+        "fn passes_the_primitive() { register(check_against); }\n"
+        "fn binds_the_primitive() { let f = self.check_against; }\n"
+        "fn passes_it_nested() { outer(register(check_against)); }\n"
+    )
+    set_inventory(work)
+    assert run(work).returncode == 0, (
+        "the primitive in argument or value position is not a call and must not be "
+        "counted, however deeply the argument list is nested"
+    )
+
+    # expressions.rs is in scope: a one-authority invariant cannot let a helper
+    # hide in the file where the primitives happen to live.
+    application_file.write_text("")
+    expression_file.write_text(
+        "fn hidden_helper() { self.check_against(expr, sp, param_ty); }\n"
+    )
+    set_inventory(work)
+    result = run(work)
+    assert result.returncode != 0, (
+        "argument checking in expressions.rs must be inventoried, not exempt"
+    )
+    assert "signature-application/hidden_helper " in result.stderr
+    expression_file.unlink()
+# ── Darwin poisoned-allocator gate ───────────────────────────────────────────
+#
+# Each case is a minimal test file the audit must accept or reject. The
+# rejecting cases are the shapes that have actually reached Linux CI red — a
+# direct call, the helper indirection every oracle uses, and a `macro_rules!`
+# arm — and the accepting cases are the two sanctioned ways to declare the host
+# requirement, plus a decoy proving string literals are masked before scanning.
+POISONED_IGNORE = (
+    '#[cfg_attr(not(target_os = "macos"), ignore = "poisoned allocator is macOS-only")]'
+)
+
+POISONED_CASES = (
+    (
+        "direct call, no gate",
+        """
+#[test]
+fn probe_is_clean() {
+    let out = run_under_malloc_scribble(&bin);
+    assert!(out.status.success());
+}
+""",
+        False,
+    ),
+    (
+        "direct call, cfg_attr ignore",
+        f"""
+{POISONED_IGNORE}
+#[test]
+fn probe_is_clean() {{
+    let out = run_under_malloc_scribble(&bin);
+    assert!(out.status.success());
+}}
+""",
+        True,
+    ),
+    (
+        "helper indirection, no gate",
+        """
+fn assert_scribble_clean(name: &str) {
+    let out = run_under_malloc_scribble(&bin);
+    assert!(out.status.success());
+}
+
+#[test]
+fn probe_is_clean() {
+    assert_scribble_clean("probe");
+}
+""",
+        False,
+    ),
+    (
+        "helper indirection, cfg_attr ignore",
+        f"""
+fn assert_scribble_clean(name: &str) {{
+    let out = run_under_malloc_scribble(&bin);
+    assert!(out.status.success());
+}}
+
+{POISONED_IGNORE}
+#[test]
+fn probe_is_clean() {{
+    assert_scribble_clean("probe");
+}}
+""",
+        True,
+    ),
+    (
+        'reaching code behind cfg(target_os = "macos")',
+        """
+fn assert_shape(name: &str) {
+    let run = plain_run(&bin);
+    assert!(run.status.success());
+    #[cfg(target_os = "macos")]
+    {
+        let scribbled = run_under_malloc_scribble(&bin);
+        assert!(scribbled.status.success());
+    }
+}
+
+#[test]
+fn probe_is_clean() {
+    assert_shape("probe");
+}
+""",
+        True,
+    ),
+    (
+        "macro-generated test, no gate",
+        f"""
+fn assert_shape(name: &str) {{
+    let out = run_under_malloc_scribble(&bin);
+    assert!(out.status.success());
+}}
+
+macro_rules! shape {{
+    ($over:ident, $under:ident, $name:literal) => {{
+        #[test]
+        fn $over() {{
+            assert_shape($name);
+        }}
+
+        {POISONED_IGNORE}
+        #[test]
+        fn $under() {{
+            assert_shape($name);
+        }}
+    }};
+}}
+
+shape!(a_over, a_under, "a");
+""",
+        False,
+    ),
+    (
+        "require_macos_poisoned_allocator, no gate",
+        """
+#[test]
+fn probe_is_clean() {
+    require_macos_poisoned_allocator();
+    assert!(true);
+}
+""",
+        False,
+    ),
+    (
+        "sentinel only inside a raw string",
+        """
+#[test]
+fn unrelated_test() {
+    let program = r#"
+        fn main() -> i64 {
+            // run_under_malloc_scribble( {{ }} not real code
+            0
+        }
+    "#;
+    assert!(!program.is_empty());
+}
+""",
+        True,
+    ),
+)
+
+for label, body, should_pass in POISONED_CASES:
+    with tempfile.TemporaryDirectory() as temp:
+        work = Path(temp)
+        (work / "scripts").mkdir()
+        enum_authority = work / "hew-types/src/stdlib_authority/codegen.rs"
+        enum_authority.parent.mkdir(parents=True)
+        enum_authority.write_text(
+            "struct BuiltinEnumAbi { name: &'static str }\n"
+            "const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[\n"
+            '    BuiltinEnumAbi { name: "AskError" },\n'
+            "];\n"
+        )
+        tests_dir = work / "hew-cli/tests"
+        tests_dir.mkdir(parents=True)
+        (tests_dir / "case_oracle.rs").write_text(body)
+        set_inventory(work)
+        result = run(work)
+        if should_pass:
+            assert result.returncode == 0, (
+                f"poisoned-allocator gate must accept: {label}\n{result.stderr}"
+            )
+        else:
+            assert result.returncode != 0, (
+                f"poisoned-allocator gate must reject: {label}\n{result.stdout}"
+            )
+            assert "ungated Darwin poisoned-allocator test" in result.stderr, (
+                f"rejection for {label} must name the rule:\n{result.stderr}"
+            )
 
 print("structural authority audit counterfactuals: PASS")

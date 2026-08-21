@@ -119,7 +119,7 @@ impl Builder {
         // elaboration frees it on whichever edge leaves the enclosing scope,
         // including the divergent-else edges. No-op for the non-Call / carrier
         // shapes per `register_from_call_scrutinee_owner`.
-        self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
+        let scrutinee_owner = self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
 
         let tag_local = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::Move {
@@ -203,29 +203,32 @@ impl Builder {
                 );
             }
             let dest = self.alloc_local(binding.ty.clone());
-            self.push_instr(Instr::Move {
-                dest,
-                src: Place::MachineVariant {
-                    local: scrutinee_local,
-                    variant_idx,
-                    field_idx: binding.field_idx,
-                },
-            });
+            let source = Place::MachineVariant {
+                local: scrutinee_local,
+                variant_idx,
+                field_idx: binding.field_idx,
+            };
+            self.push_instr(Instr::Move { dest, src: source });
             // Escape: insert into binding_locals and never restore.
             self.binding_locals.insert(binding.binding, dest);
+            let transferred_sink = self.transfer_contextual_sink_payload(
+                scrutinee_owner.as_ref(),
+                binding.binding,
+                source,
+                dest,
+                &binding_ty,
+            );
             // #2523 — record provenance for a heap-owning TOP-LEVEL let-else
             // payload binder so its move-out routes through default-deny.
-            self.record_projected_payload_provenance(
-                binding.binding,
-                &binding.name,
-                Place::MachineVariant {
-                    local: scrutinee_local,
-                    variant_idx,
-                    field_idx: binding.field_idx,
-                },
-                scrutinee_origin.clone(),
-                keep_for_drop_elab,
-            );
+            if !transferred_sink {
+                self.record_projected_payload_provenance(
+                    binding.binding,
+                    &binding.name,
+                    source,
+                    scrutinee_origin.clone(),
+                    keep_for_drop_elab,
+                );
+            }
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
             let binding_ty = self.subst_ty(&binding.ty);
@@ -635,32 +638,39 @@ impl Builder {
                 );
             }
             let dest = self.alloc_local(binding.ty.clone());
-            self.push_instr(Instr::Move {
-                dest,
-                src: Place::MachineVariant {
-                    local: pattern_scrutinee_local,
-                    variant_idx,
-                    field_idx: binding.field_idx,
-                },
-            });
+            let source = Place::MachineVariant {
+                local: pattern_scrutinee_local,
+                variant_idx,
+                field_idx: binding.field_idx,
+            };
+            self.push_instr(Instr::Move { dest, src: source });
             let previous = self.binding_locals.insert(binding.binding, dest);
             if let Some(local) = base_local(dest) {
                 self.transient_local_scopes.insert(local, body.scope);
             }
+            if keep_for_drop_elab {
+                self.deferred_drop_binding_locals
+                    .insert(binding.binding, dest);
+            }
             overwritten_bindings.push((binding.binding, previous));
+            let transferred_sink = self.transfer_contextual_sink_payload(
+                scrutinee_owner.as_ref(),
+                binding.binding,
+                source,
+                dest,
+                &binding_ty,
+            );
             // #2523 — record provenance for a heap-owning TOP-LEVEL while-let
             // payload binder so its move-out routes through default-deny.
-            self.record_projected_payload_provenance(
-                binding.binding,
-                &binding.name,
-                Place::MachineVariant {
-                    local: pattern_scrutinee_local,
-                    variant_idx,
-                    field_idx: binding.field_idx,
-                },
-                scrutinee_origin.clone(),
-                keep_for_drop_elab,
-            );
+            if !transferred_sink {
+                self.record_projected_payload_provenance(
+                    binding.binding,
+                    &binding.name,
+                    source,
+                    scrutinee_origin.clone(),
+                    keep_for_drop_elab,
+                );
+            }
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
             let binding_ty = self.subst_ty(&binding.ty);
@@ -699,6 +709,10 @@ impl Builder {
             let previous = self.binding_locals.insert(binding.binding, dest);
             if let Some(local) = base_local(dest) {
                 self.transient_local_scopes.insert(local, body.scope);
+            }
+            if keep_for_drop_elab {
+                self.deferred_drop_binding_locals
+                    .insert(binding.binding, dest);
             }
             overwritten_bindings.push((binding.binding, previous));
             // #2523 F2 — nested while-let binder bound from a transient predicate
@@ -789,8 +803,9 @@ impl Builder {
             .truncate(active_snapshot_parent_mark);
         self.active_scopes.pop();
         self.loop_stack.pop();
-        // Restore the prior `binding_locals` entries so the binding scope
-        // ends at the body's end — matches Match-arm body-block semantics.
+        // Restore the lexical map for every body-scoped payload. Owned payload
+        // places remain available through `deferred_drop_binding_locals` and
+        // are merged only after ownership finalization has derived retains.
         for (binding, previous) in overwritten_bindings.into_iter().rev() {
             if let Some(previous) = previous {
                 self.binding_locals.insert(binding, previous);
@@ -1412,7 +1427,7 @@ impl Builder {
         // the scope-exit machinery handles every edge, so no explicit
         // per-iteration owner-drop plumbing is needed (that is `lower_while_let`'s
         // loop-only concern).
-        self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
+        let scrutinee_owner = self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
 
         let tag_local = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::Move {
@@ -1499,29 +1514,36 @@ impl Builder {
                 );
             }
             let dest = self.alloc_local(binding.ty.clone());
-            self.push_instr(Instr::Move {
-                dest,
-                src: Place::MachineVariant {
-                    local: scrutinee_local,
-                    variant_idx,
-                    field_idx: binding.field_idx,
-                },
-            });
+            let source = Place::MachineVariant {
+                local: scrutinee_local,
+                variant_idx,
+                field_idx: binding.field_idx,
+            };
+            self.push_instr(Instr::Move { dest, src: source });
             let previous = self.binding_locals.insert(binding.binding, dest);
+            if keep_for_drop_elab {
+                self.deferred_drop_binding_locals
+                    .insert(binding.binding, dest);
+            }
             overwritten_bindings.push((binding.binding, previous));
+            let transferred_sink = self.transfer_contextual_sink_payload(
+                scrutinee_owner.as_ref(),
+                binding.binding,
+                source,
+                dest,
+                &binding_ty,
+            );
             // #2523 — record provenance for a heap-owning TOP-LEVEL if-let
             // payload binder so its move-out routes through default-deny.
-            self.record_projected_payload_provenance(
-                binding.binding,
-                &binding.name,
-                Place::MachineVariant {
-                    local: scrutinee_local,
-                    variant_idx,
-                    field_idx: binding.field_idx,
-                },
-                scrutinee_origin.clone(),
-                keep_for_drop_elab,
-            );
+            if !transferred_sink {
+                self.record_projected_payload_provenance(
+                    binding.binding,
+                    &binding.name,
+                    source,
+                    scrutinee_origin.clone(),
+                    keep_for_drop_elab,
+                );
+            }
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
             let binding_ty = self.subst_ty(&binding.ty);
@@ -1558,6 +1580,10 @@ impl Builder {
                 },
             });
             let previous = self.binding_locals.insert(binding.binding, dest);
+            if keep_for_drop_elab {
+                self.deferred_drop_binding_locals
+                    .insert(binding.binding, dest);
+            }
             overwritten_bindings.push((binding.binding, previous));
             // #2523 F2 — nested if-let binder bound from a transient predicate
             // copy; reject a heap-owning move-out fail-closed.
@@ -1600,7 +1626,9 @@ impl Builder {
         self.emit_pending_defers(body.scope);
         self.active_scopes.pop();
 
-        // Restore binding_locals after then-arm scope ends.
+        // Restore lexical mappings now. Owned payload places remain available
+        // in `deferred_drop_binding_locals` for function-wide drop elaboration;
+        // exit-state dataflow limits their drop to the matched branch.
         for (binding, previous) in overwritten_bindings.into_iter().rev() {
             if let Some(previous) = previous {
                 self.binding_locals.insert(binding, previous);

@@ -173,14 +173,16 @@ def test_dry_run_scales_every_budget_from_detected_parallelism() -> None:
     assert "Host parallelism: 8 (nproc)" in result.stdout, result.stdout
     assert "max(1, 16 / 8) = 2.00x" in result.stdout, result.stdout
     assert "ceil(baseline * 16 / 8)" in result.stdout, result.stdout
-    assert "make lint  (budget: 1200s)" in result.stdout, result.stdout
+    assert "make lint  (budget: 1890s)" in result.stdout, result.stdout
+    assert "make test  (budget: 3060s)" in result.stdout, result.stdout
     assert "make test-hew-ratchet  (budget: 3000s)" in result.stdout, result.stdout
     assert "make test-o2-differential  (budget: 5400s)" in result.stdout, result.stdout
 
     fast_result = run_dispatcher("some-unclassified-root-file.txt", parallelism=32)
     assert fast_result.returncode == 0, fast_result.stderr
     assert "max(1, 16 / 32) = 1.00x" in fast_result.stdout, fast_result.stdout
-    assert "make lint  (budget: 600s)" in fast_result.stdout, fast_result.stdout
+    assert "make lint  (budget: 945s)" in fast_result.stdout, fast_result.stdout
+    assert "make test  (budget: 1530s)" in fast_result.stdout, fast_result.stdout
     assert "make test-hew-ratchet  (budget: 1500s)" in fast_result.stdout, (
         fast_result.stdout
     )
@@ -234,6 +236,7 @@ def test_run_all_continues_after_failure_and_profiles_all_commands() -> None:
                     "printf '%s' RUN_TWO >/dev/null\n"
                     "printf '%s' RUN_THREE >/dev/null\n"
                 ),
+                "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
             },
             dry_run=False,
             timeout=30,
@@ -244,11 +247,18 @@ def test_run_all_continues_after_failure_and_profiles_all_commands() -> None:
         profile_entries = json.loads(Path(profile.name).read_text())
 
     assert [entry["cmd"] for entry in profile_entries] == [
+        "true",
         "exit 7",
         "printf '%s' RUN_TWO >/dev/null",
         "printf '%s' RUN_THREE >/dev/null",
     ]
-    assert [entry["status"] for entry in profile_entries] == [7, 0, 0]
+    assert [entry["phase"] for entry in profile_entries] == [
+        "warm-up",
+        "command",
+        "command",
+        "command",
+    ]
+    assert [entry["status"] for entry in profile_entries] == [0, 7, 0, 0]
     assert "    exit 7" in result.stdout, result.stdout
     assert "    printf '%s' RUN_TWO >/dev/null" in result.stdout, result.stdout
     assert "    printf '%s' RUN_THREE >/dev/null" in result.stdout, result.stdout
@@ -267,6 +277,7 @@ def test_fail_fast_stops_after_first_failure_and_profiles_only_run_commands() ->
                     "printf '%s' RUN_TWO >/dev/null\n"
                     "printf '%s' RUN_THREE >/dev/null\n"
                 ),
+                "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
             },
             dry_run=False,
             timeout=30,
@@ -278,8 +289,9 @@ def test_fail_fast_stops_after_first_failure_and_profiles_only_run_commands() ->
         )
         profile_entries = json.loads(Path(profile.name).read_text())
 
-    assert [entry["cmd"] for entry in profile_entries] == ["exit 7"]
-    assert [entry["status"] for entry in profile_entries] == [7]
+    assert [entry["cmd"] for entry in profile_entries] == ["true", "exit 7"]
+    assert [entry["phase"] for entry in profile_entries] == ["warm-up", "command"]
+    assert [entry["status"] for entry in profile_entries] == [0, 7]
     assert "    exit 7" in result.stdout, result.stdout
     summary = result.stdout.split("==> Preflight summary", 1)[1]
     assert "RUN_TWO" not in summary, result.stdout
@@ -328,6 +340,7 @@ def test_synthetic_timeout_via_run_loop() -> None:
             env={
                 "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
                 "PREFLIGHT_TEST_COMMANDS": "sleep 30",
+                "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
                 "PREFLIGHT_TIMEOUT_NARROW": "1",
             },
             dry_run=False,
@@ -337,10 +350,10 @@ def test_synthetic_timeout_via_run_loop() -> None:
 
     assert result.returncode != 0, result.stdout
     assert "TIMEOUT: 'sleep 30' exceeded 1s budget" in result.stdout, result.stdout
-    assert len(profile_entries) == 1, profile_entries
-    assert profile_entries[0]["cmd"] == "sleep 30", profile_entries
-    assert profile_entries[0]["status"] in {137, 143}, profile_entries
-    assert 1 <= profile_entries[0]["elapsed_s"] <= 10, profile_entries
+    assert [entry["phase"] for entry in profile_entries] == ["warm-up", "command"]
+    assert profile_entries[1]["cmd"] == "sleep 30", profile_entries
+    assert profile_entries[1]["status"] in {137, 143}, profile_entries
+    assert 1 <= profile_entries[1]["elapsed_s"] <= 10, profile_entries
     summary = result.stdout.split("==> Preflight summary", 1)[1]
     assert "sleep 30" in summary, result.stdout
     assert "[FAILED]" in summary, result.stdout
@@ -355,6 +368,7 @@ def test_profile_json_records_elapsed_for_each_command() -> None:
             env={
                 "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
                 "PREFLIGHT_TEST_COMMANDS": "true\nfalse\ntrue",
+                "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
             },
             dry_run=False,
             timeout=30,
@@ -362,11 +376,118 @@ def test_profile_json_records_elapsed_for_each_command() -> None:
         profile_entries = json.loads(Path(profile.name).read_text())
 
     assert result.returncode == 1, result.stdout
-    assert [entry["cmd"] for entry in profile_entries] == ["true", "false"]
-    assert [entry["status"] for entry in profile_entries] == [0, 1]
+    assert [entry["cmd"] for entry in profile_entries] == ["true", "true", "false"]
+    assert [entry["phase"] for entry in profile_entries] == [
+        "warm-up",
+        "command",
+        "command",
+    ]
+    assert [entry["status"] for entry in profile_entries] == [0, 0, 1]
     for entry in profile_entries:
         assert isinstance(entry["elapsed_s"], int), profile_entries
         assert entry["elapsed_s"] >= 0, profile_entries
+
+
+def test_compile_warmup_runs_first_and_has_a_summary_row() -> None:
+    """Compile profiles warm artifacts before their watchdog-timed commands."""
+    result = run_dispatcher(
+        "hew-parser/src/lib.rs",
+        env={
+            "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+            "PREFLIGHT_TEST_WARMUP_COMMANDS": "printf '%s\\n' WARMUP_RAN",
+            "PREFLIGHT_TEST_COMMANDS": "printf '%s\\n' GATE_RAN",
+        },
+        dry_run=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    warmup_start = result.stdout.index("==> warm-up")
+    gate_start = result.stdout.index("==> printf '%s\\n' GATE_RAN")
+    summary = result.stdout.split("==> Preflight summary", 1)[1]
+    assert "WARMUP_RAN" in result.stdout, result.stdout
+    assert warmup_start < gate_start, result.stdout
+    assert "warm-up  " in summary, result.stdout
+    assert summary.index("warm-up  ") < summary.index("GATE_RAN"), result.stdout
+
+
+def test_rust_diff_derives_its_warmup_artifacts_before_commands() -> None:
+    """A parser diff warms only the artifacts its selected commands need."""
+    result = run_dispatcher("hew-parser/src/lib.rs")
+
+    assert result.returncode == 0, result.stderr
+    packages = (
+        "-p hew-analysis -p hew-cli -p hew-codegen-rs -p hew-compile -p hew-hir "
+        "-p hew-lsp -p hew-mir -p hew-parser -p hew-sandbox-wasm -p hew-types "
+        "-p hew-wasm -p xtask"
+    )
+    warmup = result.stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
+    assert warmup == (
+        f"  - cargo clippy {packages} --tests\n"
+        "  - make hew\n"
+        "  - make wasm-runtime\n"
+        f"  - cargo nextest run --profile ci {packages} --no-run\n"
+    ), result.stdout
+    assert result.stdout.index("Warm-up:\n") < result.stdout.index("Commands:\n")
+
+
+def test_docs_diff_has_no_warmup_block() -> None:
+    result = run_dispatcher("docs/hew-language-guide.md")
+
+    assert result.returncode == 0, result.stderr
+    assert "Warm-up:\n" not in result.stdout, result.stdout
+
+
+def test_no_lane_warms_test_targets_with_all_targets() -> None:
+    """`cargo build --all-targets` cannot build a test harness under panic=abort.
+
+    The root `[profile.dev] panic = "abort"` makes a combined lib+test build
+    fail ("requires panic strategy abort which is incompatible with this
+    crate's strategy of unwind"), which is how this warm-up turned main red.
+    Test binaries are warmed the way `make test` builds them: `--no-run`.
+    """
+    for path in (
+        "hew-parser/src/lib.rs",
+        "hew-runtime/src/lib.rs",
+        "hew-codegen-rs/src/lib.rs",
+        "hew-observe/src/lib.rs",
+        "Makefile",
+    ):
+        result = run_dispatcher(path)
+        assert result.returncode == 0, result.stderr
+        warmup = result.stdout.split("Warm-up:\n", 1)
+        if len(warmup) == 1:
+            continue
+        warmup = warmup[1].split("Commands:\n", 1)[0]
+        assert "--all-targets" not in warmup, (path, result.stdout)
+
+
+def test_comprehensive_warms_clippy_and_nextest_the_way_the_gates_build() -> None:
+    """The comprehensive lane warms `make lint`'s clippy and `make test`'s binaries."""
+    result = run_dispatcher("Makefile")
+
+    assert result.returncode == 0, result.stderr
+    warmup = result.stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
+    assert "  - cargo clippy --workspace --tests\n" in warmup, result.stdout
+    assert (
+        "  - cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run\n"
+        in warmup
+    ), result.stdout
+    assert "  - make test-cabi-build\n" in warmup, result.stdout
+
+
+def test_no_warmup_names_a_non_ci_nextest_profile() -> None:
+    """A3a of the reachability gate scans this dry-run text for fast-tier profiles.
+
+    scripts/check-gate-reachability.py feeds the fallback dry-run output into the
+    CI command corpus, so a warm-up that spells `--profile ci-cabi` reads as CI
+    running a non-`ci` nextest profile. Warm through the Makefile target instead.
+    """
+    result = run_dispatcher("some-unclassified-root-file.txt")
+
+    assert result.returncode == 0, result.stderr
+    profiles = set(re.findall(r"--profile\s+([A-Za-z0-9_-]+)", result.stdout))
+    assert profiles <= {"ci"}, result.stdout
 
 
 def test_scripts_config_budget_annotation() -> None:
@@ -430,6 +551,7 @@ def test_zero_timeout_fails_closed() -> None:
         env={
             "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
             "PREFLIGHT_TEST_COMMANDS": "true",
+            "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
             "PREFLIGHT_TIMEOUT_NARROW": "0",
         },
         dry_run=False,
@@ -669,13 +791,17 @@ def test_comprehensive_profile_reserves_smoke_for_local_opt_in() -> None:
     assert result.returncode == 0, result.stderr
     assert "Selected profile: comprehensive" in result.stdout, result.stdout
     assert "make ci-preflight-smoke" not in result.stdout, result.stdout
-    assert "cargo fmt --all -- --check" in result.stdout, result.stdout
-    assert "make lint" in result.stdout, result.stdout
-    assert "make test" in result.stdout, result.stdout
 
-    fmt_pos = result.stdout.index("cargo fmt --all -- --check")
-    lint_pos = result.stdout.index("make lint")
-    test_pos = result.stdout.index("make test")
+    # Order is a property of the gate list, not of the whole transcript: the
+    # warm-up block above it also names `make test-*` targets.
+    commands = result.stdout.split("Commands:\n", 1)[1]
+    assert "cargo fmt --all -- --check" in commands, result.stdout
+    assert "make lint" in commands, result.stdout
+    assert "make test" in commands, result.stdout
+
+    fmt_pos = commands.index("cargo fmt --all -- --check")
+    lint_pos = commands.index("make lint")
+    test_pos = commands.index("make test")
     assert fmt_pos < lint_pos < test_pos, result.stdout
 
     makefile = (ROOT / "Makefile").read_text()
@@ -922,9 +1048,14 @@ def test_compiler_pipeline_absorbs_types_bucket_in_mixed_diff() -> None:
 def test_leaf_crate_runs_only_its_reverse_dependency_closure() -> None:
     result = run_dispatcher("hew-observe/src/lib.rs")
     assert result.returncode == 0, result.stderr
-    assert "cargo nextest run --profile ci -p hew-observe" in result.stdout
-    assert "--workspace" not in result.stdout
-    assert "-p hew-parser" not in result.stdout
+    sections = result.stdout.split("Warm-up:\n", 1)
+    assert len(sections) == 2, result.stdout
+    commands = sections[1].split("Commands:\n", 1)
+    assert len(commands) == 2, result.stdout
+    commands = commands[1]
+    assert "cargo nextest run --profile ci -p hew-observe" in commands
+    assert "--workspace" not in commands
+    assert "-p hew-parser" not in commands
 
 
 def test_analysis_change_runs_known_dependents_without_workspace() -> None:
@@ -1002,6 +1133,590 @@ def test_selector_exports_fail_closed_compile_requirement() -> None:
     assert "requires_compile=false" in values
 
 
+# ---------------------------------------------------------------------------
+# Shard partitioning
+# ---------------------------------------------------------------------------
+
+# One representative path per routing profile.  A shard partition that loses a
+# command on any of these loses it on a real diff of the same shape.
+_PROFILE_PROBES: dict[str, tuple[str, ...]] = {
+    "comprehensive": ("some-unclassified-root-file.txt",),
+    "scripts-config": ("scripts/foo.sh",),
+    "grammar": ("docs/specs/Hew.g4",),
+    "parser": ("hew-parser/src/lib.rs",),
+    "types": ("hew-types/src/lib.rs",),
+    "cli": ("hew-cli/src/main.rs",),
+    "compiler-pipeline": ("hew-mir/src/lower.rs",),
+    "vertical-slice": ("tests/vertical-slice/accept/x.hew",),
+    "observe": ("hew-observe/src/lib.rs",),
+    "runtime-testkit": ("hew-runtime-testkit/src/lib.rs",),
+    "hew-tests": ("tests/hew/x.hew",),
+    "runtime-net": ("hew-runtime/src/lib.rs",),
+    "wasm": ("hew-wasm/src/lib.rs",),
+    "mixed": ("Cargo.toml", "std/string.hew", "tests/fuzz-oracle/bounds.hew"),
+}
+
+# Independent restatement of the dispatcher's ordering-dependency map.  If a
+# member moves shard, a producer is separated from its consumer or a gate from
+# the self-test that proves it has teeth.
+_DEPENDENCY_GROUPS: tuple[tuple[str, ...], ...] = (
+    (
+        "make test-hew-ratchet",
+        "make test-o2-differential",
+        "make o2-differential-selftest",
+    ),
+    ("make fuzz-oracle", "make fuzz-oracle-selftest"),
+    ("make ll-diff", "make ll-identity-selftest"),
+    ("make checked-mir-verify", "make checked-mir-run"),
+    ("make test-doc-examples", "make doc-ratchet-selftest"),
+    ("make stdlib", "scripts/check-libhew-fresh.sh"),
+)
+
+_SHARD_HEADING_RE = re.compile(r"^  shard (\d+)/(\d+)  ")
+_SHARD_ENTRY_RE = re.compile(r"^      - (.*)  \(weight: (\d+)s\)$")
+
+
+def dry_run_commands(result: subprocess.CompletedProcess[str]) -> list[str]:
+    sections = result.stdout.split("\nCommands:\n", 1)
+    if len(sections) == 1:
+        return []
+    return [
+        line.removeprefix("  - ").split("  (budget:", 1)[0]
+        for line in sections[1].splitlines()
+        if line.startswith("  - ")
+    ]
+
+
+def shard_plan(
+    paths: tuple[str, ...], shards: int, env: dict[str, str] | None = None
+) -> dict[int, list[str]]:
+    result = run_dispatcher(
+        *paths, extra_args=["--shard-plan", str(shards)], dry_run=False, env=env
+    )
+    assert result.returncode == 0, result.stderr
+    plan: dict[int, list[str]] = {index: [] for index in range(1, shards + 1)}
+    current: int | None = None
+    for line in result.stdout.splitlines():
+        heading = _SHARD_HEADING_RE.match(line)
+        if heading is not None:
+            current = int(heading.group(1))
+            assert int(heading.group(2)) == shards, line
+            continue
+        entry = _SHARD_ENTRY_RE.match(line)
+        if entry is not None:
+            assert current is not None, result.stdout
+            plan[current].append(entry.group(1))
+    return plan
+
+
+def test_shard_plan_is_exhaustive_and_disjoint_for_every_profile() -> None:
+    """Every command of every profile lands in exactly one shard, for every N."""
+    for profile, paths in _PROFILE_PROBES.items():
+        unsharded = dry_run_commands(run_dispatcher(*paths))
+        assert unsharded, f"{profile}: expected a nonempty command list"
+        for shards in (1, 2, 3, 4, 5, 8):
+            plan = shard_plan(paths, shards)
+            assigned = [cmd for index in sorted(plan) for cmd in plan[index]]
+            assert len(assigned) == len(unsharded), (
+                f"{profile} N={shards}: {len(assigned)} assigned vs "
+                f"{len(unsharded)} selected"
+            )
+            assert sorted(assigned) == sorted(unsharded), (
+                f"{profile} N={shards}: partition is not the command list"
+            )
+            assert len(set(assigned)) == len(assigned), (
+                f"{profile} N={shards}: a command appears in more than one shard"
+            )
+
+
+def test_shard_partition_preserves_relative_command_order() -> None:
+    """Within a shard, commands keep the order the unsharded profile ran them."""
+    for profile, paths in _PROFILE_PROBES.items():
+        unsharded = dry_run_commands(run_dispatcher(*paths))
+        position = {cmd: index for index, cmd in enumerate(unsharded)}
+        for shards in (2, 3, 4):
+            for index, commands in shard_plan(paths, shards).items():
+                positions = [position[cmd] for cmd in commands]
+                assert positions == sorted(positions), (
+                    f"{profile} N={shards} shard {index}: reordered {commands}"
+                )
+
+
+def test_ordering_dependent_commands_share_a_shard() -> None:
+    """A gate and its producer/self-test are never split across shards."""
+    for profile, paths in _PROFILE_PROBES.items():
+        for shards in (2, 3, 4, 5, 8):
+            plan = shard_plan(paths, shards)
+            location = {
+                cmd: index for index, commands in plan.items() for cmd in commands
+            }
+            for group in _DEPENDENCY_GROUPS:
+                present = [cmd for cmd in group if cmd in location]
+                shards_used = {location[cmd] for cmd in present}
+                assert len(shards_used) <= 1, (
+                    f"{profile} N={shards}: {group} split across {shards_used}"
+                )
+
+
+def test_shard_selection_runs_exactly_its_planned_commands() -> None:
+    """--shard K/N dispatches the plan's shard K, nothing more and nothing less."""
+    paths = _PROFILE_PROBES["comprehensive"]
+    plan = shard_plan(paths, 4)
+    for index in range(1, 5):
+        result = run_dispatcher(*paths, extra_args=["--shard", f"{index}/4"])
+        assert result.returncode == 0, result.stderr
+        assert f"Shard: {index}/4" in result.stdout, result.stdout
+        assert dry_run_commands(result) == plan[index], result.stdout
+
+
+def test_shard_warmup_is_scoped_to_that_shard_commands() -> None:
+    """A shard warms only the artifacts its own commands need."""
+    paths = _PROFILE_PROBES["comprehensive"]
+    plan = shard_plan(paths, 4)
+    workspace_warmup = "cargo nextest run --workspace --exclude hew-cabi"
+    for index in range(1, 5):
+        result = run_dispatcher(*paths, extra_args=["--shard", f"{index}/4"])
+        assert result.returncode == 0, result.stderr
+        warmup = result.stdout.split("Warm-up:\n", 1)
+        warmup = warmup[1].split("\nCommands:\n", 1)[0] if len(warmup) == 2 else ""
+        if "make test" not in plan[index]:
+            assert workspace_warmup not in warmup, (
+                f"shard {index} warms the full workspace nextest without make test"
+            )
+        else:
+            assert workspace_warmup in warmup, warmup
+        if "make lint" not in plan[index]:
+            assert "cargo clippy --workspace --tests" not in warmup, (
+                f"shard {index} warms workspace clippy without make lint"
+            )
+
+
+def test_invalid_shard_specs_fail_closed() -> None:
+    """A spec that cannot partition the list is rejected before anything runs."""
+    for spec in ("0/4", "5/4", "1/0", "abc", "2", "4/", "/4", "-1/4", "1/4/4"):
+        result = run_dispatcher(
+            "some-unclassified-root-file.txt", extra_args=["--shard", spec]
+        )
+        assert result.returncode != 0, f"--shard {spec} was accepted: {result.stdout}"
+        assert "--shard" in result.stderr, result.stderr
+        assert "==> Hew CI preflight dispatcher" not in result.stdout, result.stdout
+
+    missing = subprocess.run(
+        ["bash", str(SCRIPT), "--dry-run", "--shard"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert missing.returncode != 0, missing.stdout
+    assert "--shard requires a K/N spec" in missing.stderr, missing.stderr
+
+    for count in ("0", "-2", "two", ""):
+        result = run_dispatcher(
+            "some-unclassified-root-file.txt", extra_args=["--shard-plan", count]
+        )
+        assert result.returncode != 0, (
+            f"--shard-plan {count!r} was accepted: {result.stdout}"
+        )
+
+    both = run_dispatcher(
+        "some-unclassified-root-file.txt",
+        extra_args=["--shard", "1/4", "--shard-plan", "4"],
+    )
+    assert both.returncode != 0, both.stdout
+    assert "mutually exclusive" in both.stderr, both.stderr
+
+
+def test_shard_plan_prints_the_full_assignment_and_runs_nothing() -> None:
+    result = run_dispatcher(
+        "some-unclassified-root-file.txt",
+        extra_args=["--shard-plan", "4"],
+        dry_run=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Shard plan: 4 shard(s), LPT bin packing" in result.stdout, result.stdout
+    assert result.stdout.count("min estimated") == 4, result.stdout
+    assert "Shard plan only: no commands executed." in result.stdout, result.stdout
+    assert "==> warm-up" not in result.stdout, result.stdout
+
+
+def test_help_documents_the_shard_flags() -> None:
+    result = run_dispatcher_help()
+    assert result.returncode == 0, result.stderr
+    assert "--shard K/N" in result.stdout, result.stdout
+    assert "--shard-plan N" in result.stdout, result.stdout
+    assert "exactly one shard" in result.stdout, result.stdout
+
+
+def test_hosted_linux_matrix_matches_the_dispatcher_shard_denominator() -> None:
+    """Branch protection stays honest only if the matrix covers every shard.
+
+    A matrix of [1,2,3] against `--shard N/4` would silently never run shard 4:
+    its commands would vanish from CI while every required check stayed green.
+    """
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    start = workflow.index("  build-and-test:\n")
+    following = re.search(r"^  [a-z][a-z0-9-]*:\n", workflow[start + 1 :], re.MULTILINE)
+    job = workflow[start : start + 1 + following.start()]
+
+    matrix = re.search(r"matrix:\n\s+shard: \[([0-9, ]+)\]", job)
+    assert matrix is not None, job
+    shards = [int(value) for value in matrix.group(1).split(",")]
+    assert shards == list(range(1, len(shards) + 1)), shards
+
+    denominators = re.findall(
+        r"ci-preflight-dispatcher\.sh --base origin/main --fail-fast "
+        r"--shard \$\{\{ matrix\.shard \}\}/(\d+)",
+        job,
+    )
+    assert denominators, job
+    assert {int(value) for value in denominators} == {len(shards)}, denominators
+
+    required = workflow[workflow.index("  linux-required:\n") :]
+    assert "name: Build & test (Linux)" in required, required
+    assert "needs.build-and-test.result" in required, required
+
+
+# ---------------------------------------------------------------------------
+# Failure diagnostics
+# ---------------------------------------------------------------------------
+
+
+def first_failure_cells(summary: str) -> list[str]:
+    """The First failure column of every FAILED row of the result table."""
+    cells = []
+    for line in summary.splitlines():
+        if not line.startswith("| `") or "FAILED" not in line:
+            continue
+        cells.append(line.rsplit("|", 2)[1].strip())
+    return cells
+
+
+def run_failing_commands(commands: str) -> tuple[subprocess.CompletedProcess[str], str]:
+    """Run synthetic failing commands under GitHub Actions; return the summary."""
+    with tempfile.TemporaryDirectory() as scratch:
+        step_summary = Path(scratch) / "step-summary.md"
+        local_summary = Path(scratch) / "preflight-summary.md"
+        result = run_dispatcher(
+            "some-unclassified-root-file.txt",
+            env={
+                "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+                "PREFLIGHT_TEST_COMMANDS": commands,
+                "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_STEP_SUMMARY": str(step_summary),
+                "PREFLIGHT_SUMMARY_FILE": str(local_summary),
+            },
+            dry_run=False,
+            timeout=60,
+        )
+        local_text = local_summary.read_text()
+        step_text = step_summary.read_text()
+    assert local_text == step_text.rstrip("\n") + "\n", (
+        "the local table and the GitHub step summary must be the same table"
+    )
+    return result, local_text
+
+
+def test_failing_command_emits_an_annotation_and_a_result_table() -> None:
+    result, summary = run_failing_commands(
+        "printf 'ok\\n'\nprintf 'boom\\nerror: cannot find value x\\n' >&2; exit 4\n"
+    )
+    assert result.returncode == 1, result.stdout
+
+    annotations = [
+        line for line in result.stdout.splitlines() if line.startswith("::error ")
+    ]
+    assert len(annotations) == 1, result.stdout
+    assert annotations[0].startswith(
+        "::error file=scripts/ci-preflight-dispatcher.sh,title="
+    ), annotations[0]
+    assert annotations[0].endswith("::error: cannot find value x"), annotations[0]
+
+    assert "| Command | Elapsed | Result | First failure |" in summary, summary
+    assert "| `printf 'ok\\n'` | 0s | ok |  |" in summary, summary
+    failing = next(line for line in summary.splitlines() if "FAILED (exit 4)" in line)
+    assert "error: cannot find value x" in failing, failing
+    assert "0 failure" not in summary, summary
+    assert "1 failure(s)." in summary, summary
+
+
+def test_first_failure_extraction_covers_every_gate_failure_shape() -> None:
+    """nextest, make, python and ratchet failures each yield their own line."""
+    cases = {
+        'printf "        FAIL [   1.234s] hew-cli::suite maps_ok\\n"; exit 1': (
+            "FAIL [   1.234s] hew-cli::suite maps_ok"
+        ),
+        'printf "warming\\nmake[1]: *** [Makefile:759: test] Error 2\\n"; exit 2': (
+            "make[1]: *** [Makefile:759: test] Error 2"
+        ),
+        'printf "Traceback\\nAssertionError: union missing 3 tests\\n"; exit 1': (
+            "AssertionError: union missing 3 tests"
+        ),
+        'printf "NOW-FAILS: tests/hew/actor.hew\\n"; exit 3': (
+            "NOW-FAILS: tests/hew/actor.hew"
+        ),
+        'printf "NOW-PASSES: tests/hew/actor.hew\\n"; exit 3': (
+            "NOW-PASSES: tests/hew/actor.hew"
+        ),
+        'printf "silent\\n"; exit 9': (
+            "exited 9 with no recognised failure line; see the step log"
+        ),
+    }
+    result, summary = run_failing_commands("\n".join(cases) + "\n")
+    assert result.returncode == 1, result.stdout
+    for command, expected in cases.items():
+        assert f"::{expected}" in result.stdout, (
+            f"no annotation carrying {expected!r} for {command!r}:\n{result.stdout}"
+        )
+        assert expected.replace("|", "\\|") in summary, summary
+
+
+def test_timeout_reports_the_budget_not_a_stray_log_line() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        local_summary = Path(scratch) / "preflight-summary.md"
+        result = run_dispatcher(
+            "some-unclassified-root-file.txt",
+            env={
+                "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+                "PREFLIGHT_TEST_COMMANDS": "printf 'error: red herring\\n'; sleep 30",
+                "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
+                "PREFLIGHT_TIMEOUT_FALLBACK": "1",
+                "GITHUB_ACTIONS": "true",
+                "PREFLIGHT_SUMMARY_FILE": str(local_summary),
+            },
+            dry_run=False,
+            timeout=60,
+        )
+        summary = local_summary.read_text()
+    assert result.returncode != 0, result.stdout
+    assert first_failure_cells(summary) == [
+        "exceeded the 1s budget and was killed (exit 143)"
+    ], summary
+    annotation = next(
+        line for line in result.stdout.splitlines() if line.startswith("::error ")
+    )
+    assert "budget and was killed" in annotation, annotation
+
+
+def test_counterfactual_output_never_becomes_the_reported_failure() -> None:
+    """A self-test's provoked bait must not outrank the real failure line.
+
+    A green self-test log carries "ORACLE gate: FAIL" and "error: ..." from
+    running the real gate against broken input. Those lines come FIRST, so an
+    unguarded first-match grep names the counterfactual instead of the defect.
+    """
+    bait = (
+        "CF-[t1-known-crash] ORACLE gate: FAIL\\n"
+        "CF-[t1-known-crash] error: provoked on purpose\\n"
+        "PASS oracle-flags-a-known-crash\\n"
+        "RATCHET FAIL: tests/hew/actor.hew regressed\\n"
+    )
+    result, summary = run_failing_commands(f"printf '{bait}'; exit 1\n")
+    assert result.returncode == 1, result.stdout
+    annotation = next(
+        line for line in result.stdout.splitlines() if line.startswith("::error ")
+    )
+    assert annotation.endswith("::RATCHET FAIL: tests/hew/actor.hew regressed"), (
+        annotation
+    )
+    assert first_failure_cells(summary) == [
+        "RATCHET FAIL: tests/hew/actor.hew regressed"
+    ], summary
+
+
+def test_counterfactual_marker_is_shared_by_every_producer() -> None:
+    """One marker string across the extractor and every counterfactual site."""
+    dispatcher = (ROOT / "scripts/ci-preflight-dispatcher.sh").read_text()
+    oracle = (ROOT / "scripts/fuzz/oracle-selftest.sh").read_text()
+    consumer = (ROOT / "scripts/tests/test_cargo_output_dir.py").read_text()
+    assert "PREFLIGHT_COUNTERFACTUAL_MARKER='CF-'" in dispatcher, dispatcher
+    assert 'COUNTERFACTUAL_MARKER="CF-"' in oracle, oracle
+    assert 'COUNTERFACTUAL_MARKER = "CF-"' in consumer, consumer
+    assert oracle.count('run_counterfactual "') == 4, (
+        "every unredirected oracle invocation must replay behind the marker"
+    )
+
+    makefile = (ROOT / "Makefile").read_text()
+    assert re.search(
+        r"^check-counterfactual-output:\n"
+        r"\tscripts/ci-preflight-dispatcher\.sh --check-counterfactual-output$",
+        makefile,
+        re.MULTILINE,
+    ), "the counterfactual-output gate must have a Makefile port"
+
+    selection = run_dispatcher("some-unclassified-root-file.txt")
+    assert "  - make check-counterfactual-output " in selection.stdout, (
+        "the comprehensive profile must run the counterfactual-output gate"
+    )
+
+
+def test_counterfactual_output_check_reuses_the_extractor_authority() -> None:
+    """The gate must judge output with the same pattern extraction uses.
+
+    A second copy of the pattern would let a gate pass this check and still
+    mislead the annotation, which is the whole failure it exists to prevent.
+    """
+    dispatcher = (ROOT / "scripts/ci-preflight-dispatcher.sh").read_text()
+    body = dispatcher.split("run_counterfactual_output_check() {", 1)[1]
+    body = body.split("\nDRY_RUN=0", 1)[0]
+    assert "$PREFLIGHT_FAILURE_LINE_RE" in body, body
+    assert "${PREFLIGHT_COUNTERFACTUAL_MARKER}" in body, body
+    assert dispatcher.count("PREFLIGHT_FAILURE_LINE_RE='") == 1, (
+        "the failure pattern must have exactly one definition"
+    )
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--check-counterfactual-output"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "counterfactual-output check: PASS" in result.stdout, result.stdout
+
+
+def test_signal_deaths_are_named_not_swallowed_by_the_fallback() -> None:
+    """A trap-killed gate must report the signal, not the generic fallback.
+
+    The shell reports these as a bare line with no "error" or "FAIL" token
+    anywhere, so without explicit patterns the whole compiled-Hew trap class
+    fell through to "exited N with no recognised failure line".
+    """
+    cases = {
+        'printf "Illegal instruction (core dumped)\\n"; exit 132': (
+            "Illegal instruction (core dumped)"
+        ),
+        'printf "Segmentation fault\\n"; exit 139': "Segmentation fault",
+        'printf "running\\nAborted\\n"; exit 134': "Aborted",
+        'printf "Bus error\\n"; exit 138': "Bus error",
+        'printf "zsh: trace trap  ./a.out\\n"; exit 133': "zsh: trace trap  ./a.out",
+        'printf "note\\nAbort trap: 6\\n"; exit 134': "Abort trap: 6",
+        'printf "(signal: 4, SIGILL: illegal instruction)\\n"; exit 101': (
+            "(signal: 4, SIGILL: illegal instruction)"
+        ),
+        'printf "test t ... killed by signal 11\\n"; exit 100': (
+            "test t ... killed by signal 11"
+        ),
+    }
+    result, summary = run_failing_commands("\n".join(cases) + "\n")
+    assert result.returncode == 1, result.stdout
+    reported = first_failure_cells(summary)
+    assert reported == list(cases.values()), reported
+    assert not any("no recognised failure line" in cell for cell in reported), reported
+
+
+def test_counterfactual_marker_must_be_a_line_prefix() -> None:
+    """A real failure that merely mentions the marker must not hide itself.
+
+    Matching CF- anywhere in the line would let any failure text containing it
+    — a diff of this protocol, a path like tests/CF-cases — vanish from the
+    annotation. The marker is a claim a gate makes about its own output by
+    putting it first, not a word that appears somewhere.
+    """
+    lines = (
+        "CF-[bait] ORACLE gate: FAIL\\n"
+        "   CF-[indented bait] error: still bait\\n"
+        "RATCHET FAIL: a diff of the CF- protocol regressed\\n"
+    )
+    result, summary = run_failing_commands(f"printf '{lines}'; exit 1\n")
+    assert result.returncode == 1, result.stdout
+    assert first_failure_cells(summary) == [
+        "RATCHET FAIL: a diff of the CF- protocol regressed"
+    ], summary
+
+
+def run_counterfactual_roster(roster: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["PREFLIGHT_TEST_ALLOW_OVERRIDE"] = "1"
+    env["PREFLIGHT_TEST_COUNTERFACTUAL_ROSTER"] = roster
+    return subprocess.run(
+        ["bash", str(SCRIPT), "--check-counterfactual-output"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+def test_counterfactual_check_rejects_a_gate_that_proves_nothing() -> None:
+    """A rostered gate that emits no marked line is a vacuous pass."""
+    silent = run_counterfactual_roster("true")
+    assert silent.returncode != 0, silent.stdout
+    assert "SILENT true" in silent.stderr, silent.stderr
+
+    proving = run_counterfactual_roster('printf "CF-[x] ORACLE gate: FAIL\\n"')
+    assert proving.returncode == 0, proving.stdout + proving.stderr
+    assert "1 marked line(s)" in proving.stdout, proving.stdout
+
+    offending = run_counterfactual_roster('printf "ORACLE gate: FAIL\\n"')
+    assert offending.returncode != 0, offending.stdout
+    assert "OFFENDS" in offending.stderr, offending.stderr
+
+    red = run_counterfactual_roster('printf "CF-[x] bait\\n"; exit 3')
+    assert red.returncode != 0, red.stdout
+    assert "UNPROVABLE" in red.stderr, red.stderr
+
+    mentions = run_counterfactual_roster(
+        'printf "a note about the CF- protocol\\nORACLE gate: FAIL\\n"'
+    )
+    assert mentions.returncode != 0, mentions.stdout
+    assert "OFFENDS" in mentions.stderr, mentions.stderr
+
+
+def test_every_rostered_gate_replays_its_counterfactual() -> None:
+    """The real roster is exactly the gates that drive a tool against bait."""
+    dispatcher = (ROOT / "scripts/ci-preflight-dispatcher.sh").read_text()
+    roster_block = dispatcher.split("COUNTERFACTUAL_ROSTER=(", 1)[1].split(")", 1)[0]
+    roster = re.findall(r'"([^"]+)"', roster_block)
+    assert roster, dispatcher
+    for absent in (
+        "make test-stdlib-execution-proofs",
+        "make freebsd-workflow-contract-check",
+    ):
+        assert absent not in roster, (
+            f"{absent} carries no counterfactual; rostering it is a vacuous pass"
+        )
+
+    marked_replay_sites = (
+        "scripts/ll-identity-selftest.sh",
+        "scripts/o2-differential-selftest.sh",
+        "scripts/tests/test_doc_ratchet_membership.sh",
+        "scripts/tests/test_macos_leak_oracle_runner.sh",
+        "scripts/tests/test_cargo_output_dir.py",
+        "scripts/fuzz/oracle-selftest.sh",
+    )
+    for path in marked_replay_sites:
+        text = (ROOT / path).read_text()
+        assert "COUNTERFACTUAL_MARKER" in text, f"{path} has no marked replay"
+        assert '"CF-"' in text, f"{path} uses a different marker"
+    assert "CF-[$$label]" in (ROOT / "Makefile").read_text(), (
+        "check-sanitizer-gate must replay its rejections marked"
+    )
+
+
+def test_no_annotation_is_emitted_outside_github_actions() -> None:
+    with tempfile.TemporaryDirectory() as scratch:
+        result = run_dispatcher(
+            "some-unclassified-root-file.txt",
+            env={
+                "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+                "PREFLIGHT_TEST_COMMANDS": "exit 5",
+                "PREFLIGHT_TEST_WARMUP_COMMANDS": "true",
+                "GITHUB_ACTIONS": "",
+                "PREFLIGHT_SUMMARY_FILE": str(Path(scratch) / "summary.md"),
+            },
+            dry_run=False,
+            timeout=30,
+        )
+        summary = (Path(scratch) / "summary.md").read_text()
+    assert result.returncode == 1, result.stdout
+    assert "::error" not in result.stdout, result.stdout
+    assert "FAILED (exit 5)" in summary, summary
+
+
 _TESTS = [
     test_makefile_routes_to_scripts_config_profile,
     test_scripts_path_routes_to_scripts_config_profile,
@@ -1026,6 +1741,12 @@ _TESTS = [
     test_fail_fast_stops_after_first_failure_and_profiles_only_run_commands,
     test_synthetic_timeout_via_run_loop,
     test_profile_json_records_elapsed_for_each_command,
+    test_compile_warmup_runs_first_and_has_a_summary_row,
+    test_rust_diff_derives_its_warmup_artifacts_before_commands,
+    test_docs_diff_has_no_warmup_block,
+    test_no_lane_warms_test_targets_with_all_targets,
+    test_comprehensive_warms_clippy_and_nextest_the_way_the_gates_build,
+    test_no_warmup_names_a_non_ci_nextest_profile,
     test_scripts_config_budget_annotation,
     test_runtime_net_lane_budget_annotation,
     test_runtime_net_lane_rebuilds_libhew,
@@ -1057,6 +1778,28 @@ _TESTS = [
     test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts,
     test_selected_commands_are_unique,
     test_selector_exports_fail_closed_compile_requirement,
+    # Shard partitioning
+    test_shard_plan_is_exhaustive_and_disjoint_for_every_profile,
+    test_shard_partition_preserves_relative_command_order,
+    test_ordering_dependent_commands_share_a_shard,
+    test_shard_selection_runs_exactly_its_planned_commands,
+    test_shard_warmup_is_scoped_to_that_shard_commands,
+    test_invalid_shard_specs_fail_closed,
+    test_shard_plan_prints_the_full_assignment_and_runs_nothing,
+    test_help_documents_the_shard_flags,
+    test_hosted_linux_matrix_matches_the_dispatcher_shard_denominator,
+    # Failure diagnostics
+    test_failing_command_emits_an_annotation_and_a_result_table,
+    test_first_failure_extraction_covers_every_gate_failure_shape,
+    test_timeout_reports_the_budget_not_a_stray_log_line,
+    test_counterfactual_output_never_becomes_the_reported_failure,
+    test_counterfactual_marker_is_shared_by_every_producer,
+    test_counterfactual_output_check_reuses_the_extractor_authority,
+    test_signal_deaths_are_named_not_swallowed_by_the_fallback,
+    test_counterfactual_marker_must_be_a_line_prefix,
+    test_counterfactual_check_rejects_a_gate_that_proves_nothing,
+    test_every_rostered_gate_replays_its_counterfactual,
+    test_no_annotation_is_emitted_outside_github_actions,
 ]
 
 if __name__ == "__main__":

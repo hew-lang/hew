@@ -216,6 +216,7 @@ pub(super) fn elaborate(
         &outbound_records,
         &builder.opaque_handle_names,
         &builder.lifecycle_registry,
+        &builder.fresh_variant_payload_binder_locals,
         &builder.proven_borrow_call_args,
         &builder.module_fn_names,
         &builder.module_generic_fn_names,
@@ -803,6 +804,32 @@ pub(super) fn elaborate(
             &builder.locals,
             &projection_alias_tainted,
         );
+    // A projected builtin handle can defer to its enum carrier only when that
+    // carrier actually earned an `EnumInPlace` drop. If carrier admission was
+    // withheld, suppressing the binder as an alias removes both release paths.
+    // Keep alias suppression only for the exact carrier bindings present in the
+    // enum allow-set; otherwise the binder remains the sole close authority.
+    let payload_alias_carriers = collect_payload_alias_map(&checked.blocks);
+    borrowed_builtin_handle_projection_aliases.retain(|binding| {
+        let Some(alias_local) = builder
+            .binding_locals
+            .get(binding)
+            .and_then(|place| base_local(*place))
+        else {
+            return false;
+        };
+        let Some(carrier_local) = payload_alias_carriers.get(&alias_local) else {
+            return true;
+        };
+        owned_locals_snapshot.iter().any(|(carrier, _, _)| {
+            enum_composite_drop_allowed.contains(carrier)
+                && builder
+                    .binding_locals
+                    .get(carrier)
+                    .and_then(|place| base_local(*place))
+                    == Some(*carrier_local)
+        })
+    });
     let owned_tuple_handle_projections = derive_owned_tuple_handle_projection_bindings(
         &checked.blocks,
         &owned_locals_snapshot,
@@ -2629,6 +2656,9 @@ fn apply_balance_instr(
                 if let Some(root) = cx.tracked_root(*arg) {
                     if consumed == Some(i) {
                         obligation_entry(state, root).definite_discharge();
+                    } else if i == 0 && call.symbol() == "hew_structural_format" {
+                        // Structural formatting observes the value by address.
+                        // It neither transfers nor clones any ownership authority.
                     } else {
                         // Runtime calls outside the consuming table borrow
                         // their heap args; widen only (a symbol this table
@@ -6649,6 +6679,13 @@ pub(super) fn string_binder_read_is_user_fn_borrow(
 /// there must get the SAME arg[0] receiver-borrow exemption. Conservative:
 /// `false` unless the only references to `binder` are the borrowed receiver.
 pub(super) fn binder_read_is_borrow_safe_instr(instr: &Instr, binder: u32) -> bool {
+    if matches!(
+        instr,
+        Instr::IntCmp { lhs, rhs, .. }
+            if place_refs_local(*lhs, binder) || place_refs_local(*rhs, binder)
+    ) {
+        return true;
+    }
     if let Instr::CallRuntimeAbi(call) = instr {
         let contract = crate::runtime_symbols::callee_ownership_contract(call.symbol());
         if contract.borrows_string_call_args() {
@@ -6761,6 +6798,29 @@ pub(super) fn enumerate_exits(
     // carrier.
     let payload_alias_carrier = collect_payload_alias_map(blocks);
 
+    // Carrier locals that are non-owning borrowed views of persistent actor
+    // state (`ActorStateFieldLoad { mode: Borrowed }` — a bare byte-copy alias;
+    // codegen retains nothing). Such a carrier never held an in-function drop
+    // obligation, so "its drop is absent from this edge" carries no signal of
+    // withheld admission: the actor FIELD owns the composite and frees its
+    // payload recursively for the actor's whole lifetime. A payload binder
+    // destructured out of one (`match self.field { Ok(r) => ... }`) must stay
+    // alias-suppressed on every exit — granting it sole close authority would
+    // release a handle the actor still owns (a `MonitorRef` scope-close here
+    // demonitors immediately after arming).
+    let borrowed_view_carrier_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::ActorStateFieldLoad {
+                dest,
+                mode: crate::model::ActorStateLoadMode::Borrowed,
+                ..
+            } => base_local(*dest),
+            _ => None,
+        })
+        .collect();
+
     // Narrow the function-wide LIFO to the drops whose owning binding is
     // live (`Live` / `MaybeConsumed` / `AliasedIntoAggregate`) in `state_map`.
     // A binding `Consumed` (moved out) or `Uninit` (not yet, or never,
@@ -6824,7 +6884,10 @@ pub(super) fn enumerate_exits(
                     return true;
                 }
                 match payload_alias_carrier.get(&l) {
-                    Some(carrier) => !carrier_locals_present.contains(carrier),
+                    Some(carrier) => {
+                        !carrier_locals_present.contains(carrier)
+                            && !borrowed_view_carrier_locals.contains(carrier)
+                    }
                     None => true,
                 }
             })
@@ -6935,11 +6998,19 @@ pub(super) fn enumerate_exits(
     // outer `Result` composite is STILL live past the join and frees `inner`
     // recursively at the eventual `Return`. Dropping `inner` on the goto here AND
     // letting the composite free it at the return double-frees the payload string
-    // (DI-020). The taint exactly identifies these non-sole-owner aliases, so the
-    // scope-close release stays limited to genuinely sole-owned bindings that
-    // leave scope (a resource handle, a leaf cow owner) — the leak the
-    // scope-close pass exists to close — while a payload alias is left to its
-    // composite's single recursive free.
+    // (DI-020).
+    //
+    // The suppression stays UNCONDITIONAL here, unlike the terminal-exit filter
+    // above. Carrier absence from a single edge's live drop set is not evidence
+    // that carrier admission was withheld: the obligation checker folds every
+    // alias discharge back onto the carrier mint, so a sibling binder of the same
+    // carrier discharging at a LATER exit on the same path is invisible to this
+    // edge. Reading absence as withheld admission double-freed
+    // `std$net$connect_timeout`, whose `Ok`/`Err` binders both alias one
+    // `__hew_call_scrutinee` mint. Conditional payload close authority is restored
+    // by keeping the owned binder's Place reachable through
+    // `deferred_drop_binding_locals` (see `lower_function`), not by relaxing this
+    // filter.
     //
     // The single function-wide taint set was computed with the REAL `locals`
     // table (not an empty slice), so the `string`
@@ -6957,9 +7028,6 @@ pub(super) fn enumerate_exits(
         drops_for_exit(block_id)
             .into_iter()
             .filter(|drop| {
-                // A projection-alias payload binder is owned by its composite,
-                // which frees it recursively at its own exit — never drop it on a
-                // scope-close edge (no double-free).
                 if let Some(l) = base_local(drop.place) {
                     if projection_alias_tainted.contains(&l) {
                         return false;
@@ -8467,7 +8535,7 @@ mod twin_gate_classifier {
     //! verdict is pinned here directly on synthetic HIR. Exact-value assertions
     //! (the precise origin variant), fail-closed by default.
     use super::*;
-    use crate::return_provenance::{AliasBits, CallScrutineeProvenance, ExternContractTable};
+    use hew_hir::HirProducedValueProducer;
 
     fn expr(kind: HirExprKind, ty: ResolvedTy) -> HirExpr {
         HirExpr {
@@ -8489,6 +8557,30 @@ mod twin_gate_classifier {
             },
             ty,
         )
+    }
+
+    /// A `ParamOwnershipFacts` publishing one call produced-value fact at the
+    /// shared synthetic call site (`SiteId(u32::MAX)`, see `expr` above).
+    /// Stands in for the checker's HIR-level publication — the same fact
+    /// `classify_call_arm_scrutinee_origin` reads to decide the move-out.
+    fn call_result_facts(ownership: ProducedValueOwnership) -> ParamOwnershipFacts {
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            SiteId(u32::MAX),
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::Call,
+                ownership,
+                relation: HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        facts
+    }
+
+    fn borrowed_call_result_facts() -> ParamOwnershipFacts {
+        call_result_facts(ProducedValueOwnership::Borrowed)
     }
 
     fn is_alias_reject(o: &ProjectedPayloadOrigin) -> bool {
@@ -8580,19 +8672,15 @@ mod twin_gate_classifier {
 
     #[test]
     fn call_forwarding_a_param_summary_rejects() {
-        // A resolved module-fn callee whose precise summary carries PARAM forwards
-        // a by-value heap parameter — the twin gate rejects it (defence-in-depth
-        // for the #2523 forwarding-call twin; the preflight owns the same reject).
-        let mut b = Builder::default();
-        let mut provenance = HashMap::new();
-        provenance.insert(hew_hir::ItemId(7), AliasBits::PARAM);
-        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
-            provenance,
-            extern_names: HashSet::new(),
-            extern_table: ExternContractTable::default(),
-            may_mutate: HashMap::new(),
-            ..CallScrutineeProvenance::default()
-        });
+        // A module-fn callee whose HIR-checked produced-value fact is `Borrowed`
+        // forwards a by-value heap parameter — the classify arm treats a
+        // `Borrowed` call result as caller-visible-alias and rejects the move
+        // (the checker publishes this fact for a PARAM-forwarding return; see
+        // `resolve_user_call_facts` in hew-hir/src/verify.rs).
+        let b = Builder {
+            param_ownership: Rc::new(borrowed_call_result_facts()),
+            ..Builder::default()
+        };
         let callee = expr(
             HirExprKind::BindingRef {
                 name: "passthru".to_string(),
@@ -8623,118 +8711,69 @@ mod twin_gate_classifier {
         );
     }
 
+    /// Pin every `ProducedValueOwnership` state the call arm can be handed
+    /// against the verdict it must produce. A single-state test cannot fail on
+    /// an arm merged into the wrong bucket, because `Owned`, `NoOwner` and
+    /// `Unknown` all admit today: only the whole table distinguishes "the
+    /// classifier read the checker's verdict" from "the classifier fell
+    /// through to the legacy admit".
     #[test]
-    fn call_forwarding_a_param_summary_over_fresh_arg_admits() {
-        // S2b — the arg-scan rescue: the SAME `{PARAM}`-only callee over an
-        // inline string literal is a fresh sole owner (the template/semver
-        // stdlib shape) → the twin gate agrees with the preflight's Admit.
-        let mut b = Builder::default();
-        let mut provenance = HashMap::new();
-        provenance.insert(hew_hir::ItemId(7), AliasBits::PARAM);
-        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
-            provenance,
-            extern_names: HashSet::new(),
-            extern_table: ExternContractTable::default(),
-            may_mutate: HashMap::new(),
-            ..CallScrutineeProvenance::default()
-        });
-        let callee = expr(
-            HirExprKind::BindingRef {
-                name: "try_parse".to_string(),
-                resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
-            },
-            ResolvedTy::Unit,
-        );
-        let literal_arg = expr(
-            HirExprKind::Literal(hew_hir::HirLiteral::String("hello {{.name".to_string())),
-            ResolvedTy::String,
-        );
-        let call = expr(
-            HirExprKind::Call {
-                target: hew_types::CallTarget::IndirectFunctionValue,
-                callee: Box::new(callee),
-                args: vec![literal_arg],
-            },
-            ResolvedTy::String,
-        );
-        assert!(
-            is_ephemeral(&b.classify_scrutinee_origin(&call)),
-            "a ParamsOnly callee over an inline-fresh literal arg is a fresh sole owner"
-        );
-    }
-
-    #[test]
-    fn call_with_mixed_param_opaque_summary_rejects_despite_fresh_args() {
-        // A mixed `PARAM|OPAQUE` summary is never arg-rescuable — the OPAQUE
-        // component can alias a capture/global regardless of the arguments.
-        let mut b = Builder::default();
-        let mut provenance = HashMap::new();
-        provenance.insert(hew_hir::ItemId(7), AliasBits::PARAM | AliasBits::OPAQUE);
-        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
-            provenance,
-            extern_names: HashSet::new(),
-            extern_table: ExternContractTable::default(),
-            may_mutate: HashMap::new(),
-            ..CallScrutineeProvenance::default()
-        });
-        let callee = expr(
-            HirExprKind::BindingRef {
-                name: "mixed".to_string(),
-                resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
-            },
-            ResolvedTy::Unit,
-        );
-        let literal_arg = expr(
-            HirExprKind::Literal(hew_hir::HirLiteral::String("x".to_string())),
-            ResolvedTy::String,
-        );
-        let call = expr(
-            HirExprKind::Call {
-                target: hew_types::CallTarget::IndirectFunctionValue,
-                callee: Box::new(callee),
-                args: vec![literal_arg],
-            },
-            ResolvedTy::String,
-        );
-        assert!(
-            is_alias_reject(&b.classify_scrutinee_origin(&call)),
-            "a PARAM|OPAQUE summary must reject even over fresh args"
-        );
-    }
-
-    #[test]
-    fn call_to_a_fresh_summary_admits() {
-        // A resolved module-fn callee with no PARAM bit keeps today's admission
-        // (the interim legacy window).
-        let mut b = Builder::default();
-        let mut provenance = HashMap::new();
-        provenance.insert(hew_hir::ItemId(7), AliasBits::EMPTY);
-        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
-            provenance,
-            extern_names: HashSet::new(),
-            extern_table: ExternContractTable::default(),
-            may_mutate: HashMap::new(),
-            ..CallScrutineeProvenance::default()
-        });
-        let callee = expr(
-            HirExprKind::BindingRef {
-                name: "make_fresh".to_string(),
-                resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
-            },
-            ResolvedTy::Unit,
-        );
-        let call = expr(
-            HirExprKind::Call {
-                target: hew_types::CallTarget::IndirectFunctionValue,
-                callee: Box::new(callee),
-                args: vec![],
-            },
-            ResolvedTy::String,
-        );
-        assert!(
-            is_ephemeral(&b.classify_scrutinee_origin(&call)),
-            "a fresh-summary call scrutinee is an ephemeral fresh owner"
-        );
+    fn call_result_ownership_selects_the_payload_transfer_verdict() {
+        let cases: [(ProducedValueOwnership, bool); 5] = [
+            // A fresh owned result is the sole owner of its temporary, so the
+            // payload transfer can neutralize that temporary.
+            (
+                ProducedValueOwnership::owned(hew_types::ProducedValueAcquisition::Fresh),
+                true,
+            ),
+            // A borrowed result may forward caller-visible storage.
+            (ProducedValueOwnership::Borrowed, false),
+            // A receiver-identity result IS the receiver's storage.
+            (ProducedValueOwnership::ReceiverIdentity, false),
+            // A foreign result mints no caller-side release; it is outside the
+            // payload-transfer rule and keeps the legacy admission.
+            (ProducedValueOwnership::NoOwner, true),
+            // The interim legacy fail-open window: an unresolved call still
+            // admits. This row fails when that window closes, which is the
+            // signal to retire the row rather than loosen the classifier.
+            (ProducedValueOwnership::Unknown, true),
+        ];
+        for (ownership, admits) in cases {
+            let b = Builder {
+                param_ownership: Rc::new(call_result_facts(ownership)),
+                ..Builder::default()
+            };
+            let callee = expr(
+                HirExprKind::BindingRef {
+                    name: "produce".to_string(),
+                    resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
+                },
+                ResolvedTy::Unit,
+            );
+            let literal_arg = expr(
+                HirExprKind::Literal(hew_hir::HirLiteral::String("hello".to_string())),
+                ResolvedTy::String,
+            );
+            let call = expr(
+                HirExprKind::Call {
+                    target: hew_types::CallTarget::IndirectFunctionValue,
+                    callee: Box::new(callee),
+                    args: vec![literal_arg],
+                },
+                ResolvedTy::String,
+            );
+            let origin = b.classify_scrutinee_origin(&call);
+            assert_eq!(
+                is_ephemeral(&origin),
+                admits,
+                "{ownership:?} call result took the wrong payload-transfer verdict: {origin:?}"
+            );
+            assert_eq!(
+                is_alias_reject(&origin),
+                !admits,
+                "{ownership:?} call result took the wrong payload-transfer verdict: {origin:?}"
+            );
+        }
     }
 }
 #[cfg(test)]

@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 use super::{
     apply_nested_fresh_bytes_temp_drops, apply_nested_fresh_string_temp_drops, base_local,
     check_function, check_to_diagnostic, collect_unknown_type_diagnostics, dataflow, elaborate,
@@ -257,7 +262,7 @@ impl Builder {
     /// That fallback retires when a whole-value retain/clone authority exists
     /// for those leaf classes (copy-on-write north star); extend the predicate, not this
     /// match.
-    fn closure_env_capture_ownership(
+    pub(super) fn closure_env_capture_ownership(
         &self,
         strategy: crate::closure_env::AllocationStrategy,
         ty: &ResolvedTy,
@@ -265,9 +270,19 @@ impl Builder {
         mode: hew_types::ClosureCaptureMode,
     ) -> ClosureEnvFieldOwnership {
         match strategy {
-            crate::closure_env::AllocationStrategy::Stack
-            | crate::closure_env::AllocationStrategy::ScopeOwned => {
-                ClosureEnvFieldOwnership::BorrowsOnly
+            crate::closure_env::AllocationStrategy::Stack => ClosureEnvFieldOwnership::BorrowsOnly,
+            crate::closure_env::AllocationStrategy::ScopeOwned => {
+                let ty = self.subst_ty(ty);
+                let nothing_to_own =
+                    ValueClass::of_ty(&ty, &self.type_classes) == ValueClass::BitCopy;
+                let proven_foreign = source_binding
+                    .is_some_and(|binding| self.proven_foreign_bindings.contains(&binding));
+                if mode == hew_types::ClosureCaptureMode::Move && !nothing_to_own && !proven_foreign
+                {
+                    ClosureEnvFieldOwnership::OwnsMoved
+                } else {
+                    ClosureEnvFieldOwnership::BorrowsOnly
+                }
             }
             crate::closure_env::AllocationStrategy::Heap => {
                 let ty = self.subst_ty(ty);
@@ -779,7 +794,7 @@ impl Builder {
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
-            declaration: hew_types::DefId::new(shim_name),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(shim_name),
             name: shim_name.to_string(),
             type_params: Vec::new(),
             is_generator: false,
@@ -963,7 +978,7 @@ impl Builder {
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
-            declaration: hew_types::DefId::new(shim_name),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(shim_name),
             name: shim_name.to_string(),
             type_params: Vec::new(),
             is_generator: false,
@@ -1498,7 +1513,7 @@ impl Builder {
         let synthetic_fn = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
-            declaration: hew_types::DefId::new(body_name.clone()),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(body_name.clone()),
             name: body_name.clone(),
             type_params: Vec::new(),
             is_generator: false,
@@ -2403,7 +2418,7 @@ impl Builder {
         let synthetic_fn = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
-            declaration: hew_types::DefId::new(body_name.clone()),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(body_name.clone()),
             name: body_name.clone(),
             type_params: Vec::new(),
             is_generator: false,

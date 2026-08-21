@@ -413,6 +413,7 @@ if [[ "${arith_status}" -ne 5 ]]; then
 fi
 
 run_accept_expect_stdout "hello_println"
+run_accept_expect_stdout "structural_rendering"
 
 run_accept_expect_status "assert" 0
 
@@ -489,7 +490,16 @@ expect_check_fail_contains \
 # bindings + a helper chain) must keep compiling and produce deterministic
 # output — the D108 non-regression the return-provenance preflight protects.
 run_accept_expect_stdout "call_scrutinee_fresh_forwarder_release"
+run_accept_expect_stdout "json_try_parse_direct_match_payload"
 run_accept_expect_stdout "enum_mixed_leaf_resource_drop"
+
+# A call result is movable only when it is a fresh owner. A parameter forwarder
+# returns caller-visible storage, so matching its heap payload must keep the
+# aliasing rejection rather than treating all Result returns as fresh.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/match_result_param_alias_payload.hew" \
+  "may alias caller storage" \
+  "match_result_param_alias_payload"
 
 # Close-obligated collection borrows: `v[i]` over a `#[resource]`-bearing
 # element is a BORROW (the collection is the single release authority), and
@@ -1210,6 +1220,24 @@ run_accept_expect_stdout "user_resource_close_multiple_types"
 # prints `7` twice and aborts at the resource sentinel. (Cross-eco security
 # gate bug 1.)
 run_accept_expect_stdout "resource_nonreceiver_method_arg_drops_once"
+
+# A fluent builder transfers a consumed child into its receiver while returning
+# that receiver, matching the standard encoding value-tree contract. The accept
+# fixture also pins both explicit release spellings: compiler-visible `close()`
+# and its consuming `free()` compatibility alias. It goes through `compile`, not
+# `check`: its `extern "C"` sinks are the runtime's real json ownership entry
+# points, so link failure is a regression this fixture must surface here rather
+# than only in the fuzz oracle that compiles and runs the whole accept corpus.
+compile_accept "consume_param_transfer_builder"
+
+# Reusing the transferred child must fail at checked MIR with main's concrete
+# consume-parameter diagnostic.
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/consume_param_transfer_builder_use_after_move.hew" \
+    'binding `child` is used after it was consumed' \
+    "consume param transfer builder use after move"
+grep -qF 'MIR kind: UseAfterConsume' "${reject_output}"
 
 # Drop-obligation lattice, `MachineStatePayload` position: a `#[resource]` /
 # `#[linear]` value in a machine state payload has no wired release on
@@ -2851,6 +2879,22 @@ run_accept_expect_stdout "fork_args_spawn"
 # and a heap-string arg. The block form collapses to a nameless scope spawn;
 # the fork-entry shim transfers args the same way as the named form.
 run_accept_expect_stdout "fork_block_args_spawn"
+run_accept_expect_status "fork_multi_statement_concurrent" 0
+for marker in first-start second-start first-end second-end complete; do
+  grep -qFx -- "${marker}" "${stdout_output}"
+done
+last_start_line="$(grep -nE '^(first|second)-start$' "${stdout_output}" | tail -n 1 | cut -d: -f1)"
+first_end_line="$(grep -nE '^(first|second)-end$' "${stdout_output}" | head -n 1 | cut -d: -f1)"
+if [[ "${last_start_line}" -ge "${first_end_line}" ]]; then
+  echo "expected both fork children to start before either child finished" >&2
+  cat "${stdout_output}" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic delimiters.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/fork_parent_borrow_capture.hew" \
+  'fork body cannot borrow parent binding `label`' \
+  "fork_parent_borrow_capture"
 
 # Reject: parent use of a non-Copy string arg after `fork { f(arg); }` must
 # report UseAfterMove — parity with the named `fork t = f(arg)` form. Without
@@ -2909,17 +2953,6 @@ if grep -q 'E_CODEGEN_FRONT' "${reject_output}"; then
   echo "fork-block arg type mismatch must fail at the checker, not codegen" >&2
   exit 1
 fi
-
-# Reject: `fork { ... }` block with multiple statements.
-# Pins the HIR fail-closed fork-block body boundary.
-if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_multi_stmt.hew" >"${reject_output}" 2>&1; then
-  echo "expected fork-multi-stmt fixture to fail" >&2
-  exit 1
-fi
-grep -q 'E_HIR' "${reject_output}"
-# shellcheck disable=SC2016  # backticks in the pattern are literal — they match
-# the diagnostic text, not a command substitution.
-grep -qF 'multi-statement `fork { }` bodies are not yet supported' "${reject_output}"
 
 # Reject: `after(duration) { ... }` with a non-empty timeout body in a
 # CONTEXTLESS caller. The HIR shape gate now admits non-empty bodies (MIR
@@ -3735,6 +3768,10 @@ run_accept_expect_status "vec_range_slice_inclusive" 3
 run_accept_expect_stdout "hashmap_values_scalar"
 run_accept_expect_stdout "hashmap_values_string"
 run_accept_expect_status "hashmap_generic_ops" 0
+run_accept_expect_status "temporary_receiver_method" 0
+run_accept_expect_status "temporary_receiver_for" 0
+run_accept_expect_status "temporary_receiver_argument" 0
+run_accept_expect_status "temporary_receiver_binding" 0
 run_accept_expect_stdout "vec_scalar_range_slice"
 run_accept_expect_stdout "vec_string_range_slice"
 run_accept_expect_stdout "vec_record_range_slice"
@@ -5198,7 +5235,8 @@ if "${HEW}" check \
   echo "expected record_clone_unclonable_field fixture to fail" >&2
   exit 1
 fi
-grep -q 'contains an opaque field' "${reject_output}"
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -q 'member `inner` contains opaque value' "${reject_output}"
 
 # Affine records are move-only even when their physical fields are all
 # structurally cloneable. Both explicit clone spellings must reject resource
@@ -5240,6 +5278,92 @@ grep -q 'ArrayWrapper.*LinearTicket' "${reject_output}"
 grep -q 'Vec<ResourceToken>.*ResourceToken' "${reject_output}"
 grep -q 'HashMap<string, LinearTicket>.*LinearTicket' "${reject_output}"
 
+# Built-in aggregates and records share the same member-wise clone admission.
+# A resource nested through record -> Option -> tuple must name the exact member
+# path and stop before MIR can manufacture a second owner.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/structural_clone_resource_member.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected structural_clone_resource_member fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'member `item.Some.1`' "${reject_output}"
+grep -q 'affine close contract and no semantic clone' "${reject_output}"
+
+# Equality refusal likewise names the first member without a meaningful
+# structural comparison path.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/structural_equality_function_member.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected structural_equality_function_member fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'member `callback` is ineligible' "${reject_output}"
+grep -qF 'fn(i64) -> i64' "${reject_output}"
+
+# A type parameter's clone capability inside a generic template comes from its
+# declared BOUND. An unbounded `T` grants none, and the refusal names the member
+# path and the parameter rather than deferring to monomorphisation.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/structural_clone_unbounded_generic.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected structural_clone_unbounded_generic fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'member `Some` of type `T`' "${reject_output}"
+grep -q 'has no Clone capability' "${reject_output}"
+
+# Structural equality over a type parameter is admitted in the template and
+# re-decided at instantiation. The CHECKER must refuse an ineligible
+# instantiation and name the member; codegen must never be the first to notice.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/structural_equality_generic_instantiation.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected structural_equality_generic_instantiation fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'member `Some` is ineligible' "${reject_output}"
+grep -qF 'HashMap<string, i64>' "${reject_output}"
+if grep -q 'E_CODEGEN_FRONT_FAIL_CLOSED' "${reject_output}"; then
+  echo "codegen must not be the first to notice an ineligible instantiation" >&2
+  exit 1
+fi
+
+# Method applications record their instantiation through the same authority as
+# free calls: the receiver's type arguments are the only record of what the
+# impl-level parameter became, since the signature lookup already substituted
+# them out.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/structural_equality_method_instantiation.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected structural_equality_method_instantiation fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'member `Some` is ineligible' "${reject_output}"
+grep -qF 'HashMap<string, i64>' "${reject_output}"
+if grep -q 'E_CODEGEN_FRONT_FAIL_CLOSED' "${reject_output}"; then
+  echo "codegen must not be the first to notice a method instantiation" >&2
+  exit 1
+fi
+
+# A refcounted shared handle inside an aggregate has no aggregate-ingress
+# retain, so the composite drop plan would release it once per owner. Fail
+# closed at the checker rather than emitting a program that double-frees.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/structural_clone_rc_member.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected structural_clone_rc_member fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'member `0` of type `Rc<Node>`' "${reject_output}"
+grep -q 'no aggregate-ingress retain' "${reject_output}"
+
 # User-defined GENERIC record `clone` on an instantiation whose type parameter
 # resolves to an opaque handle (`Box<Handle>`) must be rejected too — the
 # admissibility opaque walk is substitution-aware (instantiates `item: T` to
@@ -5250,7 +5374,8 @@ if "${HEW}" check \
   echo "expected generic_record_clone_opaque_leaf fixture to fail" >&2
   exit 1
 fi
-grep -q 'contains an opaque field' "${reject_output}"
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -q 'member `item` contains opaque value' "${reject_output}"
 
 # Enum twin: `clone <enum>` on an enum whose variant payload is an opaque handle
 # must be rejected too — the admissibility opaque walk recurses into enum
@@ -5261,7 +5386,8 @@ if "${HEW}" check \
   echo "expected enum_clone_unclonable_payload fixture to fail" >&2
   exit 1
 fi
-grep -q 'contains an opaque field' "${reject_output}"
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -q 'member `Live.0` contains opaque value' "${reject_output}"
 
 # ---------------------------------------------------------------------------
 # let-destructure: record/struct product-type irrefutable patterns

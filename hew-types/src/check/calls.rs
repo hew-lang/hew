@@ -3,6 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::check::types::GenericCallee;
 
 pub(super) enum SignatureArgApplication<'a> {
     PositionalOnly {
@@ -304,6 +305,10 @@ impl Checker {
         );
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "call application needs the signature, source args, span, arity mode, and the callee identity that makes generic obligations discoverable"
+    )]
     pub(super) fn apply_instantiated_call_signature(
         &mut self,
         sig: &FnSig,
@@ -312,6 +317,7 @@ impl Checker {
         span: &Span,
         arg_application: SignatureArgApplication<'_>,
         record_call_type_args: bool,
+        callee: Option<GenericCallee<'_>>,
     ) -> AppliedCallSignature {
         let empty_assoc_bindings = HashMap::new();
         self.apply_instantiated_call_signature_with_assoc(
@@ -322,6 +328,7 @@ impl Checker {
             span,
             arg_application,
             record_call_type_args,
+            callee,
         )
     }
 
@@ -338,6 +345,7 @@ impl Checker {
         span: &Span,
         arg_application: SignatureArgApplication<'_>,
         record_call_type_args: bool,
+        callee: Option<GenericCallee<'_>>,
     ) -> AppliedCallSignature {
         let (freshened_params, freshened_ret, resolved_type_args) =
             self.instantiate_fn_sig_for_call(sig, type_args, span);
@@ -432,6 +440,15 @@ impl Checker {
 
         if record_call_type_args && !sig.type_params.is_empty() {
             self.record_concrete_call_type_args(span, &resolved_type_args);
+        }
+
+        // THE recording point for generic applications. Every application shape
+        // funnels through here, so structural-equality obligations are observed
+        // for methods and trait-impl methods exactly as they are for free
+        // functions — recording at individual dispatch sites is what previously
+        // left the method surface unchecked.
+        if let Some(callee) = callee {
+            self.record_generic_application(callee, &sig.type_params, &resolved_type_args, span);
         }
 
         AppliedCallSignature {
@@ -1066,6 +1083,7 @@ impl Checker {
                 module_qualified: true,
             },
             true,
+            Some(GenericCallee::Function { key: &key }),
         );
         self.record_resolved_direct_call_ownership(
             &key,
@@ -1210,7 +1228,7 @@ impl Checker {
                 format!("{module}.{name}")
             },
         );
-        Some(CallTarget::User(crate::DefId::new(declaration)))
+        Some(CallTarget::User(crate::identity::mint_def_id(declaration)))
     }
 
     #[expect(
@@ -1250,7 +1268,7 @@ impl Checker {
                 .unwrap_or(signature_key)
                 .to_string();
             return CallTarget::Extern {
-                declaration: crate::DefId::new(declaration),
+                declaration: crate::identity::mint_def_id(declaration),
                 endpoint: extern_decl.symbol.clone(),
                 trusted_compiled_stdlib: extern_decl
                     .declaring_module
@@ -1325,7 +1343,7 @@ impl Checker {
                 // the missing declaration owner even when the signature was
                 // populated by an earlier graph-registration pass that did
                 // not retain a second `fn_def_spans` compatibility entry.
-                return CallTarget::User(crate::DefId::new(declaration));
+                return CallTarget::User(crate::identity::mint_def_id(declaration));
             }
         }
         // rc1-F1 stage A: a bare spelling that reaches this rung re-anchors
@@ -1343,7 +1361,7 @@ impl Checker {
             self.current_module_idx,
             signature_key.to_string(),
         )) {
-            return CallTarget::User(crate::DefId::new(source_key));
+            return CallTarget::User(crate::identity::mint_def_id(source_key));
         }
         // Compiler-registered builtins have no source declaration span. Their
         // executable identity comes from the typed registry populated during
@@ -2101,6 +2119,9 @@ impl Checker {
                 // monomorphised symbol; skipping these sites starved that
                 // pipeline and tripped the NYI function-call lowering arm.
                 true,
+                Some(GenericCallee::Function {
+                    key: &resolved_fn_name,
+                }),
             );
 
             let target = self.call_target_for_signature(&resolved_fn_name);
@@ -2202,6 +2223,9 @@ impl Checker {
                         // still-`Ty::Var` arg to the output-boundary prune, which
                         // keeps the checker output fail-closed.
                         true,
+                        // A lambda value has no `fn_sigs` key, so no generic body can have
+                        // raised an obligation against it.
+                        None,
                     )
                     .return_type;
             }
@@ -2831,7 +2855,9 @@ mod channel_layout_target_tests {
 
         assert_eq!(
             checker.call_target_for_signature("wire.duplex_pair"),
-            CallTarget::User(crate::DefId::new("app.transport.duplex_pair".to_string()))
+            CallTarget::User(crate::DefId::for_test(
+                "app.transport.duplex_pair".to_string()
+            ))
         );
     }
 

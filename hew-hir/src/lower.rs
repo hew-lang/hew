@@ -4874,7 +4874,7 @@ pub fn lower_program_with_mono_cap(
                     items.push(HirItem::ExternFn(crate::node::HirExternFn {
                         id: ctx.ids.item(),
                         node: ctx.ids.node(),
-                        declaration: hew_types::DefId::new(
+                        declaration: hew_types::DefId::legacy_reconstruct_from_full_path(
                             ctx.current_module_name.as_ref().map_or_else(
                                 || func.name.clone(),
                                 |module| format!("{module}.{}", func.name),
@@ -5214,10 +5214,10 @@ pub fn lower_program_with_mono_cap(
                                 items.push(HirItem::ExternFn(crate::node::HirExternFn {
                                     id: ctx.ids.item(),
                                     node: ctx.ids.node(),
-                                    declaration: hew_types::DefId::new(format!(
-                                        "{source_module}.{}",
-                                        func.name
-                                    )),
+                                    declaration:
+                                        hew_types::DefId::legacy_reconstruct_from_full_path(
+                                            format!("{source_module}.{}", func.name),
+                                        ),
                                     name: func.name.clone(),
                                     abi: block.abi.clone(),
                                     param_tys,
@@ -7427,6 +7427,7 @@ struct LowerCtx {
     /// (e.g. `duplex_pair`) that have no AST `fn` entry and therefore no
     /// `fn_registry` hit.
     expr_types: HashMap<SpanKey, Ty>,
+    interpolation_display_types: HashMap<SpanKey, Ty>,
     /// Checker result-ownership rows waiting to be projected from their
     /// source spans onto stable HIR expression sites.
     produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
@@ -8469,6 +8470,7 @@ impl LowerCtx {
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             resolved_calls: tc_output.resolved_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
+            interpolation_display_types: tc_output.interpolation_display_types.clone(),
             produced_value_ownership: tc_output.produced_value_ownership.clone(),
             produced_value_dependencies: tc_output.produced_value_dependencies.clone(),
             produced_value_source_sites: HashMap::new(),
@@ -10165,7 +10167,9 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e) = part {
+                if let hew_parser::ast::StringPart::Expr(e)
+                | hew_parser::ast::StringPart::StructuralExpr(e) = part
+                {
                     scan_expr_for_private_refs(&e.0, pf, out);
                 }
             }
@@ -11666,11 +11670,21 @@ impl LowerCtx {
     ///   sentinel — the checker's `require_display_impl` gate is the
     ///   authoritative reject point. Reaching the sentinel means
     ///   compilation halts: never a silent empty-string substitute.
+    fn lower_display_dispatch(&mut self, value: HirExpr, span: Span) -> HirExpr {
+        let dispatch_ty = value.ty.clone();
+        self.lower_display_dispatch_for_type(value, dispatch_ty, span)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "display lowering keeps all fail-closed dispatch cases in one authority"
     )]
-    fn lower_display_dispatch(&mut self, value: HirExpr, span: Span) -> HirExpr {
+    fn lower_display_dispatch_for_type(
+        &mut self,
+        value: HirExpr,
+        dispatch_ty: ResolvedTy,
+        span: Span,
+    ) -> HirExpr {
         // Resolve the Display method name through the lang-item registry.
         // Missing entry is fail-closed: f-string lowering cannot synthesise
         // dispatch without a method-name binding.
@@ -11718,7 +11732,7 @@ impl LowerCtx {
                 .unsupported_expr(span, "f-string display dispatch: untyped display lang-item");
         };
         let display_target = hew_types::CallTarget::static_trait(display_trait, display_method);
-        let ty = value.ty.clone();
+        let ty = dispatch_ty;
         match &ty {
             // String: route through a user `impl Display for string` if one
             // is registered; otherwise pass through identity. The stdlib
@@ -11839,6 +11853,37 @@ impl LowerCtx {
                 ));
                 self.unsupported_expr(span, "f-string display dispatch: unsupported type shape")
             }
+        }
+    }
+
+    fn build_structural_format_call(&mut self, value: HirExpr, span: Span) -> HirExpr {
+        let fn_ty = ResolvedTy::Function {
+            params: vec![value.ty.clone()],
+            ret: Box::new(ResolvedTy::String),
+        };
+        let callee = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&fn_ty, &self.type_classes),
+            ty: fn_ty,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(HirLiteral::Unit),
+            span: span.clone(),
+        };
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&ResolvedTy::String, &self.type_classes),
+            ty: ResolvedTy::String,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Call {
+                target: hew_types::CallTarget::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::StructuralFormat,
+                ),
+                callee: Box::new(callee),
+                args: vec![value],
+            },
+            span,
         }
     }
 
@@ -11983,6 +12028,20 @@ impl LowerCtx {
                     let value =
                         self.lower_expr(&(expr.clone(), expr_span.clone()), IntentKind::Read);
                     let rendered = self.lower_display_dispatch(value, expr_span.clone());
+                    segments.push(rendered);
+                }
+                StringPart::StructuralExpr((expr, expr_span)) => {
+                    let value =
+                        self.lower_expr(&(expr.clone(), expr_span.clone()), IntentKind::Read);
+                    let dispatch_ty = self
+                        .interpolation_display_types
+                        .get(&self.mk_key(expr_span))
+                        .and_then(|ty| ResolvedTy::from_ty(ty).ok());
+                    let rendered = if let Some(dispatch_ty) = dispatch_ty {
+                        self.lower_display_dispatch_for_type(value, dispatch_ty, expr_span.clone())
+                    } else {
+                        self.build_structural_format_call(value, expr_span.clone())
+                    };
                     segments.push(rendered);
                 }
             }
@@ -13429,10 +13488,12 @@ impl LowerCtx {
             .get(name)
             .cloned()
             .unwrap_or_else(|| {
-                hew_types::DefId::new(self.current_module_name.as_ref().map_or_else(
-                    || func.name.clone(),
-                    |module| format!("{module}.{}", func.name),
-                ))
+                hew_types::DefId::legacy_reconstruct_from_full_path(
+                    self.current_module_name.as_ref().map_or_else(
+                        || func.name.clone(),
+                        |module| format!("{module}.{}", func.name),
+                    ),
+                )
             });
 
         self.push_scope();
@@ -13934,7 +13995,7 @@ impl LowerCtx {
         HirTypeDecl {
             id,
             node: self.ids.node(),
-            declaration: hew_types::DefId::new(decl.name.clone()),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(decl.name.clone()),
             name: decl.name.clone(),
             // Root/local identity by default; the imported-module carrier
             // (`lower_imported_type_decl`) stamps `Some(module_short)` for
@@ -14032,7 +14093,10 @@ impl LowerCtx {
         module_name: &str,
     ) -> HirTypeDecl {
         let mut lowered = self.lower_type_decl(decl, span);
-        lowered.declaration = hew_types::DefId::new(format!("{module_name}.{}", decl.name));
+        lowered.declaration = hew_types::DefId::legacy_reconstruct_from_full_path(format!(
+            "{module_name}.{}",
+            decl.name
+        ));
         lowered.defining_module = Some(module_name.to_string());
         lowered
     }
@@ -18860,10 +18924,36 @@ impl LowerCtx {
                     )
                 } else {
                     let task_ty = ResolvedTy::Task(Box::new(ResolvedTy::Unit));
+                    let outer_bindings = self.visible_outer_bindings();
+                    let lowered_body = self.lower_cancellation_clause_block(body);
+                    let checker_key = self.mk_key(&span);
+                    let checker_facts = if let Some(facts) =
+                        self.closure_capture_facts.get(&checker_key)
+                    {
+                        facts.clone()
+                    } else {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "fork block".to_string(),
+                                reason: "closure_capture_facts has no record for fork block span"
+                                    .to_string(),
+                            },
+                            span.clone(),
+                            "fork block reached HIR without checker capture metadata",
+                        ));
+                        Vec::new()
+                    };
+                    let captures = self.materialize_closure_block_captures(
+                        &lowered_body,
+                        &outer_bindings,
+                        checker_facts,
+                        span.clone(),
+                    );
                     (
                         HirExprKind::ForkBlock {
-                            body: self.lower_cancellation_clause_block(body),
+                            body: lowered_body,
                             task_ty: task_ty.clone(),
+                            captures,
                         },
                         task_ty,
                     )
@@ -21170,6 +21260,28 @@ impl LowerCtx {
         let mut ordered: Vec<ClosureCaptureCandidate> = Vec::new();
         collect_general_closure_captures_walk(body, outer_bindings, &mut seen, &mut ordered);
 
+        self.materialize_closure_capture_candidates(ordered, facts, span)
+    }
+
+    fn materialize_closure_block_captures(
+        &mut self,
+        body: &HirBlock,
+        outer_bindings: &HashMap<BindingId, OuterClosureBinding>,
+        facts: Vec<ClosureCaptureFact>,
+        span: std::ops::Range<usize>,
+    ) -> Vec<HirClosureCapture> {
+        let mut seen: HashSet<BindingId> = HashSet::new();
+        let mut ordered: Vec<ClosureCaptureCandidate> = Vec::new();
+        collect_general_closure_captures_walk_block(body, outer_bindings, &mut seen, &mut ordered);
+        self.materialize_closure_capture_candidates(ordered, facts, span)
+    }
+
+    fn materialize_closure_capture_candidates(
+        &mut self,
+        ordered: Vec<ClosureCaptureCandidate>,
+        facts: Vec<ClosureCaptureFact>,
+        span: std::ops::Range<usize>,
+    ) -> Vec<HirClosureCapture> {
         let mut remaining_facts = facts;
         let mut captures = Vec::with_capacity(ordered.len());
         for (binding, name, def_span) in ordered {
@@ -33166,7 +33278,9 @@ fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e) = part {
+                if let hew_parser::ast::StringPart::Expr(e)
+                | hew_parser::ast::StringPart::StructuralExpr(e) = part
+                {
                     scan_expr_for_blocking_recv(&e.0, diagnostics);
                 }
             }
@@ -33696,7 +33810,9 @@ fn scan_expr_for_task_gates(expr: &Expr, span: &Span, ctx: &mut LowerCtx, progra
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e) = part {
+                if let hew_parser::ast::StringPart::Expr(e)
+                | hew_parser::ast::StringPart::StructuralExpr(e) = part
+                {
                     scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
                 }
             }
@@ -33864,28 +33980,14 @@ fn check_fork_child_shape(
     }
 }
 
-/// Check fork block body shape.
-///
-/// The checker's `synthesize_concurrency` `Expr::ForkBlock` arm now fully
-/// type-checks the body (statements, callee arguments, tail expression), so the
-/// shape restrictions here are NOT type-coverage proxies — they mirror exactly
-/// the body shapes the MIR `lower_fork_block_task` lowering can currently spawn:
-/// a single direct module-function call (any arity). Everything else fails
-/// closed here with an actionable compile-time diagnostic, the earliest clean
-/// point, rather than reaching MIR as a less-legible `NotYetImplemented`.
-///
-/// Unlocking multi-statement / non-call fork bodies is downstream MIR work
-/// (wrap the body in a synthesized anonymous task entry point, mirroring the
-/// lambda-actor path); until then they reject here.
-///
-/// Sites: hew-mir/src/lower.rs `lower_fork_block_task` (`ForkBlock` body).
+/// Reject an empty fork body. Every non-empty unit body is executable through
+/// the synthesized scope-owned task entry path.
 fn check_fork_block_shape(
     body: &hew_parser::ast::Block,
     span: &Span,
     ctx: &mut LowerCtx,
     _program: &Program,
 ) {
-    // Check body has exactly one statement OR one trailing expression
     let stmt_count = body.stmts.len();
     let has_trailing = body.trailing_expr.is_some();
 
@@ -33898,96 +34000,6 @@ fn check_fork_block_shape(
             span.clone(),
             "empty `fork { }` spawns nothing; put a function call in the body, \
              e.g. `fork { work() }`"
-                .to_string(),
-        ));
-        return;
-    }
-
-    if stmt_count > 1 || (stmt_count == 1 && has_trailing) {
-        ctx.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::ForkBlockBodyUnsupported {
-                site: ctx.ids.site(),
-                reason: "multi-statement".to_string(),
-            },
-            span.clone(),
-            "multi-statement `fork { }` bodies are not yet supported; move the work \
-             into a function and spawn it as `fork { the_fn() }`"
-                .to_string(),
-        ));
-        return;
-    }
-
-    // Check the single statement/expression is a direct function call
-    let call_expr = if stmt_count == 1 {
-        match &body.stmts[0].0 {
-            Stmt::Expression(e) => Some(e),
-            _ => None,
-        }
-    } else {
-        body.trailing_expr.as_deref()
-    };
-
-    if let Some(call_expr) = call_expr {
-        let Expr::Call { function, .. } = &call_expr.0 else {
-            ctx.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::ForkBlockBodyUnsupported {
-                    site: ctx.ids.site(),
-                    reason: "not a call expression".to_string(),
-                },
-                span.clone(),
-                "`fork { }` bodies must be a direct function call, e.g. `fork { work() }`; \
-                 other expression forms are not yet supported"
-                    .to_string(),
-            ));
-            return;
-        };
-        // Must be a direct function identifier
-        if let Expr::Identifier(name) = &function.0 {
-            // The checker target is declaration authority. `fn_registry` is
-            // keyed by emitted symbols, so suffix matching here can accept a
-            // same-leaf function from the wrong module.
-            if !matches!(
-                ctx.ordinary_call_target(&call_expr.1),
-                Some(CallTarget::User(_))
-            ) {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::ForkBlockBodyUnsupported {
-                        site: ctx.ids.site(),
-                        reason: "not a direct module function".to_string(),
-                    },
-                    span.clone(),
-                    format!("fork block callee '{name}' is not a direct module function"),
-                ));
-            }
-            // FC-P1-A1 (revision pass 2, Finding 1): Non-unit return is
-            // VALID at spawn time — see `lower_spawned_call` comment.
-            //
-            // RETIRED (RI-08 fold): the zero-argument restriction is gone.
-            // The checker's `Expr::ForkBlock` arm now type-checks callee
-            // arguments, and MIR's `lower_spawned_args_call_task` lowers
-            // arg-bearing single-call fork bodies, so `fork { f(args) }` is
-            // a first-class form. The old gate proxied for "the checker does
-            // not visit block bodies"; that premise no longer holds.
-        } else {
-            ctx.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::ForkBlockBodyUnsupported {
-                    site: ctx.ids.site(),
-                    reason: "callee is not a direct function identifier".to_string(),
-                },
-                span.clone(),
-                "fork block body must be a direct function call, e.g. `fork { work() }`"
-                    .to_string(),
-            ));
-        }
-    } else {
-        ctx.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::ForkBlockBodyUnsupported {
-                site: ctx.ids.site(),
-                reason: "not a call expression".to_string(),
-            },
-            span.clone(),
-            "`fork { }` bodies must be a direct function call, e.g. `fork { work() }`; \
-             other expression forms are not yet supported"
                 .to_string(),
         ));
     }
@@ -34354,7 +34366,9 @@ fn scan_expr_for_binop_gates(
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e) = part {
+                if let hew_parser::ast::StringPart::Expr(e)
+                | hew_parser::ast::StringPart::StructuralExpr(e) = part
+                {
                     scan_expr_for_binop_gates(&e.0, &e.1, false, ctx);
                 }
             }
@@ -35520,7 +35534,9 @@ fn scan_expr_for_supervisor_spawn(
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e) = part {
+                if let hew_parser::ast::StringPart::Expr(e)
+                | hew_parser::ast::StringPart::StructuralExpr(e) = part
+                {
                     scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
                 }
             }
@@ -35896,7 +35912,9 @@ fn scan_expr_for_vec_index_gate(
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e) = part {
+                if let hew_parser::ast::StringPart::Expr(e)
+                | hew_parser::ast::StringPart::StructuralExpr(e) = part
+                {
                     scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
                 }
             }
@@ -36238,7 +36256,7 @@ impl Sample for Broken {
             "parse errors: {:#?}",
             parsed.errors
         );
-        let owner = hew_types::DefId::new("support.greeting.Greet");
+        let owner = hew_types::DefId::for_test("support.greeting.Greet");
         let bindings = ["simple", "greeting"]
             .into_iter()
             .map(|method| {
@@ -36246,7 +36264,7 @@ impl Sample for Broken {
                     (None, 7, "Greet".to_string(), method.to_string()),
                     (
                         owner.clone(),
-                        hew_types::DefId::new(format!("{}::{method}", owner.full_path())),
+                        hew_types::DefId::for_test(format!("{}::{method}", owner.full_path())),
                     ),
                 )
             })
@@ -36268,12 +36286,12 @@ impl Sample for Broken {
             MONOMORPHISATION_REGISTRY_CAP,
             TargetArch::host(),
         );
-        let owner = hew_types::DefId::new("support.greeting.Greet");
+        let owner = hew_types::DefId::for_test("support.greeting.Greet");
         ctx.trait_method_ids_by_binding.insert(
             (None, 7, "Greet".to_string(), "greeting".to_string()),
             (
                 owner.clone(),
-                hew_types::DefId::new("support.greeting.Greet::greeting"),
+                hew_types::DefId::for_test("support.greeting.Greet::greeting"),
             ),
         );
 
@@ -36285,8 +36303,8 @@ impl Sample for Broken {
         ctx.trait_method_ids_by_binding.insert(
             (None, 8, "Greet".to_string(), "greeting".to_string()),
             (
-                hew_types::DefId::new("other.greeting.Greet"),
-                hew_types::DefId::new("other.greeting.Greet::greeting"),
+                hew_types::DefId::for_test("other.greeting.Greet"),
+                hew_types::DefId::for_test("other.greeting.Greet::greeting"),
             ),
         );
         assert_eq!(
@@ -36318,8 +36336,9 @@ impl Sample for Broken {
                 "std.builtins.Display",
             ),
         ] {
-            let prelude_trait = hew_types::DefId::new(prelude_owner);
-            let prelude_method = hew_types::DefId::new(format!("{prelude_owner}::{method_name}"));
+            let prelude_trait = hew_types::DefId::for_test(prelude_owner);
+            let prelude_method =
+                hew_types::DefId::for_test(format!("{prelude_owner}::{method_name}"));
             ctx.lang_items.insert(
                 lang_item.key(),
                 hew_types::LangItemBinding {
@@ -36330,8 +36349,9 @@ impl Sample for Broken {
                 },
             );
 
-            let local_trait = hew_types::DefId::new(format!("app.{trait_name}"));
-            let local_method = hew_types::DefId::new(format!("app.{trait_name}::{method_name}"));
+            let local_trait = hew_types::DefId::for_test(format!("app.{trait_name}"));
+            let local_method =
+                hew_types::DefId::for_test(format!("app.{trait_name}::{method_name}"));
             ctx.trait_method_ids.insert(
                 format!("app.{trait_name}::{method_name}"),
                 (local_trait.clone(), local_method.clone()),
@@ -36344,9 +36364,9 @@ impl Sample for Broken {
             ctx.trait_method_ids
                 .remove(&format!("app.{trait_name}::{method_name}"));
 
-            let imported_trait = hew_types::DefId::new(format!("vendor.{trait_name}"));
+            let imported_trait = hew_types::DefId::for_test(format!("vendor.{trait_name}"));
             let imported_method =
-                hew_types::DefId::new(format!("vendor.{trait_name}::{method_name}"));
+                hew_types::DefId::for_test(format!("vendor.{trait_name}::{method_name}"));
             ctx.trait_method_ids_by_binding.insert(
                 (
                     Some("app".to_string()),
@@ -36461,7 +36481,7 @@ impl Widget {
                 _ => None,
             })
             .expect("fixture impl");
-        let declaration = hew_types::DefId::new(
+        let declaration = hew_types::DefId::for_test(
             "fixture.owner.Widget::<impl inherent for fixture.owner.Widget>::run",
         );
 
@@ -36504,10 +36524,10 @@ impl Widget {
             MONOMORPHISATION_REGISTRY_CAP,
             TargetArch::host(),
         );
-        let left = hew_types::DefId::new(
+        let left = hew_types::DefId::for_test(
             "left.render.Result::<impl inherent for left.render.Result>::echo",
         );
-        let right = hew_types::DefId::new(
+        let right = hew_types::DefId::for_test(
             "right.render.Result::<impl inherent for right.render.Result>::echo",
         );
         ctx.impl_method_body_symbols
@@ -40507,7 +40527,7 @@ impl Widget {
         let decl = HirTypeDecl {
             id: ItemId(0),
             node: HirNodeId(0),
-            declaration: hew_types::DefId::new("app.Handle"),
+            declaration: hew_types::DefId::for_test("app.Handle"),
             name: "Handle".to_string(),
             defining_module: None,
             marker: ResourceMarker::Resource,

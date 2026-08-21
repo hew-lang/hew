@@ -770,6 +770,10 @@ pub enum TypeErrorKind {
     /// such a parameter) without cloning aliases the caller's pointer,
     /// causing a double-free.  Fail-closed: always an error.
     BorrowedParamReturn,
+    /// A fork body attempted to capture a caller-owned parameter. Function
+    /// parameters use Hew's borrowed call boundary, so the child cannot take
+    /// over their drop obligation.
+    ForkBorrowCapture { binding: String },
     /// An immutable foreign boundary view appeared outside an extern signature.
     BorrowTypeOutsideExternSignature,
     /// Branches of an or-pattern bind different names.
@@ -1438,6 +1442,7 @@ impl TypeErrorKind {
             Self::UnresolvedImport => "UnresolvedImport",
             Self::BlockingCallInReceiveFn => "BlockingCallInReceiveFn",
             Self::BorrowedParamReturn => "BorrowedParamReturn",
+            Self::ForkBorrowCapture { .. } => "ForkBorrowCapture",
             Self::BorrowTypeOutsideExternSignature => "BorrowTypeOutsideExternSignature",
             Self::OrPatternBindingMismatch => "OrPatternBindingMismatch",
             Self::UnsafeCollectionElement => "UnsafeCollectionElement",

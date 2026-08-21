@@ -54,13 +54,13 @@ machine ConnectionLifecycle {
                 println("Draining.exit");
             }
         }
-        on Disconnect: _ => Disconnected;
+        on Disconnect: _ => .Disconnected;
     }
 
-    on Connect: Disconnected => Authenticating;
-    on AuthOk: Authenticating => Active;
-    on DrainStart: Active => Draining;
-    on DrainDone: Draining => Disconnected;
+    on Connect: Disconnected => .Authenticating;
+    on AuthOk: Authenticating => .Active;
+    on DrainStart: Active => .Draining;
+    on DrainDone: Draining => .Disconnected;
     on Connect: _ => _ {
         state
     }
@@ -81,10 +81,10 @@ machine ConnectionLifecycle {
 fn main() {
     var c = Disconnected;
     println(c.state_name());
-    c.step(Connect);
+    c.step(.Connect);
     println(c.state_name());
-    c.step(AuthOk);
+    c.step(.AuthOk);
     println(c.state_name());
-    c.step(Disconnect);
+    c.step(.Disconnect);
     println(c.state_name());
 }

@@ -1,0 +1,23 @@
+fn make_vec(seed: i64) -> Vec<string> {
+    [f"made-{seed}-a", f"made-{seed}-b", f"made-{seed}-c"]
+}
+
+fn main() -> i64 {
+    let map: HashMap<string, string> = HashMap.new();
+    let set: HashSet<string> = HashSet.new();
+    let values: Vec<string> = Vec.new();
+    var i = 0;
+    while i < 3 {
+        map.insert(f"key-{i}", f"value-{i}");
+        set.insert(f"member-{i}");
+        values.push(f"item-{i}");
+        i = i + 1;
+    }
+
+    let total = map.keys().len()
+        + map.values().len()
+        + set.clone().len()
+        + values[..].len()
+        + make_vec(7).clone().len();
+    if total == 15 { 0 } else { 91 }
+}

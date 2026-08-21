@@ -34,7 +34,7 @@ for the documented resolver precedence.
 
 - Primitive types are lowercase: `i64`, `string`, `f64`, `bool`, `char` — never `Int`, `String`, `Float`.
 - Integer literals default to `i64`, float literals to `f64`. Annotate only for narrower widths.
-- Interpolate strings with the `f` prefix: `f"x={x}"`. A plain `"{x}"` prints literal braces.
+- Interpolate `Display` values with `f"x={x}"`; use `f"x={x:?}"` for structural debugging.
 - Convert numbers with `as`: `x as i64`, `pi as i32`. It is the only conversion mechanism.
 - Never mix integer widths in one expression; cast the narrower operand up first: `x as i64 + 1`.
 - **`var` for mutable bindings, `let` for immutable.** Hew does not have `let mut` — use `var` whenever you need to reassign a name or mutate a scalar field. `let` bindings are immutable (but `let` collections have interior mutability).
@@ -42,7 +42,7 @@ for the documented resolver precedence.
 - Iterate counts with `for i in 0..n` (exclusive) or `0..=n` (inclusive); the binding must be a named identifier.
 - Read collection elements with `v[i]` (returns `T`, traps on out-of-bounds) or `.get(i)` (returns `Option<T>`, never traps) — both universal across element types.
 - `Vec<string>` supports `v[i]` (returns a fresh owned `string`; the Vec stays usable), `.get(i)`, range-slices, and for-in. Both accessors work for `Vec<enum>` too.
-- Build maps/sets with `::new()` + `.insert()`; bind with `let` (interior mutability, not reassignment).
+- Build maps/sets with `Type.new()` + `.insert()`; bind with `let` (interior mutability, not reassignment).
 - Look up `HashMap`/`Option`/`Result` with `match`, not subscript or `.unwrap()`.
 - **Enum variants use `;` separators; record fields also use `;` in type definitions but `,` in construction literals.** These are different — `type T { a: i64; b: i64; }` defines, `T { a: 1, b: 2 }` constructs.
 - Declare records with `type Name { field: T; }` (semicolons); enum variants are `;`-separated.
@@ -52,7 +52,7 @@ for the documented resolver precedence.
 - Sending a value into an actor delivers a logical snapshot; the sender's binding stays valid afterward — no `clone` needed to keep using it. Types that cannot be sent are rejected at compile time.
 - Within a fn or actor there is no borrow checker: pass values freely, mutations to Vec/HashMap persist in the caller.
 - Last expression of a block (no trailing semicolon) is its value; a trailing `;` makes it unit.
-- Lean on the safe stdlib trio: `std::string`, `std::math`, `std::iter`. Do not import `std::option`/`std::result`.
+- Lean on the safe stdlib trio: `std.string`, `std.math`, `std.iter`. Do not import `std.option`/`std.result`.
 - Negate a bool with `!`: `!x` is `true` when `x` is `false`.
 - `break` and `continue` work in both `loop {}` and `while` loops.
 - Iterate all HashMap keys with `.keys()` → `Vec<string>`; all values with `.values()` → `Vec<V>`.
@@ -102,7 +102,14 @@ fn main() {
 }
 ```
 
-Always prefix interpolated strings with `f`. Arbitrary expressions are allowed inside `{}`. A plain string does not interpolate.
+Always prefix interpolated strings with `f`. Arbitrary expressions are allowed
+inside `{}`. Plain `{value}` requires `Display`; `{value:?}` explicitly requests
+structural debugging for records, tuples, `Option`, `Result`, `Vec`, and
+`HashMap`, including nested combinations. An explicit `Display` implementation
+still wins, including one attached to a named type alias. The distinct `:?`
+spelling is deliberate: ordinary interpolation remains the intentional
+user-facing contract and never exposes internal aggregate structure by accident.
+Structural rendering borrows the value and has no ownership effect.
 
 ### Numeric conversion via `as`
 
@@ -170,8 +177,8 @@ fn main() {
 
     let checked: Option<i32> = a.checked_add(1);
     match checked {
-        Some(v) => println(v),
-        None => println("overflow"),   // overflow
+        .Some(v) => println(v),
+        .None => println("overflow"),   // overflow
     }
 
     let clamped: i32 = a.saturating_add(1);
@@ -249,7 +256,7 @@ fn main() {
 }
 ```
 
-Annotate a `var` (or `let`) binding when the type cannot be inferred from the initial value (e.g. an empty `Vec::new()`). Use `var` only when the name itself will be rebound; `let` is correct for a collection you only mutate via methods — the compiler warns if you `var`-declare a binding that is never rebound.
+Annotate a `var` (or `let`) binding when the type cannot be inferred from the initial value (e.g. an empty `Vec.new()`). Use `var` only when the name itself will be rebound; `let` is correct for a collection you only mutate via methods — the compiler warns if you `var`-declare a binding that is never rebound.
 
 ## Control flow
 
@@ -299,22 +306,22 @@ Bind with a name then guard: `x if cond =>`. A block-bodied arm `=> { ... }` sti
 enum Event { Number(i64); Text(string); Empty; }
 fn describe(e: Event) -> string {
     match e {
-        Number(n) if n > 100 => "big number",
-        Number(n) => "number",
-        Text(s) => s,
-        Empty => "empty",
+        .Number(n) if n > 100 => "big number",
+        .Number(n) => "number",
+        .Text(s) => s,
+        .Empty => "empty",
     }
 }
 ```
 
-Variant arms bind their payload positionally. Construct values with bare variant names (`Number(5)`, `Empty`). Enum variants are declared `;`-separated.
+Variant arms bind their payload positionally. Construct values with dotted variant names (`.Number(5)`, `.Empty`). Enum variants are declared `;`-separated.
 
 ### match exhaustiveness is enforced
 
 ```hew
 enum Colour { Red; Green; Blue; }
-// match c { Red => 1, Green => 2 }  // compile error: non-exhaustive match: missing Blue
-fn code(c: Colour) -> i64 { match c { Red => 1, Green => 2, Blue => 3 } }
+// match c { .Red => 1, .Green => 2 }  // compile error: non-exhaustive match: missing Blue
+fn code(c: Colour) -> i64 { match c { .Red => 1, .Green => 2, .Blue => 3 } }
 ```
 
 Omit `_` when matching a closed enum so the compiler forces every variant. A missing variant is a hard error naming it.
@@ -412,11 +419,11 @@ fn main() {
 ```hew
 fn main() {
     let some: Option<i64> = Some(42);
-    if let Some(v) = some { println(v); } else { println(-1); }
+    if let .Some(v) = some { println(v); } else { println(-1); }
 }
 ```
 
-Use `if let Some(v) = opt` for a one-armed destructure; prefer `match` when you want the unwrapped-or-default as an expression result.
+Use `if let .Some(v) = opt` for a one-armed destructure; prefer `match` when you want the unwrapped-or-default as an expression result.
 
 ## Collections — Vec
 
@@ -473,8 +480,8 @@ fn main() {
     v.push("a");
     v.push("b");
     match v.get(0) {
-        Some(s) => println(s),   // a
-        None => println("oob"),
+        .Some(s) => println(s),   // a
+        .None => println("oob"),
     }
 }
 ```
@@ -636,8 +643,8 @@ fn main() {
     let m: HashMap<string, i64> = HashMap.new();
     m.insert("alice", 10);
     match m.get("alice") {
-        Some(v) => println(f"alice={v}"),
-        None => println("alice missing"),
+        .Some(v) => println(f"alice={v}"),
+        .None => println("alice missing"),
     }
 }
 ```
@@ -653,8 +660,8 @@ fn main() {
     m.insert("bob", 2);
     let has_alice = m.contains_key("alice");   // true
     let removed = match m.remove("bob") {
-        Some(v) => f"removed bob={v}",
-        None => "bob not present",
+        .Some(v) => f"removed bob={v}",
+        .None => "bob not present",
     };
     println(f"has={has_alice} {removed} len={m.len()}");
 }
@@ -704,13 +711,13 @@ fn main() {
 
     // Increment alice's score
     match scores.get("alice") {
-        Some(v) => scores.insert("alice", v + 5),
-        None => {},
+        .Some(v) => scores.insert("alice", v + 5),
+        .None => {},
     }
 
     match scores.get("alice") {
-        Some(v) => println(f"alice={v}"),   // alice=15
-        None => println("missing"),
+        .Some(v) => println(f"alice={v}"),   // alice=15
+        .None => println("missing"),
     }
 }
 ```
@@ -976,7 +983,7 @@ fn main() {
     let s = spawn Sink(id: 0);
     let msg: string = "hello";
     let n = await s.take(msg);         // receiver gets a snapshot of msg
-    match n { Ok(len) => println(len), Err(_) => println("ask failed") }
+    match n { .Ok(len) => println(len), .Err(_) => println("ask failed") }
     println(msg.len());   // 5 — msg still valid after the send
 }
 ```
@@ -1059,7 +1066,7 @@ Compose records by nesting; access depth-chains directly. Every field must be su
 >
 > // Construction — commas (required)
 > let p = Point { x: 1, y: 2 };
-> let c = Red;
+> let c = .Red;
 > ```
 >
 > The compiler error for a semicolon in a construction literal is "expected `}`, found `;`". Enum variants reject commas with "use `;` instead of `,` to separate variants". Type field definitions accept both separators, but `;` is the idiomatic style.
@@ -1074,18 +1081,18 @@ enum Shape {
 }
 fn area(s: Shape) -> f64 {
     match s {
-        Empty => 0.0,
-        Circle(r) => 3.14159 * r * r,
-        Rect { w, h } => w * h,
+        .Empty => 0.0,
+        .Circle(r) => 3.14159 * r * r,
+        .Rect { w, h } => w * h,
     }
 }
 fn main() {
-    println(area(Circle(2.0)));
-    println(area(Rect { w: 3.0, h: 4.0 }));
+    println(area(.Circle(2.0)));
+    println(area(Shape.Rect { w: 3.0, h: 4.0 }));
 }
 ```
 
-Mix unit, tuple, and struct variants in one enum. Enum variants are separated by `;`. Struct-variant fields use `;` separators; the variant pattern uses `{ w, h }` shorthand. Construct variants by bare name.
+Mix unit, tuple, and struct variants in one enum. Enum variants are separated by `;`. Struct-variant fields use `;` separators; the variant pattern uses `{ w, h }` shorthand. Construct variants with dotted names such as `Shape.Rect { w: 3.0, h: 4.0 }`.
 
 ### Pattern destructuring in match
 
@@ -1097,10 +1104,10 @@ enum Cmd {
 }
 fn describe(c: Cmd) -> string {
     match c {
-        Move(0, 0) => "noop",
-        Move(x, _) => "move",
-        Stop => "stop",
-        Speak { text } => text,
+        .Move(0, 0) => "noop",
+        .Move(x, _) => "move",
+        .Stop => "stop",
+        .Speak { text } => text,
     }
 }
 ```
@@ -1113,8 +1120,8 @@ Combine literal patterns for special cases above general binding patterns — or
 indirect enum Expr { Lit(i64); Add(Expr, Expr); }
 fn eval(e: Expr) -> i64 {
     match e {
-        Lit(n) => n,
-        Add(l, r) => eval(l) + eval(r),
+        .Lit(n) => n,
+        .Add(l, r) => eval(l) + eval(r),
     }
 }
 fn main() {
@@ -1123,7 +1130,7 @@ fn main() {
 }
 ```
 
-Bare variant names are the common idiom; use `EnumName::Variant` to disambiguate across modules. Match arm patterns use the bare variant name even when construction used the qualified form.
+Use `EnumName.Variant` to qualify construction or disambiguate across modules. In a match, use the contextual `.Variant` pattern when the scrutinee type selects the enum.
 
 ### Self-referential recursive enum (indirect)
 
@@ -1135,13 +1142,13 @@ indirect enum Expr {
 }
 fn eval(e: Expr) -> i64 {
     match e {
-        Lit(n) => n,
-        Add(l, r) => eval(l) + eval(r),
-        Neg(inner) => 0 - eval(inner),
+        .Lit(n) => n,
+        .Add(l, r) => eval(l) + eval(r),
+        .Neg(inner) => 0 - eval(inner),
     }
 }
 fn main() {
-    let e = Add(Lit(1), Neg(Lit(2)));
+    let e = Expr.Add(.Lit(1), .Neg(.Lit(2)));
     println(eval(e));   // -1
 }
 ```
@@ -1156,10 +1163,10 @@ enum MyOpt<T> {
     Empty;
 }
 fn main() {
-    let a: MyOpt<i64> = Has(42);
+    let a: MyOpt<i64> = .Has(42);
     match a {
-        Has(v) => println(v),
-        Empty => println(-1),
+        .Has(v) => println(v),
+        .Empty => println(-1),
     }
 }
 ```
@@ -1180,7 +1187,7 @@ fn main() {
     let s = spawn Sink();
     s.put(Record { key: 1, val: 99 });
     let r = await s.get();
-    match r { Ok(v) => println(v), Err(_) => println("err") }
+    match r { .Ok(v) => println(v), .Err(_) => println("err") }
 }
 ```
 
@@ -1195,10 +1202,10 @@ actor Acc {
     init() { total = 0; }
     receive fn apply(op: Op) {
         match op {
-            Inc(n) => {
+            .Inc(n) => {
                 total = total + n;
             },
-            Reset => {
+            .Reset => {
                 total = 0;
             },
         }
@@ -1223,7 +1230,7 @@ fn main() {
     let acct = spawn Bank(balance: 100);
     acct.deposit(50);
     let r = await acct.balance_of();
-    match r { Ok(v) => println(f"balance={v}"), Err(_) => println("ask failed") }
+    match r { .Ok(v) => println(f"balance={v}"), .Err(_) => println("ask failed") }
 }
 ```
 
@@ -1251,7 +1258,7 @@ actor Greeter {
 fn main() {
     let g: LocalPid<Greeter> = spawn Greeter(name: 5);
     let r = await g.greet();
-    match r { Ok(v) => println(f"name={v}"), Err(_) => println("ask failed") }
+    match r { .Ok(v) => println(f"name={v}"), .Err(_) => println("ask failed") }
 }
 ```
 
@@ -1286,7 +1293,7 @@ fn main() {
     let c = spawn Counter(count: 0);
     c.increment(10); c.increment(20); c.increment(12);
     let r = await c.total();
-    match r { Ok(v) => println(f"total={v}"), Err(_) => println("ask failed") }
+    match r { .Ok(v) => println(f"total={v}"), .Err(_) => println("ask failed") }
 }
 ```
 
@@ -1305,14 +1312,14 @@ actor Consumer {
     receive fn run(unused: i64) -> i64 {
         // await as a statement, inside a receive fn — always valid
         let r = await src.val();
-        match r { Ok(v) => v, Err(_) => -1 }
+        match r { .Ok(v) => v, .Err(_) => -1 }
     }
 }
 fn main() {
     let s = spawn Src();
     let c = spawn Consumer(src: s);
     let r = await c.run(0);
-    match r { Ok(v) => println(f"v={v}"), Err(_) => println("err") }
+    match r { .Ok(v) => println(f"v={v}"), .Err(_) => println("err") }
 }
 ```
 
@@ -1336,7 +1343,7 @@ scope {
 
 // Right: bind first
 let r = await actor.method();
-match r { Ok(v) => println(v), Err(_) => println("err") }
+match r { .Ok(v) => println(v), .Err(_) => println("err") }
 ```
 
 Note that `.send()` is accepted as an actor method name and compiles correctly — there is no compiler-level restriction on it.
@@ -1354,7 +1361,7 @@ fn run() -> Result<i64, AskError> {
     let w? = await c.bump();
     Ok(v + w)
 }
-fn main() { match run() { Ok(t) => println(f"total={t}"), Err(_) => println("failed") } }
+fn main() { match run() { .Ok(t) => println(f"total={t}"), .Err(_) => println("failed") } }
 ```
 
 Inside a fn returning `Result<_, AskError>`, use `let v? = await ...` to unwrap the Ok and auto-propagate Err. The `?` goes on the binding, not the expression.
@@ -1371,7 +1378,7 @@ actor Boot {
 fn main() {
     let b = spawn Boot(ready: 0);
     let r = await b.status();
-    match r { Ok(v) => println(f"ready={v}"), Err(_) => println("ask failed") }
+    match r { .Ok(v) => println(f"ready={v}"), .Err(_) => println("ask failed") }
 }
 ```
 
@@ -1391,7 +1398,7 @@ actor Risky {
 fn main() {
     let r = spawn Risky(n: 0);
     let v = await r.value();
-    match v { Ok(x) => println(f"n={x}"), Err(_) => println("failed") }
+    match v { .Ok(x) => println(f"n={x}"), .Err(_) => println("failed") }
 }
 ```
 
@@ -1408,7 +1415,7 @@ actor Calc {
 fn main() {
     let calc = spawn Calc(acc: 0);
     let r = await calc.apply(5);
-    match r { Ok(v) => println(f"acc={v}"), Err(_) => println("ask failed") }
+    match r { .Ok(v) => println(f"acc={v}"), .Err(_) => println("ask failed") }
 }
 ```
 
@@ -1425,14 +1432,14 @@ actor Manager {
     var worker: LocalPid<Worker>;
     receive fn dispatch(n: i64) -> i64 {
         let r = await worker.work(n);
-        match r { Ok(v) => v, Err(_) => -1 }
+        match r { .Ok(v) => v, .Err(_) => -1 }
     }
 }
 fn main() {
     let w = spawn Worker(id: 3);
     let m = spawn Manager(worker: w);
     let r = await m.dispatch(7);
-    match r { Ok(v) => println(f"result={v}"), Err(_) => println("failed") }
+    match r { .Ok(v) => println(f"result={v}"), .Err(_) => println("failed") }
 }
 ```
 
@@ -1472,7 +1479,7 @@ fn main() {
 
 **`sleep_until(target: instant)`** — suspend until a monotonic `instant`.
 Returns immediately if `target` is already in the past. Combine with
-`instant::now()` and duration arithmetic to build deadline-bounded loops:
+`instant.now()` and duration arithmetic to build deadline-bounded loops:
 
 ```hew
 fn main() {
@@ -1524,8 +1531,8 @@ fn main() {
     sleep(250ms);
     let r = await p.total();
     match r {
-        Ok(n) => println(f"ticks={n}"),
-        Err(_) => println("ask failed"),
+        .Ok(n) => println(f"ticks={n}"),
+        .Err(_) => println("ask failed"),
     }
 }
 ```
@@ -1576,8 +1583,8 @@ fn main() {
     sleep(150ms);
     let r = await worker.total();
     match r {
-        Ok(n) => println(f"ticks={n}"),
-        Err(_) => println("ask failed"),
+        .Ok(n) => println(f"ticks={n}"),
+        .Err(_) => println("ask failed"),
     }
 }
 ```
@@ -1590,7 +1597,7 @@ without an in-loop exit path.
 
 ### Accepting connections and reading in a receive handler: use `await`
 
-`net.Listener::accept()` and `net.Connection::read()` are blocking calls — the
+`net.Listener.accept()` and `net.Connection.read()` are blocking calls — the
 plain, non-`await` form parks the whole scheduler worker thread until a
 connection or data arrives, which is why `hew check` warns
 (`BlockingCallInReceiveFn`) whenever either appears inside a receive handler.
@@ -1636,18 +1643,18 @@ machine Counter {
 }
 fn main() {
     var c = Zero;
-    c.step(Inc); c.step(Inc); c.step(Inc);
+    c.step(.Inc); c.step(.Inc); c.step(.Inc);
     println(c.state_name());            // NonZero
     match c {
-        Zero => println("is zero"),
+        .Zero => println("is zero"),
         NonZero { value } => println(f"value={value}"),  // value=3
     }
-    c.step(Reset);
+    c.step(.Reset);
     println(c.state_name());            // Zero
 }
 ```
 
-A machine is a value type. Inside the body use bare names (`NonZero { value: 1 }`, `step(Inc)`); outside use the qualifier (`Counter::Zero`, `CounterEvent::Inc`). `step()` mutates in place — the receiver must be a `var`. End with `default { state }` to make uncovered cells a no-op stay. Every (state, event) cell must be covered or it is a compile error.
+A machine is a value type. Inside the body, state constructors are bare (`NonZero { value: 1 }`); contextual event arguments use `.Variant` (`step(.Inc)`). Outside use the qualifier (`Counter.Zero`, `CounterEvent.Inc`). `step()` mutates in place — the receiver must be a `var`. End with `default { state }` to make uncovered cells a no-op stay. Every (state, event) cell must be covered or it is a compile error.
 
 > **Why `default` is a blanket catch-all, and what that costs you.** Without
 > `default`, every `(state, event)` pair not covered by an explicit `on`
@@ -1668,6 +1675,43 @@ A machine is a value type. Inside the body use bare names (`NonZero { value: 1 }
 > every cell explicitly, including the no-op ones (`on Bump: Dead => Dead
 > reenter { state }`), so the compiler forces you to make each one a
 > deliberate decision.
+
+### Transition heads: the source is a pattern, the target is an expression
+
+`on Event: Source => Target` reads symmetrically, but the two sides are different
+grammatical things and they take different spellings.
+
+The **source** is a pattern matched against the machine's current state. It is
+never evaluated, has no expected type, and carries no bare-variant lint. Write it
+bare (`Off`), as a qualified path into a composite (`Connected.Active`, which
+resolves to the leaf `Active`), or as the wildcard `_`. A leading `.` is rejected
+there:
+
+```
+on Toggle: .Off => .On;
+           ^ error: a machine transition source state is a pattern and cannot be
+             written with a leading `.`
+```
+
+The **target** is an expression checked against the machine's state enum, so it
+takes the contextual form: `=> .On`, `=> .Faulted { code: event.code }`. The bare
+form still parses and still works, but it warns with `E_BARE_VARIANT_EXPR` and a
+fix-it that inserts the dot — the same migration every other
+enum-in-expected-type position is on. A `_` target (paired with a body that
+computes the next state) is a wildcard rather than a variant, so it takes no dot.
+
+```hew
+machine Switch {
+    events { Toggle; }
+    state Off;
+    state On;
+    on Toggle: Off => .On;
+    on Toggle: On => .Off;
+}
+```
+
+The formatter re-emits whichever target spelling you wrote; it never adds or
+removes the dot.
 
 ### State field holding a Vec
 
@@ -1690,7 +1734,7 @@ fn main() {
     log.step(Append { item: 10 });
     log.step(Append { item: 20 });
     match log {
-        Empty => println("empty"),
+        .Empty => println("empty"),
         Filled { items } => {
             println(f"count={items.len()}");   // count=2
             println(f"first={items[0]}");  // first=10
@@ -1717,13 +1761,13 @@ fn main() {
     a.step(make_add(5));
     a.step(make_add(7));
     match a {
-        Seed => println("seed"),
+        .Seed => println("seed"),
         Total { sum } => println(f"sum={sum}"),   // sum=12
     }
 }
 ```
 
-Prefer the head binding `on Add(n): ...` so payload names are declared at the rule site; `event.n` is the equivalent fallback. `self.field` reads the source state; `event.field` reads the event payload. The compiler generates a companion enum `{MachineName}Event` you can name in signatures and construct with `MachineEvent::Variant`.
+Prefer the head binding `on Add(n): ...` so payload names are declared at the rule site; `event.n` is the equivalent fallback. `self.field` reads the source state; `event.field` reads the event payload. The compiler generates a companion enum `{MachineName}Event` you can name in signatures and construct with `MachineEvent.Variant`.
 
 ### Wildcard transitions and if-expression bodies
 
@@ -1743,7 +1787,7 @@ machine Conn {
 }
 fn main() {
     var c = Idle;
-    c.step(Start); c.step(Bump); c.step(Bump); c.step(Bump);
+    c.step(.Start); c.step(.Bump); c.step(.Bump); c.step(.Bump);
     println(c.state_name());   // Dead
 }
 ```
@@ -1763,7 +1807,7 @@ machine Door {
 }
 fn drive(d: Door) -> string {
     var local = d;
-    local.step(Open);
+    local.step(.Open);
     local.state_name()
 }
 fn main() { println(drive(.Shut)); }   // Ajar
@@ -1872,7 +1916,7 @@ fn main() {
 }
 ```
 
-A monomorphic enum, even one carrying a string payload, is a valid Vec element. Construct variants as `Enum::Variant(payload)`. Generic type parameters (`Vec<T>`) are also supported for element methods (`get`, `push`, `set`, `pop`, `contains`, indexing, and range-slice).
+A monomorphic enum, even one carrying a string payload, is a valid Vec element. Construct variants as `Enum.Variant(payload)`. Generic type parameters (`Vec<T>`) are also supported for element methods (`get`, `push`, `set`, `pop`, `contains`, indexing, and range-slice).
 
 ### Vec of a concrete record
 
@@ -1890,9 +1934,9 @@ fn main() {
 
 Store concrete records in a Vec and bind the element with `let got = v[i]` before reading fields.
 
-### Turbofish — explicit type argument on a call
+### Explicit type argument on a call
 
-When a generic function takes no arguments from which the type can be inferred, use the turbofish syntax `func::<T>()` to supply the type argument explicitly:
+When a generic function takes no arguments from which the type can be inferred, use `func<T>()` to supply the type argument explicitly:
 
 ```hew
 fn make_vec<T>() -> Vec<T> {
@@ -1906,7 +1950,7 @@ fn main() {
 }
 ```
 
-**Turbofish is one way to pin a generic constructor's type argument, not the only one.** The checker also resolves `T` from the **expected return type** at the call site — a `let` binding's declared type, a function's declared return type, or an argument position — with no turbofish needed:
+**An explicit type argument is one way to pin a generic constructor's type argument, not the only one.** The checker also resolves `T` from the **expected return type** at the call site — a `let` binding's declared type, a function's declared return type, or an argument position — without an explicit type argument:
 
 ```hew
 type Stack<T> { items: Vec<T>; }
@@ -1914,11 +1958,11 @@ type Stack<T> { items: Vec<T>; }
 fn new_empty<T>() -> Stack<T> { Stack { items: Vec.new() } }
 
 fn make_i64_stack() -> Stack<i64> {
-    new_empty()                    // return-position inference — no turbofish
+    new_empty()                    // return-position inference — no explicit type argument
 }
 
 fn main() {
-    let s: Stack<i64> = new_empty();      // let-annotation inference — no turbofish
+    let s: Stack<i64> = new_empty();      // let-annotation inference — no explicit type argument
     let s2 = new_empty<i64>();          // explicit type argument
     let s3 = make_i64_stack();
     println(s.items.len());
@@ -1927,7 +1971,7 @@ fn main() {
 }
 ```
 
-Only a **genuinely unconstrained** call — no turbofish, no annotation, no usage that pins `T` — fails, and it fails with the same clean `cannot infer type for local binding` / `consider adding a type annotation` diagnostic as any other unconstrained generic call. There is no separate NYI/MIR-lowering error for this pattern; add a turbofish or a type annotation to resolve it.
+Only a **genuinely unconstrained** call — no explicit type argument, no annotation, no usage that pins `T` — fails, and it fails with the same clean `cannot infer type for local binding` / `consider adding a type annotation` diagnostic as any other unconstrained generic call. There is no separate NYI/MIR-lowering error for this pattern; add an explicit type argument or a type annotation to resolve it.
 
 ### Inherent impl on a generic record
 
@@ -1958,7 +2002,7 @@ fn main() {
 }
 ```
 
-Construct the empty generic record through the constructor function `new_stack`, either with turbofish (`new_stack::<i64>()`) or a `let` type annotation and no turbofish at all (`let s: Stack<i64> = new_stack();`) — both resolve `T` from the call site and lower identically, the same return-type-driven inference covered in the Turbofish section above. `hew fmt` normalizes an explicit `::<T>` call to `<T>` (`new_stack::<i64>()` becomes `new_stack<i64>()`); every one of these spellings type-checks and runs identically — write whichever you like and let the formatter settle it. A bare `Stack { items: Vec::new() }` construction with no surrounding annotation is still ambiguous and needs one. `push_item` mutates the `items` field in place and returns the receiver — this is the pattern to use for a generic record with an owned heap field; extracting the field into a local, pushing, and reconstructing a new `Stack { items: ... }` value is a known crash today (the generic-record drop plan double-releases the extracted field).
+Construct the empty generic record through the constructor function `new_stack`, either with an explicit type argument (`new_stack<i64>()`) or a `let` type annotation (`let s: Stack<i64> = new_stack();`). Both resolve `T` from the call site and lower identically. A bare `Stack { items: Vec.new() }` construction with no surrounding annotation is still ambiguous and needs one. `push_item` mutates the `items` field in place and returns the receiver — this is the pattern to use for a generic record with an owned heap field; extracting the field into a local, pushing, and reconstructing a new `Stack { items: ... }` value is a known crash today (the generic-record drop plan double-releases the extracted field).
 
 ### Monomorphic functions as values (cross-module)
 
@@ -2050,8 +2094,8 @@ fn divide(a: i64, b: i64) -> Result<i64, string> {
     if b == 0 { Err("division by zero") } else { Ok(a / b) }
 }
 fn main() {
-    match divide(10, 2) { Ok(v) => println(f"ok: {v}"), Err(e) => println(f"err: {e}") }
-    match divide(1, 0) { Ok(v) => println(f"ok: {v}"), Err(e) => println(f"err: {e}") }
+    match divide(10, 2) { .Ok(v) => println(f"ok: {v}"), .Err(e) => println(f"err: {e}") }
+    match divide(1, 0) { .Ok(v) => println(f"ok: {v}"), .Err(e) => println(f"err: {e}") }
 }
 ```
 
@@ -2064,9 +2108,9 @@ fn first_positive(a: i64) -> Option<i64> {
     if a > 0 { Some(a) } else { None }
 }
 fn main() {
-    match first_positive(5) { Some(v) => println(f"some: {v}"), None => println("none") }
+    match first_positive(5) { .Some(v) => println(f"some: {v}"), .None => println("none") }
     let n: Option<i64> = None;
-    match n { Some(v) => println(f"some: {v}"), None => println("none") }
+    match n { .Some(v) => println(f"some: {v}"), .None => println("none") }
 }
 ```
 
@@ -2084,8 +2128,8 @@ fn chain(a: i64, b: i64, c: i64) -> Result<i64, string> {
     Ok(y)
 }
 fn main() {
-    match chain(100, 5, 2) { Ok(v) => println(f"ok: {v}"), Err(e) => println(f"err: {e}") }
-    match chain(100, 0, 2) { Ok(v) => println(f"ok: {v}"), Err(e) => println(f"err: {e}") }
+    match chain(100, 5, 2) { .Ok(v) => println(f"ok: {v}"), .Err(e) => println(f"err: {e}") }
+    match chain(100, 0, 2) { .Ok(v) => println(f"ok: {v}"), .Err(e) => println(f"err: {e}") }
 }
 ```
 
@@ -2099,9 +2143,9 @@ fn first(o: Option<i64>) -> Option<i64> {
     Some(v + 1)
 }
 fn main() {
-    match first(Some(5)) { Some(v) => println(f"some: {v}"), None => println("none") }
+    match first(Some(5)) { .Some(v) => println(f"some: {v}"), .None => println("none") }
     let n: Option<i64> = None;
-    match first(n) { Some(v) => println(f"some: {v}"), None => println("none") }
+    match first(n) { .Some(v) => println(f"some: {v}"), .None => println("none") }
 }
 ```
 
@@ -2111,7 +2155,7 @@ Inside an Option-returning fn, `o?` yields the inner value on Some and early-ret
 
 ```hew
 fn unwrap_or(r: Result<i64, string>, fallback: i64) -> i64 {
-    match r { Ok(v) => v, Err(_) => fallback }
+    match r { .Ok(v) => v, .Err(_) => fallback }
 }
 fn main() {
     let ok: Result<i64, string> = Ok(42);
@@ -2121,7 +2165,7 @@ fn main() {
 }
 ```
 
-For unwrap_or/is_ok/is_err on Result, write a tiny `match` helper inline. This is the reliable path — do not import `std::result`/`std::option`, and do not use `.unwrap()`/`.unwrap_or()` method form.
+For unwrap_or/is_ok/is_err on Result, write a tiny `match` helper inline. This is the reliable path — do not import `std.result`/`std.option`, and do not use `.unwrap()`/`.unwrap_or()` method form.
 
 ### Option .is_some() / .is_none()
 
@@ -2143,8 +2187,8 @@ For Option presence checks, `.is_some()`/`.is_none()` read cleanly and return `b
 ```hew
 fn classify(o: Option<i64>) -> string {
     match o {
-        Some(v) => if v > 0 { "positive" } else { "non-positive" },
-        None => "missing",
+        .Some(v) => if v > 0 { "positive" } else { "non-positive" },
+        .None => "missing",
     }
 }
 fn main() {
@@ -2164,8 +2208,8 @@ fn validate(x: i64) -> Result<i64, string> {
     if x < 0 { Err("negative") } else { Ok(0) }
 }
 fn main() {
-    match validate(5)  { Ok(_) => println("valid"), Err(e) => println(f"err: {e}") }
-    match validate(-1) { Ok(_) => println("valid"), Err(e) => println(f"err: {e}") }
+    match validate(5)  { .Ok(_) => println("valid"), .Err(e) => println(f"err: {e}") }
+    match validate(-1) { .Ok(_) => println("valid"), .Err(e) => println(f"err: {e}") }
 }
 ```
 
@@ -2230,12 +2274,12 @@ fn main() {
 ```hew
 fn main() {
     match "hello world".find("world") {
-        Some(idx) => println(f"find={idx}"),   // 6
-        None => println("not found"),
+        .Some(idx) => println(f"find={idx}"),   // 6
+        .None => println("not found"),
     }
     match "hello".find("xyz") {
-        Some(idx) => println(f"find={idx}"),
-        None => println("not found"),
+        .Some(idx) => println(f"find={idx}"),
+        .None => println("not found"),
     }
 }
 ```
@@ -2255,15 +2299,15 @@ fn main() {
 
 `.len()` returns `i64` (safe directly in an f-string). `.contains(sub)` returns `bool` — bind to a `let` before interpolating.
 
-### std::string module functions
+### std.string module functions
 
 ```hew
 import std.string;
 fn main() {
     println(string.from_int(42));            // 42
     let n = match string.to_int("42") {
-        Some(v) => v,
-        None => 0,
+        .Some(v) => v,
+        .None => 0,
     };
     println(f"n={n}");                        // 42
     println(string.pad_left("7", 3, "0"));   // 007
@@ -2273,7 +2317,7 @@ fn main() {
 }
 ```
 
-Import `std::string` and call via the module name. `from_int`/`to_float` for conversions; `to_int` returns `Option<i64>` (`None` on parse failure) — consume it with `match` or `.unwrap_or(default)`; `join(Vec<string>, sep)` for assembly; `pad_left`/`pad_right` for fixed width. Use `string.try_to_int`/`try_to_float` for a `Result` when you need the failure reason.
+Import `std.string` and call via the module name. `from_int`/`to_float` for conversions; `to_int` returns `Option<i64>` (`None` on parse failure) — consume it with `match` or `.unwrap_or(default)`; `join(Vec<string>, sep)` for assembly; `pad_left`/`pad_right` for fixed width. Use `string.try_to_int`/`try_to_float` for a `Result` when you need the failure reason.
 
 ### Concatenation, char round-trip, escapes
 
@@ -2283,8 +2327,8 @@ fn main() {
     let g = "Hello" + ", " + "world";
     println(g);
     match "Z".char_at(0) {
-        Some(ch) => println(string.from_char(ch as i64)),   // Z
-        None => println("out of bounds"),
+        .Some(ch) => println(string.from_char(ch as i64)),   // Z
+        .None => println("out of bounds"),
     }
     var acc = "";
     for i in 0 .. 3 { acc = acc + "x"; }
@@ -2316,7 +2360,7 @@ fn main() {
 
 Use Go-style named receivers: the first parameter whose type matches the impl target is the receiver (no `self` keyword required — the parameter can be named anything, including `self`). The receiver is consumed by value.
 
-A trait method can carry a default body (`fn shout(self) -> string { self.greet() + "!!!" }` inside the trait declaration); an `impl` only needs to supply the methods it overrides, and an uncalled default falls back to the trait's body, dispatching through `self.method()` like any other trait call. Defaults work within a single file and across a file import (`import "other.hew";`, including a default that dispatches back through a required method declared in another file). Defaults also work when only the *trait* comes from a directory module (`import mymod::{ Greet };`) and the implementing type is local. They do not yet resolve when the implementing type is ALSO imported from a directory module (e.g. `import gm::{ Dog };` where `Dog` and its `impl Greet for Dog` both live in `gm`) — calling an inherited default on that receiver fails with `no method 'greet' on 'gm.Dog'` rather than falling back to the trait's default body; that gap is tracked separately.
+A trait method can carry a default body (`fn shout(self) -> string { self.greet() + "!!!" }` inside the trait declaration); an `impl` only needs to supply the methods it overrides, and an uncalled default falls back to the trait's body, dispatching through `self.method()` like any other trait call. Defaults work within a single file and across a file import (`import "other.hew";`, including a default that dispatches back through a required method declared in another file). Defaults also work when only the *trait* comes from a directory module (`import mymod.{ Greet };`) and the implementing type is local. They do not yet resolve when the implementing type is ALSO imported from a directory module (e.g. `import gm.{ Dog };` where `Dog` and its `impl Greet for Dog` both live in `gm`) — calling an inherited default on that receiver fails with `no method 'greet' on 'gm.Dog'` rather than falling back to the trait's default body; that gap is tracked separately.
 
 ### Display trait (fmt) for f-string interpolation
 
@@ -2401,17 +2445,17 @@ You may add trait impls for builtin nominal types like `Vec`. (A bare inherent `
 ```hew
 fn main() {
     let x = Some(42);
-    let v = match x { Some(n) => n, None => 0 };
+    let v = match x { .Some(n) => n, .None => 0 };
     println(v);   // 42
     let r: Result<i64, i64> = Ok(7);
-    let w = match r { Ok(n) => n, Err(e) => e };
+    let w = match r { .Ok(n) => n, .Err(e) => e };
     println(w);   // 7
     let y: Option<i64> = None;
-    println(match y { Some(n) => n, None => -1 });   // -1
+    println(match y { .Some(n) => n, .None => -1 });   // -1
 }
 ```
 
-Option/Result and their constructors are builtin — do not import `std::option`/`std::result`. Unwrap with `match`. Annotate a standalone `None` with a type.
+Option/Result and their constructors are builtin — do not import `std.option`/`std.result`. Unwrap with `match`. Annotate a standalone `None` with a type.
 
 ### The ? operator on Result
 
@@ -2425,14 +2469,14 @@ fn parse_add(a: string, b: string) -> Result<i64, string> {
     Ok(x + y)
 }
 fn main() {
-    match parse_add("a", "b") { Ok(n) => println(n), Err(e) => println(e) }       // 20
-    match parse_add("bad", "b") { Ok(n) => println(n), Err(e) => println(e) }     // bad input
+    match parse_add("a", "b") { .Ok(n) => println(n), .Err(e) => println(e) }       // 20
+    match parse_add("bad", "b") { .Ok(n) => println(n), .Err(e) => println(e) }     // bad input
 }
 ```
 
 Use `?` to short-circuit Err and propagate it; the enclosing fn must return a Result whose Err type matches.
 
-### std::string helpers
+### std.string helpers
 
 ```hew
 import std.string;
@@ -2444,9 +2488,9 @@ fn main() {
 }
 ```
 
-Import `std::string` and call via the module name. Most case/slice/trim/find operations are builtin methods on `string` itself; `std::string` is for conversions and padding. `to_int` returns `Option<i64>` — use `.unwrap_or(default)` or `match` to handle a parse failure.
+Import `std.string` and call via the module name. Most case/slice/trim/find operations are builtin methods on `string` itself; `std.string` is for conversions and padding. `to_int` returns `Option<i64>` — use `.unwrap_or(default)` or `match` to handle a parse failure.
 
-### std::math helpers
+### std.math helpers
 
 ```hew
 import std.math;
@@ -2460,7 +2504,7 @@ fn main() {
 
 `abs`/`min`/`max` are generic over Num (work on `i64` and `f64`); `sqrt`/`pow`/`floor`/`ceil`/`round` take `f64`. Use `math.pi()`/`math.e()` (functions, not bare constants).
 
-### std::iter — lazy iterator combinators
+### std.iter — lazy iterator combinators
 
 ```hew
 import std.iter;
@@ -2472,11 +2516,11 @@ fn main() {
 }
 ```
 
-`std::iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (consumes `v`).
+`std.iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (consumes `v`).
 
 When the receiver is a `Vec` field in actor state, `into_iter()` DRAINS the field: the iteration consumes every element and the field is left a valid empty vec. A later message may push new elements into it or iterate it again (yielding nothing). This is the only iteration form for `Vec<dyn Trait>` fields — trait objects cannot be cloned, so there is no non-consuming snapshot to hand out.
 
-### std::sort — sorting vectors
+### std.sort — sorting vectors
 
 ```hew
 import std.sort;
@@ -2502,7 +2546,7 @@ fn main() {
 
 `sort_ints` / `sort_strings` / `sort_floats` return new sorted Vecs (ascending); `reverse_ints` / `reverse_strings` / `reverse_floats` return new reversed Vecs. The original is never modified. Integer and string sorting use iterative merge passes, so their comparison count is O(n log n); float sorting retains its total-order runtime implementation.
 
-### std::random — pseudo-random number generation
+### std.random — pseudo-random number generation
 
 ```hew
 import std.random;
@@ -2521,7 +2565,7 @@ fn main() {
 
 Backed by a CPython-compatible MT19937 Mersenne Twister — the same seed produces the same sequence as CPython's `random` module. Call `seed(n)` first for reproducible output; without a seed, the state is initialised from OS entropy. `randint(lo, hi)` returns in the half-open range `[lo, hi)`.
 
-### std::time::datetime — timestamps and date arithmetic
+### std.time.datetime — timestamps and date arithmetic
 
 ```hew
 import std.time.datetime;
@@ -2541,15 +2585,15 @@ fn main() {
     println(diff);                  // 86400
 
     match datetime.try_parse("2026-01-01T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ") {
-        Ok(ts) => println(datetime.year(ts)),   // 2026
-        Err(e) => println(f"parse error: {e}"),
+        .Ok(ts) => println(datetime.year(ts)),   // 2026
+        .Err(e) => println(f"parse error: {e}"),
     }
 }
 ```
 
 Timestamps are `i64` epoch milliseconds throughout. `to_iso8601` formats as RFC 3339 UTC; `format(ts, fmt)` uses strftime-style patterns. `year`/`month`/`day`/`hour`/`minute`/`second`/`weekday` extract components. `add_days` / `add_hours` perform arithmetic; `diff_secs` returns the signed difference. Use `try_parse` when the input may be malformed; the format string must describe a complete date and time (a date-only pattern such as `"%Y-%m-%d"` fails with "input is not enough for unique date and time").
 
-### std::deque — double-ended queue
+### std.deque — double-ended queue
 
 ```hew
 import std.deque;
@@ -2581,9 +2625,9 @@ fn main() {
 }
 ```
 
-`std::string`, `std::math`, `std::iter` import together cleanly — the safe stdlib trio to lean on. An unused import warns but still compiles.
+`std.string`, `std.math`, `std.iter` import together cleanly — the safe stdlib trio to lean on. An unused import warns but still compiles.
 
-### std::encoding::json — parsing and building JSON
+### std.encoding.json — parsing and building JSON
 
 ```hew
 import std.encoding.json;
@@ -2640,29 +2684,29 @@ fn main() {
 }
 ```
 
-**Fallible parsing with `try_parse`** returns `Result<Value, ParseError>`. Match on the module-qualified `ParseError::Invalid(msg)` pattern to recover the native parser's message, or match `Err(_)` to ignore it:
+**Fallible parsing with `try_parse`** returns `Result<Value, ParseError>`. Match on the module-qualified `ParseError.Invalid(msg)` pattern to recover the native parser's message, or match `.Err(_)` to ignore it:
 
 ```hew
 import std.encoding.json;
 
 fn main() {
     match json.try_parse("{\"ok\": true}") {
-        Ok(v) => {
+        .Ok(v) => {
             println("parsed ok");
             v.free();
         },
-        Err(ParseError.Invalid(msg)) => println(f"parse failed: {msg}"),
+        .Err(ParseError.Invalid(msg)) => println(f"parse failed: {msg}"),
     }
     match json.try_parse("not valid json {") {
-        Ok(v) => { v.free(); },
-        Err(ParseError.Invalid(msg)) => println(f"bad json rejected: {msg}"),
+        .Ok(v) => { v.free(); },
+        .Err(ParseError.Invalid(msg)) => println(f"bad json rejected: {msg}"),
     }
 }
 ```
 
 **Memory management:** every `Value` (from `parse`, `get_field`, `array_get`, `from_*`, `object()`, `array()`) must be freed with `.free()` before it goes out of scope. Omitting `.free()` is a resource leak. Values returned by `get_field` and `array_get` are heap-allocated clones — free them independently of the parent.
 
-**Naming the `Value` type** — a plain `import std::encoding::json;` publishes the `json` module alias (`json.parse(...)`, `json.Value` as a qualified type) but does not put the bare `Value` name in scope. Use `Value` unqualified in a function signature (a parameter or return type) by importing it alongside the module in one combined import:
+**Naming the `Value` type** — a plain `import std.encoding.json;` publishes the `json` module alias (`json.parse(...)`, `json.Value` as a qualified type) but does not put the bare `Value` name in scope. Use `Value` unqualified in a function signature (a parameter or return type) by importing it alongside the module in one combined import:
 
 ```hew
 import std.encoding.json.{self, Value};
@@ -2728,11 +2772,11 @@ A quoted string path (`import "relative/path.hew";`) pulls in a sibling
 source file directly — no project layout is required. This is the fastest
 way to split a script into files.
 
-For a project with a `src/` tree, `import src::a::b::c;` addresses
+For a project with a `src/` tree, `import src.a.b.c;` addresses
 `src/a/b/c.hew` by dotted path and binds the module under its last
 segment (`c` here) — call its public items as `c.function_name()` /
-`c.CONST_NAME`, the same dotted-access form used for `std::string`,
-`std::math`, and every other stdlib module:
+`c.CONST_NAME`, the same dotted-access form used for `std.string`,
+`std.math`, and every other stdlib module:
 
 ```hew
 import std.string;
@@ -2742,20 +2786,19 @@ fn main() {
 }
 ```
 
-Selective import (`import src::a::b::{Thing, other_fn};`) brings specific
+Selective import (`import src.a.b.{Thing, other_fn};`) brings specific
 names into scope unqualified instead of binding the module name. Both forms
 resolve `pub` items only — a non-`pub` fn, type, `machine`, or `const` is
 invisible outside its defining file.
 
-**Reserved-word module path segments.** A path segment in `::`-dotted form may
-be a keyword: `import src::workflow::machine::{Thing};` (and the bare and
-`::*` forms) parse and resolve normally, as do `type` and `trait` segments.
+**Reserved-word module path segments.** A dotted path segment may be a
+keyword: `import src.workflow.machine.{Thing};`. Bare and selective imports
+parse and resolve normally, as do `type` and `trait` segments.
 The remaining restriction is on the *binding*, not the path — a bare
-`import src::workflow::machine;` binds the module under the name `machine`,
+`import src.workflow.machine;` binds the module under the name `machine`,
 and writing `machine.Thing` is then a parse error
 (`` unexpected `.` in block ``). The same is true of `actor`. Use the
-selective (`::{Name}`) or wildcard (`::*`) form for a keyword-named module,
-or reach it via the quoted string-path import form above.
+selective (`.{Name}`) form for a keyword-named module, or reach it via the quoted string-path import form above. Wildcard imports are retired.
 
 ### `pub const` — module-level constants
 
@@ -2771,7 +2814,7 @@ fn main() {
 exports it. A const is evaluated once and is immutable — there is no `var
 const`. Read a `pub const` from another module via dotted access on the
 imported module (`reasons.MAX_RETRIES`) — selective import of a `const`
-(`import src::reasons::reasons::{MAX_RETRIES};`, then bare `MAX_RETRIES`)
+(`import src.reasons.reasons.{MAX_RETRIES};`, then bare `MAX_RETRIES`)
 currently fails to resolve; dotted access is the only working form today.
 Prefer a `pub const` over a zero-argument wrapper function
 (`pub fn max_retries() -> i64 { 3 }`) for a fixed value — the const form is
@@ -2850,7 +2893,7 @@ fn main() {
 }
 ```
 
-### Vec::contains relies on structural equality
+### Vec.contains relies on structural equality
 
 `Vec<T>.contains(v)` walks the vector using the same element-wise equality,
 so records and enums with payloads work transparently:
@@ -2934,7 +2977,7 @@ implies an equal hash and a float-bearing `record` is a sound `HashMap` key.
 > `[nan].contains(nan)` is `false` (scalar IEEE `==`, NaN ≠ NaN), while
 > `HashSet<f64>` (which stores `f64` as a structural position) treats two
 > identical NaN bit-patterns as equal. The reflexive/bitwise guarantee does
-> not extend to `Vec<f64>::contains` or direct `f64 == f64` expressions.
+> not extend to `Vec<f64>.contains` or direct `f64 == f64` expressions.
 
 ```hew
 record Coord { x: f64, y: f64 }
@@ -2944,8 +2987,8 @@ fn main() {
     m.insert(Coord { x: 1.5, y: 2.5 }, 42);
     let v = m.get(Coord { x: 1.5, y: 2.5 });
     match v {
-        Some(n) => println(n),   // 42 — structurally equal key round-trips
-        None => println(-1),
+        .Some(n) => println(n),   // 42 — structurally equal key round-trips
+        .None => println(-1),
     }
 }
 ```
@@ -2992,8 +3035,8 @@ fn main() {
     let j = e.to_json();
     println(j);                          // {"id":42,"name":"ada"}
     match UserCreated.from_json(j) {
-        Ok(back) => println(back.name),  // ada
-        Err(_) => println("parse failed"),
+        .Ok(back) => println(back.name),  // ada
+        .Err(_) => println("parse failed"),
     }
 }
 ```
@@ -3006,9 +3049,9 @@ bare element type, not `Option<T>` — see
 [`examples/playground/types/wire_types.hew`](../examples/playground/types/wire_types.hew)
 for that form.
 
-`e.to_json()` and `TypeName.from_json(text)` (a call on the type name
-itself, not `::`) round-trip a wire type through JSON. The runtime envelope
-used for actor-to-actor message transport is CBOR; the `std::encoding::*`
+`e.to_json()` and `TypeName.from_json(text)` round-trip a wire type through
+JSON; the latter is a call on the type name itself rather than a source spelling. The runtime envelope
+used for actor-to-actor message transport is CBOR; the `std.encoding` modules
 surface (JSON, MessagePack, ...) is for cross-service and file I/O. Use `hew
 wire check <file.hew> --against <baseline.hew>` to check schema
 compatibility between two versions of a wire type.
@@ -3101,8 +3144,8 @@ actor Echo {
         while !done {
             let item = await input.recv();
             match item {
-                Some(b) => println(b.to_string()),  // x0, x1
-                None => { done = true; },
+                .Some(b) => println(b.to_string()),  // x0, x1
+                .None => { done = true; },
             }
         }
     }
@@ -3121,7 +3164,7 @@ Only `Stream<bytes>` / `Sink<bytes>` suspend (the canonical element type), and t
 canonical method names are `recv()` / `send()` — not `next()` / `write()`. `recv()`
 yields `Option<bytes>` (`None` is EOF); match it, never unwrap. `await sink.send`
 is statement-position only. Build the pipe with the public
-`std::stream.bytes_pipe(capacity)` constructor — no raw extern, no `unsafe` — and
+`std.stream.bytes_pipe(capacity)` constructor — no raw extern, no `unsafe` — and
 turn text into a frame with the public `string.to_bytes()` surface. Keep both
 ends in one handler: moving an owned `Stream`/`Sink` into actor state is not
 yet supported (`OwnedHandleAggregateExtractionUnsupported`). Full example:
@@ -3139,15 +3182,15 @@ actor Inbox {
         tx.close();
 
         match await rx.recv() {
-            Some(msg) => println(msg),   // ready
-            None => println("closed"),
+            .Some(msg) => println(msg),   // ready
+            .None => println("closed"),
         }
 
         select {
             again from rx.recv() => {
                 match again {
-                    Some(msg) => println(msg),
-                    None => println("closed"),
+                    .Some(msg) => println(msg),
+                    .None => println("closed"),
                 }
             },
             after 1s => println("timeout"),
@@ -3177,13 +3220,13 @@ fn main() {
     let re = regex.new("(?P<k>[a-z]+)=(?P<v>[0-9]+)");
     let text = "a=1 bb=22";
     match re.capture_named(text, "v") {
-        Some(v) => println(f"first value: {v}"),   // first value: 1
-        None => println("none"),
+        .Some(v) => println(f"first value: {v}"),   // first value: 1
+        .None => println("none"),
     }
     let rows = re.find_all_submatch(text);
     for i in 0..rows.len() {
-        let key = match rows.group(i, 1) { Some(g) => g, None => "?" };
-        let val = match rows.group(i, 2) { Some(g) => g, None => "?" };
+        let key = match rows.group(i, 1) { .Some(g) => g, .None => "?" };
+        let val = match rows.group(i, 2) { .Some(g) => g, .None => "?" };
         println(f"{key} -> {val}");   // a -> 1 ; bb -> 22
     }
     re.close();
@@ -3214,8 +3257,8 @@ fn main() {
     template.ctx_set_list(ctx, "xs", xs);
     let t = template.parse("hi {{.name}}:{{range .xs}} {{.}}{{end}}");
     match template.render_try(t, ctx) {
-        Ok(s) => println(s),   // hi Hew: a b
-        Err(_) => println("error"),
+        .Ok(s) => println(s),   // hi Hew: a b
+        .Err(_) => println("error"),
     }
 }
 ```
@@ -3262,7 +3305,7 @@ import std.io.scanner;
 
 fn main() {
     var sc = scanner.from_string("alpha beta\ncolour");
-    sc = scanner.with_split(sc, SplitWords);
+    sc = scanner.with_split(sc, .SplitWords);
     sc = scanner.scan(sc);
     while scanner.has_next(sc) {
         println(scanner.text(sc));
@@ -3271,8 +3314,8 @@ fn main() {
 
     let (next, line) = scanner.next_line(scanner.from_string("first\nsecond"));
     match line {
-        Some(s) => println(s),   // first
-        None => println("none"),
+        .Some(s) => println(s),   // first
+        .None => println("none"),
     }
     let _ = next;
 }
@@ -3291,7 +3334,7 @@ scanner plus `Option<string>`. Full example:
 
 The flagship networking surface is an `await`-suspended HTTP/1.1 client and
 server built on `net.connect` / `net.listen` plus the pure-Hew codecs in
-`std::net::http::http_async_client` / `http_async_server`. A server handler
+`std.net.http.http_async_client` / `http_async_server`. A server handler
 `await`s a connection, drives an `await conn.read_string()` loop until the
 request is buffered, then replies; a client writes a request and `await`s the
 response. Every `await` suspends the handler (not the worker), so one worker can
@@ -3336,8 +3379,8 @@ operations, converting a plain suspend into a timed suspend that returns
 | `await ln.accept() \| after d` | `Result<net.Connection, IoError>` |
 
 If explicit runtime shutdown begins while a deadline-form read or accept is
-already parked, it resumes as `Err(NetError::Cancelled(0))`. Its own deadline
-still reports `Err(NetError::TimedOut(_))`. Plain forms have no `Result` error
+already parked, it resumes as `Err(NetError.Cancelled(0))`. Its own deadline
+still reports `Err(NetError.TimedOut(_))`. Plain forms have no `Result` error
 surface and retain their existing fail-closed empty/invalid value behaviour.
 
 Use inside a `scope` body to bound how long a handler waits for a peer:
@@ -3347,8 +3390,8 @@ Use inside a `scope` body to bound how long a handler waits for a peer:
 scope {
     fork {
         match await conn.read_string() | after 5s {
-            Ok(data) => conn.write_string(data),
-            Err(_)   => conn.close(),
+            .Ok(data) => conn.write_string(data),
+            .Err(_)   => conn.close(),
         }
     }
 }
@@ -3373,14 +3416,14 @@ actor Client {
     receive fn go(unused: i64) {
         let found: Result<RemotePid<Echo>, LookupError> = Node.lookup("echo");
         match found {
-            Ok(peer) => {
+            .Ok(peer) => {
                 let reply = peer.ask(7, 1000);
                 match reply {
-                    Ok(n) => println(f"answer={n}"),
-                    Err(_) => println("ask failed"),
+                    .Ok(n) => println(f"answer={n}"),
+                    .Err(_) => println("ask failed"),
                 }
             },
-            Err(_) => println("lookup failed"),
+            .Err(_) => println("lookup failed"),
         }
     }
 }
@@ -3388,10 +3431,10 @@ actor Client {
 
 `RemotePid<T>` names an actor discovered through the node registry. From an
 actor handler, `peer.ask(msg, timeout_ms)` lowers to the cross-node suspending
-remote-ask path and returns `Result<T::Reply, AskError>` on resume; match
+remote-ask path and returns `Result<T.Reply, AskError>` on resume; match
 `Ok`/`Err` instead of assuming a reply. A same-node lookup can still return a
 `RemotePid<T>`, but the local-mailbox bridge for the remote-ask path is scoped
-to fail closed as `AskError::RoutingFailed`; use a `LocalPid<T>` direct actor
+to fail closed as `AskError.RoutingFailed`; use a `LocalPid<T>` direct actor
 call when both actors are intentionally local. Full example:
 [`examples/distributed/kv_client.hew`](../examples/distributed/kv_client.hew)
 and [`examples/distributed/kv_server.hew`](../examples/distributed/kv_server.hew).
@@ -3399,8 +3442,8 @@ and [`examples/distributed/kv_server.hew`](../examples/distributed/kv_server.hew
 #### Key-backed node identity and peer authentication (native only)
 
 Every distributed node identity is derived from its stable authenticated public
-credential. `Node::load_keys(path)` loads or creates that credential, and
-`Node::identity_key()` returns the public half as lowercase hexadecimal for
+credential. `Node.load_keys(path)` loads or creates that credential, and
+`Node.identity_key()` returns the public half as lowercase hexadecimal for
 out-of-band exchange.
 
 The runtime computes:
@@ -3419,12 +3462,12 @@ credential-kind byte is `1` for a TCP Noise static key and `2` for a canonical
 TLS leaf SPKI. Keeping the key preserves the `NodeId`; rotating the key rotates
 the identity.
 
-`Node::allow_peer(route_slot, credential)` binds a peer credential to a
+`Node.allow_peer(route_slot, credential)` binds a peer credential to a
 receiver-local non-zero `u16` route slot. Slot `0` is reserved for local
 dispatch. A route slot is only a compact alias inside the configuring process:
 it never becomes the peer's identity and may differ on every node.
 
-Call all identity and pinning operations before `Node::start`:
+Call all identity and pinning operations before `Node.start`:
 
 <!-- doctest: skip -->
 ```hew
@@ -3465,7 +3508,7 @@ integers. A PID captured before a same-key restart fails with `StaleRef`, even
 if the replacement process reuses the same actor slot.
 
 Registry names are discovery aliases. Repointing a name affects future
-`Node::lookup` calls but does not rewrite or revoke a previously issued
+`Node.lookup` calls but does not rewrite or revoke a previously issued
 `RemotePid`.
 
 Remote monitors deliver one typed notification through `#[on(down)]`:
@@ -3487,7 +3530,7 @@ actor Watcher {
 }
 ```
 
-`MonitorRef::id()` matches `DownNotification.monitor`. Closing the handle
+`MonitorRef.id()` matches `DownNotification.monitor`. Closing the handle
 removes the registration and delivers no notification.
 
 The complete protocol and identity rules are normative in
@@ -3506,7 +3549,7 @@ fn main() {
     let payload = req.to_bytes();
     let sent = tls.write(stream, payload);
     println(f"sent {sent}/{payload.len()} bytes");
-    // match tls.read(stream, 256) { Ok(data) => ..., Err(_) => ... }
+    // match tls.read(stream, 256) { .Ok(data) => ..., .Err(_) => ... }
     tls.close(stream);
 }
 ```
@@ -3590,7 +3633,7 @@ test result: ok. 2 passed; 0 failed; 1 ignored
 ```
 
 Each test compiles and runs as its own native subprocess — one test's
-panic, timeout, or stray `std::process::exit` cannot take down another
+panic, timeout, or stray `std.process.exit` cannot take down another
 test in the same run, and there is no shared global state between tests by
 default.
 

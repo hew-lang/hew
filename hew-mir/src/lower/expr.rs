@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 #[cfg(test)]
 use super::drop_plan::ty_is_closure_pair_vec;
 use super::{
@@ -159,8 +164,8 @@ mod builtin_vec_iter_static_next_tests {
 
     fn iterator_next_target() -> hew_types::CallTarget {
         hew_types::CallTarget::static_trait(
-            hew_types::DefId::new("std.builtins.Iterator"),
-            hew_types::DefId::new("std.builtins.Iterator::next"),
+            hew_types::DefId::legacy_reconstruct_from_full_path("std.builtins.Iterator"),
+            hew_types::DefId::legacy_reconstruct_from_full_path("std.builtins.Iterator::next"),
         )
     }
 
@@ -181,8 +186,8 @@ mod builtin_vec_iter_static_next_tests {
         );
 
         let other_iterator_method = hew_types::CallTarget::static_trait(
-            hew_types::DefId::new("std.builtins.Iterator"),
-            hew_types::DefId::new("std.builtins.Iterator::peek"),
+            hew_types::DefId::legacy_reconstruct_from_full_path("std.builtins.Iterator"),
+            hew_types::DefId::legacy_reconstruct_from_full_path("std.builtins.Iterator::peek"),
         );
         assert!(
             builtin_vec_iter_static_next_element(&other_iterator_method, &builtin_cursor, 0)
@@ -700,6 +705,9 @@ impl Builder {
     }
 
     fn is_structural_eq_comparison(&self, lhs_ty: &ResolvedTy, rhs_ty: &ResolvedTy) -> bool {
+        if lhs_ty == rhs_ty && matches!(lhs_ty, ResolvedTy::Tuple(_)) {
+            return true;
+        }
         if let (Some(lhs_key), Some(rhs_key)) = (
             self.record_layout_key_for_eq(lhs_ty),
             self.record_layout_key_for_eq(rhs_ty),
@@ -3531,6 +3539,29 @@ impl Builder {
                                 Some(&expr.ty),
                             );
                         }
+                        if family == &hew_types::runtime_call::RuntimeCallFamily::StructuralFormat {
+                            if args.len() != 1 {
+                                self.diagnostics.push(MirDiagnostic {
+                                    kind: MirDiagnosticKind::NotYetImplemented {
+                                        construct: "structural format arity".to_string(),
+                                        site: expr.site,
+                                    },
+                                    note: format!(
+                                        "structural formatting expects one argument, got {}",
+                                        args.len()
+                                    ),
+                                });
+                                return None;
+                            }
+                            let value = self.lower_value(&args[0])?;
+                            let dest = self.alloc_local(ResolvedTy::String);
+                            self.push_runtime_call(
+                                "hew_structural_format",
+                                vec![value],
+                                Some(dest),
+                            );
+                            return Some(dest);
+                        }
                         // `runtime_symbol_for_call_expr` handled the ABI subset
                         // above.  The remaining typed families are the explicit
                         // direct/codegen-intercept partition.
@@ -4868,7 +4899,9 @@ impl Builder {
                 bound,
                 source_anchor: _,
             } => self.lower_spawned_call_task(callee, args, task_ty, *bound, expr.site),
-            HirExprKind::ForkBlock { body, .. } => self.lower_fork_block_task(body, expr.site),
+            HirExprKind::ForkBlock { body, captures, .. } => {
+                self.lower_fork_block_task(body, captures, expr.site)
+            }
             HirExprKind::ScopeDeadline { duration, body } => {
                 self.lower_scope_deadline(duration, body, expr.site)
             }
@@ -5769,6 +5802,12 @@ impl Builder {
                 // COPY-IN param embeds stay caller-borrowed; only the source
                 // temp's independently retained string share gains an owner.
                 self.finalize_vec_copy_in_source_owner(&callee, args, &arg_places);
+                let receiver_contract = crate::runtime_symbols::callee_ownership_contract(&callee);
+                if receiver_contract.borrows_vec_receiver()
+                    || receiver_contract.borrows_collection_receiver()
+                {
+                    self.finalize_borrowed_receiver_owner(receiver, receiver_place);
+                }
                 let dest = if matches!(ret_ty, ResolvedTy::Unit) {
                     None
                 } else {
@@ -6836,6 +6875,96 @@ impl Builder {
                         next,
                     });
                     self.start_block(next);
+                    return Some(dest);
+                }
+                if matches!(
+                    record_ty,
+                    ResolvedTy::Tuple(_)
+                        | ResolvedTy::Named {
+                            builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                            ..
+                        }
+                ) {
+                    let record_layouts: Vec<crate::model::RecordLayout> = self
+                        .record_field_orders
+                        .iter()
+                        .filter(|(_, fields)| !fields.is_empty())
+                        .map(|(name, fields)| crate::model::RecordLayout {
+                            name: name.clone(),
+                            field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                            field_names: fields.iter().map(|(field, _)| field.clone()).collect(),
+                        })
+                        .collect();
+                    let plan =
+                        match crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+                            &record_ty,
+                            &record_layouts,
+                            &self.enum_layouts,
+                            &self.opaque_handle_names,
+                            &self.lifecycle_registry,
+                        ) {
+                            Ok(plan) => plan,
+                            Err(error) => {
+                                self.diagnostics.push(MirDiagnostic {
+                                    kind: MirDiagnosticKind::NotYetImplemented {
+                                        construct: format!(
+                                            "structural clone of `{record_ty}` could not be \
+                                             classified: {error}"
+                                        ),
+                                        site: expr.site,
+                                    },
+                                    note: "the checker admitted the clone, but MIR could not build \
+                                           a total member-wise clone plan"
+                                        .to_string(),
+                                });
+                                return None;
+                            }
+                        };
+                    match plan.is_clone_total(
+                        &record_layouts,
+                        &self.enum_layouts,
+                        &self.opaque_handle_names,
+                        &self.lifecycle_registry,
+                    ) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "structural clone of `{record_ty}` contains a drop-only \
+                                         member"
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: "clone admission must never manufacture ownership for an \
+                                       affine or resource-bearing member"
+                                    .to_string(),
+                            });
+                            return None;
+                        }
+                        Err(error) => {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "structural clone totality for `{record_ty}` could not be \
+                                         proven: {error}"
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: "MIR requires a total clone and inverse drop plan"
+                                    .to_string(),
+                            });
+                            return None;
+                        }
+                    }
+                    let dest = self.alloc_local(record_ty.clone());
+                    self.instructions.push(Instr::ValueSnapshotClone {
+                        dest,
+                        src: src_place,
+                        ty: record_ty,
+                        plan,
+                        boundary: crate::model::PreparedCarrierBoundary::LocalCall,
+                    });
                     return Some(dest);
                 }
                 // A type parameter that monomorphises to a builtin heap value

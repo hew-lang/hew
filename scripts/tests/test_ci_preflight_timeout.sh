@@ -205,6 +205,64 @@ done
 unset _invalid_seconds _t6_status _SENTINEL_FILE
 
 # ---------------------------------------------------------------------------
+# Test 7: Shard plan determinism across independent processes.
+#
+# The four hosted Linux gate shards never exchange state: each computes the
+# partition itself from the same diff. If two invocations could disagree, a
+# command could be claimed by two shards (wasted runner time) or by none
+# (silent coverage loss behind green checks). Prove the plan is a pure
+# function of (command list, shard count) by comparing separate processes.
+# ---------------------------------------------------------------------------
+
+_PLAN_A=$(
+    bash "${REPO_ROOT}/scripts/ci-preflight-dispatcher.sh" \
+        --shard-plan 4 -- "some-unclassified-root-file.txt" 2>/dev/null
+) || true
+_PLAN_B=$(
+    bash "${REPO_ROOT}/scripts/ci-preflight-dispatcher.sh" \
+        --shard-plan 4 -- "some-unclassified-root-file.txt" 2>/dev/null
+) || true
+
+if [[ -n "$_PLAN_A" && "$_PLAN_A" == "$_PLAN_B" ]]; then
+    pass "shard plan is identical across independent dispatcher processes"
+else
+    fail "shard plan differs between processes — shards cannot agree on a partition"
+fi
+
+# Every command of the unsharded profile must appear in exactly one shard.
+_UNSHARDED=$(
+    bash "${REPO_ROOT}/scripts/ci-preflight-dispatcher.sh" \
+        --dry-run -- "some-unclassified-root-file.txt" 2>/dev/null \
+        | sed -n 's/^  - \(.*\)  (budget: [0-9]*s)$/\1/p' | LC_ALL=C sort
+) || true
+
+_UNION=""
+for _shard in 1 2 3 4; do
+    _SHARD_COMMANDS=$(
+        bash "${REPO_ROOT}/scripts/ci-preflight-dispatcher.sh" \
+            --dry-run --shard "${_shard}/4" -- "some-unclassified-root-file.txt" \
+            2>/dev/null | sed -n 's/^  - \(.*\)  (budget: [0-9]*s)$/\1/p'
+    ) || true
+    _UNION="${_UNION}${_SHARD_COMMANDS}"$'\n'
+done
+_UNION=$(printf '%s' "$_UNION" | sed '/^$/d' | LC_ALL=C sort)
+
+if [[ -n "$_UNSHARDED" && "$_UNION" == "$_UNSHARDED" ]]; then
+    pass "the four shards partition the comprehensive profile exactly"
+else
+    fail "shard union is not the unsharded command list"
+    diff <(printf '%s\n' "$_UNSHARDED") <(printf '%s\n' "$_UNION") >&2 || true
+fi
+
+if [[ "$(printf '%s\n' "$_UNION" | LC_ALL=C uniq -d)" == "" ]]; then
+    pass "no command is claimed by more than one shard"
+else
+    fail "a command appears in more than one shard"
+fi
+
+unset _PLAN_A _PLAN_B _UNSHARDED _UNION _SHARD_COMMANDS _shard
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""

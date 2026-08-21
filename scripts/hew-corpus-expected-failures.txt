@@ -39,9 +39,6 @@
 
 # deferred-nyi: lambda actor syntax not yet supported
 
-# deferred-nyi: machine select/transition watch NYI
-examples/machine/bounded_resource.hew
-
 # deferred-nyi: multifile compilation NYI (requires multi-file resolve)
 examples/multifile/02_geometry/geo/area.hew
 examples/multifile/02_geometry/geo/distance.hew

@@ -1,0 +1,14 @@
+fn count_all<T: Clone>(values: Vec<T>) -> i64 {
+    var seen = 0;
+    for value in values {
+        let _ = value;
+        seen = seen + 1;
+    }
+    seen
+}
+
+fn main() {
+    let numbers: Vec<i64> = [1, 2, 3];
+    let names: Vec<string> = ["a", "b"];
+    println(f"{count_all(numbers)} {count_all(names)}");
+}

@@ -529,7 +529,7 @@ fn collect_inlay_hints_from_expr(
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let StringPart::Expr(expr) = part {
+                if let StringPart::Expr(expr) | StringPart::StructuralExpr(expr) = part {
                     collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
                 }
             }

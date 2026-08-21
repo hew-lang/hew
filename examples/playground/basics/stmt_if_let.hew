@@ -7,7 +7,7 @@ enum Wrapped {
 }
 
 fn announce(w: Wrapped) {
-    if let Value(n) = w {
+    if let .Value(n) = w {
         println(f"value: {n}");
     } else {
         println("empty");
@@ -15,17 +15,17 @@ fn announce(w: Wrapped) {
 }
 
 fn main() {
-    announce(Value(10));
-    announce(Empty);
-    announce(Value(99));
+    announce(.Value(10));
+    announce(.Empty);
+    announce(.Value(99));
 
     // No-else form: only fires when pattern matches.
-    let x = Value(7);
-    if let Value(n) = x {
+    let x: Wrapped = .Value(7);
+    if let .Value(n) = x {
         println(f"x is {n}");
     }
-    let y = Empty;
-    if let Value(n) = y {
+    let y: Wrapped = .Empty;
+    if let .Value(n) = y {
         println(f"should not print: {n}");
     }
     println("done");

@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 //! Inkwell direct LLVM IR emitter for the out-of-process LLVM backend.
 //!
 //! Adopted from the §10 backend probe (Track C) at HEAD `e6c83faa` on
@@ -1406,6 +1411,7 @@ fn wasm_excluded_call_family(
         | F::StringCharAtUtf8
         | F::StringCharCount
         | F::StringConcat
+        | F::StructuralFormat
         | F::StringFind
         | F::StringGet
         | F::StringIndex
@@ -2020,6 +2026,7 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// were a plain integer — defensive fall-back used by hand-built test
     /// fixtures that do not register a record layout for every named local.
     pub(crate) record_field_resolved_tys: &'a HashMap<String, Vec<ResolvedTy>>,
+    pub(crate) record_field_names: &'a HashMap<String, Vec<String>>,
     /// Module-wide dyn-trait vtable registry, shared by reference from
     /// `pipeline.dyn_vtable_registry`. Consumed by
     /// `Instr::CoerceToDynTrait` to resolve the
@@ -2780,7 +2787,7 @@ pub(crate) fn is_unsigned_integer_ty(ty: &ResolvedTy) -> bool {
     )
 }
 
-fn build_const_string_ptr<'ctx>(
+pub(crate) fn build_const_string_ptr<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     value: &str,
@@ -5902,7 +5909,9 @@ fn emit_state_clone_drop_synthesis<'ctx>(
                 record_struct,
                 kinds,
                 lifecycle_registry
-                    .resource_record(&hew_types::DefId::new(record_name))
+                    .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(
+                        record_name,
+                    ))
                     .map(|lifecycle| lifecycle.close_symbol.as_str()),
                 &drop_witnesses,
             )?;
@@ -8543,7 +8552,9 @@ fn ensure_record_drop_body<'ctx>(
     )?;
     let resource_close = w
         .lifecycle_registry
-        .resource_record(&hew_types::DefId::new(record_key))
+        .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(
+            record_key,
+        ))
         .map(|lifecycle| lifecycle.close_symbol.as_str());
     emit_record_drop_inplace_body(
         ctx,
@@ -13437,6 +13448,7 @@ fn lower_instruction_with_cancel_drops(
                 if !matches!(
                     (lhs_resolved_ty, rhs_resolved_ty),
                     (ResolvedTy::Named { .. }, ResolvedTy::Named { .. })
+                        | (ResolvedTy::Tuple(_), ResolvedTy::Tuple(_))
                 ) {
                     return Err(CodegenError::FailClosed(format!(
                         "IntCmp aggregate operands must be named structural-equality types; \
@@ -17581,7 +17593,7 @@ fn emit_field_overwrite_release(
             if !release_resource_records
                 && fn_ctx
                     .lifecycle_registry
-                    .resource_record(&hew_types::DefId::new(name))
+                    .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(name))
                     .is_some()
             {
                 return Ok(());
@@ -22347,6 +22359,9 @@ fn call_destination_has_specialized_crash_cleanup_lifecycle(
             matches!(
                 family,
                 Family::VecGet(hew_types::runtime_call::VecGetElem::Clone)
+                    | Family::VecClone
+                    | Family::VecCloneLayout
+                    | Family::VecCloneOwned
             ) || matches!(
                 family.abi_shape(),
                 Shape::HashCollectionLayoutOp | Shape::HashMapLayoutGet
@@ -25372,7 +25387,9 @@ fn emit_heap_slot_drop<'ctx>(
                     // user `close(self)` fires (spec §3.7.3).
                     let resource_close = fn_ctx
                         .lifecycle_registry
-                        .resource_record(&hew_types::DefId::new(&name))
+                        .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(
+                            &name,
+                        ))
                         .map(|lifecycle| lifecycle.close_symbol.as_str());
                     emit_record_drop_inplace_body(
                         fn_ctx.ctx,
@@ -34653,6 +34670,7 @@ fn lower_function<'ctx>(
         enum_layouts,
         indirect_enum_owned_locals,
         record_field_resolved_tys,
+        record_field_names,
         dyn_vtable_registry,
         const_globals,
         borrow_mode,

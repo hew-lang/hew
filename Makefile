@@ -72,9 +72,9 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
-.PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
-.PHONY: assemble assemble-release pre-release publish-docs
+.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-ci-coverage-check structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan legacy-path-syntax-lint hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability check-counterfactual-output sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check tool-pin-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
+.PHONY: clean install uninstall verify-ffi test-verify-ffi cabi-surface-check test-cabi-surface test-python310-toml-compat
+.PHONY: assemble assemble-release pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
 .PHONY: ll-diff ll-golden ll-identity-selftest
@@ -673,6 +673,15 @@ release:
 pre-release: release
 	scripts/pre-release-validate.sh $(PLATFORMS)
 
+# Build the staged source tree the Windows validator builds from
+# (scripts/windows-release-build.ps1 runs `cargo build` itself; it needs
+# Cargo.toml/Cargo.lock and every crate, not compiled artifacts). Archives
+# the committed HEAD tree, so uncommitted changes are not included.
+windows-release-candidate:
+	@mkdir -p target
+	git archive --format=tar.gz -o target/hew-windows-candidate.tar.gz HEAD
+	@echo "Wrote target/hew-windows-candidate.tar.gz from $$(git rev-parse HEAD)"
+
 # Build stdlib docs and print the wrangler deploy command.
 # Requires a release binary; run `make release` first if the release hew
 # is absent or stale.  The operator supplies the Cloudflare token via
@@ -788,6 +797,14 @@ test-leak-oracle-selftest:
 # an `--exclude hew-cabi` runs it.
 test-cabi:
 	cargo nextest run --profile ci-cabi -p hew-cabi
+
+# Build test-cabi's binaries without running them. The preflight warm-up
+# calls this instead of spelling the nextest invocation out, so the profile
+# name lives in exactly one place: scripts/check-gate-reachability.py A3a
+# scans the dispatcher's own dry-run output for `--profile <fast-tier>` and
+# a second literal there would read as CI running a non-`ci` profile.
+test-cabi-build:
+	cargo nextest run --profile ci-cabi -p hew-cabi --no-run
 
 # Build the combined runtime+stdlib static lib and the WASM runtime before
 # running the compiler-pipeline tests.  Several hew-cli integration tests
@@ -984,6 +1001,17 @@ check-gate-reachability: test-check-gate-reachability
 test-check-gate-reachability:
 	python3 scripts/tests/test_check_gate_reachability.py
 
+# Counterfactual-output gate: a PASSING gate must never print a line that reads
+# as a failure. The preflight dispatcher reduces a failed step's multi-megabyte
+# log to one annotation by grepping for the first failure-shaped line, and a
+# self-test that provokes the real gate leaves "ORACLE gate: FAIL" / "error: ..."
+# in a GREEN log — so that grep would name the bait, not the defect. This gate
+# runs the rostered counterfactual-carrying checks and fails if a zero exit
+# carries an unmarked match; the exemption is to route the provoked output
+# through run_counterfactual (scripts/lib/counterfactual.sh).
+check-counterfactual-output:
+	scripts/ci-preflight-dispatcher.sh --check-counterfactual-output
+
 test-stdlib-ratchet: hew
 	@echo "==> Type-checking stdlib (ratcheted)"
 	HEW_BIN="$(DEBUG_DIR)/hew" scripts/stdlib-ratchet.sh
@@ -1047,10 +1075,10 @@ test-example-expectations-selftest:
 	@python3 scripts/tests/test_example_expectations.py
 
 # Check ```hew fenced blocks in docs/ against hew check.
-# Extracts each fence from docs/hew-language-guide.md and docs/specs/HEW-SPEC-2026.md
-# into .tmp/doc-fences/, runs `hew check` on each, and applies the ratchet
-# from scripts/doc-test-expected-failures.txt so known-failing fences do not
-# block the gate while new failures always do.
+# Extracts each fence from the Markdown guides and docs/language/*.hew module
+# doc blocks into .tmp/doc-fences/, runs `hew check` on each, and applies the
+# ratchet from scripts/doc-test-expected-failures.txt so known-failing fences
+# do not block the gate while new failures always do.
 #
 # Skip-annotated fences (<!-- doctest: skip --> or preceding NYI callout) are
 # never compiled — they describe aspirational or not-yet-implemented surfaces.
@@ -1068,15 +1096,28 @@ doc-ratchet-selftest:
 	@scripts/tests/test_doc_ratchet_membership.sh
 
 # Release sanitizer gate validator self-test.
+# Every expect_reject case is a COUNTERFACTUAL: the real gate is driven against a
+# fixture rigged to be rejected, so this target PASSES while the gate emits
+# genuine rejection diagnostics. cf_run replays that output behind the CF-
+# marker so the preflight's first-failure extractor cannot report it as a
+# verdict, and so a green log still carries evidence the bait path ran
+# (ci-preflight-dispatcher.sh --check-counterfactual-output).
 check-sanitizer-gate:
 	@set -e; \
 	version=0.6.0-rc1; \
 	fixture=scripts/fixtures/sanitizer-gate; \
 	pass=0; \
 	fail=0; \
+	cf_run() { \
+	  label="$$1"; shift; \
+	  out=$$("$$@" 2>&1) && rc=0 || rc=$$?; \
+	  echo "CF-[$$label] exit $$rc"; \
+	  if [ -n "$$out" ]; then printf '%s\n' "$$out" | sed "s|^|CF-[$$label] |"; fi; \
+	  return $$rc; \
+	}; \
 	expect_reject() { \
 	  name="$$1"; asan_file="$$2"; waiver_file="$$3"; \
-	  if scripts/check-sanitizer-gate.sh "$$version" "$$asan_file" "$$waiver_file"; then \
+	  if cf_run "$$name" scripts/check-sanitizer-gate.sh "$$version" "$$asan_file" "$$waiver_file"; then \
 	    echo "FAIL $$name: expected reject"; fail=$$((fail + 1)); \
 	  else \
 	    echo "ok $$name: rejected"; pass=$$((pass + 1)); \
@@ -1084,7 +1125,7 @@ check-sanitizer-gate:
 	}; \
 	expect_accept() { \
 	  name="$$1"; asan_file="$$2"; waiver_file="$$3"; \
-	  if scripts/check-sanitizer-gate.sh "$$version" "$$asan_file" "$$waiver_file"; then \
+	  if cf_run "$$name" scripts/check-sanitizer-gate.sh "$$version" "$$asan_file" "$$waiver_file"; then \
 	    echo "ok $$name: accepted"; pass=$$((pass + 1)); \
 	  else \
 	    echo "FAIL $$name: expected accept"; fail=$$((fail + 1)); \
@@ -1217,8 +1258,15 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate codegen-trap-inventory-check verify-ffi test-verify-ffi test-python310-toml-compat verify-sys-lane-closure hew-fmt-check sandbox-parity-coverage-check
+lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan legacy-path-syntax-lint codegen-carried-identity-gate codegen-trap-inventory-check verify-ffi test-verify-ffi test-cabi-surface test-python310-toml-compat verify-sys-lane-closure hew-fmt-check sandbox-parity-coverage-check tool-pin-contract-check lint-ci-coverage-check
 	cargo clippy --workspace --tests -- -D warnings
+
+legacy-path-syntax-lint:
+	python3 scripts/lint-legacy-path-syntax.py
+
+lint-ci-coverage-check:
+	python3 scripts/check-lint-ci-coverage.py
+	python3 scripts/tests/test_check_lint_ci_coverage.py
 
 # Self-provisioning: the pinned toolchain install is a prerequisite of every
 # structural-lint entry point, not a separate manual step. The install path
@@ -1252,6 +1300,10 @@ test-structural-lint-bootstrap:
 # for fast feedback on the files most likely to change the contract.
 freebsd-workflow-contract-check:
 	python3 scripts/tests/test_freebsd_workflow_contract.py
+
+# Keep build-system tool verification and every CI installer on one exact pin.
+tool-pin-contract-check:
+	python3 scripts/tests/test_tool_pin_contract.py
 
 # Assert every VM-dependent hew-sandbox-wasm test binary (one containing a
 # function that spawns the hew-sandbox-vm Node runner) is excluded WHOLE
@@ -1483,11 +1535,17 @@ coverage-branch:
 # Validates that every hew-runtime #[no_mangle] export is classified in
 # scripts/jit-symbol-classification.toml (stable vs internal).
 
-verify-ffi:
+verify-ffi: cabi-surface-check
 	python3 scripts/verify-ffi-symbols.py --classify stable --validate > /dev/null
 
 test-verify-ffi:
 	python3 scripts/tests/test_verify_ffi_symbols.py
+
+cabi-surface-check:
+	python3 scripts/generate-cabi-surface.py --check
+
+test-cabi-surface:
+	python3 scripts/tests/test_cabi_surface.py
 
 # The release macOS validator uses Python 3.10, which has no stdlib tomllib.
 # Force the dependency-free parser even on newer CI interpreters and run every

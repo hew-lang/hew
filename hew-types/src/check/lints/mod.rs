@@ -309,6 +309,7 @@ impl LintSources {
 /// root unit, N = N-th non-root module) and `source_module` tags emitted
 /// diagnostics so the CLI routes them to the correct source file.
 pub(super) struct LintCtx<'a> {
+    pub checker: &'a super::Checker,
     pub subst: &'a Substitution,
     pub expr_types: &'a HashMap<SpanKey, Ty>,
     pub module_idx: u32,
@@ -318,9 +319,42 @@ pub(super) struct LintCtx<'a> {
     /// install sources (e.g. internal callers of `check_program`), in which
     /// case suppression is simply skipped.
     pub source: Option<&'a str>,
+    /// Type parameters in scope for the body being linted, mapped to their
+    /// declared bound names. Empty for a non-generic body. A lint that
+    /// suggests a rewrite must prove the rewrite compiles at *every*
+    /// monomorphisation, which is a question about the bounds, not about the
+    /// unsubstituted parameter.
+    pub type_params: HashMap<String, Vec<String>>,
 }
 
-impl LintCtx<'_> {
+/// Collect declared type parameters and their bound names into the map
+/// [`LintCtx::type_params`] carries. Called with the enclosing item's
+/// parameters and then extended with the body's own.
+///
+/// Only inline bounds (`<T: Clone>`) are read; a `where T: Clone` predicate
+/// leaves the parameter looking unbounded here. WHY: the lint layer has no
+/// where-clause resolution, and reading one wrong would be worse than reading
+/// none — an unbounded parameter withholds a suggestion rather than emitting an
+/// uncompilable one. WHEN-OBSOLETE: when a lint must fire on a
+/// where-clause-bounded template. WHAT: fold [`hew_parser::ast::WhereClause`]
+/// predicates whose subject is a bare parameter name into the same map.
+pub(super) fn collect_type_params(
+    declared: Option<&Vec<hew_parser::ast::TypeParam>>,
+    into: &mut HashMap<String, Vec<String>>,
+) {
+    for param in declared.into_iter().flatten() {
+        into.insert(
+            param.name.clone(),
+            param
+                .bounds
+                .iter()
+                .map(|bound| bound.name.clone())
+                .collect(),
+        );
+    }
+}
+
+impl<'a> LintCtx<'a> {
     /// The fully-resolved checker type recorded for the expression at `span`.
     ///
     /// Returns `None` when no type was recorded for the span — lints treat a
@@ -328,6 +362,31 @@ impl LintCtx<'_> {
     fn resolved_type_at(&self, span: &Span) -> Option<Ty> {
         let key = SpanKey::in_module(span, self.module_idx);
         self.expr_types.get(&key).map(|ty| self.subst.resolve(ty))
+    }
+
+    /// Whether a direct `for value in collection` rewrite has executable
+    /// iterator semantics for this collection's element type.
+    fn supports_direct_vec_iteration(&self, ty: &Ty) -> bool {
+        self.checker
+            .supports_direct_vec_iteration(ty, &self.type_params)
+    }
+
+    /// This context with `declared` added to the in-scope type parameters.
+    pub(super) fn with_type_params(
+        &self,
+        declared: Option<&Vec<hew_parser::ast::TypeParam>>,
+    ) -> LintCtx<'a> {
+        let mut type_params = self.type_params.clone();
+        collect_type_params(declared, &mut type_params);
+        LintCtx {
+            checker: self.checker,
+            subst: self.subst,
+            expr_types: self.expr_types,
+            module_idx: self.module_idx,
+            source_module: self.source_module,
+            source: self.source,
+            type_params,
+        }
     }
 
     /// Emit one lint diagnostic, honouring suppression and the configured
@@ -798,7 +857,7 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let StringPart::Expr(inner) = part {
+                if let StringPart::Expr(inner) | StringPart::StructuralExpr(inner) = part {
                     walk_expr(&inner.0, &inner.1, visitor);
                 }
             }

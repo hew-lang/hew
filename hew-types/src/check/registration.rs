@@ -497,7 +497,7 @@ fn validated_resource_candidate(
     producer_symbol: &str,
 ) -> OpaqueResourceLifecycleCandidate {
     OpaqueResourceLifecycleCandidate {
-        resource_declaration: crate::DefId::new(typed_result.resource_type),
+        resource_declaration: crate::identity::mint_def_id(typed_result.resource_type),
         resource_type: typed_result.resource_type.to_string(),
         owner_module: typed_result.owner_module.to_string(),
         close_declaration,
@@ -713,7 +713,7 @@ fn derive_opaque_resource_candidate_graph(
                     release_symbol,
                     kind,
                 } => {
-                    conflicted_types.insert(crate::DefId::new(resource_type.clone()));
+                    conflicted_types.insert(crate::identity::mint_def_id(resource_type.clone()));
                     graph.conflicts.push(OpaqueResourceLifecycleConflict {
                         resource_type,
                         producer_symbol: (*producer_symbol).to_string(),
@@ -4729,7 +4729,9 @@ impl Checker {
             }
             Expr::InterpolatedString(parts) => {
                 for part in parts {
-                    if let StringPart::Expr((expr, expr_span)) = part {
+                    if let StringPart::Expr((expr, expr_span))
+                    | StringPart::StructuralExpr((expr, expr_span)) = part
+                    {
                         Self::collect_machine_transition_forbidden_exprs(expr, expr_span, hits);
                     }
                 }
@@ -5234,7 +5236,11 @@ impl Checker {
                         })
                         .collect(),
                 };
-                self.check_against(&transition.body.0, &transition.body.1, &expected_machine_ty);
+                self.check_expr_with_expected(
+                    &transition.body.0,
+                    &transition.body.1,
+                    &expected_machine_ty,
+                );
             }
             self.current_machine_transition = None;
             self.env.pop_scope();
@@ -5451,7 +5457,7 @@ impl Checker {
     /// are still caught: that path runs through `register_trait_lang_items`,
     /// which owns `lang_item_spans`.
     pub(super) fn seed_trait_lang_items(&mut self, td: &TraitDecl) {
-        let trait_id = crate::DefId::new(self.trait_ref_lookup_key(&td.name));
+        let trait_id = crate::identity::mint_def_id(self.trait_ref_lookup_key(&td.name));
         if let Some(key) = &td.lang_item {
             if self.lang_items.get(key).is_none() {
                 self.lang_items.insert(
@@ -5475,7 +5481,7 @@ impl Checker {
                                 trait_name: td.name.clone(),
                                 trait_id: trait_id.clone(),
                                 method_name: Some(m.name.clone()),
-                                method_id: Some(crate::DefId::new(format!(
+                                method_id: Some(crate::identity::mint_def_id(format!(
                                     "{}::{}",
                                     trait_id.full_path(),
                                     m.name
@@ -5503,7 +5509,7 @@ impl Checker {
     /// Duplicate keys raise `TypeError::duplicate_definition` against the
     /// trait's span so the registry remains one-binding-per-key.
     pub(super) fn register_trait_lang_items(&mut self, td: &TraitDecl, span: Span) {
-        let trait_id = crate::DefId::new(self.trait_ref_lookup_key(&td.name));
+        let trait_id = crate::identity::mint_def_id(self.trait_ref_lookup_key(&td.name));
         if let Some(key) = &td.lang_item {
             if let Some(prev) = self.lang_item_spans.insert(key.clone(), span.clone()) {
                 self.errors
@@ -5537,7 +5543,7 @@ impl Checker {
                                 trait_name: td.name.clone(),
                                 trait_id: trait_id.clone(),
                                 method_name: Some(m.name.clone()),
-                                method_id: Some(crate::DefId::new(format!(
+                                method_id: Some(crate::identity::mint_def_id(format!(
                                     "{}::{}",
                                     trait_id.full_path(),
                                     m.name
@@ -6350,7 +6356,9 @@ impl Checker {
                                     let declaration = crate::default_impl_method_declaration(
                                         &declaring_trait,
                                         &crate::NominalInstance {
-                                            nominal: crate::NominalId::new(receiver_name),
+                                            nominal: crate::identity::mint_nominal_id(
+                                                receiver_name,
+                                            ),
                                             args: receiver_args,
                                         },
                                         &m.name,
@@ -6409,6 +6417,25 @@ impl Checker {
                             (method.type_params.as_ref(), method.where_clause.as_ref()),
                         ]);
                         let method_key = format!("{}::{}", td.name, method.name);
+                        // Inline type-body methods can declare their own
+                        // generics alongside the type's; the same shadow
+                        // refusal applies here as on `impl` blocks.
+                        if let Some(type_tps) = td.type_params.as_ref() {
+                            let enclosing: Vec<String> =
+                                type_tps.iter().map(|tp| tp.name.clone()).collect();
+                            if !enclosing.is_empty() {
+                                let owner = Self::shadowed_method_declaration_key(
+                                    &self.declaration_owner_key(&td.name),
+                                    &method.name,
+                                );
+                                self.reject_shadowing_method_type_params(
+                                    method.type_params.as_ref(),
+                                    &[(enclosing, format!("the type `{}`", td.name))],
+                                    &owner,
+                                    &method.decl_span,
+                                );
+                            }
+                        }
                         self.register_fn_sig_with_name(&method_key, method);
                         let skip = usize::from(
                             method
@@ -6595,6 +6622,120 @@ impl Checker {
         }
     }
 
+    /// Type-parameter names declared by `trait_name`, or empty when the trait
+    /// is not (yet) registered.
+    fn trait_type_param_names(&self, trait_name: &str) -> Vec<String> {
+        let key = self.trait_ref_lookup_key(trait_name);
+        self.trait_defs
+            .get(&key)
+            .or_else(|| self.trait_defs.get(trait_name))
+            .map(|info| info.type_params.clone())
+            .unwrap_or_default()
+    }
+
+    /// DECISION: a method type parameter that shadows a type parameter of its
+    /// enclosing `impl` block or `trait` is REFUSED, rather than the two being
+    /// distinguished by scope.
+    ///
+    /// The two are already conflated everywhere downstream, silently and
+    /// wrongly. `instantiate_named_method_sig` (`method_resolution.rs`)
+    /// substitutes the enclosing type arguments by NAME and then drops every
+    /// matching name from `sig.type_params`, so the method's own parameter is
+    /// erased and bound to the enclosing argument: given
+    /// `impl<T> Holder<T> { fn same<T>(self, marker: T) }`, a `Holder<i64>`
+    /// receiver makes `same("text")` report `expected i64, found string`, and
+    /// `trait Choice<T> { fn same<T>(self, marker: T) }` reports `expected T`.
+    /// The method's `T` never existed in either case.
+    ///
+    /// Keying substitutions by `(scope, name)` would not fix that: the collapse
+    /// happens upstream of any substitution map, and `type_params` is a flat
+    /// `Vec<String>` read by every consumer of `FnSig`, all of which would need
+    /// the two-level key. Shadowing buys no expressiveness — the method
+    /// parameter can always be renamed — so the fail-closed refusal is both the
+    /// smaller change and the honest one.
+    ///
+    /// One authority for all three shapes: inherent `impl` methods, trait
+    /// declaration methods (including default bodies), and trait `impl`
+    /// methods shadowing a parameter the trait declared.
+    /// Module-qualified identity of a declaration owner, for the shadow-report
+    /// dedup key.
+    pub(super) fn declaration_owner_key(&self, name: &str) -> String {
+        scoped_module_item_name(self.current_module.as_deref(), name)
+            .unwrap_or_else(|| name.to_string())
+    }
+
+    /// Declaration identity for the shadow-report dedup key: a module-qualified
+    /// owner plus the method name. Built in one place so the three registration
+    /// paths cannot drift into three spellings of the same identity.
+    fn shadowed_method_declaration_key(owner: &str, method_name: &str) -> String {
+        format!("{owner}::{method_name}")
+    }
+
+    /// `["a"]` -> `a`; `["a", "b"]` -> `a and b`; `["a", "b", "c"]` -> `a, b and c`.
+    fn and_list(items: &[&str]) -> String {
+        match items {
+            [] => String::new(),
+            [only] => (*only).to_string(),
+            [head @ .., last] => format!("{} and {last}", head.join(", ")),
+        }
+    }
+
+    pub(super) fn reject_shadowing_method_type_params(
+        &mut self,
+        method_type_params: Option<&Vec<TypeParam>>,
+        enclosing: &[(Vec<String>, String)],
+        declaration_owner: &str,
+        decl_span: &Span,
+    ) {
+        let Some(method_tps) = method_type_params else {
+            return;
+        };
+        let mut shadowed: Vec<&str> = method_tps.iter().map(|tp| tp.name.as_str()).collect();
+        shadowed.sort_unstable();
+        shadowed.dedup();
+        for name in shadowed {
+            // A method can shadow more than one enclosing owner at once — an
+            // `impl<T> Trait<T> for X<T>` block and the trait both declare `T`.
+            // That is ONE mistake at ONE span, so it is one diagnostic naming
+            // every owner, not one diagnostic per owner.
+            let owners: Vec<&str> = enclosing
+                .iter()
+                .filter(|(params, _)| params.iter().any(|outer| outer == name))
+                .map(|(_, description)| description.as_str())
+                .collect();
+            if owners.is_empty() {
+                continue;
+            }
+            // Registration visits a declaration more than once — trait method
+            // signatures repeatedly, and an inherited default once per
+            // implementing module. The key is the DECLARATION's identity
+            // (module-qualified owner, method, span, parameter), never the
+            // registering module's: a span alone collides across files that
+            // happen to place a method at the same byte offset.
+            if !self.shadowed_method_type_param_reports.insert((
+                declaration_owner.to_string(),
+                decl_span.start,
+                decl_span.end,
+                name.to_string(),
+            )) {
+                continue;
+            }
+            self.report_error_with_suggestions(
+                TypeErrorKind::DuplicateDefinition,
+                decl_span,
+                format!(
+                    "method type parameter `{name}` shadows the type parameter `{name}` \
+                     declared by {}; the two cannot be told apart once the enclosing type \
+                     arguments are substituted",
+                    Self::and_list(&owners)
+                ),
+                vec![format!(
+                    "rename the method's parameter so it is distinct from the enclosing `{name}`"
+                )],
+            );
+        }
+    }
+
     fn register_trait_method_sig(
         &mut self,
         trait_name: &str,
@@ -6621,8 +6762,21 @@ impl Checker {
                 || self.trait_ref_lookup_key(trait_name),
                 |module| format!("{module}.{trait_name}"),
             );
-        let trait_id = crate::DefId::new(declaration_key.clone());
-        let method_id = crate::DefId::new(format!("{}::{}", trait_id.full_path(), method.name));
+        // Keyed by the trait's own declaration key, which is stable across the
+        // implementing modules an inherited default is re-registered under.
+        let trait_params = self.trait_type_param_names(trait_name);
+        if !trait_params.is_empty() {
+            let owner = Self::shadowed_method_declaration_key(&declaration_key, &method.name);
+            self.reject_shadowing_method_type_params(
+                method.type_params.as_ref(),
+                &[(trait_params, format!("trait `{trait_name}`"))],
+                &owner,
+                &method.span,
+            );
+        }
+        let trait_id = crate::identity::mint_def_id(declaration_key.clone());
+        let method_id =
+            crate::identity::mint_def_id(format!("{}::{}", trait_id.full_path(), method.name));
         let ids = (trait_id, method_id);
         self.trait_method_ids
             .insert(ids.1.full_path().to_string(), ids.clone());
@@ -7496,6 +7650,42 @@ impl Checker {
             .map(|p| p.name.clone())
             .collect();
 
+        // A method type parameter that shadows an enclosing one is REFUSED.
+        // See `reject_shadowing_method_type_params` for the decision and why
+        // scoping the two apart is not the fix.
+        // Every owner whose parameters this method could shadow: the `impl`
+        // block's own, and — for a trait impl — the trait's, which the impl
+        // block never mentions. Collected together so a method shadowing both
+        // reports once, naming both.
+        let mut shadow_owners: Vec<(Vec<String>, String)> = Vec::new();
+        if let Some(impl_tps) = impl_type_params {
+            let params: Vec<String> = impl_tps.iter().map(|tp| tp.name.clone()).collect();
+            if !params.is_empty() {
+                shadow_owners.push((params, format!("the `impl` block on `{type_name}`")));
+            }
+        }
+        if let Some(bound) = trait_bound {
+            let params = self.trait_type_param_names(&bound.name);
+            if !params.is_empty() {
+                shadow_owners.push((params, format!("trait `{}`", bound.name)));
+            }
+        }
+        if !shadow_owners.is_empty() {
+            // The declaration is the impl METHOD, so its identity is the
+            // implementing module's type and method name — not the trait's key,
+            // which every file implementing that trait would share.
+            let owner = Self::shadowed_method_declaration_key(
+                &self.declaration_owner_key(type_name),
+                &method.name,
+            );
+            self.reject_shadowing_method_type_params(
+                method.type_params.as_ref(),
+                &shadow_owners,
+                &owner,
+                &method.decl_span,
+            );
+        }
+
         // Collect type param names: impl-level + method-level.
         let mut all_type_params: Vec<String> = impl_type_params
             .map(|tps| tps.iter().map(|tp| tp.name.clone()).collect())
@@ -7811,7 +8001,7 @@ impl Checker {
                 }
             },
         );
-        crate::DefId::new(format!(
+        crate::identity::mint_def_id(format!(
             "{receiver}::<impl {trait_identity} for {declared_receiver}>::{}",
             method.name
         ))
@@ -9625,7 +9815,7 @@ impl Checker {
         consuming_params: &[bool],
         f: &hew_parser::ast::ExternFnDecl,
     ) {
-        let declaration = crate::DefId::new(key.to_string());
+        let declaration = crate::identity::mint_def_id(key.to_string());
         if source_symbol.is_empty() {
             // Template declarations (`#[extern_symbol("…{T}…")]`) have no
             // call-independent symbol and therefore no symbol-keyed contract
@@ -9915,7 +10105,7 @@ impl Checker {
             self.fn_sigs.insert(key.clone(), sig);
             self.source_extern_declarations
                 .push(SourceExternDeclaration {
-                    declaration: crate::DefId::new(key.clone()),
+                    declaration: crate::identity::mint_def_id(key.clone()),
                     symbol: source_symbol,
                     symbol_template: source_symbol_template,
                     signature_key: key.clone(),
@@ -10072,7 +10262,7 @@ impl Checker {
             };
             self.fn_sigs.insert(key.clone(), sig);
             self.extern_table
-                .register_declaration_only(crate::DefId::new(key));
+                .register_declaration_only(crate::identity::mint_def_id(key));
         }
 
         // The typed-serialise send takes the value by reference plus the
@@ -10090,7 +10280,7 @@ impl Checker {
             };
             self.fn_sigs.insert(send_key.clone(), sig);
             self.extern_table
-                .register_declaration_only(crate::DefId::new(send_key));
+                .register_declaration_only(crate::identity::mint_def_id(send_key));
         }
     }
 
@@ -10434,7 +10624,9 @@ impl Checker {
                             ..FnSig::default()
                         };
                         self.extern_table
-                            .register_declaration_only(crate::DefId::new(func.name.clone()));
+                            .register_declaration_only(crate::identity::mint_def_id(
+                                func.name.clone(),
+                            ));
                         self.fn_sigs.insert(func.name, sig);
                     }
 
@@ -10515,7 +10707,7 @@ impl Checker {
                             self.fn_sigs.entry(key.clone()).or_insert(sig);
                             if !source_sig_exists && wrapper_sig.is_none() {
                                 self.extern_table
-                                    .register_declaration_only(crate::DefId::new(key));
+                                    .register_declaration_only(crate::identity::mint_def_id(key));
                             }
                         }
                     }
@@ -12365,14 +12557,17 @@ impl Checker {
                     // published bare name. Record the checker-owned declaration
                     // IDs under that binding too, so call-target selection never
                     // has to recover an owner from the trait's leaf spelling.
-                    let trait_id = crate::DefId::new(qualified.clone());
+                    let trait_id = crate::identity::mint_def_id(qualified.clone());
                     let qualified_binding = format!("{module_short}.{}", tr.name);
                     for trait_item in &tr.items {
                         let TraitItem::Method(method) = trait_item else {
                             continue;
                         };
-                        let method_id =
-                            crate::DefId::new(format!("{}::{}", trait_id.full_path(), method.name));
+                        let method_id = crate::identity::mint_def_id(format!(
+                            "{}::{}",
+                            trait_id.full_path(),
+                            method.name
+                        ));
                         self.trait_method_ids_by_binding.insert(
                             (
                                 self.current_module.clone(),
@@ -12436,7 +12631,7 @@ impl Checker {
                             let TraitItem::Method(method) = trait_item else {
                                 continue;
                             };
-                            let method_id = crate::DefId::new(format!(
+                            let method_id = crate::identity::mint_def_id(format!(
                                 "{}::{}",
                                 trait_id.full_path(),
                                 method.name

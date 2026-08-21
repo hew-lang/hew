@@ -1,3 +1,0 @@
-# Exact short_name identifier nodes proven to be arguments of parsed LLVM
-# debug-info builder calls. A location without the recorded AST context is debt.
-path	line	column	form	context_form	category	retirement_stage	reason

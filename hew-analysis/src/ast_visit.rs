@@ -861,7 +861,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             }
             Expr::InterpolatedString(parts) => {
                 for part in parts {
-                    if let StringPart::Expr(expr) = part {
+                    if let StringPart::Expr(expr) | StringPart::StructuralExpr(expr) = part {
                         self.walk_expr(&expr.0, &expr.1, body);
                     }
                 }

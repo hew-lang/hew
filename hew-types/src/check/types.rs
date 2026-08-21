@@ -207,6 +207,9 @@ pub struct ExternMethodCallIdentity {
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
     pub expr_types: HashMap<SpanKey, Ty>,
+    /// Interpolation operands whose rendering selected an explicit `Display`
+    /// implementation. The value preserves alias identity for HIR dispatch.
+    pub interpolation_display_types: HashMap<SpanKey, Ty>,
     /// Total checker-authored ownership facts for accepted expression results.
     ///
     /// HIR projects this span-keyed table onto stable `SiteId`s. MIR consumes
@@ -1279,6 +1282,7 @@ impl Default for TypeCheckOutput {
     fn default() -> Self {
         Self {
             expr_types: HashMap::new(),
+            interpolation_display_types: HashMap::new(),
             produced_value_ownership: HashMap::new(),
             produced_value_dependencies: HashMap::new(),
             caller_visible_param_projections: HashSet::new(),
@@ -2173,6 +2177,101 @@ pub(super) struct DeferredBuiltinCloneAdmission {
     pub(super) source_module: Option<String>,
 }
 
+/// A structural-equality requirement raised by a generic function body.
+///
+/// `a == b` on an aggregate whose members bottom out in the enclosing
+/// function's type parameters is admitted in the template — the parameter has
+/// no concrete leaf to walk yet — and the obligation is recorded here in the
+/// owner's own type-parameter terms (`Option<T>`). Every instantiation of that
+/// function substitutes the obligation and re-runs the *same* eligibility
+/// walk, so the checker refuses `T = HashMap<string, i64>` instead of letting
+/// codegen's `eq_thunk` be the first to notice.
+///
+/// A semantic `Eq` bound is deliberately NOT accepted as a proxy: `Eq` can be
+/// satisfied by types that have no structural compare path.
+#[derive(Debug, Clone)]
+pub(super) struct GenericStructuralEqRequirement {
+    /// The aggregate type, spelled in the owning function's type parameters.
+    pub(super) ty: Ty,
+    /// The owning signature's type parameters, so the discharge walk can tell a
+    /// fully pinned instantiation from one whose substitution left a parameter
+    /// abstract (which it must not decide).
+    pub(super) owner_type_params: Vec<String>,
+}
+
+/// One generic function call site, recorded so structural-equality obligations
+/// can be discharged per instantiation.
+///
+#[derive(Debug, Clone)]
+pub(super) struct GenericFnInstantiationSite {
+    pub(super) caller: Option<String>,
+    pub(super) caller_type_params: Vec<String>,
+    pub(super) callee: String,
+    /// Partial, name-keyed binding of the callee's type parameters, captured in
+    /// the CALLER's terms: inside a generic caller the values may still name the
+    /// caller's own parameters, which is what lets
+    /// [`Checker::finalize_generic_structural_eq`] walk generic → generic call
+    /// edges from a concrete root instead of stopping at the first hop.
+    pub(super) substitution: HashMap<String, Ty>,
+    pub(super) span: Span,
+    pub(super) source_module: Option<String>,
+}
+
+/// Identity of the callee at a generic application site.
+///
+/// Deliberately carries the PARTS of a method identity rather than a formatted
+/// key: `record_generic_application` is the one place that joins nominal and
+/// method into a `fn_sigs` key, so the string form of method identity is
+/// constructed once instead of at every dispatch site.
+#[derive(Clone, Copy)]
+pub(super) enum GenericCallee<'a> {
+    /// A free or module-qualified function, already keyed by its `fn_sigs` name.
+    Function { key: &'a str },
+    /// A method. `owner_type_args` are the receiver's type arguments, needed
+    /// because `lookup_named_method_sig` instantiates the impl-level parameters
+    /// into the signature and drops them from `sig.type_params` before the
+    /// application ever sees it — so for `Holder<HashMap<string, i64>>::same`
+    /// the signature-level instantiation is EMPTY and the only record of
+    /// `T = HashMap<string, i64>` is the receiver.
+    Method {
+        type_name: &'a str,
+        method: &'a str,
+        owner_type_args: &'a [Ty],
+    },
+}
+
+/// One generic → generic call edge, carrying a partial, NAME-keyed
+/// substitution in the enclosing generic function's own terms.
+///
+/// Name-keyed rather than positional: an impl method's `fn_sigs` type-parameter
+/// list interleaves method-level and impl-level parameters (the impl's are
+/// appended after the method's during registration), and the two are pinned by
+/// different sources at the call site. Zipping by name lets each source
+/// contribute what it knows without any positional assumption, and a parameter
+/// no source pinned simply stays abstract — which the walk then treats as
+/// undischarged rather than silently mis-binding.
+#[derive(Debug, Clone)]
+pub(super) struct GenericCallEdge {
+    pub(super) callee: String,
+    pub(super) substitution: HashMap<String, Ty>,
+}
+
+/// One instantiation queued for structural-equality discharge.
+#[derive(Debug, Clone)]
+pub(super) struct PendingInstantiation {
+    pub(super) callee: String,
+    pub(super) substitution: HashMap<String, Ty>,
+    /// Span and module of the CONCRETE application the diagnostic points at —
+    /// carried unchanged along every edge so a nested obligation still reports
+    /// where the program pinned the type arguments.
+    pub(super) report_span: Span,
+    pub(super) report_module: Option<String>,
+    pub(super) depth: u32,
+    /// Callee keys from the concrete root to here, so a chain that outruns the
+    /// hop budget can be named in the diagnostic instead of vanishing.
+    pub(super) chain: Vec<String>,
+}
+
 /// A channel method call rewrite deferred until after all inference has settled.
 ///
 /// Recorded when a `Sender<T>::send` / `Receiver<T>::recv` / `try_recv` call is
@@ -2484,6 +2583,7 @@ pub struct Checker {
     /// Checker-side accumulator for [`TypeCheckOutput::user_clone_record_seeds`].
     pub(super) user_clone_record_seeds: Vec<String>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
+    pub(super) interpolation_display_types: HashMap<SpanKey, Ty>,
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::produced_value_ownership`].
     pub(super) produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
@@ -2626,6 +2726,22 @@ pub struct Checker {
     /// Built-in value-container clone checks deferred until after inference.
     /// Keyed by clone call-site span.
     pub(super) deferred_builtin_clone_admission: HashMap<SpanKey, DeferredBuiltinCloneAdmission>,
+    /// Structural-equality obligations raised inside generic function bodies,
+    /// keyed by the owning function's `fn_sigs` key. Discharged per
+    /// instantiation by `finalize_generic_structural_eq`.
+    /// Dedup set for [`Checker::reject_shadowing_method_type_params`], keyed by
+    /// the DECLARATION's identity: owner key, declaration span, parameter name.
+    ///
+    /// Deliberately not keyed by the registering module. An inherited trait
+    /// default is re-registered under each implementing module, so a
+    /// registering-module key emitted the same diagnostic once per module — the
+    /// second copy landing at unrelated lines in the implementor's file.
+    pub(super) shadowed_method_type_param_reports: HashSet<(String, usize, usize, String)>,
+    pub(super) generic_structural_eq_requirements:
+        HashMap<String, Vec<GenericStructuralEqRequirement>>,
+    /// Every generic function call site observed while checking bodies, in
+    /// source order. Consumed alongside `generic_structural_eq_requirements`.
+    pub(super) generic_fn_instantiation_sites: Vec<GenericFnInstantiationSite>,
     /// Channel method call rewrites deferred until after inference completes.
     /// Keyed by call-site span so repeated traversal of the same site is
     /// idempotent (last write wins, which is fine since the inner type is the
@@ -3598,6 +3714,7 @@ impl Checker {
             warnings: Vec::new(),
             user_clone_record_seeds: Vec::new(),
             expr_types: HashMap::new(),
+            interpolation_display_types: HashMap::new(),
             produced_value_ownership: HashMap::new(),
             resolved_direct_call_ownership: HashMap::new(),
             resolved_method_call_ownership: HashMap::new(),
@@ -3637,6 +3754,9 @@ impl Checker {
             hashset_layout_facts: HashMap::new(),
             deferred_vec_admission: HashMap::new(),
             deferred_builtin_clone_admission: HashMap::new(),
+            shadowed_method_type_param_reports: HashSet::new(),
+            generic_structural_eq_requirements: HashMap::new(),
+            generic_fn_instantiation_sites: Vec::new(),
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),

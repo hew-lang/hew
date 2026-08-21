@@ -277,7 +277,7 @@ fn fstring_named_type_without_impl_is_fail_closed() {
         .iter()
         .find_map(|p| match p {
             StringPart::Expr((_, sp)) => Some(sp.clone()),
-            StringPart::Literal(_) => None,
+            StringPart::Literal(_) | StringPart::StructuralExpr(_) => None,
         })
         .expect("interp expr present");
 
@@ -288,9 +288,9 @@ fn fstring_named_type_without_impl_is_fail_closed() {
         hew_types::LANG_ITEM_DISPLAY_FMT,
         hew_types::LangItemBinding {
             trait_name: "Display".to_string(),
-            trait_id: hew_types::DefId::new("Display"),
+            trait_id: hew_types::DefId::for_test("Display"),
             method_name: Some("fmt".to_string()),
-            method_id: Some(hew_types::DefId::new("Display::fmt")),
+            method_id: Some(hew_types::DefId::for_test("Display::fmt")),
         },
     );
     tc.insert_expr_type(

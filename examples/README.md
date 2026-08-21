@@ -30,9 +30,9 @@ this progression:
    directory-module pattern, but with peer files contributing types and trait
    impls.
 3. [`multifile/README.md`](multifile/README.md) / `02_geometry/` — selective
-   `import mod::{A, B}` from a shared module namespace.
+   `import mod.{A, B}` from a shared module namespace.
 4. [`multifile/README.md`](multifile/README.md) / `03_text_stats/` — nested
-   modules where `import parent;` and `import parent::child;` are distinct.
+   modules where `import parent;` and `import parent.child;` are distinct.
 
 Whichever layout you use, point `hew check`, `hew build`, and `hew run` at the
 example's `main.hew` entry file; imports resolve the rest.
@@ -64,8 +64,8 @@ If the diff is empty the output matches exactly. A non-empty diff means the prog
 - **module_generic_boundaries/** -- Small two-file demo showing generic trait APIs crossing a module boundary (`main.hew` + `src/widgets.hew`)
 - **multifile/** -- Progressive multi-file examples showing peer-file type contribution, selective imports, and two-level module hierarchies ([README](multifile/README.md)):
   - `01_shapes/` — directory module with peer-file types + trait impls; bare import + qualified access
-  - `02_geometry/` — peer files sharing a type across functions; selective `import mod::{A, B}`
-  - `03_text_stats/` — two-level hierarchy; `import parent;` vs `import parent::child;`
+  - `02_geometry/` — peer files sharing a type across functions; selective `import mod.{A, B}`
+  - `03_text_stats/` — two-level hierarchy; `import parent;` vs `import parent.child;`
 
 ### From Examples to Stdlib
 
@@ -73,12 +73,12 @@ The learning paths here are mostly language-focused. When you want shipped libra
 
 | After this part of `examples/` | Start with these modules | Why |
 | --- | --- | --- |
-| `ux/` and `progressive/` | `std::string`, `std::fmt`, `std::vec`, `std::option`, `std::result`, `std::math` | Next stop after the core syntax, collections, and expression lessons |
-| Root-level utilities such as `file_reader`, `cli_argparse`, `hew_grep`, and `regex_demo` | `std::io`, `std::fs`, `std::path`, `std::os`, `std::string`, `std::text::regex` | CLI I/O, files, paths, env access, and text scanning |
-| Root-level networking examples such as `http_server`, `static_server`, `curl_client`, `http_json_demo`, and `chat_*` | `std::net`, `std::net::http`, `std::net::mime`, `std::net::url`, `std::encoding::json` | TCP, HTTP, content types, URLs, and JSON client payloads |
-| `smtp_client.hew` (requires a real SMTP server; see file header) | `std::net::smtp` | Connecting via STARTTLS or implicit TLS, sending plain-text and HTML email |
-| Root-level async/concurrency examples such as `async_demo` and `scope_*` | `std::stream`, `std::channel::channel`, `std::semaphore` | Stream pipelines, MPSC channels, and coordination primitives |
-| `benchmark_demo.hew` and `benchmarks/` | `std::bench`, `std::net::http` | Benchmark harness plus the HTTP surfaces used in the server comparison |
+| `ux/` and `progressive/` | `std.string`, `std.fmt`, `std.vec`, `std.option`, `std.result`, `std.math` | Next stop after the core syntax, collections, and expression lessons |
+| Root-level utilities such as `file_reader`, `cli_argparse`, `hew_grep`, and `regex_demo` | `std.io`, `std.fs`, `std.path`, `std.os`, `std.string`, `std.text.regex` | CLI I/O, files, paths, env access, and text scanning |
+| Root-level networking examples such as `http_server`, `static_server`, `curl_client`, `http_json_demo`, and `chat_*` | `std.net`, `std.net.http`, `std.net.mime`, `std.net.url`, `std.encoding.json` | TCP, HTTP, content types, URLs, and JSON client payloads |
+| `smtp_client.hew` (requires a real SMTP server; see file header) | `std.net.smtp` | Connecting via STARTTLS or implicit TLS, sending plain-text and HTML email |
+| Root-level async/concurrency examples such as `async_demo` and `scope_*` | `std.stream`, `std.channel.channel`, `std.semaphore` | Stream pipelines, MPSC channels, and coordination primitives |
+| `benchmark_demo.hew` and `benchmarks/` | `std.bench`, `std.net.http` | Benchmark harness plus the HTTP surfaces used in the server comparison |
 
 ### Topic Collections
 
@@ -102,7 +102,7 @@ The learning paths here are mostly language-focused. When you want shipped libra
   - [`regex_captures.hew`](v05/surfaces/regex_captures.hew) -- regex capture groups (`capture` / `capture_named` / `find_all` / `find_all_submatch`)
   - [`template_render.hew`](v05/surfaces/template_render.hew) -- Go-style text templates (`parse` + `render_try`)
   - [`unicode_runes.hew`](v05/surfaces/unicode_runes.hew) -- unicode rune helpers + classification predicates
-  - [`scanner_tokens.hew`](v05/surfaces/scanner_tokens.hew) -- line and word tokenisation through the value-state `std::io::scanner` API. It is admitted to `make test-surface-examples` with an exact five-line normalized-output expectation and no diagnostic allowances, so output, diagnostics, status, and timeout drift all fail the gate.
+  - [`scanner_tokens.hew`](v05/surfaces/scanner_tokens.hew) -- line and word tokenisation through the value-state `std.io.scanner` API. It is admitted to `make test-surface-examples` with an exact five-line normalized-output expectation and no diagnostic allowances, so output, diagnostics, status, and timeout drift all fail the gate.
 - Networking surfaces live under **net/**:
   - [`http_await_service.hew`](net/http_await_service.hew) -- async HTTP/1.1 client + server over `await` (two routes). Loopback-only (`127.0.0.1`), so it is offline and deterministic — it **is** wired into the `make test-surface-examples` gate alongside the pure surface demos, with a paired `.expected`.
   - [`tls_client.hew`](net/tls_client.hew) -- TLS client free-function surface (`tls.connect`/`write`/`read`/`close`); type-checks + runs, encrypted round-trip gated on a known v0.5 data-plane ABI fix. **Excluded from `make test-surface-examples`** on purpose: it dials a real public host (`example.com:443`), a genuine outbound network dependency that cannot run offline, and it deliberately fails closed on the data-plane gap. It ships a paired `.expected` for local diffing only.
@@ -117,7 +117,7 @@ The learning paths here are mostly language-focused. When you want shipped libra
 - **services/** -- Distributed service patterns that showcase Hew's actor model ([README](services/README.md)):
   - Circuit breaker, rate limiter, worker pool, pub/sub broker, health monitor, distributed counter
 - **quic_mesh/** -- Two-node QUIC/TLS mesh demo with separate `server.hew` and `client.hew`
-- **quic_service/** -- Minimal QUIC client/server round-trip using only the public `std::net::quic` API
+- **quic_service/** -- Minimal QUIC client/server round-trip using only the public `std.net.quic` API
 - **Root-level network/distributed demos** -- `distributed_hello`, `sensor_mesh`, `http_server`, `static_server`, `mqtt_broker`, `chat_*`, `curl_client`, `actor_net_reader`, `network_file_reader`, and `http_json_demo` (HTTP fetch + JSON parse pipeline; requires internet access)
 
 ### Root-Level Examples

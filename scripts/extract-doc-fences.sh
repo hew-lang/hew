@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # extract-doc-fences.sh — Extract and typecheck ```hew fenced blocks from docs/.
 #
-# Walks docs/hew-language-guide.md and docs/specs/HEW-SPEC-2026.md, emits each
+# Walks the Markdown guides and every docs/language/*.hew module, emits each
 # ```hew fence to .tmp/doc-fences/<source>-<n>.hew, then runs `hew check` on
 # each one and applies the ratchet against scripts/doc-test-expected-failures.txt.
 #
@@ -64,6 +64,34 @@ DOCS=(
     "docs/hew-language-guide.md:guide"
     "docs/specs/HEW-SPEC-2026.md:spec"
 )
+LANGUAGE_DOC_DIR="$REPO_ROOT/docs/language"
+
+add_language_docs() {
+    local language_doc
+    local language_name
+    local relative_path
+    local found=0
+
+    [[ -d "$LANGUAGE_DOC_DIR" ]] || {
+        echo "error: language documentation directory not found: $LANGUAGE_DOC_DIR" >&2
+        exit 1
+    }
+
+    while IFS= read -r language_doc; do
+        found=1
+        relative_path="${language_doc#"$REPO_ROOT"/}"
+        language_name="${language_doc##*/}"
+        language_name="${language_name%.hew}"
+        DOCS+=("$relative_path:lang-$language_name")
+    done < <(find "$LANGUAGE_DOC_DIR" -maxdepth 1 -type f -name '*.hew' -print | LC_ALL=C sort)
+
+    (( found )) || {
+        echo "error: no language documentation modules found in $LANGUAGE_DOC_DIR" >&2
+        exit 1
+    }
+}
+
+add_language_docs
 
 usage() {
     cat <<'EOF'
@@ -130,10 +158,26 @@ extract_doc() {
     local filepath="$1"
     local prefix="$2"
 
+    # Doc-comment pages (docs/language/*.hew) carry their prose as `//!` module
+    # doc comments, so their fences read `//! ```hew`, not ```hew. Strip the
+    # `//!` prefix (plus one following space, preserving fence indentation) as
+    # the file is read; every downstream step — fence detection, skip-marker
+    # scanning, content emission — then works unchanged. Non-doc-comment lines
+    # are blanked rather than kept: fenced samples live in the doc comment, and
+    # a page's own code is not doc content.
+    local strip_doc_prefix=0
+    [[ "$filepath" == *.hew ]] && strip_doc_prefix=1
+
     # Read the file into an array (one element per line, newline preserved).
     # mapfile requires bash 4; use a while loop for bash 3 compat (macOS ships 3.x).
     local lines=()
     while IFS= read -r line; do
+        if (( strip_doc_prefix )); then
+            case "$line" in
+                '//!'*) line="${line#//!}"; line="${line# }" ;;
+                *)      line="" ;;
+            esac
+        fi
         lines+=("$line")
     done < "$filepath"
 

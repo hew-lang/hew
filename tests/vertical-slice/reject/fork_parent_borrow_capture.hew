@@ -1,0 +1,14 @@
+// Function and handler parameters are caller-owned borrows. A child task may
+// not retain one across its concurrent boundary.
+actor Driver {
+    receive fn run(label: string) {
+        scope {
+            fork {
+                sleep(10ms);
+                println(label);
+            };
+        };
+    }
+}
+
+fn main() {}

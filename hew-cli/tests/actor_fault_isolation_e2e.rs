@@ -508,6 +508,176 @@ fn main() {
 }
 "#;
 
+/// Nested authority transfer: the inner supervisor exhausts its budget and
+/// ESCALATES to the outer one, which restarts the whole subtree. The escalated
+/// record is provisional until the outer supervisor rules, and its restart
+/// CLEARS it — a tree that recovered a subtree did what a tree is for.
+const NESTED_ESCALATION_RECOVERED_BY_PARENT: &str = r#"
+actor Flaky {
+    receive fn work() {
+        println("WORKED");
+    }
+
+    receive fn boom() {
+        panic("inner child crash")
+    }
+}
+
+supervisor Inner {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+
+    child f1: Flaky;
+}
+
+supervisor Outer {
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+
+    child inner: Inner;
+}
+
+fn main() {
+    let outer = spawn Outer;
+    sleep(80ms);
+    var inner = outer.inner;
+    var f1 = inner.f1;
+    f1.work();
+    sleep(40ms);
+
+    f1.boom();
+    sleep(400ms);
+    inner = outer.inner;
+    f1 = inner.f1;
+    f1.boom();
+    sleep(800ms);
+
+    inner = outer.inner;
+    f1 = inner.f1;
+    f1.work();
+    sleep(100ms);
+    println("MAIN_DONE");
+}
+"#;
+
+/// Two unrelated supervisors: one recovers its child, the other exhausts its
+/// budget. Settling the recovered record must not settle the other one — a
+/// ruling settles exactly the record it is about.
+const TWO_SUPERVISORS_ONE_HANDLED_ONE_NOT: &str = r#"
+actor Flaky {
+    let id: i64;
+
+    receive fn work() {
+        println(f"WORKED:{id}");
+    }
+
+    receive fn boom() {
+        panic("child crash")
+    }
+}
+
+supervisor Recovering {
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+
+    child r1: Flaky(id: 1);
+}
+
+supervisor GivingUp {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+
+    child g1: Flaky(id: 2);
+}
+
+fn main() {
+    let good = spawn Recovering;
+    let bad = spawn GivingUp;
+    sleep(50ms);
+
+    var r1 = good.r1;
+    r1.boom();
+    sleep(400ms);
+    r1 = good.r1;
+    r1.work();
+    sleep(40ms);
+
+    var g1 = bad.g1;
+    g1.boom();
+    sleep(400ms);
+    g1 = bad.g1;
+    g1.boom();
+    sleep(600ms);
+    println("MAIN_DONE");
+}
+"#;
+
+/// A SUSPENDING `main`. Its body is lowered as a coroutine, so its return does
+/// not take the ordinary path — the exit-status consult has to be on the shape
+/// `main` actually compiles to, not the one it usually compiles to.
+const SUSPENDING_MAIN_WITH_FAULT: &str = r#"
+actor Slow {
+    receive fn fetch() -> i64 {
+        sleep(60ms);
+        11
+    }
+}
+
+actor Loner {
+    receive fn boom() -> i64 {
+        panic("unsupervised crash in a suspending main")
+    }
+}
+
+fn main() {
+    let slow = spawn Slow;
+    let loner = spawn Loner;
+    match await slow.fetch() {
+        .Ok(v) => println(f"FETCHED:{v}"),
+        .Err(_) => println("FETCH_FAILED"),
+    }
+    match await loner.boom() {
+        .Ok(_) => println("LONER_REPLIED"),
+        .Err(_) => println("LONER_CRASHED"),
+    }
+    println("MAIN_DONE");
+}
+"#;
+
+/// A `main` that drives a generator to completion and also faults an actor.
+/// The generator drive introduces its own suspend/resume machinery around the
+/// return; the fault must still reach the exit status.
+const GENERATOR_MAIN_WITH_FAULT: &str = r#"
+gen fn counter(limit: i64) -> i64 {
+    var i: i64 = 0;
+    while i < limit {
+        yield i;
+        i = i + 1;
+    }
+}
+
+actor Loner {
+    receive fn boom() -> i64 {
+        panic("unsupervised crash beside a generator drive")
+    }
+}
+
+fn main() {
+    var total: i64 = 0;
+    for value in counter(4) {
+        total = total + value;
+    }
+    println(f"TOTAL:{total}");
+
+    let loner = spawn Loner;
+    match await loner.boom() {
+        .Ok(_) => println("LONER_REPLIED"),
+        .Err(_) => println("LONER_CRASHED"),
+    }
+    println("MAIN_DONE");
+}
+"#;
+
 fn compile_fixture(source: &str, dir: &Path, name: &str) -> PathBuf {
     let source_path = dir.join(format!("{name}.hew"));
     std::fs::write(&source_path, source).expect("write chat-room fixture");
@@ -812,34 +982,23 @@ fn crash_escalated_past_the_root_supervisor_fails_the_process() {
 
 /// A supervised crash queued as `main` returns is still ruled on: shutdown
 /// quiesces the queued work AND the supervisor decision it raises before
-/// joining workers, so the restart decides the status. Run repeatedly — the
-/// bug this pins was a race, and a single green run cannot see one.
+/// joining workers, so the restart decides the status.
+///
+/// The RACE itself is pinned deterministically in `hew-runtime`
+/// (`scheduler::tests::a_popped_actor_awaiting_activation_is_not_idle`), which
+/// parks a real worker in the pop-to-activation window with the queue-handoff
+/// hook. This is the end-to-end shape over that fix, not the probe for it —
+/// repeating a racy run to try to catch a race is what that unit test replaces.
 #[test]
 fn supervised_crash_racing_shutdown_is_still_ruled_on() {
     require_codegen();
-
-    let dir = tempdir();
-    let binary = compile_fixture(
+    assert_fixture_under_every_worker_pool(
         SUPERVISED_CRASH_RACING_SHUTDOWN,
-        dir.path(),
         "supervised_crash_racing_shutdown",
+        0,
+        &["MAIN_RETURNS_IMMEDIATELY"],
+        &["supervised crash racing the exit path"],
     );
-
-    for workers in WORKER_POOLS {
-        for attempt in 0..12 {
-            let output = run_fixture_with_workers(&binary, workers);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert_eq!(
-                output.status.code(),
-                Some(0),
-                "attempt {attempt} under HEW_WORKERS={workers}: the supervisor restarts this \
-                 child, so the run is successful. A 1 here means the worker join beat the \
-                 queued crash or its supervisor's ruling, and the exit status was decided by \
-                 that race:\nstdout:\n{stdout}\nstderr:\n{stderr}",
-            );
-        }
-    }
 }
 
 /// A non-zero code the program returned survives the fault report.
@@ -878,5 +1037,62 @@ fn explicit_exit_code_survives_an_unrecovered_fault() {
         3,
         &["LONER_CRASHED"],
         &["unsupervised crash before an explicit exit(3)"],
+    );
+}
+
+/// An escalated record is provisional: the parent's restart of the subtree
+/// clears it. Concluding "handled" from the escalation SEND, or "unrecovered"
+/// from the child's own give-up, both get this wrong.
+#[test]
+fn nested_escalation_recovered_by_the_parent_keeps_the_run_successful() {
+    require_codegen();
+    assert_fixture_counts_under_every_worker_pool(
+        NESTED_ESCALATION_RECOVERED_BY_PARENT,
+        "nested_escalation_recovered_by_parent",
+        0,
+        &["MAIN_DONE"],
+        &[("WORKED", 2)],
+        &["inner child crash"],
+    );
+}
+
+/// A ruling settles exactly one record: the recovered supervisor's restart must
+/// not clear the record of the one that gave up.
+#[test]
+fn one_recovered_supervisor_does_not_clear_another_that_gave_up() {
+    require_codegen();
+    assert_fixture_under_every_worker_pool(
+        TWO_SUPERVISORS_ONE_HANDLED_ONE_NOT,
+        "two_supervisors_one_handled_one_not",
+        1,
+        &["WORKED:1", "MAIN_DONE"],
+        &["child crash"],
+    );
+}
+
+/// A suspending `main` compiles to a coroutine; the exit-status consult must be
+/// on that shape too.
+#[test]
+fn suspending_main_reports_an_unrecovered_fault() {
+    require_codegen();
+    assert_fixture_under_every_worker_pool(
+        SUSPENDING_MAIN_WITH_FAULT,
+        "suspending_main_with_fault",
+        1,
+        &["FETCHED:11", "LONER_CRASHED", "MAIN_DONE"],
+        &["unsupervised crash in a suspending main"],
+    );
+}
+
+/// A `main` that drives a generator likewise.
+#[test]
+fn generator_driving_main_reports_an_unrecovered_fault() {
+    require_codegen();
+    assert_fixture_under_every_worker_pool(
+        GENERATOR_MAIN_WITH_FAULT,
+        "generator_main_with_fault",
+        1,
+        &["TOTAL:6", "LONER_CRASHED", "MAIN_DONE"],
+        &["unsupervised crash beside a generator drive"],
     );
 }

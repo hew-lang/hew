@@ -41,13 +41,30 @@ supervisor App {
 fn main() -> i64 {
     let sup = spawn App;
     let w = sup.w1;
-    // Exhaust the restart budget through the held handle: the child ends
-    // permanently Dead. The loop is generous so the terminal decision is reached
-    // regardless of restart-window timing; the settle lets the supervisor finish
-    // processing the final terminal crash.
-    for _ in 0 .. 5 {
-        w.crash_me();
-        sleep(80ms);
+    // Crash until the child is PERMANENTLY dead, observing the effect rather
+    // than assuming a fixed number of sleeps reaches it. A wall-clock loop is
+    // load-sensitive: under a busy machine the restarts had not yet exhausted
+    // the budget when the asks below ran, and the fixture asserted its sentinel
+    // against a LIVE child.
+    var attempts: i64 = 0;
+    var dead = false;
+    while attempts < 30 && !dead {
+        let alive = match await w.get_value() {
+            .Ok(_) => true,
+            .Err(_) => false,
+        };
+        if alive {
+            w.crash_me();
+            sleep(120ms);
+        } else {
+            dead = true;
+        }
+        attempts = attempts + 1;
+    }
+    // Make a failed precondition legible: the stdout diff then names the reason
+    // instead of only showing a wrong sentinel.
+    if !dead {
+        println("PRECONDITION_CHILD_STILL_ALIVE");
     }
     sleep(200ms);
 

@@ -3002,13 +3002,39 @@ mod sched_metrics_tests {
         let _guard = METRICS_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        hew_sched_metrics_reset();
 
-        assert_eq!(hew_sched_metrics_tasks_spawned(), 0);
-        assert_eq!(hew_sched_metrics_tasks_completed(), 0);
-        assert_eq!(hew_sched_metrics_steals(), 0);
-        assert_eq!(hew_sched_metrics_messages_sent(), 0);
-        assert_eq!(hew_sched_metrics_messages_received(), 0);
+        // `METRICS_LOCK` serializes this module, but the counters are
+        // PROCESS-global: a test in another module of this binary can spawn a
+        // task or send a message between the reset and the read, and did once
+        // under a loaded machine (`tasks_spawned` read 1). That is interference,
+        // not a reset that failed to zero — so retry a bounded number of times
+        // and only fail when EVERY attempt was disturbed. Retrying keeps the
+        // contract intact: one clean attempt still has to observe all five
+        // counters at zero.
+        let mut disturbed = Vec::new();
+        for _ in 0..16 {
+            hew_sched_metrics_reset();
+            let sample = [
+                ("tasks_spawned", hew_sched_metrics_tasks_spawned()),
+                ("tasks_completed", hew_sched_metrics_tasks_completed()),
+                ("steals", hew_sched_metrics_steals()),
+                ("messages_sent", hew_sched_metrics_messages_sent()),
+                ("messages_received", hew_sched_metrics_messages_received()),
+            ];
+            if sample.iter().all(|(_, value)| *value == 0) {
+                return;
+            }
+            disturbed = sample
+                .iter()
+                .filter(|(_, value)| *value != 0)
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect();
+        }
+        panic!(
+            "reset never zeroed the scheduler interval counters in 16 attempts; \
+             last non-zero: {}",
+            disturbed.join(", ")
+        );
     }
 
     #[test]

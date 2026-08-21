@@ -33,7 +33,9 @@
 //! an allow-set test without a paired exclusion would pass even if the gate
 //! admitted everything (the double-free this fix must never introduce).
 
-use hew_mir::{DropKind, ElabDrop, ExitPath, IrPipeline, Terminator};
+use hew_mir::{
+    DropKind, ElabDrop, ExitPath, Instr, IrPipeline, NeutralizeAuthority, Place, Terminator,
+};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -111,6 +113,28 @@ fn count_calls(p: &IrPipeline, fn_name: &str, symbol: &str) -> usize {
             matches!(&block.terminator, Terminator::Call { callee, .. } if callee == symbol)
         })
         .count()
+}
+
+/// Every source `Place` nulled by a divergent-arm selection transfer in
+/// `fn_name`. The arm locals in that set keep their scope-exit release
+/// precisely because the transfer nulled them.
+fn selection_transfer_sources(p: &IrPipeline, fn_name: &str) -> Vec<Place> {
+    p.raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present in raw_mir"))
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::NeutralizePayloadSlot {
+                place,
+                authority: NeutralizeAuthority::DivergentSelectionTransfer,
+                ..
+            } => Some(*place),
+            _ => None,
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -582,12 +606,18 @@ fn plain_vec_chained_pipeline_frees_each_intermediate_exactly_once() {
 /// hung at ~9.6s CPU on this exact shape). The fix EVICTS the dual-rooted
 /// result slot so the fixpoint converges.
 ///
-/// Here the result is RETURNED, so the arm locals legitimately escape to the
-/// caller and the producing function must free NEITHER — both the convergence
-/// proof (this test runs to completion) and the correct exclusion are pinned.
-/// LESSONS: `drop-allowset-from-value-flow`, `boundary-fail-closed`.
+/// Eviction alone made the shape fail closed by excluding EVERY arm local from
+/// the drop set — which leaks the arm that loses the selection. The selection
+/// transfer now nulls each arm's slot as it hands its handle to the join slot,
+/// so each arm local keeps its OWN scope-exit release: a null-tolerant no-op
+/// on the path that transferred, a real free on the path that did not.
+///
+/// What must still never appear is a release of the RESULT slot in the
+/// producing function — the caller owns what it receives.
+/// LESSONS: `drop-allowset-from-value-flow`, `boundary-fail-closed`,
+/// `raii-null-after-move`.
 #[test]
-fn plain_vec_local_drop_multi_arm_match_returned_converges_and_excludes() {
+fn plain_vec_local_drop_multi_arm_match_returned_releases_only_neutralized_arm_locals() {
     let pipeline = pipeline_with_tc(
         r"
         enum Action { Move; Left }
@@ -600,24 +630,38 @@ fn plain_vec_local_drop_multi_arm_match_returned_converges_and_excludes() {
         fn main() -> i64 { 0 }
         ",
     );
-    let drops = all_exit_drops(&pipeline, "codes");
+    let neutralized = selection_transfer_sources(&pipeline, "codes");
     assert_eq!(
-        count_free(&drops, "hew_vec_free"),
-        0,
-        "both arms' vecs are moved into the returned result slot — the caller \
-         owns them; the producing function must free NEITHER (a free here is \
-         the double-free this fix must never introduce); got {drops:?}"
+        neutralized.len(),
+        2,
+        "each arm hands its fresh local to the shared result slot, so each arm local must be \
+         nulled at its transfer; got {neutralized:?}"
+    );
+    let freed: Vec<Place> = all_exit_drops(&pipeline, "codes")
+        .iter()
+        .filter(|drop| is_cow_heap_free(drop, "hew_vec_free"))
+        .map(|drop| drop.place)
+        .collect();
+    assert!(
+        !freed.is_empty() && freed.iter().all(|place| neutralized.contains(place)),
+        "every plain-Vec release in the producing function must target an arm local that its own \
+         selection transfer nulled; a release of the result slot double-frees what the caller \
+         owns; neutralized {neutralized:?}, freed {freed:?}"
     );
 }
 
 /// The same dual-root result slot when the match value is consumed LOCALLY
-/// rather than returned: convergence must still hold, and the ambiguous group
-/// (the two arm handles plus the result slot all reachable from two roots) is
-/// fail-closed — it leaks, never double-frees. A `match` returning `string`
-/// alongside proves the non-collection multi-arm path is unaffected.
-/// LESSONS: `boundary-fail-closed`.
+/// rather than returned: convergence must still hold, and now the frame owns
+/// three separately-minted handles — the two arm locals and the result binding.
+/// Each earns exactly one release, and the two arm releases are the ones the
+/// selection transfer nulls, so at runtime the frame frees the live handle once
+/// and no-ops on the transferred slot.
+///
+/// Pre-fix this exit released only the result, leaking whichever arm won the
+/// selection into it — the divergent-arm leak stated structurally.
+/// LESSONS: `cleanup-all-exits`, `raii-null-after-move`.
 #[test]
-fn plain_vec_local_drop_multi_arm_match_consumed_locally_converges() {
+fn plain_vec_local_drop_multi_arm_match_consumed_locally_releases_every_owner() {
     let pipeline = pipeline_with_tc(
         r"
         enum Action { Move; Left }
@@ -630,13 +674,25 @@ fn plain_vec_local_drop_multi_arm_match_consumed_locally_converges() {
         }
         ",
     );
-    // The assertion that matters is that lowering CONVERGED at all (pre-fix this
-    // hung). The ambiguous group is fail-closed: no double-free is emitted.
-    let drops = all_exit_drops(&pipeline, "main");
-    assert!(
-        count_free(&drops, "hew_vec_free") <= 1,
-        "the ambiguous dual-root result group must fail closed (at most one \
-         free of the single live result, never one-per-arm); got {drops:?}"
+    let neutralized = selection_transfer_sources(&pipeline, "main");
+    assert_eq!(
+        neutralized.len(),
+        2,
+        "both arm locals transfer into the shared result slot; got {neutralized:?}"
+    );
+    let freed: Vec<Place> = all_exit_drops(&pipeline, "main")
+        .iter()
+        .filter(|drop| is_cow_heap_free(drop, "hew_vec_free"))
+        .map(|drop| drop.place)
+        .collect();
+    let result_releases = freed
+        .iter()
+        .filter(|place| !neutralized.contains(place))
+        .count();
+    assert_eq!(
+        result_releases, 1,
+        "the result binding is one live handle and earns exactly one release; more is a \
+         double-free, none re-opens the leak; neutralized {neutralized:?}, freed {freed:?}"
     );
 }
 

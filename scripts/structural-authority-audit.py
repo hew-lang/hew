@@ -43,6 +43,11 @@ ALL_GROUPS = {
     "suspend-authority",
     "owner-retirement-path",
     "monomorphic-enum-leaf-synthesis",
+    # Applying a call signature to its arguments. One authority
+    # (`apply_instantiated_call_signature_with_assoc`) freshens a generic
+    # callee's type parameters, infers them from the arguments, and records the
+    # instantiation; a hand-rolled arg-vs-parameter loop does none of it.
+    "signature-application",
 }
 SEMANTIC_KEY_BUILDERS = {
     "scoped_module_item_name",
@@ -1083,6 +1088,18 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
                 finding("mir-ownership-sink", "ownership-classify-call", match)
             )
 
+    # Applying a call signature means checking each argument against the
+    # signature's parameter types. That must happen in ONE place
+    # (`apply_instantiated_call_signature_with_assoc`), because that is where a
+    # generic callee's type parameters are freshened, inferred, and recorded as
+    # an instantiation. A hand-rolled `check_against(expr, span, param_ty)` loop
+    # silently skips all three: it is how generic actor receive calls ended up
+    # reporting `expected T` and never discharging their obligations. Every such
+    # site is inventoried so a new one cannot appear without review.
+    for match in run_query(ast_grep, root, pattern="$R.check_against($E, $S, $P)"):
+        if "param" in single_meta(match, "P"):
+            findings.add(finding("signature-application", "manual-arg-vs-param", match))
+
     for match in run_query(ast_grep, root, pattern="$R.insert($$$ARGS)"):
         receiver = single_meta(match, "R").split(".")[-1]
         if receiver in {"expr_types", "resolved_calls", "call_targets"}:
@@ -1308,6 +1325,8 @@ def canonical_stage(group: str, form: str, path: str) -> str:
             if path.startswith("hew-codegen-rs/") or path.endswith("model.rs")
             else "stage-4"
         )
+    if group == "signature-application":
+        return "stage-1"
     if group == "string-method-identity":
         if path.startswith(("hew-types/", "hew-hir/", "hew-analysis/")):
             return "stage-1"

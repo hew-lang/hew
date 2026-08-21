@@ -4506,3 +4506,245 @@ fn main() -> i64 {
          that pattern aborts with `Rc double-free`; got: {help}"
     );
 }
+
+// -------------------------------------------------------------------------
+// Application-authority coverage: actor receive calls, associated-type
+// positions, and type-parameter shadowing
+// -------------------------------------------------------------------------
+
+const GENERIC_RECEIVE_ACTOR: &str = r"
+actor Store {
+    var seen: i64;
+
+    init() {
+        seen = 0;
+    }
+
+    receive fn keep<T>(left: Option<T>, right: Option<T>) -> bool {
+        seen = seen + 1;
+        left == right
+    }
+}
+";
+
+#[test]
+fn generic_receive_call_instantiates_its_type_parameters() {
+    // The receive path used to check arguments against `sig.params` directly,
+    // so a generic handler's `T` was never freshened and every call reported
+    // `expected Option<T>`.
+    let source = format!(
+        "{GENERIC_RECEIVE_ACTOR}
+fn main() -> i64 {{
+    let store: LocalPid<Store> = spawn Store();
+    let left: Option<i64> = Some(1);
+    let right: Option<i64> = Some(1);
+    let out = await store.keep(left, right);
+    match out {{
+        .Ok(v) => match v {{ true => 0, false => 1 }},
+        .Err(_) => 2,
+    }}
+}}
+"
+    );
+    let output = check_source(&source);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("expected `Option<T>`")),
+        "a generic receive handler's type parameters must be instantiated at the call site; \
+         got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_receive_call_with_ineligible_instantiation_is_refused_by_checker() {
+    let source = format!(
+        "{GENERIC_RECEIVE_ACTOR}
+fn main() -> i64 {{
+    let store: LocalPid<Store> = spawn Store();
+    let a: HashMap<string, i64> = HashMap.new();
+    let b: HashMap<string, i64> = HashMap.new();
+    let left: Option<HashMap<string, i64>> = Some(a);
+    let right: Option<HashMap<string, i64>> = Some(b);
+    let out = await store.keep(left, right);
+    match out {{
+        .Ok(v) => match v {{ true => 0, false => 1 }},
+        .Err(_) => 2,
+    }}
+}}
+"
+    );
+    let output = check_source(&source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("`Store::keep`")
+                && e.message.contains("member `Some`")
+                && e.message.contains("HashMap<string, i64>")
+        }),
+        "an actor receive call is an application like any other and must discharge its \
+         obligations; got: {:?}",
+        output.errors
+    );
+}
+
+const CARRIER_TRAIT: &str = r"
+trait Carrier {
+    type Item;
+    fn peek(self) -> Option<Self.Item>;
+}
+
+type IntBox {
+    value: i64;
+}
+
+impl Carrier for IntBox {
+    type Item = i64;
+    fn peek(self) -> Option<i64> {
+        Some(self.value)
+    }
+}
+
+type MapBox {
+    value: i64;
+}
+
+impl Carrier for MapBox {
+    type Item = HashMap<string, i64>;
+    fn peek(self) -> Option<HashMap<string, i64>> {
+        None
+    }
+}
+
+fn same<C: Carrier>(left: Option<C.Item>, right: Option<C.Item>) -> bool {
+    left == right
+}
+";
+
+#[test]
+fn abstract_associated_type_position_is_deferred_not_rejected() {
+    // `C.Item` over an in-scope parameter is in the same position a bare `T` is
+    // in: no concrete leaf yet. Marking it categorically ineligible rejected
+    // every projection, including the ones that are perfectly comparable.
+    let source = format!("{CARRIER_TRAIT}\nfn main() -> i64 {{ 0 }}\n");
+    let output = check_source(&source);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("is not supported because member")),
+        "an abstract associated-type position must defer, not reject in the template; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn associated_type_instantiation_with_eligible_projection_is_admitted() {
+    let source = format!(
+        "{CARRIER_TRAIT}
+fn main() -> i64 {{
+    match same<IntBox>(Some(1), Some(1)) {{
+        true => 0,
+        false => 1,
+    }}
+}}
+"
+    );
+    let output = check_source(&source);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("structural equality")),
+        "`IntBox::Item = i64` projects to an eligible leaf; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn associated_type_instantiation_with_ineligible_projection_is_refused() {
+    // The obligation is substituted AND its projection collapsed before the
+    // eligibility walk, so the diagnostic names the concrete projected type.
+    let source = format!(
+        "{CARRIER_TRAIT}
+fn main() -> i64 {{
+    match same<MapBox>(None, None) {{
+        true => 0,
+        false => 1,
+    }}
+}}
+"
+    );
+    let output = check_source(&source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+        }),
+        "`MapBox::Item = HashMap<string, i64>` has no structural equality path; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn method_type_parameter_shadowing_an_impl_parameter_is_refused() {
+    // Shadowing is refused rather than scoped: `instantiate_named_method_sig`
+    // substitutes the impl's arguments by name and drops every matching name
+    // from the signature, so the method's own parameter cannot survive.
+    let source = r"
+type Holder<T> {
+    value: T;
+}
+
+impl<T> Holder<T> {
+    fn same<T>(self, marker: T) -> bool {
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("method type parameter `T` shadows")
+                && e.message.contains("`impl` block on `Holder`")
+        }),
+        "a shadowing method type parameter must be refused at its declaration; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn renamed_method_type_parameter_is_admitted_and_stays_independent() {
+    // The renamed form is what the diagnostic asks for, and it must actually
+    // work: the method parameter binds `string` while the impl parameter is
+    // `i64`.
+    let source = r#"
+type Holder<T> {
+    value: T;
+}
+
+impl<T> Holder<T> {
+    fn same<U>(self, marker: U) -> bool {
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 {
+    let holder = Holder { value: 1 };
+    match holder.same("text") {
+        true => 0,
+        false => 1,
+    }
+}
+"#;
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "a distinct method type parameter must bind independently of the impl's; got: {:?}",
+        output.errors
+    );
+}

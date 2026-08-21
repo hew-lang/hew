@@ -9150,15 +9150,35 @@ impl Checker {
                         return Ty::Error;
                     }
                     if let Some(sig) = self.fn_sigs.get(&method_key).cloned() {
-                        for (i, arg) in args.iter().enumerate() {
-                            let (expr, sp) = arg.expr();
-                            let ty = if let Some(param_ty) = sig.params.get(i) {
-                                self.check_against(expr, sp, param_ty)
-                            } else {
-                                self.synthesize(expr, sp)
-                            };
-                            self.enforce_actor_boundary_send(expr, sp, sp, &ty);
-                        }
+                        // Route through the one application authority rather
+                        // than checking args against `sig.params` directly: a
+                        // generic `receive fn keep<T>(..)` needs its type
+                        // parameters freshened and inferred from the arguments,
+                        // and its instantiation recorded so structural-equality
+                        // obligations raised in the handler body are discharged.
+                        // The hand-rolled loop that used to live here skipped
+                        // both, so a generic handler reported `expected T` at
+                        // every call site.
+                        let applied_sig = self.apply_instantiated_call_signature(
+                            &sig,
+                            None,
+                            args,
+                            span,
+                            SignatureArgApplication::PositionalOnly {
+                                arity_context: format!("method `{method}`"),
+                            },
+                            true,
+                            Some(GenericCallee::Method {
+                                type_name: &actor_identity,
+                                method,
+                                owner_type_args: &[],
+                            }),
+                        );
+                        // Every argument crosses the mailbox boundary. This is
+                        // the funnel-compatible pairing (it reads the per-arg
+                        // types the application just published) used by the bare
+                        // actor-instance dispatch arm.
+                        self.enforce_actor_method_send_args(args);
                         self.record_method_call_receiver_kind(
                             span,
                             MethodCallReceiverKind::ActorInstance {
@@ -9168,7 +9188,7 @@ impl Checker {
                         // Ask-without-await guard: ask-shaped receive fn must be
                         // awaited. Generator methods (`receive gen fn`) use `for
                         // await` at the call site and are exempt from this guard.
-                        let resolved_ret = self.subst.resolve(&sig.return_type);
+                        let resolved_ret = self.subst.resolve(&applied_sig.return_type);
                         if !matches!(resolved_ret, Ty::Unit)
                             && !self.receive_generator_methods.contains(&method_key)
                             && !self.inside_await_expr
@@ -9186,9 +9206,9 @@ impl Checker {
                         self.record_actor_method_dispatch(
                             span,
                             method_key,
-                            sig.return_type.clone(),
+                            applied_sig.return_type.clone(),
                         );
-                        return sig.return_type;
+                        return applied_sig.return_type;
                     }
                 }
                 for arg in args {

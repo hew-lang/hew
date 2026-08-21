@@ -681,4 +681,31 @@ with tempfile.TemporaryDirectory() as temp:
         "whitespace-qualified non-format macro paths must remain controls"
     )
 
+    # A hand-rolled arg-vs-signature-parameter application must be inventoried.
+    # This is the shape that let generic actor receive calls skip type-parameter
+    # instantiation entirely; a new one has to be reviewed, not merged quietly.
+    for source_text, description in (
+        (
+            "fn f() { let ty = self.check_against(expr, sp, param_ty); }\n",
+            "direct parameter application",
+        ),
+        (
+            "fn f() { checker.check_against(expr, sp, &sig_param); }\n",
+            "borrowed parameter application",
+        ),
+    ):
+        target.write_text(source_text)
+        set_inventory(work)
+        result = run(work)
+        assert result.returncode != 0, (
+            f"a new {description} must fail the signature-application ratchet"
+        )
+        assert "manual-arg-vs-param" in result.stderr
+
+    target.write_text("fn f() { self.check_against(expr, sp, &expected_fn); }\n")
+    set_inventory(work)
+    assert run(work).returncode == 0, (
+        "checking against a non-signature expected type must remain a control"
+    )
+
 print("structural authority audit counterfactuals: PASS")

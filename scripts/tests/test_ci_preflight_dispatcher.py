@@ -1517,6 +1517,9 @@ def test_golden_corpus_failures_name_the_fixture_not_the_make_target() -> None:
         'printf "CORPUS FAIL: 2 UNEXPECTED failure(s) - not in expected list:\\n"; exit 1': (
             "CORPUS FAIL: 2 UNEXPECTED failure(s) - not in expected list:"
         ),
+        'printf "cached status: FAILED\\nTRANSCRIPT MISMATCH: actual_fixture\\n"; exit 1': (
+            "TRANSCRIPT MISMATCH: actual_fixture"
+        ),
         'printf "sweeping\\n==> Corpus sweep: FAILED\\n"; exit 1': (
             "==> Corpus sweep: FAILED"
         ),

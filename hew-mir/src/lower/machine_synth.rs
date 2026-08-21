@@ -1695,18 +1695,19 @@ pub(super) fn synthesize_machine_step_fn(
         });
     }
 
-    // Drain pending blocks into the function's final blocks vec. The
-    // builder's current block is the trap (already finished); there is no
-    // dangling cursor. We allocate a sentinel empty entry to satisfy
-    // `finalize_blocks` (which seals the current cursor with a terminator);
-    // start_block to a fresh id and immediately finalize with a benign
-    // Goto-to-trap that will be unreachable, OR just collect the pending
-    // blocks directly.
-    //
-    // Inline the drain: take pending_blocks directly, sort by id. Equivalent
-    // to finalize_blocks but without adding a phantom block for the cursor.
-    let mut blocks = std::mem::take(&mut builder.pending_blocks);
-    blocks.sort_by_key(|b| b.id);
+    // The dispatch's current block is the trap, already finished — there is no
+    // dangling cursor to seal, and sealing again would append a phantom block.
+    // That is a seal STRATEGY (`BodySeal::AlreadyTerminated`), not a reason to
+    // drain by hand beside the seam: this body finishes through `finalize_body`
+    // like every other, so an ownership pass added there reaches it too.
+    let super::FinalizedBody {
+        blocks,
+        thir_statements: _,
+    } = super::finalize_body(
+        &mut builder,
+        super::BodySeal::AlreadyTerminated,
+        super::BodyFinalizeSpec::nested_body(),
+    );
 
     // Locals + diagnostics drained from the builder.
     let locals = builder.locals.clone();

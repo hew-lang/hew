@@ -1287,7 +1287,7 @@ pub fn analyze_with_binding_locals<S: std::hash::BuildHasher>(
     };
 
     // The function's entry block is id 0 by construction (see
-    // `lower::Builder::finalize_blocks`).
+    // `lower::Builder::seal_body_blocks`).
     let entry_id = 0;
 
     // ── Phase 1: fixpoint ──────────────────────────────────────────────
@@ -1392,7 +1392,7 @@ pub fn analyze_with_binding_locals<S: std::hash::BuildHasher>(
 
     for block in blocks {
         let blk_id = block.id;
-        // `finalize_blocks` preserves a structurally valid home for source
+        // `seal_body_blocks` preserves a structurally valid home for source
         // after a failed/never-returning sub-lowering (for example, the loop
         // exit following a match whose scrutinee could not lower).  Such a
         // block has no path from entry, so it must not diagnose its implicit

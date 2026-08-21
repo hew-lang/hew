@@ -4,15 +4,14 @@
 )]
 
 use super::{
-    apply_nested_fresh_bytes_temp_drops, apply_nested_fresh_string_temp_drops, base_local,
-    check_function, check_to_diagnostic, collect_unknown_type_diagnostics, dataflow, elaborate,
-    finalize_bytes_ownership, finalize_string_ownership, terminator_is_suspend_carrier,
+    base_local, check_function, check_to_diagnostic, collect_unknown_type_diagnostics, dataflow,
+    elaborate, finalize_bytes_ownership, finalize_string_ownership, terminator_is_suspend_carrier,
     ActorStateLoadMode, BindingId, Builder, BuiltinType, CaptureEnvSource, CheckedMirFunction,
     ClosureEnvAllocation, ClosureEnvFieldInit, ClosureEnvFieldOwnership, DropKind, ElabDrop,
-    FieldOffset, HashMap, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, Instr, IntentKind,
-    LambdaCapture, LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
-    RawMirFunction, ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SourceOrigin,
-    StreamProducerPumpCtx, SuspendKind, Terminator, ThirFunction, ValueClass,
+    FieldOffset, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, Instr, IntentKind, LambdaCapture,
+    LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction,
+    ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SourceOrigin, StreamProducerPumpCtx,
+    SuspendKind, Terminator, ThirFunction, ValueClass,
 };
 use crate::model::{GeneratorEnvFieldPlan, GeneratorEnvPlan};
 
@@ -726,42 +725,20 @@ impl Builder {
             ty: ret_ty.clone(),
         });
 
-        let mut blocks = builder.finalize_blocks(Terminator::Return);
-        let nested_temp_binding_locals: HashMap<BindingId, Place> = builder
-            .binding_locals
-            .iter()
-            .filter(|(binding, _)| {
-                !builder
-                    .synthetic_owner_publication_sites
-                    .contains_key(binding)
-            })
-            .map(|(binding, place)| (*binding, *place))
-            .collect();
-        apply_nested_fresh_string_temp_drops(
-            &mut blocks,
-            &mut builder.suspend_kinds,
-            &builder.locals,
-            &nested_temp_binding_locals,
-            &builder
-                .call_scrutinee_provenance
-                .owned_string_return_carrier_symbols,
-            &mut builder.suspend_abandon_extra_drops,
-            &mut builder.instr_spans,
+        // Closure bodies finish through the SAME seam as every other body kind
+        // (`finalize_body`), so an ownership pass added there reaches a closure
+        // without a second registration. This ramp used to hand-roll a partial
+        // copy of `lower_function`'s pipeline, and a divergent-arm selection
+        // inside a closure leaked a whole `Vec` per call because the copy
+        // predated the pass that releases it.
+        let super::FinalizedBody {
+            blocks,
+            thir_statements,
+        } = super::finalize_body(
+            &mut builder,
+            super::BodySeal::Cursor(Terminator::Return),
+            super::BodyFinalizeSpec::nested_body(),
         );
-        // #2542 — mirror the closure-shim ramp's string splice for the bytes
-        // user-call-result temp class (see `lower_function`'s call site).
-        apply_nested_fresh_bytes_temp_drops(
-            &mut blocks,
-            &builder.suspend_kinds,
-            &builder.locals,
-            &nested_temp_binding_locals,
-            &mut builder.instr_spans,
-        );
-        builder.consume_typed_publication_owners_at_inline_release(&blocks);
-        let thir_statements: Vec<MirStatement> = blocks
-            .iter()
-            .flat_map(|b| b.statements.iter().cloned())
-            .collect();
         let thir = ThirFunction {
             name: shim_name.to_string(),
             return_ty: ret_ty.clone(),
@@ -933,12 +910,17 @@ impl Builder {
 
         // Block 1: return.
         builder.start_block(ret_block_id);
-        let blocks = builder.finalize_blocks(Terminator::Return);
-
-        let thir_statements: Vec<MirStatement> = blocks
-            .iter()
-            .flat_map(|b| b.statements.iter().cloned())
-            .collect();
+        // Synthesised trampoline: no user body, so the shared pipeline has
+        // nothing to splice today. It still finishes through the one seam, so a
+        // future pass cannot be silently absent here either.
+        let super::FinalizedBody {
+            blocks,
+            thir_statements,
+        } = super::finalize_body(
+            &mut builder,
+            super::BodySeal::Cursor(Terminator::Return),
+            super::BodyFinalizeSpec::nested_body(),
+        );
         let thir = ThirFunction {
             name: shim_name.to_string(),
             return_ty: ret_ty.clone(),
@@ -1459,7 +1441,19 @@ impl Builder {
             }
         }
 
-        let body_blocks = body_builder.finalize_blocks(Terminator::Return);
+        // The lambda-actor handler body is a user body: it finishes through the
+        // one seam, so a pass added there reaches it without a second
+        // registration. Its spec withholds exactly one pair — the nested
+        // fresh-temp releases, whose precondition this body does not meet
+        // (measured on `BodyFinalizeSpec::nested_fresh_temp_releases`).
+        let super::FinalizedBody {
+            blocks: body_blocks,
+            thir_statements: body_thir_statements,
+        } = super::finalize_body(
+            &mut body_builder,
+            super::BodySeal::Cursor(Terminator::Return),
+            super::BodyFinalizeSpec::lambda_actor_body(),
+        );
         let body_locals = body_builder.locals.clone();
         let body_user_return_ty = if matches!(shape, crate::model::LambdaActorShape::Ask) {
             reply_ty.clone()
@@ -1499,14 +1493,10 @@ impl Builder {
             source_origin: SourceOrigin::Unknown,
         };
 
-        let thir_statements: Vec<MirStatement> = body_blocks
-            .iter()
-            .flat_map(|b| b.statements.iter().cloned())
-            .collect();
         let thir = ThirFunction {
             name: body_name.clone(),
             return_ty: body_user_return_ty.clone(),
-            statements: thir_statements,
+            statements: body_thir_statements,
         };
 
         // Synthetic HirFn shell for `check_function` (mirrors `lower_gen_block`).
@@ -2298,55 +2288,19 @@ impl Builder {
         // Seal the last block with `Terminator::Return`. For a gen body
         // this represents the generator completing (returns `return_ty` which
         // S5 maps to `None` on the Iterator impl side).
-        let mut blocks = body_builder.finalize_blocks(Terminator::Return);
-        let nested_temp_binding_locals: HashMap<BindingId, Place> = body_builder
-            .binding_locals
-            .iter()
-            .filter(|(binding, _)| {
-                !body_builder
-                    .synthetic_owner_publication_sites
-                    .contains_key(binding)
-            })
-            .map(|(binding, place)| (*binding, *place))
-            .collect();
-
-        // W5.011 P3 — release nested fresh-`string` temporaries (f-string
-        // interpolation's `to_string_*`/`string_concat` chain, `(a + b).len()`,
-        // `s.to_uppercase().len()`, discarded `a + b;`) that `derive_cow_fresh_
-        // borrowed_owner` (binding-scoped) cannot see. `lower_function`'s
-        // ordinary-fn path runs this splice unconditionally right after
-        // `finalize_blocks` (see its own call site); this gen-body ramp builds
-        // its `RawMirFunction` through its own hand-rolled pipeline below
-        // instead of going through `lower_function`, so it needs the identical
-        // call — omitting it left every fresh-string temp inside a generator
-        // body (most visibly an f-string per `yield`) leaking unconditionally,
-        // independent of the `string_concat` catalog-name contract fix, since
-        // this pass never ran on gen-body blocks at all. Must run BEFORE
-        // `check_function`/`elaborate` below so the dataflow observes each
-        // inline drop as a read of its temp and codegen emits the release.
-        apply_nested_fresh_string_temp_drops(
-            &mut blocks,
-            &mut body_builder.suspend_kinds,
-            &body_builder.locals,
-            &nested_temp_binding_locals,
-            &body_builder
-                .call_scrutinee_provenance
-                .owned_string_return_carrier_symbols,
-            &mut body_builder.suspend_abandon_extra_drops,
-            &mut body_builder.instr_spans,
+        // Generator bodies finish through the one seam. This ramp used to
+        // hand-roll a partial copy of `lower_function`'s pipeline — its own
+        // comments said so — and each pass that copy predated was silently
+        // absent inside a `gen fn`: the divergent-arm selection release among
+        // them, leaking a whole `Vec` per iteration.
+        let super::FinalizedBody {
+            blocks,
+            thir_statements,
+        } = super::finalize_body(
+            &mut body_builder,
+            super::BodySeal::Cursor(Terminator::Return),
+            super::BodyFinalizeSpec::nested_body(),
         );
-        // #2542 — the gen-body ramp needs the identical bytes user-call-result
-        // temp splice as `lower_function` (a `mk().len()` inside a `yield`
-        // expression would otherwise leak per iteration). Must run BEFORE
-        // `check_function`/elaborate below, same as the string splice.
-        apply_nested_fresh_bytes_temp_drops(
-            &mut blocks,
-            &body_builder.suspend_kinds,
-            &body_builder.locals,
-            &nested_temp_binding_locals,
-            &mut body_builder.instr_spans,
-        );
-        body_builder.consume_typed_publication_owners_at_inline_release(&blocks);
 
         // Cross-suspend state is owned by LLVM's CoroSplit. The generator body
         // lowers to an `llvm.coro.*` switched-resume coroutine; CoroSplit
@@ -2359,14 +2313,10 @@ impl Builder {
         let body_locals_with_state = body_builder.locals.clone();
 
         // Build the THIR/raw/checked/elaborated triple for the body function.
-        let thir_stmts: Vec<MirStatement> = blocks
-            .iter()
-            .flat_map(|b| b.statements.iter().cloned())
-            .collect();
         let thir = ThirFunction {
             name: body_name.clone(),
             return_ty: return_ty.clone(),
-            statements: thir_stmts,
+            statements: thir_statements,
         };
 
         // The gen-body coroutine ramp's formal parameters mirror the leading
@@ -2527,7 +2477,7 @@ impl Builder {
     /// close:
     ///   call hew_sink_close(sink) -> close_next
     /// close_next:
-    ///   <cursor left open — `lower_function`'s `finalize_blocks(Terminator::Return)`
+    ///   <cursor left open — the seam's `BodySeal::Cursor(Terminator::Return)`
     ///    seals it as the implicit unit return>
     /// ```
     ///

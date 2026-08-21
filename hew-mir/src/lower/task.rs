@@ -4,14 +4,13 @@
 )]
 
 use super::{
-    bracket_actor_handler_blocks, check_function, check_to_diagnostic,
-    collect_unknown_type_diagnostics, dataflow, elaborate, finalize_bytes_ownership,
-    finalize_string_ownership, BasicBlock, BindingId, Builder, BuiltinType, CheckedMirFunction,
-    ClosureEnvFieldOwnership, FieldOffset, HirBlock, HirExpr, HirExprKind, HirFn, HirJoin,
-    HirSelect, HirSelectArmKind, HirStmtKind, Instr, IntentKind, JoinBranch, LoweredFunction,
-    MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, ResolvedTy, SelectArm,
-    SelectArmKind, SourceOrigin, SpawnEnvFieldOwnership, SuspendKind, Terminator, ThirFunction,
-    ValueClass,
+    check_function, check_to_diagnostic, collect_unknown_type_diagnostics, dataflow, elaborate,
+    finalize_bytes_ownership, finalize_string_ownership, BasicBlock, BindingId, Builder,
+    BuiltinType, CheckedMirFunction, ClosureEnvFieldOwnership, FieldOffset, HirBlock, HirExpr,
+    HirExprKind, HirFn, HirJoin, HirSelect, HirSelectArmKind, HirStmtKind, Instr, IntentKind,
+    JoinBranch, LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
+    RawMirFunction, ResolvedTy, SelectArm, SelectArmKind, SourceOrigin, SpawnEnvFieldOwnership,
+    SuspendKind, Terminator, ThirFunction, ValueClass,
 };
 use crate::model::StableActorRole;
 
@@ -315,33 +314,20 @@ impl Builder {
         adapter_symbol
     }
 
-    /// Synthesize the per-callee task-entry adapter (`__hew_task_entry_<fn>`,
-    /// `TaskEntry` call-conv). The adapter is the body the codegen task wrapper
-    /// invokes on the spawned worker; the wrapper publishes the adapter's return
-    /// value through `hew_task_set_result` and then `hew_task_complete_threaded`.
+    /// The adapter's two blocks: call the task body, then return.
     ///
-    /// For a value-returning task (`result_ty != ()`) the adapter calls the body
-    /// into a typed `dest` local and RETURNS it, so the wrapper captures the
-    /// child's `T` and writes it into the task result buffer. For a unit task
-    /// the adapter calls the body with `dest: None` and returns unit — the
-    /// wrapper publishes nothing.
-    fn synthesize_task_entry_adapter(
-        &self,
-        callee_symbol: &str,
-        adapter_symbol: &str,
-        result_ty: &ResolvedTy,
-    ) -> LoweredFunction {
-        let is_value_task = !matches!(result_ty, ResolvedTy::Unit);
-        // Value task: the body call writes its `T` directly into the function
-        // return slot so `Terminator::Return` hands it back; the codegen wrapper
-        // then publishes that return value through `hew_task_set_result`. Unit
-        // task: discard the body result (`dest: None`).
-        let call_dest = if is_value_task {
-            Some(Place::ReturnSlot)
-        } else {
+    /// Value task (`result_ty != ()`): the body call writes its `T` directly
+    /// into the function return slot so `Terminator::Return` hands it back, and
+    /// the codegen wrapper publishes that value through `hew_task_set_result`.
+    /// Unit task: the body result is discarded (`dest: None`) and the wrapper
+    /// publishes nothing.
+    fn task_entry_adapter_blocks(callee_symbol: &str, result_ty: &ResolvedTy) -> Vec<BasicBlock> {
+        let call_dest = if matches!(result_ty, ResolvedTy::Unit) {
             None
+        } else {
+            Some(Place::ReturnSlot)
         };
-        let mut blocks = vec![
+        vec![
             BasicBlock {
                 id: 0,
                 statements: vec![],
@@ -360,8 +346,43 @@ impl Builder {
                 instructions: vec![],
                 terminator: Terminator::Return,
             },
-        ];
-        bracket_actor_handler_blocks(&mut blocks);
+        ]
+    }
+
+    /// Synthesize the per-callee task-entry adapter (`__hew_task_entry_<fn>`,
+    /// `TaskEntry` call-conv). The adapter is the body the codegen task wrapper
+    /// invokes on the spawned worker; the wrapper publishes the adapter's return
+    /// value through `hew_task_set_result` and then `hew_task_complete_threaded`.
+    ///
+    /// For a value-returning task (`result_ty != ()`) the adapter calls the body
+    /// into a typed `dest` local and RETURNS it, so the wrapper captures the
+    /// child's `T` and writes it into the task result buffer. For a unit task
+    /// the adapter calls the body with `dest: None` and returns unit — the
+    /// wrapper publishes nothing.
+    fn synthesize_task_entry_adapter(
+        &self,
+        callee_symbol: &str,
+        adapter_symbol: &str,
+        result_ty: &ResolvedTy,
+    ) -> LoweredFunction {
+        let blocks = Self::task_entry_adapter_blocks(callee_symbol, result_ty);
+
+        let mut builder = Builder {
+            current_function_symbol: adapter_symbol.to_string(),
+            current_function_call_conv: crate::model::FunctionCallConv::TaskEntry,
+            ..self.child_builder_tables()
+        };
+        // The adapter's two blocks are constructed rather than lowered through
+        // a cursor, but it is a production body kind all the same: it finishes
+        // through the seam so the execution-context bracketing and every
+        // ownership splice reach it from the one place, not from a hand-rolled
+        // call here.
+        builder.pending_blocks = blocks;
+        let super::FinalizedBody { blocks, .. } = super::finalize_body(
+            &mut builder,
+            super::BodySeal::AlreadyTerminated,
+            super::BodyFinalizeSpec::task_entry_adapter(),
+        );
 
         let adapter_return_ty = result_ty.clone();
         let thir = ThirFunction {
@@ -389,11 +410,6 @@ impl Builder {
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
             source_origin: SourceOrigin::Unknown,
-        };
-        let mut builder = Builder {
-            current_function_symbol: adapter_symbol.to_string(),
-            current_function_call_conv: crate::model::FunctionCallConv::TaskEntry,
-            ..self.child_builder_tables()
         };
         let mut dataflow_result = dataflow::analyze(&raw.blocks, &builder.type_classes, &[]);
         dataflow_result
@@ -923,12 +939,17 @@ impl Builder {
                 });
             }
         }
-        let blocks = builder.finalize_blocks(Terminator::Return);
-
-        let thir_statements: Vec<MirStatement> = blocks
-            .iter()
-            .flat_map(|b| b.statements.iter().cloned())
-            .collect();
+        // Synthesised fork trampoline: no user body, so the shared pipeline has
+        // nothing to splice today. It still finishes through the one seam, so a
+        // future pass cannot be silently absent here either.
+        let super::FinalizedBody {
+            blocks,
+            thir_statements,
+        } = super::finalize_body(
+            &mut builder,
+            super::BodySeal::Cursor(Terminator::Return),
+            super::BodyFinalizeSpec::nested_body(),
+        );
         let thir = ThirFunction {
             name: shim_name.to_string(),
             return_ty: ResolvedTy::Unit,

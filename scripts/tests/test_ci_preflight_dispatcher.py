@@ -1561,7 +1561,7 @@ def test_counterfactual_output_check_reuses_the_extractor_authority() -> None:
     body = dispatcher.split("run_counterfactual_output_check() {", 1)[1]
     body = body.split("\nDRY_RUN=0", 1)[0]
     assert "$PREFLIGHT_FAILURE_LINE_RE" in body, body
-    assert "$PREFLIGHT_COUNTERFACTUAL_MARKER" in body, body
+    assert "${PREFLIGHT_COUNTERFACTUAL_MARKER}" in body, body
     assert dispatcher.count("PREFLIGHT_FAILURE_LINE_RE='") == 1, (
         "the failure pattern must have exactly one definition"
     )
@@ -1575,6 +1575,126 @@ def test_counterfactual_output_check_reuses_the_extractor_authority() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "counterfactual-output check: PASS" in result.stdout, result.stdout
+
+
+def test_signal_deaths_are_named_not_swallowed_by_the_fallback() -> None:
+    """A trap-killed gate must report the signal, not the generic fallback.
+
+    The shell reports these as a bare line with no "error" or "FAIL" token
+    anywhere, so without explicit patterns the whole compiled-Hew trap class
+    fell through to "exited N with no recognised failure line".
+    """
+    cases = {
+        'printf "Illegal instruction (core dumped)\\n"; exit 132': (
+            "Illegal instruction (core dumped)"
+        ),
+        'printf "Segmentation fault\\n"; exit 139': "Segmentation fault",
+        'printf "running\\nAborted\\n"; exit 134': "Aborted",
+        'printf "Bus error\\n"; exit 138': "Bus error",
+        'printf "zsh: trace trap  ./a.out\\n"; exit 133': "zsh: trace trap  ./a.out",
+        'printf "note\\nAbort trap: 6\\n"; exit 134': "Abort trap: 6",
+        'printf "(signal: 4, SIGILL: illegal instruction)\\n"; exit 101': (
+            "(signal: 4, SIGILL: illegal instruction)"
+        ),
+        'printf "test t ... killed by signal 11\\n"; exit 100': (
+            "test t ... killed by signal 11"
+        ),
+    }
+    result, summary = run_failing_commands("\n".join(cases) + "\n")
+    assert result.returncode == 1, result.stdout
+    reported = first_failure_cells(summary)
+    assert reported == list(cases.values()), reported
+    assert not any("no recognised failure line" in cell for cell in reported), reported
+
+
+def test_counterfactual_marker_must_be_a_line_prefix() -> None:
+    """A real failure that merely mentions the marker must not hide itself.
+
+    Matching CF- anywhere in the line would let any failure text containing it
+    — a diff of this protocol, a path like tests/CF-cases — vanish from the
+    annotation. The marker is a claim a gate makes about its own output by
+    putting it first, not a word that appears somewhere.
+    """
+    lines = (
+        "CF-[bait] ORACLE gate: FAIL\\n"
+        "   CF-[indented bait] error: still bait\\n"
+        "RATCHET FAIL: a diff of the CF- protocol regressed\\n"
+    )
+    result, summary = run_failing_commands(f"printf '{lines}'; exit 1\n")
+    assert result.returncode == 1, result.stdout
+    assert first_failure_cells(summary) == [
+        "RATCHET FAIL: a diff of the CF- protocol regressed"
+    ], summary
+
+
+def run_counterfactual_roster(roster: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["PREFLIGHT_TEST_ALLOW_OVERRIDE"] = "1"
+    env["PREFLIGHT_TEST_COUNTERFACTUAL_ROSTER"] = roster
+    return subprocess.run(
+        ["bash", str(SCRIPT), "--check-counterfactual-output"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+def test_counterfactual_check_rejects_a_gate_that_proves_nothing() -> None:
+    """A rostered gate that emits no marked line is a vacuous pass."""
+    silent = run_counterfactual_roster("true")
+    assert silent.returncode != 0, silent.stdout
+    assert "SILENT true" in silent.stderr, silent.stderr
+
+    proving = run_counterfactual_roster('printf "CF-[x] ORACLE gate: FAIL\\n"')
+    assert proving.returncode == 0, proving.stdout + proving.stderr
+    assert "1 marked line(s)" in proving.stdout, proving.stdout
+
+    offending = run_counterfactual_roster('printf "ORACLE gate: FAIL\\n"')
+    assert offending.returncode != 0, offending.stdout
+    assert "OFFENDS" in offending.stderr, offending.stderr
+
+    red = run_counterfactual_roster('printf "CF-[x] bait\\n"; exit 3')
+    assert red.returncode != 0, red.stdout
+    assert "UNPROVABLE" in red.stderr, red.stderr
+
+    mentions = run_counterfactual_roster(
+        'printf "a note about the CF- protocol\\nORACLE gate: FAIL\\n"'
+    )
+    assert mentions.returncode != 0, mentions.stdout
+    assert "OFFENDS" in mentions.stderr, mentions.stderr
+
+
+def test_every_rostered_gate_replays_its_counterfactual() -> None:
+    """The real roster is exactly the gates that drive a tool against bait."""
+    dispatcher = (ROOT / "scripts/ci-preflight-dispatcher.sh").read_text()
+    roster_block = dispatcher.split("COUNTERFACTUAL_ROSTER=(", 1)[1].split(")", 1)[0]
+    roster = re.findall(r'"([^"]+)"', roster_block)
+    assert roster, dispatcher
+    for absent in (
+        "make test-stdlib-execution-proofs",
+        "make freebsd-workflow-contract-check",
+    ):
+        assert absent not in roster, (
+            f"{absent} carries no counterfactual; rostering it is a vacuous pass"
+        )
+
+    marked_replay_sites = (
+        "scripts/ll-identity-selftest.sh",
+        "scripts/o2-differential-selftest.sh",
+        "scripts/tests/test_doc_ratchet_membership.sh",
+        "scripts/tests/test_macos_leak_oracle_runner.sh",
+        "scripts/tests/test_cargo_output_dir.py",
+        "scripts/fuzz/oracle-selftest.sh",
+    )
+    for path in marked_replay_sites:
+        text = (ROOT / path).read_text()
+        assert "COUNTERFACTUAL_MARKER" in text, f"{path} has no marked replay"
+        assert '"CF-"' in text, f"{path} uses a different marker"
+    assert "CF-[$$label]" in (ROOT / "Makefile").read_text(), (
+        "check-sanitizer-gate must replay its rejections marked"
+    )
 
 
 def test_no_annotation_is_emitted_outside_github_actions() -> None:
@@ -1675,6 +1795,10 @@ _TESTS = [
     test_counterfactual_output_never_becomes_the_reported_failure,
     test_counterfactual_marker_is_shared_by_every_producer,
     test_counterfactual_output_check_reuses_the_extractor_authority,
+    test_signal_deaths_are_named_not_swallowed_by_the_fallback,
+    test_counterfactual_marker_must_be_a_line_prefix,
+    test_counterfactual_check_rejects_a_gate_that_proves_nothing,
+    test_every_rostered_gate_replays_its_counterfactual,
     test_no_annotation_is_emitted_outside_github_actions,
 ]
 

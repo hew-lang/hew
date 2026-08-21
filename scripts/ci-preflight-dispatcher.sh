@@ -245,17 +245,31 @@ warmup_timeout() {
 #   corpus drift    "NOW-FAILS: tests/hew/x.hew" / "NOW-PASSES: ..."
 #   watchdog        "==> TIMEOUT: 'make test' exceeded 1530s budget"
 #   rust panics     "thread 'main' panicked at ..."
+#   signal deaths   "Illegal instruction (core dumped)" / "Segmentation fault" /
+#                   "Aborted" / "Bus error" / "Trace/breakpoint trap" /
+#                   "zsh: trace trap" / "Abort trap: 6", the SIG* spellings
+#                   cargo and nextest use ("signal: 4, SIGILL"), and nextest's
+#                   "killed by signal 11" form
+# A compiled-Hew gate that dies on a trap is the failure mode this repo cares
+# most about, and the shell reports it as a bare "Illegal instruction" line with
+# no "error" or "FAIL" token anywhere — without these patterns that whole class
+# fell through to the generic exit-status fallback.
 # A log with none of these still reports its exit status rather than nothing.
-PREFLIGHT_FAILURE_LINE_RE='(^|[[:space:]])FAIL \[|^[[:space:]]*FAILED?([[:space:]]|:)|^make(\[[0-9]+\])?: \*\*\* |^[[:space:]]*error(\[[A-Za-z0-9_]+\])?:|^[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*Error:|RATCHET FAIL|Ratchet: FAILED|ORACLE gate: FAIL|Differential gate: FAILED|NOW-FAILS|NOW-PASSES|^==> TIMEOUT:|^thread .* panicked|^[[:space:]]*assert(ion)?.*failed'
+PREFLIGHT_FAILURE_LINE_RE='(^|[[:space:]])FAIL \[|^[[:space:]]*FAILED?([[:space:]]|:)|^make(\[[0-9]+\])?: \*\*\* |^[[:space:]]*error(\[[A-Za-z0-9_]+\])?:|^[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*Error:|RATCHET FAIL|Ratchet: FAILED|ORACLE gate: FAIL|Differential gate: FAILED|NOW-FAILS|NOW-PASSES|^==> TIMEOUT:|^thread .* panicked|^[[:space:]]*assert(ion)?.*failed|(^|[[:space:]])SIG(ILL|TRAP|SEGV|ABRT|BUS|FPE|KILL)([[:space:]:,)]|$)|Illegal instruction|Segmentation fault|Bus error|Floating point exception|Trace/breakpoint trap|Trace/BPT trap|trace trap|Abort trap|^[[:space:]]*Aborted([[:space:]]|$)|killed by signal[[:space:]]+[0-9]+|core dumped'
 
 # Counterfactual marker.  A self-test proves its gate has teeth by RUNNING that
 # gate against deliberately broken input, so a PASSING self-test log is full of
 # real-looking failure text — "ORACLE gate: FAIL", "error: ...", a bare "FAIL".
 # Grepping such a log for the first failure line reports the counterfactual, not
-# the defect.  Every deliberately-provoked failure is therefore emitted through
-# scripts/lib/counterfactual.sh, which prefixes each line with this marker;
-# extraction skips marked lines, and --check-counterfactual-output below proves
-# no rostered gate emits an unmarked match while exiting 0.
+# the defect.  Every deliberately-provoked failure is therefore replayed with
+# this marker at the START of the line, and extraction skips lines that carry it
+# there.  The position is load-bearing: matching the marker anywhere in the line
+# would let a real failure that merely mentions it — a diff of this protocol, a
+# path like tests/CF-cases — hide itself from the extractor.  Marked replay is a
+# gate's own choice about its own output; nothing a gate under test emits can
+# claim the prefix by accident.
+# --check-counterfactual-output below proves no rostered gate emits an unmarked
+# match while exiting 0, and that each one still emits marked lines at all.
 PREFLIGHT_COUNTERFACTUAL_MARKER='CF-'
 
 extract_first_failure() {
@@ -266,7 +280,7 @@ extract_first_failure() {
     if [[ -s "$log" ]]; then
         line="$(
             sed $'s/\033\\[[0-9;?]*[a-zA-Z]//g' "$log" \
-                | grep -v -F "$PREFLIGHT_COUNTERFACTUAL_MARKER" \
+                | grep -v -E "^${PREFLIGHT_COUNTERFACTUAL_MARKER}" \
                 | grep -m1 -E "$PREFLIGHT_FAILURE_LINE_RE" || true
         )"
     fi
@@ -326,28 +340,55 @@ emit_failure_annotation() {
 # rather than in a checker of its own so the pattern and the marker are the same
 # two variables the extractor uses — there is nothing to keep in sync.
 #
+# Membership is earned, not declared: a rostered gate must emit at least one
+# CF-marked line.  Without that the check passes vacuously — a self-test whose
+# counterfactual was deleted, disabled, or silently redirected away prints
+# nothing, offends nothing, and reports ok while proving nothing.  The marked
+# replay IS the evidence that the bait path ran, so a gate that produces none is
+# either gutted or was never counterfactual-carrying and does not belong here.
+#
 # The roster covers the gates that need no compiler build, keeping this a fast
 # check rather than a second preflight.  A gate that needs `make hew` is proved
 # by the preflight run itself: its first-failure line is only ever consulted
 # once it has already failed.
+# test-stdlib-execution-proofs and freebsd-workflow-contract-check are
+# deliberately absent: both are plain assertion gates that never drive a tool
+# against rigged input, so they carry no counterfactual to mark and nothing here
+# could prove about them.  Listing them would have been the vacuous pass this
+# check exists to reject.
 COUNTERFACTUAL_ROSTER=(
     "make ll-identity-selftest"
     "make o2-differential-selftest"
     "make doc-ratchet-selftest"
     "make check-sanitizer-gate"
     "make test-release-workflow-contract"
-    "make test-stdlib-execution-proofs"
-    "make freebsd-workflow-contract-check"
     "make test-leak-oracle-selftest"
 )
 
 run_counterfactual_output_check() {
-    local cmd output offenders
+    local cmd output offenders marked
     local status=0
     local failures=0
+    local roster=("${COUNTERFACTUAL_ROSTER[@]}")
 
-    echo "==> counterfactual-output check (${#COUNTERFACTUAL_ROSTER[@]} gate(s))"
-    for cmd in "${COUNTERFACTUAL_ROSTER[@]}"; do
+    # Test-only roster replacement, behind the same explicit sentinel every
+    # other command override uses.  The three verdicts below (OFFENDS, SILENT,
+    # UNPROVABLE) are only credible if they can be provoked, and the real roster
+    # is green by construction.
+    if [[ -n "${PREFLIGHT_TEST_COUNTERFACTUAL_ROSTER:-}" ]]; then
+        if [[ "${PREFLIGHT_TEST_ALLOW_OVERRIDE:-}" != "1" ]]; then
+            die "PREFLIGHT_TEST_COUNTERFACTUAL_ROSTER requires PREFLIGHT_TEST_ALLOW_OVERRIDE=1 for test-only use."
+        fi
+        echo "warning: PREFLIGHT_TEST_COUNTERFACTUAL_ROSTER override active (test-only)." >&2
+        roster=()
+        while IFS= read -r cmd; do
+            [[ -n "$cmd" ]] || continue
+            roster+=("$cmd")
+        done <<< "$PREFLIGHT_TEST_COUNTERFACTUAL_ROSTER"
+    fi
+
+    echo "==> counterfactual-output check (${#roster[@]} gate(s))"
+    for cmd in "${roster[@]}"; do
         status=0
         output="$(bash -c "$cmd" 2>&1)" || status=$?
         if (( status != 0 )); then
@@ -358,16 +399,23 @@ run_counterfactual_output_check() {
         offenders="$(
             printf '%s\n' "$output" \
                 | sed $'s/\033\\[[0-9;?]*[a-zA-Z]//g' \
-                | grep -v -F "$PREFLIGHT_COUNTERFACTUAL_MARKER" \
+                | grep -v -E "^${PREFLIGHT_COUNTERFACTUAL_MARKER}" \
                 | grep -E "$PREFLIGHT_FAILURE_LINE_RE" || true
         )"
+        marked="$(printf '%s\n' "$output" | grep -c -E "^${PREFLIGHT_COUNTERFACTUAL_MARKER}" || true)"
         if [[ -n "$offenders" ]]; then
             echo "    OFFENDS $cmd — passed while printing failure-shaped line(s):" >&2
             printf '        %s\n' "$offenders" >&2
             echo "        Route the provoked output through a CF- marked replay so extraction skips it." >&2
             failures=$(( failures + 1 ))
+        elif (( marked == 0 )); then
+            echo "    SILENT $cmd — passed without emitting a single ${PREFLIGHT_COUNTERFACTUAL_MARKER}marked line." >&2
+            echo "        A rostered gate proves its counterfactual ran by replaying it marked." >&2
+            echo "        Replay the provoked output instead of discarding it, or drop this gate" >&2
+            echo "        from COUNTERFACTUAL_ROSTER because it carries no counterfactual." >&2
+            failures=$(( failures + 1 ))
         else
-            echo "    ok $cmd"
+            echo "    ok $cmd ($marked marked line(s))"
         fi
     done
 

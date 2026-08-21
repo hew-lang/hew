@@ -1096,15 +1096,28 @@ doc-ratchet-selftest:
 	@scripts/tests/test_doc_ratchet_membership.sh
 
 # Release sanitizer gate validator self-test.
+# Every expect_reject case is a COUNTERFACTUAL: the real gate is driven against a
+# fixture rigged to be rejected, so this target PASSES while the gate emits
+# genuine rejection diagnostics. cf_run replays that output behind the CF-
+# marker so the preflight's first-failure extractor cannot report it as a
+# verdict, and so a green log still carries evidence the bait path ran
+# (ci-preflight-dispatcher.sh --check-counterfactual-output).
 check-sanitizer-gate:
 	@set -e; \
 	version=0.6.0-rc1; \
 	fixture=scripts/fixtures/sanitizer-gate; \
 	pass=0; \
 	fail=0; \
+	cf_run() { \
+	  label="$$1"; shift; \
+	  out=$$("$$@" 2>&1) && rc=0 || rc=$$?; \
+	  echo "CF-[$$label] exit $$rc"; \
+	  if [ -n "$$out" ]; then printf '%s\n' "$$out" | sed "s|^|CF-[$$label] |"; fi; \
+	  return $$rc; \
+	}; \
 	expect_reject() { \
 	  name="$$1"; asan_file="$$2"; waiver_file="$$3"; \
-	  if scripts/check-sanitizer-gate.sh "$$version" "$$asan_file" "$$waiver_file"; then \
+	  if cf_run "$$name" scripts/check-sanitizer-gate.sh "$$version" "$$asan_file" "$$waiver_file"; then \
 	    echo "FAIL $$name: expected reject"; fail=$$((fail + 1)); \
 	  else \
 	    echo "ok $$name: rejected"; pass=$$((pass + 1)); \
@@ -1112,7 +1125,7 @@ check-sanitizer-gate:
 	}; \
 	expect_accept() { \
 	  name="$$1"; asan_file="$$2"; waiver_file="$$3"; \
-	  if scripts/check-sanitizer-gate.sh "$$version" "$$asan_file" "$$waiver_file"; then \
+	  if cf_run "$$name" scripts/check-sanitizer-gate.sh "$$version" "$$asan_file" "$$waiver_file"; then \
 	    echo "ok $$name: accepted"; pass=$$((pass + 1)); \
 	  else \
 	    echo "FAIL $$name: expected accept"; fail=$$((fail + 1)); \

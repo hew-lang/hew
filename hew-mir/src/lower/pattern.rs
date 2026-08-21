@@ -11,6 +11,22 @@ use super::{
     TrapKind, ValueClass, VecElementRelease, SYNTHETIC_PROJECTED_SCRUTINEE_NAME,
 };
 
+/// Release symbol for an `Rc` / `Weak` slot overwritten at a reassignment
+/// generation boundary; see `Builder::emit_refcounted_overwrite_release`.
+fn refcounted_overwrite_release_symbol(ty: &ResolvedTy) -> Option<&'static str> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Rc),
+            ..
+        } => Some("hew_rc_drop"),
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Weak),
+            ..
+        } => Some("hew_weak_drop_rc"),
+        _ => None,
+    }
+}
+
 fn is_builtin_option_carrier(ty: &ResolvedTy) -> bool {
     matches!(
         ty,
@@ -1459,6 +1475,42 @@ impl Builder {
             HirExprKind::BindingRef { resolved, .. } => {
                 matches!(resolved, ResolvedRef::Binding(id) if *id == binding)
             }
+            // Compiler-known `Rc`/`Weak` operations. Without an arm these fell
+            // to the conservative tail, which vetoed the overwrite release for
+            // every `shared = Rc.new(..)` and leaked the outgoing generation.
+            //
+            // `New` allocates: `hew_rc_new` COPIES the payload into a fresh
+            // block, so the handle itself can never be the old one. Its payload
+            // can still embed an un-retained leaf read out of the old value
+            // (`Rc.new(Node { v: old.get().v })`), so it takes the ordinary
+            // construction rule — aliasing iff its operand aliases.
+            //
+            // `Clone` / `WeakClone` / `Downgrade` / `WeakUpgrade` are RETAINED
+            // mints. They may well hand back the same allocation, but with the
+            // count already incremented: the RHS is lowered before the release
+            // is emitted, so `+1` strictly precedes the `-1` and the allocation
+            // cannot reach zero across the overwrite. Releasing the outgoing
+            // generation is exactly the balancing `-1` — vetoing it is what
+            // leaks `shared = shared.clone()`.
+            //
+            // `GetCopy` returns a shallow copy of the PAYLOAD, which does share
+            // the payload's un-retained leaves, and `Set` / the count and
+            // uniqueness queries have no owned result. All keep the fail-closed
+            // tail.
+            HirExprKind::RcIntrinsic { op, value, .. } => match op {
+                hew_types::RcIntrinsicOp::New => value
+                    .as_deref()
+                    .is_none_or(|v| self.reassign_rhs_may_alias_binding(v, binding)),
+                hew_types::RcIntrinsicOp::Clone
+                | hew_types::RcIntrinsicOp::WeakClone
+                | hew_types::RcIntrinsicOp::Downgrade
+                | hew_types::RcIntrinsicOp::WeakUpgrade => false,
+                hew_types::RcIntrinsicOp::GetCopy
+                | hew_types::RcIntrinsicOp::Set
+                | hew_types::RcIntrinsicOp::StrongCount
+                | hew_types::RcIntrinsicOp::WeakCount
+                | hew_types::RcIntrinsicOp::IsUnique => true,
+            },
             // Method calls (can return borrowed `self`), derefs, operators
             // over owned values, and every future form: fail closed.
             _ => true,
@@ -1506,6 +1558,41 @@ impl Builder {
         }
     }
 
+    /// Release an `Rc` / `Weak` slot overwritten at a reassignment generation
+    /// boundary. Returns `true` when it emitted the release, meaning the caller
+    /// must not fall through to the aggregate arms.
+    ///
+    /// The outgoing handle's single count must be released at the overwrite or
+    /// it is never released at all: the binding's scope-exit drop only ever
+    /// discharges the LAST generation, so a skipped release here is a leak no
+    /// later drop can recover.
+    ///
+    /// Selected here rather than in `project_field_inline_drop_symbol`, which
+    /// deliberately has no `Rc`/`Weak` arm — that picker is shared with the
+    /// Vec-element, record-field and generator-yield release paths, and widening
+    /// it would change all of them. This is the overwrite seam only.
+    ///
+    /// The symbols are the ones `generator_yield_drop_symbol` already wires for
+    /// these types, and codegen already admits both as inline `Instr::Drop`
+    /// rituals (`is_known_cow_heap_drop_symbol`): load the slot, call the
+    /// null-tolerant release, null the slot. The immediately following `Move`
+    /// installs the new generation.
+    ///
+    /// Reached only through the flag-gated arm in `assign`, so a handle already
+    /// transferred into an aggregate (flag == 1) never arrives here — that would
+    /// be the double-free one step along.
+    fn emit_refcounted_overwrite_release(&mut self, dest: Place, ty: &ResolvedTy) -> bool {
+        let Some(symbol) = refcounted_overwrite_release_symbol(ty) else {
+            return false;
+        };
+        self.push_instr(Instr::Drop {
+            place: dest,
+            ty: ty.clone(),
+            drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+        });
+        true
+    }
+
     /// Release the heap-owning OLD value of a `var`-local slot before a
     /// reassignment store overwrites it, mirroring the actor state-field
     /// overwrite release. Without this, `r = make()` in a loop leaks the prior
@@ -1547,6 +1634,9 @@ impl Builder {
             // A resource with no resolvable close is rejected upstream
             // (E_RESOURCE_MISSING_CLOSE); nothing further to release either
             // way — `close(self)` consumes the whole value.
+            return;
+        }
+        if self.emit_refcounted_overwrite_release(dest, &ty) {
             return;
         }
         // Single-pointer / fat-triple COW leaf (string / Vec / HashMap /

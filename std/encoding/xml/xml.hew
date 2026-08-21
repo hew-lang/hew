@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::encoding::xml;
+//! import std.encoding.xml;
 //!
 //! fn main() {
 //!     let root = xml.parse("<book><title>Hew Guide</title></book>");

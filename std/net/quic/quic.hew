@@ -27,7 +27,7 @@
 //! ## Server
 //!
 //! ```
-//! import std::net::quic;
+//! import std.net.quic;
 //!
 //! fn main() {
 //!     let ep = quic.new_server(":4433");
@@ -61,7 +61,7 @@
 //! ## Client
 //!
 //! ```
-//! import std::net::quic;
+//! import std.net.quic;
 //!
 //! fn main() {
 //!     let ep = quic.new_client();
@@ -303,13 +303,13 @@ trait QUICStreamMethods {
     /// Receive bytes with a per-call deadline.
     ///
     /// `deadline_ms <= 0` disables the deadline. On deadline expiry returns
-    /// `Err(NetError::TimedOut(0))`. On stream EOF returns `Ok(empty)`.
+    /// `Err(NetError.TimedOut(0))`. On stream EOF returns `Ok(empty)`.
     fn recv_timeout(self, deadline_ms: i64) -> Result<bytes, net.NetError>;
 
     /// Send bytes with a per-call deadline.
     ///
     /// `deadline_ms <= 0` disables the deadline. On deadline expiry returns
-    /// `Err(NetError::TimedOut(0))`.
+    /// `Err(NetError.TimedOut(0))`.
     fn send_timeout(self, data: bytes, deadline_ms: i64) -> Result<(), net.NetError>;
 
     /// Signal that no more data will be sent on this stream.
@@ -528,7 +528,7 @@ pub fn connection_observe(conn: QUICConnection) -> QUICConnectionObservation {
 ///
 /// Sends a `CONNECTION_CLOSE` frame to the peer and releases the
 /// connection handle. Returns `Ok(())` on success. On failure, returns
-/// `Err(NetError::Other(0))`; inspect `conn.observe().last_error` for the
+/// `Err(NetError.Other(0))`; inspect `conn.observe().last_error` for the
 /// QUIC-level error string because QUIC errors carry no OS errno.
 /// After calling `connection_disconnect`, the connection handle must
 /// not be used again.
@@ -570,7 +570,7 @@ pub fn stream_observe(stream: QUICStream) -> QUICStreamObservation {
 /// Sends `data` as a single STREAM frame sequence. Blocks until the
 /// data is accepted by the QUIC stack (not until it is acknowledged
 /// by the peer). Returns `Ok(())` on success. On failure, returns
-/// `Err(NetError::Other(0))`; inspect `strm.observe().last_error` for
+/// `Err(NetError.Other(0))`; inspect `strm.observe().last_error` for
 /// the QUIC-level error string. Does not close the send side — call
 /// `stream_finish` when all data has been written.
 pub fn stream_send(strm: QUICStream, data: bytes) -> Result<(), net.NetError> {
@@ -599,8 +599,8 @@ fn try_quic_deadline_ms(context: string, deadline_ms: i64) -> Result<i64, net.Ne
 
 /// Send bytes on a QUIC stream with a per-call deadline.
 ///
-/// `deadline_ms <= 0` disables the deadline. Returns `Err(NetError::TimedOut(0))`
-/// on deadline expiry, `Err(NetError::Other(0))` on transport error.
+/// `deadline_ms <= 0` disables the deadline. Returns `Err(NetError.TimedOut(0))`
+/// on deadline expiry, `Err(NetError.Other(0))` on transport error.
 pub fn stream_send_timeout(strm: QUICStream, data: bytes, deadline_ms: i64) -> Result<(), net.NetError> {
     let deadline = try_quic_deadline_ms("quic.stream_send_timeout", deadline_ms)?;
     let status: i32 = unsafe { // INTERNAL-ABI: 0=ok, -1=error, -2=timeout; deadline range-checked above
@@ -617,7 +617,7 @@ pub fn stream_send_timeout(strm: QUICStream, data: bytes, deadline_ms: i64) -> R
 
 /// Receive bytes from a QUIC stream with a per-call deadline.
 ///
-/// `deadline_ms <= 0` disables the deadline. Returns `Err(NetError::TimedOut(0))`
+/// `deadline_ms <= 0` disables the deadline. Returns `Err(NetError.TimedOut(0))`
 /// on deadline expiry. On success returns the bytes (may be empty for EOF).
 pub fn stream_recv_timeout(strm: QUICStream, deadline_ms: i64) -> Result<bytes, net.NetError> {
     let deadline = try_quic_deadline_ms("quic.stream_recv_timeout", deadline_ms)?;
@@ -641,7 +641,7 @@ pub fn stream_recv_timeout(strm: QUICStream, deadline_ms: i64) -> Result<bytes, 
 /// Sends a FIN to the peer, indicating no more data will be written.
 /// The stream remains open for receiving until the peer also closes
 /// their send side (or until `stream_stop` is called). Returns
-/// `Ok(())` on success. On failure, returns `Err(NetError::Other(0))`;
+/// `Ok(())` on success. On failure, returns `Err(NetError.Other(0))`;
 /// inspect `strm.observe().last_error` for the QUIC-level error string.
 pub fn stream_finish(strm: QUICStream) -> Result<(), net.NetError> {
     // QUIC errors carry no OS errno; error string available via stream.observe().last_error
@@ -662,7 +662,7 @@ pub fn stream_finish(strm: QUICStream) -> Result<(), net.NetError> {
 /// the QUIC protocol mandates 62-bit codes and `i64` is a 64-bit i64
 /// so no narrowing occurs). Use this when the stream must be abandoned
 /// rather than gracefully finished. Returns `Ok(())` on success. On
-/// failure, returns `Err(NetError::Other(0))`; inspect
+/// failure, returns `Err(NetError.Other(0))`; inspect
 /// `strm.observe().last_error` for the QUIC-level error string.
 pub fn stream_stop(strm: QUICStream, error_code: i64) -> Result<(), net.NetError> { // INTERNAL-ABI: QUIC protocol mandates 62-bit error codes; i64 is 64-bit i64 so no narrowing needed
     // QUIC errors carry no OS errno; error string available via stream.observe().last_error

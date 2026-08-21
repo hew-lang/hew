@@ -19,7 +19,7 @@ XML parsing and serialization for Hew.
 ## Example
 
 ```hew
-import std::encoding::xml;
+import std.encoding.xml;
 
 fn main() {
     let root = xml.parse("<book lang=\"en\"><title>Hew Guide</title></book>");

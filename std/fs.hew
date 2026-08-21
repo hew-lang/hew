@@ -2,8 +2,8 @@
 //!
 //! Read, write, and query files on the local file system.
 //!
-//! For path-only helpers prefer `std::path`, and for stdin/stdout prefer
-//! `std::io`. This module keeps `fs.exists` as a compatibility surface
+//! For path-only helpers prefer `std.path`, and for stdin/stdout prefer
+//! `std.io`. This module keeps `fs.exists` as a compatibility surface
 //! for existing code.
 //!
 //! # Error Handling
@@ -23,7 +23,7 @@
 //!         Ok(data) => println(data),
 //!         Err(e) => {
 //!             match e {
-//!                 IoError::NotFound(_) => println("missing"),
+//!                 IoError.NotFound(_) => println("missing"),
 //!                 _ => println("i/o error"),
 //!             }
 //!         },
@@ -38,7 +38,7 @@
 /// structured error handling with the `?` operator.
 ///
 /// For network errors (`ConnectionRefused`, `AddressInUse`, etc.) see
-/// `net.NetError` in `std::net`.
+/// `net.NetError` in `std.net`.
 pub enum IoError {
     /// The target path does not exist.
     NotFound(i64);
@@ -73,7 +73,7 @@ pub enum IoError {
 /// for kinds without a canonical tag.
 ///
 /// Covers file-system errno values. For network errno values use
-/// `net.net_error_from_errno` in `std::net`.
+/// `net.net_error_from_errno` in `std.net`.
 pub fn io_error_from_errno(errno: i64) -> IoError {
     // ENOENT: Linux=2, macOS=2
     if errno == 2 {
@@ -108,7 +108,7 @@ pub fn io_error_from_errno(errno: i64) -> IoError {
 /// the `IO_ERROR_KIND_*` constants in `hew-runtime/src/stream_error.rs`.
 ///
 /// Public so sibling wrappers that read the same runtime error channel — e.g.
-/// `std::stream`'s `try_from_file` / `try_to_file` — classify failures through
+/// `std.stream`'s `try_from_file` / `try_to_file` — classify failures through
 /// this one authority rather than re-deriving it from the raw errno.
 pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
     if kind == 1 {
@@ -128,7 +128,7 @@ pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
 ///
 /// The returned string includes the variant name and the raw OS errno so
 /// callers can log or surface structured errors without matching on every arm.
-/// For network errors use `net.net_error_message` in `std::net`.
+/// For network errors use `net.net_error_message` in `std.net`.
 ///
 /// ```
 /// match result {
@@ -147,7 +147,7 @@ pub fn io_error_message(e: IoError) -> string {
     }
 }
 
-/// Construct an `IoError::TimedOut(0)` value without a platform-specific
+/// Construct an `IoError.TimedOut(0)` value without a platform-specific
 /// errno. Useful for in-process deadline expiry where there is no OS error
 /// to map (e.g. `fs.io_error_from_errno` would need a platform-aware errno
 /// constant that the caller does not have).
@@ -155,7 +155,7 @@ pub fn io_error_timed_out() -> IoError {
     IoError.TimedOut(0)
 }
 
-/// Construct an `IoError::Cancelled(0)` value without a platform-specific
+/// Construct an `IoError.Cancelled(0)` value without a platform-specific
 /// errno. Useful for in-process cancellation (e.g. blocking pool stopped)
 /// where there is no OS error to map.
 pub fn io_error_cancelled() -> IoError {
@@ -292,7 +292,7 @@ pub fn delete(path: string) -> i64 {
 
 /// Delete a file.
 ///
-/// Returns `Err(IoError::NotFound(_))` when the path is missing.
+/// Returns `Err(IoError.NotFound(_))` when the path is missing.
 pub fn try_delete(file_path: string) -> Result<i64, IoError> {
     match unsafe {
         hew_file_delete(file_path)

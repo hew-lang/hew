@@ -1,6 +1,6 @@
 //! Structured, leveled logging for Hew programs (slog-style).
 //!
-//! import std::misc::log;
+//! import std.misc.log;
 //!
 //! Provides two surfaces:
 //!

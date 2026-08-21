@@ -17,6 +17,22 @@ use super::{
     SYNTHETIC_PROJECTED_SCRUTINEE_NAME,
 };
 
+/// Release symbol for an `Rc` / `Weak` slot overwritten at a reassignment
+/// generation boundary; see `Builder::emit_refcounted_overwrite_release`.
+fn refcounted_overwrite_release_symbol(ty: &ResolvedTy) -> Option<&'static str> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Rc),
+            ..
+        } => Some("hew_rc_drop"),
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Weak),
+            ..
+        } => Some("hew_weak_drop_rc"),
+        _ => None,
+    }
+}
+
 fn is_builtin_option_carrier(ty: &ResolvedTy) -> bool {
     matches!(
         ty,
@@ -1465,6 +1481,42 @@ impl Builder {
             HirExprKind::BindingRef { resolved, .. } => {
                 matches!(resolved, ResolvedRef::Binding(id) if *id == binding)
             }
+            // Compiler-known `Rc`/`Weak` operations. Without an arm these fell
+            // to the conservative tail, which vetoed the overwrite release for
+            // every `shared = Rc.new(..)` and leaked the outgoing generation.
+            //
+            // `New` allocates: `hew_rc_new` COPIES the payload into a fresh
+            // block, so the handle itself can never be the old one. Its payload
+            // can still embed an un-retained leaf read out of the old value
+            // (`Rc.new(Node { v: old.get().v })`), so it takes the ordinary
+            // construction rule — aliasing iff its operand aliases.
+            //
+            // `Clone` / `WeakClone` / `Downgrade` / `WeakUpgrade` are RETAINED
+            // mints. They may well hand back the same allocation, but with the
+            // count already incremented: the RHS is lowered before the release
+            // is emitted, so `+1` strictly precedes the `-1` and the allocation
+            // cannot reach zero across the overwrite. Releasing the outgoing
+            // generation is exactly the balancing `-1` — vetoing it is what
+            // leaks `shared = shared.clone()`.
+            //
+            // `GetCopy` returns a shallow copy of the PAYLOAD, which does share
+            // the payload's un-retained leaves, and `Set` / the count and
+            // uniqueness queries have no owned result. All keep the fail-closed
+            // tail.
+            HirExprKind::RcIntrinsic { op, value, .. } => match op {
+                hew_types::RcIntrinsicOp::New => value
+                    .as_deref()
+                    .is_none_or(|v| self.reassign_rhs_may_alias_binding(v, binding)),
+                hew_types::RcIntrinsicOp::Clone
+                | hew_types::RcIntrinsicOp::WeakClone
+                | hew_types::RcIntrinsicOp::Downgrade
+                | hew_types::RcIntrinsicOp::WeakUpgrade => false,
+                hew_types::RcIntrinsicOp::GetCopy
+                | hew_types::RcIntrinsicOp::Set
+                | hew_types::RcIntrinsicOp::StrongCount
+                | hew_types::RcIntrinsicOp::WeakCount
+                | hew_types::RcIntrinsicOp::IsUnique => true,
+            },
             // Method calls (can return borrowed `self`), derefs, operators
             // over owned values, and every future form: fail closed.
             _ => true,
@@ -1512,6 +1564,41 @@ impl Builder {
         }
     }
 
+    /// Release an `Rc` / `Weak` slot overwritten at a reassignment generation
+    /// boundary. Returns `true` when it emitted the release, meaning the caller
+    /// must not fall through to the aggregate arms.
+    ///
+    /// The outgoing handle's single count must be released at the overwrite or
+    /// it is never released at all: the binding's scope-exit drop only ever
+    /// discharges the LAST generation, so a skipped release here is a leak no
+    /// later drop can recover.
+    ///
+    /// Selected here rather than in `project_field_inline_drop_symbol`, which
+    /// deliberately has no `Rc`/`Weak` arm — that picker is shared with the
+    /// Vec-element, record-field and generator-yield release paths, and widening
+    /// it would change all of them. This is the overwrite seam only.
+    ///
+    /// The symbols are the ones `generator_yield_drop_symbol` already wires for
+    /// these types, and codegen already admits both as inline `Instr::Drop`
+    /// rituals (`is_known_cow_heap_drop_symbol`): load the slot, call the
+    /// null-tolerant release, null the slot. The immediately following `Move`
+    /// installs the new generation.
+    ///
+    /// Reached only through the flag-gated arm in `assign`, so a handle already
+    /// transferred into an aggregate (flag == 1) never arrives here — that would
+    /// be the double-free one step along.
+    fn emit_refcounted_overwrite_release(&mut self, dest: Place, ty: &ResolvedTy) -> bool {
+        let Some(symbol) = refcounted_overwrite_release_symbol(ty) else {
+            return false;
+        };
+        self.push_instr(Instr::Drop {
+            place: dest,
+            ty: ty.clone(),
+            drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+        });
+        true
+    }
+
     /// Release the heap-owning OLD value of a `var`-local slot before a
     /// reassignment store overwrites it, mirroring the actor state-field
     /// overwrite release. Without this, `r = make()` in a loop leaks the prior
@@ -1553,6 +1640,9 @@ impl Builder {
             // A resource with no resolvable close is rejected upstream
             // (E_RESOURCE_MISSING_CLOSE); nothing further to release either
             // way — `close(self)` consumes the whole value.
+            return;
+        }
+        if self.emit_refcounted_overwrite_release(dest, &ty) {
             return;
         }
         // Single-pointer / fat-triple COW leaf (string / Vec / HashMap /
@@ -4522,6 +4612,11 @@ impl Builder {
                 };
             let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
             let mut call_carrier_match_result_candidates = Vec::new();
+            // Contextual `Sink` handoffs admitted while destructuring this
+            // arm's payload binders. The destructure runs BEFORE the arm's
+            // guard decides, so the slot-clearing instruction is held here and
+            // emitted on the arm-selected edge below.
+            let mut pending_sink_handoffs: Vec<Instr> = Vec::new();
             // Fresh `Some(x)` bindings whose payload owns heap. VecIter clone
             // reads, generator drives, and receiver reads all hand the body a
             // fresh sole owner, so one shared lifecycle releases it at
@@ -4612,6 +4707,23 @@ impl Builder {
                     dest,
                     src: payload_source,
                 });
+                let previous = self.binding_locals.insert(binding.binding, dest);
+                // Clearing the carrier slot here would neutralize it before a
+                // guard on this arm has selected it: a false guard falls
+                // through to a later arm that re-destructures the same slot and
+                // binds a null handle, while this arm's dead binder keeps the
+                // real close authority. Defer to the arm-selected edge — the
+                // same neutralize-before-guard hazard `in_fallthrough_match_guard`
+                // rejects for an in-guard consume.
+                let sink_handoff = self.contextual_sink_payload_handoff(
+                    call_scrutinee_owner.as_ref(),
+                    binding.binding,
+                    payload_source,
+                    dest,
+                    &binding_ty,
+                );
+                let transferred_sink = sink_handoff.is_some();
+                pending_sink_handoffs.extend(sink_handoff);
                 if projected_tuple_owner_active && keep_for_drop_elab {
                     self.push_move_out_neutralize(
                         payload_source,
@@ -4629,7 +4741,6 @@ impl Builder {
                     dest,
                     &binding_ty,
                 );
-                let previous = self.binding_locals.insert(binding.binding, dest);
                 overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
                 // #2523 — record provenance for a heap-owning TOP-LEVEL projected
                 // payload binder so its `Consume`-intent move-out routes through
@@ -4649,6 +4760,20 @@ impl Builder {
                 let is_fresh_owned_frame_payload =
                     arm_is_fresh_owned_vec_iter_some || arm_is_generator_some || arm_is_recv_some;
                 if !is_fresh_owned_frame_payload {
+                    // A binder that took the contextual `Sink` handoff is still a
+                    // projected payload and must route its consumes through the
+                    // same default-deny hook — a guard that consumes it (or moves
+                    // it out) has to be refused fail-closed like any other. Its
+                    // origin is not the generic scrutinee verdict: the handoff's
+                    // admission already PROVED a fresh, solely-owned `Result`
+                    // carrier, which is exactly `EphemeralTemp` — nulling the
+                    // variant slot transfers ownership with no re-readable origin
+                    // left behind.
+                    let origin = if transferred_sink {
+                        ProjectedPayloadOrigin::EphemeralTemp
+                    } else {
+                        scrutinee_origin.clone()
+                    };
                     self.record_projected_payload_provenance(
                         binding.binding,
                         &binding.name,
@@ -4657,7 +4782,7 @@ impl Builder {
                             variant_idx,
                             field_idx: binding.field_idx,
                         },
-                        scrutinee_origin.clone(),
+                        origin,
                         keep_for_drop_elab,
                     );
                 }
@@ -4923,6 +5048,12 @@ impl Builder {
                     });
                     self.start_block(body_entry_bb);
                 }
+            }
+
+            // The arm is now selected on every reaching path: clear the
+            // carrier slots whose payloads this arm's binders own.
+            for instr in pending_sink_handoffs.drain(..) {
+                self.push_instr(instr);
             }
 
             let body_start_block_id = self.current_block_id;

@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::deque;
+//! import std.deque;
 //!
 //! fn main() {
 //!     let dq = deque.new();

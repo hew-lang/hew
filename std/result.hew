@@ -10,7 +10,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::result;
+//! import std.result;
 //!
 //! fn main() {
 //!     let x: Result<i64, i64> = Ok(42);

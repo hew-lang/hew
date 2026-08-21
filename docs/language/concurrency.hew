@@ -1,0 +1,76 @@
+//! # Structured concurrency
+//!
+//! `scope` owns child tasks. A `fork` starts work, and scope exit waits for all
+//! children. `await task` joins a named value-producing fork. If one child
+//! traps, sibling structured tasks are cancelled and the trap escapes the
+//! scope; lambda actors are independent and are not sibling-cancelled.
+//!
+//! ```hew
+//! fn left_half() -> i64 { 20 }
+//! fn right_half() -> i64 { 22 }
+//!
+//! actor Totals {
+//!     receive fn combined() -> i64 {
+//!         var total = 0;
+//!         scope {
+//!             fork left = left_half();
+//!             fork right = right_half();
+//!             let a = await left;
+//!             let b = await right;
+//!             total = a + b;
+//!         }
+//!         total
+//!     }
+//! }
+//!
+//! fn main() {
+//!     let totals = spawn Totals;
+//!     match await totals.combined() {
+//!         .Ok(value) => println(f"{value}"),
+//!         .Err(_) => println("ask failed"),
+//!     }
+//! }
+//! ```
+//!
+//! Two placement rules govern where this form is legal today.
+//!
+//! First, `scope { fork ... }` needs a ctx-bearing execution context, so it
+//! belongs in a `receive fn` body or an actor-internal helper. A `fork` written
+//! directly in `fn main` is refused: `fn main` has no execution-context
+//! parameter, so there is no scope owner to attach children to.
+//!
+//! Second, a statement in a `scope` body that is a bare call is read as a task
+//! spawn, not as an ordinary call. `println(f"{a},{b}")` inside the scope is
+//! therefore rejected as a spawn of `println` rather than executed — carry the
+//! result out through a `var` assigned inside the scope and print after the
+//! scope joins, as above.
+//!
+//! A value-producing `fork` currently takes no arguments; an argument-bearing
+//! `fork name = f(args)` requires a unit-returning `f`. Value propagation out
+//! of argument-bearing spawns is fail-closed rather than silently dropped.
+//!
+//! `join` is the actor-ask fan-out form. It issues every branch concurrently,
+//! waits for all replies, and binds a tuple in source order. Two branches have
+//! result shape `(R0, R1)`, not a list, map, or nested `Result`:
+//!
+//! ```hew
+//! actor Doubler {
+//!     receive fn compute(value: i64) -> i64 { value * 2 }
+//! }
+//!
+//! fn main() {
+//!     let a = spawn Doubler;
+//!     let b = spawn Doubler;
+//!     let (first, second) = join {
+//!         a.compute(10),
+//!         b.compute(11),
+//!     };
+//!     assert_eq(first, 20);
+//!     assert_eq(second, 22);
+//!     println(f"{first},{second}");
+//! }
+//! ```
+//!
+//! `scope` and `join` are distinct: scope manages task lifetime, while join
+//! collects ordered actor replies. Cancellation is cooperative at suspension
+//! points and is part of normal scope teardown, not an exception to the model.

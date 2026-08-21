@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::text::semver;
+//! import std.text.semver;
 //!
 //! fn main() {
 //!     let v = semver.parse("1.2.3-beta.1");
@@ -521,7 +521,7 @@ fn matches_single(v: Version, constraint: string) -> bool {
 
 // ── FFI ───────────────────────────────────────────────────────────────
 // Lexicographic string comparison: returns negative, zero, or positive.
-// Declared here rather than via `import std::string` to avoid the module
+// Declared here rather than via `import std.string` to avoid the module
 // compile path that `impl string { ... }` currently blocks on C2.
 extern "C" {
     fn hew_string_compare(a: string, b: string) -> i32;

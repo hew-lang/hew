@@ -28,6 +28,7 @@ fn valid_file_exits_zero() {
     assert_success(&output, "expected exit 0 for valid file");
     assert!(out_dir.join("index.html").is_file(), "missing index.html");
     assert!(out_dir.join("ok.html").is_file(), "missing ok.html");
+    assert!(out_dir.join("404.html").is_file(), "missing 404.html");
 }
 
 /// A file with parse errors must exit nonzero and emit an error message.

@@ -1,6 +1,6 @@
 //! Async HTTP/1.1 server codec — idiomatic Hew over a suspending listener+conn.
 //!
-//! The `await`-suspended sibling of the blocking `std::net::http` server
+//! The `await`-suspended sibling of the blocking `std.net.http` server
 //! (which is backed by a native engine and cannot suspend an actor). The codec
 //! is pure Hew layered on NEW-2's `await listener.accept()` carrier and NEW-1's
 //! `await conn.read()`: an acceptor handler creates a listener with
@@ -18,9 +18,9 @@
 //! # Example (the await-accept + await-read request loop, inline in a handler)
 //!
 //! ```
-//! import std::net;
-//! import std::net::http::http_async_server;
-//! import std::string;
+//! import std.net;
+//! import std.net.http.http_async_server;
+//! import std.string;
 //!
 //! actor Server {
 //!     let addr: string;   // "127.0.0.1:8080"
@@ -184,7 +184,7 @@ pub fn over_limit(raw: string) -> bool {
 /// first CRLF-terminated line (`GET /path HTTP/1.1`); the method and path are
 /// its first two space-separated tokens. The body is everything after the first
 /// CRLF-CRLF. The framing is validated and the request FAILS CLOSED — see
-/// [`AsyncRequest::reject_status`] — on a malformed request line, an unsupported
+/// [`AsyncRequest.reject_status`] — on a malformed request line, an unsupported
 /// `Transfer-Encoding`, a duplicate/conflicting/non-numeric `Content-Length`, or
 /// any size bound (F2/F3); the acceptor replies with that status and closes.
 pub fn parse_request(raw: string) -> AsyncRequest {

@@ -24,7 +24,7 @@
 //! # Example
 //!
 //! ```
-//! import std::stream;
+//! import std.stream;
 //!
 //! fn main() {
 //!     let (sink, input) = stream.pipe(16);
@@ -134,7 +134,7 @@ pub fn try_bytes_pipe(capacity: i64) -> Result<(Sink<bytes>, Stream<bytes>), str
 /// stream is opened remain wrapper-specific and out of scope for the core
 /// Stream/Sink contract.
 /// Prefer `try_from_file` for a structured `Result<Stream<string>, fs.IoError>`.
-/// Import `std::fs` as well if you want to match on `IoError` variants.
+/// Import `std.fs` as well if you want to match on `IoError` variants.
 ///
 /// # Examples
 ///
@@ -156,9 +156,9 @@ pub fn from_file(path: string) -> Result<Stream<string>, string> {
 /// Open a file as a readable `Stream<string>`.
 ///
 /// This preserves `from_file`'s runtime behaviour while returning `fs.IoError`
-/// instead of a raw OS message string. Import `std::fs` when matching on the
+/// instead of a raw OS message string. Import `std.fs` when matching on the
 /// returned error value so you can use the existing unqualified
-/// `IoError::Variant(...)` constructor/pattern style.
+/// `IoError.Variant(...)` constructor/pattern style.
 pub fn try_from_file(path: string) -> Result<Stream<string>, fs.IoError> {
     unsafe {
         let s = hew_stream_from_file_read(path);
@@ -182,7 +182,7 @@ pub fn try_from_file(path: string) -> Result<Stream<string>, fs.IoError> {
 /// sink is opened remain wrapper-specific and out of scope for the core
 /// Stream/Sink contract.
 /// Prefer `try_to_file` for a structured `Result<Sink<string>, fs.IoError>`.
-/// Import `std::fs` as well if you want to match on `IoError` variants.
+/// Import `std.fs` as well if you want to match on `IoError` variants.
 ///
 /// # Examples
 ///
@@ -205,9 +205,9 @@ pub fn to_file(path: string) -> Result<Sink<string>, string> {
 /// Open a file as a writable `Sink<string>`.
 ///
 /// This preserves `to_file`'s runtime behaviour while returning `fs.IoError`
-/// instead of a raw OS message string. Import `std::fs` when matching on the
+/// instead of a raw OS message string. Import `std.fs` when matching on the
 /// returned error value so you can use the existing unqualified
-/// `IoError::Variant(...)` constructor/pattern style.
+/// `IoError.Variant(...)` constructor/pattern style.
 pub fn try_to_file(path: string) -> Result<Sink<string>, fs.IoError> {
     unsafe {
         let s = hew_stream_from_file_write(path);

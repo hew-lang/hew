@@ -717,16 +717,53 @@ fn spoofed_recv_symbol_extern_acquires_no_delivery_owner() {
 }
 
 #[test]
-fn twin_call_forwarder_move_out_uses_borrowed_authority() {
+fn borrowed_call_forwarder_payload_move_stays_rejected() {
     let src = format!(
         "{FORWARDER}
-         fn sink(s: string) -> i64 {{ 1 }}
-         fn use_it(r: Result<string, string>) -> i64 {{
-            match passthru(r) {{ Ok(inner) => sink(inner), Err(_) => 0 }}
+         fn seed() -> Vec<i64> {{
+            let values: Vec<i64> = Vec.new();
+            values.push(1);
+            values
+         }}
+         fn passthru_vec(r: Result<Vec<i64>, Vec<i64>>) -> Result<Vec<i64>, Vec<i64>> {{ r }}
+         fn use_it(r: Result<Vec<i64>, Vec<i64>>) -> i64 {{
+            match passthru_vec(r) {{
+                Ok(inner) => {{
+                    var moved = inner;
+                    moved = seed();
+                    moved.len()
+                }},
+                Err(_) => 0,
+            }}
          }}"
     );
     let p = pipeline(&src);
-    assert_authority(&p, "passthru(r)", Ownership::Borrowed);
+    assert_authority(&p, "passthru_vec(r)", Ownership::Borrowed);
+    assert_eq!(payload_move_reject_count(&p), 1, "{:#?}", p.diagnostics);
+}
+
+#[test]
+fn fresh_call_result_payload_move_is_admitted() {
+    let src = r"
+        fn seed() -> Vec<i64> {
+            let values: Vec<i64> = Vec.new();
+            values.push(1);
+            values
+        }
+        fn make() -> Result<Vec<i64>, Vec<i64>> { Ok(seed()) }
+        fn use_it() -> i64 {
+            match make() {
+                Ok(payload) => {
+                    var moved = payload;
+                    moved = seed();
+                    moved.len()
+                },
+                Err(payload) => payload.len(),
+            }
+        }
+    ";
+    let p = pipeline(src);
+    assert_owned(&p, "make()", Acquisition::Fresh);
     assert_eq!(payload_move_reject_count(&p), 0, "{:#?}", p.diagnostics);
     assert_clean(&p);
 }

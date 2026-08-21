@@ -44,6 +44,47 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
+  # Trunk health — a red main must not broadcast into every open branch
+  # ─────────────────────────────────────────────────────────────────────────
+  main-health:
+    name: main is green
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # On 2026-08-20 a warm-up defect landed on main and the same failure was
+      # reported by eleven branch runs over four hours: every one of them ran
+      # the trunk defect, not their own diff, and every one of them cost a full
+      # runner. A pull request cannot fix main from its own CI, so branch runs
+      # wait for main to be green instead of re-discovering its break.
+      #
+      # The escape is deliberate and visible: label the pull request `fix-main`
+      # and its run proceeds. Without an escape, a red main is a repository-wide
+      # deadlock, which is worse than the broadcast.
+      - name: Refuse to run branch gates while main is red
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=1" > main-run.json
+          conclusion=$(jq -r '.workflow_runs[0].conclusion // "unknown"' main-run.json)
+          head_sha=$(jq -r '.workflow_runs[0].head_sha // "unknown"' main-run.json)
+          run_url=$(jq -r '.workflow_runs[0].html_url // ""' main-run.json)
+          echo "Last completed CI run on main: ${conclusion} at ${head_sha}"
+          case "${conclusion}" in
+            success|unknown|skipped)
+              exit 0
+              ;;
+          esac
+          if printf '%s' "${PR_LABELS}" | jq -e 'index("fix-main")' > /dev/null; then
+            echo "::notice::main is ${conclusion} at ${head_sha}; running anyway because this pull request is labelled fix-main."
+            exit 0
+          fi
+          echo "::error::main is red at ${head_sha}; fix main first (${run_url}). Label this pull request fix-main if it is the fix."
+          exit 1
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Path change detection — gates Windows/macOS and playground jobs
   # ─────────────────────────────────────────────────────────────────────────
   changes:
@@ -162,7 +203,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   docs-and-scripts:
     name: Docs & scripts gates
-    needs: changes
+    needs: [changes, main-health]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -187,7 +228,13 @@ jobs:
 
       - name: Run change-scoped checks
         if: needs.changes.outputs.selected_compile != 'true' && (needs.changes.outputs.docs == 'true' || needs.changes.outputs.scripts == 'true')
-        run: scripts/ci-preflight-dispatcher.sh --base origin/main
+        run: |
+          set -euo pipefail
+          args=(--base origin/main)
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            args+=(--fail-fast)
+          fi
+          scripts/ci-preflight-dispatcher.sh "${args[@]}"
 
   # ─────────────────────────────────────────────────────────────────────────
   # Lint — code quality plus 1,778-file formatter preservation
@@ -628,7 +675,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test:
     name: Linux gates
-    needs: changes
+    needs: [changes, main-health]
     runs-on: ubuntu-24.04
     # A cancelled cold-runner job completed about 105 min of work, then spent
     # 20 min in its final O2 differential step. That step measures about 33
@@ -750,7 +797,16 @@ jobs:
           CI_PREFLIGHT_BASE: origin/main
           COMPILED_HEW_GATE_OWNER: aggregate
           HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
-        run: scripts/ci-preflight-dispatcher.sh --base origin/main
+        run: |
+          set -euo pipefail
+          args=(--base origin/main)
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            # A push to main is the broadcast source: on run 96627649275 the
+            # dispatcher kept going after the first red and burned 1400 more
+            # seconds proving nothing. On main, stop at the first failure.
+            args+=(--fail-fast)
+          fi
+          scripts/ci-preflight-dispatcher.sh "${args[@]}"
 
       - name: Upload test reports
         if: always() && env.RUN_CODE_PATH == 'true'

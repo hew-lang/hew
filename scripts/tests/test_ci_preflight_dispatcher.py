@@ -1303,8 +1303,24 @@ def test_analysis_change_runs_known_dependents_without_workspace() -> None:
 
 def test_hosted_linux_executes_the_dispatcher_directly() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-    assert "run: scripts/ci-preflight-dispatcher.sh --base origin/main" in workflow
+    assert 'scripts/ci-preflight-dispatcher.sh "${args[@]}"' in workflow
     assert "run: make test-hew-ratchet" not in workflow
+
+
+def test_a_push_to_main_stops_at_the_first_failing_gate() -> None:
+    """A red main broadcasts; finishing the other 37 commands proves nothing."""
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert workflow.count('if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then') == 2, (
+        workflow
+    )
+    assert workflow.count("args+=(--fail-fast)") == 2, workflow
+
+
+def test_branch_gates_wait_for_a_green_main() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "  main-health:" in workflow, workflow
+    assert "needs: [changes, main-health]" in workflow, workflow
+    assert "main is red at ${head_sha}; fix main first" in workflow, workflow
 
 
 def test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts() -> None:
@@ -1437,6 +1453,8 @@ _TESTS = [
     test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts,
     test_selected_commands_are_unique,
     test_selector_exports_fail_closed_compile_requirement,
+    test_a_push_to_main_stops_at_the_first_failing_gate,
+    test_branch_gates_wait_for_a_green_main,
 ]
 
 if __name__ == "__main__":

@@ -1,6 +1,18 @@
 # Exact nonzero counts keyed by parsed syntax form and source path.
 # Retirement stages are checked against canonical_stage() and cannot be edited
 # independently of the Stage 1-5 cutover dependency map.
+#
+# signature-application rows: one reviewed count per (enclosing function, file)
+# for every call of an argument-check primitive under hew-types/src/. Callees are
+# reduced through the parse, so method, UFCS, fully-pathed, parenthesized and
+# comment-separated spellings all count, and the primitive in argument or value
+# position does not. It DETECTS: a call in a function not listed here, and an
+# extra call inside a function that is. It does NOT detect a net-zero relocation
+# — moving a call between two already-listed functions changes no total when the
+# two counts move by the same amount in opposite directions. Accepted residual:
+# closing it needs per-call-site identity, which byte offsets cannot supply
+# without churning on every unrelated edit above the site.
+#
 # Canonical keyspace exceptions use this machine-readable comment form:
 # canonical-keyspace-allow<TAB>path<TAB>table<TAB>count<TAB>owner<TAB>follow-on work<TAB>reason
 # canonical-keyspace-allow	hew-hir/src/lower.rs	const_registry	1	hew-hir	a316-keyspace-registries	canonical const identity is qualified today but remains a bare local at insertion
@@ -134,7 +146,7 @@ string-method-identity	qualified-format-macro	hew-types/src/check/expressions.rs
 string-method-identity	qualified-format-macro	hew-types/src/check/items.rs	9	stage-1	A315 S7 retired source-facing scoped diagnostic spellings
 string-method-identity	qualified-format-macro	hew-types/src/check/methods.rs	25	stage-1	retired source-facing scoped diagnostic spellings
 string-method-identity	qualified-format-macro	hew-types/src/check/mod.rs	1	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	21	stage-1	retired source-facing scoped diagnostic spellings plus file-indexed imported trait binding publication
+string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	22	stage-1	retired source-facing scoped diagnostic spellings plus file-indexed imported trait binding publication; plus the single shadow-report declaration-key builder shared by the impl, trait and type-body registration paths
 string-method-identity	qualified-format-macro	hew-types/src/check/resolution.rs	6	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/statements.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/type_members.rs	4	stage-1	reviewed dotted qualified identity construction

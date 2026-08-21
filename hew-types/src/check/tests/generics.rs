@@ -4910,9 +4910,8 @@ fn shadow_report_is_keyed_by_declaration_not_registering_module() {
         checker.current_module_idx = module_idx;
         checker.reject_shadowing_method_type_params(
             Some(&method_params),
-            &enclosing,
-            "trait `Choice`",
-            "carrier.Choice",
+            &[(enclosing.clone(), "trait `Choice`".to_string())],
+            "carrier.Choice::same",
             &decl_span,
         );
     }
@@ -4922,5 +4921,77 @@ fn shadow_report_is_keyed_by_declaration_not_registering_module() {
         1,
         "one declaration must report once however many modules re-register it; got: {:?}",
         checker.errors
+    );
+}
+
+#[test]
+fn shadow_report_key_separates_declarations_sharing_a_span() {
+    // Byte offsets are file-local, so two files can place a method at exactly
+    // the same offsets. Keying on the span (and the trait both implement) alone
+    // collided, and the second declaration's diagnostic was swallowed.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let method_params = vec![hew_parser::ast::TypeParam {
+        name: "T".to_string(),
+        bounds: vec![],
+    }];
+    let enclosing = vec!["T".to_string()];
+    let decl_span = Span::from(40..60);
+
+    for owner in ["alpha.Holder::same", "beta.Other::same"] {
+        checker.reject_shadowing_method_type_params(
+            Some(&method_params),
+            &[(enclosing.clone(), "trait `Choice`".to_string())],
+            owner,
+            &decl_span,
+        );
+    }
+
+    assert_eq!(
+        checker.errors.len(),
+        2,
+        "two declarations sharing a byte range are still two declarations; got: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
+fn shadowing_both_the_impl_and_the_trait_reports_once_naming_both() {
+    // `impl<T> Choice<T> for Holder<T> { fn same<T> }` shadows two owners at one
+    // span. That is one mistake, so it is one diagnostic that names both.
+    let source = r"
+trait Choice<T> {
+    fn same(self, marker: T) -> bool;
+}
+
+type Holder<T> {
+    value: T;
+}
+
+impl<T> Choice<T> for Holder<T> {
+    fn same<T>(self, marker: T) -> bool {
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    let reports: Vec<&crate::error::TypeError> = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("method type parameter `T` shadows"))
+        .collect();
+    assert_eq!(
+        reports.len(),
+        1,
+        "one span, one diagnostic; got: {:?}",
+        output.errors
+    );
+    assert!(
+        reports[0].message.contains("the `impl` block on `Holder`")
+            && reports[0].message.contains("trait `Choice`"),
+        "the single diagnostic must name both owners; got: {}",
+        reports[0].message
     );
 }

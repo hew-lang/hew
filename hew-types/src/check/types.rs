@@ -2729,6 +2729,10 @@ pub struct Checker {
     /// Structural-equality obligations raised inside generic function bodies,
     /// keyed by the owning function's `fn_sigs` key. Discharged per
     /// instantiation by `finalize_generic_structural_eq`.
+    /// Dedup set for [`Checker::reject_shadowing_method_type_params`]. Trait
+    /// method signatures are registered by more than one pass, so the same
+    /// declaration would otherwise report its shadowed parameter twice.
+    pub(super) shadowed_method_type_param_reports: HashSet<(SpanKey, String)>,
     pub(super) generic_structural_eq_requirements:
         HashMap<String, Vec<GenericStructuralEqRequirement>>,
     /// Every generic function call site observed while checking bodies, in
@@ -3746,6 +3750,7 @@ impl Checker {
             hashset_layout_facts: HashMap::new(),
             deferred_vec_admission: HashMap::new(),
             deferred_builtin_clone_admission: HashMap::new(),
+            shadowed_method_type_param_reports: HashSet::new(),
             generic_structural_eq_requirements: HashMap::new(),
             generic_fn_instantiation_sites: Vec::new(),
             deferred_channel_rewrites: HashMap::new(),

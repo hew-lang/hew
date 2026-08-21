@@ -6597,6 +6597,85 @@ impl Checker {
         }
     }
 
+    /// Type-parameter names declared by `trait_name`, or empty when the trait
+    /// is not (yet) registered.
+    fn trait_type_param_names(&self, trait_name: &str) -> Vec<String> {
+        let key = self.trait_ref_lookup_key(trait_name);
+        self.trait_defs
+            .get(&key)
+            .or_else(|| self.trait_defs.get(trait_name))
+            .map(|info| info.type_params.clone())
+            .unwrap_or_default()
+    }
+
+    /// DECISION: a method type parameter that shadows a type parameter of its
+    /// enclosing `impl` block or `trait` is REFUSED, rather than the two being
+    /// distinguished by scope.
+    ///
+    /// The two are already conflated everywhere downstream, silently and
+    /// wrongly. `instantiate_named_method_sig` (`method_resolution.rs`)
+    /// substitutes the enclosing type arguments by NAME and then drops every
+    /// matching name from `sig.type_params`, so the method's own parameter is
+    /// erased and bound to the enclosing argument: given
+    /// `impl<T> Holder<T> { fn same<T>(self, marker: T) }`, a `Holder<i64>`
+    /// receiver makes `same("text")` report `expected i64, found string`, and
+    /// `trait Choice<T> { fn same<T>(self, marker: T) }` reports `expected T`.
+    /// The method's `T` never existed in either case.
+    ///
+    /// Keying substitutions by `(scope, name)` would not fix that: the collapse
+    /// happens upstream of any substitution map, and `type_params` is a flat
+    /// `Vec<String>` read by every consumer of `FnSig`, all of which would need
+    /// the two-level key. Shadowing buys no expressiveness — the method
+    /// parameter can always be renamed — so the fail-closed refusal is both the
+    /// smaller change and the honest one.
+    ///
+    /// One authority for all three shapes: inherent `impl` methods, trait
+    /// declaration methods (including default bodies), and trait `impl`
+    /// methods shadowing a parameter the trait declared.
+    pub(super) fn reject_shadowing_method_type_params(
+        &mut self,
+        method_type_params: Option<&Vec<TypeParam>>,
+        enclosing_params: &[String],
+        enclosing_description: &str,
+        decl_span: &Span,
+    ) {
+        let Some(method_tps) = method_type_params else {
+            return;
+        };
+        if enclosing_params.is_empty() {
+            return;
+        }
+        let mut shadowed: Vec<&str> = method_tps
+            .iter()
+            .map(|tp| tp.name.as_str())
+            .filter(|name| enclosing_params.iter().any(|outer| outer == name))
+            .collect();
+        shadowed.sort_unstable();
+        shadowed.dedup();
+        for name in shadowed {
+            // Trait method signatures pass through registration more than once;
+            // one declaration must not report its shadow twice.
+            if !self.shadowed_method_type_param_reports.insert((
+                SpanKey::in_module(decl_span, self.current_module_idx),
+                name.to_string(),
+            )) {
+                continue;
+            }
+            self.report_error_with_suggestions(
+                TypeErrorKind::DuplicateDefinition,
+                decl_span,
+                format!(
+                    "method type parameter `{name}` shadows the type parameter `{name}` \
+                     declared by {enclosing_description}; the two cannot be told apart once \
+                     the enclosing type arguments are substituted"
+                ),
+                vec![format!(
+                    "rename the method's parameter so it is distinct from the enclosing `{name}`"
+                )],
+            );
+        }
+    }
+
     fn register_trait_method_sig(
         &mut self,
         trait_name: &str,
@@ -6604,6 +6683,13 @@ impl Checker {
         span: &Span,
     ) {
         let method_key = format!("{trait_name}::{}", method.name);
+        let trait_params = self.trait_type_param_names(trait_name);
+        self.reject_shadowing_method_type_params(
+            method.type_params.as_ref(),
+            &trait_params,
+            &format!("trait `{trait_name}`"),
+            &method.span,
+        );
         // Declaration IDs are minted at the checker registration boundary and
         // handed to HIR verbatim. The key is source-owned, not a linker name.
         // A trait declaration owns its method IDs directly. During the
@@ -7498,49 +7584,28 @@ impl Checker {
             .map(|p| p.name.clone())
             .collect();
 
-        // DECISION: a method type parameter that shadows an impl type parameter
-        // is REFUSED, rather than the two being distinguished by scope.
-        //
-        // The two are already conflated everywhere downstream, silently and
-        // wrongly. `instantiate_named_method_sig` (method_resolution.rs)
-        // substitutes the impl's type arguments by NAME and then drops every
-        // matching name from `sig.type_params`, so the method's own parameter is
-        // erased and bound to the impl's argument: given
-        // `impl<T> Holder<T> { fn same<T>(self, marker: T) }`, a
-        // `Holder<i64>` receiver makes `same("text")` report
-        // `expected i64, found string` — the method's `T` never existed.
-        //
-        // Keying substitutions by `(scope, name)` would not fix that: the
-        // collapse happens upstream of any substitution map, and `type_params`
-        // is a flat `Vec<String>` read by every consumer of `FnSig`, all of
-        // which would need the two-level key. Shadowing buys no expressiveness
-        // — the method parameter can always be renamed — so the fail-closed
-        // refusal is both the smaller change and the honest one.
-        if let (Some(impl_tps), Some(method_tps)) = (impl_type_params, method.type_params.as_ref())
-        {
-            let impl_names: std::collections::HashSet<&str> =
-                impl_tps.iter().map(|tp| tp.name.as_str()).collect();
-            let mut shadowed: Vec<&str> = method_tps
-                .iter()
-                .map(|tp| tp.name.as_str())
-                .filter(|name| impl_names.contains(name))
-                .collect();
-            shadowed.sort_unstable();
-            shadowed.dedup();
-            for name in shadowed {
-                self.report_error_with_suggestions(
-                    TypeErrorKind::DuplicateDefinition,
-                    &method.decl_span,
-                    format!(
-                        "method type parameter `{name}` shadows the type parameter `{name}` \
-                         declared by the `impl` block on `{type_name}`; the two cannot be told \
-                         apart once the receiver's type arguments are substituted"
-                    ),
-                    vec![format!(
-                        "rename the method's parameter so it is distinct from the impl's `{name}`"
-                    )],
-                );
-            }
+        // A method type parameter that shadows an enclosing one is REFUSED.
+        // See `reject_shadowing_method_type_params` for the decision and why
+        // scoping the two apart is not the fix.
+        if let Some(impl_tps) = impl_type_params {
+            let enclosing: Vec<String> = impl_tps.iter().map(|tp| tp.name.clone()).collect();
+            self.reject_shadowing_method_type_params(
+                method.type_params.as_ref(),
+                &enclosing,
+                &format!("the `impl` block on `{type_name}`"),
+                &method.decl_span,
+            );
+        }
+        // A trait impl's method may also shadow a parameter declared by the
+        // TRAIT itself, which the impl block never mentions.
+        if let Some(bound) = trait_bound {
+            let trait_params = self.trait_type_param_names(&bound.name);
+            self.reject_shadowing_method_type_params(
+                method.type_params.as_ref(),
+                &trait_params,
+                &format!("trait `{}`", bound.name),
+                &method.decl_span,
+            );
         }
 
         // Collect type param names: impl-level + method-level.

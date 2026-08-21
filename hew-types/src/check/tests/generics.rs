@@ -4748,3 +4748,91 @@ fn main() -> i64 {
         output.errors
     );
 }
+
+#[test]
+fn trait_default_method_type_parameter_shadowing_the_trait_is_refused() {
+    // A trait declaration's own parameter is shadowed just as silently as an
+    // impl block's: `expected T, found string` with no explanation.
+    let source = r"
+trait Choice<T> {
+    fn same<T>(self, marker: T) -> bool {
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    let reports: Vec<&crate::error::TypeError> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.message.contains("method type parameter `T` shadows")
+                && e.message.contains("trait `Choice`")
+        })
+        .collect();
+    assert_eq!(
+        reports.len(),
+        1,
+        "a trait default method's shadow must be refused exactly once (trait signatures are \
+         registered by more than one pass); got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn trait_impl_method_type_parameter_shadowing_the_trait_is_refused() {
+    // The impl block declares no parameters at all here — the shadowed one
+    // belongs to the trait, so the impl-block check alone never sees it.
+    let source = r"
+trait Choice<T> {
+    fn same(self, marker: T) -> bool;
+}
+
+type Holder {
+    value: i64;
+}
+
+impl Choice<i64> for Holder {
+    fn same<T>(self, marker: T) -> bool {
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("method type parameter `T` shadows")
+                && e.message.contains("trait `Choice`")
+        }),
+        "an impl method shadowing the trait's parameter must be refused; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn trait_method_with_a_distinct_type_parameter_is_admitted() {
+    let source = r"
+trait Choice<T> {
+    fn same<U>(self, marker: U) -> bool {
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("shadows the type parameter")),
+        "a distinct trait method parameter must be admitted; got: {:?}",
+        output.errors
+    );
+}

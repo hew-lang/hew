@@ -137,6 +137,7 @@ NEXTEST_FLAG_MIN_VERSION: dict[str, tuple[int, int, int]] = {
     "--no-run": NEXTEST_BASELINE,
     "--profile": NEXTEST_BASELINE,
     "--test": NEXTEST_BASELINE,
+    "--version": NEXTEST_BASELINE,
     "--workspace": NEXTEST_BASELINE,
     "--list-type": (0, 9, 10),  # 0.9.10
     "--cargo-quiet": (0, 9, 58),  # 0.9.58

@@ -697,32 +697,33 @@ def run_with_fake_nextest(version: str) -> subprocess.CompletedProcess[str]:
         )
 
 
-def test_a_nextest_older_than_the_ci_pin_stops_the_preflight() -> None:
+def pinned_nextest_version() -> str:
+    """The build system's one cargo-nextest pin, from the tool-pin contract."""
+    contract = (ROOT / "scripts/tests/test_tool_pin_contract.py").read_text()
+    match = re.search(r'"NEXTEST": \("cargo-nextest", "([0-9.]+)"\)', contract)
+    assert match, contract
+    return match.group(1)
+
+
+def test_a_nextest_older_than_the_pin_stops_the_preflight() -> None:
     """Three reds were an unpinned nextest rejecting a flag the gates pass."""
     result = run_with_fake_nextest("0.9.99")
 
     assert result.returncode != 0, result.stdout
-    assert "older than the CI pin" in result.stderr, result.stderr
+    assert "older than the pinned" in result.stderr, result.stderr
     assert "==> true" not in result.stdout, result.stdout
 
 
-def test_a_nextest_at_or_above_the_ci_pin_runs_the_gates() -> None:
-    result = run_with_fake_nextest("0.9.120")
+def test_the_preflight_reads_its_pin_from_the_tool_pin_contract() -> None:
+    """One declaration for the whole build system, not a second copy here."""
+    pinned = pinned_nextest_version()
+    result = run_with_fake_nextest(pinned)
 
     assert result.returncode == 0, result.stderr
-    assert "satisfies the CI pin 0.9.120" in result.stdout, result.stdout
-
-
-def test_every_nextest_install_site_declares_the_same_pin() -> None:
-    """The dispatcher reads the pin from the install site, so the sites must agree."""
-    pins = set()
-    for workflow in sorted((ROOT / ".github").rglob("*.yml")):
-        text = workflow.read_text()
-        pins.update(re.findall(r"tools: nextest@([0-9.]+)", text))
-        pins.update(re.findall(r"cargo install cargo-nextest@([0-9.]+)", text))
-        assert not re.search(r"tools: nextest(?![@,\w.-])", text), workflow
-        assert not re.search(r"cargo install cargo-nextest(?!@)", text), workflow
-    assert len(pins) == 1, pins
+    assert f"satisfies the pinned {pinned}" in result.stdout, result.stdout
+    assert pinned not in SCRIPT.read_text(), (
+        "the dispatcher must read the pin, not restate it"
+    )
 
 
 def test_runtime_net_lane_budget_annotation() -> None:
@@ -1421,9 +1422,8 @@ _TESTS = [
     test_a_fmt_gate_warms_nothing,
     test_every_dispatched_make_target_exists_in_the_makefile,
     test_no_warmup_carries_a_flag_its_gate_does_not,
-    test_a_nextest_older_than_the_ci_pin_stops_the_preflight,
-    test_a_nextest_at_or_above_the_ci_pin_runs_the_gates,
-    test_every_nextest_install_site_declares_the_same_pin,
+    test_a_nextest_older_than_the_pin_stops_the_preflight,
+    test_the_preflight_reads_its_pin_from_the_tool_pin_contract,
     test_no_warmup_names_a_non_ci_nextest_profile,
     test_scripts_config_budget_annotation,
     test_runtime_net_lane_budget_annotation,

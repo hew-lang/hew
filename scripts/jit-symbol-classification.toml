@@ -6373,7 +6373,7 @@ discharge-depth = "none"
 [[ownership.contracts]]
 symbol = "hew_supervisor_notify_child_supervisor_escalation"
 result = "none"
-params = ["borrow", "borrow", "borrow", "borrow"]
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

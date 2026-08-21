@@ -5,62 +5,73 @@
 //! An actor fault that no supervisor recovered must make the process exit
 //! non-zero. That is a property of the RUN, not of the shutdown path taken to
 //! end it, so it lives here as one authority every termination path consults —
-//! `hew_shutdown_wait`, the native `main`-return epilogue, and the `exit()`
-//! builtin alike. Reading it on only one of those (as an `actor`-private static
-//! read solely by `hew_shutdown_wait` once did) makes the answer depend on
-//! which epilogue a program's shape selected.
+//! `hew_shutdown_wait`, the native `main`-return epilogue, the synthetic cancel
+//! return, and the `exit()` builtin alike.
 //!
-//! ## The two-level record
+//! ## The fault-record state machine
 //!
-//! A crash's disposition is not always known at crash time. An UNSUPERVISED
-//! actor's crash is settled immediately: nothing owns the recovery decision, so
-//! it is unrecovered by construction. A SUPERVISED actor's crash is decided
-//! later, on the supervisor's own dispatch, and that decision can be lost —
-//! the supervisor may already be stopping, its mailbox may be closed, or an
-//! immediate `hew_sched_shutdown` may join the workers before the queued
-//! decision runs.
+//! The rule this module exists to hold is that a crash is HANDLED only when a
+//! supervisor's recovery took EFFECT — a child that is alive again, a ruling
+//! that actually arrived. Not when one was intended: a non-null parent pointer,
+//! a message that was sent, a timer that was requested. Every one of those is a
+//! plan that can fail after it is made.
 //!
-//! So the authority holds two things:
+//! One record per SUPERVISED actor crash, created at the crash site before the
+//! supervisor is notified. An UNSUPERVISED crash creates no record — no
+//! authority exists to rule on it, so it is [`Unrecovered`] immediately.
 //!
-//! * [`OPEN_SUPERVISED_FAULTS`] — supervised crashes whose supervisor has not
-//!   yet ruled. Each is opened at the crash site and must be settled exactly
-//!   once by the supervisor's decision funnel.
-//! * [`UNRECOVERED_ACTOR_FAULT`] — the terminal record. Set directly for a
-//!   crash with no recovery authority, and by a settle whose outcome is
-//!   [`SupervisedFaultOutcome::Unrecovered`].
+//! A record carries an id, and the id travels on the messages that transfer its
+//! ownership (`ChildEvent`, `ChildSupervisorEscalation`, `DelayedRestartEvent`),
+//! so a ruling settles exactly the record it is about.
 //!
-//! An OPEN fault counts as failing. A supervisor HANDLING the fault is the only
-//! transition that may lower the status, and it lowers only its own open
-//! record — it can never clear the terminal flag, so a later successful restart
-//! of one child cannot retract an earlier unrecovered fault. A decision that is
-//! never delivered therefore fails closed: the status stays non-zero because
-//! nothing ever proved the fault was handled.
+//! ```text
+//!                     ┌──────────────────────────────┐
+//!                     │  Open(child, supervisor)     │  COUNTS AS FAILING
+//!                     └──────────────┬───────────────┘
+//!        ┌──────────────┬────────────┼─────────────┬──────────────────┐
+//!        │              │            │             │                  │
+//!   restart returns   timer      escalation    policy declines    ruling never
+//!   a NON-NULL child  ARMED      ACCEPTED      (temporary /       arrives
+//!        │            (admitted   by a live     breaker / Kill /       │
+//!        │             + spawned) parent        no parent / spec       │
+//!        │              │            │           retired)              │
+//!        ▼              ▼            ▼             │                   │
+//!    ┌────────┐   ┌────────────┐ ┌───────────┐     │                   │
+//!    │Handled │   │ArmedFor    │ │Escalated  │     │              stays Open
+//!    │        │   │Restart     │ │(to parent)│     │              (failing)
+//!    └────────┘   └─────┬──────┘ └─────┬─────┘     │
+//!    terminal-       PROVISIONAL    PROVISIONAL    │
+//!     success        record stays   record stays   │
+//!                    Open, owned    Open, owned    │
+//!                    by the timer   by the parent  │
+//!                          │              │        │
+//!            fires: restart│      parent's│ruling  │
+//!            effect rules  │      rules   │        │
+//!                          └──────┬───────┘        │
+//!                                 ▼                ▼
+//!                          ┌─────────────────────────────┐
+//!                          │        Unrecovered          │ terminal-failure
+//!                          └─────────────────────────────┘
+//! ```
 //!
-//! ## The rule (`FAULTED` means: exit non-zero)
+//! ### Rules
 //!
-//! The status is failing when an actor fault reached a point with no recovery
-//! authority left:
-//!
-//! * an actor CRASHES with no supervisor attached, or with a supervisor
-//!   back-pointer carrying no child index — nothing owns the recovery decision
-//!   (`actor::hew_actor_trap_inner`); a top-level supervisor actor crashing is
-//!   this case, since it has no supervisor of its own;
-//! * a supervisor RULES that it cannot recover the fault — restart budget
-//!   exhausted, child not restartable (`temporary`, or a tripped circuit
-//!   breaker), the restart itself returned no child, an `#[on(crash)]` hook
-//!   answering `Kill`, or `Escalate` with no parent to escalate to
-//!   (`supervisor::decide_child_failure`, the single funnel every give-up path
-//!   returns through);
-//! * a supervised crash whose decision never arrives at all (the open record
-//!   above).
-//!
-//! It is NOT failing when a supervisor HANDLES the fault: a restart now, a
-//! scheduled restart, or an escalation to a parent that owns the decision. That
-//! — supervised and handled — is the ONLY thing that keeps a crashed actor out
-//! of the process exit status.
-//!
-//! Timing is irrelevant to the rule: a crash after shutdown has begun sets the
-//! record exactly like a crash mid-run.
+//! 1. A record is settled by EXACTLY ONE ruling. [`FaultRuling::Escalated`] and
+//!    [`FaultRuling::ArmedForRestart`] are explicitly NOT settles: they hand the
+//!    SAME record to the next authority, which settles it.
+//! 2. A provisional escalation the parent then RECOVERS clears the record.
+//!    Nested budget exhaustion followed by a successful parent restart is not
+//!    terminal — the subtree was recovered, which is what the tree is for.
+//! 3. A transfer that FAILS settles `Unrecovered`, never `Handled`: a null
+//!    parent actor, an un-representable child-supervisor index, a refused
+//!    `send_system_message` to a stopped or closed parent, a refused timer
+//!    admission, a failed timer thread spawn. Handing a record to an authority
+//!    that never receives it is not recovery.
+//! 4. A record whose ruling never arrives stays Open, and Open counts as
+//!    failing. Shutdown quiesces (bounded) so a ruling that IS coming lands
+//!    first; what remains open after that genuinely never came.
+//! 5. `Unrecovered` is terminal and monotonic. A later `Handled` on a DIFFERENT
+//!    record cannot retract it.
 //!
 //! ## The final exit code
 //!
@@ -68,15 +79,13 @@
 //!
 //! ```text
 //! final = user_code            if user_code != 0
-//!       = 1                    if an unrecovered fault was recorded
+//!       = 1                    if any record is Open or Unrecovered
 //!       = 0                    otherwise
 //! ```
 //!
 //! A deliberate non-zero code the program chose is never overwritten — it is
-//! already a failure and it carries more information than `1`. A `0` never
-//! masks a fault. Every termination path routes through this: `hew_exit` (so
-//! the `exit()` builtin cannot exit 0 over a recorded fault), and the native
-//! `main` epilogue (so a returned non-zero code survives the fault report).
+//! already a failure and carries more information than `1`. A `0` never masks a
+//! fault.
 
 // WASM-TODO(actor-exit-status): report unrecovered actor faults in the wasm32
 // program-exit status. This module is native-only (gated at `lib.rs`): its
@@ -87,35 +96,97 @@
 // not in the program's exit status.
 
 use std::ffi::c_int;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-/// How a supervisor ruled on one supervised crash.
+/// A supervised crash's record id.
+///
+/// Rides the system-message payloads that transfer the record's ownership, so a
+/// ruling names the exact crash it is about. [`FaultRecord::NONE`] is the
+/// "no record" value carried by events that predate a record (a graceful child
+/// stop) or by a test that drives a dispatch arm directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SupervisedFaultOutcome {
-    /// The supervisor owns the outcome: it restarted the child, scheduled a
-    /// restart, or escalated to a parent that now owns the decision.
+pub(crate) struct FaultRecord(u64);
+
+impl FaultRecord {
+    /// No record. Settling it is a no-op.
+    pub(crate) const NONE: Self = Self(0);
+
+    /// Reconstruct a record id received over a message payload.
+    pub(crate) const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    /// The id to place in a message payload.
+    pub(crate) const fn as_raw(self) -> u64 {
+        self.0
+    }
+
+    /// Whether this names a real record.
+    pub(crate) const fn is_some(self) -> bool {
+        self.0 != 0
+    }
+}
+
+/// How an authority ruled on one fault record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FaultRuling {
+    /// A recovery took EFFECT: the failed child is alive again.
     Handled,
-    /// No recovery authority remains for this fault.
+    /// Ownership moved to a live parent supervisor that accepted the
+    /// escalation. PROVISIONAL — the parent's ruling settles the record.
+    Escalated,
+    /// Ownership moved to an armed restart timer. PROVISIONAL — the restart's
+    /// effect when the timer fires settles the record.
+    ArmedForRestart,
+    /// No recovery authority remains, or a transfer to one failed.
     Unrecovered,
 }
 
-/// The two-level record described in the module docs, as one value so its
+impl FaultRuling {
+    /// Whether this ruling settles the record here, or hands it on.
+    const fn settles(self) -> bool {
+        matches!(self, Self::Handled | Self::Unrecovered)
+    }
+}
+
+/// How many crash records may be open at once.
+///
+/// A record is open only while a crash awaits its supervisor's ruling, so this
+/// bounds concurrent in-flight crashes, not crashes per run. Exhausting it is
+/// itself a fault signal: the overflow path records terminal failure rather
+/// than dropping the record.
+const MAX_OPEN_RECORDS: usize = 64;
+
+/// The record table and the terminal flag, as one value so the state machine's
 /// transitions can be exercised without touching process-global state.
+///
+/// LOCK-FREE by requirement, not by preference: [`open_record`] is called from
+/// `actor::hew_actor_trap_inner`, which runs on the crash path — including the
+/// `siglongjmp` recovery of a SEGV/BUS/FPE/ILL. Taking a mutex there can block
+/// behind a thread the crash just interrupted. A fixed table of atomic slots
+/// gives exactly-once settling with no lock on any path.
 #[derive(Debug)]
 pub(crate) struct ExitStatusAuthority {
-    /// An actor fault reached a point with no recovery authority left. Never
-    /// lowered within a runtime lifetime.
+    /// A fault reached a state with no recovery authority left. Never lowered
+    /// within a runtime lifetime.
     terminal: AtomicBool,
-    /// Supervised crashes awaiting their supervisor's ruling. Non-zero means
-    /// the process cannot yet claim success.
-    open_supervised: AtomicI64,
+    /// Source of record ids. Starts at 1 so `0` stays the NONE sentinel.
+    next_id: AtomicU64,
+    /// Open records, one id per occupied slot; `0` is free.
+    slots: [AtomicU64; MAX_OPEN_RECORDS],
 }
 
 impl ExitStatusAuthority {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
+        #[allow(
+            clippy::declare_interior_mutable_const,
+            reason = "array initialiser for atomics; each element is a distinct value"
+        )]
+        const FREE: AtomicU64 = AtomicU64::new(0);
         Self {
             terminal: AtomicBool::new(false),
-            open_supervised: AtomicI64::new(0),
+            next_id: AtomicU64::new(1),
+            slots: [FREE; MAX_OPEN_RECORDS],
         }
     }
 
@@ -123,42 +194,69 @@ impl ExitStatusAuthority {
         self.terminal.store(true, Ordering::Release);
     }
 
-    fn open_supervised(&self) {
-        self.open_supervised.fetch_add(1, Ordering::AcqRel);
+    fn open_record(&self) -> FaultRecord {
+        let id = self.next_id.fetch_add(1, Ordering::AcqRel);
+        for slot in &self.slots {
+            if slot
+                .compare_exchange(0, id, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return FaultRecord(id);
+            }
+        }
+        // The table is full: more crashes are in flight than the runtime can
+        // track. Fail closed rather than lose a record.
+        self.record_unrecovered();
+        FaultRecord::NONE
     }
 
-    fn settle_supervised(&self, outcome: SupervisedFaultOutcome) {
-        if outcome == SupervisedFaultOutcome::Unrecovered {
+    /// Apply a ruling. Returns whether this call was the one that settled the
+    /// record — false for a provisional ruling, and false for a double-settle.
+    fn settle(&self, record: FaultRecord, ruling: FaultRuling) -> bool {
+        if ruling == FaultRuling::Unrecovered {
+            // Raise the flag even on a NONE record or a double-settle: the
+            // ruling names a fault with no authority, which is the terminal
+            // case regardless of whether a slot is still held.
             self.record_unrecovered();
         }
-        // Saturate at zero: a settle with nothing open means the accounting
-        // drifted, and going negative would let that drift pre-pay for a later
-        // crash's ruling.
-        let _ = self
-            .open_supervised
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |open| {
-                (open > 0).then(|| open - 1)
-            });
+        if !record.is_some() || !ruling.settles() {
+            // A provisional ruling leaves the record open for its new owner.
+            return false;
+        }
+        for slot in &self.slots {
+            if slot
+                .compare_exchange(record.0, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn open_count(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| slot.load(Ordering::Acquire) != 0)
+            .count()
     }
 
     fn faulted(&self) -> bool {
-        self.terminal.load(Ordering::Acquire) || self.open_supervised.load(Ordering::Acquire) > 0
-    }
-
-    fn open_count(&self) -> i64 {
-        self.open_supervised.load(Ordering::Acquire)
+        self.terminal.load(Ordering::Acquire) || self.open_count() > 0
     }
 
     fn reset(&self) {
         self.terminal.store(false, Ordering::Release);
-        self.open_supervised.store(0, Ordering::Release);
+        for slot in &self.slots {
+            slot.store(0, Ordering::Release);
+        }
     }
 }
 
 /// The installed authority for this process.
 static AUTHORITY: ExitStatusAuthority = ExitStatusAuthority::new();
 
-/// Record an actor fault that no supervision authority can recover.
+/// Record a fault that no supervision authority can rule on.
 ///
 /// Idempotent and monotonic within a runtime lifetime — the process exit status
 /// only ever moves from success to failure.
@@ -169,21 +267,30 @@ pub(crate) fn record_unrecovered_actor_fault() {
 /// Open a supervised crash's record, at the crash site, before its supervisor
 /// is notified.
 ///
-/// The paired [`settle_supervised_fault`] is the supervisor's ruling. Until it
-/// arrives the fault counts as failing, so a ruling that is never delivered —
-/// a stopping supervisor, a closed mailbox, workers joined by an immediate
-/// shutdown — leaves the status non-zero rather than silently successful.
-pub(crate) fn open_supervised_fault() {
-    AUTHORITY.open_supervised();
+/// The returned id must reach a ruling. Until it does the fault counts as
+/// failing, so a ruling that is never delivered — a stopping supervisor, a
+/// closed mailbox, workers joined by an immediate shutdown — leaves the status
+/// non-zero rather than silently successful.
+pub(crate) fn open_supervised_fault() -> FaultRecord {
+    AUTHORITY.open_record()
 }
 
-/// Settle one open supervised crash with its supervisor's ruling.
-pub(crate) fn settle_supervised_fault(outcome: SupervisedFaultOutcome) {
-    AUTHORITY.settle_supervised(outcome);
+/// Apply an authority's ruling to one record.
+pub(crate) fn settle_supervised_fault(record: FaultRecord, ruling: FaultRuling) {
+    AUTHORITY.settle(record, ruling);
 }
 
-/// True when this runtime carries an actor fault that was not recovered —
-/// either terminally recorded, or still awaiting a ruling that may never come.
+/// Whether any supervised crash is still awaiting a ruling.
+///
+/// Read by the scheduler's pre-teardown quiesce: workers must not be joined
+/// while a queued ruling could still settle a record, or whether it ran would
+/// decide the program's exit status.
+pub(crate) fn has_open_supervised_faults() -> bool {
+    AUTHORITY.open_count() > 0
+}
+
+/// True when this runtime carries a fault that was not recovered — either
+/// terminally recorded, or still awaiting a ruling that may never come.
 pub(crate) fn unrecovered_actor_fault() -> bool {
     AUTHORITY.faulted()
 }
@@ -205,32 +312,18 @@ pub(crate) fn final_exit_code(user_code: i64) -> i64 {
     exit_code_rule(user_code, unrecovered_actor_fault())
 }
 
-/// Whether any supervised crash is still awaiting its supervisor's ruling.
-///
-/// Read by the scheduler's pre-teardown quiesce: workers must not be joined
-/// while a queued supervisor decision could still settle a fault, or whether it
-/// ran would decide the program's exit status. The provisional record is
-/// reached only when a decision genuinely never comes.
-pub(crate) fn has_open_supervised_faults() -> bool {
-    AUTHORITY.open_count() > 0
-}
-
-/// Clear the exit-status authority for a freshly initialized runtime.
-///
-/// Called from scheduler init, so a previous runtime's fault cannot colour a
-/// new one — notably in-process test runs that install several runtimes in
-/// sequence.
+/// Clear the authority for a freshly initialized runtime, so a previous
+/// runtime's fault cannot colour a new one.
 pub fn reset_process_exit_status() {
     AUTHORITY.reset();
 }
 
 /// C ABI: the process exit status a Hew `main` must report.
 ///
-/// Returns `0` when every actor fault (if any) was handled by a supervisor, and
-/// `1` when at least one fault went unrecovered or is still unsettled. Codegen
-/// calls this on every native `main` return path, after that program's
-/// drain/shutdown epilogue has joined the scheduler, so faults raised during
-/// the drain are included.
+/// `0` when every actor fault (if any) was recovered, `1` when at least one
+/// went unrecovered or is still unsettled. Codegen calls this on every native
+/// `main` return path, after that program's drain/shutdown epilogue has joined
+/// the scheduler, so faults raised during the drain are included.
 ///
 /// Safe to call on a runtime that was never initialized: no actor ever crashed,
 /// so the answer is `0`.
@@ -241,77 +334,94 @@ pub extern "C" fn hew_runtime_exit_status() -> c_int {
 
 #[cfg(test)]
 mod tests {
-    use super::{exit_code_rule, ExitStatusAuthority, SupervisedFaultOutcome};
+    use super::{exit_code_rule, ExitStatusAuthority, FaultRecord, FaultRuling};
 
     /// A supervised crash counts as failing from the moment it is opened: its
     /// supervisor may never rule, and an unsettled fault must not read as
     /// success.
     #[test]
-    fn open_supervised_fault_is_failing_until_settled() {
+    fn an_open_record_is_failing_until_a_ruling_settles_it() {
         let authority = ExitStatusAuthority::new();
         assert!(!authority.faulted());
-        authority.open_supervised();
+        let record = authority.open_record();
         assert!(authority.faulted());
-        authority.settle_supervised(SupervisedFaultOutcome::Handled);
+        assert!(authority.settle(record, FaultRuling::Handled));
         assert!(!authority.faulted());
     }
 
-    /// Handling is the only transition that may lower the status, and it lowers
-    /// only its own open record — a later handled crash cannot retract an
-    /// earlier unrecovered one.
+    /// Escalation is a TRANSFER, not a settle: the record stays open until the
+    /// parent rules. Concluding "handled" from the send is the bug this pins.
     #[test]
-    fn handled_settle_cannot_clear_an_earlier_unrecovered_fault() {
+    fn escalation_leaves_the_record_open_for_the_parent() {
+        let authority = ExitStatusAuthority::new();
+        let record = authority.open_record();
+        assert!(!authority.settle(record, FaultRuling::Escalated));
+        assert!(
+            authority.faulted(),
+            "an escalated record is provisional, not recovered"
+        );
+        // The parent recovers the subtree: the SAME record is cleared.
+        assert!(authority.settle(record, FaultRuling::Handled));
+        assert!(!authority.faulted());
+    }
+
+    /// Arming a restart timer is likewise a transfer: the timer's fire rules.
+    #[test]
+    fn arming_a_restart_timer_leaves_the_record_open_for_the_timer() {
+        let authority = ExitStatusAuthority::new();
+        let record = authority.open_record();
+        assert!(!authority.settle(record, FaultRuling::ArmedForRestart));
+        assert!(authority.faulted());
+        assert!(authority.settle(record, FaultRuling::Unrecovered));
+        assert!(authority.faulted(), "the fire found no child to restart");
+    }
+
+    /// A ruling settles exactly one record; a second ruling on the same record
+    /// does not settle a sibling's.
+    #[test]
+    fn a_ruling_settles_exactly_one_record() {
+        let authority = ExitStatusAuthority::new();
+        let first = authority.open_record();
+        let second = authority.open_record();
+        assert!(authority.settle(first, FaultRuling::Handled));
+        assert!(
+            !authority.settle(first, FaultRuling::Handled),
+            "a double-settle must not consume the sibling's record"
+        );
+        assert!(authority.faulted(), "the second record is still open");
+        assert!(authority.settle(second, FaultRuling::Handled));
+        assert!(!authority.faulted());
+    }
+
+    /// Two unrelated supervisors: one recovers its child, the other does not.
+    /// The handled one must not clear the unrecovered one.
+    #[test]
+    fn one_handled_supervisor_does_not_clear_an_unrecovered_sibling() {
+        let authority = ExitStatusAuthority::new();
+        let handled = authority.open_record();
+        let unrecovered = authority.open_record();
+        authority.settle(unrecovered, FaultRuling::Unrecovered);
+        authority.settle(handled, FaultRuling::Handled);
+        assert!(authority.faulted());
+    }
+
+    /// `Unrecovered` is terminal: a later handled record cannot retract it.
+    #[test]
+    fn a_later_handled_record_cannot_retract_a_terminal_fault() {
         let authority = ExitStatusAuthority::new();
         authority.record_unrecovered();
-        authority.open_supervised();
-        authority.settle_supervised(SupervisedFaultOutcome::Handled);
+        let record = authority.open_record();
+        authority.settle(record, FaultRuling::Handled);
         assert!(authority.faulted());
     }
 
-    /// An unrecovered ruling promotes the open record to the terminal one, so
-    /// the status stays failing after the count returns to zero.
+    /// A fault with no record and no authority — an unsupervised crash reported
+    /// through the ruling path — is terminal, not silently dropped.
     #[test]
-    fn unrecovered_settle_promotes_to_the_terminal_record() {
+    fn an_unrecovered_ruling_without_a_record_still_raises_the_flag() {
         let authority = ExitStatusAuthority::new();
-        authority.open_supervised();
-        authority.settle_supervised(SupervisedFaultOutcome::Unrecovered);
+        authority.settle(FaultRecord::NONE, FaultRuling::Unrecovered);
         assert!(authority.faulted());
-    }
-
-    /// Concurrent supervised crashes are counted, not collapsed: settling one
-    /// must not clear the other.
-    #[test]
-    fn each_open_supervised_fault_needs_its_own_settle() {
-        let authority = ExitStatusAuthority::new();
-        authority.open_supervised();
-        authority.open_supervised();
-        authority.settle_supervised(SupervisedFaultOutcome::Handled);
-        assert!(authority.faulted());
-        authority.settle_supervised(SupervisedFaultOutcome::Handled);
-        assert!(!authority.faulted());
-    }
-
-    /// A settle with nothing open saturates at zero rather than going negative,
-    /// so accounting drift cannot pre-pay for a later crash's ruling.
-    #[test]
-    fn settle_without_an_open_record_does_not_go_negative() {
-        let authority = ExitStatusAuthority::new();
-        authority.settle_supervised(SupervisedFaultOutcome::Handled);
-        authority.open_supervised();
-        assert!(authority.faulted());
-    }
-
-    /// The scheduler's pre-teardown quiesce reads this: it must report an open
-    /// fault until the ruling lands, so workers are not joined over a decision
-    /// that would have settled it.
-    #[test]
-    fn open_faults_are_visible_to_the_shutdown_quiesce() {
-        let authority = ExitStatusAuthority::new();
-        assert_eq!(authority.open_count(), 0);
-        authority.open_supervised();
-        assert_eq!(authority.open_count(), 1);
-        authority.settle_supervised(SupervisedFaultOutcome::Handled);
-        assert_eq!(authority.open_count(), 0);
     }
 
     /// The shipped rule: a deliberate non-zero user code always wins, a zero

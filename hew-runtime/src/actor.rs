@@ -6809,24 +6809,37 @@ unsafe fn hew_actor_trap_inner(
     if !supervisor.is_null() {
         if let Ok(child_index) = u32::try_from(supervisor_child_index) {
             // Open the crash's exit-status record BEFORE the notification is
-            // queued. The supervisor's ruling runs on its own dispatch, so
-            // opening afterwards could race a settle that has already run.
-            // Until that ruling arrives the fault counts as failing: a
-            // supervisor that is already stopping, a closed mailbox, or an
-            // immediate `hew_sched_shutdown` joining the workers before the
-            // queued decision runs all leave it open rather than silently
-            // successful.
-            if terminal == HewActorState::Crashed as i32 {
-                crate::exit_status::open_supervised_fault();
-            }
+            // queued, and hand its id to the supervisor on the event. The
+            // supervisor's ruling runs on its own dispatch, so opening
+            // afterwards could race a settle that has already run. Until that
+            // ruling arrives the fault counts as failing: a supervisor that is
+            // already stopping, a closed mailbox, or an immediate
+            // `hew_sched_shutdown` joining the workers before the queued
+            // decision runs all leave it open rather than silently successful.
+            let record = if terminal == HewActorState::Crashed as i32 {
+                crate::exit_status::open_supervised_fault()
+            } else {
+                crate::exit_status::FaultRecord::NONE
+            };
             // SAFETY: supervisor back-pointer was set by hew_supervisor_add_child.
-            unsafe {
+            let notified = unsafe {
                 crate::supervisor::hew_supervisor_notify_child_actor_event(
                     supervisor.cast(),
                     child_index,
                     actor_id,
                     terminal,
                     error_code,
+                    record.as_raw(),
+                )
+            };
+            if !notified {
+                // The supervisor never received the event — a null supervisor
+                // actor, or a mailbox that refused it. The record reached no
+                // authority, so it is settled here rather than left to time out
+                // in the shutdown quiesce.
+                crate::exit_status::settle_supervised_fault(
+                    record,
+                    crate::exit_status::FaultRuling::Unrecovered,
                 );
             }
         } else if terminal == HewActorState::Crashed as i32 {

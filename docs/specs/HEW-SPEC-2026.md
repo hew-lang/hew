@@ -3880,6 +3880,21 @@ failure and carries more information than `1`. A zero never masks a fault. This
 rule applies on EVERY termination path — returning from `main`, and an explicit
 `exit(code)` anywhere — so `exit(0)` cannot report success over a crashed actor.
 
+**Each supervised crash carries a record**, opened at the crash site and settled
+by exactly ONE ruling. A crash is HANDLED only when a recovery took EFFECT — the
+failed child is alive again. Not when one was intended: a non-null parent
+pointer, a message that was sent, a timer that was requested are all plans that
+can fail after they are made.
+
+Two rulings do not settle a record; they TRANSFER it:
+
+- **escalation** to a parent that ACCEPTS it (§5.5). The record stays open and
+  the parent's own ruling settles it. A subtree the parent then restarts CLEARS
+  the record — nested budget exhaustion followed by a recovery upward is not a
+  fault of the run.
+- **arming a delayed restart** (the backoff in §5.4). The record stays open and
+  the restart's effect when the timer fires settles it.
+
 **An actor fault is unrecovered** when it reaches a point with no recovery
 authority left:
 
@@ -3890,16 +3905,19 @@ authority left:
   exhausted (§5.4), the child is not restartable (`temporary`, or a tripped
   circuit breaker), the restart itself produces no child, an `#[on(crash)]` hook
   answers `Kill`, or it answers `Escalate` at a supervisor with no parent;
+- a TRANSFER fails: the parent is stopped or closed and never receives the
+  escalation, or the restart timer cannot be armed. Handing a record to an
+  authority that never receives it is not a recovery;
 - a supervised crash whose supervisor never rules at all — its supervisor was
   already stopping, its mailbox was closed, or shutdown joined the workers
   before the queued decision ran. An undelivered decision is not a recovery.
 
-A crash a supervisor HANDLES — restarting the child, scheduling a restart, or
-escalating to a parent that owns the decision (§5.5) — leaves the exit status
-successful. That, and only that, keeps a crashed actor out of the exit status.
-Handling settles only its own fault: a later successful restart of one child
-does not retract an earlier unrecovered fault. A crash raised after shutdown has
-begun counts exactly like one raised mid-run.
+A crash a supervisor HANDLES leaves the exit status successful. That, and only
+that, keeps a crashed actor out of the exit status. A ruling settles only its own
+record: one supervisor recovering its child does not clear a sibling
+supervisor's unrecovered crash, and a later successful restart does not retract
+an earlier unrecovered fault. A crash raised after shutdown has begun counts
+exactly like one raised mid-run.
 
 The rule does not depend on program shape. A program that contains a supervisor
 and ALSO spawns an unsupervised actor that crashes exits non-zero — the

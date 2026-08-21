@@ -192,7 +192,10 @@ def test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps() ->
     ), comprehensive.stdout
 
     makefile = (ROOT / "Makefile").read_text()
-    assert re.search(r"^lint:.*\bstructural-lint\b", makefile, re.MULTILINE), makefile
+    assert re.search(r"^LINT_GATES \+= structural-lint$", makefile, re.MULTILINE), (
+        makefile
+    )
+    assert re.search(r"^lint:.*\$\$\(LINT_GATES\)", makefile, re.MULTILINE), makefile
 
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
     assert re.search(
@@ -2296,7 +2299,9 @@ def test_failing_command_emits_an_annotation_and_a_result_table() -> None:
     assert annotations[0].endswith("::error: cannot find value x"), annotations[0]
 
     assert "| Command | Elapsed | Result | First failure |" in summary, summary
-    assert "| `printf 'ok\\n'` | 0s | ok |  |" in summary, summary
+    assert re.search(
+        r"^\| `printf 'ok\\n'` \| \d+s \| ok \|  \|$", summary, re.MULTILINE
+    ), summary
     failing = next(line for line in summary.splitlines() if "FAILED (exit 4)" in line)
     assert "error: cannot find value x" in failing, failing
     assert "0 failure" not in summary, summary

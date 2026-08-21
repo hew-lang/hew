@@ -1,0 +1,17 @@
+#[resource]
+type Token {
+    id: i64;
+}
+
+impl Token {
+    fn close(self) {}
+}
+
+type Holder {
+    item: Option<(i64, Token)>;
+}
+
+fn main() {
+    let value = Holder { item: Some((1, Token { id: 7 })) };
+    let _copy = clone value;
+}

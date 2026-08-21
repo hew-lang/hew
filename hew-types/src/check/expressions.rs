@@ -6,9 +6,16 @@ use super::types::GenericLambdaSig;
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::check::types::{
+    GenericCallEdge, GenericCallee, GenericFnInstantiationSite, GenericStructuralEqRequirement,
+    PendingInstantiation,
+};
 use crate::env::{PlaceConflict, PlacePath};
-use crate::eq_eligibility::{ty_is_eq_eligible_with_type_params, EqEligibility};
+use crate::eq_eligibility::{
+    ty_eq_ineligibility_with_type_params, EqEligibility, EqEligibilityFailure,
+};
 use crate::BuiltinType;
+use std::collections::VecDeque;
 
 type DangerousRcBinding = String;
 type DangerousRcScope = HashMap<String, Option<DangerousRcBinding>>;
@@ -4970,7 +4977,7 @@ impl Checker {
         })
     }
 
-    fn current_type_param_names(&self) -> HashSet<String> {
+    pub(super) fn current_type_param_names(&self) -> HashSet<String> {
         let mut names = HashSet::new();
         for frame in &self.current_type_param_bounds {
             names.extend(frame.bounds.keys().cloned());
@@ -5007,34 +5014,50 @@ impl Checker {
         enum UnsupportedComparison {
             Record {
                 type_name: String,
-                reason: Option<EqEligibility>,
+                reason: Option<EqEligibilityFailure>,
             },
             PayloadEnum {
                 type_name: String,
-                reason: EqEligibility,
+                reason: EqEligibilityFailure,
+            },
+            Tuple {
+                type_name: String,
+                reason: Option<EqEligibilityFailure>,
             },
             EnumOrdering(String),
         }
 
         let current_type_params = self.current_type_param_names();
         let unsupported = [left_resolved, right_resolved].into_iter().find_map(|ty| {
-            let Ty::Named { name, builtin, .. } = ty else {
-                return None;
-            };
             let type_name = ty.user_facing().to_string();
-            if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
+            if matches!(ty, Ty::Tuple(_)) {
                 if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                    let eligibility = ty_is_eq_eligible_with_type_params(
+                    return ty_eq_ineligibility_with_type_params(
                         ty,
                         &self.type_defs,
                         &current_type_params,
-                    );
-                    return (eligibility != EqEligibility::Eligible).then_some(
-                        UnsupportedComparison::PayloadEnum {
-                            type_name,
-                            reason: eligibility,
-                        },
-                    );
+                    )
+                    .map(|reason| UnsupportedComparison::Tuple {
+                        type_name,
+                        reason: Some(reason),
+                    });
+                }
+                return Some(UnsupportedComparison::Tuple {
+                    type_name,
+                    reason: None,
+                });
+            }
+            let Ty::Named { name, builtin, .. } = ty else {
+                return None;
+            };
+            if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
+                if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+                    return ty_eq_ineligibility_with_type_params(
+                        ty,
+                        &self.type_defs,
+                        &current_type_params,
+                    )
+                    .map(|reason| UnsupportedComparison::PayloadEnum { type_name, reason });
                 }
                 return Some(UnsupportedComparison::EnumOrdering(type_name));
             }
@@ -5042,17 +5065,15 @@ impl Checker {
             match type_def.kind {
                 TypeDefKind::Struct | TypeDefKind::Record => {
                     if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                        let eligibility = ty_is_eq_eligible_with_type_params(
+                        return ty_eq_ineligibility_with_type_params(
                             ty,
                             &self.type_defs,
                             &current_type_params,
-                        );
-                        return (eligibility != EqEligibility::Eligible).then_some(
-                            UnsupportedComparison::Record {
-                                type_name,
-                                reason: Some(eligibility),
-                            },
-                        );
+                        )
+                        .map(|reason| UnsupportedComparison::Record {
+                            type_name,
+                            reason: Some(reason),
+                        });
                     }
                     Some(UnsupportedComparison::Record {
                         type_name,
@@ -5066,17 +5087,12 @@ impl Checker {
                         .any(|variant| !matches!(variant, VariantDef::Unit));
                     if has_payload_variant {
                         if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                            let eligibility = ty_is_eq_eligible_with_type_params(
+                            ty_eq_ineligibility_with_type_params(
                                 ty,
                                 &self.type_defs,
                                 &current_type_params,
-                            );
-                            (eligibility != EqEligibility::Eligible).then_some(
-                                UnsupportedComparison::PayloadEnum {
-                                    type_name,
-                                    reason: eligibility,
-                                },
                             )
+                            .map(|reason| UnsupportedComparison::PayloadEnum { type_name, reason })
                         } else {
                             Some(UnsupportedComparison::EnumOrdering(type_name))
                         }
@@ -5090,6 +5106,14 @@ impl Checker {
             }
         });
         let Some(unsupported) = unsupported else {
+            // Admitted. If the admission leaned on an abstract type parameter,
+            // the template proved nothing about the concrete leaves — record
+            // the obligation so every instantiation re-runs the same walk.
+            if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+                for ty in [left_resolved, right_resolved] {
+                    self.record_generic_structural_eq_requirement(ty, &current_type_params);
+                }
+            }
             return;
         };
         // Span the whole comparison, not just one operand.
@@ -5102,8 +5126,10 @@ impl Checker {
                 if let Some(reason) = reason {
                     (
                         format!(
-                            "`{op}` on record type `{type_name}` is not supported because {}",
-                            Self::structural_eq_ineligibility_reason(reason)
+                            "`{op}` on record type `{type_name}` is not supported because member \
+                             `{}` is ineligible: {}",
+                            reason.member,
+                            Self::structural_eq_ineligibility_reason(reason.reason)
                         ),
                         "compare individual eligible fields explicitly, or match/destructure and \
                          handle managed fields with their supported equality operations"
@@ -5118,12 +5144,32 @@ impl Checker {
             }
             UnsupportedComparison::PayloadEnum { type_name, reason } => (
                 format!(
-                    "`{op}` on enum `{type_name}` with payload variants is not supported because {}",
-                    Self::structural_eq_ineligibility_reason(reason)
+                    "`{op}` on enum `{type_name}` with payload variants is not supported because \
+                     member `{}` is ineligible: {}",
+                    reason.member,
+                    Self::structural_eq_ineligibility_reason(reason.reason)
                 ),
                 "match on the enum and compare eligible payload fields in the relevant arms"
                     .to_string(),
             ),
+            UnsupportedComparison::Tuple { type_name, reason } => {
+                if let Some(reason) = reason {
+                    (
+                        format!(
+                            "`{op}` on tuple type `{type_name}` is not supported because member \
+                             `{}` is ineligible: {}",
+                            reason.member,
+                            Self::structural_eq_ineligibility_reason(reason.reason)
+                        ),
+                        "compare only tuple members that support equality".to_string(),
+                    )
+                } else {
+                    (
+                        format!("`{op}` is not supported for tuple type `{type_name}`"),
+                        "tuple ordering is not structural; compare an explicit member".to_string(),
+                    )
+                }
+            }
             UnsupportedComparison::EnumOrdering(type_name) => (
                 format!("`{op}` is not supported for enum `{type_name}`"),
                 "match on the enum and compare an explicit value in each arm".to_string(),
@@ -5137,17 +5183,387 @@ impl Checker {
         );
     }
 
+    /// True when `ty` still names one of `params`.
+    ///
+    /// Implemented by substituting every parameter for a type that cannot occur
+    /// in a checked program (`Ty::Never`) and comparing: this reuses the one
+    /// substitution traversal instead of adding a second walk that could drift
+    /// out of sync with it as `Ty` grows variants.
+    pub(super) fn ty_mentions_type_params(ty: &Ty, params: &[String]) -> bool {
+        if params.is_empty() {
+            return false;
+        }
+        let probe: HashMap<String, Ty> = params
+            .iter()
+            .cloned()
+            .map(|param| (param, Ty::Never))
+            .collect();
+        ty.substitute_named_params_parallel(&probe) != *ty
+    }
+
+    /// Record a structural-equality obligation raised by the generic function
+    /// currently being checked.
+    ///
+    /// Only aggregates that actually mention the owning signature's type
+    /// parameters are recorded — a fully concrete aggregate was already decided
+    /// on the spot by `reject_record_comparison`.
+    fn record_generic_structural_eq_requirement(&mut self, ty: &Ty, in_scope: &HashSet<String>) {
+        if in_scope.is_empty() {
+            return;
+        }
+        let Some(fn_key) = self.current_function.clone() else {
+            return;
+        };
+        let Some(params) = self
+            .fn_sigs
+            .get(&fn_key)
+            .map(|sig| sig.type_params.clone())
+            .filter(|params| !params.is_empty())
+        else {
+            return;
+        };
+        if !Self::ty_mentions_type_params(ty, &params) {
+            return;
+        }
+        let requirements = self
+            .generic_structural_eq_requirements
+            .entry(fn_key)
+            .or_default();
+        if requirements.iter().any(|existing| existing.ty == *ty) {
+            return;
+        }
+        requirements.push(GenericStructuralEqRequirement {
+            ty: ty.clone(),
+            owner_type_params: params,
+        });
+    }
+
+    /// The single recording authority for a generic application.
+    ///
+    /// Every application shape — free function, module-qualified function,
+    /// method, actor method, trait-impl method — funnels through
+    /// `apply_instantiated_call_signature_with_assoc`, and that is the only
+    /// caller of this function. Recording anywhere else would reintroduce the
+    /// exact gap this closes: obligations discharged for direct calls only,
+    /// while a method instantiation walked straight into codegen.
+    ///
+    /// Two independent sources pin the callee's parameters and BOTH are merged
+    /// by name: the signature instantiation (method-level parameters) and the
+    /// receiver's type arguments (impl-level parameters, which
+    /// `lookup_named_method_sig` has already substituted out of the signature).
+    pub(super) fn record_generic_application(
+        &mut self,
+        callee: GenericCallee<'_>,
+        sig_type_params: &[String],
+        sig_type_args: &[Ty],
+        span: &Span,
+    ) {
+        // The one place method identity is joined into a `fn_sigs` key.
+        let (callee_key, owner) = match callee {
+            GenericCallee::Function { key } => (key.to_string(), None),
+            GenericCallee::Method {
+                type_name,
+                method,
+                owner_type_args,
+            } => (
+                format!("{type_name}::{method}"),
+                Some((type_name, owner_type_args)),
+            ),
+        };
+        let Some(declared_params) = self
+            .fn_sigs
+            .get(&callee_key)
+            .map(|sig| sig.type_params.clone())
+            .filter(|params| !params.is_empty())
+        else {
+            return;
+        };
+        let mut substitution: HashMap<String, Ty> = HashMap::new();
+        if sig_type_params.len() == sig_type_args.len() {
+            for (param, arg) in sig_type_params.iter().zip(sig_type_args) {
+                substitution.insert(param.clone(), self.subst.resolve(arg));
+            }
+        }
+        if let Some((owner_name, owner_args)) = owner {
+            let owner_params = self
+                .type_defs
+                .get(owner_name)
+                .map(|type_def| type_def.type_params.clone())
+                .unwrap_or_default();
+            if owner_params.len() == owner_args.len() {
+                for (param, arg) in owner_params.iter().zip(owner_args) {
+                    substitution
+                        .entry(param.clone())
+                        .or_insert_with(|| self.subst.resolve(arg));
+                }
+            }
+        }
+        // Nothing pinned means nothing to discharge; a partially pinned
+        // application still records, and the walk refuses to decide any
+        // obligation whose substituted form is still abstract.
+        if !declared_params
+            .iter()
+            .any(|param| substitution.contains_key(param))
+        {
+            return;
+        }
+        let enclosing = self.current_function.clone();
+        let enclosing_params = enclosing
+            .as_ref()
+            .and_then(|name| self.fn_sigs.get(name))
+            .map_or_else(Vec::new, |sig| sig.type_params.clone());
+        self.generic_fn_instantiation_sites
+            .push(GenericFnInstantiationSite {
+                caller: enclosing,
+                caller_type_params: enclosing_params,
+                callee: callee_key,
+                substitution,
+                span: span.clone(),
+                source_module: self.current_module.clone(),
+            });
+    }
+
+    /// Split the recorded applications into concrete roots and generic → generic
+    /// edges.
+    ///
+    /// An application whose substitution still names the enclosing generic
+    /// function's own parameters proves nothing on its own; it becomes an edge,
+    /// reachable only once a concrete root pins those parameters.
+    fn partition_generic_instantiation_sites(
+        &self,
+        sites: Vec<GenericFnInstantiationSite>,
+    ) -> (
+        Vec<PendingInstantiation>,
+        HashMap<String, Vec<GenericCallEdge>>,
+    ) {
+        let mut roots: Vec<PendingInstantiation> = Vec::new();
+        let mut edges: HashMap<String, Vec<GenericCallEdge>> = HashMap::new();
+        for site in sites {
+            let substitution: HashMap<String, Ty> = site
+                .substitution
+                .iter()
+                .map(|(param, ty)| {
+                    (
+                        param.clone(),
+                        self.subst.resolve(ty).materialize_literal_defaults(),
+                    )
+                })
+                .collect();
+            let still_abstract = substitution
+                .values()
+                .any(|ty| Self::ty_mentions_type_params(ty, &site.caller_type_params));
+            if still_abstract {
+                if let Some(owner) = site.caller {
+                    edges.entry(owner).or_default().push(GenericCallEdge {
+                        callee: site.callee,
+                        substitution,
+                    });
+                }
+                continue;
+            }
+            roots.push(PendingInstantiation {
+                chain: vec![site.callee.clone()],
+                callee: site.callee,
+                substitution,
+                report_span: site.span,
+                report_module: site.source_module,
+                depth: 0,
+            });
+        }
+        (roots, edges)
+    }
+
+    /// Stable rendering of a substitution, for the visited-set key.
+    fn render_substitution(substitution: &HashMap<String, Ty>) -> String {
+        let mut pairs: Vec<String> = substitution
+            .iter()
+            .map(|(param, ty)| format!("{param}={}", ty.user_facing()))
+            .collect();
+        pairs.sort();
+        pairs.join(", ")
+    }
+
+    /// Build the diagnostic for one ineligible instantiation of a generic
+    /// callee that compares `template` structurally.
+    fn generic_structural_eq_instantiation_error(
+        template: &Ty,
+        concrete: &Ty,
+        failure: EqEligibilityFailure,
+        pending: &PendingInstantiation,
+    ) -> crate::error::TypeError {
+        let callee = &pending.callee;
+        let mut err = crate::error::TypeError::new(
+            TypeErrorKind::InvalidOperation,
+            pending.report_span.clone(),
+            format!(
+                "`{callee}` compares `{}` structurally; this instantiation `{}` has no \
+                 structural equality path because member `{}` is ineligible: {}",
+                template.user_facing(),
+                concrete.user_facing(),
+                failure.member,
+                Self::structural_eq_ineligibility_reason(failure.reason),
+            ),
+        )
+        .with_suggestion(format!(
+            "instantiate `{callee}` with a type whose members all support structural equality, \
+             or compare the eligible members explicitly inside `{callee}`"
+        ));
+        if let Some(module) = pending.report_module.clone() {
+            err = err.with_source_module(module);
+        }
+        err
+    }
+
+    /// Fail-closed diagnostic for an instantiation chain that outruns the hop
+    /// budget.
+    ///
+    /// Dropping the obligation here would hand the un-analysed instantiation to
+    /// codegen — the very thing this pass exists to prevent — so the budget
+    /// refuses the program and names the chain that hit it.
+    fn generic_structural_eq_depth_error(
+        pending: &PendingInstantiation,
+        budget: u32,
+    ) -> crate::error::TypeError {
+        let chain = pending.chain.join(" → ");
+        let mut err = crate::error::TypeError::new(
+            TypeErrorKind::InvalidOperation,
+            pending.report_span.clone(),
+            format!(
+                "structural-equality obligations for this instantiation could not be \
+                 discharged: the generic instantiation chain exceeded {budget} hops \
+                 ({chain}). The checker refuses rather than hand an unanalysed \
+                 instantiation to codegen.",
+            ),
+        )
+        .with_suggestion(
+            "break the generic call chain — give an intermediate function a concrete type \
+             argument, or move the comparison to a non-generic helper"
+                .to_string(),
+        );
+        if let Some(module) = pending.report_module.clone() {
+            err = err.with_source_module(module);
+        }
+        err
+    }
+
+    /// Discharge every generic structural-equality obligation against the
+    /// concrete instantiations the program actually contains.
+    ///
+    /// The walk starts at applications whose substitution is concrete in the
+    /// caller's terms and follows generic → generic call edges, so an obligation
+    /// raised two hops down still lands on the concrete application the
+    /// programmer wrote. Codegen's `eq_thunk` is therefore never the first to
+    /// notice an ineligible instantiation.
+    pub(super) fn finalize_generic_structural_eq(&mut self) {
+        // WHY a hop budget: polymorphic recursion (`fn f<T>() { g::<Vec<T>>() }`)
+        // generates an unbounded instantiation chain. Exceeding it is reported,
+        // never skipped — see `generic_structural_eq_depth_error`.
+        const MAX_INSTANTIATION_DEPTH: u32 = 64;
+
+        let requirements = std::mem::take(&mut self.generic_structural_eq_requirements);
+        let sites = std::mem::take(&mut self.generic_fn_instantiation_sites);
+        if requirements.is_empty() {
+            return;
+        }
+
+        let (roots, edges) = self.partition_generic_instantiation_sites(sites);
+        let mut seen: HashSet<(String, String, usize, Option<String>)> = HashSet::new();
+        let mut work: VecDeque<PendingInstantiation> = roots.into();
+        let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
+
+        while let Some(pending) = work.pop_front() {
+            // Span offsets are module-local, so two modules can produce the same
+            // (callee, args, offset) triple for genuinely different sites; the
+            // module completes the identity.
+            if !seen.insert((
+                pending.callee.clone(),
+                Self::render_substitution(&pending.substitution),
+                pending.report_span.start,
+                pending.report_module.clone(),
+            )) {
+                continue;
+            }
+            if pending.depth > MAX_INSTANTIATION_DEPTH {
+                new_errors.push(Self::generic_structural_eq_depth_error(
+                    &pending,
+                    MAX_INSTANTIATION_DEPTH,
+                ));
+                continue;
+            }
+
+            for requirement in requirements.get(&pending.callee).into_iter().flatten() {
+                // Substitute, then collapse any associated-type projection the
+                // substitution just made resolvable (`Option<C::Item>` with
+                // `C = IntBox` becomes `Option<i64>`). A projection that
+                // survives collapse has an unresolved carrier: the instantiation
+                // is not decidable here, so do not answer for it.
+                let concrete = self.project_assoc_types(
+                    &requirement
+                        .ty
+                        .substitute_named_params_parallel(&pending.substitution),
+                );
+                if concrete.contains_error()
+                    || concrete.has_inference_var()
+                    || concrete.contains_assoc_type()
+                {
+                    continue;
+                }
+                // A parameter no source pinned leaves the obligation abstract;
+                // deciding it here would be guessing.
+                if Self::ty_mentions_type_params(&concrete, &requirement.owner_type_params) {
+                    continue;
+                }
+                if let Some(failure) = ty_eq_ineligibility_with_type_params(
+                    &concrete,
+                    &self.type_defs,
+                    &HashSet::new(),
+                ) {
+                    new_errors.push(Self::generic_structural_eq_instantiation_error(
+                        &requirement.ty,
+                        &concrete,
+                        failure,
+                        &pending,
+                    ));
+                }
+            }
+
+            for edge in edges.get(&pending.callee).into_iter().flatten() {
+                let mut chain = pending.chain.clone();
+                chain.push(edge.callee.clone());
+                work.push_back(PendingInstantiation {
+                    callee: edge.callee.clone(),
+                    substitution: edge
+                        .substitution
+                        .iter()
+                        .map(|(param, ty)| {
+                            (
+                                param.clone(),
+                                ty.substitute_named_params_parallel(&pending.substitution),
+                            )
+                        })
+                        .collect(),
+                    report_span: pending.report_span.clone(),
+                    report_module: pending.report_module.clone(),
+                    depth: pending.depth + 1,
+                    chain,
+                });
+            }
+        }
+
+        self.errors.extend(new_errors);
+    }
+
     fn structural_eq_ineligibility_reason(reason: EqEligibility) -> String {
         match reason {
             EqEligibility::Eligible => {
                 "structural equality eligibility was unexpectedly unresolved".to_string()
             }
             EqEligibility::IneligibleManaged(managed_ty) => format!(
-                "a field or payload contains layout-managed/non-Copy data `{}`",
+                "it contains layout-managed/non-Copy data `{}`",
                 managed_ty.user_facing()
             ),
             EqEligibility::IneligibleOwned(owned_ty) => format!(
-                "a field or payload contains owned or heap-backed data `{}`",
+                "it contains owned or heap-backed data `{}`",
                 owned_ty.user_facing()
             ),
             EqEligibility::IneligibleUnknown => {

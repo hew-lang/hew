@@ -30,20 +30,43 @@ pub(crate) enum EqEligibility {
     IneligibleUnknown,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EqEligibilityFailure {
+    pub reason: EqEligibility,
+    pub member: String,
+}
+
+impl EqEligibilityFailure {
+    fn at_member(mut self, member: impl Into<String>) -> Self {
+        let member = member.into();
+        self.member = if self.member.is_empty() {
+            member
+        } else {
+            format!("{member}.{}", self.member)
+        };
+        self
+    }
+}
+
 /// Returns `Some(rejection)` if `ty` is not equality-eligible, `None` if eligible.
 ///
 /// This inner form takes the active generic type parameters so abstract
 /// aggregates can admit parameter leaves and let monomorphized codegen resolve
 /// the concrete equality path after substitution.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the closed type-shape walk keeps each equality capability decision explicit"
+)]
 fn eq_ineligibility(
     ty: &Ty,
     type_defs: &HashMap<String, TypeDef>,
     type_params: &HashSet<String>,
-) -> Option<EqEligibility> {
+) -> Option<EqEligibilityFailure> {
     match ty {
         Ty::I8
         | Ty::I16
         | Ty::I32
+        | Ty::IntLiteral
         | Ty::U8
         | Ty::U16
         | Ty::U32
@@ -59,26 +82,37 @@ fn eq_ineligibility(
         // (bitwise/total semantics — reflexive, NaN==NaN iff identical bits).
         | Ty::F32
         | Ty::F64
+        | Ty::FloatLiteral
         | Ty::String
         | Ty::Named {
             builtin: Some(BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid),
             ..
         } => None,
-        Ty::Tuple(elems) => elems
-            .iter()
-            .find_map(|elem| eq_ineligibility(elem, type_defs, type_params)),
+        Ty::Tuple(elems) => elems.iter().enumerate().find_map(|(index, elem)| {
+            eq_ineligibility(elem, type_defs, type_params)
+                .map(|failure| failure.at_member(index.to_string()))
+        }),
         Ty::Named {
             builtin: Some(BuiltinType::Option | BuiltinType::Result),
             args,
             ..
-        } => args
-            .iter()
-            .find_map(|arg| eq_ineligibility(arg, type_defs, type_params)),
+        } => args.iter().enumerate().find_map(|(index, arg)| {
+            let member = if args.len() == 1 {
+                "Some"
+            } else if index == 0 {
+                "Ok"
+            } else {
+                "Err"
+            };
+            eq_ineligibility(arg, type_defs, type_params)
+                .map(|failure| failure.at_member(member))
+        }),
         Ty::Named {
             builtin: Some(BuiltinType::Vec),
             args,
             ..
-        } if args.len() == 1 => eq_ineligibility(&args[0], type_defs, type_params),
+        } if args.len() == 1 => eq_ineligibility(&args[0], type_defs, type_params)
+            .map(|failure| failure.at_member("element")),
         Ty::Named {
             builtin: Some(
                 BuiltinType::HashMap
@@ -96,14 +130,38 @@ fn eq_ineligibility(
         | Ty::Pointer { .. }
         | Ty::Borrow { .. }
         | Ty::TraitObject { .. }
-        | Ty::Task(_)
-        | Ty::AssocType { .. } => Some(EqEligibility::IneligibleOwned(ty.clone())),
+        | Ty::Task(_) => Some(EqEligibilityFailure {
+            reason: EqEligibility::IneligibleOwned(ty.clone()),
+            member: String::new(),
+        }),
+        // An associated-type projection over an in-scope type parameter
+        // (`C::Item` inside `fn same<C: Carrier>`) is in exactly the position a
+        // bare `T` is in: there is no concrete leaf to walk yet. Defer it like
+        // an abstract parameter and let the instantiation decide, rather than
+        // calling it ineligible and rejecting every eligible projection.
+        //
+        // A projection over a carrier that is NOT abstract reached here with
+        // collapse already having failed, so nothing further will resolve it —
+        // fail closed.
+        Ty::AssocType { base, .. } => {
+            if assoc_carrier_is_abstract(base, type_params) {
+                None
+            } else {
+                Some(EqEligibilityFailure {
+                    reason: EqEligibility::IneligibleOwned(ty.clone()),
+                    member: String::new(),
+                })
+            }
+        }
         Ty::Named { name, args, .. } => match type_defs.get(name).or_else(|| {
             name.split_once('.')
                 .and_then(|(_, local)| type_defs.get(local))
         }) {
             Some(type_def) if type_def.is_indirect => {
-                Some(EqEligibility::IneligibleOwned(ty.clone()))
+                Some(EqEligibilityFailure {
+                    reason: EqEligibility::IneligibleOwned(ty.clone()),
+                    member: String::new(),
+                })
             }
             Some(type_def) if type_def.kind == TypeDefKind::Enum => {
                 walk_variants_for_eq_eligibility(type_def, args, type_defs, type_params)
@@ -112,12 +170,33 @@ fn eq_ineligibility(
                 walk_instantiated_fields_for_eq_eligibility(type_def, args, type_defs, type_params)
             }
             None if args.is_empty() && type_params.contains(name) => None,
-            None => Some(EqEligibility::IneligibleUnknown),
+            None => Some(EqEligibilityFailure {
+                reason: EqEligibility::IneligibleUnknown,
+                member: String::new(),
+            }),
         },
-        Ty::Var(_) | Ty::Error | Ty::IntLiteral | Ty::FloatLiteral | Ty::Never => {
-            Some(EqEligibility::IneligibleUnknown)
+        Ty::Var(_) | Ty::Error | Ty::Never => {
+            Some(EqEligibilityFailure {
+                reason: EqEligibility::IneligibleUnknown,
+                member: String::new(),
+            })
         }
-        Ty::Bytes => Some(EqEligibility::IneligibleManaged(ty.clone())),
+        Ty::Bytes => Some(EqEligibilityFailure {
+            reason: EqEligibility::IneligibleManaged(ty.clone()),
+            member: String::new(),
+        }),
+    }
+}
+
+/// True when an associated-type projection's carrier is an in-scope type
+/// parameter (directly, or through a chain of further projections).
+///
+/// `C::Item` inside `fn same<C: Carrier>` is abstract; `IntBox::Item` is not.
+fn assoc_carrier_is_abstract(base: &Ty, type_params: &HashSet<String>) -> bool {
+    match base {
+        Ty::Named { name, args, .. } => args.is_empty() && type_params.contains(name),
+        Ty::AssocType { base, .. } => assoc_carrier_is_abstract(base, type_params),
+        _ => false,
     }
 }
 
@@ -138,13 +217,14 @@ fn walk_instantiated_fields_for_eq_eligibility(
     type_args: &[Ty],
     type_defs: &HashMap<String, TypeDef>,
     type_params: &HashSet<String>,
-) -> Option<EqEligibility> {
+) -> Option<EqEligibilityFailure> {
     if type_args.is_empty() {
         let mut field_names: Vec<&String> = type_def.fields.keys().collect();
         field_names.sort();
         return field_names.into_iter().find_map(|name| {
             let field_ty = type_def.fields.get(name)?;
             eq_ineligibility(field_ty, type_defs, type_params)
+                .map(|failure| failure.at_member(name.clone()))
         });
     }
     let mut field_names: Vec<&String> = type_def.fields.keys().collect();
@@ -153,6 +233,7 @@ fn walk_instantiated_fields_for_eq_eligibility(
         let field_ty = type_def.fields.get(name)?;
         let field_ty = instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
         eq_ineligibility(&field_ty, type_defs, type_params)
+            .map(|failure| failure.at_member(name.clone()))
     })
 }
 
@@ -161,22 +242,24 @@ fn walk_variants_for_eq_eligibility(
     type_args: &[Ty],
     type_defs: &HashMap<String, TypeDef>,
     type_params: &HashSet<String>,
-) -> Option<EqEligibility> {
+) -> Option<EqEligibilityFailure> {
     let mut variant_names: Vec<&String> = type_def.variants.keys().collect();
     variant_names.sort();
     variant_names.into_iter().find_map(|name| {
         let variant = type_def.variants.get(name)?;
         match variant {
             VariantDef::Unit => None,
-            VariantDef::Tuple(fields) => fields.iter().find_map(|field_ty| {
+            VariantDef::Tuple(fields) => fields.iter().enumerate().find_map(|(index, field_ty)| {
                 let field_ty =
                     instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
                 eq_ineligibility(&field_ty, type_defs, type_params)
+                    .map(|failure| failure.at_member(format!("{name}.{index}")))
             }),
-            VariantDef::Struct(fields) => fields.iter().find_map(|(_, field_ty)| {
+            VariantDef::Struct(fields) => fields.iter().find_map(|(field_name, field_ty)| {
                 let field_ty =
                     instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
                 eq_ineligibility(&field_ty, type_defs, type_params)
+                    .map(|failure| failure.at_member(format!("{name}.{field_name}")))
             }),
         }
     })
@@ -184,14 +267,22 @@ fn walk_variants_for_eq_eligibility(
 
 #[must_use]
 pub(crate) fn ty_is_eq_eligible(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> EqEligibility {
-    eq_ineligibility(ty, type_defs, &HashSet::new()).unwrap_or(EqEligibility::Eligible)
+    ty_eq_ineligibility(ty, type_defs).map_or(EqEligibility::Eligible, |failure| failure.reason)
 }
 
 #[must_use]
-pub(crate) fn ty_is_eq_eligible_with_type_params(
+pub(crate) fn ty_eq_ineligibility(
+    ty: &Ty,
+    type_defs: &HashMap<String, TypeDef>,
+) -> Option<EqEligibilityFailure> {
+    eq_ineligibility(ty, type_defs, &HashSet::new())
+}
+
+#[must_use]
+pub(crate) fn ty_eq_ineligibility_with_type_params(
     ty: &Ty,
     type_defs: &HashMap<String, TypeDef>,
     type_params: &HashSet<String>,
-) -> EqEligibility {
-    eq_ineligibility(ty, type_defs, type_params).unwrap_or(EqEligibility::Eligible)
+) -> Option<EqEligibilityFailure> {
+    eq_ineligibility(ty, type_defs, type_params)
 }

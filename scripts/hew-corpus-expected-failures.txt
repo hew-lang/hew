@@ -31,7 +31,7 @@
 # add the path + category comment here, and re-run `make hew-check-all`.
 # To remove an entry: delete the line once the file compiles clean.
 #
-# Gate: make hew-check-all (scripts/hew-corpus-check.sh)
+# Gate: make hew-check-all (scripts/corpus-ratchet.sh hew-corpus)
 
 # ── examples/ ────────────────────────────────────────────────────────────────
 

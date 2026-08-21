@@ -106,7 +106,7 @@ run_case "floor-required-for-custom-corpus" 1 "baseline-identical"
 
 # ── C1 handoff-path equivalence cases ────────────────────────────────────────
 # The stub's O0 output (unset/HEW_OPT_LEVEL=0) for each existing case is the
-# exact content scripts/hew-suite-ratchet.sh's --emit-o0-outcomes would write.
+# exact content scripts/corpus-ratchet.sh hew-suite's --emit-o0-outcomes would write.
 # Pre-capture it the same way (same extraction regex the gate itself uses) and
 # feed it back via --o0-outcomes, asserting the handoff path reaches the same
 # verdict as the self-run path above for BOTH the identical and the

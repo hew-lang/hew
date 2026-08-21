@@ -38,7 +38,7 @@ if [[ $# -ne 0 ]]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HARNESS="$REPO_ROOT/scripts/extract-doc-fences.sh"
+HARNESS="$REPO_ROOT/scripts/corpus-ratchet.sh"
 
 # shellcheck source=scripts/lib/line-set.sh
 # shellcheck disable=SC1091
@@ -78,15 +78,21 @@ assert_contains() {
 }
 
 assert_production_membership_wiring() {
-    # These are literal source contracts; variable expansion would weaken the
-    # assertion by substituting the self-test's current values.
+    # A literal source contract; variable expansion would weaken the assertion
+    # by substituting the self-test's current values. Both directions of the
+    # comparison run through the one shared set_difference call site, and the
+    # driver must reach it with exact membership rather than a producer-to-grep
+    # pipeline that can turn a present entry into a false absence.
     # shellcheck disable=SC2016
-    local expected_lookup='    if ! line_set_contains "$EXPECTED_STR" "$name"; then'
+    local lookup='        if ! line_set_contains "$against" "$entry"; then'
     # shellcheck disable=SC2016
-    local actual_lookup='    if ! line_set_contains "$ACTUAL_STR" "$name"; then'
+    local expected_call='    unexpected_failures="$(set_difference "$ACTUAL_STR" "$EXPECTED_STR")"'
+    # shellcheck disable=SC2016
+    local actual_call='    unexpected_passes="$(set_difference "$EXPECTED_STR" "$ACTUAL_STR")"'
 
-    if grep -Fqx "$expected_lookup" "$HARNESS" \
-        && grep -Fqx "$actual_lookup" "$HARNESS"; then
+    if grep -Fqx "$lookup" "$HARNESS" \
+        && grep -Fqx "$expected_call" "$HARNESS" \
+        && grep -Fqx "$actual_call" "$HARNESS"; then
         pass "production ratchet uses exact membership for both set comparisons"
     else
         fail "production ratchet bypasses exact membership wiring"
@@ -157,7 +163,7 @@ run_harness() {
     HARNESS_OUTPUT="$({
         HEW_FAIL_IDS="$fail_file" \
         HEW_CALL_LOG="$call_log" \
-        "$HARNESS" \
+        "$HARNESS" doc-fences \
             --expected-failures "$expected_file" \
             --outdir "$OUTDIR" \
             --hew-bin "$FAKE_HEW"

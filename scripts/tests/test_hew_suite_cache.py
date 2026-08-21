@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-RATCHET = ROOT / "scripts/hew-suite-ratchet.sh"
+RATCHET = ROOT / "scripts/corpus-ratchet.sh"
 
 
 def run(env: dict[str, str], expected: Path, report: Path) -> None:
@@ -17,6 +17,7 @@ def run(env: dict[str, str], expected: Path, report: Path) -> None:
         [
             "bash",
             str(RATCHET),
+            "hew-suite",
             "--expected-failures",
             str(expected),
             "--junit-output",

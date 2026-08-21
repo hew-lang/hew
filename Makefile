@@ -1263,9 +1263,9 @@ test-runtime-unit-build: $(LIBHEW_READY)
 
 # Ratcheted wrappers for the Hew-language test suites.
 #
-# These targets run the suites through scripts/hew-suite-ratchet.sh and
-# scripts/stdlib-ratchet.sh, which compare the set of failing tests against
-# an exhaustive tracked-failures list.  Any unexpected failure or unexpected
+# These targets run the suites through scripts/corpus-ratchet.sh, which
+# compares the set of failing tests against an exhaustive tracked-failures
+# list.  Any unexpected failure or unexpected
 # pass causes the gate to exit 1.  When the converging lanes land and the
 # tracked failures drop to zero, delete the list entries; the ratchets then
 # pass with no tracking overhead.
@@ -1275,7 +1275,7 @@ test-runtime-unit-build: $(LIBHEW_READY)
 # the identical O0 pass a second time (CI sets this across both targets in the
 # same job; plain `make test-hew-ratchet` / `make test-o2-differential` with no
 # env var keep their original standalone behaviour).
-# inputs: tests/hew/* scripts/hew-suite-ratchet.sh
+# inputs: tests/hew/* scripts/corpus-ratchet.sh
 # inputs: scripts/lib/hew_junit.py
 # inputs: scripts/hew-suite-expected-failures.txt scripts/compiled-hew-shards.py
 # inputs: std/*.hew hew-runtime/src/*.rs hew-codegen-rs/src/*.rs hew-mir/src/*.rs
@@ -1297,7 +1297,7 @@ test-hew-ratchet-build:
 else
 test-hew-ratchet: hew-native runtime $(LIBHEW_READY)
 	@echo "==> Running Hew test suite (ratcheted)"
-	HEW_BIN="$(DEBUG_DIR)/hew" scripts/hew-suite-ratchet.sh $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
+	HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh hew-suite $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 test-hew-ratchet-build: hew-native runtime $(LIBHEW_READY)
@@ -1445,11 +1445,11 @@ check-counterfactual-output-build:
 check-counterfactual-output-artifacts-build: $(LIBHEW_READY)
 	bash -n scripts/ci-preflight-dispatcher.sh
 
-# inputs: std/* scripts/stdlib-ratchet.sh scripts/stdlib-expected-failures.txt
+# inputs: std/* scripts/corpus-ratchet.sh scripts/stdlib-expected-failures.txt
 test-stdlib-ratchet: hew
 	@bash scripts/tests/test_stdlib_ratchet_deprecations.sh
 	@echo "==> Type-checking stdlib (ratcheted)"
-	HEW_BIN="$(DEBUG_DIR)/hew" scripts/stdlib-ratchet.sh
+	HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh stdlib
 
 # Every stdlib source must stay clean in isolation, and every module must stay
 # silent when checked and built through a temporary user package.
@@ -1577,9 +1577,9 @@ test-example-expectations-selftest-build:
 # Run `make test-doc-examples` after any docs/ change to confirm no fence
 # regressions were introduced.
 # inputs: docs/hew-language-guide.md docs/specs/HEW-SPEC-2026.md
-# inputs: scripts/extract-doc-fences.sh scripts/doc-test-expected-failures.txt
+# inputs: scripts/corpus-ratchet.sh scripts/doc-test-expected-failures.txt
 test-doc-examples: hew
-	@HEW_BIN="$(DEBUG_DIR)/hew" scripts/extract-doc-fences.sh
+	@HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh doc-fences
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 test-doc-examples-build: hew
@@ -2074,12 +2074,12 @@ hew-fmt-property-build: hew
 # reject fixtures).  Ratchets against scripts/hew-corpus-expected-failures.txt.
 # Catches the class of bug where a symbol rename or type change lands in the
 # compiler but fixture files across crates/tests/examples are silently missed.
-# See scripts/hew-corpus-check.sh for the allowlist format and classification guide.
-# inputs: *.hew */hew.toml scripts/hew-corpus-check.sh
+# See scripts/corpus-ratchet.sh for the allowlist format and classification guide.
+# inputs: *.hew */hew.toml scripts/corpus-ratchet.sh
 # inputs: scripts/hew-corpus-expected-failures.txt
 hew-check-all: hew
 	@echo "==> hew-check-all: compiling full .hew corpus"
-	HEW_BIN="$(DEBUG_DIR)/hew" scripts/hew-corpus-check.sh
+	HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh hew-corpus
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 hew-check-all-build: hew

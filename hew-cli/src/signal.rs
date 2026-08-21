@@ -80,7 +80,7 @@ pub fn forward_signals_to_child(child_pid: u32) {
 /// dump, having emitted nothing, on a run whose only unusual property is that
 /// its consumer stopped reading.
 ///
-/// That is exactly what `scripts/stdlib-ratchet.sh` does when it REPORTS an
+/// That is exactly what `scripts/corpus-ratchet.sh stdlib` does when it REPORTS an
 /// unexpected failure (`"$HEW_BIN" check "$path" 2>&1 | head -3`), and it is
 /// why a plain diagnosable rejection reached CI as `exit 134` while the same
 /// file run directly exited 1 with a full diagnostic. The reset used to be

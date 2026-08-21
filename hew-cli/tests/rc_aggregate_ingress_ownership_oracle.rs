@@ -43,11 +43,21 @@
 
 mod support;
 
+use std::process::Command;
+use std::time::Duration;
+
+#[cfg(target_os = "macos")]
+use support::leak_slope::run_under_malloc_scribble;
 use support::leak_slope::{
     assert_frame_slope_below_tolerance_exact_lines, compile_to_native, require_leaks_tool,
-    run_under_malloc_scribble,
 };
-use support::{describe_output, require_codegen};
+use support::{describe_output, require_codegen, try_run_bounded_command};
+
+/// Ceiling for one probe run, mirroring the leak harness's own bound for the
+/// same kind of run. Every shape here is a bounded counting loop that finishes
+/// in milliseconds; a probe that has not exited by now is hung, and a hung probe
+/// has established nothing.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// One frame prints exactly one line, so the leak-slope harness can pin the
 /// drained iteration count instead of settling for monotonicity.
@@ -634,13 +644,45 @@ fn assert_shape_does_not_over_release(name: &str, source_fn: fn(usize) -> String
         .tempdir()
         .expect("tempdir");
     let binary = compile_to_native(&source_fn(16), dir.path(), name);
-    let run = run_under_malloc_scribble(&binary);
+
+    // EVERY host runs this half. Releasing a shared handle once too often trips
+    // the runtime's own `Rc double-free` guard, which aborts the process, so a
+    // probe that reaches its own exit with status 0 has proved the release count
+    // is not too high. That guard lives in `hew-runtime`, not in the allocator,
+    // so the oracle is the same everywhere and this half must NOT be gated to
+    // macOS — gating it would leave the over-release direction unmeasured on the
+    // host CI actually gates on.
+    let run = try_run_bounded_command(
+        Command::new(&binary),
+        format!("run the {name} over-release probe"),
+        PROBE_TIMEOUT,
+    )
+    .unwrap_or_else(|error| {
+        panic!("{name}: probe did not finish within {PROBE_TIMEOUT:?}: {error}")
+    });
     assert!(
         run.status.success(),
         "{name}: moving a refcounted handle into a value aggregate must transfer its single \
          strong count exactly once — a second release aborts the process:\n{}",
         describe_output(&run)
     );
+
+    // macOS additionally runs it under the poisoned-allocator triple, which
+    // turns the weaker failure — a release that frees storage the aggregate drop
+    // then reads — into an abort rather than a silent read of stale bytes.
+    // `MallocScribble` / `MallocPreScribble` / `MallocGuardEdges` are Darwin
+    // libmalloc facilities that are silently ignored elsewhere, so this is the
+    // only part of the assertion that is host-specific.
+    #[cfg(target_os = "macos")]
+    {
+        let scribbled = run_under_malloc_scribble(&binary);
+        assert!(
+            scribbled.status.success(),
+            "{name}: the probe exited cleanly but aborted under the poisoned allocator, so a \
+             release freed storage that is still read:\n{}",
+            describe_output(&scribbled)
+        );
+    }
 }
 
 /// The UNDER-release half: the per-iteration leak slope must stay flat.

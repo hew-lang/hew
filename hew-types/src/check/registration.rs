@@ -7498,6 +7498,51 @@ impl Checker {
             .map(|p| p.name.clone())
             .collect();
 
+        // DECISION: a method type parameter that shadows an impl type parameter
+        // is REFUSED, rather than the two being distinguished by scope.
+        //
+        // The two are already conflated everywhere downstream, silently and
+        // wrongly. `instantiate_named_method_sig` (method_resolution.rs)
+        // substitutes the impl's type arguments by NAME and then drops every
+        // matching name from `sig.type_params`, so the method's own parameter is
+        // erased and bound to the impl's argument: given
+        // `impl<T> Holder<T> { fn same<T>(self, marker: T) }`, a
+        // `Holder<i64>` receiver makes `same("text")` report
+        // `expected i64, found string` — the method's `T` never existed.
+        //
+        // Keying substitutions by `(scope, name)` would not fix that: the
+        // collapse happens upstream of any substitution map, and `type_params`
+        // is a flat `Vec<String>` read by every consumer of `FnSig`, all of
+        // which would need the two-level key. Shadowing buys no expressiveness
+        // — the method parameter can always be renamed — so the fail-closed
+        // refusal is both the smaller change and the honest one.
+        if let (Some(impl_tps), Some(method_tps)) = (impl_type_params, method.type_params.as_ref())
+        {
+            let impl_names: std::collections::HashSet<&str> =
+                impl_tps.iter().map(|tp| tp.name.as_str()).collect();
+            let mut shadowed: Vec<&str> = method_tps
+                .iter()
+                .map(|tp| tp.name.as_str())
+                .filter(|name| impl_names.contains(name))
+                .collect();
+            shadowed.sort_unstable();
+            shadowed.dedup();
+            for name in shadowed {
+                self.report_error_with_suggestions(
+                    TypeErrorKind::DuplicateDefinition,
+                    &method.decl_span,
+                    format!(
+                        "method type parameter `{name}` shadows the type parameter `{name}` \
+                         declared by the `impl` block on `{type_name}`; the two cannot be told \
+                         apart once the receiver's type arguments are substituted"
+                    ),
+                    vec![format!(
+                        "rename the method's parameter so it is distinct from the impl's `{name}`"
+                    )],
+                );
+            }
+        }
+
         // Collect type param names: impl-level + method-level.
         let mut all_type_params: Vec<String> = impl_type_params
             .map(|tps| tps.iter().map(|tp| tp.name.clone()).collect())

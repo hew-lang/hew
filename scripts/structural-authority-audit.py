@@ -1069,6 +1069,72 @@ def reject_raw_codegen_call_dispatch(ast_grep: Path, root: Path) -> None:
         )
 
 
+SIGNATURE_APPLICATION_FILES = (
+    "hew-types/src/check/calls.rs",
+    "hew-types/src/check/methods.rs",
+)
+SIGNATURE_APPLICATION_AUTHORITY = "apply_instantiated_call_signature_with_assoc"
+ARG_CHECK_PRIMITIVES = ("check_against", "check_expr_with_expected")
+
+
+def signature_application_findings(ast_grep: Path, root: Path) -> set[Finding]:
+    """Inventory every argument-check outside the one application authority.
+
+    Applying a call signature means checking each argument against the
+    signature's parameter types. That must happen in ONE place, because that is
+    where a generic callee's type parameters are freshened, inferred from the
+    arguments, and recorded as an instantiation. A hand-rolled arg-check loop
+    skips all three: it is how generic actor receive calls ended up reporting
+    `expected T` and never discharging their obligations.
+
+    The rule is deliberately INVERTED and structural. It does not try to decide
+    whether a given expected-type operand "looks like" a signature parameter —
+    an earlier name-based version was defeated by a helper taking the operand as
+    `expected`, and would be defeated again by any rename. Instead every call of
+    an argument-check primitive inside the two call-application files is a
+    reviewed finding unless it sits inside the authority's own body. Adding a
+    call anywhere else in those files moves the count and fails the lint,
+    whatever its variables are called.
+    """
+    # Matched by node kind rather than a `fn NAME(..)` pattern: the authority
+    # carries a visibility modifier, which a bare `fn` pattern does not match.
+    authority = [
+        node_range(match)
+        for match in run_query(ast_grep, root, kind="function_item")
+        if f"fn {SIGNATURE_APPLICATION_AUTHORITY}" in str(match["text"])
+    ]
+    if len(authority) > 1:
+        raise SystemExit(
+            "expected at most one call-signature application authority, found "
+            f"{len(authority)}"
+        )
+    # Fail closed if the query stops finding an authority that is plainly there:
+    # a silently-empty allowlist would turn every sanctioned check into a
+    # finding, and a silently-empty FINDING set is the failure this rule exists
+    # to prevent. Either way the mismatch must be loud, not absorbed.
+    for scoped in SIGNATURE_APPLICATION_FILES:
+        scoped_path = root / scoped
+        if (
+            not authority
+            and scoped_path.exists()
+            and SIGNATURE_APPLICATION_AUTHORITY in scoped_path.read_text()
+        ):
+            raise SystemExit(
+                f"{scoped} names {SIGNATURE_APPLICATION_AUTHORITY} but the authority "
+                "query matched nothing; the allowlist would be silently empty"
+            )
+    findings: set[Finding] = set()
+    for primitive in ARG_CHECK_PRIMITIVES:
+        for match in run_query(ast_grep, root, pattern=f"$R.{primitive}($$$ARGS)"):
+            match_range = node_range(match)
+            if match_range.path not in SIGNATURE_APPLICATION_FILES:
+                continue
+            if any(range_contains(scope, match_range) for scope in authority):
+                continue
+            findings.add(finding("signature-application", "arg-check-call", match))
+    return findings
+
+
 def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange]]:
     test_ranges = test_only_ranges(ast_grep, root)
     findings: set[Finding] = set()
@@ -1088,17 +1154,7 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
                 finding("mir-ownership-sink", "ownership-classify-call", match)
             )
 
-    # Applying a call signature means checking each argument against the
-    # signature's parameter types. That must happen in ONE place
-    # (`apply_instantiated_call_signature_with_assoc`), because that is where a
-    # generic callee's type parameters are freshened, inferred, and recorded as
-    # an instantiation. A hand-rolled `check_against(expr, span, param_ty)` loop
-    # silently skips all three: it is how generic actor receive calls ended up
-    # reporting `expected T` and never discharging their obligations. Every such
-    # site is inventoried so a new one cannot appear without review.
-    for match in run_query(ast_grep, root, pattern="$R.check_against($E, $S, $P)"):
-        if "param" in single_meta(match, "P"):
-            findings.add(finding("signature-application", "manual-arg-vs-param", match))
+    findings.update(signature_application_findings(ast_grep, root))
 
     for match in run_query(ast_grep, root, pattern="$R.insert($$$ARGS)"):
         receiver = single_meta(match, "R").split(".")[-1]

@@ -681,31 +681,58 @@ with tempfile.TemporaryDirectory() as temp:
         "whitespace-qualified non-format macro paths must remain controls"
     )
 
-    # A hand-rolled arg-vs-signature-parameter application must be inventoried.
-    # This is the shape that let generic actor receive calls skip type-parameter
-    # instantiation entirely; a new one has to be reviewed, not merged quietly.
+    # Argument checking outside the one application authority must be
+    # inventoried. The rule is path-scoped and structural: it does not inspect
+    # the expected-type operand's NAME, so a helper that launders the parameter
+    # through an `expected` argument is caught exactly like a direct loop.
+    application_file = work / "hew-types/src/check/methods.rs"
+    application_file.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("")
     for source_text, description in (
         (
             "fn f() { let ty = self.check_against(expr, sp, param_ty); }\n",
             "direct parameter application",
         ),
         (
-            "fn f() { checker.check_against(expr, sp, &sig_param); }\n",
-            "borrowed parameter application",
+            "fn apply_one(&mut self, expr: &Expr, sp: &Span, expected: &Ty) {\n"
+            "    self.check_against(expr, sp, expected);\n"
+            "}\n",
+            "helper laundering the parameter as `expected`",
+        ),
+        (
+            "fn f() { self.check_expr_with_expected(expr, sp, whatever); }\n",
+            "the other arg-check primitive",
         ),
     ):
-        target.write_text(source_text)
+        application_file.write_text(source_text)
         set_inventory(work)
         result = run(work)
         assert result.returncode != 0, (
             f"a new {description} must fail the signature-application ratchet"
         )
-        assert "manual-arg-vs-param" in result.stderr
+        assert "arg-check-call" in result.stderr
 
-    target.write_text("fn f() { self.check_against(expr, sp, &expected_fn); }\n")
+    # A call inside the application authority's own body is the sanctioned site.
+    application_file.write_text(
+        "fn apply_instantiated_call_signature_with_assoc(&mut self) {\n"
+        "    self.check_against(expr, sp, param_ty);\n"
+        "}\n"
+    )
     set_inventory(work)
     assert run(work).returncode == 0, (
-        "checking against a non-signature expected type must remain a control"
+        "the application authority's own argument check must be the allowlisted site"
     )
+
+    # The same call outside the two call-application files is not this rule's
+    # business — general expression checking uses the primitive constantly.
+    application_file.write_text("")
+    (work / "hew-types/src/check/expressions.rs").write_text(
+        "fn f() { self.check_against(expr, sp, param_ty); }\n"
+    )
+    set_inventory(work)
+    assert run(work).returncode == 0, (
+        "argument checking outside the call-application files must remain a control"
+    )
+    (work / "hew-types/src/check/expressions.rs").unlink()
 
 print("structural authority audit counterfactuals: PASS")

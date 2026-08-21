@@ -66,8 +66,8 @@ runtime-call-authority	runtime-call-family-use	hew-mir/src/runtime_symbols.rs	3	
 runtime-call-authority	runtime-call-family-use	hew-types/src/runtime_call.rs	16	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	230	stage-4	typed runtime-family dispatch carrier including structural formatting
 semantic-owner-shortening-sink	registry-key	hew-types/src/check/registration.rs	8	stage-1	reviewed remaining owner-shortening sink
-signature-application	manual-arg-vs-param	hew-types/src/check/calls.rs	5	stage-1	reviewed: the application authority itself plus lambda/closure call arg checking, which apply no named signature
-signature-application	manual-arg-vs-param	hew-types/src/check/methods.rs	6	stage-1	reviewed: builtin and template-driven method arg checking that binds no generic signature; every named-signature application routes through apply_instantiated_call_signature
+signature-application	arg-check-call	hew-types/src/check/calls.rs	13	stage-1	reviewed: argument checks outside apply_instantiated_call_signature_with_assoc — lambda, closure and expected-constructor paths that apply no named signature
+signature-application	arg-check-call	hew-types/src/check/methods.rs	27	stage-1	reviewed: builtin and template-driven method argument checks that bind no generic signature; every named-signature application routes through apply_instantiated_call_signature
 string-method-identity	qualified-format-macro	hew-analysis/src/hover.rs	5	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-analysis/src/inlay_hints.rs	5	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-analysis/src/signature_help.rs	1	stage-1	reviewed qualified string identity construction

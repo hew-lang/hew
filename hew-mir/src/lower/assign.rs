@@ -384,6 +384,46 @@ impl Builder {
                                 value: i64::from(!owns_snapshot),
                             });
                         }
+                    } else if let Some(flag) = self.affine_release_flags.get(binding).copied() {
+                        // A `var` reassignment is a GENERATION BOUNDARY for an
+                        // affine refcounted handle (`Rc` / `Weak`) or a user
+                        // `#[resource]`. Two obligations meet here, and the
+                        // runtime flag is what separates them.
+                        //
+                        // The OLD generation must be released iff this frame
+                        // still owns it. It does not when the handle was moved
+                        // into an aggregate or otherwise transferred, and that
+                        // is exactly what the flag records — so the release is
+                        // gated on `flag == 0` rather than on the binding's
+                        // static `owned_locals` disposition, which an aggregate
+                        // ingress deliberately leaves untouched. The unguarded
+                        // static arm below would have released a handle the
+                        // aggregate now owns.
+                        //
+                        // The NEW generation is a fresh value this frame owns
+                        // outright, so the flag resets to 0 after the store.
+                        // Leaving it at 1 (the state a prior transfer left it
+                        // in) suppressed the replacement's scope-exit release
+                        // entirely: `let pair = (shared, "t"); shared = Rc.new(..)`
+                        // leaked one handle per frame. This mirrors the reset the
+                        // `overwrite_guard_flags` arm below performs for the
+                        // same reason.
+                        //
+                        // `rhs_may_alias_old` keeps the #2420 posture: an RHS
+                        // that reads the outgoing value (`shared = shared`,
+                        // `shared = pick(shared)`) skips the release rather than
+                        // freeing storage the incoming value still points at.
+                        if !rhs_may_alias_old {
+                            self.emit_flag_gated_overwrite_release(
+                                *binding, dest, &target.ty, flag, value,
+                            );
+                        }
+                        self.push_instr(Instr::Move { dest, src });
+                        self.push_instr(Instr::ConstI64 {
+                            dest: flag,
+                            value: 0,
+                        });
+                        self.set_owned_local_disposition(*binding, Disposition::ScopeExit);
                     } else if let Some(flag) = self.overwrite_guard_flags.get(binding).copied() {
                         // #2301 -- `binding` is consumed on one control-flow path
                         // and overwritten on another. The consume removed it from

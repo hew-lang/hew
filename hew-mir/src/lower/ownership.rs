@@ -1844,7 +1844,57 @@ impl Builder {
     /// spelled without naming who took ownership and why, so the fact is never
     /// erased at the retraction seam. Every production consume routes through
     /// here (via [`Builder::mark_binding_moved`]).
+    /// Record that `binding`'s ownership obligation has been discharged by a
+    /// TRANSFER, at lowering time.
+    ///
+    /// This is the lowest seam the transfer passes through, so it is where the
+    /// affine refcounted-handle (`Rc` / `Weak`) and user `#[resource]` release
+    /// flag is written: the `ConsumedAt` disposition and the runtime transfer
+    /// record are set together, by one statement, and a caller cannot record
+    /// one without the other. `mark_binding_moved` funnels here, and so do the
+    /// synthetic produced-value owner handoffs that bypass it.
+    ///
+    /// WHY a runtime flag and not the disposition alone. A flagged binding is
+    /// deliberately KEPT in `owned_locals` across its consume so the guard can
+    /// decide per control-flow path, so the disposition below does not retire
+    /// its drop — only the flag can. The dataflow `Consumed` state suffices for
+    /// a consume that DOMINATES the exit (`filter_drops_by_state` excludes a
+    /// `Consumed` binding), but a conditional one meets `Live` at the join and
+    /// yields `MaybeConsumed`, which the same filter admits as live. The drop
+    /// then fires on the path that already transferred the handle, guard still
+    /// reading 0 — `match flag { true => { let v: Vec<Rc<T>> = [shared]; .. }
+    /// false => .. }` aborted with `Rc double-free`.
+    ///
+    /// A no-op for every unflagged binding.
     pub(crate) fn set_owned_local_consumed(
+        &mut self,
+        binding: BindingId,
+        transferee: Option<Place>,
+        site: DischargeSite,
+    ) {
+        if let Some(flag) = self.affine_release_flags.get(&binding).copied() {
+            self.instructions.push(Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            });
+        }
+        self.set_owned_local_consumed_post_lowering(binding, transferee, site);
+    }
+
+    /// Disposition-only form of [`Self::set_owned_local_consumed`], for a
+    /// handoff discovered AFTER block building has finished.
+    ///
+    /// The finalized-MIR `string` / `bytes` retain-site derivations run over
+    /// `raw.blocks` once the builder's instruction buffer is closed, so a
+    /// `push_instr` from there would append to a stream nothing emits. Those
+    /// passes are also the wrong authority for the flag: they resolve
+    /// CoW-carrier handoffs, whose release accounting is the retain-site
+    /// derivation's, never an affine handle's. Recording the disposition alone
+    /// is therefore both necessary and sufficient there.
+    ///
+    /// Every LOWERING-time consume must use [`Self::set_owned_local_consumed`]
+    /// instead, so the transfer record cannot go missing.
+    pub(crate) fn set_owned_local_consumed_post_lowering(
         &mut self,
         binding: BindingId,
         transferee: Option<Place>,
@@ -3328,6 +3378,54 @@ impl Builder {
             // Whole-value placement into a fresh aggregate: `(t, t)` double
             // placement IS a use-after-move, so keep the strict check.
             partial_projection: false,
+        });
+        self.record_affine_aggregate_ingress_transfer(*id);
+    }
+
+    /// Record the path-local ownership TRANSFER for an affine handle whose
+    /// whole value was just placed into an owning aggregate.
+    ///
+    /// An `Rc` / `Weak` handle (and a non-idempotent user `#[resource]`) is
+    /// byte-copied into a tuple / record / enum payload / machine payload /
+    /// array element with NO retain: the aggregate's composite drop
+    /// (`tuple_in_place`, `record_in_place`, `enum_in_place`, the container's
+    /// element release) becomes an owner of the SAME count the source binder
+    /// still holds a `DropKind::RcRelease` obligation for. Left unrecorded,
+    /// both fire and the second one underflows the strong count — the runtime's
+    /// `Rc double-free` abort, reachable from a plain
+    /// `let pair = (shared, "tag")` with no `clone` anywhere.
+    ///
+    /// Every other owning class already answers this: `Vec`, `HashMap` /
+    /// `HashSet`, `bytes`, `CoW string` and owned records each gate their
+    /// scope-exit release on a per-class escape-scan allow-set that removes a
+    /// handle proven to have escaped into an aggregate. `Rc` / `Weak` have no
+    /// such allow-set — `build_lifo_drops`' `AffineResource` arm emits their
+    /// release unconditionally — so the transfer has to be recorded where it
+    /// happens.
+    ///
+    /// The record is the SAME path-sensitive drop-flag store a by-value
+    /// `Use { Consume }` already emits (`#1933` / `#1941`):
+    /// `affine_release_needs_drop_flag` mints the flag for EVERY `Rc` / `Weak`
+    /// local at its introducing `let`, zero-initialised so the init dominates
+    /// this store and every exit, and codegen gates the release on `flag == 0`.
+    /// Storing `1` here therefore skips the binder's release on exactly the
+    /// paths that transferred the handle and keeps it on the paths that did not
+    /// — the conditional ingress (`match flag { true => (shared, "t"), false =>
+    /// 0 }`) stays exactly-once on both arms.
+    ///
+    /// Deliberately NOT a dataflow `Consumed` transition: `AliasedIntoAggregate`
+    /// is `Live` for every escape-scan / alias / drop reader, and demoting it
+    /// would turn the W3.053 fail-closed aggregate refusals into leaks for the
+    /// classes that DO have allow-sets. The binder keeps its `owned_locals`
+    /// membership and its dataflow state; only the runtime transfer record is
+    /// added. A binding with no flag (any non-affine class) is untouched.
+    fn record_affine_aggregate_ingress_transfer(&mut self, binding: BindingId) {
+        let Some(flag) = self.affine_release_flags.get(&binding).copied() else {
+            return;
+        };
+        self.push_instr(Instr::ConstI64 {
+            dest: flag,
+            value: 1,
         });
     }
     /// True when an overriding functional-update field VALUE is, at its

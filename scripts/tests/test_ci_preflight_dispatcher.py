@@ -665,6 +665,21 @@ def _dispatchable_make_targets() -> set[str]:
     }
 
 
+def _gates_with_a_build_form() -> set[str]:
+    """Every gate the Makefile declares a warm-up form for.
+
+    Wider than the set the dispatcher selects today: a form is declared before
+    its gate is dispatched by name, and an undeclared-but-wrong form is exactly
+    what these checks exist to catch before it warms anything.
+    """
+    makefile = (ROOT / "Makefile").read_text()
+    return set(re.findall(r"^([A-Za-z0-9][\w.-]*)-build:", makefile, re.MULTILINE))
+
+
+def _checkable_gates() -> list[str]:
+    return sorted(_dispatchable_make_targets() | _gates_with_a_build_form())
+
+
 _COMPILING_COMMAND = re.compile(r"\bcargo\s+(?:build|run|test|nextest|clippy)\b")
 _SCRIPT_REF = re.compile(r"(?:^|[\s\"'=])((?:scripts|tests)/[\w./-]+\.(?:sh|py))")
 _MAKE_CALL = re.compile(r"(?:^|[\s;&|(\"'])(?:\$\(MAKE\)|make)\s+([A-Za-z][\w.-]*)")
@@ -768,7 +783,7 @@ def test_no_gate_compiles_behind_an_empty_build_form() -> None:
     the recipe alone puts that build back inside the timed gate — the same
     reading error as the warm-up that diverged from its gate.
     """
-    for target in sorted(_dispatchable_make_targets()):
+    for target in _checkable_gates():
         plan = _make_plan(target)
         assert plan.returncode == 0, (target, plan.stderr)
         evidence = compiling_evidence(
@@ -780,6 +795,43 @@ def test_no_gate_compiles_behind_an_empty_build_form() -> None:
             f"make {target} compiles ({evidence}) but {target}-build declares "
             f"that it builds nothing"
         )
+
+
+_BUILD_SELECTOR = re.compile(r"--(?:test|bin|example)[= ]([A-Za-z0-9_-]+)")
+
+
+def _named_binaries(plan: str) -> set[str]:
+    return {
+        name
+        for line in plan.splitlines()
+        if not _is_message(line.strip())
+        for name in _BUILD_SELECTOR.findall(line)
+    }
+
+
+def test_a_build_form_names_every_binary_its_gate_runs() -> None:
+    """Naming one of a gate's two test binaries leaves the other to the gate.
+
+    A gate whose recipe runs two nextest binaries, with a build form that
+    spells out only the first, warms half of itself: the second compiles inside
+    the timed budget while the summary reports a warm run. A partial warm-up
+    reads as a warm one, which is the failure mode this derivation removes.
+    """
+    for target in _checkable_gates():
+        gate = _make_plan(target)
+        assert gate.returncode == 0, (target, gate.stderr)
+        build = _make_plan(f"{target}-build")
+        assert build.returncode == 0, (target, build.stderr)
+        missing = _named_binaries(gate.stdout) - _named_binaries(build.stdout)
+        assert not missing, (
+            f"make {target} runs {sorted(missing)}, which {target}-build does not build"
+        )
+
+
+def test_the_binary_check_sees_a_half_named_build_form() -> None:
+    gate = "\tcargo nextest run -p hew-cli --test first --test second\n"
+    form = "\tcargo nextest run -p hew-cli --test first --no-run\n"
+    assert _named_binaries(gate) - _named_binaries(form) == {"second"}
 
 
 def test_the_compile_walk_sees_a_compile_one_script_deep() -> None:
@@ -1734,6 +1786,8 @@ _TESTS = [
     test_every_dispatched_make_target_exists_in_the_makefile,
     test_no_warmup_carries_a_flag_its_gate_does_not,
     test_no_gate_compiles_behind_an_empty_build_form,
+    test_a_build_form_names_every_binary_its_gate_runs,
+    test_the_binary_check_sees_a_half_named_build_form,
     test_the_compile_walk_sees_a_compile_one_script_deep,
     test_the_compile_walk_sees_a_compile_two_levels_deep,
     test_the_compile_walk_does_not_count_printed_text,

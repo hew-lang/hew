@@ -339,6 +339,10 @@ wasm-capability:
 wasm-capability-check:
 	cargo run -p hew-capability-gen -- --check
 
+# Build the generator the check runs.
+wasm-capability-check-build:
+	cargo build -p hew-capability-gen
+
 # Regenerate the curated playground manifest consumed by downstream browser tooling.
 playground-manifest: wasm-capability
 	python3 scripts/gen-playground-manifest.py
@@ -346,6 +350,10 @@ playground-manifest: wasm-capability
 # Verify the checked-in playground manifest is current.
 playground-manifest-check: wasm-capability-check
 	python3 scripts/gen-playground-manifest.py --check
+
+# Build the generator the manifest check runs.
+playground-manifest-check-build:
+	cargo build -p hew-capability-gen
 
 sandbox-fixtures:
 	cargo run -p xtask -- sandbox-fixtures
@@ -1146,6 +1154,10 @@ check-gate-reachability-build:
 test-check-gate-reachability:
 	python3 scripts/tests/test_check_gate_reachability.py
 
+# Python only; no artifacts.
+test-check-gate-reachability-build:
+	@:
+
 test-stdlib-ratchet: hew
 	@echo "==> Type-checking stdlib (ratcheted)"
 	HEW_BIN="$(DEBUG_DIR)/hew" scripts/stdlib-ratchet.sh
@@ -1224,6 +1236,10 @@ test-surface-examples-build: hew-native runtime $(LIBHEW_READY)
 
 test-example-expectations-selftest:
 	@python3 scripts/tests/test_example_expectations.py
+
+# Python only; no artifacts.
+test-example-expectations-selftest-build:
+	@:
 
 # Check ```hew fenced blocks in docs/ against hew check.
 # Extracts each fence from docs/hew-language-guide.md and docs/specs/HEW-SPEC-2026.md
@@ -1351,6 +1367,10 @@ endif
 test-asan-fixture-selftest:
 	scripts/asan-fixture-check.sh --selftest
 
+# Shell only; no artifacts.
+test-asan-fixture-selftest-build:
+	@:
+
 # Nightly rust-runtime TSan command (Linux/nightly toolchain required).
 #
 # TSan is not currently supported on darwin-arm64 by the upstream Rust
@@ -1421,6 +1441,10 @@ lint-ci-coverage-check:
 	python3 scripts/check-lint-ci-coverage.py
 	python3 scripts/tests/test_check_lint_ci_coverage.py
 
+# Python only; no artifacts.
+lint-ci-coverage-check-build:
+	@:
+
 # Self-provisioning: the pinned toolchain install is a prerequisite of every
 # structural-lint entry point, not a separate manual step. The install path
 # (scripts/ast-grep-lint.sh --bootstrap --install-only, via
@@ -1446,11 +1470,24 @@ structural-lint-bootstrap-install:
 test-structural-authority-audit:
 	python3 scripts/tests/test_structural_authority_audit.py
 
+# Provision the pinned ast-grep toolchain; the audit belongs to the gate.
+test-structural-authority-audit-build: structural-lint-bootstrap-install
+	@:
+
 test-ast-grep-contract:
 	bash scripts/tests/test_ast_grep_contract.sh
 
+# Provision the pinned ast-grep toolchain; the contract belongs to the gate.
+test-ast-grep-contract-build: structural-lint-bootstrap-install
+	@:
+
 test-structural-lint-bootstrap:
 	python3 scripts/tests/test_structural_lint_bootstrap.py
+
+# Provision the pinned ast-grep toolchain; the assertions belong to the gate.
+test-structural-lint-bootstrap-build: structural-lint-bootstrap-install
+	@:
+
 # Keep nightly FreeBSD coverage and both release-gate legs on one exact
 # nextest/provisioning contract. The required Clippy & format job runs this
 # unconditionally; the docs/scripts job and scripts-config preflight also run it
@@ -1491,6 +1528,10 @@ tool-pin-contract-check-build:
 sandbox-parity-coverage-check: test-sandbox-parity-coverage-check
 	python3 scripts/check-sandbox-parity-coverage.py
 
+# Python only; no artifacts.
+sandbox-parity-coverage-check-build:
+	@:
+
 # Self-test for the checker above: proves a VM spawn marker anywhere in a
 # test file condemns the whole binary regardless of which test can be
 # statically shown to reach it, and that a test reaching the marker only
@@ -1498,6 +1539,10 @@ sandbox-parity-coverage-check: test-sandbox-parity-coverage-check
 # evade classification. See scripts/tests/test_check_sandbox_parity_coverage.py.
 test-sandbox-parity-coverage-check:
 	python3 scripts/tests/test_check_sandbox_parity_coverage.py
+
+# Python only; no artifacts.
+test-sandbox-parity-coverage-check-build:
+	@:
 
 # Keep the required release handoff fail-closed and correlated to its exact
 # downstream workflow run. This target is called by CI for release workflow
@@ -1535,6 +1580,10 @@ hew-fmt-check: hew
 	    && echo "hew-fmt-check passed: all $$total .hew sources are formatted." \
 	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
 
+# Warm-up form for the preflight dispatcher, which derives it by name.
+hew-fmt-check-build: hew
+	@:
+
 # Exercise representative migration inputs in an isolated copy so the proof
 # never edits the checkout. The second pass must leave the first-pass snapshot
 # byte-identical.
@@ -1569,6 +1618,10 @@ test-migrate-corpus: hew
 	echo "6/6 require check mode to recognize the fixed point"; \
 	"$(DEBUG_DIR)/hew" fmt --migrate --check --root "$$migration_root/accept"
 
+# Warm-up form for the preflight dispatcher, which derives it by name.
+test-migrate-corpus-build: hew
+	@:
+
 # Derive the compilable corpus from the tracked source roots, format a private
 # path-preserving mirror, then require the result to check and reach a fixed point.
 hew-fmt-property: hew
@@ -1599,9 +1652,17 @@ codegen-carried-identity-gate:
 	fi
 	@echo "codegen carried-identity gate: OK"
 
+# rg only; no artifacts.
+codegen-carried-identity-gate-build:
+	@:
+
 .PHONY: codegen-trap-inventory-check
 codegen-trap-inventory-check:
 	python3 scripts/check-codegen-trap-inventory.py
+
+# Python only; no artifacts.
+codegen-trap-inventory-check-build:
+	@:
 
 # Smoke-test the release binary with `hew run` to catch process-exit aborts
 # (e.g. libc++ ABI mismatch at locale destructor — issue #1606).
@@ -1637,6 +1698,10 @@ stdlib-errno-gate:
 		fi; \
 		echo "stdlib-errno-gate passed: no banned string-match error patterns in std/."'
 
+# rg only; no artifacts.
+stdlib-errno-gate-build:
+	@:
+
 stdlib-lint: stdlib-errno-gate
 	bash scripts/lint-stdlib-int-surface.sh
 
@@ -1651,10 +1716,18 @@ stdlib-lint-build:
 runtime-poison-safe-lint: runtime-poison-safe-lint-self-test
 	bash scripts/lint-runtime-poison-safe.sh
 
+# grep only; no artifacts.
+runtime-poison-safe-lint-build:
+	@:
+
 # Validate that the lint script's own pattern-matching regex is coherent.
 # Runs synthetic violations through the linter to confirm every guard fires.
 runtime-poison-safe-lint-self-test:
 	bash scripts/lint-runtime-poison-safe.sh --self-test
+
+# grep only; no artifacts.
+runtime-poison-safe-lint-self-test-build:
+	@:
 
 # Validate the repository-owned WASM backlog authority and every actionable
 # WASM-TODO(<stable-backlog-id>): marker. The self-test pins fail-closed
@@ -1662,8 +1735,16 @@ runtime-poison-safe-lint-self-test:
 lint-wasm-todo: lint-wasm-todo-self-test wasm-capability-check
 	python3 scripts/lint-wasm-todo.py
 
+# Reaches cargo through wasm-capability-check; build that generator.
+lint-wasm-todo-build:
+	cargo build -p hew-capability-gen
+
 lint-wasm-todo-self-test:
 	python3 scripts/lint-wasm-todo.py --self-test
+
+# Python only; no artifacts.
+lint-wasm-todo-self-test-build:
+	@:
 
 # ── Coverage ───────────────────────────────────────────────────────────────
 #
@@ -1738,14 +1819,26 @@ coverage-branch:
 verify-ffi:
 	python3 scripts/verify-ffi-symbols.py --classify stable --validate > /dev/null
 
+# Python only; no artifacts.
+verify-ffi-build:
+	@:
+
 test-verify-ffi:
 	python3 scripts/tests/test_verify_ffi_symbols.py
+
+# Python only; no artifacts.
+test-verify-ffi-build:
+	@:
 
 # The release macOS validator uses Python 3.10, which has no stdlib tomllib.
 # Force the dependency-free parser even on newer CI interpreters and run every
 # production consumer of repository TOML policy/configuration.
 test-python310-toml-compat:
 	HEW_FORCE_TOML_FALLBACK=1 python3 scripts/tests/test_toml_compat.py
+
+# Python only; no artifacts.
+test-python310-toml-compat-build:
+	@:
 
 # ── System-lane closure ────────────────────────────────────────────────────
 # docs/internal/jit-host-abi.md forbids any `stable` symbol from producing,
@@ -1758,11 +1851,19 @@ test-python310-toml-compat:
 verify-sys-lane-closure: test-sys-lane-closure
 	python3 scripts/sys-lane-closure.py
 
+# Python only; no artifacts.
+verify-sys-lane-closure-build:
+	@:
+
 # Self-test for the checker above: proves it still fails on a transitive reach,
 # that an authenticated edge clears only the caller it names, and that a stale
 # or unreasoned waiver fails rather than silently widening the stable tier.
 test-sys-lane-closure:
 	python3 scripts/tests/test_sys_lane_closure.py
+
+# Python only; no artifacts.
+test-sys-lane-closure-build:
+	@:
 
 
 # ── Install / Uninstall ────────────────────────────────────────────────────

@@ -82,30 +82,6 @@ fn bootstrap_wasi_runner() -> Result<(), String> {
     Ok(())
 }
 
-fn target_dir() -> Result<PathBuf, String> {
-    hew_binary()
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .ok_or_else(|| {
-            format!(
-                "hew binary path {} is not under a Cargo target directory",
-                hew_binary().display()
-            )
-        })
-}
-
-fn build_profile() -> &'static str {
-    match hew_binary()
-        .parent()
-        .and_then(|dir| dir.file_name())
-        .and_then(|name| name.to_str())
-    {
-        Some("release") => "release",
-        _ => "debug",
-    }
-}
-
 pub fn tempdir() -> tempfile::TempDir {
     tempfile::tempdir().expect("create hew-cli tempdir")
 }

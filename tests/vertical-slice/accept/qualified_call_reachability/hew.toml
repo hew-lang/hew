@@ -1,0 +1,6 @@
+[package]
+name = "callgraph_reach_fixture"
+edition = "2026"
+version = "0.1.0"
+
+[dependencies]

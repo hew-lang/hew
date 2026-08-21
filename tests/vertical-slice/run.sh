@@ -4226,6 +4226,39 @@ run_accept_expect_status "w2006_scope_spawn" 0
 # Layout: accept/sibling_module_call.hew imports accept/arith.hew
 run_accept_expect_status "sibling_module_call" 42
 
+# A package-qualified call reaches its imported declaration and the private
+# helper below it. The uncalled private function proves the dead-code lint is
+# still active rather than suppressed for the fixture.
+qualified_call_reachability="${ROOT}/tests/vertical-slice/accept/qualified_call_reachability"
+if ! (
+  cd "${qualified_call_reachability}"
+  "${HEW}" build ops/native-loop.hew
+) >"${accept_output}" 2>&1; then
+  echo "qualified_call_reachability: expected package build to succeed" >&2
+  cat "${accept_output}" >&2
+  exit 1
+fi
+for reachable_function in run_once reachable_helper; do
+  if grep -qF "function \`${reachable_function}\` is never called" "${accept_output}"; then
+    echo "qualified_call_reachability: ${reachable_function} must be reachable" >&2
+    cat "${accept_output}" >&2
+    exit 1
+  fi
+done
+# shellcheck disable=SC2016  # Backticks are literal Hew diagnostic syntax.
+grep -qF 'function `genuinely_uncalled` is never called' "${accept_output}" || {
+  echo "qualified_call_reachability: expected the negative control warning" >&2
+  cat "${accept_output}" >&2
+  exit 1
+}
+# shellcheck disable=SC2016  # Backticks are literal Hew diagnostic syntax.
+qualified_dead_count="$(grep -c 'function `[^`]*` is never called' "${accept_output}")"
+if [[ "${qualified_dead_count}" -ne 1 ]]; then
+  echo "qualified_call_reachability: expected one dead-code warning, got ${qualified_dead_count}" >&2
+  cat "${accept_output}" >&2
+  exit 1
+fi
+
 # Accept: a flat file import publishes a pub free function into the importing
 # file's bare namespace, and the selected call target survives through native
 # lowering and execution.

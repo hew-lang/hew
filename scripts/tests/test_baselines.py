@@ -9,6 +9,7 @@ trusts to answer "is this baseline current".
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import re
 import sys
@@ -334,6 +335,45 @@ def test_blanket_regen_skips_user_facing_contracts() -> None:
             member.regen_command(),
         )
 
+    # Not just the advertised command -- the actual sweep. Drive cmd_regen with
+    # no --only and record every command it would run: an explicit-only
+    # member's regen must never appear, and an ordinary member's must.
+    invoked: list[str] = []
+
+    def record(command: str, *, capture: bool) -> tuple[int, str]:
+        invoked.append(command)
+        return 0, ""
+
+    original_run = baselines.run
+    baselines.run = record
+    try:
+        status = baselines.cmd_regen(
+            argparse.Namespace(tier="compiler", only=[], relevant_to=[])
+        )
+    finally:
+        baselines.run = original_run
+
+    check("the sweep reports success", status == 0, str(status))
+    for member in explicit:
+        assert member.regen is not None
+        check(
+            f"{member.id}: the sweep did not run {member.regen}",
+            member.regen not in invoked,
+            str(invoked),
+        )
+    ordinary = [
+        m
+        for m in baselines.REGISTRY
+        if m.tier == "compiler" and not m.explicit_only and m.regen
+    ]
+    check("the sweep has ordinary members to run", ordinary != [], "")
+    for member in ordinary:
+        check(
+            f"{member.id}: the sweep ran {member.regen}",
+            member.regen in invoked,
+            str(invoked),
+        )
+
 
 def test_file_closure_is_the_authority() -> None:
     """The reviewer's case: a shaped tracked file nobody regenerates fails A6."""
@@ -358,6 +398,20 @@ def test_file_closure_is_the_authority() -> None:
         "an unregistered baseline-shaped file is reported",
         [path for path, _ in new_findings] == [invented],
         str(new_findings),
+    )
+
+    # And a no-baseline entry whose files all disappeared is dead text. Drop
+    # every file the vertical-slice entry excuses and it must be reported.
+    thinned = [
+        path
+        for path in tracked
+        if not baselines._matches(path, "tests/vertical-slice/*")
+    ]
+    _, expired = baselines.coverage(thinned)
+    check(
+        "a no-baseline entry that excuses nothing is reported as expired",
+        "tests/vertical-slice/*" in expired,
+        str(expired),
     )
     check(
         "and it is reported as unowned, not as a conflict",

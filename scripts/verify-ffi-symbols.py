@@ -98,6 +98,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="fail if any hew-runtime export is missing from the JIT classification file",
     )
     parser.add_argument(
+        "--write-ownership-ratchet",
+        action="store_true",
+        help=(
+            "re-record the exact unclassified-ownership count in "
+            "scripts/ffi-ownership-ratchet.toml. Records a DECREASE (ABI surface "
+            "gaining ownership contracts); refuses an INCREASE, which is new "
+            "unclassified ABI surface and needs a deliberate decision"
+        ),
+    )
+    parser.add_argument(
         "--emit-cpp-header",
         type=Path,
         metavar="PATH",
@@ -334,10 +344,25 @@ def load_jit_symbol_classification() -> dict[str, set[str]]:
     return classification
 
 
+def write_ownership_ratchet(count: int) -> None:
+    """Rewrite the exact count in place, leaving the header comment alone."""
+    lines = FFI_OWNERSHIP_RATCHET.read_text(encoding=SOURCE_ENCODING).splitlines(
+        keepends=True
+    )
+    for index, line in enumerate(lines):
+        if line.startswith("unclassified"):
+            lines[index] = f"unclassified = {count}\n"
+            break
+    else:
+        raise SystemExit(f"{FFI_OWNERSHIP_RATCHET}: no `unclassified` assignment")
+    FFI_OWNERSHIP_RATCHET.write_text("".join(lines), encoding=SOURCE_ENCODING)
+
+
 def validate_ownership_contracts(
     classification: dict[str, set[str]],
     all_exports: set[str],
     fn_param_counts: dict[str, set[int]],
+    write_ratchet: bool = False,
 ) -> list[str]:
     errors: list[str] = []
     document = toml_compat.loads(
@@ -582,11 +607,33 @@ def validate_ownership_contracts(
         errors.append(f"{FFI_OWNERSHIP_RATCHET}: unclassified must be non-negative")
     else:
         actual_unclassified = len(classified - contracted)
-        if actual_unclassified != expected_unclassified:
+        if actual_unclassified == expected_unclassified:
+            pass
+        elif not write_ratchet:
             errors.append(
                 f"unclassified ownership contracts: expected "
                 f"{expected_unclassified}, found {actual_unclassified}; "
-                f"update the exact count in {FFI_OWNERSHIP_RATCHET}"
+                f"re-record with `make baselines` "
+                f"(python3 scripts/baselines.py regen --only ffi-ownership-ratchet)"
+            )
+        elif actual_unclassified > expected_unclassified:
+            # The regen half of the ratchet, and its one refusal. More
+            # unclassified symbols means ABI surface arrived without an
+            # ownership contract; writing the higher number down would record
+            # the gap instead of reporting it.
+            errors.append(
+                f"unclassified ownership contracts ROSE "
+                f"{expected_unclassified} -> {actual_unclassified}: new ABI "
+                f"surface has no ownership contract. A regen never records an "
+                f"increase — add the contracts, or raise the count by hand and "
+                f"say why in the commit"
+            )
+        else:
+            write_ownership_ratchet(actual_unclassified)
+            print(
+                f"ffi ownership ratchet: {expected_unclassified} -> "
+                f"{actual_unclassified} unclassified",
+                file=sys.stderr,
             )
     return errors
 
@@ -595,6 +642,7 @@ def validate_jit_symbol_classification(
     runtime_exports: set[str],
     stdlib_exports: set[str],
     classification: dict[str, set[str]],
+    write_ratchet: bool = False,
 ) -> list[str]:
     errors: list[str] = []
     stable = classification["stable"]
@@ -647,6 +695,7 @@ def validate_jit_symbol_classification(
             classification,
             runtime_exports | stdlib_exports,
             _extract_fn_param_counts([RUNTIME_SRC, STDLIB_SRC]),
+            write_ratchet,
         )
     )
     return errors
@@ -679,7 +728,10 @@ def run_classification_mode(
     classification = load_jit_symbol_classification()
     if args.validate:
         errors = validate_jit_symbol_classification(
-            runtime_exports, stdlib_exports, classification
+            runtime_exports,
+            stdlib_exports,
+            classification,
+            args.write_ownership_ratchet,
         )
         if errors:
             for error in errors:
@@ -718,6 +770,8 @@ def run_coverage_mode(strict: bool) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.write_ownership_ratchet and not args.validate:
+        raise SystemExit("--write-ownership-ratchet requires --validate")
     if args.classify is not None or args.validate or args.emit_cpp_header is not None:
         runtime_exports = extract_runtime_exports()
         stdlib_exports = extract_stdlib_exports()

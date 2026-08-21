@@ -160,6 +160,15 @@ REGISTRY: tuple[Baseline, ...] = (
         check=None,
     ),
     Baseline(
+        id="ffi-ownership-ratchet",
+        summary="exact count of ABI-classified symbols without ownership contracts",
+        tier="fast",
+        paths=("scripts/ffi-ownership-ratchet.toml",),
+        gates=("verify-ffi",),
+        regen="make ffi-ownership-ratchet-record",
+        check="make verify-ffi",
+    ),
+    Baseline(
         id="core-matrix-truth-table",
         summary="recorded outcome class of every core-matrix cell",
         tier="compiler",
@@ -356,6 +365,18 @@ BASELINE_SHAPES = (
     "*/golden/*",
     "*expected-failures*.txt",
     "*ratchet*.txt",
+    # A ratchet is a ratchet whatever it is serialized as. The .txt-only shape
+    # missed scripts/ffi-ownership-ratchet.toml, which pins an exact count that
+    # verify-ffi-symbols.py compares on every `make lint`.
+    "*ratchet*.toml",
+    "*ratchet*.tsv",
+    "*ratchet*.json",
+    # Every data table a checker keeps under scripts/ is a decision on the
+    # record: either something regenerates it, or NO_BASELINE_FILES says why
+    # nothing does. This is where checkers put the files they compare against.
+    "scripts/*.toml",
+    "scripts/*.tsv",
+    "scripts/*.json",
     "*-inventory.tsv",
     "*census*",
     "*baseline*.tsv",
@@ -374,6 +395,33 @@ BASELINE_SHAPES = (
 # on the record: the reason says what the file is instead, and A6 reports an
 # entry that stops matching anything so the list cannot rot.
 NO_BASELINE_FILES: tuple[tuple[str, str], ...] = (
+    (
+        "scripts/fixtures/*",
+        "inputs to the checkers' own self-tests (sanitizer waivers, release-lib-link "
+        "scaffolding); they are counterfactuals a gate is driven against, never "
+        "output a gate compares the tree to",
+    ),
+    (
+        "scripts/jit-symbol-classification.toml",
+        "the JIT host-ABI classification and its two named escape hatches; a "
+        "hand-authored declaration of which symbols are exempt and why, not derived",
+    ),
+    (
+        "scripts/opaque-resource-lifecycle-evidence.json",
+        "hand-authored runtime/wasm execution evidence per shipped opaque resource "
+        "(schema 2). The AST-derived facts it is cross-checked against are a "
+        "different artefact written by structural-authority-audit.py "
+        "--opaque-resource-facts; this file is the evidence, not the facts",
+    ),
+    (
+        "scripts/stdlib-execution-proofs.tsv",
+        "the manifest of which fixture proves which stdlib module; a hand-authored "
+        "index of intent, not derived output",
+    ),
+    (
+        "scripts/fuzz/package*.json",
+        "npm dependency manifest and lockfile for the fuzz tooling",
+    ),
     (
         "tests/vertical-slice/*",
         "accept/reject fixture expectations state INTENDED behaviour. Re-recording "
@@ -916,9 +964,9 @@ def cmd_regen(args: argparse.Namespace) -> int:
         members = [m for m in members if not m.explicit_only]
         for member in deferred:
             print(
-                f"==> baselines: SKIPPING {member.id} — its artefact is a "
-                f"user-facing contract, so it is only re-recorded when named: "
-                f"{member.regen_command()}"
+                f"==> baselines: SKIPPING {member.id} — its artefact records "
+                f"observed behaviour, so a sweep would write down whatever "
+                f"changed. Re-record it deliberately: {member.regen_command()}"
             )
     failures: list[str] = []
     for member in members:

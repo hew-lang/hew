@@ -4729,7 +4729,9 @@ impl Checker {
             }
             Expr::InterpolatedString(parts) => {
                 for part in parts {
-                    if let StringPart::Expr((expr, expr_span)) = part {
+                    if let StringPart::Expr((expr, expr_span))
+                    | StringPart::StructuralExpr((expr, expr_span)) = part
+                    {
                         Self::collect_machine_transition_forbidden_exprs(expr, expr_span, hits);
                     }
                 }

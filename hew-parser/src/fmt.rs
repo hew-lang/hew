@@ -2366,7 +2366,9 @@ impl<'a> Formatter<'a> {
             }
             Expr::InterpolatedString(parts) => parts.iter().all(|part| match part {
                 StringPart::Literal(_) => true,
-                StringPart::Expr((expr, _)) => Self::can_format_expr_inline(expr),
+                StringPart::Expr((expr, _)) | StringPart::StructuralExpr((expr, _)) => {
+                    Self::can_format_expr_inline(expr)
+                }
             }),
             Expr::Block(_)
             | Expr::If { .. }
@@ -3231,6 +3233,11 @@ impl<'a> Formatter<'a> {
                             self.write("{");
                             self.format_expr(expr);
                             self.write("}");
+                        }
+                        StringPart::StructuralExpr((expr, _)) => {
+                            self.write("{");
+                            self.format_expr(expr);
+                            self.write(":?}");
                         }
                     }
                 }

@@ -329,7 +329,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let StringPart::Expr(e) = part {
+                if let StringPart::Expr(e) | StringPart::StructuralExpr(e) = part {
                     collect_calls_in_expr(e, calls);
                 }
             }

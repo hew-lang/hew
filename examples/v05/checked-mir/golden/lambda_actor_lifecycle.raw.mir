@@ -22,14 +22,16 @@ fn main() -> () [conv=default]
     _19: bool
     _20: i64
     _21: i64
+    _22: i64
+    _23: i64
   bb0:
     lambda0 = make_lambda_actor __hew_lambda_body_main_0 drop=__hew_lambda_state_drop_noop shape=0 mailbox=64 -> bb1
   bb1:
-    stmt: bind BindingId(0) doubler site=SiteId(0) ty=LambdaPid<i64, ()>
-    stmt: use BindingId(0) doubler site=SiteId(8) ty=LambdaPid<i64, ()> intent=Read
-    stmt: eval site=SiteId(7) ty=Result<(), std.builtins.SendError>
-    stmt: bind BindingId(2) factor site=SiteId(11) ty=i64
-    _1 = const.i64 21
+    stmt: bind BindingId(0) out site=SiteId(0) ty=LambdaPid<i64, ()>
+    stmt: use BindingId(0) out site=SiteId(6) ty=LambdaPid<i64, ()> intent=Read
+    stmt: eval site=SiteId(5) ty=Result<(), std.builtins.SendError>
+    stmt: bind BindingId(2) factor site=SiteId(9) ty=i64
+    _1 = const.i64 42
     _2 = const.i64 8
     call_rt hew_lambda_actor_send(lambda0, _1, _2)
     _3 = const.i64 7
@@ -37,10 +39,10 @@ fn main() -> () [conv=default]
     _6 = record_init __hew_lambda_env_main_1 { .0=_4 }
     lambda5 = make_lambda_actor __hew_lambda_body_main_1 drop=__hew_lambda_env_drop_main_1 shape=1 mailbox=64, env=_6, env_drops=[none] -> bb2
   bb2:
-    stmt: bind BindingId(3) scale site=SiteId(12) ty=LambdaPid<i64, i64>
-    stmt: use BindingId(3) scale site=SiteId(19) ty=LambdaPid<i64, i64> intent=Read
-    stmt: bind BindingId(5) a site=SiteId(17) ty=Result<i64, std.builtins.AskError>
-    stmt: use BindingId(5) a site=SiteId(21) ty=Result<i64, std.builtins.AskError> intent=Read
+    stmt: bind BindingId(3) scale site=SiteId(10) ty=LambdaPid<i64, i64>
+    stmt: use BindingId(3) scale site=SiteId(17) ty=LambdaPid<i64, i64> intent=Read
+    stmt: bind BindingId(5) a site=SiteId(15) ty=Result<i64, std.builtins.AskError>
+    stmt: use BindingId(5) a site=SiteId(19) ty=Result<i64, std.builtins.AskError> intent=Read
     _7 = const.i64 3
     _8 = const.i64 8
     _9 = call_rt hew_lambda_actor_ask(lambda5, _7, _8, _10, _11, _12)
@@ -50,27 +52,31 @@ fn main() -> () [conv=default]
     _17 = icmp.eq _15 _16
     branch _17 ? bb4 : bb7
   bb3:
-    stmt: return site=Some(SiteId(20)) ty=()
+    stmt: return site=Some(SiteId(18)) ty=()
     ret = move _14
     return
   bb4:
-    stmt: bind BindingId(6) v site=SiteId(22) ty=i64
+    stmt: bind BindingId(6) v site=SiteId(20) ty=i64
+    stmt: use BindingId(0) out site=SiteId(22) ty=LambdaPid<i64, ()> intent=Read
     stmt: use BindingId(6) v site=SiteId(23) ty=i64 intent=Read
+    stmt: eval site=SiteId(21) ty=Result<(), std.builtins.SendError>
     _20 = move mvar13.0.0
-    call println_i64(_20) -> bb8
+    _21 = const.i64 8
+    call_rt hew_lambda_actor_send(lambda0, _20, _21)
+    goto bb3
   bb5:
-    _21 = const.i64 -1
-    call println_i64(_21) -> bb9
+    stmt: use BindingId(0) out site=SiteId(27) ty=LambdaPid<i64, ()> intent=Read
+    stmt: eval site=SiteId(26) ty=Result<(), std.builtins.SendError>
+    _22 = const.i64 -1
+    _23 = const.i64 8
+    call_rt hew_lambda_actor_send(lambda0, _22, _23)
+    goto bb3
   bb6:
     trap(ExhaustivenessFallthrough)
   bb7:
     _18 = const.i64 1
     _19 = icmp.eq _15 _18
     branch _19 ? bb5 : bb6
-  bb8:
-    goto bb3
-  bb9:
-    goto bb3
 
 fn __hew_lambda_body_main_0(*mut (), *mut (), i64, *mut (), *mut ()) -> () [conv=lambda_actor_body]
   locals:
@@ -80,19 +86,10 @@ fn __hew_lambda_body_main_0(*mut (), *mut (), i64, *mut (), *mut ()) -> () [conv
     _3: *mut ()
     _4: *mut ()
     _5: i64
-    _6: i64
-    _7: i64
-    _8: bool
   bb0:
-    stmt: use BindingId(1) x site=SiteId(4) ty=i64 intent=Read
-    _6 = const.i64 2
-    _7 ovf=_8 = mul.checked.s _5 _6
-    branch _8 ? bb1 : bb2
+    stmt: use BindingId(1) line site=SiteId(3) ty=i64 intent=Read
+    call println_i64(_5) -> bb1
   bb1:
-    trap(IntegerOverflow)
-  bb2:
-    call println_i64(_7) -> bb3
-  bb3:
     stmt: eval site=SiteId(2) ty=()
     return
 
@@ -109,7 +106,7 @@ fn __hew_lambda_body_main_1(*mut (), *mut (), i64, *mut (), *mut ()) -> i64 [con
     _8: bool
     _9: i64
   bb0:
-    stmt: use BindingId(4) n site=SiteId(15) ty=i64 intent=Read
+    stmt: use BindingId(4) n site=SiteId(13) ty=i64 intent=Read
     _6 = closure_env_load _0.field[0] env_ty=__hew_lambda_env_main_1
     _7 ovf=_8 = mul.checked.s _5 _6
     branch _8 ? bb1 : bb2
@@ -126,12 +123,12 @@ fn i8::fmt(i8) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(15) val site=SiteId(98) ty=i8 intent=Read
+    stmt: use BindingId(15) val site=SiteId(100) ty=i8 intent=Read
     _1 = cast _0 i8 -> i32
     _2 = call hew_int_to_string(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(96) ty=string
-    stmt: return site=Some(SiteId(96)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(98) ty=string
+    stmt: return site=Some(SiteId(98)) ty=string
     ret = move _2
     return
 
@@ -141,12 +138,12 @@ fn i16::fmt(i16) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(16) val site=SiteId(102) ty=i16 intent=Read
+    stmt: use BindingId(16) val site=SiteId(104) ty=i16 intent=Read
     _1 = cast _0 i16 -> i32
     _2 = call hew_int_to_string(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(100) ty=string
-    stmt: return site=Some(SiteId(100)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(102) ty=string
+    stmt: return site=Some(SiteId(102)) ty=string
     ret = move _2
     return
 
@@ -155,11 +152,11 @@ fn i32::fmt(i32) -> string [conv=default]
     _0: i32
     _1: string
   bb0:
-    stmt: use BindingId(17) val site=SiteId(105) ty=i32 intent=Read
+    stmt: use BindingId(17) val site=SiteId(107) ty=i32 intent=Read
     _1 = call hew_int_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(104) ty=string
-    stmt: return site=Some(SiteId(104)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(106) ty=string
+    stmt: return site=Some(SiteId(106)) ty=string
     ret = move _1
     return
 
@@ -168,11 +165,11 @@ fn i64::fmt(i64) -> string [conv=default]
     _0: i64
     _1: string
   bb0:
-    stmt: use BindingId(18) val site=SiteId(108) ty=i64 intent=Read
+    stmt: use BindingId(18) val site=SiteId(110) ty=i64 intent=Read
     _1 = call hew_i64_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(107) ty=string
-    stmt: return site=Some(SiteId(107)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(109) ty=string
+    stmt: return site=Some(SiteId(109)) ty=string
     ret = move _1
     return
 
@@ -181,11 +178,11 @@ fn u8::fmt(u8) -> string [conv=default]
     _0: u8
     _1: string
   bb0:
-    stmt: use BindingId(19) val site=SiteId(111) ty=u8 intent=Read
+    stmt: use BindingId(19) val site=SiteId(113) ty=u8 intent=Read
     _1 = call hew_u8_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(110) ty=string
-    stmt: return site=Some(SiteId(110)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(112) ty=string
+    stmt: return site=Some(SiteId(112)) ty=string
     ret = move _1
     return
 
@@ -194,11 +191,11 @@ fn u16::fmt(u16) -> string [conv=default]
     _0: u16
     _1: string
   bb0:
-    stmt: use BindingId(20) val site=SiteId(114) ty=u16 intent=Read
+    stmt: use BindingId(20) val site=SiteId(116) ty=u16 intent=Read
     _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(113) ty=string
-    stmt: return site=Some(SiteId(113)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(115) ty=string
+    stmt: return site=Some(SiteId(115)) ty=string
     ret = move _1
     return
 
@@ -207,11 +204,11 @@ fn u32::fmt(u32) -> string [conv=default]
     _0: u32
     _1: string
   bb0:
-    stmt: use BindingId(21) val site=SiteId(117) ty=u32 intent=Read
+    stmt: use BindingId(21) val site=SiteId(119) ty=u32 intent=Read
     _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(116) ty=string
-    stmt: return site=Some(SiteId(116)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(118) ty=string
+    stmt: return site=Some(SiteId(118)) ty=string
     ret = move _1
     return
 
@@ -220,11 +217,11 @@ fn u64::fmt(u64) -> string [conv=default]
     _0: u64
     _1: string
   bb0:
-    stmt: use BindingId(22) val site=SiteId(120) ty=u64 intent=Read
+    stmt: use BindingId(22) val site=SiteId(122) ty=u64 intent=Read
     _1 = call hew_u64_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(119) ty=string
-    stmt: return site=Some(SiteId(119)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(121) ty=string
+    stmt: return site=Some(SiteId(121)) ty=string
     ret = move _1
     return
 
@@ -234,12 +231,12 @@ fn isize::fmt(isize) -> string [conv=default]
     _1: i64
     _2: string
   bb0:
-    stmt: use BindingId(23) val site=SiteId(124) ty=isize intent=Read
+    stmt: use BindingId(23) val site=SiteId(126) ty=isize intent=Read
     _1 = cast _0 isize -> i64
     _2 = call hew_i64_to_string(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(122) ty=string
-    stmt: return site=Some(SiteId(122)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(124) ty=string
+    stmt: return site=Some(SiteId(124)) ty=string
     ret = move _2
     return
 
@@ -249,12 +246,12 @@ fn usize::fmt(usize) -> string [conv=default]
     _1: u64
     _2: string
   bb0:
-    stmt: use BindingId(24) val site=SiteId(128) ty=usize intent=Read
+    stmt: use BindingId(24) val site=SiteId(130) ty=usize intent=Read
     _1 = cast _0 usize -> u64
     _2 = call hew_u64_to_string(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(126) ty=string
-    stmt: return site=Some(SiteId(126)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(128) ty=string
+    stmt: return site=Some(SiteId(128)) ty=string
     ret = move _2
     return
 
@@ -263,11 +260,11 @@ fn bool::fmt(bool) -> string [conv=default]
     _0: bool
     _1: string
   bb0:
-    stmt: use BindingId(25) val site=SiteId(131) ty=bool intent=Read
+    stmt: use BindingId(25) val site=SiteId(133) ty=bool intent=Read
     _1 = call hew_bool_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(130) ty=string
-    stmt: return site=Some(SiteId(130)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(132) ty=string
+    stmt: return site=Some(SiteId(132)) ty=string
     ret = move _1
     return
 
@@ -276,11 +273,11 @@ fn char::fmt(char) -> string [conv=default]
     _0: char
     _1: string
   bb0:
-    stmt: use BindingId(26) val site=SiteId(134) ty=char intent=Read
+    stmt: use BindingId(26) val site=SiteId(136) ty=char intent=Read
     _1 = call hew_char_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(133) ty=string
-    stmt: return site=Some(SiteId(133)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(135) ty=string
+    stmt: return site=Some(SiteId(135)) ty=string
     ret = move _1
     return
 
@@ -289,11 +286,11 @@ fn f64::fmt(f64) -> string [conv=default]
     _0: f64
     _1: string
   bb0:
-    stmt: use BindingId(27) val site=SiteId(137) ty=f64 intent=Read
+    stmt: use BindingId(27) val site=SiteId(139) ty=f64 intent=Read
     _1 = call hew_float_to_string(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(136) ty=string
-    stmt: return site=Some(SiteId(136)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(138) ty=string
+    stmt: return site=Some(SiteId(138)) ty=string
     ret = move _1
     return
 
@@ -303,12 +300,12 @@ fn f32::fmt(f32) -> string [conv=default]
     _1: f64
     _2: string
   bb0:
-    stmt: use BindingId(28) val site=SiteId(141) ty=f32 intent=Read
+    stmt: use BindingId(28) val site=SiteId(143) ty=f32 intent=Read
     _1 = cast _0 f32 -> f64
     _2 = call hew_float_to_string(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(139) ty=string
-    stmt: return site=Some(SiteId(139)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(141) ty=string
+    stmt: return site=Some(SiteId(141)) ty=string
     ret = move _2
     return
 
@@ -316,8 +313,8 @@ fn string::fmt(string) -> string [conv=default]
   locals:
     _0: string
   bb0:
-    stmt: use BindingId(29) val site=SiteId(143) ty=string intent=Read
-    stmt: return site=Some(SiteId(143)) ty=string
+    stmt: use BindingId(29) val site=SiteId(145) ty=string intent=Read
+    stmt: return site=Some(SiteId(145)) ty=string
     string.retain _0
     ret = move _0
     return
@@ -329,14 +326,14 @@ fn duration::from_nanos(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(30) n site=SiteId(145) ty=i64 intent=Read
+    stmt: use BindingId(30) n site=SiteId(147) ty=i64 intent=Read
     _1 = const.duration 1ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(144)) ty=duration
+    stmt: return site=Some(SiteId(146)) ty=duration
     ret = move _2
     return
 
@@ -347,14 +344,14 @@ fn duration::from_micros(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(31) n site=SiteId(148) ty=i64 intent=Read
+    stmt: use BindingId(31) n site=SiteId(150) ty=i64 intent=Read
     _1 = const.duration 1000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(147)) ty=duration
+    stmt: return site=Some(SiteId(149)) ty=duration
     ret = move _2
     return
 
@@ -365,14 +362,14 @@ fn duration::from_millis(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(32) n site=SiteId(151) ty=i64 intent=Read
+    stmt: use BindingId(32) n site=SiteId(153) ty=i64 intent=Read
     _1 = const.duration 1000000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(150)) ty=duration
+    stmt: return site=Some(SiteId(152)) ty=duration
     ret = move _2
     return
 
@@ -383,14 +380,14 @@ fn duration::from_secs(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(33) n site=SiteId(154) ty=i64 intent=Read
+    stmt: use BindingId(33) n site=SiteId(156) ty=i64 intent=Read
     _1 = const.duration 1000000000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(153)) ty=duration
+    stmt: return site=Some(SiteId(155)) ty=duration
     ret = move _2
     return
 
@@ -402,14 +399,14 @@ fn duration::fmt(duration) -> string [conv=default]
     _3: string
     _4: string
   bb0:
-    stmt: use BindingId(34) val site=SiteId(159) ty=duration intent=Read
+    stmt: use BindingId(34) val site=SiteId(161) ty=duration intent=Read
     _1 = call hew_duration_nanos(_0) -> bb1
   bb1:
     _2 = call hew_i64_to_string(_1) -> bb2
   bb2:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(157) ty=string
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(156) ty=string
-    stmt: return site=Some(SiteId(156)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(159) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(158) ty=string
+    stmt: return site=Some(SiteId(158)) ty=string
     _3 = string_lit "ns"
     _4 = call_rt hew_string_concat(_2, _3)
     drop _2 ty=string fn=release(hew_string_drop)

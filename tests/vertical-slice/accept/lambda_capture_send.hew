@@ -2,12 +2,12 @@
 // capture rides the heap-boxed env record passed as the runtime state
 // pointer; the body reads it back through the state slot on every
 // dispatch. Both tells land in one mailbox, so their prints are FIFO
-// ordered; main prints last after the drain window.
+// ordered and runtime shutdown drains that mailbox to quiescence. Nothing
+// is printed from `main`: a print there would be ordered against the tells
+// only by a sleep, which is not a happens-before edge.
 fn main() {
     let base = 100;
     let log = actor |n: i64| { println(f"sum={base + n}"); };
     log(1);
     log(2);
-    sleep(300ms);
-    println("done");
 }

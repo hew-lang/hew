@@ -279,19 +279,6 @@ impl CommonBuildArgs {
             ..Default::default()
         }
     }
-
-    /// True when any compile-only flag was passed. No-input package-mode
-    /// `check`/`build` cannot honor these (there is no `.hew` file to apply
-    /// them to) — callers reject loudly rather than silently ignoring them.
-    pub fn any_set(&self) -> bool {
-        self.werror
-            || self.no_typecheck
-            || self.pkg_path.is_some()
-            || self.project_dir.is_some()
-            || !self.allow.is_empty()
-            || !self.warn.is_empty()
-            || !self.deny.is_empty()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -300,8 +287,9 @@ impl CommonBuildArgs {
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// Input .hew file.
-    pub input: PathBuf,
+    /// Input .hew file, or a package directory. Omit it to run the package
+    /// enclosing the current directory.
+    pub input: Option<PathBuf>,
     /// Build with debug info (no optimization, no stripping).
     #[arg(long, short = 'g')]
     pub debug: bool,
@@ -390,8 +378,8 @@ impl DebugArgs {
 
 #[derive(Debug, Args)]
 pub struct CheckArgs {
-    /// Input .hew file. Omit inside a `hew.toml` project to validate the
-    /// manifest instead (text output only).
+    /// Input .hew file, or a package directory. Omit it to check the package
+    /// enclosing the current directory.
     pub input: Option<PathBuf>,
     /// Print alias-vs-copy decision for every actor send site.
     ///
@@ -432,10 +420,11 @@ impl CheckArgs {
 
 #[derive(Debug, Args)]
 pub struct BuildArgs {
-    /// Input .hew file. Omit inside a `hew.toml` project to build and stage
-    /// the package's `[native]` FFI library instead.
+    /// Input .hew file, or a package directory. Omit it to build the package
+    /// enclosing the current directory.
     pub input: Option<PathBuf>,
-    /// Output binary path. Default: `./<stem>` (no extension on Unix targets,
+    /// Output binary path. Default: `<package-root>/<package-name>` for a
+    /// package, `./<stem>` for an explicit file (no extension on Unix targets,
     /// `.exe` on Windows targets). Ignored with `--emit-obj`.
     #[arg(long, short = 'o', value_name = "PATH")]
     pub output: Option<PathBuf>,

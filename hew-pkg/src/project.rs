@@ -42,7 +42,7 @@ impl ResolvedPackage {
     }
 
     /// True when this package declares a `[native]` FFI library that must be
-    /// built and staged before its Hew sources compile.
+    /// built before its Hew sources compile.
     #[must_use]
     pub fn has_native(&self) -> bool {
         self.manifest.native.is_some()

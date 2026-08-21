@@ -9,7 +9,7 @@ use crate::package_name::{
     invalid_message as invalid_package_name_message, is_valid as is_valid_package_name,
 };
 use crate::{
-    checksum, client, config, credentials, index, lockfile, manifest, native, package_fs, registry,
+    checksum, client, config, credentials, index, lockfile, manifest, package_fs, registry,
     resolver, signing, tarball,
 };
 
@@ -281,17 +281,23 @@ pub fn dispatch(cmd: &PkgCommand) {
     }
 }
 
-/// Validate the current project's manifest — `hew check` with no input file.
-pub fn run_manifest_check() {
+/// Validate the manifest of the package rooted at `root`, resolving every
+/// declared dependency against the configured registry. Returns the list of
+/// problems found; an empty list means the manifest is valid.
+///
+/// This is the manifest half of `hew check` in package mode — the CLI runs it
+/// before type-checking the package's entry point.
+///
+/// # Errors
+///
+/// Returns a rendered message when the manifest cannot be read or parsed.
+pub fn manifest_issues(root: &Path) -> Result<Vec<String>, String> {
     let cfg = load_config_or_exit();
     let registry = registry::Registry::with_root(config::registry_path(&cfg));
-    cmd_check(&registry);
-}
-
-/// Build and stage the current package's `[native]` FFI library — `hew build`
-/// with no input file.
-pub fn run_native_build() {
-    cmd_build();
+    let manifest_path = root.join(crate::project::MANIFEST_FILE);
+    let m = manifest::parse_manifest(&manifest_path)
+        .map_err(|e| format!("cannot load {}: {e}", manifest_path.display()))?;
+    Ok(collect_manifest_issues(&m, &registry))
 }
 
 /// Scaffold a manifest-first Hew project in `dir` — the `hew init` back end.
@@ -1441,57 +1447,16 @@ fn cmd_remove(package: &str) {
     }
 }
 
-/// `hew build` — build this package's `[native]` FFI library and stage it under
-/// `.hew/native/` so the compiler can link it.
-fn cmd_build() {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let artifact = match native::build_native(&cwd) {
-        Ok(None) => {
-            println!("No [native] section in hew.toml — nothing to build.");
-            return;
-        }
-        Ok(Some(artifact)) => artifact,
-        Err(e) => {
-            eprintln!("hew build: {e}");
-            std::process::exit(1);
-        }
-    };
-    let dest_dir = cwd.join(".hew").join("native");
-    match native::stage_native(&artifact, &dest_dir) {
-        Ok(staged) => {
-            println!("Built native lib `{}`", artifact.lib);
-            println!("  artifact: {}", artifact.path.display());
-            println!("  staged:   {}", staged.display());
-        }
-        Err(e) => {
-            eprintln!("hew build: {e}");
-            std::process::exit(1);
-        }
-    }
-}
-
-fn cmd_check(registry: &registry::Registry) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let manifest_path = cwd.join("hew.toml");
-    if !manifest_path.exists() {
-        eprintln!("hew check: no hew.toml found in current directory");
-        std::process::exit(1);
-    }
-    let m = match manifest::parse_manifest(&manifest_path) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("hew check: {e}");
-            std::process::exit(1);
-        }
-    };
-
+/// Collect every manifest-level problem: malformed package identity plus any
+/// dependency requirement the registry cannot satisfy.
+fn collect_manifest_issues(
+    m: &manifest::HewManifest,
+    registry: &registry::Registry,
+) -> Vec<String> {
     let mut issues = Vec::new();
 
     if !is_valid_package_name(&m.package.name) {
-        issues.push(format!(
-            "invalid package name `{}`: only lowercase alphanumeric, `_`, and dotted segments allowed",
-            m.package.name
-        ));
+        issues.push(invalid_package_name_message(&m.package.name));
     }
 
     if semver::Version::parse(&m.package.version).is_err() {
@@ -1508,15 +1473,7 @@ fn cmd_check(registry: &registry::Registry) {
         }
     }
 
-    if issues.is_empty() {
-        println!("OK: manifest is valid.");
-    } else {
-        println!("Issues found:");
-        for issue in &issues {
-            println!("  - {issue}");
-        }
-        std::process::exit(1);
-    }
+    issues
 }
 
 fn cmd_outdated(registry: &registry::Registry) {

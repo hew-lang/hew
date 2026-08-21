@@ -3,11 +3,11 @@
 //! ```text
 //! hew compile file.hew [--emit-dir DIR] [--dump-mir raw|elab] [--target wasm32-unknown-unknown]
 //!                                  # Run the v0.5 IR ladder and emit native or WASM
-//! hew run file.hew [-- args...]    # Compile through v0.5 native codegen and execute
+//! hew run [file.hew|DIR] [-- args...]
+//!                                  # Compile and run a package or explicit file
 //! hew debug file.hew [-- args...]  # Compile through v0.5 native codegen and launch a debugger
-//! hew check file.hew               # Parse + typecheck only
-//! hew check                        # Validate the project manifest (hew.toml)
-//! hew build                        # Build the package's [native] FFI library
+//! hew check [file.hew|DIR]          # Type-check a package or explicit file
+//! hew build [file.hew|DIR]          # Build a package or explicit file
 //! hew watch file_or_dir [options]  # Watch for changes and re-check
 //! hew eval                         # Interactive eval through the v0.5 native path
 //! hew eval "<expression>"          # Evaluate through the v0.5 native path
@@ -37,6 +37,7 @@ mod jit;
 mod link;
 mod machine;
 mod native_link;
+mod package;
 mod platform;
 mod playground;
 mod process;
@@ -886,20 +887,25 @@ pub(crate) fn compile_native_from_program_with_paths(
 
 /// Resolve the output binary path for `hew build` using go-build naming.
 ///
-/// With `-o`, the path is used verbatim. Otherwise the default is
-/// `./<input-stem><target.executable_suffix()>` in the current directory —
-/// `""` on Unix targets, `.exe` on Windows targets, `.wasm` on wasm targets.
-/// The suffix is target-driven, not host-driven, so a Windows cross-build names
-/// `foo.exe` even on a Unix host.
+/// With `-o`, the path is used verbatim. A package builds
+/// `<package-root>/<package-name><suffix>`; an explicit file builds
+/// `./<input-stem><suffix>` in the current directory. The suffix is
+/// target-driven, not host-driven — `""` on Unix targets, `.exe` on Windows
+/// targets, `.wasm` on wasm targets — so a Windows cross-build names `foo.exe`
+/// even on a Unix host.
 fn resolve_build_output_path(
     a: &args::BuildArgs,
-    input: &Path,
+    resolved: &package::Input,
     target: &target::TargetSpec,
 ) -> std::path::PathBuf {
     if let Some(output) = &a.output {
         return output.clone();
     }
-    let stem = input
+    if let Some(pkg) = resolved.package() {
+        return pkg.default_binary_path(target.executable_suffix());
+    }
+    let source = resolved.source();
+    let stem = source
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("a.out");
@@ -1111,43 +1117,18 @@ fn cmd_build(a: &args::BuildArgs) {
 /// Body of `hew build`. Returns the process exit code; MUST NOT call
 /// `std::process::exit` (bypasses the [`JsonDiagnosticFlush`] guard).
 fn cmd_build_run(a: &args::BuildArgs) -> i32 {
-    // No input: inside a hew.toml project this is the package native-build
-    // (build + stage the [native] FFI staticlib); anywhere else it is a
-    // usage error. File-oriented flags are rejected loudly rather than
-    // silently ignored (fail-closed).
-    let Some(input) = a.input.as_deref() else {
-        if a.output.is_some()
-            || a.target.is_some()
-            || a.emit_obj
-            || a.debug
-            || a.opt_level != "0"
-            || !a.link_libs.is_empty()
-            || a.common.any_set()
-        {
-            eprintln!(
-                "Error: build options require an input .hew file; \
-                 `hew build` with no input builds the package's [native] library"
-            );
-            return 2;
+    // No input, or a directory: the manifest names the entry point and the
+    // binary. A directory is resolved here and never handed to the compiler as
+    // a source path.
+    let resolved = match package::resolve(a.input.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(failure) => {
+            eprintln!("Error: {}", failure.message);
+            return failure.code;
         }
-        // `--format json` has no meaningful package-mode output: the native
-        // build reports staged-artifact paths, not compiler diagnostics, so
-        // there is nothing for the JSON diagnostic array to describe.
-        if a.format == args::DiagnosticFormat::Json {
-            eprintln!(
-                "Error: --format json is not supported for `hew build` with no input \
-                 (package-mode native build has no diagnostic output to format)"
-            );
-            return 2;
-        }
-        if !Path::new("hew.toml").is_file() {
-            eprintln!("Error: no input file and no hew.toml in the current directory");
-            eprintln!("Pass a .hew file to compile, or run `hew init` to create a project.");
-            return 2;
-        }
-        hew_pkg::cli::run_native_build();
-        return 0;
     };
+    let source = resolved.source();
+    let input = source.as_path();
 
     // A target parse error is a usage error before any compilation — exit 2.
     let target = match target::TargetSpec::from_requested(a.target.as_deref()) {
@@ -1167,6 +1148,28 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
              (native archives cannot be linked into a wasm module)"
         );
         return 2;
+    }
+    if target.is_wasm()
+        && resolved
+            .package()
+            .is_some_and(hew_pkg::project::ResolvedPackage::has_native)
+    {
+        eprintln!(
+            "Error: this package declares a [native] library, which cannot be \
+             linked into a wasm module"
+        );
+        return 2;
+    }
+
+    // The package's own [native] crate is a prerequisite of its link step:
+    // build it before compiling so `extern` calls resolve.
+    let mut link_libs = a.link_libs.clone();
+    match package::native_link_libs(&resolved) {
+        Ok(libs) => link_libs.extend(libs),
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return 1;
+        }
     }
 
     let options = a.to_compile_options();
@@ -1196,14 +1199,14 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
         return 1;
     }
 
-    let output_path = resolve_build_output_path(a, input, &target);
+    let output_path = resolve_build_output_path(a, &resolved, &target);
     match compile_build_binary(
         input,
         &output_path,
         &target,
         a.debug,
         opt_level,
-        &a.link_libs,
+        &link_libs,
         &options,
     ) {
         Ok(()) => 0,
@@ -1540,7 +1543,17 @@ fn cmd_run(a: &args::RunArgs) {
     // empty array is emitted so program output is never corrupted.
     diagnostic_json::set_output_format(a.format.into());
 
-    let input = a.input.display().to_string();
+    // No input, or a directory: the manifest names the entry point. Resolution
+    // happens before any path reaches the compiler, so a directory is never
+    // read as source.
+    let resolved = match package::resolve(a.input.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(failure) => {
+            eprintln!("Error: {}", failure.message);
+            std::process::exit(failure.code);
+        }
+    };
+    let input = resolved.source().display().to_string();
     let options = a.to_compile_options();
     let target = resolve_run_target(options.target.as_deref());
 
@@ -1553,6 +1566,27 @@ fn cmd_run(a: &args::RunArgs) {
              (native archives cannot be linked into a wasm module)"
         );
         std::process::exit(2);
+    }
+    if target.is_wasi()
+        && resolved
+            .package()
+            .is_some_and(hew_pkg::project::ResolvedPackage::has_native)
+    {
+        eprintln!(
+            "Error: this package declares a [native] library, which cannot be \
+             linked into a wasm module"
+        );
+        std::process::exit(2);
+    }
+
+    // The package's own [native] crate is a prerequisite of its link step.
+    let mut link_libs = a.link_libs.clone();
+    match package::native_link_libs(&resolved) {
+        Ok(libs) => link_libs.extend(libs),
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
     }
 
     let timeout = a.timeout.as_deref().map(|raw| {
@@ -1585,7 +1619,7 @@ fn cmd_run(a: &args::RunArgs) {
     if target.is_wasi() {
         cmd_run_wasi(a, &input, &options, &target, timeout);
     } else {
-        cmd_run_native(a, &input, &options, &target, timeout);
+        cmd_run_native(a, &input, &options, &target, &link_libs, timeout);
     }
 }
 
@@ -1624,9 +1658,10 @@ fn cmd_run_native(
     input: &str,
     options: &compile::CompileOptions,
     target: &target::ExecutionTarget,
+    link_libs: &[String],
     timeout: Option<std::time::Duration>,
 ) -> ! {
-    let artifact = compile_temp_run_artifact(input, options, target, &a.link_libs)
+    let artifact = compile_temp_run_artifact(input, options, target, link_libs)
         .unwrap_or_else(|()| std::process::exit(1));
 
     let mut command = std::process::Command::new(artifact.path());
@@ -1702,6 +1737,26 @@ fn resolve_run_target(requested: Option<&str>) -> target::ExecutionTarget {
     target
 }
 
+/// Validate a package's manifest: package identity plus every declared
+/// dependency's resolvability. Issues render on stderr as plain diagnostics so
+/// stdout stays reserved for the `--format json` diagnostic array.
+fn check_manifest(root: &Path) -> Result<(), i32> {
+    let issues = match hew_pkg::cli::manifest_issues(root) {
+        Ok(issues) => issues,
+        Err(message) => {
+            eprintln!("Error: {message}");
+            return Err(1);
+        }
+    };
+    if issues.is_empty() {
+        return Ok(());
+    }
+    for issue in &issues {
+        eprintln!("Error: hew.toml: {issue}");
+    }
+    Err(1)
+}
+
 fn cmd_check(a: &args::CheckArgs) {
     diagnostic_json::set_output_format(a.format.into());
     // Same single flush-then-exit chokepoint as `cmd_compile`: `cmd_check_run`
@@ -1721,38 +1776,23 @@ fn cmd_check(a: &args::CheckArgs) {
 fn cmd_check_run(a: &args::CheckArgs) -> i32 {
     let json = a.format == args::DiagnosticFormat::Json;
 
-    // No input: inside a hew.toml project this validates the manifest;
-    // anywhere else it is a usage error. File-oriented flags are rejected
-    // loudly rather than silently ignored (fail-closed).
-    let Some(input_path) = a.input.as_deref() else {
-        if a.explain_cow || a.show_stack_hints || a.target.is_some() || a.common.any_set() {
-            eprintln!(
-                "Error: check options require an input .hew file; \
-                 `hew check` with no input validates the project manifest"
-            );
-            return 2;
+    // No input, or a directory: the manifest names the entry point. A package
+    // is checked manifest-first — an unresolvable dependency or a malformed
+    // package identity stops the check before type-checking runs.
+    let resolved = match package::resolve(a.input.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(failure) => {
+            eprintln!("Error: {}", failure.message);
+            return failure.code;
         }
-        // `--format json` has no meaningful package-mode output: manifest
-        // validation reports free-form issue strings, not structured
-        // compiler diagnostics, so there is nothing for the JSON array to
-        // describe.
-        if json {
-            eprintln!(
-                "Error: --format json is not supported for `hew check` with no input \
-                 (package-mode manifest validation has no diagnostic output to format)"
-            );
-            return 2;
-        }
-        if !Path::new("hew.toml").is_file() {
-            eprintln!("Error: no input file and no hew.toml in the current directory");
-            eprintln!("Pass a .hew file to check, or run `hew init` to create a project.");
-            return 2;
-        }
-        hew_pkg::cli::run_manifest_check();
-        return 0;
     };
+    if let Some(pkg) = resolved.package() {
+        if let Err(code) = check_manifest(&pkg.root) {
+            return code;
+        }
+    }
 
-    let input = input_path.display().to_string();
+    let input = resolved.source().display().to_string();
     let options = a.to_compile_options();
     let target = match target::TargetSpec::from_requested(options.target.as_deref()) {
         Ok(target) => target,

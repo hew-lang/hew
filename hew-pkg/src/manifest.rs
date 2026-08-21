@@ -220,15 +220,15 @@ impl Package {
 }
 
 /// `[native]` — declares the Rust FFI library that backs this package's `extern`
-/// functions. `hew build` builds the crate at [`crate_dir`](NativeLib::crate_dir) and
-/// stages the produced `lib<lib>.a` (or `.dylib`); the compiler links it when the
-/// package is imported, so consumers never pass `--link-lib` manually.
+/// functions. `hew build` builds the crate at [`crate_dir`](NativeLib::crate_dir);
+/// the compiler links the produced `lib<lib>.a` (or `.dylib`) when the package is
+/// built or imported, so consumers never pass `--link-lib` manually.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct NativeLib {
     /// Path to the Cargo crate directory, relative to `hew.toml` (default `"."`).
     #[serde(rename = "crate", default = "default_native_crate")]
     pub crate_dir: String,
-    /// The `[lib] name` the crate produces; the staged artifact is `lib<lib>.a`/`.dylib`.
+    /// The `[lib]` name the crate produces as `lib<lib>.a` or `lib<lib>.dylib`.
     pub lib: String,
     /// Library kind: `"staticlib"` (default) or `"cdylib"`.
     #[serde(default = "default_native_kind")]

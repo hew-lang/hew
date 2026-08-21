@@ -1,0 +1,26 @@
+record NestedScalarReadInner { text: string, value: i64 }
+record NestedScalarReadCarrier {
+    inner: NestedScalarReadInner,
+    sibling: string,
+}
+
+fn project(i: i64) -> i64 {
+    let r = NestedScalarReadCarrier {
+        inner: NestedScalarReadInner {
+            text: string_concat("inner-", "payload"),
+            value: i,
+        },
+        sibling: string_concat("sibling-", "payload"),
+    };
+    r.inner.value
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 64 {
+        total = total + project(i);
+        i = i + 1;
+    }
+    if total == 2016 { 0 } else { 1 }
+}

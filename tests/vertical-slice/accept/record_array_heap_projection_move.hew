@@ -1,0 +1,24 @@
+record ArrayHeapMoveCarrier { items: Vec<string>, sibling: string }
+
+fn project(i: i64) -> string {
+    let values: Vec<string> = Vec.new();
+    values.push(string_concat("array-", "payload"));
+    let r = ArrayHeapMoveCarrier {
+        items: values,
+        sibling: string_concat("sibling-", "payload"),
+    };
+    let moved = r.items[0];
+    let _ = i;
+    moved
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 64 {
+        let moved = project(i);
+        total = total + moved.len();
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

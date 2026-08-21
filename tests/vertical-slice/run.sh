@@ -5404,6 +5404,21 @@ run_accept_expect_status "let_record_destructure_multi_fields" 155
 # Accept: record with an owned string field destructures without double-free.
 # tag=7 is returned; run under MallocScribble=1 to catch use-after-free.
 run_accept_expect_status "let_record_destructure_owned_field" 7
+run_accept_expect_status "record_array_heap_projection_move" 0
+run_accept_expect_status "record_array_heap_projection_read" 0
+run_accept_expect_status "record_array_scalar_projection_move" 0
+run_accept_expect_status "record_array_scalar_projection_read" 0
+run_accept_expect_status "record_enum_heap_projection_move" 0
+run_accept_expect_status "record_enum_heap_projection_read" 0
+run_accept_expect_status "record_enum_scalar_projection_move" 0
+run_accept_expect_status "record_enum_scalar_projection_read" 0
+run_accept_expect_status "record_nested_heap_projection_move" 0
+run_accept_expect_status "record_nested_heap_projection_read" 0
+run_accept_expect_status "record_nested_scalar_projection_move" 0
+run_accept_expect_status "record_nested_scalar_projection_read" 0
+run_accept_expect_status "record_tuple_heap_projection_move" 0
+run_accept_expect_status "record_tuple_heap_projection_read" 0
+run_accept_expect_status "record_tuple_scalar_projection_move" 0
 run_accept_expect_status "record_tuple_scalar_projection_drop" 0
 
 # Accept: destructure inside a called function and again at the call site.

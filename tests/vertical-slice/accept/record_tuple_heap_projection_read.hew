@@ -1,0 +1,22 @@
+record TupleHeapReadCarrier {
+    pair: (string, i64),
+    sibling: string,
+}
+
+fn project(i: i64) -> i64 {
+    let r = TupleHeapReadCarrier {
+        pair: (string_concat("tuple-", "payload"), i),
+        sibling: string_concat("sibling-", "payload"),
+    };
+    r.pair.0.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 64 {
+        total = total + project(i);
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

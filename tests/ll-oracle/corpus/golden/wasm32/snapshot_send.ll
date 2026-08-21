@@ -1003,9 +1003,9 @@ bb5:                                              ; preds = %clone_ok29
   %field_0_load = load ptr, ptr %field_0_load_ptr, align 4
   store ptr %field_0_load, ptr %local_17, align 4
   store i64 9, ptr %local_18, align 8
-  %call_arg41 = load ptr, ptr %local_17, align 4
-  %call_arg42 = load i64, ptr %local_18, align 8
-  call void @hew_vec_push_i64(ptr %call_arg41, i64 %call_arg42)
+  %call_arg44 = load ptr, ptr %local_17, align 4
+  %call_arg45 = load i64, ptr %local_18, align 8
+  call void @hew_vec_push_i64(ptr %call_arg44, i64 %call_arg45)
   br label %bb6
 
 bb6:                                              ; preds = %bb5
@@ -1066,7 +1066,10 @@ clone_ok:                                         ; preds = %frame_cleanup_regis
   %actor_id = load i64, ptr %actor_id_slot, align 8
   %hew_actor_send_by_id_call = call i32 @hew_actor_send_by_id(i64 %actor_id, ptr null, i32 -1599914196, ptr %local_14, i32 ptrtoint (ptr getelementptr (%__hew_packed_args_main_0, ptr null, i32 1) to i32))
   %send_not_ok = icmp ne i32 %hew_actor_send_by_id_call, 0
-  br i1 %send_not_ok, label %actor_send_fail, label %bb4
+  %send_recipient_stopped = icmp eq i32 %hew_actor_send_by_id_call, -2
+  %send_recipient_running = xor i1 %send_recipient_stopped, true
+  %send_must_trap = and i1 %send_not_ok, %send_recipient_running
+  br i1 %send_must_trap, label %actor_send_fail, label %bb4
 
 clone_trap:                                       ; preds = %frame_cleanup_registered
   call void @hew_trap_with_code(i32 200)
@@ -1091,7 +1094,10 @@ clone_ok29:                                       ; preds = %bb4
   %actor_id37 = load i64, ptr %actor_id_slot36, align 8
   %hew_actor_send_by_id_call38 = call i32 @hew_actor_send_by_id(i64 %actor_id37, ptr null, i32 -1599914196, ptr %local_16, i32 ptrtoint (ptr getelementptr (%__hew_packed_args_main_1, ptr null, i32 1) to i32))
   %send_not_ok40 = icmp ne i32 %hew_actor_send_by_id_call38, 0
-  br i1 %send_not_ok40, label %actor_send_fail39, label %bb5
+  %send_recipient_stopped41 = icmp eq i32 %hew_actor_send_by_id_call38, -2
+  %send_recipient_running42 = xor i1 %send_recipient_stopped41, true
+  %send_must_trap43 = and i1 %send_not_ok40, %send_recipient_running42
+  br i1 %send_must_trap43, label %actor_send_fail39, label %bb5
 
 clone_trap30:                                     ; preds = %bb4
   call void @hew_trap_with_code(i32 200)

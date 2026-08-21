@@ -490,7 +490,10 @@ bb0:                                              ; preds = %entry
   %actor_id = load i64, ptr %actor_id_slot, align 8
   %hew_actor_send_by_id_call = call i32 @hew_actor_send_by_id(i64 %actor_id, ptr null, i32 1995638644, ptr %local_3, i64 ptrtoint (ptr getelementptr (i64, ptr null, i32 1) to i64))
   %send_not_ok = icmp ne i32 %hew_actor_send_by_id_call, 0
-  br i1 %send_not_ok, label %actor_send_fail, label %bb1
+  %send_recipient_stopped = icmp eq i32 %hew_actor_send_by_id_call, -2
+  %send_recipient_running = xor i1 %send_recipient_stopped, true
+  %send_must_trap = and i1 %send_not_ok, %send_recipient_running
+  br i1 %send_must_trap, label %actor_send_fail, label %bb1
 
 bb1:                                              ; preds = %bb0
   store i64 42, ptr %local_4, align 8

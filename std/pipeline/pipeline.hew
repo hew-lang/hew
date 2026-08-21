@@ -72,10 +72,10 @@ pub actor SinkI64 {
         var admitted = false;
         while !admitted {
             match await control.take_permit() {
-                Ok(open) => {
+                .Ok(open) => {
                     admitted = open;
                 },
-                Err(_) => {
+                .Err(_) => {
                     return;
                 },
             }
@@ -131,8 +131,8 @@ pub actor StageI64 {
 
     receive fn push(item: PipelineItemI64) -> bool {
         match await control.mark_stage_attempt() {
-            Ok(_) => {},
-            Err(_) => {
+            .Ok(_) => {},
+            .Err(_) => {
                 return false;
             },
         }
@@ -142,8 +142,8 @@ pub actor StageI64 {
         let transformed = PipelineItemI64 { value: item.value * 2, label: item.label + ":stage", crash_stage: false };
         next.push(transformed);
         match await control.mark_stage_post_send() {
-            Ok(_) => true,
-            Err(_) => false,
+            .Ok(_) => true,
+            .Err(_) => false,
         }
     }
 }
@@ -157,43 +157,43 @@ pub actor SourceI64 {
 
     receive fn push(item: PipelineItemI64) -> bool {
         match await next.push(item) {
-            Ok(accepted) => accepted,
-            Err(_) => false,
+            .Ok(accepted) => accepted,
+            .Err(_) => false,
         }
     }
 
     receive fn count() -> i64 {
         match await sink.count() {
-            Ok(value) => value,
-            Err(_) => -1,
+            .Ok(value) => value,
+            .Err(_) => -1,
         }
     }
 
     receive fn sum() -> i64 {
         match await sink.sum() {
-            Ok(value) => value,
-            Err(_) => -1,
+            .Ok(value) => value,
+            .Err(_) => -1,
         }
     }
 
     receive fn last_value() -> i64 {
         match await sink.last_value() {
-            Ok(value) => value,
-            Err(_) => -1,
+            .Ok(value) => value,
+            .Err(_) => -1,
         }
     }
 
     receive fn item(index: i64) -> i64 {
         match await sink.item(index) {
-            Ok(value) => value,
-            Err(_) => -1,
+            .Ok(value) => value,
+            .Err(_) => -1,
         }
     }
 
     receive fn last_label() -> string {
         match await sink.last_label() {
-            Ok(value) => value,
-            Err(_) => "",
+            .Ok(value) => value,
+            .Err(_) => "",
         }
     }
 
@@ -207,22 +207,22 @@ pub actor SourceI64 {
 
     receive fn stage_attempts() -> i64 {
         match await control.attempts() {
-            Ok(value) => value,
-            Err(_) => -1,
+            .Ok(value) => value,
+            .Err(_) => -1,
         }
     }
 
     receive fn stage_post_sends() -> i64 {
         match await control.post_sends() {
-            Ok(value) => value,
-            Err(_) => -1,
+            .Ok(value) => value,
+            .Err(_) => -1,
         }
     }
 
     receive fn shutdown(expected_count: i64) -> bool {
         match await sink.count() {
-            Ok(value) => value == expected_count,
-            Err(_) => false,
+            .Ok(value) => value == expected_count,
+            .Err(_) => false,
         }
     }
 }

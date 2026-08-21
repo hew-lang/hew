@@ -21,12 +21,12 @@
 import std.testing;
 
 // ── Order A: embedded machine declared FIRST (this always worked) ─────────
-
 machine InnerA {
     events {
         go;
     }
-    state Ready { payload: string }
+
+    state Ready { payload: string; }
     state Done;
 
     on go: Ready => Done {
@@ -41,7 +41,8 @@ machine OuterA {
     events {
         step;
     }
-    state Holding { inner: InnerA }
+
+    state Holding { inner: InnerA; }
     state Empty;
 
     on step: Holding => Empty {
@@ -54,31 +55,27 @@ machine OuterA {
 
 fn payload_of_a(o: OuterA) -> string {
     match o {
-        Holding { inner } => match inner {
-            Ready { payload } => payload,
-            Done => "done",
+        .Holding { inner } => match inner {
+            .Ready { payload } => payload,
+            .Done => "done",
         },
-        Empty => "empty",
+        .Empty => "empty",
     }
 }
 
 #[test]
 fn machine_in_machine_embedded_declared_first() {
-    let o = OuterA.Holding {
-        inner: InnerA.Ready {
-            payload: "embedded-first-payload",
-        },
-    };
+    let o = OuterA.Holding { inner: InnerA.Ready { payload: "embedded-first-payload" } };
     testing.assert_eq_str(payload_of_a(o), "embedded-first-payload");
 }
 
 // ── Order B: container declared FIRST (this segfaulted before the fix) ────
-
 machine OuterB {
     events {
         step;
     }
-    state HoldingB { inner: InnerB }
+
+    state HoldingB { inner: InnerB; }
     state EmptyB;
 
     on step: HoldingB => EmptyB {
@@ -93,7 +90,8 @@ machine InnerB {
     events {
         go;
     }
-    state ReadyB { payload: string }
+
+    state ReadyB { payload: string; }
     state DoneB;
 
     on go: ReadyB => DoneB {
@@ -106,20 +104,16 @@ machine InnerB {
 
 fn payload_of_b(o: OuterB) -> string {
     match o {
-        HoldingB { inner } => match inner {
-            ReadyB { payload } => payload,
-            DoneB => "done",
+        .HoldingB { inner } => match inner {
+            .ReadyB { payload } => payload,
+            .DoneB => "done",
         },
-        EmptyB => "empty",
+        .EmptyB => "empty",
     }
 }
 
 #[test]
 fn machine_in_machine_container_declared_first() {
-    let o = OuterB.HoldingB {
-        inner: InnerB.ReadyB {
-            payload: "container-first-payload",
-        },
-    };
+    let o = OuterB.HoldingB { inner: InnerB.ReadyB { payload: "container-first-payload" } };
     testing.assert_eq_str(payload_of_b(o), "container-first-payload");
 }

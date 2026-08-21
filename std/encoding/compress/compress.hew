@@ -30,8 +30,8 @@
 /// `try_gzip_compress(data)` when failure should be returned as an error.
 pub fn gzip_compress(data: bytes) -> bytes {
     match try_gzip_compress(data) {
-        Ok(out) => out,
-        Err(reason) => {
+        .Ok(out) => out,
+        .Err(reason) => {
             panic(f"compress.gzip_compress: {reason}");
             "".to_bytes()
         },
@@ -64,8 +64,8 @@ pub fn try_gzip_compress(data: bytes) -> Result<bytes, string> {
 /// returned as an error.
 pub fn gzip_decompress(data: bytes, max_output_len: i64) -> bytes {
     match try_gzip_decompress(data, max_output_len) {
-        Ok(out) => out,
-        Err(reason) => {
+        .Ok(out) => out,
+        .Err(reason) => {
             panic(f"compress.gzip_decompress: {reason}");
             "".to_bytes()
         },
@@ -92,8 +92,8 @@ pub fn try_gzip_decompress(data: bytes, max_output_len: i64) -> Result<bytes, st
 /// Panics with the codec's reason if compression fails.
 pub fn deflate_compress(data: bytes) -> bytes {
     match try_deflate_compress(data) {
-        Ok(out) => out,
-        Err(reason) => {
+        .Ok(out) => out,
+        .Err(reason) => {
             panic(f"compress.deflate_compress: {reason}");
             "".to_bytes()
         },
@@ -120,8 +120,8 @@ pub fn try_deflate_compress(data: bytes) -> Result<bytes, string> {
 /// Panics with the codec's reason if decompression fails.
 pub fn deflate_decompress(data: bytes, max_output_len: i64) -> bytes {
     match try_deflate_decompress(data, max_output_len) {
-        Ok(out) => out,
-        Err(reason) => {
+        .Ok(out) => out,
+        .Err(reason) => {
             panic(f"compress.deflate_decompress: {reason}");
             "".to_bytes()
         },
@@ -148,8 +148,8 @@ pub fn try_deflate_decompress(data: bytes, max_output_len: i64) -> Result<bytes,
 /// Panics with the codec's reason if compression fails.
 pub fn zlib_compress(data: bytes) -> bytes {
     match try_zlib_compress(data) {
-        Ok(out) => out,
-        Err(reason) => {
+        .Ok(out) => out,
+        .Err(reason) => {
             panic(f"compress.zlib_compress: {reason}");
             "".to_bytes()
         },
@@ -176,8 +176,8 @@ pub fn try_zlib_compress(data: bytes) -> Result<bytes, string> {
 /// Panics with the codec's reason if decompression fails.
 pub fn zlib_decompress(data: bytes, max_output_len: i64) -> bytes {
     match try_zlib_decompress(data, max_output_len) {
-        Ok(out) => out,
-        Err(reason) => {
+        .Ok(out) => out,
+        .Err(reason) => {
             panic(f"compress.zlib_decompress: {reason}");
             "".to_bytes()
         },

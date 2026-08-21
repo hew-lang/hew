@@ -91,8 +91,8 @@ pub fn try_encode(payload: string, secret: string, algorithm: string) -> Result<
 /// structured error handling.
 pub fn encode(payload: string, secret: string, algorithm: string) -> string {
     match try_encode(payload, secret, algorithm) {
-        Ok(token) => token,
-        Err(err) => {
+        .Ok(token) => token,
+        .Err(err) => {
             panic(f"jwt.encode failed: {error_message(err)}");
             ""
         },
@@ -119,8 +119,8 @@ pub fn try_decode(token: string, secret: string, algorithm: string) -> Result<st
 /// Panics on invalid tokens. Use `try_decode` for structured error handling.
 pub fn decode(token: string, secret: string, algorithm: string) -> string {
     match try_decode(token, secret, algorithm) {
-        Ok(payload) => payload,
-        Err(err) => {
+        .Ok(payload) => payload,
+        .Err(err) => {
             panic(f"jwt.decode failed: {error_message(err)}");
             ""
         },

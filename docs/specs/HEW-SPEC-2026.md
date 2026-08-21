@@ -847,11 +847,11 @@ import std.text.regex;   // Available as "regex"
 
 // Call module functions with dot-syntax: module.function(args)
 match http.listen("127.0.0.1:0") { // Returns Result<Server, NetError>
-    Ok(server) => {
+    .Ok(server) => {
         println(f"HTTP server listening on port {http.server_port(server)}");
         server.close(); // Explicitly release the listener on every success path.
     },
-    Err(_err) => println(f"listen failed: {http.listen_error()}"),
+    .Err(_err) => println(f"listen failed: {http.listen_error()}"),
 }
 let content = fs.read("config.toml");
 let exists = fs.exists("output.txt");       // Returns bool
@@ -1419,9 +1419,9 @@ let e = Expr.Add(Expr.Lit(1), Expr.Neg(Expr.Lit(2)));
 ```hew
 fn eval(e: Expr) -> i64 {
     match e {
-        Lit(n) => n,
-        Add(l, r) => eval(l) + eval(r),
-        Neg(inner) => 0 - eval(inner),
+        .Lit(n) => n,
+        .Add(l, r) => eval(l) + eval(r),
+        .Neg(inner) => 0 - eval(inner),
     }
 }
 ```
@@ -2851,9 +2851,9 @@ light.step(LightEvent.Toggle);   // fully qualified (also valid)
 
 ```hew
 match cb {
-    Closed { failures } => println(f"failures = {failures}"),
-    Open                => println("open"),
-    HalfOpen            => println("half-open"),
+    .Closed { failures } => println(f"failures = {failures}"),
+    .Open                => println("open"),
+    .HalfOpen            => println("half-open"),
 }
 ```
 
@@ -2869,7 +2869,7 @@ actor ConnectionManager {
         tcp.step(event);
         // React to the new state
         match tcp {
-            Established { local_seq, remote_seq } => {
+            .Established { local_seq, remote_seq } => {
                 println(f"established seq={local_seq}/{remote_seq}");
             },
             _ => {},
@@ -3169,8 +3169,8 @@ unexpected, unrecoverable failures (Section 2.2).
 // Cancellation returns Err, not a trap:
 let result = await task;
 match result {
-    Ok(v) => use_value(v),
-    Err(_) => handle_cancellation(),
+    .Ok(v) => use_value(v),
+    .Err(_) => handle_cancellation(),
 }
 
 // Use ? to propagate cancellation errors:
@@ -3284,8 +3284,8 @@ scope {
     };
 
     match await task {
-        Ok(v) => use_value(v),
-        Err(e) => handle_error(e),
+        .Ok(v) => use_value(v),
+        .Err(e) => handle_error(e),
     }
 }
 ```
@@ -4072,8 +4072,8 @@ by this contract freeze.
 ```hew
 // Pull items
 match bytes_stream.recv() {
-    Some(chunk) => { ... },
-    None => { /* EOF only */ },
+    .Some(chunk) => { ... },
+    .None => { /* EOF only */ },
 }
 
 // Empty items are valid data, not EOF

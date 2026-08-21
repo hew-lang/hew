@@ -1666,7 +1666,7 @@ fn main() {
     println(c.state_name());            // NonZero
     match c {
         .Zero => println("is zero"),
-        NonZero { value } => println(f"value={value}"),  // value=3
+        .NonZero { value } => println(f"value={value}"),  // value=3
     }
     c.step(.Reset);
     println(c.state_name());            // Zero
@@ -1754,7 +1754,7 @@ fn main() {
     log.step(Append { item: 20 });
     match log {
         .Empty => println("empty"),
-        Filled { items } => {
+        .Filled { items } => {
             println(f"count={items.len()}");   // count=2
             println(f"first={items[0]}");  // first=10
         },
@@ -1781,7 +1781,7 @@ fn main() {
     a.step(make_add(7));
     match a {
         .Seed => println("seed"),
-        Total { sum } => println(f"sum={sum}"),   // sum=12
+        .Total { sum } => println(f"sum={sum}"),   // sum=12
     }
 }
 ```

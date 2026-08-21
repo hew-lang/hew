@@ -37,8 +37,8 @@ type P {
 
 fn state_tag(p: P) -> i64 {
     match p.f {
-        S1 => 1,
-        S2 => 2,
+        .S1 => 1,
+        .S2 => 2,
     }
 }
 
@@ -82,8 +82,8 @@ type Q {
 
 fn running_count(q: Q) -> i64 {
     match q.g {
-        Idle => -1,
-        Running { count } => count,
+        .Idle => -1,
+        .Running { count } => count,
     }
 }
 
@@ -118,8 +118,8 @@ type R {
 
 fn label_of(r: R) -> string {
     match r.h {
-        Empty => "empty",
-        Named { label } => label,
+        .Empty => "empty",
+        .Named { label } => label,
     }
 }
 

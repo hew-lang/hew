@@ -194,8 +194,8 @@ impl TlsStream {
 /// ```
 pub fn connect(host: string, port: i64) -> TlsStream {
     let checked = match net.try_port_arg("tls.connect", port) {
-        Ok(value) => value,
-        Err(err) => {
+        .Ok(value) => value,
+        .Err(err) => {
             panic(f"tls.connect failed: {net.net_error_message(err)}");
             0
         },

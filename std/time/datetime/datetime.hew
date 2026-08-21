@@ -42,8 +42,8 @@ pub fn now_secs() -> i64 {
 /// ```
 pub fn format(epoch_ms: i64, fmt: string) -> string {
     match try_format(epoch_ms, fmt) {
-        Ok(value) => value,
-        Err(err) => {
+        .Ok(value) => value,
+        .Err(err) => {
             panic(f"datetime.format failed: {err}");
             ""
         },
@@ -86,8 +86,8 @@ fn component_or_panic(value: i64) -> i64 {
 ///
 pub fn parse(s: string, fmt: string) -> i64 {
     match try_parse(s, fmt) {
-        Ok(epoch_ms) => epoch_ms,
-        Err(err) => {
+        .Ok(epoch_ms) => epoch_ms,
+        .Err(err) => {
             panic(f"datetime.parse failed: {err}");
             0
         },

@@ -127,7 +127,7 @@ fn constructed_affine_collection_call(
         items: vec![HirItem::Function(HirFn {
             id: ids.item(),
             node: ids.node(),
-            declaration: hew_types::DefId::new("main"),
+            declaration: hew_types::DefId::for_test("main"),
             name: "main".to_string(),
             type_params: vec![],
             params: vec![],

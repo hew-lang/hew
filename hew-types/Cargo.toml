@@ -12,6 +12,11 @@ categories = ["compilers"]
 [lints]
 workspace = true
 
+[features]
+# Exposes fixture-only identities to direct dev-dependencies. Production builds
+# leave this disabled, so fixture constructors are absent from the public API.
+test = []
+
 [dependencies]
 hew-parser = { path = "../hew-parser" }
 serde.workspace = true

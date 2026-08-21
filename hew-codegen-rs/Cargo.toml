@@ -55,6 +55,7 @@ cc = "1"
 
 [dev-dependencies]
 hew-testutil = { path = "../hew-testutil" }
+hew-types = { path = "../hew-types", features = ["test"] }
 # The worker-free actor teardown seam is test-only. Keeping its feature on the
 # dev dependency prevents Cargo feature unification from putting the seam in
 # the compiler or the shipped `libhew.a`.

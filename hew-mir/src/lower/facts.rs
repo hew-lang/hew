@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 #[cfg(test)]
 use super::*;
 #[cfg(not(test))]
@@ -4535,7 +4540,7 @@ mod enum_layout_tests {
         HirTypeDecl {
             id: ItemId(0),
             node: HirNodeId(0),
-            declaration: hew_types::DefId::new("Shape"),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path("Shape"),
             name: "Shape".to_string(),
             defining_module: None,
             marker: ResourceMarker::None,
@@ -4596,7 +4601,7 @@ mod enum_layout_tests {
         let decl = HirTypeDecl {
             id: ItemId(1),
             node: HirNodeId(1),
-            declaration: hew_types::DefId::new("Colour"),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path("Colour"),
             name: "Colour".to_string(),
             defining_module: None,
             marker: ResourceMarker::None,
@@ -4830,7 +4835,7 @@ mod enum_layout_tests {
         let decl = HirTypeDecl {
             id: option_item_id,
             node: HirNodeId(10),
-            declaration: hew_types::DefId::new("Option"),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path("Option"),
             name: "Option".to_string(),
             defining_module: None,
             marker: ResourceMarker::None,
@@ -4931,7 +4936,7 @@ mod call_param_verdict_tests {
         HirFn {
             id: ItemId(id),
             node: HirNodeId(0),
-            declaration: hew_types::DefId::new(format!("f{id}")),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!("f{id}")),
             name: format!("f{id}"),
             type_params: Vec::new(),
             params: vec![HirBinding {

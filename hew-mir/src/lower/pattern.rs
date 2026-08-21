@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 use super::{
     base_local, callee_is_resolved_item, callee_returns_fresh_owner,
     field_override_uses_record_field_drop, float_width, generator_yield_instr_escapes,
@@ -536,7 +541,7 @@ impl Builder {
             } if args.is_empty()
                 && self
                     .lifecycle_registry
-                    .resource_record(&hew_types::DefId::new(name))
+                    .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(name))
                     .is_some() =>
             {
                 ReleaseSymbolVerdict::WiredInPlace(crate::ownership::InPlaceReleaseKind::Record)
@@ -4519,7 +4524,7 @@ impl Builder {
                                             } if args.is_empty()
                                                 && self
                                                     .lifecycle_registry
-                                                    .resource_record(&hew_types::DefId::new(name))
+                                                    .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(name))
                                                     .is_some()
                                         )
                                     })

@@ -19,9 +19,13 @@
 #   APPLE_API_KEY_ID            — App Store Connect API key ID
 #   APPLE_API_ISSUER_ID         — App Store Connect API issuer ID
 #
-# Required variable and secret for the required playground dispatch:
-#   secrets.PLAYGROUND_APP_ID — GitHub App ID for the playground dispatch App
-#   secrets.PLAYGROUND_APP_PRIVATE_KEY — Private key for the playground dispatch App
+# Required variable and secrets for the required playground release image:
+#   vars.PLAYGROUND_PUBLISH_MODE — how the release image is acquired; exactly
+#     `actions` (dispatch the playground build workflow and watch it) or
+#     `local` (a maintainer publishes it with `make release-publish`). Any
+#     other value, including unset, fails the release.
+#   secrets.PLAYGROUND_APP_ID — GitHub App ID for the playground App
+#   secrets.PLAYGROUND_APP_PRIVATE_KEY — Private key for the playground App
 #
 # Homebrew tap updates use a separate optional credential and are skipped for
 # prereleases:
@@ -1568,6 +1572,11 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # Playground — trigger Docker image rebuild in hew-lang/playground
   # ─────────────────────────────────────────────────────────────────────────
+  # The job's contract is the release image itself: for this tag, an image
+  # exists in the registry and it binds this release commit. How the image gets
+  # there is an acquisition mode, not the contract — `actions` dispatches the
+  # playground build workflow, `local` waits for a maintainer's
+  # `make release-publish`. Both modes end at the identical assertion.
   playground:
     needs: release
     runs-on: ubuntu-24.04
@@ -1575,7 +1584,8 @@ jobs:
     # The downstream publish path is bounded at 5 + 5 + 45 + 30 + 5 minutes
     # across its authority, contract-verify, smoke, publish, and result jobs
     # (90 minutes sequential worst case). Leave another 30 minutes for dispatch
-    # visibility and runner scheduling while still failing closed.
+    # visibility and runner scheduling while still failing closed. The image
+    # assertion's own deadline is carved out of the same budget per mode.
     timeout-minutes: 120
 
     steps:
@@ -1594,6 +1604,44 @@ jobs:
           fi
           echo "hew_sha=${HEW_SHA}" >> "${GITHUB_OUTPUT}"
 
+      - name: Select release image acquisition mode
+        id: acquisition
+        shell: bash
+        env:
+          PLAYGROUND_PUBLISH_MODE: ${{ vars.PLAYGROUND_PUBLISH_MODE }}
+        run: |
+          set -euo pipefail
+
+          # No default and no skip: an unset or unrecognized mode is a release
+          # configuration error, and guessing one would publish nothing while
+          # reporting success.
+          case "${PLAYGROUND_PUBLISH_MODE:-}" in
+            actions)
+              # The dispatched run is watched to completion first, so the image
+              # is already published by the time the assertion starts.
+              deadline=25
+              ;;
+            local)
+              # Nothing is dispatched; the whole remaining job budget is the
+              # window for the maintainer's publish to land.
+              deadline=110
+              ;;
+            *)
+              echo "::error::vars.PLAYGROUND_PUBLISH_MODE must be exactly 'actions' or 'local'; got '${PLAYGROUND_PUBLISH_MODE:-<unset>}'"
+              exit 1
+              ;;
+          esac
+          {
+            echo "mode=${PLAYGROUND_PUBLISH_MODE}"
+            echo "assert_deadline_minutes=${deadline}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout release machinery
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: release-machinery
+
       - name: Validate playground GitHub App configuration
         shell: bash
         env:
@@ -1602,8 +1650,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Required in both acquisition modes: the App token dispatches the
+          # playground build in `actions` mode and reads the playground's
+          # container package in either mode.
           if [[ -z "${PLAYGROUND_APP_ID}" || -z "${PLAYGROUND_APP_PRIVATE_KEY}" ]]; then
-            echo "::error::Playground dispatch requires secrets.PLAYGROUND_APP_ID and secrets.PLAYGROUND_APP_PRIVATE_KEY; configure both before running a release"
+            echo "::error::The playground release image requires secrets.PLAYGROUND_APP_ID and secrets.PLAYGROUND_APP_PRIVATE_KEY; configure both before running a release"
             exit 1
           fi
 
@@ -1617,6 +1668,7 @@ jobs:
           repositories: playground
 
       - name: Trigger playground image rebuild
+        if: steps.acquisition.outputs.mode == 'actions'
         shell: bash
         env:
           GH_TOKEN: ${{ steps.playground-app-token.outputs.token }}
@@ -1710,6 +1762,35 @@ jobs:
             exit 1
           fi
           gh run watch "${RUN_ID}" -R hew-lang/playground --exit-status
+
+      - name: Report expected local release image publish
+        if: steps.acquisition.outputs.mode == 'local'
+        shell: bash
+        env:
+          HEW_SHA: ${{ steps.release-commit.outputs.hew_sha }}
+          DEADLINE_MINUTES: ${{ steps.acquisition.outputs.assert_deadline_minutes }}
+        run: |
+          set -euo pipefail
+
+          VERSION="${RELEASE_TAG#v}"
+          echo "Acquisition mode is 'local': no playground workflow was dispatched."
+          echo "Publish the release image from a hew-lang/playground checkout:"
+          echo "  make release-publish HEW_SHA=${HEW_SHA} HEW_VERSION=${VERSION}"
+          echo "This job waits up to ${DEADLINE_MINUTES}m for that image and fails if it does not arrive."
+
+      - name: Assert release image exists and binds the release commit
+        # Runs on every acquisition mode, including one whose acquisition step
+        # failed: the image is the contract, so the release states plainly
+        # whether it exists rather than inheriting a dispatch's verdict.
+        if: ${{ !cancelled() && steps.acquisition.outputs.mode != '' }}
+        shell: bash
+        env:
+          IMAGE_REPOSITORY: hew-lang/playground
+          IMAGE_TAG: ${{ env.RELEASE_TAG }}
+          EXPECTED_REVISION: ${{ steps.release-commit.outputs.hew_sha }}
+          REGISTRY_TOKEN: ${{ steps.playground-app-token.outputs.token }}
+          DEADLINE_MINUTES: ${{ steps.acquisition.outputs.assert_deadline_minutes }}
+        run: release-machinery/scripts/assert-playground-release-image.sh
 
   # ─────────────────────────────────────────────────────────────────────────
   # VS Code Extension — package + publish with bundled hew-lsp per platform

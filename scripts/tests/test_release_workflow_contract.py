@@ -39,6 +39,7 @@ RELEASE_LINK_MANIFEST = (
 WINDOWS_RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.ps1"
 WINDOWS_RELEASE_BUILD = ROOT / "scripts" / "windows-release-build.ps1"
 SANITIZER_GATE = ROOT / "scripts" / "check-sanitizer-gate.sh"
+RELEASE_IMAGE_ASSERTION = ROOT / "scripts" / "assert-playground-release-image.sh"
 MAKEFILE = ROOT / "Makefile"
 RELEASE_BINARY_SMOKE = ROOT / "scripts" / "test-release-binary.sh"
 PACKAGE_BUILDER = ROOT / "installers" / "build-packages.sh"
@@ -74,11 +75,82 @@ def playground_job(text: str | None = None) -> str:
 
 
 def playground_script(text: str | None = None) -> str:
-    """Extract the exact Bash program executed by the playground job."""
+    """Extract the exact Bash program executed by the dispatch step.
+
+    Bounded at the next step so the acquisition-mode steps that follow the
+    dispatch cannot leak their YAML into the program under test.
+    """
     job = playground_job() if text is None else text
     step = job.index("      - name: Trigger playground image rebuild\n")
     run = job.index("        run: |\n", step) + len("        run: |\n")
-    return textwrap.dedent(job[run:]).rstrip() + "\n"
+    next_step = job.find("\n      - name: ", run)
+    body = job[run:] if next_step == -1 else job[run : next_step + 1]
+    return textwrap.dedent(body).rstrip() + "\n"
+
+
+def step_of(job: str, name: str) -> str:
+    """Extract one named step's YAML from a job, bounded at the next step."""
+    start = job.index(f"      - name: {name}\n")
+    end = job.find("\n      - name: ", start + 1)
+    return job[start:] if end == -1 else job[start : end + 1]
+
+
+def acquisition_script() -> str:
+    """Extract the exact Bash program that selects the acquisition mode."""
+    job = playground_job()
+    step = step_of(job, "Select release image acquisition mode")
+    run = step.index("        run: |\n") + len("        run: |\n")
+    return textwrap.dedent(step[run:]).rstrip() + "\n"
+
+
+def run_acquisition(mode: str | None) -> tuple:
+    """Execute the acquisition-mode selection with a given repository variable."""
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "github_output"
+        output.touch()
+        env = os.environ.copy()
+        env["GITHUB_OUTPUT"] = str(output)
+        env.pop("PLAYGROUND_PUBLISH_MODE", None)
+        if mode is not None:
+            env["PLAYGROUND_PUBLISH_MODE"] = mode
+        result = subprocess.run(
+            ["bash", "-c", acquisition_script()],
+            cwd=ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        outputs = dict(
+            line.split("=", 1)
+            for line in output.read_text().splitlines()
+            if "=" in line
+        )
+        return result, outputs
+
+
+def run_release_image_assertion(env_overrides: dict) -> subprocess.CompletedProcess:
+    """Execute the release-image assertion with a fixed environment."""
+    env = os.environ.copy()
+    for key in (
+        "IMAGE_REPOSITORY",
+        "IMAGE_TAG",
+        "EXPECTED_REVISION",
+        "REGISTRY_TOKEN",
+        "DEADLINE_MINUTES",
+        "IMAGE_REGISTRY",
+        "POLL_INTERVAL_SECONDS",
+    ):
+        env.pop(key, None)
+    env.update(env_overrides)
+    return subprocess.run(
+        [str(RELEASE_IMAGE_ASSERTION)],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 def assert_exact_dispatch_correlation(job: str) -> None:
@@ -435,6 +507,106 @@ def test_dispatch_correlation_is_unique_and_bounded() -> None:
     assert "mapfile -t RUN_IDS < <(" not in job
     assert "LAST_CANDIDATE_ID" in job
     assert "ambiguous playground workflow dispatch correlation" in job
+
+
+def test_release_image_acquisition_mode_is_exhaustive_and_fails_closed() -> None:
+    accepted = {"actions": "25", "local": "110"}
+    for mode, deadline in accepted.items():
+        result, outputs = run_acquisition(mode)
+        assert result.returncode == 0, result.stderr
+        assert outputs["mode"] == mode
+        assert outputs["assert_deadline_minutes"] == deadline
+
+    for rejected in (None, "", "Actions", "LOCAL", "skip", "true", "actions local"):
+        result, outputs = run_acquisition(rejected)
+        assert result.returncode != 0, repr(rejected)
+        assert "must be exactly 'actions' or 'local'" in result.stdout, repr(rejected)
+        assert outputs == {}, repr(rejected)
+
+
+def test_release_image_assertion_covers_every_acquisition_mode() -> None:
+    job = playground_job()
+    mode_step = step_of(job, "Select release image acquisition mode")
+    assert "id: acquisition" in mode_step
+    assert "PLAYGROUND_PUBLISH_MODE: ${{ vars.PLAYGROUND_PUBLISH_MODE }}" in mode_step
+    assert "if:" not in mode_step
+    assert "continue-on-error:" not in mode_step
+
+    trigger_step = step_of(job, "Trigger playground image rebuild")
+    assert "if: steps.acquisition.outputs.mode == 'actions'" in trigger_step
+
+    local_step = step_of(job, "Report expected local release image publish")
+    assert "if: steps.acquisition.outputs.mode == 'local'" in local_step
+    assert (
+        "make release-publish HEW_SHA=${HEW_SHA} HEW_VERSION=${VERSION}" in local_step
+    )
+    assert "gh workflow run" not in local_step
+
+    assert_step = step_of(
+        job, "Assert release image exists and binds the release commit"
+    )
+    assert (
+        "if: ${{ !cancelled() && steps.acquisition.outputs.mode != '' }}" in assert_step
+    )
+    assert "continue-on-error:" not in assert_step
+    assert "IMAGE_REPOSITORY: hew-lang/playground" in assert_step
+    assert "IMAGE_TAG: ${{ env.RELEASE_TAG }}" in assert_step
+    assert (
+        "EXPECTED_REVISION: ${{ steps.release-commit.outputs.hew_sha }}" in assert_step
+    )
+    assert (
+        "REGISTRY_TOKEN: ${{ steps.playground-app-token.outputs.token }}" in assert_step
+    )
+    assert (
+        "DEADLINE_MINUTES: ${{ steps.acquisition.outputs.assert_deadline_minutes }}"
+        in assert_step
+    )
+    assert "run: release-machinery/scripts/assert-playground-release-image.sh" in (
+        assert_step
+    )
+
+    machinery_step = step_of(job, "Checkout release machinery")
+    assert "ref: ${{ github.sha }}" in machinery_step
+    assert "path: release-machinery" in machinery_step
+
+    assert RELEASE_IMAGE_ASSERTION.exists()
+    assert RELEASE_IMAGE_ASSERTION.stat().st_mode & stat.S_IXUSR
+
+
+def test_release_image_assertion_rejects_unusable_inputs() -> None:
+    valid = {
+        "IMAGE_REPOSITORY": "hew-lang/playground",
+        "IMAGE_TAG": "v0.6.0-rc2",
+        "EXPECTED_REVISION": HEW_SHA,
+        "REGISTRY_TOKEN": "test-token",
+        "DEADLINE_MINUTES": "1",
+    }
+    # Each case is rejected before any network call, so the assertion can never
+    # reach a registry with an identity it has not fully resolved.
+    cases = {
+        "IMAGE_REPOSITORY": "",
+        "IMAGE_TAG": "",
+        "REGISTRY_TOKEN": "",
+        "DEADLINE_MINUTES": "",
+    }
+    for key, value in cases.items():
+        env = dict(valid, **{key: value})
+        result = run_release_image_assertion(env)
+        assert result.returncode != 0, key
+        assert f"{key} must be set" in result.stderr, key
+
+    for bad_sha in ("not-a-sha", HEW_SHA[:39], HEW_SHA.upper()):
+        result = run_release_image_assertion(dict(valid, EXPECTED_REVISION=bad_sha))
+        assert result.returncode != 0, bad_sha
+        assert "exact lowercase 40-character commit SHA" in result.stderr, bad_sha
+
+    result = run_release_image_assertion(dict(valid, DEADLINE_MINUTES="soon"))
+    assert result.returncode != 0
+    assert "whole number of minutes" in result.stderr
+
+    result = run_release_image_assertion(dict(valid, POLL_INTERVAL_SECONDS="0"))
+    assert result.returncode != 0
+    assert "POLL_INTERVAL_SECONDS must be a positive whole number" in result.stderr
 
 
 def test_exact_workflow_shell_accepts_one_stable_matching_run() -> None:
@@ -1861,6 +2033,9 @@ _TESTS = [
     test_playground_dispatch_is_purpose_scoped_and_fail_closed,
     test_dispatch_uses_exact_playground_workflow_input_and_ref,
     test_dispatch_correlation_is_unique_and_bounded,
+    test_release_image_acquisition_mode_is_exhaustive_and_fails_closed,
+    test_release_image_assertion_covers_every_acquisition_mode,
+    test_release_image_assertion_rejects_unusable_inputs,
     test_exact_workflow_shell_accepts_one_stable_matching_run,
     test_malformed_release_commit_identity_is_terminal,
     test_run_listing_api_failure_is_terminal,

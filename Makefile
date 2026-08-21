@@ -1225,6 +1225,7 @@ check-counterfactual-output-build:
 	bash -n scripts/ci-preflight-dispatcher.sh
 
 test-stdlib-ratchet: hew
+	@bash scripts/tests/test_stdlib_ratchet_deprecations.sh
 	@echo "==> Type-checking stdlib (ratcheted)"
 	HEW_BIN="$(DEBUG_DIR)/hew" scripts/stdlib-ratchet.sh
 

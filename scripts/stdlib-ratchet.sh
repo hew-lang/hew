@@ -3,10 +3,13 @@
 #
 # Behaviour:
 #   - Exits 0 if the set of failing stdlib files exactly matches the list in
-#     scripts/stdlib-expected-failures.txt.
+#     scripts/stdlib-expected-failures.txt and no check emits a deprecation
+#     warning.
 #   - Exits 1 if any NEW stdlib file fails (unexpected regression).
 #   - Exits 1 if any LISTED file no longer fails (unexpected fix — delete the
 #     entry from the list to accept the green).
+#   - Exits 1 if any stdlib check emits a deprecation warning, including when
+#     the check otherwise succeeds.
 #
 # WHY: The Hew stdlib type-check suite has known failures that converging lanes
 # are fixing.  Gating on zero failures would block integration; gating on nothing
@@ -104,14 +107,22 @@ done < "$EXPECTED_FAILURES_FILE"
 
 # Type-check each stdlib file and collect failures.
 ACTUAL_STR=""
+DEPRECATIONS_STR=""
 TOTAL=0
 
 while IFS= read -r -d $'\0' f; do
     TOTAL=$((TOTAL + 1))
     # Normalize path to be relative to repo root.
     relpath="${f#"$REPO_ROOT"/}"
-    if ! "$HEW_BIN" check "$f" >/dev/null 2>&1; then
+    check_output=""
+    check_status=0
+    check_output="$("$HEW_BIN" check "$f" 2>&1)" || check_status=$?
+    if (( check_status != 0 )); then
         ACTUAL_STR="${ACTUAL_STR}${relpath}"$'\n'
+    fi
+    deprecations=""
+    if deprecations="$(printf '%s\n' "$check_output" | rg ': warning: [^:]+: .*deprecated')"; then
+        DEPRECATIONS_STR="${DEPRECATIONS_STR}${deprecations}"$'\n'
     fi
 done < <(find "$STDLIB_DIR" -name '*.hew' -not -path '*/target/*' -print0 | sort -z)
 
@@ -137,6 +148,11 @@ if [[ -n "$ACTUAL_STR" ]]; then
     count_actual="$(line_set_count "$ACTUAL_STR")"
 fi
 
+count_deprecations=0
+if [[ -n "$DEPRECATIONS_STR" ]]; then
+    count_deprecations="$(line_set_count "$DEPRECATIONS_STR")"
+fi
+
 # Find unexpected failures (in actual but not in expected).
 unexpected_failures=""
 while IFS= read -r path; do
@@ -159,6 +175,7 @@ echo "==> Stdlib type-check ratchet"
 echo "Files checked:     $TOTAL"
 echo "Expected failures: $count_expected"
 echo "Actual failures:   $count_actual"
+echo "Deprecations:      $count_deprecations"
 echo ""
 
 count_unexpected_fail=0
@@ -167,7 +184,7 @@ count_unexpected_fail=0
 count_unexpected_pass=0
 [[ -n "$unexpected_passes" ]] && count_unexpected_pass="$(line_set_count "$unexpected_passes")"
 
-if [[ $count_unexpected_fail -eq 0 && $count_unexpected_pass -eq 0 ]]; then
+if [[ $count_unexpected_fail -eq 0 && $count_unexpected_pass -eq 0 && $count_deprecations -eq 0 ]]; then
     if [[ $count_actual -eq 0 ]]; then
         echo "All stdlib files pass type-check. Remove entries from expected-failures file."
     else
@@ -183,6 +200,17 @@ if [[ $count_unexpected_fail -eq 0 && $count_unexpected_pass -eq 0 ]]; then
 fi
 
 # Report problems.
+if [[ $count_deprecations -gt 0 ]]; then
+    echo "RATCHET FAIL: $count_deprecations deprecation warning(s) in stdlib checks:"
+    while IFS= read -r diagnostic; do
+        [[ -z "$diagnostic" ]] && continue
+        echo "  DEPRECATED: $diagnostic"
+    done <<< "$DEPRECATIONS_STR"
+    echo ""
+    echo "  Fix every deprecated stdlib use; deprecations are not ratcheted."
+    echo ""
+fi
+
 if [[ $count_unexpected_fail -gt 0 ]]; then
     echo "RATCHET FAIL: $count_unexpected_fail UNEXPECTED failure(s) — not in expected list:"
     while IFS= read -r path; do

@@ -1016,3 +1016,61 @@ pub extern "C" fn _start() {
     }
 }
 // test
+
+/// `hew_exit` is a termination path like any other, so it must consult the same
+/// exit-status authority every other one does.
+///
+/// These assert the RESOLUTION rather than a platform's exit syscall, because
+/// the bug they pin was not in the syscall. `hew_exit` and `resolve_exit_code`
+/// carry no per-OS branch — the only cfg on either is `target_arch = "wasm32"`,
+/// which selects the pass-through for the one target that has no authority. The
+/// gate below is that same cfg, so on EVERY native target, Windows included,
+/// this is the code path the `exit` builtin actually runs.
+///
+/// Nothing covered this before: the only `hew_exit` test in the tree was a
+/// wasm32 one asserting a non-zero code, and a non-zero code passes through
+/// whether or not the authority is consulted. `exit(0)` over a fault was the
+/// one shape that could tell the difference, and it was untested.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod exit_code_resolution_tests {
+    /// Capture what `hew_exit` WOULD hand the OS, without terminating the test
+    /// process.
+    fn resolved_exit_code(requested: i64) -> i32 {
+        let captured = std::cell::Cell::new(i32::MIN);
+        super::hew_exit_impl(requested, |code| captured.set(code));
+        captured.get()
+    }
+
+    #[test]
+    fn explicit_exit_zero_cannot_report_success_over_an_unrecovered_fault() {
+        let _guard = crate::runtime_test_guard();
+        crate::exit_status::reset_process_exit_status();
+        assert_eq!(
+            resolved_exit_code(0),
+            0,
+            "a clean run's exit(0) is still a success"
+        );
+
+        crate::exit_status::record_unrecovered_actor_fault();
+        assert_eq!(
+            resolved_exit_code(0),
+            1,
+            "exit(0) must not mask a crash no supervisor recovered"
+        );
+
+        crate::exit_status::reset_process_exit_status();
+    }
+
+    #[test]
+    fn an_explicit_non_zero_exit_code_survives_a_fault_unchanged() {
+        let _guard = crate::runtime_test_guard();
+        crate::exit_status::reset_process_exit_status();
+        crate::exit_status::record_unrecovered_actor_fault();
+        assert_eq!(
+            resolved_exit_code(3),
+            3,
+            "a code the program chose is already a failure and says more than 1"
+        );
+        crate::exit_status::reset_process_exit_status();
+    }
+}

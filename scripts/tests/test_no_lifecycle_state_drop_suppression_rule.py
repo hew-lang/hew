@@ -12,11 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RULE = ROOT / "rules/rust/concurrency-drop/no-lifecycle-state-drop-suppression.yml"
-AST_GREP = (
-    Path(sys.argv[1]).resolve()
-    if len(sys.argv) > 1
-    else ROOT / ".ast-grep/tool/bin/ast-grep"
-)
+AST_GREP = ROOT / ".ast-grep/tool/bin/ast-grep"
 
 
 def findings(source: str) -> list[dict[str, object]]:
@@ -61,15 +57,28 @@ fn caller(actor: *mut u8) { free_actor_resources_wasm(actor, true); }
 """,
 }
 
-for name, source in RED.items():
-    if not findings(source):
-        raise SystemExit(f"RED counterfactual did not fire: {name}")
-
 GREEN = """
 fn free_actor_resources(actor: *mut u8) { let _ = actor; }
 fn finalize_quiescent_actor_cleanup(actor: *mut u8, state: i32) { let _ = (actor, state); }
 """
-if unexpected := findings(GREEN):
-    raise SystemExit(f"GREEN common-authority fixture unexpectedly fired: {unexpected}")
 
-print("no-lifecycle-state-drop-suppression counterfactuals: PASS")
+
+def main() -> None:
+    global AST_GREP
+    if len(sys.argv) > 1:
+        AST_GREP = Path(sys.argv[1]).resolve()
+
+    for name, source in RED.items():
+        if not findings(source):
+            raise SystemExit(f"RED counterfactual did not fire: {name}")
+
+    if unexpected := findings(GREEN):
+        raise SystemExit(
+            f"GREEN common-authority fixture unexpectedly fired: {unexpected}"
+        )
+
+    print("no-lifecycle-state-drop-suppression counterfactuals: PASS")
+
+
+if __name__ == "__main__":
+    main()

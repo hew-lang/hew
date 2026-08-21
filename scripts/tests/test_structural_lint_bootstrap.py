@@ -110,19 +110,24 @@ def run_bootstrap(
         return result, event_log
 
 
-result, order = run_bootstrap()
-assert result.returncode == 0, result.stdout + result.stderr
-assert order[0] == "bootstrap", order
-assert set(order[1:]) == {
-    "authority",
-    "archive-contract",
-    "bootstrap-contract",
-}, order
+def main() -> None:
+    result, order = run_bootstrap()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert order[0] == "bootstrap", order
+    assert set(order[1:]) == {
+        "authority",
+        "archive-contract",
+        "bootstrap-contract",
+    }, order
 
-for parse_input in PARSE_INPUTS:
-    result, _ = run_bootstrap(omitted=parse_input)
-    output = result.stdout + result.stderr
-    assert result.returncode != 0, f"make parsed without {parse_input}"
-    assert "Makefile:" in output and "***" in output, output
+    for parse_input in PARSE_INPUTS:
+        result, _ = run_bootstrap(omitted=parse_input)
+        output = result.stdout + result.stderr
+        assert result.returncode != 0, f"make parsed without {parse_input}"
+        assert "Makefile:" in output and "***" in output, output
 
-print("structural lint clean-bootstrap ordering: PASS")
+    print("structural lint clean-bootstrap ordering: PASS")
+
+
+if __name__ == "__main__":
+    main()

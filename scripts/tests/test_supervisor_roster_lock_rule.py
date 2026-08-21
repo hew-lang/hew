@@ -14,11 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RULE = (
     ROOT / "rules/rust/concurrency-drop/no-unsynchronized-supervisor-roster-access.yml"
 )
-AST_GREP = (
-    Path(sys.argv[1]).resolve()
-    if len(sys.argv) > 1
-    else ROOT / ".ast-grep/tool/bin/ast-grep"
-)
+AST_GREP = ROOT / ".ast-grep/tool/bin/ast-grep"
 
 
 def findings(source: str) -> list[dict[str, object]]:
@@ -89,10 +85,6 @@ fn bad(lock: &Lock, cond: &Condvar) {
 """,
 }
 
-for name, source in RED.items():
-    if not findings(source):
-        raise SystemExit(f"RED counterfactual did not fire: {name}")
-
 GREEN = """
 struct SupervisorRoster { children: Vec<usize>, child_count: usize }
 fn direct(lock: &Lock) -> usize {
@@ -109,7 +101,22 @@ fn helper(roster: &SupervisorRoster) -> usize {
     roster.children[0]
 }
 """
-if unexpected := findings(GREEN):
-    raise SystemExit(f"GREEN typed-guard fixtures unexpectedly fired: {unexpected}")
 
-print("no-unsynchronized-supervisor-roster-access counterfactuals: PASS")
+
+def main() -> None:
+    global AST_GREP
+    if len(sys.argv) > 1:
+        AST_GREP = Path(sys.argv[1]).resolve()
+
+    for name, source in RED.items():
+        if not findings(source):
+            raise SystemExit(f"RED counterfactual did not fire: {name}")
+
+    if unexpected := findings(GREEN):
+        raise SystemExit(f"GREEN typed-guard fixtures unexpectedly fired: {unexpected}")
+
+    print("no-unsynchronized-supervisor-roster-access counterfactuals: PASS")
+
+
+if __name__ == "__main__":
+    main()

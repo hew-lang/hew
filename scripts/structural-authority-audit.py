@@ -1069,69 +1069,84 @@ def reject_raw_codegen_call_dispatch(ast_grep: Path, root: Path) -> None:
         )
 
 
-SIGNATURE_APPLICATION_FILES = (
-    "hew-types/src/check/calls.rs",
-    "hew-types/src/check/methods.rs",
-)
-SIGNATURE_APPLICATION_AUTHORITY = "apply_instantiated_call_signature_with_assoc"
-ARG_CHECK_PRIMITIVES = ("check_against", "check_expr_with_expected")
+ARG_CHECK_SCOPE_PREFIX = "hew-types/src/"
+ARG_CHECK_PRIMITIVES = frozenset(("check_against", "check_expr_with_expected"))
+
+
+def callee_leaf(call_text: str) -> str | None:
+    """Final path/field segment of a call expression's callee.
+
+    Form-agnostic on purpose: `self.check_against(..)`,
+    `Self::check_against(self, ..)` and `Checker::check_against(..)` all reduce
+    to `check_against`, so a UFCS spelling cannot slip past a method-call
+    pattern.
+    """
+    head = call_text.split("(", 1)[0]
+    if not head:
+        return None
+    leaf = head.replace("::", ".").split(".")[-1]
+    leaf = leaf.strip()
+    return leaf or None
+
+
+def enclosing_function_index(
+    ast_grep: Path, root: Path
+) -> defaultdict[str, list[tuple[SyntaxRange, str]]]:
+    """Every `function_item` range, with its name, grouped by path."""
+    index: defaultdict[str, list[tuple[SyntaxRange, str]]] = defaultdict(list)
+    for match in run_query(ast_grep, root, kind="function_item"):
+        item_range = node_range(match)
+        name = re.search(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)", str(match["text"]))
+        if name is None:
+            continue
+        index[item_range.path].append((item_range, name.group(1)))
+    return index
 
 
 def signature_application_findings(ast_grep: Path, root: Path) -> set[Finding]:
-    """Inventory every argument-check outside the one application authority.
+    """Inventory every argument-check primitive call, by enclosing function.
 
     Applying a call signature means checking each argument against the
-    signature's parameter types. That must happen in ONE place, because that is
-    where a generic callee's type parameters are freshened, inferred from the
-    arguments, and recorded as an instantiation. A hand-rolled arg-check loop
-    skips all three: it is how generic actor receive calls ended up reporting
-    `expected T` and never discharging their obligations.
+    signature's parameter types. That must happen in ONE place
+    (`apply_instantiated_call_signature_with_assoc`), because that is where a
+    generic callee's type parameters are freshened, inferred from the arguments,
+    and recorded as an instantiation. A hand-rolled arg-check loop skips all
+    three: it is how generic actor receive calls ended up reporting `expected T`
+    and never discharging their obligations.
 
-    The rule is deliberately INVERTED and structural. It does not try to decide
-    whether a given expected-type operand "looks like" a signature parameter —
-    an earlier name-based version was defeated by a helper taking the operand as
-    `expected`, and would be defeated again by any rename. Instead every call of
-    an argument-check primitive inside the two call-application files is a
-    reviewed finding unless it sits inside the authority's own body. Adding a
-    call anywhere else in those files moves the count and fails the lint,
-    whatever its variables are called.
+    The rule is structural and carries no allowlist. It does not inspect the
+    expected-type operand (a name-based version was defeated by a helper taking
+    it as `expected`), and it does not match the authority by substring (which
+    would have allowlisted `..._with_assoc_renamed`). Instead EVERY call of a
+    primitive anywhere under `hew-types/src/` is a finding whose form is its
+    enclosing function's exact name, so the inventory records a reviewed count
+    per (function, file) — including the authority's own. A call added in a new
+    function fails the lint; so does an extra call inside a function already
+    listed, because the count moves.
     """
-    # Matched by node kind rather than a `fn NAME(..)` pattern: the authority
-    # carries a visibility modifier, which a bare `fn` pattern does not match.
-    authority = [
-        node_range(match)
-        for match in run_query(ast_grep, root, kind="function_item")
-        if f"fn {SIGNATURE_APPLICATION_AUTHORITY}" in str(match["text"])
-    ]
-    if len(authority) > 1:
-        raise SystemExit(
-            "expected at most one call-signature application authority, found "
-            f"{len(authority)}"
-        )
-    # Fail closed if the query stops finding an authority that is plainly there:
-    # a silently-empty allowlist would turn every sanctioned check into a
-    # finding, and a silently-empty FINDING set is the failure this rule exists
-    # to prevent. Either way the mismatch must be loud, not absorbed.
-    for scoped in SIGNATURE_APPLICATION_FILES:
-        scoped_path = root / scoped
-        if (
-            not authority
-            and scoped_path.exists()
-            and SIGNATURE_APPLICATION_AUTHORITY in scoped_path.read_text()
-        ):
-            raise SystemExit(
-                f"{scoped} names {SIGNATURE_APPLICATION_AUTHORITY} but the authority "
-                "query matched nothing; the allowlist would be silently empty"
-            )
+    functions = enclosing_function_index(ast_grep, root)
     findings: set[Finding] = set()
-    for primitive in ARG_CHECK_PRIMITIVES:
-        for match in run_query(ast_grep, root, pattern=f"$R.{primitive}($$$ARGS)"):
-            match_range = node_range(match)
-            if match_range.path not in SIGNATURE_APPLICATION_FILES:
-                continue
-            if any(range_contains(scope, match_range) for scope in authority):
-                continue
-            findings.add(finding("signature-application", "arg-check-call", match))
+    for match in run_query(ast_grep, root, kind="call_expression"):
+        leaf = callee_leaf(str(match["text"]))
+        if leaf not in ARG_CHECK_PRIMITIVES:
+            continue
+        call_range = node_range(match)
+        if not call_range.path.startswith(ARG_CHECK_SCOPE_PREFIX):
+            continue
+        enclosing = [
+            (item_range, name)
+            for item_range, name in functions.get(call_range.path, [])
+            if range_contains(item_range, call_range)
+        ]
+        if not enclosing:
+            raise SystemExit(
+                f"argument-check primitive at {call_range.path}:{call_range.line} has no "
+                "enclosing function; the inventory form would be unattributable"
+            )
+        # Innermost wins: a closure or nested fn inside a listed function is its
+        # own reviewed site, not absorbed into the outer one.
+        _, name = min(enclosing, key=lambda item: item[0].byte_end - item[0].byte_start)
+        findings.add(finding("signature-application", name, match))
     return findings
 
 

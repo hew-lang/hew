@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 //! The shell-drop-safety cap on the `string_binder_read_is_user_fn_borrow`
 //! exemption must be a POSITIVE predicate over payload classes whose shell
 //! drop cannot double-release, not "owns no heap".
@@ -525,9 +530,11 @@ fn lifecycle_registered_resource_beside_string_is_refused() {
     let mut registry = hew_hir::LifecycleRegistry::default();
     registry
         .admit_opaque_resource(hew_hir::OpaqueResourceLifecycle {
-            resource_declaration: hew_types::DefId::new("Handle"),
-            close_declaration: hew_types::DefId::new("Handle::close"),
-            release_declaration: hew_types::DefId::new("Handle::close"),
+            resource_declaration: hew_types::DefId::legacy_reconstruct_from_full_path("Handle"),
+            close_declaration: hew_types::DefId::legacy_reconstruct_from_full_path("Handle::close"),
+            release_declaration: hew_types::DefId::legacy_reconstruct_from_full_path(
+                "Handle::close",
+            ),
             close_symbol: "Handle::close".to_string(),
             release_symbol: "Handle::close".to_string(),
             discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
@@ -557,8 +564,8 @@ fn handle_record_lifecycle_registry() -> hew_hir::LifecycleRegistry {
     let mut classes = hew_hir::TypeClassTable::default();
     classes
         .admit_resource_record_lifecycle(hew_hir::ResourceRecordLifecycle {
-            resource_declaration: hew_types::DefId::new("Handle"),
-            close_declaration: hew_types::DefId::new("Handle::close"),
+            resource_declaration: hew_types::DefId::legacy_reconstruct_from_full_path("Handle"),
+            close_declaration: hew_types::DefId::legacy_reconstruct_from_full_path("Handle::close"),
             close_symbol: "Handle::close".to_string(),
         })
         .expect("unique test lifecycle");

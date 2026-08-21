@@ -149,30 +149,30 @@ with tempfile.TemporaryDirectory() as temp:
     target.write_text(
         "#[cfg(test)]\n"
         "mod tests {\n"
-        "    fn macro_authority() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
-        '    fn macro_leaf() { let leaf = name.rsplit("::").next().unwrap(); let _ = DefId::new(leaf); }\n'
+        "    fn macro_authority() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
+        '    fn macro_leaf() { let leaf = name.rsplit("::").next().unwrap(); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n'
         "    fn scalar() { let _: HashMap<SpanKey, SiteId> = HashMap::new(); }\n"
         "}\n"
         "#[cfg(test)]\n"
-        "fn item_macro() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
+        "fn item_macro() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
         "fn production() {}\n"
     )
     assert run(work).returncode == 0, "parsed test-only module/items must be excluded"
 
     target.write_text(
         "#[cfg(all(test))]\n"
-        "fn all_single() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
+        "fn all_single() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
         '#[cfg(all(feature = "x", test))]\n'
-        "fn all_reordered() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
+        "fn all_reordered() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
     )
     assert run(work).returncode == 0, "all(...) test guards must be order-independent"
     target.write_text(
         '#[cfg(any(test, feature = "x"))]\n'
-        "fn any_guard() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
+        "fn any_guard() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
     )
     assert run(work).returncode != 0, "cfg(any(test, feature)) is production-capable"
     target.write_text(
-        "#[cfg(not(test))]\nfn non_test_guard() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
+        "#[cfg(not(test))]\nfn non_test_guard() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
     )
     assert run(work).returncode != 0, "cfg(not(test)) is production authority"
 
@@ -456,7 +456,7 @@ with tempfile.TemporaryDirectory() as temp:
     analysis.write_text(
         "fn authority(name: &str) {\n"
         "    let leaf = short_name(name);\n"
-        "    let _ = DefId::new(leaf);\n"
+        "    let _ = DefId::legacy_reconstruct_from_full_path(leaf);\n"
         "}\n"
     )
     assert run(work).returncode != 0, "hew-analysis identity sinks must be audited"
@@ -505,19 +505,19 @@ with tempfile.TemporaryDirectory() as temp:
     target.write_text(
         "fn authority(module_path: &str, name: &str) {\n"
         '    let owner = module_path.rsplit("::").next().unwrap();\n'
-        '    let _ = DefId::new(format!("{}.{}", owner, name));\n'
+        '    let _ = DefId::legacy_reconstruct_from_full_path(format!("{}.{}", owner, name));\n'
         "}\n"
     )
     set_inventory(work)
     result = run(work)
-    assert result.returncode != 0, "a leaf owner must not mint a DefId"
+    assert result.returncode != 0, "a leaf owner must not reconstruct a DefId"
     assert "semantic-owner-shortening-sink/def-id" in result.stderr
 
     target.write_text(
         "fn authority(current_module: &str, name: &str) {\n"
         "    let owner = short_name(current_module);\n"
-        '    let _ = CallTarget::User(DefId::new(format!("{}.{}", owner, name)));\n'
-        '    let _ = NominalId::new(format!("{}.{}", owner, name));\n'
+        '    let _ = CallTarget::User(DefId::legacy_reconstruct_from_full_path(format!("{}.{}", owner, name)));\n'
+        '    let _ = NominalId::legacy_reconstruct_from_full_path(format!("{}.{}", owner, name));\n'
         "}\n"
     )
     set_inventory(work)
@@ -557,7 +557,7 @@ with tempfile.TemporaryDirectory() as temp:
         "fn canonical(declaring_module: &str, signature_key: &str) {\n"
         "    let name = signature_key.rsplit('.').next().unwrap();\n"
         '    let declaration = format!("{declaring_module}.{name}");\n'
-        "    let _ = DefId::new(declaration);\n"
+        "    let _ = DefId::legacy_reconstruct_from_full_path(declaration);\n"
         "}\n"
     )
     set_inventory(work)
@@ -610,7 +610,7 @@ with tempfile.TemporaryDirectory() as temp:
     target.write_text(
         "fn bad(name: &str) {\n"
         "    let leaf = short_name(name);\n"
-        "    let _ = DefId::new(leaf);\n"
+        "    let _ = DefId::legacy_reconstruct_from_full_path(leaf);\n"
         "}\n"
     )
     set_inventory(work)

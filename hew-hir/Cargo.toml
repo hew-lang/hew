@@ -23,6 +23,9 @@ serde.workspace = true
 # `cargo test -p hew-hir --features internal-test-hooks`.
 internal-test-hooks = []
 
+[dev-dependencies]
+hew-types = { path = "../hew-types", features = ["test"] }
+
 [[test]]
 name = "call_shape_gates"
 required-features = ["internal-test-hooks"]

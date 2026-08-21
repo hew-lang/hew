@@ -257,11 +257,23 @@ impl Builder {
     /// That fallback retires when a whole-value retain/clone authority exists
     /// for those leaf classes (copy-on-write north star); extend the predicate, not this
     /// match.
+    ///
+    /// The ledger is keyed by the CAPTURED binding, not by the MIR place the
+    /// value is read from. A capture resolved through `capture_env_sources`
+    /// (loaded out of an enclosing closure env by `ClosureEnvFieldLoad`) has no
+    /// local slot, so the field init records `source_binding = None` — you
+    /// cannot emit a consume statement against a binding with no slot. That
+    /// absence says nothing about foreignness: the binding id is still the
+    /// ledger's key, and the parent's ledger is cloned into every child builder
+    /// so a nested closure sees the same fact. Passing `binding` here and
+    /// keeping `source_binding` for the consume decision alone stops a
+    /// transitively captured foreign value from being answered "not foreign"
+    /// and handed an env destructor it must not have.
     pub(super) fn closure_env_capture_ownership(
         &self,
         strategy: crate::closure_env::AllocationStrategy,
         ty: &ResolvedTy,
-        source_binding: Option<BindingId>,
+        binding: BindingId,
         mode: hew_types::ClosureCaptureMode,
     ) -> ClosureEnvFieldOwnership {
         match strategy {
@@ -270,8 +282,7 @@ impl Builder {
                 let ty = self.subst_ty(ty);
                 let nothing_to_own =
                     ValueClass::of_ty(&ty, &self.type_classes) == ValueClass::BitCopy;
-                let proven_foreign = source_binding
-                    .is_some_and(|binding| self.proven_foreign_bindings.contains(&binding));
+                let proven_foreign = self.proven_foreign_bindings.contains(&binding);
                 if mode == hew_types::ClosureCaptureMode::Move && !nothing_to_own && !proven_foreign
                 {
                     ClosureEnvFieldOwnership::OwnsMoved
@@ -293,8 +304,7 @@ impl Builder {
                 // whose ledger holds the fact, and the parent's ledger is
                 // cloned into every child builder so a nested closure sees it
                 // too.
-                let proven_foreign = source_binding
-                    .is_some_and(|binding| self.proven_foreign_bindings.contains(&binding));
+                let proven_foreign = self.proven_foreign_bindings.contains(&binding);
                 if nothing_to_own || proven_foreign {
                     ClosureEnvFieldOwnership::BorrowsOnly
                 } else if mode == hew_types::ClosureCaptureMode::Borrow
@@ -444,10 +454,12 @@ impl Builder {
                 continue;
             };
             let field_ty = self.subst_ty(&capture.ty);
+            // Ledger query keys off the captured binding; `source_binding` only
+            // decides whether a consume statement can be emitted below.
             let ownership = self.closure_env_capture_ownership(
                 strategy,
                 &field_ty,
-                source_binding,
+                capture.binding,
                 capture.mode,
             );
             if ownership == ClosureEnvFieldOwnership::OwnsMoved {

@@ -186,6 +186,86 @@ fn a_heap_env_capture_of_a_domestic_binding_still_owns_it() {
 }
 
 // ---------------------------------------------------------------------------
+// The TRANSITIVE capture: the ledger is keyed by the captured binding, not by
+// the place the value is read from.
+// ---------------------------------------------------------------------------
+
+/// A generator body captures `h`, and a closure INSIDE that body captures `h`
+/// again. The second capture has no local slot in the generator body frame — it
+/// resolves through `capture_env_sources` and is loaded out of the generator's
+/// own environment by `ClosureEnvFieldLoad`. The field-init record therefore
+/// carries `source_binding = None`, because you cannot emit a consume statement
+/// against a binding with no slot.
+///
+/// That absence is about the CONSUME half only. Keying the proven-foreign query
+/// off it too answered "not foreign" for every transitively captured field, so
+/// the same double release the direct capture above closes reopened one frame
+/// down: `own=own_moved` installed the closure env destructor as the release
+/// authority for a handle a declared `extern` still owns.
+///
+/// The ledger query keys off `capture.binding`, which is a valid key regardless
+/// of slot residency, and the parent's ledger is cloned into every child builder
+/// precisely so a nested body sees the fact. Exact verdict: `borrow`.
+#[test]
+fn a_transitive_capture_of_a_proven_foreign_binding_takes_no_ownership() {
+    let p = pipeline_with_tc(&format!(
+        "{PRELUDE}{RUN}{FOREIGN_MK}\n{TRANSITIVE_GEN_CAPTURE}"
+    ));
+    assert_eq!(
+        own_moved_env_fields(&p),
+        0,
+        "a capture resolved through the enclosing generator env must still be \
+         put to the proven-foreign ledger: keying the query off the absent \
+         local slot made this 1, and that manifest entry frees a handle the \
+         host owns"
+    );
+    assert_eq!(
+        retained_share_env_fields(&p),
+        0,
+        "and it must not mint a retained share either — there is no domestic \
+         refcount behind a foreign handle to balance"
+    );
+}
+
+/// The control that stops the assertion above from being satisfiable by
+/// refusing every transitive capture outright: the identically shaped DOMESTIC
+/// binding, captured the same way through the same generator env, still hands
+/// the closure env destructor the release authority.
+#[test]
+fn a_transitive_capture_of_a_domestic_binding_still_owns_it() {
+    let p = pipeline_with_tc(&format!(
+        "{PRELUDE}{RUN}{DOMESTIC_MK}\n{TRANSITIVE_GEN_CAPTURE}"
+    ));
+    assert_eq!(
+        own_moved_env_fields(&p),
+        1,
+        "the withhold is provenance-directed, not shape-directed: a domestic \
+         `move` capture through the same generator env keeps its owned field"
+    );
+}
+
+/// `mk()` is bound in `make`, captured by the `gen` block, and captured AGAIN
+/// by a `move` closure inside the generator body. `run` forces that inner
+/// closure across a call boundary so the checker classifies it as escaping and
+/// its env is heap-allocated — a stack env is `BorrowsOnly` by construction and
+/// would not discriminate.
+const TRANSITIVE_GEN_CAPTURE: &str = r#"
+fn make() -> Generator<i64, ()> {
+    let h = mk(0);
+    gen {
+        yield run(move || h.label.len());
+    }
+}
+
+fn main() -> i64 {
+    for value in make() {
+        println(f"x={value}");
+    }
+    0
+}
+"#;
+
+// ---------------------------------------------------------------------------
 // U1 — pattern payload binders
 // ---------------------------------------------------------------------------
 

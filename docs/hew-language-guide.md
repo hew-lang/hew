@@ -1676,6 +1676,43 @@ A machine is a value type. Inside the body, state constructors are bare (`NonZer
 > reenter { state }`), so the compiler forces you to make each one a
 > deliberate decision.
 
+### Transition heads: the source is a pattern, the target is an expression
+
+`on Event: Source => Target` reads symmetrically, but the two sides are different
+grammatical things and they take different spellings.
+
+The **source** is a pattern matched against the machine's current state. It is
+never evaluated, has no expected type, and carries no bare-variant lint. Write it
+bare (`Off`), as a qualified path into a composite (`Connected.Active`, which
+resolves to the leaf `Active`), or as the wildcard `_`. A leading `.` is rejected
+there:
+
+```
+on Toggle: .Off => .On;
+           ^ error: a machine transition source state is a pattern and cannot be
+             written with a leading `.`
+```
+
+The **target** is an expression checked against the machine's state enum, so it
+takes the contextual form: `=> .On`, `=> .Faulted { code: event.code }`. The bare
+form still parses and still works, but it warns with `E_BARE_VARIANT_EXPR` and a
+fix-it that inserts the dot — the same migration every other
+enum-in-expected-type position is on. A `_` target (paired with a body that
+computes the next state) is a wildcard rather than a variant, so it takes no dot.
+
+```hew
+machine Switch {
+    events { Toggle; }
+    state Off;
+    state On;
+    on Toggle: Off => .On;
+    on Toggle: On => .Off;
+}
+```
+
+The formatter re-emits whichever target spelling you wrote; it never adds or
+removes the dot.
+
 ### State field holding a Vec
 
 ```hew

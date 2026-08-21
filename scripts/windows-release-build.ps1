@@ -92,18 +92,26 @@ if ([string]::IsNullOrWhiteSpace($env:CARGO_BUILD_JOBS)) {
     $env:CARGO_BUILD_JOBS = '2'
 }
 
+# The validator must not turn a candidate check into a network operation.  The
+# host's provisioned cache is a prerequisite; check it explicitly before any
+# build so an unprepared host fails with an actionable reason.
+& cargo fetch --locked --offline
+if ($LASTEXITCODE -ne 0) {
+    throw 'Windows release validation requires a populated Cargo cache; run cargo fetch --locked on the Windows host before validation.'
+}
+
 # Cargo's JSON compiler-artifact messages are the authority for every path
 # below.  Do not reconstruct target/release from the filesystem: CARGO_TARGET_DIR,
 # build.target-dir, build.target, and target paths containing spaces all move the
 # actual output location.  Capturing these messages from THIS build also makes a
 # stale executable/archive elsewhere on disk unusable as release evidence.
 $ReleaseBuildMessages = @(
-    & cargo build -p hew-cli -p hew-lsp -p hew-observe --release --message-format=json
+    & cargo build -p hew-cli -p hew-lsp -p hew-observe --release --frozen --message-format=json
 )
 Assert-NativeSuccess 'cargo build release binaries'
 
 $ReleaseLibBuildMessages = @(
-    & cargo build -p hew-lib --profile release-lib --message-format=json
+    & cargo build -p hew-lib --profile release-lib --frozen --message-format=json
 )
 Assert-NativeSuccess 'cargo build hew-lib'
 

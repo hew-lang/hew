@@ -49,6 +49,7 @@ Tiers
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -87,11 +88,11 @@ class Baseline:
 
 # ── Registry ───────────────────────────────────────────────────────────────────
 #
-# Adding a baseline means adding a row here.  check-gate-reachability's A6
-# discovers comparison targets STRUCTURALLY — from what each Makefile recipe
-# runs and what those scripts read — so a gate that compares against a committed
-# artefact fails the lint until it is registered here or exempted below, whether
-# or not its name looks like a gate.
+# Adding a baseline means adding a row here.  check-gate-reachability's A6a
+# closes the set over the TREE: every tracked file matching a shape in
+# BASELINE_SHAPES below must be owned by exactly one member's `paths` or listed
+# in NO_BASELINE_FILES with a reason.  A member's `paths` may be a file, a
+# directory (covering its tree), or a glob.
 #
 # Every command below is a Makefile target, not a driver script: the Makefile
 # already owns the binary paths, the build prerequisites and the ordering, and
@@ -159,6 +160,30 @@ REGISTRY: tuple[Baseline, ...] = (
         check=None,
     ),
     Baseline(
+        id="core-matrix-truth-table",
+        summary="recorded outcome class of every core-matrix cell",
+        tier="compiler",
+        paths=("tests/core-matrix/matrix.tsv",),
+        gates=("test-core-matrix",),
+        regen="make core-matrix-record",
+        check="make test-core-matrix",
+        # The table records what each primitive x operation cell DOES today,
+        # including the cells that fail. Re-recording it in a sweep would erase a
+        # regression by writing the regression down, so the gate stays red until
+        # someone names this member and says in the commit which cells moved.
+        #
+        # MEASURED 2026-08-21, and a trap for whoever re-records next: `--record`
+        # is NOT idempotent. Six `*__map_key` cells report a different line:col
+        # for the same source on consecutive runs (enum_payload 9:12 vs 11:11,
+        # hashset 5:12 vs 6:5, vec 7:11 vs 5:12, ...) -- same message, same
+        # outcome class, nondeterministic span. Separately, the committed detail
+        # column is stale against the `::`-to-`.` method-syntax change in
+        # diagnostics. Neither is visible to `make test-core-matrix`, which
+        # compares the outcome CLASS column only. Fix the span nondeterminism
+        # before re-recording, or the refresh commits noise.
+        explicit_only=True,
+    ),
+    Baseline(
         id="structural-authority-inventory",
         summary="exact per-form/per-path structural authority counts",
         tier="fast",
@@ -190,7 +215,7 @@ REGISTRY: tuple[Baseline, ...] = (
         id="checked-mir-expected",
         summary="checked-MIR corpus execution transcripts",
         tier="compiler",
-        paths=("examples/v05/checked-mir",),
+        paths=("examples/v05/checked-mir/*.expected",),
         gates=("checked-mir-run",),
         regen="make checked-mir-expect",
         check="make checked-mir-run",
@@ -223,6 +248,38 @@ REGISTRY: tuple[Baseline, ...] = (
         gates=("test-surface-examples",),
         regen="make surface-examples-expect",
         check="make test-surface-examples",
+        explicit_only=True,
+    ),
+    Baseline(
+        id="funcupdate-mir-baselines",
+        summary="funcupdate/reassign elaborated-MIR interface pin",
+        tier="compiler",
+        paths=("tests/mir-baselines/funcupdate-reassign",),
+        gates=(),
+        regen="make funcupdate-mir-baselines-golden",
+        check=(
+            "cargo nextest run -p hew-cli --profile ci "
+            "-E 'test(funcupdate_reassign_elab_mir_matches_committed_baselines)'"
+        ),
+        # The dump's function ORDER is nondeterministic (map iteration), so the
+        # harness normalizes before comparing and a raw re-dump is not
+        # byte-stable. Regeneration is therefore a reviewed act, exactly as the
+        # manifest header has always said, and never a side effect of a sweep.
+        explicit_only=True,
+    ),
+    Baseline(
+        id="release-count-baseline",
+        summary="per-(file, function) elaborated release counts over std/ and examples/",
+        tier="compiler",
+        paths=("hew-cli/tests/fixtures/release-count-baseline.tsv",),
+        gates=(),
+        regen=(
+            "HEW_RELEASE_COUNT_CAPTURE=1 cargo nextest run -p hew-cli "
+            "-E 'test(release_count)' --no-capture"
+        ),
+        check="cargo nextest run -p hew-cli --profile ci -E 'test(release_count)'",
+        # A DROP in a release count is a leak. Re-recording it in a sweep would
+        # erase the finding, so the capture stays a named, explained act.
         explicit_only=True,
     ),
     Baseline(
@@ -279,6 +336,76 @@ REGISTRY: tuple[Baseline, ...] = (
 # (`fuzz_mir/regression-link-monitor-spawn.hew`, `fuzz_structured/seed.hew`).
 # It is a curated set with a hydrator, not a derived artefact — registering it
 # would turn `make baselines` into a command that deletes curated seeds.
+
+
+# ── The file closure ───────────────────────────────────────────────────────────
+#
+# The authority for "is this set closed" is the TREE, not the gates. Two earlier
+# attempts asked the question from the gate side — first by target name, then by
+# analysing what each gate's scripts read — and both could be walked past: a
+# reader that builds its path through a variable is invisible to the second, and
+# a gate named nothing in particular is invisible to the first.
+#
+# So the question is asked of the files. Every tracked file whose NAME says it is
+# a committed baseline must be covered by exactly one registry member, or by a
+# NO_BASELINE_FILES entry that records why it is not derived. Nothing about how a
+# script reaches it matters.
+
+BASELINE_SHAPES = (
+    "*.expected",
+    "*/golden/*",
+    "*expected-failures*.txt",
+    "*ratchet*.txt",
+    "*-inventory.tsv",
+    "*census*",
+    "*baseline*.tsv",
+    "*baseline*.txt",
+    "*baseline*.json",
+    "tests/ll-oracle/*",
+    "*.mir",
+    "*_generated.*",
+    "*.generated.*",
+    "*matrix.tsv",
+    "THIRD-PARTY-LICENSES",
+)
+
+
+# Tracked files that LOOK like baselines and are not. Every entry is a decision
+# on the record: the reason says what the file is instead, and A6 reports an
+# entry that stops matching anything so the list cannot rot.
+NO_BASELINE_FILES: tuple[tuple[str, str], ...] = (
+    (
+        "tests/vertical-slice/*",
+        "accept/reject fixture expectations state INTENDED behaviour. Re-recording "
+        "them from observed output would make the compiler's own oracle agree with "
+        "whatever the compiler currently does (LESSONS oracle-encodes-intent-not-"
+        "observed-output), so this corpus has no regen by design",
+    ),
+    (
+        "tests/pkg-import/*",
+        "cross-module import oracle; its expectations state intended behaviour",
+    ),
+    (
+        "tests/corpus/migrate/*",
+        "each entry pairs a pre-migration source with the exact post-migration form "
+        "the migration is specified to produce; re-recording from the migrator's "
+        "output would make the oracle agree with the migrator",
+    ),
+    (
+        "examples/playground/*",
+        "compared by the sandbox-VM parity gate (hew-sandbox-wasm/tests/playground.rs) "
+        "against VM execution. The expectation is the agreement point between the "
+        "native compiler and the VM; re-recording it from either side would collapse "
+        "the parity oracle into a tautology",
+    ),
+    (
+        "examples/*",
+        "reference output shipped beside an example for readers. No gate compares it "
+        "-- the gated example corpora are the ux/progressive, v05-surfaces and "
+        "checked-mir members above, and hew-check-all only type-checks the rest. An "
+        "ungated .expected here is a documentation artefact, not a baseline",
+    ),
+)
 
 
 # ── Gates that compare against something other than a committed baseline ────────
@@ -352,6 +479,67 @@ EXEMPT_GATES: dict[str, str] = {
 
 
 # ── Member selection ───────────────────────────────────────────────────────────
+
+
+def _matches(path: str, pattern: str) -> bool:
+    """Match a repo-relative path against a member path or a shape.
+
+    A pattern without a wildcard is a prefix: naming a directory covers its
+    tree, which is how members declare corpora. A pattern with one covers the
+    whole path, so `*/golden/*` reaches any depth -- fnmatch does not treat `/`
+    specially, and that is what is wanted here.
+    """
+    if any(ch in pattern for ch in "*?["):
+        return fnmatch.fnmatch(path, pattern)
+    return path == pattern or path.startswith(pattern.rstrip("/") + "/")
+
+
+def is_baseline_shaped(path: str) -> bool:
+    return any(_matches(path, shape) for shape in BASELINE_SHAPES)
+
+
+def tracked_files() -> list[str]:
+    return subprocess.run(
+        ["git", "ls-files"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split("\n")
+
+
+def coverage(paths: list[str]) -> tuple[list[tuple[str, list[str]]], list[str]]:
+    """Close the set over FILES.
+
+    Returns (findings, stale-no-baseline-patterns). A finding is a
+    baseline-shaped tracked file with the member ids covering it: zero means
+    nobody regenerates what some gate compares, and two or more means two
+    members would fight over the same bytes.
+    """
+    member_paths = [(m.id, p) for m in REGISTRY for p in m.paths]
+    findings: list[tuple[str, list[str]]] = []
+    used: set[str] = set()
+    for path in paths:
+        if not path or not is_baseline_shaped(path):
+            continue
+        owners = [mid for mid, pattern in member_paths if _matches(path, pattern)]
+        if len(owners) == 1:
+            continue
+        if not owners:
+            excuse = next(
+                (
+                    pattern
+                    for pattern, _ in NO_BASELINE_FILES
+                    if _matches(path, pattern)
+                ),
+                None,
+            )
+            if excuse is not None:
+                used.add(excuse)
+                continue
+        findings.append((path, owners))
+    stale = [pattern for pattern, _ in NO_BASELINE_FILES if pattern not in used]
+    return findings, stale
 
 
 def gate_index() -> dict[str, str]:

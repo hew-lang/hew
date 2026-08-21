@@ -81,9 +81,16 @@ def test_registry_is_well_formed() -> None:
             member.tier,
         )
         for path in member.paths:
+            if any(ch in path for ch in "*?["):
+                exists = any(
+                    baselines._matches(tracked, path)
+                    for tracked in baselines.tracked_files()
+                )
+            else:
+                exists = (ROOT / path).exists()
             check(
                 f"{member.id}: {path} exists",
-                (ROOT / path).exists(),
+                exists,
                 "registry names an artefact that is not in the tree",
             )
         for gate in member.gates:
@@ -92,6 +99,7 @@ def test_registry_is_well_formed() -> None:
                 gate in targets,
                 "registry names a gate the Makefile does not define",
             )
+
         check(
             f"{member.id}: has a regen path",
             member.regen is not None or member.prune_list is not None,
@@ -307,11 +315,17 @@ def test_blanket_regen_skips_user_facing_contracts() -> None:
     """`make baselines` must never silently re-record an example's output."""
     print("a blanket regen defers explicit-only members")
     explicit = [m for m in baselines.REGISTRY if m.explicit_only]
+    contracts = {
+        "ux-example-expectations",
+        "surface-example-expectations",
+        "core-matrix-truth-table",
+        "funcupdate-mir-baselines",
+        "release-count-baseline",
+    }
     check(
-        "the example-expectation corpora are explicit-only",
-        {m.id for m in explicit}
-        == {"ux-example-expectations", "surface-example-expectations"},
-        str([m.id for m in explicit]),
+        "every artefact that records observed behaviour is explicit-only",
+        contracts <= {m.id for m in explicit},
+        str(sorted(contracts - {m.id for m in explicit})),
     )
     for member in explicit:
         check(
@@ -321,12 +335,85 @@ def test_blanket_regen_skips_user_facing_contracts() -> None:
         )
 
 
+def test_file_closure_is_the_authority() -> None:
+    """The reviewer's case: a shaped tracked file nobody regenerates fails A6."""
+    print("the file closure covers every baseline-shaped tracked file")
+    tracked = baselines.tracked_files()
+    findings, stale = baselines.coverage(tracked)
+    check(
+        "no baseline-shaped file is uncovered or double-owned",
+        findings == [],
+        str(findings[:5]),
+    )
+    check("no no-baseline entry matches nothing", stale == [], str(stale))
+
+    shaped = [p for p in tracked if p and baselines.is_baseline_shaped(p)]
+    check("the closure actually looks at files", len(shaped) > 500, str(len(shaped)))
+
+    # An unregistered file matching a shape must fail, or the closure proves
+    # nothing. `docs/` is outside every member path and every no-baseline entry.
+    invented = "docs/synthetic-corpus/golden/case.mir"
+    new_findings, _ = baselines.coverage(tracked + [invented])
+    check(
+        "an unregistered baseline-shaped file is reported",
+        [path for path, _ in new_findings] == [invented],
+        str(new_findings),
+    )
+    check(
+        "and it is reported as unowned, not as a conflict",
+        len(new_findings) == 1 and new_findings[0][1] == [],
+        str(new_findings),
+    )
+
+    # Two members claiming one file is the other failure: it means neither
+    # regen is authoritative over those bytes.
+    widened = baselines.REGISTRY + (
+        baselines.Baseline(
+            id="probe-overlap",
+            summary="probe",
+            tier="fast",
+            paths=("tests/ll-oracle",),
+            gates=(),
+            regen="make ll-golden",
+        ),
+    )
+    original = baselines.REGISTRY
+    baselines.REGISTRY = widened
+    try:
+        overlap, _ = baselines.coverage(tracked)
+    finally:
+        baselines.REGISTRY = original
+    check(
+        "a file claimed by two members is reported",
+        any(len(owners) > 1 for _, owners in overlap),
+        str(overlap[:3]),
+    )
+
+
+def test_file_closure_survives_indirection() -> None:
+    """The closure must not depend on how a script reaches its baseline."""
+    print("the closure is over files, not over readers")
+    # `tests/mir-baselines` and the release-count table are reached through
+    # variables in Rust test code -- no Makefile recipe or script names them as
+    # a literal. Both are registered, which is the property the reader analysis
+    # could not deliver.
+    ids = {m.id for m in baselines.REGISTRY}
+    for member_id in (
+        "funcupdate-mir-baselines",
+        "release-count-baseline",
+        "core-matrix-truth-table",
+    ):
+        check(f"{member_id} is registered", member_id in ids, str(sorted(ids)))
+
+
 def main() -> int:
     test_registry_is_well_formed()
     test_ratchet_report_parsing()
     test_prune_removes_only_now_passing_entries()
     test_regen_refuses_to_record_a_new_failure()
     test_lane_relevance_follows_prerequisites()
+    test_file_closure_is_the_authority()
+    test_file_closure_survives_indirection()
     test_snapshot_restores_kind_and_mode()
     test_blanket_regen_skips_user_facing_contracts()
     test_every_gate_shaped_target_is_accounted_for()

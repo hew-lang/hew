@@ -34,7 +34,7 @@ for the documented resolver precedence.
 
 - Primitive types are lowercase: `i64`, `string`, `f64`, `bool`, `char` — never `Int`, `String`, `Float`.
 - Integer literals default to `i64`, float literals to `f64`. Annotate only for narrower widths.
-- Interpolate strings with the `f` prefix: `f"x={x}"`. A plain `"{x}"` prints literal braces.
+- Interpolate `Display` values with `f"x={x}"`; use `f"x={x:?}"` for structural debugging.
 - Convert numbers with `as`: `x as i64`, `pi as i32`. It is the only conversion mechanism.
 - Never mix integer widths in one expression; cast the narrower operand up first: `x as i64 + 1`.
 - **`var` for mutable bindings, `let` for immutable.** Hew does not have `let mut` — use `var` whenever you need to reassign a name or mutate a scalar field. `let` bindings are immutable (but `let` collections have interior mutability).
@@ -102,7 +102,14 @@ fn main() {
 }
 ```
 
-Always prefix interpolated strings with `f`. Arbitrary expressions are allowed inside `{}`. A plain string does not interpolate.
+Always prefix interpolated strings with `f`. Arbitrary expressions are allowed
+inside `{}`. Plain `{value}` requires `Display`; `{value:?}` explicitly requests
+structural debugging for records, tuples, `Option`, `Result`, `Vec`, and
+`HashMap`, including nested combinations. An explicit `Display` implementation
+still wins, including one attached to a named type alias. The distinct `:?`
+spelling is deliberate: ordinary interpolation remains the intentional
+user-facing contract and never exposes internal aggregate structure by accident.
+Structural rendering borrows the value and has no ownership effect.
 
 ### Numeric conversion via `as`
 

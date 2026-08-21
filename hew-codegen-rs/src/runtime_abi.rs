@@ -2537,6 +2537,70 @@ pub(crate) fn lower_call_runtime_abi(
                 .llvm_ctx("hew_string_concat store")?;
             let _ = i32_ty;
         }
+        F::StructuralFormat => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "structural format runtime call expected 1 arg, got {}",
+                    args.len()
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_structural_format: producer must supply a dest place".into(),
+                )
+            })?;
+            let (value_ptr, value_ty) = place_pointer(fn_ctx, args[0])?;
+            let resolved_ty = place_resolved_ty(fn_ctx, args[0])?;
+            let formatter = crate::thunks::get_or_emit_structural_format_thunk(
+                fn_ctx,
+                value_ty,
+                resolved_ty,
+            )?;
+            let builder_new = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_string_builder_new",
+            )?;
+            let builder = fn_ctx
+                .builder
+                .build_call(builder_new, &[], "structural_builder_new")
+                .llvm_ctx("structural builder new")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_string_builder_new returned void".into())
+                })?
+                .into_pointer_value();
+            fn_ctx
+                .builder
+                .build_call(
+                    formatter,
+                    &[builder.into(), value_ptr.into()],
+                    "structural_format_call",
+                )
+                .llvm_ctx("structural format call")?;
+            let finish = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_string_builder_finish",
+            )?;
+            let rendered = fn_ctx
+                .builder
+                .build_call(finish, &[builder.into()], "structural_builder_finish")
+                .llvm_ctx("structural builder finish")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_string_builder_finish returned void".into())
+                })?;
+            let (dest_ptr, _) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, rendered)
+                .llvm_ctx("structural format result store")?;
+        }
         F::ObserveReadU64 => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
@@ -4138,6 +4202,38 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // hew_string_concat(a: *const c_char, b: *const c_char) -> *mut c_char
         // (`hew-runtime/src/string.rs`). Returns a fresh owned string.
         "hew_string_concat" => ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_string_builder_new" => ptr_ty.fn_type(&[], false),
+        "hew_string_builder_finish" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_string_builder_append_cstr" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_string_builder_append_identity" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false),
+        "hew_string_builder_append_i64" | "hew_string_builder_append_u64" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        "hew_string_builder_append_f64" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ctx.f64_type().into()], false),
+        "hew_string_builder_append_bool" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i8_ty.into()], false),
+        "hew_string_builder_append_char" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i32_ty.into()], false),
+        "hew_structural_format_vec" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false),
+        "hew_structural_format_hashmap" => ctx.void_type().fn_type(
+            &[
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        ),
         "hew_actor_register_type" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),

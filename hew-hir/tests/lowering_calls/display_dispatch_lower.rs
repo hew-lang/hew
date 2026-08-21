@@ -277,7 +277,7 @@ fn fstring_named_type_without_impl_is_fail_closed() {
         .iter()
         .find_map(|p| match p {
             StringPart::Expr((_, sp)) => Some(sp.clone()),
-            StringPart::Literal(_) => None,
+            StringPart::Literal(_) | StringPart::StructuralExpr(_) => None,
         })
         .expect("interp expr present");
 

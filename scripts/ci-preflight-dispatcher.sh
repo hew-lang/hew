@@ -72,14 +72,21 @@ print_timeout_scaling() {
 # Per-command stuck ceilings from the local preflight timing audit.  These are
 # measurement-only hang budgets, not coverage skips or bypasses.  The effective
 # timeout is max(command floor, lane tier), so narrow lanes get enough time for
-# known-long suites while the fallback's 600s ceiling remains unchanged.
+# known-long suites while retaining finite stuck ceilings for every command.
 command_timeout_floor() {
     local cmd="$1"
     case "$cmd" in
         "make ci-preflight-smoke") echo 420 ;;
-        "make lint") echo 90 ;;
+        # A warm lint run measured 698 s on the 16-core developer machine.
+        # Add roughly 35% cache and host-load headroom, rounded to 945 s, while
+        # retaining a finite stuck ceiling.
+        "make lint") echo 945 ;;
         "make playground-check") echo 150 ;;
-        "make test") echo 360 ;;
+        # A warm workspace make test run measured 1129 s for 14,050 nextest
+        # tests on the 16-core developer machine.  Add roughly 35% cache and
+        # host-load headroom, rounded to 1530 s, while retaining a finite stuck
+        # ceiling.
+        "make test") echo 1530 ;;
         # test-compiler-pipeline carries the hew-cli consumer corpus (compiled
         # leak/drop oracles + e2e suites).  The 600 s figure came from ~234 s
         # on a warm 16-core developer machine; hosted runners have far fewer
@@ -1170,6 +1177,22 @@ esac
 # superset: a parser diff needs the native compiler and WASM runtime, while a
 # documentation diff needs neither.  An unrecognised command falls back to the
 # complete artifact set and leaves a visible note so its mapping can be added.
+#
+# A warm-up must build the artifacts its command needs THE SAME WAY the command
+# builds them.  `cargo build --all-targets` is not that way: the root
+# `[profile.dev] panic = "abort"` cannot apply to a libtest harness, so mixing
+# lib and test targets in one invocation fails outright
+# ("requires panic strategy abort which is incompatible with this crate's
+# strategy of unwind" on hew-sandbox-wasm, plus a duplicate-unit serde mismatch
+# in xtask).  Test-target warm-ups therefore mirror the real gate: the same
+# nextest/cargo-test invocation with `--no-run`, exactly as `make test` builds
+# its binaries.  Clippy warms through clippy — its check artifacts are a
+# separate fingerprint from rustc's — with the trailing `-- -D warnings` dropped
+# so a lint failure surfaces as the timed gate's failure, not as an aborted
+# warm-up.  Dropping the deny flag does not cost the warm: it only re-checks the
+# top-level packages, dependencies stay cached.
+WORKSPACE_TEST_WARMUP="cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run"
+
 add_warmup_command() {
     local candidate="$1"
     local existing
@@ -1181,7 +1204,7 @@ add_warmup_command() {
 
 add_full_warmup() {
     local cmd="$1"
-    add_warmup_command "cargo build --workspace --all-targets"
+    add_warmup_command "$WORKSPACE_TEST_WARMUP"
     add_warmup_command "make hew"
     add_warmup_command "make runtime"
     add_warmup_command "make stdlib"
@@ -1194,14 +1217,34 @@ map_warmup_artifacts() {
     case "$cmd" in
         "cargo fmt "*)
             ;;
-        "cargo clippy "*|"cargo nextest "*|"make grammar"|"make playground-check"|"make test-cabi"|"make test-runtime-unit")
-            add_warmup_command "cargo build --workspace --all-targets"
+        "cargo clippy "*)
+            add_warmup_command "${cmd%% -- *}"
             ;;
-        "make structural-lint"|"make lint")
+        "cargo nextest run "*)
+            add_warmup_command "$cmd --no-run"
+            ;;
+        "make test-cabi")
+            add_warmup_command "make test-cabi-build"
+            ;;
+        "make test-runtime-unit")
+            add_warmup_command "cargo nextest run --profile ci -p hew-runtime --no-default-features --no-run"
+            ;;
+        "make playground-check")
+            add_warmup_command "cargo test -p hew-wasm --no-run"
+            ;;
+        "make grammar")
+            add_warmup_command "$WORKSPACE_TEST_WARMUP"
+            ;;
+        "make structural-lint")
             add_warmup_command "scripts/ast-grep-lint.sh --bootstrap --install-only"
             ;;
+        "make lint")
+            # `make lint` bootstraps ast-grep and then runs
+            # `cargo clippy --workspace --tests -- -D warnings`; warm both.
+            add_warmup_command "scripts/ast-grep-lint.sh --bootstrap --install-only"
+            add_warmup_command "cargo clippy --workspace --tests"
+            ;;
         "make hew-native wasm-runtime")
-            add_warmup_command "cargo build --workspace --all-targets"
             add_warmup_command "make hew"
             add_warmup_command "make wasm-runtime"
             ;;
@@ -1235,11 +1278,13 @@ map_warmup_artifacts() {
         "make leak-scan"|"make freebsd-workflow-contract-check"|"make test-release-workflow-contract"|"make test-stdlib-execution-proofs"|"make o2-differential-selftest"|"make doc-ratchet-selftest"|"make check-sanitizer-gate"|"make check-gate-reachability"|"make test-leak-oracle-selftest"|"make ll-identity-selftest")
             ;;
         "make test")
-            add_warmup_command "cargo build --workspace --all-targets"
+            # Mirror the target's own order: wasm-runtime/runtime/libhew first,
+            # then the nextest binary build.
             add_warmup_command "make hew"
             add_warmup_command "make runtime"
             add_warmup_command "make stdlib"
             add_warmup_command "make wasm-runtime"
+            add_warmup_command "$WORKSPACE_TEST_WARMUP"
             ;;
         *)
             add_full_warmup "$cmd"

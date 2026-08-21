@@ -137,23 +137,13 @@ impl Checker {
         }
     }
 
-    /// Verify that `ty` has a `Display` impl reachable by f-string
-    /// interpolation lowering. The Display trait is identified through the
-    /// lang-item registry (`LANG_ITEM_DISPLAY` key) so stdlib can rename or
-    /// move the trait by relocating its `#[lang_item("display")]` attribute
-    /// without code changes here. Mirrors the lookup that
-    /// `lower_display_dispatch` performs in HIR: primitives consult
-    /// `primitive_trait_impls`, user-named types consult `trait_impls_set`,
-    /// and `string` is accepted as a passthrough. Emits a clear
-    /// `BoundsNotSatisfied` diagnostic on miss so the negative gate is
-    /// raised at check time rather than as an opaque HIR/MIR error.
-    pub(super) fn require_display_impl(&mut self, ty: &Ty, span: &Span) {
+    fn display_impl_type(&mut self, ty: &Ty) -> Option<Ty> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         if matches!(resolved, Ty::String) {
-            return;
+            return Some(resolved);
         }
         if matches!(resolved, Ty::Var(_) | Ty::Error) {
-            return;
+            return None;
         }
         // `instant` is a monotonic timestamp that canonicalises to a bare i64 at
         // the MIR boundary; HIR's Display dispatch routes it through the i64
@@ -161,7 +151,7 @@ impl Checker {
         // dedicated `impl Display for instant` body. A monotonic timestamp has
         // no wall-clock meaning, so raw nanos is the honest rendering.
         if resolved.is_instant() {
-            return;
+            return Some(resolved);
         }
         // These compiler carriers have a closed Display ABI selected by their
         // builtin discriminator in HIR/codegen (`hew_*_display`), with the
@@ -183,7 +173,7 @@ impl Checker {
                 ..
             }
         ) {
-            return;
+            return Some(resolved);
         }
         // Resolve the Display trait name through the lang-item registry.
         // No `#[lang_item("display")]` in scope means the program defines no
@@ -192,7 +182,7 @@ impl Checker {
         // above. Falling back to the literal name `"Display"` keeps
         // pre-lang-item check-time tests (no stdlib loaded) working with the
         // implicit naming convention.
-        let (display_trait, display_trait_key) =
+        let (_display_trait, display_trait_key) =
             self.lang_items.get(crate::LANG_ITEM_DISPLAY).map_or_else(
                 || ("Display".to_string(), "Display".to_string()),
                 |binding| {
@@ -207,12 +197,12 @@ impl Checker {
                 .primitive_trait_impls
                 .contains_key(&(canonical.to_string(), display_trait_key.clone()))
             {
-                return;
+                return Some(resolved);
             }
         }
         if let Ty::Named { name, args, .. } = &resolved {
             if self.type_implements_trait_for_ty(&resolved, &display_trait_key) {
-                return;
+                return Some(resolved);
             }
             // A bare type parameter (e.g. `T` in `fn f<T: Display>(x: T)`)
             // carries no registered impl of its own, but the enclosing
@@ -221,9 +211,26 @@ impl Checker {
             // impl is selected per monomorphisation by HIR's static
             // trait-dispatch lowering. Mirrors `type_satisfies_trait_bound`.
             if args.is_empty() && self.type_param_carries_bound(name, &display_trait_key) {
-                return;
+                return Some(resolved);
             }
         }
+        None
+    }
+
+    /// Verify that `ty` has a `Display` impl reachable by f-string
+    /// interpolation lowering.
+    pub(super) fn require_display_impl(&mut self, ty: &Ty, span: &Span) {
+        if matches!(self.subst.resolve(ty), Ty::Var(_) | Ty::Error) {
+            return;
+        }
+        if self.display_impl_type(ty).is_some() {
+            return;
+        }
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        let display_trait = self.lang_items.get(crate::LANG_ITEM_DISPLAY).map_or_else(
+            || "Display".to_string(),
+            |binding| binding.trait_name.clone(),
+        );
         let ty_str = format!("{}", resolved.user_facing());
         self.report_error(
             TypeErrorKind::BoundsNotSatisfied,
@@ -275,9 +282,21 @@ impl Checker {
             Expr::ByteStringLiteral(_) | Expr::ByteArrayLiteral(_) => Ty::Bytes,
             Expr::InterpolatedString(parts) => {
                 for part in parts {
-                    if let StringPart::Expr((expr, expr_span)) = part {
-                        let part_ty = self.synthesize(expr, expr_span);
-                        self.require_display_impl(&part_ty, expr_span);
+                    match part {
+                        StringPart::Literal(_) => {}
+                        StringPart::Expr((expr, expr_span)) => {
+                            let part_ty = self.synthesize(expr, expr_span);
+                            self.require_display_impl(&part_ty, expr_span);
+                        }
+                        StringPart::StructuralExpr((expr, expr_span)) => {
+                            let part_ty = self.synthesize(expr, expr_span);
+                            if let Some(display_ty) = self.display_impl_type(&part_ty) {
+                                self.interpolation_display_types.insert(
+                                    SpanKey::in_module(expr_span, self.current_module_idx),
+                                    display_ty,
+                                );
+                            }
+                        }
                     }
                 }
                 Ty::String

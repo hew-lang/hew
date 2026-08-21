@@ -294,6 +294,16 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                         poison!(root);
                     }
                 }
+                Instr::TupleFieldLoad { tuple, dest, .. } => {
+                    if let Some(local) = base_local(*tuple) {
+                        if field_binders.contains(&local) {
+                            site!(binder_root(local), Some(idx));
+                        }
+                    }
+                    if let Some(&root) = base_local(*dest).and_then(|dl| alias_of.get(&dl)) {
+                        poison!(root);
+                    }
+                }
                 Instr::RecordInit { fields, dest, .. } => {
                     // A live-root field-projection cursor init BORROWS its
                     // `vec`-field binder (`vec_iter_projection_borrow_inits`):
@@ -795,8 +805,13 @@ fn compute_escaped_chain_sibling_drops(
     aggregate_clone_sites: &HashSet<(u32, usize, Place)>,
 ) -> Vec<(u32, usize, Vec<Instr>)> {
     // Immediate-parent map: alias_local -> (parent_local, field ordinal it reads).
+    // A retained string field load is a fresh co-owner, so it terminates the
+    // byte-alias chain rather than transferring the parent's original field.
+    let retained_string_aliases =
+        uniquely_defined_retained_string_field_load_aliases(blocks, local_tys);
     let parent_of: HashMap<u32, (u32, u32)> = alias_chain
         .iter()
+        .filter(|(alias, _, _)| !retained_string_aliases.contains(alias))
         .copied()
         .map(|(alias, parent, field)| (alias, (parent, field)))
         .collect();
@@ -2256,8 +2271,95 @@ pub(super) fn derive_owned_record_drop_allowed(
             .entry(binder)
             .or_insert(FieldBinderProvenance::RootOnly { root: owner_local });
     }
-    let is_escape_binder =
-        |l: u32| field_binders.contains(&l) || match_hop_binders.contains_key(&l);
+    let retained_string_moves = corroborated_retained_string_move_sites(blocks, local_tys);
+    let retained_bytes_moves = corroborated_retained_bytes_move_sites(blocks, local_tys);
+
+    // A heap-owning enum payload projected from a record field remains tied to
+    // the same record root until value flow proves an owning transfer. Carry
+    // the field provenance through the interior projection and ordinary local
+    // moves so the escape scan can distinguish a retained return (the caller
+    // receives an independent share) from an unretained hand-off. This is the
+    // record-field analogue of the payload-binder closure in the enum
+    // composite prover.
+    let mut nested_payload_binders: HashSet<u32> = HashSet::new();
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for (instr_index, instr) in block.instructions.iter().enumerate() {
+                let Instr::Move { dest, src } = instr else {
+                    continue;
+                };
+                let Some(dest_local) = base_local(*dest) else {
+                    continue;
+                };
+                if !matches!(dest, Place::Local(_)) || !local_is_heap_owning(dest_local) {
+                    continue;
+                }
+                if retained_string_moves.contains(&(block.id, instr_index))
+                    || retained_bytes_moves.contains(&(block.id, instr_index))
+                {
+                    continue;
+                }
+                let source_local = base_local(*src);
+                let source_is_binder = source_local.is_some_and(|local| {
+                    nested_payload_binders.contains(&local)
+                        || field_binders.contains(&local)
+                        || match_hop_binders.contains_key(&local)
+                });
+                let projection_seed = place_is_interior_projection(*src) && source_is_binder;
+                let local_handoff = matches!(src, Place::Local(_)) && source_is_binder;
+                if !projection_seed && !local_handoff {
+                    continue;
+                }
+                if nested_payload_binders.insert(dest_local) {
+                    changed = true;
+                }
+                let incoming = source_local
+                    .and_then(|local| binder_provenance.get(&local).copied())
+                    .unwrap_or(FieldBinderProvenance::Ambiguous);
+                match binder_provenance.entry(dest_local) {
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert(incoming);
+                        changed = true;
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut slot) => {
+                        let current = *slot.get();
+                        let merged = match (current, incoming) {
+                            (a, b) if a == b => a,
+                            (FieldBinderProvenance::Ambiguous, _)
+                            | (_, FieldBinderProvenance::Ambiguous) => {
+                                FieldBinderProvenance::Ambiguous
+                            }
+                            (
+                                FieldBinderProvenance::Unique { root: r1, .. }
+                                | FieldBinderProvenance::RootOnly { root: r1 },
+                                FieldBinderProvenance::Unique { root: r2, .. }
+                                | FieldBinderProvenance::RootOnly { root: r2 },
+                            ) => {
+                                if r1 == r2 {
+                                    FieldBinderProvenance::RootOnly { root: r1 }
+                                } else {
+                                    FieldBinderProvenance::Ambiguous
+                                }
+                            }
+                        };
+                        if merged != current {
+                            slot.insert(merged);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let is_escape_binder = |l: u32| {
+        field_binders.contains(&l)
+            || match_hop_binders.contains_key(&l)
+            || nested_payload_binders.contains(&l)
+    };
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
     let generator_env_inits = generator_env_snapshot_init_locals(blocks);
@@ -2511,6 +2613,10 @@ pub(super) fn derive_owned_record_drop_allowed(
             // another alias member) from a real whole-record escape.
             if let Instr::Move { dest, src } = instr {
                 let src_local = base_local(*src);
+                let retained_projection_move = retained_string_moves
+                    .contains(&(block.id, instr_index))
+                    || retained_bytes_moves.contains(&(block.id, instr_index))
+                    || is_retained_return_move(block, instr_index, *dest, *src);
                 let dest_local = base_local(*dest);
                 if let Some(sl) = src_local {
                     let src_is_member = alias_of.contains_key(&sl)
@@ -2523,10 +2629,18 @@ pub(super) fn derive_owned_record_drop_allowed(
                     if src_is_member && !dest_is_member {
                         note_alias_escape(sl, &mut excluded_roots);
                     }
+                    // A tag read or scalar payload projection copies only
+                    // BitCopy data out of an aggregate field binder. The
+                    // record still owns every heap leaf, so this is an
+                    // interior read, not a field escape. A heap-owning payload
+                    // destination stays on the fail-closed escape path below.
                     if is_escape_binder(sl) {
                         let benign = dest_local.is_some_and(is_escape_binder)
                             && matches!(dest, Place::Local(_));
-                        if !benign {
+                        let benign_projection_read = place_is_tag_read(*src)
+                            || (place_is_interior_projection(*src)
+                                && dest_local.is_some_and(|dl| !local_is_heap_owning(dl)));
+                        if !benign && !benign_projection_read && !retained_projection_move {
                             note_field_escape(sl, &mut excluded_roots);
                         }
                     }
@@ -2548,6 +2662,7 @@ pub(super) fn derive_owned_record_drop_allowed(
                 Instr::Move { .. }
                     | Instr::Drop { .. }
                     | Instr::RecordFieldLoad { .. }
+                    | Instr::TupleFieldLoad { .. }
                     // `RecordFieldDrop` is an interior operation (GEP+drop on one
                     // field slot) and does not transfer ownership of the whole
                     // record out of the scope, so it must not count as an escape
@@ -6592,6 +6707,254 @@ mod owned_record_drop_derivation {
         assert!(
             allowed.contains(&b),
             "an untouched owned record is its own sole owner and must be admitted"
+        );
+    }
+
+    #[test]
+    fn scalar_tuple_projection_through_owned_field_is_admitted() {
+        let b = BindingId(1);
+        let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals = HashMap::from([(b, Place::Local(0))]);
+        let local_tys = vec![rec_ty(), tuple_ty.clone(), ResolvedTy::I64];
+        let instructions = vec![
+            Instr::RecordFieldLoad {
+                record: Place::Local(0),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(1),
+            },
+            Instr::TupleFieldLoad {
+                tuple: Place::Local(1),
+                field_index: 1,
+                dest: Place::Local(2),
+            },
+        ];
+
+        let allowed = derive_with_field_ty(
+            &[block(0, instructions, Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+            tuple_ty,
+        );
+        assert!(
+            allowed.contains(&b),
+            "a scalar tuple projection is an interior read; the record must keep its drop"
+        );
+    }
+
+    #[test]
+    fn retained_string_tuple_projection_through_owned_field_is_admitted() {
+        let b = BindingId(1);
+        let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals = HashMap::from([(b, Place::Local(0))]);
+        let local_tys = vec![rec_ty(), tuple_ty.clone(), ResolvedTy::String];
+        let instructions = vec![
+            Instr::RecordFieldLoad {
+                record: Place::Local(0),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(1),
+            },
+            Instr::TupleFieldLoad {
+                tuple: Place::Local(1),
+                field_index: 0,
+                dest: Place::Local(2),
+            },
+        ];
+
+        let allowed = derive_with_field_ty(
+            &[block(0, instructions, Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+            tuple_ty,
+        );
+        assert!(
+            allowed.contains(&b),
+            "a retained string tuple load mints its own share; the record keeps its drop"
+        );
+    }
+
+    #[test]
+    fn scalar_enum_payload_projection_through_owned_field_is_admitted() {
+        let b = BindingId(1);
+        let enum_ty = ResolvedTy::named_user("Choice", vec![]);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals = HashMap::from([(b, Place::Local(0))]);
+        let local_tys = vec![rec_ty(), enum_ty.clone(), ResolvedTy::I64, ResolvedTy::I64];
+        let instructions = vec![
+            Instr::RecordFieldLoad {
+                record: Place::Local(0),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(1),
+            },
+            Instr::Move {
+                dest: Place::Local(2),
+                src: Place::EnumTag(1),
+            },
+            Instr::Move {
+                dest: Place::Local(3),
+                src: Place::EnumVariant {
+                    local: 1,
+                    variant_idx: 0,
+                    field_idx: 0,
+                },
+            },
+        ];
+
+        let allowed = derive_with_field_ty(
+            &[block(0, instructions, Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+            enum_ty,
+        );
+        assert!(
+            allowed.contains(&b),
+            "enum tag and scalar payload reads transfer no heap ownership"
+        );
+    }
+
+    #[test]
+    fn heap_enum_payload_projection_through_owned_field_is_excluded() {
+        let b = BindingId(1);
+        let enum_ty = ResolvedTy::named_user("Choice", vec![]);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals = HashMap::from([(b, Place::Local(0))]);
+        let local_tys = vec![rec_ty(), enum_ty.clone(), ResolvedTy::String];
+        let instructions = vec![
+            Instr::RecordFieldLoad {
+                record: Place::Local(0),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(1),
+            },
+            Instr::Move {
+                dest: Place::Local(2),
+                src: Place::EnumVariant {
+                    local: 1,
+                    variant_idx: 1,
+                    field_idx: 0,
+                },
+            },
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(2),
+            },
+        ];
+
+        let record_field_orders = HashMap::from([(
+            "Rec".to_string(),
+            vec![("choice".to_string(), enum_ty.clone())],
+        )]);
+        let enum_layouts = vec![crate::model::EnumLayout {
+            name: "Choice".to_string(),
+            tag_width: 1,
+            variants: vec![
+                crate::model::MachineVariantLayout {
+                    name: "Number".to_string(),
+                    field_tys: vec![ResolvedTy::I64],
+                    field_names: vec![],
+                },
+                crate::model::MachineVariantLayout {
+                    name: "Text".to_string(),
+                    field_tys: vec![ResolvedTy::String],
+                    field_names: vec![],
+                },
+            ],
+            is_indirect: false,
+        }];
+        let allowed = derive_owned_record_drop_allowed(
+            &[block(0, instructions, Terminator::Return)],
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &local_tys,
+            &is_rec,
+            &|_, _| false,
+            &record_field_orders,
+            &enum_layouts,
+            &hew_hir::LifecycleRegistry::default(),
+            &[],
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+        assert!(
+            !allowed.contains(&b),
+            "a heap payload projection transfers ownership and must exclude the record"
+        );
+    }
+
+    #[test]
+    fn retained_heap_enum_payload_projection_through_owned_field_is_admitted() {
+        let b = BindingId(1);
+        let enum_ty = ResolvedTy::named_user("Choice", vec![]);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals = HashMap::from([(b, Place::Local(0))]);
+        let local_tys = vec![rec_ty(), enum_ty.clone(), ResolvedTy::String];
+        let instructions = vec![
+            Instr::RecordFieldLoad {
+                record: Place::Local(0),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(1),
+            },
+            Instr::Move {
+                dest: Place::Local(2),
+                src: Place::EnumVariant {
+                    local: 1,
+                    variant_idx: 1,
+                    field_idx: 0,
+                },
+            },
+            Instr::StringRetain {
+                value: Place::Local(2),
+                condition: StringRetainCondition::Always,
+            },
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(2),
+            },
+        ];
+
+        let record_field_orders = HashMap::from([(
+            "Rec".to_string(),
+            vec![("choice".to_string(), enum_ty.clone())],
+        )]);
+        let enum_layouts = vec![crate::model::EnumLayout {
+            name: "Choice".to_string(),
+            tag_width: 1,
+            variants: vec![
+                crate::model::MachineVariantLayout {
+                    name: "Number".to_string(),
+                    field_tys: vec![ResolvedTy::I64],
+                    field_names: vec![],
+                },
+                crate::model::MachineVariantLayout {
+                    name: "Text".to_string(),
+                    field_tys: vec![ResolvedTy::String],
+                    field_names: vec![],
+                },
+            ],
+            is_indirect: false,
+        }];
+        let allowed = derive_owned_record_drop_allowed(
+            &[block(0, instructions, Terminator::Return)],
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &local_tys,
+            &is_rec,
+            &|_, _| false,
+            &record_field_orders,
+            &enum_layouts,
+            &hew_hir::LifecycleRegistry::default(),
+            &[],
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+        assert!(
+            allowed.contains(&b),
+            "a retained payload return leaves the record as the original owner"
         );
     }
 

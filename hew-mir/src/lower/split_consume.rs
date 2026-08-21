@@ -1070,11 +1070,16 @@ pub(super) fn collect_record_field_binders(
         let mut changed = false;
         for block in blocks {
             for instr in &block.instructions {
-                if let Instr::Move { dest, src } = instr {
-                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
-                        if field_binders.contains(&sl) && field_binders.insert(dl) {
-                            changed = true;
-                        }
+                if let Instr::Move {
+                    dest: Place::Local(dest),
+                    src: Place::Local(src),
+                } = instr
+                {
+                    if local_is_heap_owning(*dest)
+                        && field_binders.contains(src)
+                        && field_binders.insert(*dest)
+                    {
+                        changed = true;
                     }
                 }
             }

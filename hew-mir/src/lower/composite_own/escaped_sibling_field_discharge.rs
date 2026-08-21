@@ -828,6 +828,55 @@ fn match_bound_retained_string_load_is_not_attributed() {
     );
 }
 
+#[test]
+fn retained_string_tuple_chain_is_not_discharged_as_a_transfer() {
+    let b = BindingId(1);
+    let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]);
+    let owned = vec![(b, "r".to_string(), rec_ty())];
+    let binding_locals = HashMap::from([(b, Place::Local(0))]);
+    let local_tys = vec![rec_ty(), tuple_ty, ResolvedTy::String];
+    let mut blocks = vec![
+        block(0, vec![], Terminator::Goto { target: 1 }),
+        block(
+            1,
+            vec![
+                Instr::RecordFieldLoad {
+                    record: Place::Local(0),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(1),
+                },
+                Instr::TupleFieldLoad {
+                    tuple: Place::Local(1),
+                    field_index: 0,
+                    dest: Place::Local(2),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(2),
+                },
+            ],
+            Terminator::Return,
+        ),
+    ];
+
+    apply_with(
+        &mut blocks,
+        &owned,
+        &binding_locals,
+        &local_tys,
+        &[(1, 0, 0), (2, 1, 0)],
+        &is_rec,
+        &owned_fields,
+    );
+    assert!(
+        !blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(instr, Instr::FieldDropInPlace { .. })),
+        "a retained tuple string is an independent share, so the record keeps its full drop"
+    );
+}
+
 /// Handle-transfer fields are also not byte-copy aggregate aliases. The
 /// helper must keep `local_is_byte_copy_aggregate` as the gate and leave the
 /// pre-existing fail-closed posture unchanged.

@@ -33,6 +33,10 @@ def assert_isolated_staging(text: str) -> None:
         'WINDOWS_STAGE_ROOT="${HEW_WINDOWS_STAGE_ROOT:-${WINDOWS_STAGE_ROOT:-}}"'
         in text
     )
+    assert (
+        'WINDOWS_CANDIDATE_ARCHIVE="${HEW_WINDOWS_CANDIDATE_ARCHIVE:-${WINDOWS_CANDIDATE_ARCHIVE:-}}"'
+        in text
+    )
     assert "\\$Drive.Free -lt 8GB" in text
     assert "^/tmp/hew-pre-release\\.[A-Za-z0-9._-]+$" in text
     assert "^[A-Za-z]:/[A-Za-z0-9._/\\ -]*/hew-pre-release-[0-9A-Fa-f-]+$" in text
@@ -45,11 +49,7 @@ def assert_isolated_staging(text: str) -> None:
         == 3
     )
     assert text.count("--exclude node_modules") == 3
-    assert (
-        "--exclude='./target' --exclude='./.git' --exclude='./build' --exclude='./.tmp'"
-        in text
-    )
-    assert "--exclude='node_modules'" in text
+    assert "tar -czf" not in text
     assert '. "${MACOS_HOST}:${remote_stage}/"' in text
     assert '. "${LINUX_AARCH64_HOST}:${remote_stage}/"' in text
     assert '. "${FREEBSD_HOST}:${remote_stage}/"' in text
@@ -121,19 +121,30 @@ def assert_windows_staged_build_transport_contract(text: str) -> None:
     assert "Set-Location (Split-Path -Parent $PSScriptRoot)" in text
     # The single build/consumer/smoke process must override a potentially full
     # host C: temp directory with paths rooted in the already space-checked,
-    # uniquely staged candidate.
+    # uniquely staged candidate. It may read the provisioned Cargo cache, but
+    # cannot fetch from the network or mutate that cache.
     assert text.count("\\$env:TEMP = '${remote_stage}/.tmp'") == 1
     assert text.count("\\$env:TMP = \\$env:TEMP") == 1
     assert text.count("\\$env:CARGO_TARGET_DIR = '${remote_stage}/target'") == 1
-    assert text.count("\\$env:CARGO_HOME = '${remote_stage}/.cargo-home'") == 1
+    assert "\\$env:CARGO_HOME =" not in text
+    assert text.count("\\$env:CARGO_NET_OFFLINE = 'true'") == 1
     assert (
         text.count(
             "New-Item -ItemType Directory -Force -Path "
-            "\\$env:TEMP, \\$env:CARGO_TARGET_DIR, \\$env:CARGO_HOME | Out-Null"
+            "\\$env:TEMP, \\$env:CARGO_TARGET_DIR | Out-Null"
         )
         == 1
     )
-    assert "cargo build -p hew-cli -p hew-lsp -p hew-observe --release" in text
+    assert "& cargo fetch --locked --offline" in text
+    assert "Windows release validation requires a populated Cargo cache" in text
+    assert (
+        "cargo build -p hew-cli -p hew-lsp -p hew-observe "
+        "--release --frozen --message-format=json" in text
+    )
+    assert (
+        "cargo build -p hew-lib --profile release-lib --frozen "
+        "--message-format=json" in text
+    )
     assert "release library consumer proof" in text
     assert "& $Hew build $SmokeSource -o $SmokeOutput" in text
     assert "Smoke test passed" in text
@@ -183,8 +194,8 @@ def assert_cargo_output_dir_contract(text: str) -> None:
     # is the sole artifact-path authority. This covers custom target roots,
     # configured build targets, and path spaces without a filesystem search.
     assert ".hew-release-dir" in windows
-    assert "--release --message-format=json" in windows
-    assert "--profile release-lib --message-format=json" in windows
+    assert "--release --frozen --message-format=json" in windows
+    assert "--profile release-lib --frozen --message-format=json" in windows
     assert "Get-CargoCompilerArtifacts" in windows
     assert "ConvertFrom-Json -ErrorAction Stop" in windows
     assert "if ($Message.reason -eq 'compiler-artifact')" in windows
@@ -264,6 +275,12 @@ set -eu
 printf 'scp %s\n' "$*" >> "$FAKE_REMOTE_LOG"
 """
 
+_FAKE_TAR = r"""#!/usr/bin/env bash
+set -eu
+printf 'tar %s\n' "$*" >> "$FAKE_REMOTE_LOG"
+exit 98
+"""
+
 
 def run_with_fake_remote(
     platform: str, extra_env: dict[str, str] | None = None
@@ -276,6 +293,7 @@ def run_with_fake_remote(
             ("ssh", _FAKE_SSH),
             ("rsync", _FAKE_RSYNC),
             ("scp", _FAKE_SCP),
+            ("tar", _FAKE_TAR),
         ):
             path = bin_dir / name
             path.write_text(source)
@@ -283,6 +301,8 @@ def run_with_fake_remote(
 
         log = temp / "remote.log"
         state = temp / "windows-state"
+        candidate_archive = temp / "hew-windows-candidate.tar.gz"
+        candidate_archive.write_bytes(b"test candidate archive")
         env = os.environ.copy()
         env.update(
             {
@@ -296,6 +316,7 @@ def run_with_fake_remote(
                 "HEW_LINUX_AARCH64_HOST": "fake-linux-arm",
                 "HEW_FREEBSD_HOST": "fake-freebsd",
                 "HEW_WINDOWS_HOST": "fake-windows",
+                "HEW_WINDOWS_CANDIDATE_ARCHIVE": str(candidate_archive),
             }
         )
         if extra_env:
@@ -489,14 +510,27 @@ def test_windows_staged_build_transport_mutations_are_rejected() -> None:
             1,
         ),
         original.replace(
-            "\\$env:CARGO_HOME = '${remote_stage}/.cargo-home'",
-            "\\$env:CARGO_HOME = 'C:/Users/hew/.cargo'",
+            "\\$env:CARGO_NET_OFFLINE = 'true'",
+            "\\$env:CARGO_NET_OFFLINE = 'false'",
             1,
         ),
         original.replace(
             "New-Item -ItemType Directory -Force -Path "
-            "\\$env:TEMP, \\$env:CARGO_TARGET_DIR, \\$env:CARGO_HOME | Out-Null",
+            "\\$env:TEMP, \\$env:CARGO_TARGET_DIR | Out-Null",
             "Write-Output skipped-candidate-directories",
+            1,
+        ),
+        original.replace(
+            "& cargo fetch --locked --offline", "& cargo fetch --locked", 1
+        ),
+        original.replace(
+            "--release --frozen --message-format=json",
+            "--release --message-format=json",
+            1,
+        ),
+        original.replace(
+            "Windows release validation requires a populated Cargo cache",
+            "Cargo cache missing",
             1,
         ),
     ):
@@ -575,7 +609,7 @@ def test_cargo_output_dir_mutations_are_rejected() -> None:
 def test_windows_cargo_json_artifact_mutations_are_rejected() -> None:
     original = WINDOWS_BUILD_SCRIPT.read_text()
     for mutation in (
-        original.replace("--release --message-format=json", "--release", 1),
+        original.replace("--release --frozen --message-format=json", "--release", 1),
         original.replace("ConvertFrom-Json -ErrorAction Stop", "ConvertFrom-String", 1),
         original.replace(
             "if ($Message.reason -eq 'compiler-artifact')",
@@ -613,8 +647,8 @@ def test_windows_cargo_json_artifact_mutations_are_rejected() -> None:
     ):
         try:
             windows = mutation
-            assert "--release --message-format=json" in windows
-            assert "--profile release-lib --message-format=json" in windows
+            assert "--release --frozen --message-format=json" in windows
+            assert "--profile release-lib --frozen --message-format=json" in windows
             assert "Get-CargoCompilerArtifacts" in windows
             assert "ConvertFrom-Json -ErrorAction Stop" in windows
             assert "if ($Message.reason -eq 'compiler-artifact')" in windows
@@ -663,9 +697,7 @@ def test_ephemeral_output_exclusion_mutations_are_rejected() -> None:
     original = validator()
     for mutation in (
         original.replace(" --exclude .tmp", "", 1),
-        original.replace("--exclude='./.tmp' ", "", 1),
         original.replace(" --exclude node_modules", "", 1),
-        original.replace("--exclude='node_modules' ", "", 1),
     ):
         try:
             assert_isolated_staging(mutation)
@@ -714,6 +746,7 @@ def test_windows_uses_only_the_staged_candidate() -> None:
     assert result.returncode == 0, result.stdout + result.stderr
     assert "fake-windows true" not in calls
     assert calls.count("-EncodedCommand") >= 2
+    assert "tar " not in calls
     assert "scp " in calls
     assert (
         "fake-windows:C:/Temp/hew-pre-release-00000000-0000-0000-0000-000000000001/candidate.tar.gz"
@@ -750,6 +783,17 @@ def test_windows_rejects_an_unsafe_stage_root_before_sync() -> None:
     )
     assert result.returncode != 0
     assert "scp " not in calls
+
+
+def test_windows_requires_a_candidate_archive_before_remote_access() -> None:
+    result, calls = run_with_fake_remote(
+        "windows", {"HEW_WINDOWS_CANDIDATE_ARCHIVE": ""}
+    )
+    assert result.returncode != 0
+    assert "HEW_WINDOWS_CANDIDATE_ARCHIVE not configured" in result.stdout
+    assert "ssh " not in calls
+    assert "scp " not in calls
+    assert "tar " not in calls
 
 
 def test_malformed_remote_stage_is_rejected_before_sync() -> None:
@@ -986,6 +1030,7 @@ _TESTS = [
     test_windows_uses_only_the_staged_candidate,
     test_windows_accepts_a_safe_spacious_stage_root,
     test_windows_rejects_an_unsafe_stage_root_before_sync,
+    test_windows_requires_a_candidate_archive_before_remote_access,
     test_malformed_remote_stage_is_rejected_before_sync,
     test_staging_failure_cannot_be_masked_by_a_later_remote_command,
     test_requested_unreachable_host_fails_closed,

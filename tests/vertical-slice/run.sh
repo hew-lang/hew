@@ -4230,9 +4230,13 @@ run_accept_expect_status "sibling_module_call" 42
 # helper below it. The uncalled private function proves the dead-code lint is
 # still active rather than suppressed for the fixture.
 qualified_call_reachability="${ROOT}/tests/vertical-slice/accept/qualified_call_reachability"
+qualified_call_hew="${HEW}"
+if [[ "${qualified_call_hew}" != /* ]]; then
+  qualified_call_hew="${ROOT}/${qualified_call_hew}"
+fi
 if ! (
   cd "${qualified_call_reachability}"
-  "${HEW}" build ops/native-loop.hew
+  "${qualified_call_hew}" build ops/native-loop.hew
 ) >"${accept_output}" 2>&1; then
   echo "qualified_call_reachability: expected package build to succeed" >&2
   cat "${accept_output}" >&2

@@ -1442,7 +1442,10 @@ impl Builder {
         }
 
         // The lambda-actor handler body is a user body: it finishes through the
-        // one seam so every ownership splice `lower_function` gets, it gets.
+        // one seam, so a pass added there reaches it without a second
+        // registration. Its spec withholds exactly one pair — the nested
+        // fresh-temp releases, whose precondition this body does not meet
+        // (measured on `BodyFinalizeSpec::nested_fresh_temp_releases`).
         let super::FinalizedBody {
             blocks: body_blocks,
             thir_statements: body_thir_statements,
@@ -2474,7 +2477,7 @@ impl Builder {
     /// close:
     ///   call hew_sink_close(sink) -> close_next
     /// close_next:
-    ///   <cursor left open — `lower_function`'s `finalize_blocks(Terminator::Return)`
+    ///   <cursor left open — the seam's `BodySeal::Cursor(Terminator::Return)`
     ///    seals it as the implicit unit return>
     /// ```
     ///

@@ -556,14 +556,14 @@ struct Builder {
     /// `start_block` for a block that has no predecessor in the CFG —
     /// typically the synthetic continuation block opened after an
     /// explicit early `return` seals its block with `Terminator::Return`.
-    /// `finalize_blocks` drops this block from the function's CFG when
+    /// `seal_body_blocks` drops this block from the function's CFG when
     /// it is observed to be empty, so the dead-end does not appear as
     /// an additional `Return` exit in `drop_plans`.
     pub(crate) cursor_unreachable: bool,
     /// Set alongside `cursor_unreachable` ONLY when the current dead cursor
     /// was opened as the `next` of an already-sealed `Terminator::Call`
     /// (a `Never`-typed callee's continuation) rather than from an
-    /// explicit `return`'s own seal. `finalize_blocks`'s empty-dead-cursor
+    /// explicit `return`'s own seal. `seal_body_blocks`'s empty-dead-cursor
     /// drop is safe for the `return` case because nothing else references
     /// that block's id (`Terminator::Return` has no successor field), but
     /// a `Terminator::Call { next, .. }` DOES reference this id — dropping
@@ -573,10 +573,10 @@ struct Builder {
     /// the function-tail defer drain or a plain live-cursor fall-through
     /// reached a `defer exit(..)`/`defer panic(..)` and nothing else wrote
     /// into the resulting dead continuation before finalisation). When
-    /// this flag is set, `finalize_blocks` seals the empty block with
+    /// this flag is set, `seal_body_blocks` seals the empty block with
     /// `Terminator::Trap { kind: UnreachableCallContinuation }` instead of
     /// dropping it, so the id stays valid. Cleared by `start_block` and by
-    /// every `finalize_blocks` call, same as `cursor_unreachable`.
+    /// every `seal_body_blocks` call, same as `cursor_unreachable`.
     pub(crate) dead_cursor_is_call_continuation: bool,
     /// Type-indexed local registers. `locals[i]` is the `ResolvedTy` of
     /// `Place::Local(i as u32)`.
@@ -1771,7 +1771,7 @@ struct Builder {
     /// statement/expression byte span. Populated incrementally by `push_instr`
     /// (the index is the live `instructions.len()` before the push — the
     /// instruction's final position in its block, because the per-block buffer
-    /// is moved out whole by `finish_current_block` / `finalize_blocks`).
+    /// is moved out whole by `finish_current_block` / `seal_body_blocks`).
     /// Transferred into `RawMirFunction::instr_spans` at function finalisation.
     pub(crate) instr_spans: BTreeMap<(u32, u32), (u32, u32)>,
     /// Target pointer width (32 on wasm32, 64 native), threaded from the
@@ -5909,10 +5909,11 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
 ///
 /// Everything NOT named here is shared by construction: a pass added to
 /// `finalize_body` reaches every body kind — free functions, closure shims,
-/// lambda-actor handler bodies, generator bodies, and the synthesized
-/// invoke / fork trampolines — without a second registration. Keeping this
-/// struct small is the point: each field is a documented exception, and a new
-/// pass must argue its way into becoming one rather than defaulting to it.
+/// lambda-actor handler bodies, generator bodies, the synthesized invoke /
+/// fork trampolines, the task-entry adapter, and the machine-`step` dispatch —
+/// without a second registration. Keeping this struct small is the point: each
+/// field is a documented exception, and a new pass must argue its way into
+/// becoming one rather than defaulting to it.
 #[derive(Clone, Copy)]
 pub(in crate::lower) struct BodyFinalizeSpec {
     /// Append releases for owned by-value carrier PARAMETERS. Only a body
@@ -5940,8 +5941,9 @@ pub(in crate::lower) struct BodyFinalizeSpec {
 
 impl BodyFinalizeSpec {
     /// The spec for every body not lowered from a `HirFn` signature: closure
-    /// shims, lambda-actor handler bodies, generator bodies, and the
-    /// synthesized invoke / fork trampolines.
+    /// shims, generator bodies, the synthesized invoke / fork trampolines, and
+    /// the machine-`step` dispatch. The lambda-actor handler body and the
+    /// task-entry adapter each narrow one field below.
     pub(in crate::lower) fn nested_body() -> Self {
         Self {
             owned_carrier_param_drops: false,
@@ -5955,6 +5957,19 @@ impl BodyFinalizeSpec {
     pub(in crate::lower) fn lambda_actor_body() -> Self {
         Self {
             nested_fresh_temp_releases: false,
+            ..Self::nested_body()
+        }
+    }
+
+    /// The synthesized `TaskEntry` adapter. Its two blocks are constructed
+    /// rather than lowered through a cursor, but the `TaskEntry` call
+    /// convention carries the hidden execution-context argument
+    /// (`FunctionCallConv::carries_execution_context`), so the body needs the
+    /// `EnterContext` / `ExitContext` bracket. It used to call the bracketing
+    /// helper directly and never reached the pipeline at all.
+    pub(in crate::lower) fn task_entry_adapter() -> Self {
+        Self {
+            bracket_execution_context: true,
             ..Self::nested_body()
         }
     }
@@ -5999,9 +6014,13 @@ pub(in crate::lower) struct FinalizedBody {
 /// a selection inside a closure or a generator kept leaking a whole `Vec` per
 /// call for exactly that reason.
 ///
-/// [`Builder::seal_body_blocks`] is called from here and nowhere else. The
-/// `seal_body_blocks_is_called_only_from_the_finalization_seam` test holds that
-/// structurally, so a new ramp cannot quietly grow an eighth pipeline.
+/// [`Builder::seal_body_blocks`] is called from here and nowhere else, and the
+/// synthesized task-entry adapter — which constructs its blocks rather than
+/// lowering them through a cursor — arrives here through
+/// [`BodySeal::AlreadyTerminated`] rather than bracketing itself on the side.
+/// `hew-mir/tests/body_finalization_seam.rs` resolves the ENCLOSING FUNCTION of
+/// every call to both names, so a ninth ramp that grows its own pipeline, or a
+/// seal moved out of this function, fails there.
 pub(in crate::lower) fn finalize_body(
     builder: &mut Builder,
     seal: BodySeal,
@@ -7672,7 +7691,7 @@ impl Builder {
     /// The key is `(current_block_id, instruction_index)`, where the index is
     /// the live `instructions.len()` BEFORE the push — which is the
     /// instruction's final position in its block, because the per-block buffer
-    /// is moved out whole by `finish_current_block` / `finalize_blocks` (order
+    /// is moved out whole by `finish_current_block` / `seal_body_blocks` (order
     /// preserved). Recording at push time means the index is self-correcting:
     /// it always reflects the true position regardless of how earlier
     /// instructions in the same block were appended. Stage 2 (gdb `-g`): this
@@ -7819,8 +7838,8 @@ impl Builder {
     /// neutralizes). [`finalize_body`] is the sole caller for that reason — it
     /// seals and then runs that pipeline, so every body kind gets the same one.
     /// Calling this directly produces blocks that look finished and silently
-    /// leak; the `seal_body_blocks_is_called_only_from_the_finalization_seam`
-    /// test holds the single-caller property structurally.
+    /// leak; `hew-mir/tests/body_finalization_seam.rs` holds the single-caller
+    /// property by resolving the enclosing function of every call to this name.
     fn seal_body_blocks(&mut self, terminator: Terminator) -> Vec<BasicBlock> {
         self.reject_buffered_capture_env_owned_moves();
         let mut blocks = std::mem::take(&mut self.pending_blocks);
@@ -8000,7 +8019,7 @@ impl Builder {
             // lowering opens its own dead continuation block via
             // `start_dead_block`, which is never sealed (nothing follows the
             // function's real exit) and gets silently dropped by
-            // `finalize_blocks`' empty-dead-cursor cleanup -- while the
+            // `seal_body_blocks`' empty-dead-cursor cleanup -- while the
             // duplicate `Call` terminator that seeded it still points at the
             // now-missing block id, aborting codegen with
             // `E_CODEGEN_FRONT_FAIL_CLOSED: Call next bb<N> missing`
@@ -8150,7 +8169,7 @@ enum ClosurePairRhs {
 
 /// The function entry block id. `dataflow::analyze` seeds parameter live-state
 /// at block 0 and `dataflow::compute_cooperate_sites` pins the `FunctionEntry`
-/// cooperate site to block 0; the MIR builder's `finalize_blocks` constructs the
+/// cooperate site to block 0; the MIR builder's `seal_body_blocks` constructs the
 /// entry block as id 0. This single constant keeps the elaborator's
 /// FunctionEntry-cancel handling aligned with those producers.
 const ENTRY_BLOCK_ID: u32 = 0;

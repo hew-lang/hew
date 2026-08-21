@@ -102,7 +102,7 @@ use self::actor_state_handle::{
 };
 #[cfg(not(test))]
 use self::cfg_util::{
-    block_by_id, blocks_reachable_from, call_terminator_next,
+    block_by_id, block_dominators, blocks_reachable_from, call_terminator_next,
     local_is_rewritten_after_current_iteration, local_is_used_after, shift_instr_spans_on_insert,
 };
 #[cfg(not(test))]
@@ -556,14 +556,14 @@ struct Builder {
     /// `start_block` for a block that has no predecessor in the CFG —
     /// typically the synthetic continuation block opened after an
     /// explicit early `return` seals its block with `Terminator::Return`.
-    /// `finalize_blocks` drops this block from the function's CFG when
+    /// `seal_body_blocks` drops this block from the function's CFG when
     /// it is observed to be empty, so the dead-end does not appear as
     /// an additional `Return` exit in `drop_plans`.
     pub(crate) cursor_unreachable: bool,
     /// Set alongside `cursor_unreachable` ONLY when the current dead cursor
     /// was opened as the `next` of an already-sealed `Terminator::Call`
     /// (a `Never`-typed callee's continuation) rather than from an
-    /// explicit `return`'s own seal. `finalize_blocks`'s empty-dead-cursor
+    /// explicit `return`'s own seal. `seal_body_blocks`'s empty-dead-cursor
     /// drop is safe for the `return` case because nothing else references
     /// that block's id (`Terminator::Return` has no successor field), but
     /// a `Terminator::Call { next, .. }` DOES reference this id — dropping
@@ -573,10 +573,10 @@ struct Builder {
     /// the function-tail defer drain or a plain live-cursor fall-through
     /// reached a `defer exit(..)`/`defer panic(..)` and nothing else wrote
     /// into the resulting dead continuation before finalisation). When
-    /// this flag is set, `finalize_blocks` seals the empty block with
+    /// this flag is set, `seal_body_blocks` seals the empty block with
     /// `Terminator::Trap { kind: UnreachableCallContinuation }` instead of
     /// dropping it, so the id stays valid. Cleared by `start_block` and by
-    /// every `finalize_blocks` call, same as `cursor_unreachable`.
+    /// every `seal_body_blocks` call, same as `cursor_unreachable`.
     pub(crate) dead_cursor_is_call_continuation: bool,
     /// Type-indexed local registers. `locals[i]` is the `ResolvedTy` of
     /// `Place::Local(i as u32)`.
@@ -1771,7 +1771,7 @@ struct Builder {
     /// statement/expression byte span. Populated incrementally by `push_instr`
     /// (the index is the live `instructions.len()` before the push — the
     /// instruction's final position in its block, because the per-block buffer
-    /// is moved out whole by `finish_current_block` / `finalize_blocks`).
+    /// is moved out whole by `finish_current_block` / `seal_body_blocks`).
     /// Transferred into `RawMirFunction::instr_spans` at function finalisation.
     pub(crate) instr_spans: BTreeMap<(u32, u32), (u32, u32)>,
     /// Target pointer width (32 on wasm32, 64 native), threaded from the
@@ -5221,6 +5221,375 @@ fn prepare_outbound_actor_payloads(
     }
 }
 
+/// Maximum single-writer copy hops walked back from a join slot's direct source
+/// to the owned local that produced it. The `if`/`else` value lowering inserts
+/// exactly one temp; the bound keeps the walk terminating on any future shape
+/// without special-casing a depth.
+const SELECTION_SOURCE_CHAIN_LIMIT: usize = 8;
+
+/// Resolve a join-slot move site to the `(block, instr_index, owned_local,
+/// transferee)` at which an owned local's value leaves its slot.
+///
+/// Returns the site itself when the move's source is already an owned local.
+/// Otherwise the source is a temp; the walk follows it back while it has
+/// EXACTLY ONE writer and that writer is a whole-local `Move`. A temp with
+/// several writers, or one produced by a call/constructor rather than a copy,
+/// resolves to `None` (fail-closed: the shape keeps its pre-existing posture).
+fn resolve_selection_source(
+    blocks: &[BasicBlock],
+    candidate_locals: &HashSet<u32>,
+    block_id: u32,
+    instr_index: usize,
+    src_local: u32,
+    dest_local: u32,
+) -> Option<(u32, usize, u32, u32)> {
+    let mut site = (block_id, instr_index, src_local, dest_local);
+    for _ in 0..SELECTION_SOURCE_CHAIN_LIMIT {
+        if candidate_locals.contains(&site.2) {
+            return Some(site);
+        }
+        let (writer_block, writer_index, inner) = sole_whole_local_move_writer(blocks, site.2)?;
+        site = (writer_block, writer_index, inner, site.2);
+    }
+    None
+}
+
+/// The single defining site of `local` when it is written exactly once, by a
+/// whole-local `Move`, and never by a terminator. Returns
+/// `(block_id, instr_index, source_local)`.
+fn sole_whole_local_move_writer(blocks: &[BasicBlock], local: u32) -> Option<(u32, usize, u32)> {
+    let mut found: Option<(u32, usize, u32)> = None;
+    for block in blocks {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            if !dataflow::instr_write_places(instr)
+                .into_iter()
+                .any(|place| base_local(place) == Some(local))
+            {
+                continue;
+            }
+            let Instr::Move {
+                dest: Place::Local(dest_local),
+                src: Place::Local(source_local),
+            } = instr
+            else {
+                return None;
+            };
+            if *dest_local != local {
+                return None;
+            }
+            if found.is_some() {
+                return None;
+            }
+            found = Some((block.id, instr_index, *source_local));
+        }
+        if terminator_mint_writes_local(&block.terminator, local) {
+            return None;
+        }
+    }
+    found
+}
+
+/// Whether a terminator defines `local` (a call result, ask reply slot, select
+/// arm binding, …). Such a local is a fresh producer, not a copy of an owned
+/// local, so the selection-source walk stops there.
+fn terminator_mint_writes_local(terminator: &Terminator, local: u32) -> bool {
+    drop_plan::terminator_mint_places(terminator)
+        .into_iter()
+        .any(|place| base_local(place) == Some(local))
+}
+
+/// Backing locals of this frame's MOVE-SEMANTICS owned locals — the only slots
+/// a selection transfer may null.
+///
+/// The classes admitted here are the ones whose every share lowers as a bare
+/// pointer bitcopy with NO retain (the M-COW spine invariant documented on
+/// `derive_local_collection_drop_allowed`): plain and owned-element `Vec`,
+/// `HashMap` / `HashSet` handles, and owned aggregate records. For those,
+/// exactly one live slot owns a given allocation, so nulling the source at a
+/// transfer leaves exactly one owner and the source's release becomes a
+/// null-tolerant no-op.
+///
+/// `string` and `bytes` are deliberately NOT admitted. They mint co-owners
+/// through explicit `StringRetain` / `BytesRetain` markers, so an arm selection
+/// over them already leaves TWO owners each holding a reference and each owing
+/// one release. Nulling the source there would destroy a live reference's
+/// release and leak the retained generation — the opposite of the defect being
+/// fixed (measured: `std$net$http$host_of` lost five releases, `if_key` /
+/// `range_key` / `map_str` lost both of theirs).
+///
+/// By-value parameters are excluded in every class: they are caller-retained
+/// borrows and the caller owns their release (A278).
+fn frame_owned_heap_locals(builder: &Builder) -> HashSet<u32> {
+    let mut candidate_locals: HashSet<u32> = HashSet::new();
+    for (binding, _name, ty) in builder.owned_locals_exit_candidates() {
+        let move_semantics = builder.binding_ty_is_owned_element_vec(&ty)
+            || builder.binding_ty_is_plain_vec(&ty)
+            || drop_plan::ty_is_local_collection_handle(&ty)
+            || builder.is_owned_aggregate_record_ty(&ty);
+        if !move_semantics {
+            continue;
+        }
+        if !crate::model::ty_owns_heap_mir(&ty, &builder.record_field_orders, &builder.enum_layouts)
+        {
+            continue;
+        }
+        let Some(local) = builder
+            .binding_locals
+            .get(&binding)
+            .and_then(|p| base_local(*p))
+        else {
+            continue;
+        };
+        if builder.parameter_locals.contains(&local) {
+            continue;
+        }
+        candidate_locals.insert(local);
+    }
+    candidate_locals
+}
+
+/// Null a whole owned local after a DIVERGENT-ARM VALUE SELECTION moved it into
+/// a branch-join result slot.
+///
+/// `let out = match c { true => a, false => b };` (and the if/else, nested, and
+/// return-position forms) lowers to one join slot written by a whole-value
+/// `Move` on each arm. The join slot ends up holding exactly ONE of the
+/// sources; every other source still owns a live allocation nothing releases.
+///
+/// Before this pass the join slot was reachable from two distinct alias roots,
+/// so `propagate_whole_value_alias_roots` evicted it as conflicted and the
+/// escape scans read each arm's `Move` as an ownership escape — which excluded
+/// EVERY arm source from the scope-exit drop set. The join slot's own owner
+/// then freed the selected value and the losing arm's value leaked, once per
+/// call (`Vec<i64>`: 2 leak nodes / 144 B per frame).
+///
+/// The rewrite makes the transfer physical instead of inferred: after the arm's
+/// `Move`, the source slot is zeroed. Ownership is then unambiguous on every
+/// path — the join slot owns what it received, and each source owns its own
+/// value on the paths where its `Move` never ran. The source keeps its ordinary
+/// scope-exit release, which walks a nulled slot (a null-tolerant no-op) on the
+/// transferring path and frees normally everywhere else. No runtime flag, no
+/// per-exit path reconstruction: the LESSON is `raii-null-after-move`.
+///
+/// FAIL-CLOSED admission. A source is rewritten only when
+///   * the transfer is CONDITIONAL — its block does not dominate every return
+///     exit, so some path reaches an exit without executing it. That is the
+///     arm-selection signature, and it also covers a selection whose sibling
+///     arm diverges (one `Move`, still conditional) and a rebind sitting behind
+///     an earlier guard return. A move that dominates every return hands
+///     ownership over on ALL paths; it is an ordinary rebind, already resolved
+///     by the alias machinery, and is left byte-identical;
+///   * the source is a MOVE-SEMANTICS owned local of this frame — never a
+///     retain-on-share leaf, never an interior alias, never a parameter (see
+///     `frame_owned_heap_locals`); and
+///   * the source local has NO READ on any path after the transfer site. A
+///     read after the selection (`let out = match c { true => a, .. }; a.len()`)
+///     is accepted today as an aliasing read of the still-live source slot;
+///     nulling under it would turn a leak into a use-after-move fault. Those
+///     shapes keep the pre-existing leak posture until the surface decides the
+///     read is an error.
+///
+/// The paired `NeutralizePayloadSlot` carries
+/// [`NeutralizeAuthority::DivergentSelectionTransfer`], and the alias / escape /
+/// hand-off scans read that authority off the MIR
+/// (`split_consume::is_divergent_selection_transfer_move`) rather than
+/// re-deriving the shape.
+fn neutralize_divergent_selection_sources(
+    blocks: &mut [BasicBlock],
+    builder: &mut Builder,
+    projection_tainted: &HashSet<u32>,
+) {
+    let mut candidate_locals = frame_owned_heap_locals(builder);
+    // A slot holding an INTERIOR ALIAS of a still-live parent — a match-arm
+    // payload binder over an enum/machine carrier, a record/tuple field load,
+    // a collection element getter — is not a whole-value owner, and its
+    // ownership is governed by the projected-payload provenance machinery
+    // (`NeutralizeAuthority::MoveOutArmConsume` and the alias-binder scans),
+    // not by whole-local move semantics. Nulling such a binder makes its own
+    // release a no-op while the parent's release stays suppressed, so the
+    // payload leaks. Leave the whole alias class to its own authority.
+    let interior_alias = temp_drop::compute_collection_interior_alias_taint(blocks);
+    candidate_locals
+        .retain(|local| !projection_tainted.contains(local) && !interior_alias.contains(local));
+    if candidate_locals.is_empty() {
+        return;
+    }
+
+    // A transfer is CONDITIONAL when its block does not dominate every return
+    // exit: some path reaches an exit WITHOUT executing the move, and on that
+    // path the source still owns its own value and owes its own release. That
+    // is the arm-selection signature — `match`/`if` value arms, nested arms, a
+    // selection whose sibling arm diverges, and a rebind sitting behind an
+    // earlier guard return. A move that dominates every return hands ownership
+    // over on ALL paths; the existing alias machinery already resolves it and
+    // it is left byte-identical here.
+    let dominators = block_dominators(blocks);
+    let return_exits: Vec<u32> = blocks
+        .iter()
+        .filter(|block| matches!(block.terminator, Terminator::Return))
+        .map(|block| block.id)
+        .filter(|id| dominators.contains_key(id))
+        .collect();
+    if return_exits.is_empty() {
+        return;
+    }
+
+    let mut inserts: Vec<(u32, usize, u32, u32)> = Vec::new();
+    for block in blocks.iter() {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            let Instr::Move {
+                dest: Place::Local(dest_local),
+                src: Place::Local(src_local),
+            } = instr
+            else {
+                continue;
+            };
+            if dest_local == src_local {
+                continue;
+            }
+            let conditional = return_exits.iter().any(|exit| {
+                dominators
+                    .get(exit)
+                    .is_some_and(|doms| !doms.contains(&block.id))
+            });
+            if !conditional {
+                continue;
+            }
+            // `if`/`else` value lowering copies each arm's value through a
+            // per-arm temp before the join slot (`_6 = move _4; _5 = move _6`),
+            // so the join slot's direct source is a temp. Walk back through
+            // that single-writer copy chain to the owned local it started at
+            // and neutralize THERE — the temp holds the value from that point
+            // on, exactly as in the direct `match` form.
+            let Some((site_block, site_index, owned_local, transferee)) = resolve_selection_source(
+                blocks,
+                &candidate_locals,
+                block.id,
+                instr_index,
+                *src_local,
+                *dest_local,
+            ) else {
+                continue;
+            };
+            if local_read_after_site(
+                blocks,
+                &builder.suspend_kinds,
+                owned_local,
+                site_block,
+                site_index,
+            ) {
+                continue;
+            }
+            // Another authority already nulls this slot at this move (a
+            // whole-carrier or send-transfer consume). Its neutralize is the
+            // same store; a second one is dead weight in the emitted IR.
+            if source_slot_already_neutralized(blocks, site_block, site_index, owned_local) {
+                continue;
+            }
+            inserts.push((site_block, site_index, owned_local, transferee));
+        }
+    }
+    inserts.sort_unstable();
+    inserts.dedup();
+    if inserts.is_empty() {
+        return;
+    }
+
+    // Insert back-to-front per block so earlier recorded indices stay valid.
+    inserts.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    for (block_id, instr_index, owned_local, transferee) in inserts {
+        let Some(block) = blocks.iter_mut().find(|block| block.id == block_id) else {
+            continue;
+        };
+        let at = instr_index + 1;
+        cfg_util::shift_instr_spans_on_insert(
+            &mut builder.instr_spans,
+            block_id,
+            u32::try_from(at).unwrap_or(u32::MAX),
+        );
+        block.instructions.insert(
+            at,
+            Instr::NeutralizePayloadSlot {
+                place: Place::Local(owned_local),
+                transferee: Some(Place::Local(transferee)),
+                authority: crate::model::NeutralizeAuthority::DivergentSelectionTransfer,
+            },
+        );
+    }
+}
+
+/// Whether the instruction directly after `(site_block, site_index)` already
+/// nulls `local` under some other neutralize authority.
+fn source_slot_already_neutralized(
+    blocks: &[BasicBlock],
+    site_block: u32,
+    site_index: usize,
+    local: u32,
+) -> bool {
+    blocks
+        .iter()
+        .find(|block| block.id == site_block)
+        .and_then(|block| block.instructions.get(site_index + 1))
+        .is_some_and(|instr| {
+            matches!(
+                instr,
+                Instr::NeutralizePayloadSlot { place, .. }
+                    if base_local(*place) == Some(local)
+            )
+        })
+}
+
+/// Whether `local` is READ anywhere reachable from just after the instruction
+/// at `(site_block, site_index)`.
+///
+/// Scans the remainder of the site block plus every block reachable from it. A
+/// site block that is reachable from itself (a loop body) is scanned in full,
+/// because its earlier instructions execute again. Over-approximates reads
+/// (every source place of every instruction and terminator counts), so the
+/// caller's admission can only be too conservative, never too permissive.
+fn local_read_after_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    local: u32,
+    site_block: u32,
+    site_index: usize,
+) -> bool {
+    let reachable = cfg_util::blocks_reachable_from(blocks, site_block);
+    let site_on_cycle = reachable.contains(&site_block);
+    let reads = |place: Place| base_local(place) == Some(local);
+    for block in blocks {
+        let is_site = block.id == site_block;
+        if !is_site && !reachable.contains(&block.id) {
+            continue;
+        }
+        // The transfer move itself reads the source — that is the read this
+        // neutralize pairs with, never an observation of the nulled slot. On a
+        // loop back-edge the rest of the site block IS re-entered, so only the
+        // transfer instruction is exempt there; everything else in the block
+        // still counts.
+        let start = if is_site && !site_on_cycle {
+            site_index + 1
+        } else {
+            0
+        };
+        for (instr_index, instr) in block.instructions.iter().enumerate().skip(start) {
+            if is_site && instr_index == site_index {
+                continue;
+            }
+            if instr_source_places(instr).into_iter().any(reads) {
+                return true;
+            }
+        }
+        if terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+            .into_iter()
+            .any(reads)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Null scalar handle sources after an exact tuple/record constructor has
 /// moved them into a value that reaches the return slot.
 ///
@@ -5359,6 +5728,346 @@ pub fn validate_outbound_actor_modes(raw: &RawMirFunction) -> Vec<MirCheck> {
             unresolved.then_some(MirCheck::OutboundModeUnresolved { block: block.id })
         })
         .collect()
+}
+
+/// Locals released by an inline `Instr::Drop` naming the string or bytes
+/// release symbol. Used to take a before/after reading around the nested-temp
+/// splices so publication-owner retirement pairs with the releases those
+/// splices placed rather than with any release that happens to be present.
+fn inline_string_or_bytes_release_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
+    blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::Drop {
+                place: Place::Local(local),
+                drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+                ..
+            } if matches!(*symbol, "hew_string_drop" | "hew_bytes_drop") => Some(*local),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Phase one of [`finalize_body`]: splice the RELEASES the per-binding drop
+/// provers cannot see — nested fresh string/bytes temporaries, the share-intent
+/// finalisation, and the non-escaped sibling fields of an escaped record.
+///
+/// These run before the checker statement snapshot because each adds a
+/// checker-visible read of the value it discharges.
+fn splice_body_ownership_releases(
+    blocks: &mut Vec<BasicBlock>,
+    builder: &mut Builder,
+    nested_fresh_temp_releases: bool,
+) {
+    if nested_fresh_temp_releases {
+        // Inline string/bytes releases this body's own lowering already
+        // emitted. The retirement below pairs with the releases the nested-temp
+        // splices are about to add, so anything already present is excluded.
+        let released_before_splices = inline_string_or_bytes_release_locals(blocks);
+        let nested_temp_binding_locals: HashMap<BindingId, Place> = builder
+            .binding_locals
+            .iter()
+            .filter(|(binding, _)| {
+                !builder
+                    .synthetic_owner_publication_sites
+                    .contains_key(binding)
+            })
+            .map(|(binding, place)| (*binding, *place))
+            .collect();
+        apply_nested_fresh_string_temp_drops(
+            &mut *blocks,
+            &mut builder.suspend_kinds,
+            &builder.locals,
+            &nested_temp_binding_locals,
+            &builder
+                .call_scrutinee_provenance
+                .owned_string_return_carrier_symbols,
+            &mut builder.suspend_abandon_extra_drops,
+            &mut builder.instr_spans,
+        );
+        // #2542 — release nested fresh-owned `bytes` user-call-result temporaries
+        // (`mk().len()`, `mk().to_string()`, discarded `mk();`) that
+        // `derive_local_bytes_drop_allowed` (binding-scoped) cannot see. Same
+        // pre-`check_function` ordering rationale as the string splice above.
+        apply_nested_fresh_bytes_temp_drops(
+            &mut *blocks,
+            &builder.suspend_kinds,
+            &builder.locals,
+            &nested_temp_binding_locals,
+            &mut builder.instr_spans,
+        );
+        // Inline string/bytes releases consume the exact typed-publication
+        // generation for their local.  This keeps concat/f-string and bytes
+        // temporaries on the checker-owned carrier without a second scope-exit
+        // drop authority, while persistent publications remain ledger-owned.
+        builder
+            .consume_typed_publication_owners_at_inline_release(&*blocks, &released_before_splices);
+    }
+    finalize_string_local_share_intents(&mut *blocks, builder);
+    splice_escaped_record_sibling_field_drops(blocks, builder);
+}
+
+/// #2212 — an owned record whose field escapes through a binder loses its
+/// composite scope-exit drop (the sole-owner prover excludes it); the record's
+/// NON-escaped owned sibling fields still need their release. Where the value
+/// flow proves the escape's root, field, and last-use position, splice one
+/// `FieldDropInPlace` per dischargeable sibling right after the escape.
+fn splice_escaped_record_sibling_field_drops(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
+    let owned_locals_snapshot = builder.owned_locals_snapshot();
+    // #2212 — an owned record whose field escapes through a binder loses its
+    // composite scope-exit drop (the sole-owner prover excludes it); the
+    // record's NON-escaped owned sibling fields still need their release.
+    // Where the value flow proves the escape's root, field, and last-use
+    // position, splice one `FieldDropInPlace` per dischargeable sibling
+    // right after the escape. Runs BEFORE `check_function` / elaboration so
+    // the dataflow observes the discharges and codegen emits them.
+    {
+        let mut instr_spans = std::mem::take(&mut builder.instr_spans);
+        // The immediate-parent chain of every recorded byte-copy alias, so the
+        // sibling-discharge emitter can walk a MULTI-HOP escape (`let mid = o.mid;
+        // let leaf = mid.leaf; return leaf`) and compensate the non-escaped
+        // siblings at every level — the reach `close_alias_binders_forward` gave
+        // the composite-drop prover's exclusion.
+        let alias_chain = builder.alias_projection_chain();
+        let aggregate_clone_sites = aggregate_borrowed_ingress_clone_sites(&*blocks, builder);
+        let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
+        let owned_field_list = |ty: &ResolvedTy| builder.project_record_owned_field_list(ty);
+        let owned_tuple_field_list = |ty: &ResolvedTy| builder.project_tuple_owned_field_list(ty);
+        let field_dischargeable = |ty: &ResolvedTy| {
+            matches!(ty, ResolvedTy::String) || builder.field_drop_in_place_admissible(ty)
+        };
+        apply_escaped_record_sibling_field_drops(
+            &mut *blocks,
+            &builder.suspend_kinds,
+            &owned_locals_snapshot,
+            &builder.binding_locals,
+            &builder.locals,
+            &builder.record_field_orders,
+            &builder.enum_layouts,
+            builder.type_classes.lifecycle_registry(),
+            &alias_chain,
+            &aggregate_clone_sites,
+            &builder.vec_iter_projection_borrow_inits,
+            &is_owned_record,
+            &owned_field_list,
+            &owned_tuple_field_list,
+            &field_dischargeable,
+            &mut instr_spans,
+        );
+        builder.instr_spans = instr_spans;
+    }
+}
+
+/// Phase two of [`finalize_body`]: prepare the OPERANDS — name locals for the
+/// debug tables, classify actor-state loads, materialise owned call carriers
+/// and outbound actor payloads, and null every slot whose ownership physically
+/// transferred (returned aggregate members, divergent-arm selection sources).
+///
+/// These run after the checker statement snapshot because they rewrite operands
+/// rather than discharge values.
+fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
+    builder.resolve_local_names_from_binds(&*blocks);
+    // P0 #2432 — classify every `ActorStateFieldLoad`'s own/borrow `mode`
+    // over the fully finalised blocks (every splice pass above has already
+    // run). Must run on THIS `blocks` local, before it moves into `raw`
+    // below: codegen's per-instruction lowering loop reads
+    // `RawMirFunction.blocks`, not `CheckedMirFunction.blocks` (a clone
+    // taken afterward), so classifying any later would be a no-op against
+    // codegen. A no-op here for every non-actor-handler lowering entry point
+    // (`load_locals` is empty whenever `current_actor_state_fields` was
+    // never populated).
+    classify_actor_state_load_modes(
+        &mut *blocks,
+        &builder.suspend_kinds,
+        &builder.locals,
+        &builder.module_fn_names,
+        &builder.module_generic_fn_names,
+        &builder.call_scrutinee_provenance.extern_table,
+    );
+    let projection_tainted = temp_drop::compute_projection_alias_taint(
+        &*blocks,
+        &builder.match_project_consumed_binder_locals,
+        &builder.fresh_variant_payload_binder_locals,
+        &builder.locals,
+    );
+    prepare_owned_call_carriers(&mut *blocks, builder, &projection_tainted);
+    let resolved_outbound =
+        resolve_outbound_actor_modes(&mut *blocks, builder, &projection_tainted);
+    prepare_outbound_actor_payloads(
+        &mut *blocks,
+        builder,
+        &resolved_outbound,
+        &projection_tainted,
+    );
+    neutralize_returned_aggregate_handle_sources(&mut *blocks, builder);
+    neutralize_divergent_selection_sources(&mut *blocks, builder, &projection_tainted);
+}
+
+/// Which body-kind-specific splices [`finalize_body`] runs on top of the shared
+/// ownership pipeline.
+///
+/// Everything NOT named here is shared by construction: a pass added to
+/// `finalize_body` reaches every body kind — free functions, closure shims,
+/// lambda-actor handler bodies, generator bodies, the synthesized invoke /
+/// fork trampolines, the task-entry adapter, and the machine-`step` dispatch —
+/// without a second registration. Keeping this struct small is the point: each
+/// field is a documented exception, and a new pass must argue its way into
+/// becoming one rather than defaulting to it.
+#[derive(Clone, Copy)]
+pub(in crate::lower) struct BodyFinalizeSpec {
+    /// Append releases for owned by-value carrier PARAMETERS. Only a body
+    /// lowered from a `HirFn` signature carries the parameter ledger this
+    /// reads; the shim and trampoline ramps bind their operands as locals.
+    pub owned_carrier_param_drops: bool,
+    /// Bracket the body with `EnterContext` / `ExitContext` — only for a call
+    /// convention that carries the hidden execution-context argument.
+    pub bracket_execution_context: bool,
+    /// Splice inline releases for nested fresh string/bytes temporaries and
+    /// retire the publication owners those releases discharge.
+    ///
+    /// This pair has a PRECONDITION the lambda-actor handler body does not
+    /// meet. That body arrives with its own message and reply teardown spine
+    /// and derives its string ownership separately afterwards
+    /// (`finalize_string_ownership`); running the pair over it withdraws
+    /// releases the body still owes. Measured on `examples/lambda_actors.hew`:
+    /// `__hew_lambda_body_main_6` emitted 28 `hew_string_drop` calls without
+    /// the pair and 12 with it, and every `__hew_lambda_body_*` in the example
+    /// corpus lost its full scope-exit release count. Fail closed — that body
+    /// keeps the posture it had, and the seam still carries every other pass to
+    /// it.
+    pub nested_fresh_temp_releases: bool,
+}
+
+impl BodyFinalizeSpec {
+    /// The spec for every body not lowered from a `HirFn` signature: closure
+    /// shims, generator bodies, the synthesized invoke / fork trampolines, and
+    /// the machine-`step` dispatch. The lambda-actor handler body and the
+    /// task-entry adapter each narrow one field below.
+    pub(in crate::lower) fn nested_body() -> Self {
+        Self {
+            owned_carrier_param_drops: false,
+            bracket_execution_context: false,
+            nested_fresh_temp_releases: true,
+        }
+    }
+
+    /// The lambda-actor handler body: everything except the nested fresh-temp
+    /// release pair, whose precondition it does not meet (see the field).
+    pub(in crate::lower) fn lambda_actor_body() -> Self {
+        Self {
+            nested_fresh_temp_releases: false,
+            ..Self::nested_body()
+        }
+    }
+
+    /// The synthesized `TaskEntry` adapter. Its two blocks are constructed
+    /// rather than lowered through a cursor, but the `TaskEntry` call
+    /// convention carries the hidden execution-context argument
+    /// (`FunctionCallConv::carries_execution_context`), so the body needs the
+    /// `EnterContext` / `ExitContext` bracket. It used to call the bracketing
+    /// helper directly and never reached the pipeline at all.
+    pub(in crate::lower) fn task_entry_adapter() -> Self {
+        Self {
+            bracket_execution_context: true,
+            ..Self::nested_body()
+        }
+    }
+}
+
+/// How [`finalize_body`] obtains the sealed block list.
+///
+/// Almost every body ends with a live cursor that needs a terminator. The
+/// synthesised machine-`step` dispatch is the exception: it already finished
+/// its last block with a `Trap`, and sealing again would append a phantom
+/// cursor block. Naming that as a seal STRATEGY keeps it inside the one seam
+/// instead of justifying a hand-rolled drain beside it.
+#[derive(Clone)]
+pub(in crate::lower) enum BodySeal {
+    /// Seal the in-flight cursor with this terminator.
+    Cursor(Terminator),
+    /// The last block is already terminated; drain the pending list as-is.
+    AlreadyTerminated,
+}
+
+/// A finished body: the fully spliced blocks plus the two facts every caller
+/// needs from the pipeline that produced them.
+pub(in crate::lower) struct FinalizedBody {
+    pub blocks: Vec<BasicBlock>,
+    /// The checker statement stream, snapshotted at the canonical point — after
+    /// the ownership splices that add checker-visible reads, before the carrier
+    /// and outbound preparation that rewrites operands. Callers use THIS rather
+    /// than re-flattening `blocks`, or the snapshot drifts between body kinds.
+    pub thir_statements: Vec<MirStatement>,
+}
+
+/// THE body-finalization seam. Every body kind finishes here.
+///
+/// Before this existed, `lower_function` ran a long ownership pipeline after
+/// sealing its blocks while `lower_closure_shim`, the lambda-actor handler
+/// ramp, `lower_gen_block`, `lower_named_fn_invoke_shim` and the fork
+/// trampoline each hand-rolled a PARTIAL copy of it — several carrying a
+/// comment explaining that they "mirror `lower_function`'s call site". Every
+/// copy is a place a later pass can be forgotten, and the omission is silent:
+/// the body compiles, and the missing splice surfaces only as a runtime leak.
+/// The divergent-arm selection release was added to `lower_function` alone, and
+/// a selection inside a closure or a generator kept leaking a whole `Vec` per
+/// call for exactly that reason.
+///
+/// [`Builder::seal_body_blocks`] is called from here and nowhere else, and the
+/// synthesized task-entry adapter — which constructs its blocks rather than
+/// lowering them through a cursor — arrives here through
+/// [`BodySeal::AlreadyTerminated`] rather than bracketing itself on the side.
+/// `hew-mir/tests/body_finalization_seam.rs` resolves the ENCLOSING FUNCTION of
+/// every call to both names, so a ninth ramp that grows its own pipeline, or a
+/// seal moved out of this function, fails there.
+pub(in crate::lower) fn finalize_body(
+    builder: &mut Builder,
+    seal: BodySeal,
+    spec: BodyFinalizeSpec,
+) -> FinalizedBody {
+    let mut blocks = match seal {
+        BodySeal::Cursor(terminator) => builder.seal_body_blocks(terminator),
+        BodySeal::AlreadyTerminated => {
+            let mut pending = std::mem::take(&mut builder.pending_blocks);
+            pending.sort_by_key(|block| block.id);
+            pending
+        }
+    };
+    if spec.owned_carrier_param_drops {
+        append_owned_carrier_param_drops(&mut blocks, builder);
+    }
+    if spec.bracket_execution_context {
+        // `bracket_actor_handler_blocks` splices `EnterContext` at index 0 of
+        // the entry block when it is not already present. That shifts the
+        // Stage 2 side-table indices for the entry block — realign them. (A
+        // ctx-bearing body that is also a suspend coroutine is skipped by
+        // codegen's debug path anyway, but keeping the table correct here is
+        // cheap and fail-closed for any non-suspend ctx-bearing `fn`.)
+        let entry_had_enter = matches!(
+            blocks.first().and_then(|b| b.instructions.first()),
+            Some(Instr::EnterContext)
+        );
+        bracket_actor_handler_blocks(&mut blocks);
+        if !entry_had_enter {
+            if let Some(entry_id) = blocks.first().map(|b| b.id) {
+                shift_instr_spans_on_insert(&mut builder.instr_spans, entry_id, 0);
+            }
+        }
+    }
+    splice_body_ownership_releases(&mut blocks, builder, spec.nested_fresh_temp_releases);
+    let thir_statements: Vec<MirStatement> = blocks
+        .iter()
+        .flat_map(|b| b.statements.iter().cloned())
+        .collect();
+    // Name the `let`-bound locals from the emitted `Bind` stream before the
+    // blocks are moved into the raw function — params were already named in
+    // `lower_params`. Feeds the `-g` variable DIEs.
+    prepare_body_transfers(&mut blocks, builder);
+    FinalizedBody {
+        blocks,
+        thir_statements,
+    }
 }
 
 #[allow(
@@ -5501,176 +6210,28 @@ pub(crate) fn lower_function(
     // singleton blocks vector; Slice 2+ may surface multiple blocks
     // when `If` (and later `Match` / loops) split the CFG. The order is
     // monotone in block id.
-    let mut blocks = builder.finalize_blocks(Terminator::Return);
-    append_owned_carrier_param_drops(&mut blocks, &mut builder);
-    if call_conv.carries_execution_context() {
-        // `bracket_actor_handler_blocks` splices `EnterContext` at index 0 of
-        // the entry block when it is not already present. That shifts the
-        // Stage 2 side-table indices for the entry block — realign them. (A
-        // ctx-bearing body that is also a suspend coroutine is skipped by
-        // codegen's debug path anyway, but keeping the table correct here is
-        // cheap and fail-closed for any non-suspend ctx-bearing `fn`.)
-        let entry_had_enter = matches!(
-            blocks.first().and_then(|b| b.instructions.first()),
-            Some(Instr::EnterContext)
-        );
-        bracket_actor_handler_blocks(&mut blocks);
-        if !entry_had_enter {
-            if let Some(entry_id) = blocks.first().map(|b| b.id) {
-                shift_instr_spans_on_insert(&mut builder.instr_spans, entry_id, 0);
-            }
-        }
-    }
-    // W5.011 P3 — release nested fresh-`string` temporaries (the bare-temp
-    // shapes `(a + b).len()`, `s.to_uppercase().len()`, `xs[i].len()`, and the
-    // discarded `a + b;`) that `derive_cow_fresh_borrowed_owner` (binding-scoped)
-    // cannot see. Runs BEFORE `check_function`/elaboration so the dataflow
-    // observes each inline drop as a read of its temp and codegen emits the
-    // release. Fail-closed: only provably fresh, borrow-only/discarded,
-    // single-predecessor-dominated temps earn an inline `hew_string_drop`.
-    // Synthetic typed-publication bindings are candidates for this exact
-    // nested-temp last-use derivation, so omit them from the map of persistent
-    // binding locals. When it materialises an inline release,
-    // `consume_typed_publication_owners_at_inline_release` below retires that
-    // generation from scope-exit ownership. Named bindings remain in the map
-    // and can never be mistaken for anonymous expression temporaries.
-    let nested_temp_binding_locals: HashMap<BindingId, Place> = builder
-        .binding_locals
-        .iter()
-        .filter(|(binding, _)| {
-            !builder
-                .synthetic_owner_publication_sites
-                .contains_key(binding)
-        })
-        .map(|(binding, place)| (*binding, *place))
-        .collect();
-    apply_nested_fresh_string_temp_drops(
-        &mut blocks,
-        &mut builder.suspend_kinds,
-        &builder.locals,
-        &nested_temp_binding_locals,
-        &builder
-            .call_scrutinee_provenance
-            .owned_string_return_carrier_symbols,
-        &mut builder.suspend_abandon_extra_drops,
-        &mut builder.instr_spans,
+    let FinalizedBody {
+        blocks,
+        thir_statements,
+    } = finalize_body(
+        &mut builder,
+        BodySeal::Cursor(Terminator::Return),
+        BodyFinalizeSpec {
+            owned_carrier_param_drops: true,
+            bracket_execution_context: call_conv.carries_execution_context(),
+            nested_fresh_temp_releases: true,
+        },
     );
-    // #2542 — release nested fresh-owned `bytes` user-call-result temporaries
-    // (`mk().len()`, `mk().to_string()`, discarded `mk();`) that
-    // `derive_local_bytes_drop_allowed` (binding-scoped) cannot see. Same
-    // pre-`check_function` ordering rationale as the string splice above.
-    apply_nested_fresh_bytes_temp_drops(
-        &mut blocks,
-        &builder.suspend_kinds,
-        &builder.locals,
-        &nested_temp_binding_locals,
-        &mut builder.instr_spans,
-    );
-    // Inline string/bytes releases consume the exact typed-publication
-    // generation for their local.  This keeps concat/f-string and bytes
-    // temporaries on the checker-owned carrier without a second scope-exit
-    // drop authority, while persistent publications remain ledger-owned.
-    builder.consume_typed_publication_owners_at_inline_release(&blocks);
-    finalize_string_local_share_intents(&mut blocks, &mut builder);
-    // The scope-exit-live owned-locals view, materialised once for the
-    // escaped-sibling emitter and the double-free gate below — the same
-    // `(binding, name, ty)` tuples they read before the ledger carried richer
-    // facts.
-    let owned_locals_snapshot = builder.owned_locals_snapshot();
-    // #2212 — an owned record whose field escapes through a binder loses its
-    // composite scope-exit drop (the sole-owner prover excludes it); the
-    // record's NON-escaped owned sibling fields still need their release.
-    // Where the value flow proves the escape's root, field, and last-use
-    // position, splice one `FieldDropInPlace` per dischargeable sibling
-    // right after the escape. Runs BEFORE `check_function` / elaboration so
-    // the dataflow observes the discharges and codegen emits them.
-    {
-        let mut instr_spans = std::mem::take(&mut builder.instr_spans);
-        // The immediate-parent chain of every recorded byte-copy alias, so the
-        // sibling-discharge emitter can walk a MULTI-HOP escape (`let mid = o.mid;
-        // let leaf = mid.leaf; return leaf`) and compensate the non-escaped
-        // siblings at every level — the reach `close_alias_binders_forward` gave
-        // the composite-drop prover's exclusion.
-        let alias_chain = builder.alias_projection_chain();
-        let aggregate_clone_sites = aggregate_borrowed_ingress_clone_sites(&blocks, &builder);
-        let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
-        let owned_field_list = |ty: &ResolvedTy| builder.project_record_owned_field_list(ty);
-        let owned_tuple_field_list = |ty: &ResolvedTy| builder.project_tuple_owned_field_list(ty);
-        let field_dischargeable = |ty: &ResolvedTy| {
-            matches!(ty, ResolvedTy::String) || builder.field_drop_in_place_admissible(ty)
-        };
-        apply_escaped_record_sibling_field_drops(
-            &mut blocks,
-            &builder.suspend_kinds,
-            &owned_locals_snapshot,
-            &builder.binding_locals,
-            &builder.locals,
-            &builder.record_field_orders,
-            &builder.enum_layouts,
-            builder.type_classes.lifecycle_registry(),
-            &alias_chain,
-            &aggregate_clone_sites,
-            &builder.vec_iter_projection_borrow_inits,
-            &is_owned_record,
-            &owned_field_list,
-            &owned_tuple_field_list,
-            &field_dischargeable,
-            &mut instr_spans,
-        );
-        builder.instr_spans = instr_spans;
-    }
-    // THIR's `statements` is the union of every block's checker stream
-    // in CFG-construction order — the THIR snapshot's job is preserving
-    // the pre-CFG flat-stream shape for diagnostic readers that haven't
-    // been ported to block-aware iteration yet. Slice 3's per-block
-    // dataflow consumes `RawMirFunction.blocks` directly and doesn't
-    // touch this snapshot.
-    let thir_statements: Vec<MirStatement> = blocks
-        .iter()
-        .flat_map(|b| b.statements.iter().cloned())
-        .collect();
     let thir = ThirFunction {
         name: emit_name.clone(),
         return_ty: return_ty.clone(),
         statements: thir_statements,
     };
-    // Name the `let`-bound locals from the emitted `Bind` stream before the
-    // blocks are moved into the raw function — params were already named in
-    // `lower_params`. Feeds the `-g` variable DIEs.
-    builder.resolve_local_names_from_binds(&blocks);
-    // P0 #2432 — classify every `ActorStateFieldLoad`'s own/borrow `mode`
-    // over the fully finalised blocks (every splice pass above has already
-    // run). Must run on THIS `blocks` local, before it moves into `raw`
-    // below: codegen's per-instruction lowering loop reads
-    // `RawMirFunction.blocks`, not `CheckedMirFunction.blocks` (a clone
-    // taken afterward), so classifying any later would be a no-op against
-    // codegen. A no-op here for every non-actor-handler lowering entry point
-    // (`load_locals` is empty whenever `current_actor_state_fields` was
-    // never populated).
-    classify_actor_state_load_modes(
-        &mut blocks,
-        &builder.suspend_kinds,
-        &builder.locals,
-        &builder.module_fn_names,
-        &builder.module_generic_fn_names,
-        &builder.call_scrutinee_provenance.extern_table,
-    );
-    let projection_tainted = temp_drop::compute_projection_alias_taint(
-        &blocks,
-        &builder.match_project_consumed_binder_locals,
-        &builder.fresh_variant_payload_binder_locals,
-        &builder.locals,
-    );
-    prepare_owned_call_carriers(&mut blocks, &mut builder, &projection_tainted);
-    let resolved_outbound =
-        resolve_outbound_actor_modes(&mut blocks, &mut builder, &projection_tainted);
-    prepare_outbound_actor_payloads(
-        &mut blocks,
-        &mut builder,
-        &resolved_outbound,
-        &projection_tainted,
-    );
-    neutralize_returned_aggregate_handle_sources(&mut blocks, &mut builder);
+    // Re-read the scope-exit-live owned-locals view after the splice pipeline:
+    // the carrier and outbound preparation inside `finalize_body` can retire a
+    // binding from the ledger, so the double-free gate below must see the
+    // post-pipeline ledger rather than a snapshot taken ahead of it.
+    let owned_locals_snapshot = builder.owned_locals_snapshot();
     debug_assert!(
         builder.pending_outbound_actor_args.is_empty(),
         "checked MIR cannot retain unresolved outbound actor arguments"
@@ -7130,7 +7691,7 @@ impl Builder {
     /// The key is `(current_block_id, instruction_index)`, where the index is
     /// the live `instructions.len()` BEFORE the push — which is the
     /// instruction's final position in its block, because the per-block buffer
-    /// is moved out whole by `finish_current_block` / `finalize_blocks` (order
+    /// is moved out whole by `finish_current_block` / `seal_body_blocks` (order
     /// preserved). Recording at push time means the index is self-correcting:
     /// it always reflects the true position regardless of how earlier
     /// instructions in the same block were appended. Stage 2 (gdb `-g`): this
@@ -7258,7 +7819,7 @@ impl Builder {
 
     /// Open a fresh continuation block whose only predecessor would be
     /// post-return source code. The block is flagged `cursor_unreachable`
-    /// so `finalize_blocks` can drop it if it remains empty when the
+    /// so `seal_body_blocks` can drop it if it remains empty when the
     /// function body finishes — preventing a synthetic Return exit with
     /// an empty drop plan from polluting `drop_plans`. Source code that
     /// lexically follows the `return` still lowers cleanly into this
@@ -7268,13 +7829,18 @@ impl Builder {
         self.cursor_unreachable = true;
     }
 
-    /// Finalise the function's CFG by sealing the in-flight current
-    /// block with the provided terminator. Returns the full
-    /// `Vec<BasicBlock>` in id order. Slice 1 always returns a singleton
-    /// because no caller invokes `finish_current_block`/`start_block`
-    /// during the function-body walk; Slice 2's `If` lowering is the
-    /// first writer to produce a non-trivial CFG here.
-    fn finalize_blocks(&mut self, terminator: Terminator) -> Vec<BasicBlock> {
+    /// Seal the in-flight current block with the provided terminator and
+    /// return the full `Vec<BasicBlock>` in id order.
+    ///
+    /// This is only HALF of finishing a body: sealed blocks still owe the
+    /// ownership splice pipeline (nested temp releases, escaped sibling field
+    /// discharges, carrier and outbound preparation, the null-after-move
+    /// neutralizes). [`finalize_body`] is the sole caller for that reason — it
+    /// seals and then runs that pipeline, so every body kind gets the same one.
+    /// Calling this directly produces blocks that look finished and silently
+    /// leak; `hew-mir/tests/body_finalization_seam.rs` holds the single-caller
+    /// property by resolving the enclosing function of every call to this name.
+    fn seal_body_blocks(&mut self, terminator: Terminator) -> Vec<BasicBlock> {
         self.reject_buffered_capture_env_owned_moves();
         let mut blocks = std::mem::take(&mut self.pending_blocks);
         // Drop a synthetic dead-end cursor (from an early-return seal)
@@ -7453,7 +8019,7 @@ impl Builder {
             // lowering opens its own dead continuation block via
             // `start_dead_block`, which is never sealed (nothing follows the
             // function's real exit) and gets silently dropped by
-            // `finalize_blocks`' empty-dead-cursor cleanup -- while the
+            // `seal_body_blocks`' empty-dead-cursor cleanup -- while the
             // duplicate `Call` terminator that seeded it still points at the
             // now-missing block id, aborting codegen with
             // `E_CODEGEN_FRONT_FAIL_CLOSED: Call next bb<N> missing`
@@ -7603,7 +8169,7 @@ enum ClosurePairRhs {
 
 /// The function entry block id. `dataflow::analyze` seeds parameter live-state
 /// at block 0 and `dataflow::compute_cooperate_sites` pins the `FunctionEntry`
-/// cooperate site to block 0; the MIR builder's `finalize_blocks` constructs the
+/// cooperate site to block 0; the MIR builder's `seal_body_blocks` constructs the
 /// entry block as id 0. This single constant keeps the elaborator's
 /// FunctionEntry-cancel handling aligned with those producers.
 const ENTRY_BLOCK_ID: u32 = 0;

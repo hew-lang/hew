@@ -1,6 +1,18 @@
 # Exact nonzero counts keyed by parsed syntax form and source path.
 # Retirement stages are checked against canonical_stage() and cannot be edited
 # independently of the Stage 1-5 cutover dependency map.
+#
+# signature-application rows: one reviewed count per (enclosing function, file)
+# for every call of an argument-check primitive under hew-types/src/. Callees are
+# reduced through the parse, so method, UFCS, fully-pathed, parenthesized and
+# comment-separated spellings all count, and the primitive in argument or value
+# position does not. It DETECTS: a call in a function not listed here, and an
+# extra call inside a function that is. It does NOT detect a net-zero relocation
+# — moving a call between two already-listed functions changes no total when the
+# two counts move by the same amount in opposite directions. Accepted residual:
+# closing it needs per-call-site identity, which byte offsets cannot supply
+# without churning on every unrelated edit above the site.
+#
 # Canonical keyspace exceptions use this machine-readable comment form:
 # canonical-keyspace-allow<TAB>path<TAB>table<TAB>count<TAB>owner<TAB>follow-on work<TAB>reason
 # canonical-keyspace-allow	hew-hir/src/lower.rs	const_registry	1	hew-hir	a316-keyspace-registries	canonical const identity is qualified today but remains a bare local at insertion
@@ -43,7 +55,7 @@ lifecycle-identity-authority	lifecycle-conflict-use	hew-types/src/check/registra
 lifecycle-identity-authority	lifecycle-conflict-variant	hew-types/src/check/types.rs	5	stage-2	canonical checker lifecycle identity carrier
 mir-ownership-sink	ownership-classify-call	hew-mir/src/lower/ownership.rs	3	stage-4	RC1 syntax-node authority inventory
 mir-ownership-sink	ownership-classify-call	hew-mir/src/ownership.rs	1	stage-4	RC1 syntax-node authority inventory
-owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/closure_gen.rs	4	stage-3	composed owner retirement path
+owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/closure_gen.rs	2	stage-3	composed owner retirement path
 owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/drop_plan.rs	1	stage-3	composed owner retirement path
 owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/mod.rs	2	stage-3	composed owner retirement path
 owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/temp_drop.rs	2	stage-3	composed owner retirement path
@@ -66,6 +78,46 @@ runtime-call-authority	runtime-call-family-use	hew-mir/src/runtime_symbols.rs	3	
 runtime-call-authority	runtime-call-family-use	hew-types/src/runtime_call.rs	16	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	230	stage-4	typed runtime-family dispatch carrier including structural formatting
 semantic-owner-shortening-sink	registry-key	hew-types/src/check/registration.rs	8	stage-1	reviewed remaining owner-shortening sink
+signature-application	apply_instantiated_call_signature_with_assoc	hew-types/src/check/calls.rs	3	stage-1	THE call-signature application authority: the one place a generic callee's type parameters are freshened, inferred, and recorded as an instantiation
+signature-application	check_actor_field_defaults	hew-types/src/check/items.rs	1	stage-1	actor field default initialisers checked against declared field types
+signature-application	check_against_inner	hew-types/src/check/expressions.rs	18	stage-1	general expression checking against an expected type; the recursive spine of the primitive itself, no signature involved
+signature-application	check_binary_op	hew-types/src/check/expressions.rs	2	stage-1	operand checking against the operator's own expected operand type
+signature-application	check_block	hew-types/src/check/statements.rs	1	stage-1	block tail checked against the block's expected type
+signature-application	check_call	hew-types/src/check/calls.rs	6	stage-1	call-shape paths that check a callee value or constructor operand, not a named signature's parameters
+signature-application	check_call_against_expected_constructor	hew-types/src/check/calls.rs	4	stage-1	constructor payloads checked against the expected enum or record shape
+signature-application	check_call_with_type	hew-types/src/check/calls.rs	3	stage-1	explicitly annotated call operands checked against the annotation
+signature-application	check_collection_args	hew-types/src/check/methods.rs	1	stage-1	builtin collection arguments checked against an ArgTemplate instantiated from the receiver, which binds no user signature
+signature-application	check_const	hew-types/src/check/items.rs	1	stage-1	const initialiser checked against the declared const type
+signature-application	check_discarded_if_chain	hew-types/src/check/statements.rs	1	stage-1	discarded if-chain arms checked against unit
+signature-application	check_duplex_method	hew-types/src/check/methods.rs	2	stage-1	builtin Duplex arguments checked against the channel's payload type
+signature-application	check_expr_with_expected	hew-types/src/check/expressions.rs	1	stage-1	the primitive's own thin entry point, delegating to the expression spine
+signature-application	check_hashmap_method	hew-types/src/check/methods.rs	2	stage-1	builtin HashMap key/value arguments checked against the receiver's own K/V
+signature-application	check_hashset_element_arg	hew-types/src/check/methods.rs	1	stage-1	builtin HashSet element argument checked against the receiver's element type
+signature-application	check_lambda	hew-types/src/check/expressions.rs	2	stage-1	lambda body and parameter checking against the lambda's own declared shape
+signature-application	check_lambda_pid_method	hew-types/src/check/methods.rs	1	stage-1	lambda-actor send/ask arguments checked against the lambda's declared parameter type
+signature-application	check_machine_exhaustiveness	hew-types/src/check/registration.rs	2	stage-1	machine transition arms checked against the declared state type
+signature-application	check_match_expr	hew-types/src/check/expressions.rs	2	stage-1	match arm bodies checked against the match's expected result type
+signature-application	check_match_stmt	hew-types/src/check/statements.rs	1	stage-1	match-statement arms checked against the statement's expected type
+signature-application	check_method_call_inner	hew-types/src/check/methods.rs	7	stage-1	method-dispatch paths that check a receiver or operand shape, not a named signature's parameters
+signature-application	check_return_operand	hew-types/src/check/statements.rs	1	stage-1	return operand checked against the enclosing function's declared return type
+signature-application	check_runtime_vec_method_from_source	hew-types/src/check/methods.rs	1	stage-1	source-derived Vec method arguments checked against the receiver's element type
+signature-application	check_send_half_method	hew-types/src/check/methods.rs	2	stage-1	builtin Sender arguments checked against the channel's payload type
+signature-application	check_spawn_constructor_args	hew-types/src/check/expressions.rs	1	stage-1	spawn constructor arguments checked against actor init parameter types, which carry no generic callee signature
+signature-application	check_stmt	hew-types/src/check/statements.rs	4	stage-1	statement operands checked against their declared or inferred types
+signature-application	check_stmt_as_expr	hew-types/src/check/statements.rs	1	stage-1	tail statement checked against the block's expected type
+signature-application	check_stream_method	hew-types/src/check/methods.rs	2	stage-1	builtin Stream arguments checked against the receiver's element type
+signature-application	check_struct_init	hew-types/src/check/expressions.rs	2	stage-1	record field initialisers checked against declared field types
+signature-application	check_vec_method	hew-types/src/check/methods.rs	7	stage-1	builtin Vec arguments checked against the receiver's element type
+signature-application	record_concrete_integer_operand	hew-types/src/check/expressions.rs	1	stage-1	integer literal re-checked against its settled concrete width
+signature-application	synthesize_array_literal	hew-types/src/check/expressions.rs	1	stage-1	array elements unified against the literal's element type
+signature-application	synthesize_array_repeat	hew-types/src/check/expressions.rs	1	stage-1	array-repeat element checked against the annotated element type
+signature-application	synthesize_concurrency	hew-types/src/check/expressions.rs	4	stage-1	concurrency-block operands checked against their awaited shapes
+signature-application	synthesize_index	hew-types/src/check/expressions.rs	12	stage-1	index operands and results checked against the indexing surface's declared types
+signature-application	synthesize_inner	hew-types/src/check/expressions.rs	1	stage-1	expected-type propagation inside the synthesize spine
+signature-application	synthesize_map_literal	hew-types/src/check/expressions.rs	2	stage-1	map literal keys and values checked against the literal's declared key/value types
+signature-application	synthesize_unary_op	hew-types/src/check/expressions.rs	1	stage-1	unary operand checked against the operator's expected type
+signature-application	synthesize_yield	hew-types/src/check/expressions.rs	1	stage-1	yielded value checked against the generator's declared element type
+signature-application	try_record_fn_field_call	hew-types/src/check/methods.rs	1	stage-1	record function-typed field invoked as a value; its parameters come from the field's fn type, not a signature
 string-method-identity	qualified-format-macro	hew-analysis/src/hover.rs	5	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-analysis/src/inlay_hints.rs	5	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-analysis/src/signature_help.rs	1	stage-1	reviewed qualified string identity construction
@@ -90,11 +142,11 @@ string-method-identity	qualified-format-macro	hew-mir/src/thunk_requirements.rs	
 string-method-identity	qualified-format-macro	hew-types/src/actor_protocol.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/calls.rs	3	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/coerce.rs	2	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/expressions.rs	7	stage-1	reviewed qualified string identity construction; adds dotted module-qualified unit-constructor resolution (module.Type.Variant)
+string-method-identity	qualified-format-macro	hew-types/src/check/expressions.rs	8	stage-1	reviewed qualified string identity construction; adds dotted module-qualified unit-constructor resolution (module.Type.Variant); plus the single join of nominal+method into a fn_sigs key in record_generic_application, which every generic application funnels through so dispatch sites never build method identity themselves
 string-method-identity	qualified-format-macro	hew-types/src/check/items.rs	9	stage-1	A315 S7 retired source-facing scoped diagnostic spellings
 string-method-identity	qualified-format-macro	hew-types/src/check/methods.rs	25	stage-1	retired source-facing scoped diagnostic spellings
 string-method-identity	qualified-format-macro	hew-types/src/check/mod.rs	1	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	21	stage-1	retired source-facing scoped diagnostic spellings plus file-indexed imported trait binding publication
+string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	22	stage-1	retired source-facing scoped diagnostic spellings plus file-indexed imported trait binding publication; plus the single shadow-report declaration-key builder shared by the impl, trait and type-body registration paths
 string-method-identity	qualified-format-macro	hew-types/src/check/resolution.rs	6	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/statements.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/type_members.rs	4	stage-1	reviewed dotted qualified identity construction

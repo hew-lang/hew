@@ -818,9 +818,21 @@ impl Builder {
     /// instruction and the synthetic binding name the same MIR local; this is
     /// a generation hand-off, not a type/name heuristic.  Persistent results
     /// receive no inline release and remain scope-exit owned.
+    ///
+    /// `released_before_splices` is the inline-release set as it stood BEFORE
+    /// the nested-temp splices ran, and it is excluded here. Retirement is
+    /// paired with the splices that placed the release — it is emphatically NOT
+    /// "this local has an inline release somewhere, so drop its ledger entry".
+    /// A body whose own lowering already emitted inline string/bytes drops (the
+    /// lambda-actor handler's message and reply teardown) would otherwise have
+    /// every publication owner retired against a release that discharges a
+    /// different generation, withdrawing scope-exit releases it still owes:
+    /// measured at every `__hew_lambda_body_*` in the example corpus losing its
+    /// full release count the moment that ramp began running this pass.
     pub(crate) fn consume_typed_publication_owners_at_inline_release(
         &mut self,
         blocks: &[BasicBlock],
+        released_before_splices: &HashSet<u32>,
     ) {
         let released: HashSet<u32> = blocks
             .iter()
@@ -835,6 +847,7 @@ impl Builder {
                             drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
                             ..
                         } if matches!(*symbol, "hew_string_drop" | "hew_bytes_drop")
+                            && !released_before_splices.contains(local)
                             && !local_is_rewritten_after_current_iteration(
                                 blocks, *local, block.id, index,
                             ) =>
@@ -5171,7 +5184,10 @@ mod typed_produced_owner_tests {
             },
         ];
 
-        builder.consume_typed_publication_owners_at_inline_release(&blocks);
+        builder.consume_typed_publication_owners_at_inline_release(
+            &blocks,
+            &crate::lower::HashSet::new(),
+        );
 
         assert_eq!(builder.owned_locals_snapshot().len(), 1);
     }
@@ -5214,7 +5230,10 @@ mod typed_produced_owner_tests {
         assert!(
             !crate::lower::cfg_util::local_is_rewritten_after_current_iteration(&blocks, 15, 0, 0,)
         );
-        builder.consume_typed_publication_owners_at_inline_release(&blocks);
+        builder.consume_typed_publication_owners_at_inline_release(
+            &blocks,
+            &crate::lower::HashSet::new(),
+        );
 
         assert!(builder.owned_locals_snapshot().is_empty());
     }

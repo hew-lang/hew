@@ -1126,7 +1126,8 @@ def test_release_record_is_durable_and_tag_ready() -> None:
 def test_contract_oracle_runs_in_required_ci() -> None:
     ci = CI_WORKFLOW.read_text()
     assert "'.github/workflows/release.yml'" in ci
-    assert "scripts/ci-preflight-dispatcher.sh --base origin/main" in ci
+    assert 'scripts/ci-preflight-dispatcher.sh "${args[@]}"' in ci
+    assert "args=(--base origin/main)" in ci
     dispatcher = (ROOT / "scripts/ci-preflight-dispatcher.sh").read_text()
     assert 'add_command "make test-release-workflow-contract"' in dispatcher
 

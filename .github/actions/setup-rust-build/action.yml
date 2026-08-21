@@ -143,6 +143,13 @@ runs:
         echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
         echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
         echo "SCCACHE_CACHE_SIZE=2G" >> "$GITHUB_ENV"
+        # RUSTC_WRAPPER is exported job-wide, so every compile in the job --
+        # including `cargo install` of a tool -- goes through sccache. Without
+        # this, an unreachable Actions cache service is a hard rustc failure:
+        # a DNS blip took out `Install cargo-deny` on 2026-08-21 before a single
+        # check had run. A cache that cannot be reached must degrade to a cold
+        # compile; it is a cache.
+        echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1" >> "$GITHUB_ENV"
 
     - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
       with:

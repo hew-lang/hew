@@ -854,6 +854,18 @@ impl Ty {
         }
     }
 
+    /// True when this type still carries an unresolved associated-type
+    /// projection (`C::Item`) anywhere inside it.
+    ///
+    /// Projection collapse replaces a projection with the impl's declared
+    /// binding, so a surviving `AssocType` means the carrier was not resolvable
+    /// — the type is not yet decidable and any capability answer about it would
+    /// be a guess.
+    #[must_use]
+    pub fn contains_assoc_type(&self) -> bool {
+        matches!(self, Ty::AssocType { .. }) || self.any_child(&Ty::contains_assoc_type)
+    }
+
     // -- Constructor helpers: all produce Ty::Named --
 
     /// Construct `Option<inner>`.

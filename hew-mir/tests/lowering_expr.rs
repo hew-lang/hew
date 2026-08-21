@@ -35,6 +35,8 @@ mod elaborate;
 #[path = "lowering_expr/extern_wrapper_result_opacity.rs"]
 mod extern_wrapper_result_opacity;
 
+#[path = "lowering_expr/divergent_selection_transfer.rs"]
+mod divergent_selection_transfer;
 #[path = "lowering_expr/for_in_hash_projection_types.rs"]
 mod for_in_hash_projection_types;
 #[path = "lowering_expr/forawait_loopvar_release.rs"]

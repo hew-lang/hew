@@ -1,0 +1,7 @@
+fn clone_option<T>(value: Option<T>) -> Option<T> {
+    clone value
+}
+
+fn main() -> i64 {
+    0
+}

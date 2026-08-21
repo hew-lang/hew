@@ -13834,6 +13834,141 @@
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_builder_append_bool( *mut c_void, u8)",
+        "wasm32-wasip1": "fn hew_string_builder_append_bool( *mut c_void, u8)"
+      },
+      "symbol": "hew_string_builder_append_bool"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_builder_append_char( *mut c_void, u32)",
+        "wasm32-wasip1": "fn hew_string_builder_append_char( *mut c_void, u32)"
+      },
+      "symbol": "hew_string_builder_append_char"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "nul-terminated",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_builder_append_cstr( *mut c_void, *const c_char, )",
+        "wasm32-wasip1": "fn hew_string_builder_append_cstr( *mut c_void, *const c_char, )"
+      },
+      "symbol": "hew_string_builder_append_cstr"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_builder_append_f64( *mut c_void, f64)",
+        "wasm32-wasip1": "fn hew_string_builder_append_f64( *mut c_void, f64)"
+      },
+      "symbol": "hew_string_builder_append_f64"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_builder_append_i64( *mut c_void, i64)",
+        "wasm32-wasip1": "fn hew_string_builder_append_i64( *mut c_void, i64)"
+      },
+      "symbol": "hew_string_builder_append_i64"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "nul-terminated",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_builder_append_identity( *mut c_void, *const c_char, *const c_void, )",
+        "wasm32-wasip1": "fn hew_string_builder_append_identity( *mut c_void, *const c_char, *const c_void, )"
+      },
+      "symbol": "hew_string_builder_append_identity"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_builder_append_u64( *mut c_void, u64)",
+        "wasm32-wasip1": "fn hew_string_builder_append_u64( *mut c_void, u64)"
+      },
+      "symbol": "hew_string_builder_append_u64"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "nul-terminated",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_builder_finish( *mut c_void) -> *mut c_char",
+        "wasm32-wasip1": "fn hew_string_builder_finish( *mut c_void) -> *mut c_char"
+      },
+      "symbol": "hew_string_builder_finish"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_builder_new() -> *mut c_void",
+        "wasm32-wasip1": "fn hew_string_builder_new() -> *mut c_void"
+      },
+      "symbol": "hew_string_builder_new"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
@@ -14381,6 +14516,51 @@
         "wasm32-wasip1": "fn hew_string_trim( *const c_char) -> *mut c_char"
       },
       "symbol": "hew_string_trim"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "nul-terminated",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_structural_format( *const c_void) -> *mut c_char",
+        "wasm32-wasip1": "fn hew_structural_format( *const c_void) -> *mut c_char"
+      },
+      "symbol": "hew_structural_format"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_structural_format_hashmap( *mut c_void, *const HewLayoutHashMap, Option<HewStructuralFormatFn>, Option<HewStructuralFormatFn>, )",
+        "wasm32-wasip1": "fn hew_structural_format_hashmap( *mut c_void, *const HewLayoutHashMap, Option<HewStructuralFormatFn>, Option<HewStructuralFormatFn>, )"
+      },
+      "symbol": "hew_structural_format_hashmap"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_structural_format_vec( *mut c_void, *const HewVec, Option<HewStructuralFormatFn>, )",
+        "wasm32-wasip1": "fn hew_structural_format_vec( *mut c_void, *const HewVec, Option<HewStructuralFormatFn>, )"
+      },
+      "symbol": "hew_structural_format_vec"
     },
     {
       "availability": [

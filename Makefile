@@ -1907,6 +1907,7 @@ test-release-workflow-contract-build:
 # no job at all -- the state check-gate-reachability.py's A6 assertion now
 # refuses for every scripts/tests/ file. All five use stubs or temporary trees;
 # none needs a built compiler.
+.PHONY: test-build-harness
 test-build-harness:
 	python3 scripts/tests/test_ci_preflight_dispatcher.py
 	bash scripts/tests/test_ci_preflight_timeout.sh

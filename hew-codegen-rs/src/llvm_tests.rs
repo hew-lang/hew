@@ -1308,6 +1308,7 @@ fn non_context_function_callclosure_uses_zeroed_fallback_context() {
                     env: Place::Local(0),
                     dest: Place::Local(1),
                     env_mode: hew_mir::ClosureEnvMode::Stack,
+                    env_ownership: Vec::new(),
                 },
                 Instr::CallClosure {
                     callee: Place::Local(1),
@@ -17814,3 +17815,231 @@ fn fn_symbol_real_accessor_rejects_record_return_extern() {
 
 // Make `StubErr` `Clone` so we can re-use the same error in multiple
 // assertions above. (Trivial — derived above.)
+
+/// Build a module whose `main` materialises a HEAP-BOXED closure environment
+/// with a single `string` capture field, carrying `env_ownership` as its
+/// manifest. Returns the emitted free thunk's body.
+///
+/// The heap-box path synthesises the environment's free thunk, and that thunk
+/// is the environment's release authority. What it drops is the MANIFEST's
+/// business, not the field type's: `env_field_drop_kinds` answers "how would a
+/// `string` be released", while the manifest answers "is THIS environment the
+/// one that must release it".
+fn closure_env_free_thunk_ir(ownership: hew_mir::ClosureEnvFieldOwnership, module: &str) -> String {
+    let env_ty = named_record_ty("__hew_closure_env_main_0");
+    let env_ptr_ty = pointer_to(env_ty.clone());
+    let fn_ty = ResolvedTy::Function {
+        params: Vec::new(),
+        ret: Box::new(ResolvedTy::I64),
+    };
+    let invoke = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
+        name: "__hew_closure_invoke_main_0".to_string(),
+        return_ty: ResolvedTy::I64,
+        call_conv: hew_mir::FunctionCallConv::ClosureInvoke,
+        params: vec![env_ptr_ty.clone()],
+        locals: vec![env_ptr_ty, ResolvedTy::I64],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: vec![
+                Instr::ConstI64 {
+                    dest: Place::Local(1),
+                    value: 10,
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                },
+            ],
+            terminator: Terminator::Return,
+        }],
+        decisions: Vec::new(),
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::BTreeMap::new(),
+    };
+    let main = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
+        name: "main".to_string(),
+        return_ty: ResolvedTy::I64,
+        call_conv: hew_mir::FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![env_ty.clone(), fn_ty, ResolvedTy::I64, ResolvedTy::String],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: vec![
+                Instr::StringLit {
+                    dest: Place::Local(3),
+                    bytes: b"captured".to_vec(),
+                },
+                Instr::ClosureEnvInit {
+                    ty: env_ty.clone(),
+                    fields: vec![hew_mir::ClosureEnvFieldInit {
+                        field_offset: hew_mir::FieldOffset(0),
+                        src: Place::Local(3),
+                        source_binding: None,
+                        capture_mode: hew_types::ClosureCaptureMode::Move,
+                        allocation: hew_mir::ClosureEnvAllocation::Heap,
+                        ownership,
+                        source_is_parameter: false,
+                    }],
+                    dest: Place::Local(0),
+                },
+                Instr::MakeClosure {
+                    fn_symbol: "__hew_closure_invoke_main_0".to_string(),
+                    env: Place::Local(0),
+                    dest: Place::Local(1),
+                    env_mode: hew_mir::ClosureEnvMode::HeapBox,
+                    env_ownership: vec![ownership],
+                },
+                Instr::ConstI64 {
+                    dest: Place::Local(2),
+                    value: 0,
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(2),
+                },
+            ],
+            terminator: Terminator::Return,
+        }],
+        decisions: Vec::new(),
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::BTreeMap::new(),
+    };
+    let pipeline = IrPipeline {
+        thir: Vec::new(),
+        raw_mir: vec![invoke, main],
+        checked_mir: Vec::new(),
+        elaborated_mir: Vec::new(),
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
+        diagnostics: Vec::new(),
+        wire_layouts: std::sync::Arc::default(),
+        opaque_handle_names: Vec::new(),
+        record_layouts: vec![hew_mir::RecordLayout {
+            name: "__hew_closure_env_main_0".to_string(),
+            field_tys: vec![ResolvedTy::String],
+            field_names: Vec::new(),
+        }],
+        actor_layouts: Vec::new(),
+        supervisor_layouts: Vec::new(),
+        machine_layouts: Vec::new(),
+        enum_layouts: Vec::new(),
+        regex_literals: Vec::new(),
+        user_consts: Vec::new(),
+        extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
+        polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
+    };
+
+    let ctx = Context::create();
+    let m = build_module(&ctx, &pipeline, module).expect("heap-box closure env module must build");
+    m.verify().expect("heap-box closure env module must verify");
+    let ir = m.print_to_string().to_string();
+    closure_env_thunk_body(&ir, "@__hew_closure_env_free___hew_closure_invoke_main_0")
+        .unwrap_or_else(|| panic!("no closure env free thunk emitted:\n{ir}"))
+}
+
+/// Extract a function body from its `define` line to the closing brace.
+fn closure_env_thunk_body(ir: &str, needle: &str) -> Option<String> {
+    let mut body = String::new();
+    let mut in_fn = false;
+    for line in ir.lines() {
+        if !in_fn {
+            if line.starts_with("define") && line.contains(needle) {
+                in_fn = true;
+                body.push_str(line);
+                body.push('\n');
+            }
+            continue;
+        }
+        body.push_str(line);
+        body.push('\n');
+        if line.starts_with('}') {
+            return Some(body);
+        }
+    }
+    None
+}
+
+/// THE MANIFEST DECIDES. A `BorrowsOnly` capture is owned by someone else — a
+/// proven-foreign handle the host owns, or a field an enclosing environment
+/// still owns and this one only aliases. The environment's free thunk must free
+/// its box and release nothing.
+///
+/// Before the manifest reached codegen, the thunk derived its drop set from the
+/// env record's field TYPES alone, so this emitted `hew_string_drop` against a
+/// string the environment did not own — a second release of one value.
+#[test]
+fn a_borrowed_closure_env_field_gets_no_release_in_the_free_thunk() {
+    let thunk = closure_env_free_thunk_ir(
+        hew_mir::ClosureEnvFieldOwnership::BorrowsOnly,
+        "closure_env_free_thunk_borrow",
+    );
+    assert!(
+        !thunk.contains("hew_string_drop"),
+        "a BorrowsOnly capture is released by its real owner, never by this \
+         environment's free thunk:\n{thunk}"
+    );
+    assert!(
+        thunk.contains("hew_dyn_box_free"),
+        "the box itself is still this environment's to free:\n{thunk}"
+    );
+}
+
+/// The control, so the assertion above cannot be satisfied by emitting a thunk
+/// that releases nothing at all: the identical env, field type and heap-box
+/// path with an OWNING manifest still routes the field to its canonical release
+/// before freeing the box.
+#[test]
+fn an_owned_closure_env_field_still_gets_its_release_in_the_free_thunk() {
+    let thunk = closure_env_free_thunk_ir(
+        hew_mir::ClosureEnvFieldOwnership::OwnsMoved,
+        "closure_env_free_thunk_owned",
+    );
+    assert!(
+        thunk.contains("hew_string_drop"),
+        "an OwnsMoved capture makes the env free thunk the release authority:\n{thunk}"
+    );
+    assert!(
+        thunk.contains("hew_dyn_box_free"),
+        "and the box is freed after the field release:\n{thunk}"
+    );
+}
+
+/// A retained share is an owner too: the environment minted its own `+1` at
+/// ingress, so its free thunk must release that share independently of whoever
+/// else owns the value. This is the verdict a slot-less `move` capture takes.
+#[test]
+fn a_retained_share_closure_env_field_gets_its_release_in_the_free_thunk() {
+    let thunk = closure_env_free_thunk_ir(
+        hew_mir::ClosureEnvFieldOwnership::OwnsClonedOrRetained,
+        "closure_env_free_thunk_share",
+    );
+    assert!(
+        thunk.contains("hew_string_drop"),
+        "a retained share is released by the environment that took it:\n{thunk}"
+    );
+}

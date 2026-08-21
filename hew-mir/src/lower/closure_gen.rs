@@ -210,7 +210,7 @@ impl Builder {
         // preserves the pre-promotion behaviour rather than fabricating an
         // unowned heap box.
         let strategy = layout.allocation_strategy();
-        let (shim_name, _env_ty, env_place, suspends, _manifest) =
+        let (shim_name, _env_ty, env_place, suspends, manifest) =
             self.materialize_closure_env(expr, params, ret_ty, body, captures, strategy)?;
         // Record the body-suspends verdict so the enclosing `Let` handler can
         // attribute it to the bound binding (the suspendable-callee
@@ -236,12 +236,20 @@ impl Builder {
         self.pending_closure_literal_heap =
             Some(strategy == crate::closure_env::AllocationStrategy::Heap);
 
+        // The env free thunk drops exactly what this manifest says the
+        // environment owns. A `Null` env has no record and therefore no fields.
+        let env_ownership = if env_mode == crate::model::ClosureEnvMode::Null {
+            Vec::new()
+        } else {
+            manifest.iter().map(|field| field.ownership).collect()
+        };
         let closure_place = self.alloc_local(expr.ty.clone());
         self.push_instr(Instr::MakeClosure {
             fn_symbol: shim_name,
             env: env_place,
             dest: closure_place,
             env_mode,
+            env_ownership,
         });
 
         Some(closure_place)
@@ -558,6 +566,47 @@ impl Builder {
                 CaptureSource::of(source_binding),
                 capture.mode,
             );
+            // An ESCAPING environment that can neither own the field nor take a
+            // share of it would be left aliasing storage the enclosing
+            // environment releases at its own destruction — and this closure can
+            // outlive that. Refuse instead of emitting the alias.
+            if strategy == crate::closure_env::AllocationStrategy::Heap
+                && source_binding.is_none()
+                && ownership == ClosureEnvFieldOwnership::BorrowsOnly
+                && crate::model::ty_owns_heap_mir(
+                    &field_ty,
+                    &self.record_field_orders,
+                    &self.enum_layouts,
+                )
+                && !super::composite_own::string_or_bitcopy_tree(
+                    &field_ty,
+                    &self.record_field_orders,
+                    &self.enum_layouts,
+                    &mut HashSet::new(),
+                )
+            {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::EscapingCaptureAliasesEnclosingEnv {
+                        name: capture.name.clone(),
+                        ty: match &field_ty {
+                            ResolvedTy::Named { name, .. } => name.clone(),
+                            other => format!("{other:?}"),
+                        },
+                        site: expr.site,
+                    },
+                    note: format!(
+                        "escaping closure capture `{}` is read out of an enclosing \
+                         closure/generator environment that still owns it, and its type has no \
+                         whole-value retain authority, so this environment can take neither the \
+                         owner nor a share; the closure may outlive that environment and would \
+                         read freed storage. Bind the value into a local of this frame first, or \
+                         capture a field with a retainable type",
+                        capture.name
+                    ),
+                });
+                failed = true;
+                continue;
+            }
             if ownership == ClosureEnvFieldOwnership::OwnsMoved {
                 if let Some(binding) = source_binding {
                     self.statements.push(MirStatement::Use {

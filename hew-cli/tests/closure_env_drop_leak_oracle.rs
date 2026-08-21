@@ -530,6 +530,72 @@ fn generator_transitive_capture_outliving_its_generator_is_not_a_use_after_free(
     );
 }
 
+/// The share the slot-less `move` capture takes must be BALANCED, and the leak
+/// oracle cannot see that here: the escaping pair is bound by a `for` binder and
+/// a `var`, neither of which `derive_closure_pair_drop_allowed` clears, so its
+/// free thunk is never reached and a missing retain would show up as nothing at
+/// all. Prove it structurally on the emitted IR instead — the `+1` at ingress
+/// inside the generator body, and the typed release inside the environment's
+/// free thunk.
+#[test]
+fn generator_transitive_capture_retain_and_release_are_balanced_in_ir() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("gen-transitive-capture-ir-")
+        .tempdir()
+        .expect("tempdir");
+    let name = "gen_transitive_capture_ir";
+    let _ = compile_to_native(GEN_TRANSITIVE_CAPTURE_OUTLIVES_GENERATOR, dir.path(), name);
+    let ll = std::fs::read_to_string(dir.path().join(format!("{name}.ll")))
+        .expect("read emitted closure-capture IR");
+
+    let gen_body = ir_fn_body(&ll, "@__hew_gen_body_make_0")
+        .unwrap_or_else(|| panic!("no generator body in emitted IR:\n{ll}"));
+    assert!(
+        gen_body.contains("hew_string_clone"),
+        "the slot-less `move` capture must mint its own share at ingress — \
+         without the retain the environment's release is unbalanced:\n{gen_body}"
+    );
+
+    let thunk = ir_fn_body(
+        &ll,
+        "@__hew_closure_env_free___hew_closure_invoke___hew_gen_body_make_0_0",
+    )
+    .unwrap_or_else(|| panic!("no closure env free thunk in emitted IR:\n{ll}"));
+    assert!(
+        thunk.contains("__hew_record_drop_inplace_Holder"),
+        "and the environment's free thunk must release that share through the \
+         record's typed release:\n{thunk}"
+    );
+    assert!(
+        thunk.contains("hew_dyn_box_free"),
+        "the box is freed after the field release:\n{thunk}"
+    );
+}
+
+/// Extract an LLVM function body from its `define` line to the closing brace.
+fn ir_fn_body(ll: &str, needle: &str) -> Option<String> {
+    let mut body = String::new();
+    let mut in_fn = false;
+    for line in ll.lines() {
+        if !in_fn {
+            if line.starts_with("define") && line.contains(needle) {
+                in_fn = true;
+                body.push_str(line);
+                body.push('\n');
+            }
+            continue;
+        }
+        body.push_str(line);
+        body.push('\n');
+        if line.starts_with('}') {
+            return Some(body);
+        }
+    }
+    None
+}
+
 /// The reassignment twin of the oracle above: no double free when the
 /// transitively captured binding was overwritten before the capture.
 #[test]

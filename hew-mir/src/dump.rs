@@ -965,12 +965,18 @@ fn render_instr(instr: &Instr) -> String {
             env,
             dest,
             env_mode,
+            env_ownership,
         } => format!(
-            "{} = make_closure {} env={} mode={}",
+            "{} = make_closure {} env={} mode={} env_own=[{}]",
             render_place(dest),
             fn_symbol,
             render_place(env),
-            render_env_mode(*env_mode)
+            render_env_mode(*env_mode),
+            env_ownership
+                .iter()
+                .map(|ownership| render_closure_env_ownership(*ownership))
+                .collect::<Vec<_>>()
+                .join(",")
         ),
         Instr::ClosureEnvInit { ty, fields, dest } => {
             let fields = fields
@@ -1780,6 +1786,9 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
             name,
             site,
         } => format!("CannotMaterializeClosureCapture {binding:?} {name} site={site:?}"),
+        MirDiagnosticKind::EscapingCaptureAliasesEnclosingEnv { name, ty, site } => {
+            format!("EscapingCaptureAliasesEnclosingEnv {name} ty={ty} site={site:?}")
+        }
         MirDiagnosticKind::RemotePayloadUnsupported {
             actor,
             handler,

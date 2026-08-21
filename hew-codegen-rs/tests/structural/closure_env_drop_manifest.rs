@@ -231,10 +231,23 @@ fn bitcopy_capture_has_no_owned_release_in_free_thunk() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn captured_scalar_record_drop_thunk_defined_and_called() {
+fn captured_scalar_record_drop_helper_is_defined_and_the_thunk_releases_nothing() {
     // All-BitCopy record: never earns a `RecordInPlace` drop plan (nothing to
     // drop) yet still classifies as `UserRecord` at the free-thunk site — the
     // minimal #2419 shape.
+    //
+    // #2419 is about DEFINEDNESS: `emit_field_drop_step` declares
+    // `__hew_record_drop_inplace_<R>` at internal linkage, and an internal
+    // declaration with no body makes LLVM verify reject the module. That half
+    // is asserted below and is the half this test exists for.
+    //
+    // The env free thunk does NOT dispatch through the helper here, and must
+    // not: the ownership manifest records this capture as `BorrowsOnly`
+    // (`nothing_to_own` — every leaf is a byte copy), and the manifest is what
+    // decides the thunk's drop set. The call it used to emit ran a helper whose
+    // body is `br` straight to `done`. The dispatch half is pinned where it
+    // carries meaning, on the Vec-bearing sibling below, whose capture the
+    // manifest records as owned.
     let ll = emit_ll(
         "type Pair {\n\
         \x20   a: i64;\n\
@@ -253,6 +266,13 @@ fn captured_scalar_record_drop_thunk_defined_and_called() {
          pass), not a bodyless internal declaration that LLVM verify rejects. \
          Emitted IR:\n{ll}"
     );
+    let record_thunk = function_body(&ll, "__hew_record_drop_inplace_Pair");
+    assert!(
+        !record_thunk.contains("hew_vec_free")
+            && !record_thunk.contains("hew_string_drop")
+            && !record_thunk.contains("hew_bytes_drop"),
+        "an all-BitCopy record's drop body releases nothing. Body:\n{record_thunk}"
+    );
     let thunk = function_body(&ll, FREE_THUNK);
     assert!(
         !thunk.is_empty(),
@@ -260,9 +280,13 @@ fn captured_scalar_record_drop_thunk_defined_and_called() {
          closure. Emitted IR:\n{ll}"
     );
     assert!(
-        thunk.contains("call void @__hew_record_drop_inplace_Pair("),
-        "the env free thunk must dispatch the captured record through its \
-         in-place drop helper. Thunk body:\n{thunk}"
+        !thunk.contains("call void @__hew_record_drop_inplace_Pair("),
+        "the manifest records this capture as owning nothing, so the free thunk \
+         must not dispatch a release for it. Thunk body:\n{thunk}"
+    );
+    assert!(
+        thunk.contains("hew_dyn_box_free"),
+        "the box itself is still the environment's to free. Thunk body:\n{thunk}"
     );
 }
 

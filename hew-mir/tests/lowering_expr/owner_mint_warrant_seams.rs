@@ -211,6 +211,41 @@ fn transitive_gen(mk: &str, capture: &str) -> IrPipeline {
     ))
 }
 
+/// The ownership manifest as it reaches `MakeClosure` — the operand codegen
+/// hands to the heap-box free thunk. `ClosureEnvInit` deciding correctly is
+/// only half the story; the verdict has to travel to the instruction that
+/// synthesises the environment's release authority.
+fn make_closure_env_ownership(p: &IrPipeline) -> Vec<String> {
+    hew_mir::dump_mir(p, DumpStage::Raw)
+        .lines()
+        .filter_map(|line| {
+            let idx = line.find("make_closure ")?;
+            let own = line[idx..].split("env_own=[").nth(1)?;
+            Some(own.trim_end_matches(']').to_string())
+        })
+        .filter(|own| !own.is_empty())
+        .collect()
+}
+
+/// The per-field verdicts `ClosureEnvInit` recorded, in field order.
+fn closure_env_init_ownership(p: &IrPipeline) -> Vec<String> {
+    hew_mir::dump_mir(p, DumpStage::Raw)
+        .lines()
+        .filter(|line| line.contains("closure_env_init"))
+        .flat_map(|line| {
+            line.split("own=")
+                .skip(1)
+                .map(|rest| {
+                    rest.split_whitespace()
+                        .next()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// Generator environments that own a captured field, read off the raw MIR's
 /// `make_generator` field plan. This is the counterparty to every assertion
 /// below: the closure env taking nothing is only correct because the generator
@@ -363,7 +398,85 @@ fn a_reassigned_binding_captured_through_an_enclosing_env_takes_no_owner() {
             1,
             "{name}: the generator env remains the field's single owner"
         );
+        // The verdict must REACH the instruction that synthesises the free
+        // thunk. Codegen derived that thunk's drop set from the env record's
+        // field types until this manifest was threaded through `MakeClosure`,
+        // so it released a field the environment did not own. Assert the
+        // verdicts are the SAME object at both instructions rather than a
+        // literal: the two reassignment directions land on different verdicts
+        // (the ledger is monotone, so `foreign then domestic` still reads
+        // foreign and takes a bare alias), and what this pins is that whatever
+        // was decided is what codegen receives.
+        assert_eq!(
+            make_closure_env_ownership(&p),
+            closure_env_init_ownership(&p),
+            "{name}: the manifest must travel to `MakeClosure`, not stop at \
+             `ClosureEnvInit`"
+        );
     }
+}
+
+/// An ESCAPING environment that can neither own the field nor take a share of
+/// it is REFUSED, not silently left aliasing storage the enclosing environment
+/// releases at its own destruction.
+///
+/// `bytes` has no whole-value retain authority, so the share promotion that
+/// rescues a string-tree capture does not apply. The remaining options are a
+/// second owner or a dangling alias — the checker admits yielding this closure
+/// out of the `gen` body, so the alias really can be called after the generator
+/// is destroyed. Neither is emitted.
+#[test]
+fn an_escaping_capture_that_can_be_neither_owned_nor_shared_is_refused() {
+    let p = pipeline_with_tc(
+        r"record Blob { payload: bytes }
+
+fn mk() -> Blob {
+    let b: bytes = bytes.new();
+    b.push(7);
+    Blob { payload: b }
+}
+
+fn make() -> Generator<fn() -> i64, ()> {
+    let h = mk();
+    gen {
+        yield move || h.payload.len();
+    }
+}
+
+fn main() -> i64 {
+    var kept: fn() -> i64 = || 0;
+    for f in make() {
+        kept = f;
+    }
+    kept()
+}
+",
+    );
+    assert!(
+        p.diagnostics.iter().any(|d| matches!(
+            d.kind,
+            hew_mir::MirDiagnosticKind::EscapingCaptureAliasesEnclosingEnv { .. }
+        )),
+        "a non-retainable capture read out of an enclosing env, in an escaping \
+         closure, must fail closed: {:#?}",
+        p.diagnostics
+    );
+}
+
+/// The control: the SAME shape with a retainable field is admitted, because the
+/// environment can take an independent share of it. The refusal is directed at
+/// the absence of a retain authority, not at transitive captures in general.
+#[test]
+fn an_escaping_capture_with_a_retainable_field_is_admitted() {
+    let p = transitive_gen(DOMESTIC_MK, "move ||");
+    assert!(
+        !p.diagnostics.iter().any(|d| matches!(
+            d.kind,
+            hew_mir::MirDiagnosticKind::EscapingCaptureAliasesEnclosingEnv { .. }
+        )),
+        "a string-tree capture takes a share and must not be refused: {:#?}",
+        p.diagnostics
+    );
 }
 
 // ---------------------------------------------------------------------------

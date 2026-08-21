@@ -3117,6 +3117,8 @@ impl Builder {
                     env: null_env,
                     dest,
                     env_mode: crate::model::ClosureEnvMode::Null,
+                    // No environment record exists, so there is nothing to own.
+                    env_ownership: Vec::new(),
                 });
                 Some(dest)
             }

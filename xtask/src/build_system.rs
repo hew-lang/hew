@@ -8,7 +8,7 @@ use serde_json::Value;
 
 type Result<T> = std::result::Result<T, String>;
 
-const NEXTEST: &str = "cargo-nextest@0.9.99";
+const NEXTEST: &str = "cargo-nextest@0.9.120";
 const CARGO_DENY: &str = "cargo-deny@0.19.6";
 const CARGO_ABOUT: &str = "cargo-about@0.9.0";
 const LLVM_COV: &str = "cargo-llvm-cov@0.8.7";
@@ -382,7 +382,7 @@ impl ToolPlan {
     fn verify(&self, root: &Path) -> Result<()> {
         for tool in &self.tools {
             let (binary, expected) = match *tool {
-                NEXTEST => ("cargo-nextest", "0.9.99"),
+                NEXTEST => ("cargo-nextest", "0.9.120"),
                 CARGO_DENY => ("cargo-deny", "0.19.6"),
                 CARGO_ABOUT => ("cargo-about", "0.9.0"),
                 LLVM_COV => ("cargo-llvm-cov", "0.8.7"),

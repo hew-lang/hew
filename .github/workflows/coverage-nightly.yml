@@ -106,7 +106,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           components: llvm-tools
-          tools: nextest@0.9.99,cargo-llvm-cov@0.8.7
+          tools: nextest@0.9.120,cargo-llvm-cov@0.8.7
           cache-shared-key: coverage
 
       - name: Free runner disk
@@ -288,7 +288,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
-          tools: nextest@0.9.99
+          tools: nextest@0.9.120
           cache-shared-key: build-test-windows
 
       - name: Build Rust crates
@@ -392,7 +392,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
-          tools: nextest@0.9.99
+          tools: nextest@0.9.120
           cache-shared-key: build-test-macos
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}

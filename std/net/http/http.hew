@@ -8,7 +8,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::net::http;
+//! import std.net.http;
 //!
 //! fn main() {
 //!     match http.listen(":8080") {
@@ -234,7 +234,7 @@ impl RequestMethods for Request {
             hew_http_respond_stream(req.handle, status as i32, content_type)
         } // INTERNAL-ABI: C ABI status is i32
     }
-    /// Send a full HTTP response; returns Err(NetError::Other(0)) on failure.
+    /// Send a full HTTP response; returns Err(NetError.Other(0)) on failure.
     fn try_respond(req: Request, status: i64, content_type: string, body: string) -> Result<i64, net.NetError> {
         // SHIM: WHY — codegen drops the `as i32` cast when inlining through respond(); call FFI
         //   directly to preserve the i32 truncation the FFI signature requires.
@@ -253,7 +253,7 @@ impl RequestMethods for Request {
             Ok(n)
         } // HTTP has no OS errno channel
     }
-    /// Send a plain-text HTTP response; returns Err(NetError::Other(0)) on failure.
+    /// Send a plain-text HTTP response; returns Err(NetError.Other(0)) on failure.
     fn try_respond_text(req: Request, status: i64, body: string) -> Result<i64, net.NetError> {
         // SHIM: WHY — codegen drops the `as i32` cast when inlining through respond_text(); call FFI
         //   directly to preserve the i32 truncation the FFI signature requires.
@@ -272,7 +272,7 @@ impl RequestMethods for Request {
             Ok(n)
         } // HTTP has no OS errno channel
     }
-    /// Send a JSON HTTP response; returns Err(NetError::Other(0)) on failure.
+    /// Send a JSON HTTP response; returns Err(NetError.Other(0)) on failure.
     fn try_respond_json(req: Request, status: i64, json: string) -> Result<i64, net.NetError> {
         // SHIM: WHY — codegen drops the `as i32` cast when inlining through respond_json(); call FFI
         //   directly to preserve the i32 truncation the FFI signature requires.
@@ -291,7 +291,7 @@ impl RequestMethods for Request {
             Ok(n)
         } // HTTP has no OS errno channel
     }
-    /// Begin a streaming response; returns Err(NetError::Other(0)) on failure.
+    /// Begin a streaming response; returns Err(NetError.Other(0)) on failure.
     fn try_respond_stream(req: Request, status: i64, content_type: string) -> Result<Sink<string>, net.NetError> {
         if valid_response_status(status) {
             let sink = unsafe {

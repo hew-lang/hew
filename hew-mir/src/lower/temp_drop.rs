@@ -4851,7 +4851,11 @@ pub(super) fn finalize_string_ownership(
     });
     for (binding, destination) in named_aggregate_handoffs {
         derivation.allowed.remove(&binding);
-        builder.set_owned_local_consumed(binding, Some(destination), DischargeSite::BindingMoved);
+        builder.set_owned_local_consumed_post_lowering(
+            binding,
+            Some(destination),
+            DischargeSite::BindingMoved,
+        );
     }
     apply_string_retain_sites(
         &mut raw.blocks,
@@ -8125,7 +8129,11 @@ pub(super) fn finalize_bytes_ownership(
     });
     for (binding, destination) in named_aggregate_handoffs {
         derivation.allowed.remove(&binding);
-        builder.set_owned_local_consumed(binding, Some(destination), DischargeSite::BindingMoved);
+        builder.set_owned_local_consumed_post_lowering(
+            binding,
+            Some(destination),
+            DischargeSite::BindingMoved,
+        );
     }
     apply_bytes_retain_sites(
         &mut raw.blocks,

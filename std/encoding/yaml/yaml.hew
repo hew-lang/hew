@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::encoding::yaml;
+//! import std.encoding.yaml;
 //!
 //! fn main() {
 //!     let doc = yaml.parse("name: Hew\nversion: 1");
@@ -22,9 +22,9 @@ import std.encoding.wire.value_trait;
 /// Structured error type for YAML parsing failures.
 ///
 /// Use `Result<Value, ParseError>` with `try_parse` for structured error
-/// handling. Import `std::encoding::yaml` when matching on the returned error
+/// handling. Import `std.encoding.yaml` when matching on the returned error
 /// value so you can use the existing unqualified
-/// `ParseError::Invalid(message)` constructor/pattern style.
+/// `ParseError.Invalid(message)` constructor/pattern style.
 pub enum ParseError {
     /// The input was not valid YAML. Carries the native parser message.
     Invalid(string);
@@ -43,7 +43,7 @@ pub type Value {
 /// Methods available on a YAML `Value`.
 ///
 /// Extends the shared opaque-handle contract from
-/// `std::encoding::wire::value_trait`. Canonical methods are redeclared here
+/// `std.encoding.wire.value_trait`. Canonical methods are redeclared here
 /// with YAML-specific docstrings for documentation purposes.
 trait ValueMethods: CanonicalValueMethods {
     /// Serialize the value back to a YAML string.
@@ -302,8 +302,8 @@ pub fn parse(s: string) -> Value {
 
 /// Parse a YAML string into a `Value`.
 ///
-/// Returns `Err(ParseError::Invalid(message))` with the native parser message
-/// when parsing fails. Match on `ParseError::Invalid(message)` to recover the
+/// Returns `Err(ParseError.Invalid(message))` with the native parser message
+/// when parsing fails. Match on `ParseError.Invalid(message)` to recover the
 /// original parser message.
 pub fn try_parse(s: string) -> Result<Value, ParseError> {
     let val = parse(s);

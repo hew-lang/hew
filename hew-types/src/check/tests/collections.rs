@@ -485,6 +485,10 @@ fn vec_layout_unsupported_method_remains_fail_closed() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table-driven test pins the complete equality-eligibility shape matrix"
+)]
 fn vec_contains_eq_eligibility_classifies_layout_elements() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.type_defs.insert(
@@ -574,6 +578,20 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
     );
     assert_eq!(
         ty_is_eq_eligible(&Ty::Tuple(vec![Ty::I32, Ty::Bytes]), &checker.type_defs),
+        EqEligibility::IneligibleManaged(Ty::Bytes)
+    );
+    let nested_failure = crate::eq_eligibility::ty_eq_ineligibility(
+        &Ty::Named {
+            name: "Option".to_string(),
+            args: vec![Ty::Tuple(vec![Ty::I32, Ty::Bytes])],
+            builtin: Some(BuiltinType::Option),
+        },
+        &checker.type_defs,
+    )
+    .expect("bytes member must reject structural equality");
+    assert_eq!(nested_failure.member, "Some.1");
+    assert_eq!(
+        nested_failure.reason,
         EqEligibility::IneligibleManaged(Ty::Bytes)
     );
     assert_eq!(
@@ -965,18 +983,24 @@ fn record_clone_affine_veto_is_transitive_but_stops_at_rc() {
         RecordCloneAdmissibility::AffineValue {
             type_name,
             marker: hew_parser::ast::ResourceMarker::Resource,
-        } if type_name == "owner.ResourceToken"
+            member,
+        } if type_name == "owner.ResourceToken" && member == "resource"
     ));
     assert!(matches!(
         checker.record_clone_admissibility("LinearWrapper", &[], &span),
         RecordCloneAdmissibility::AffineValue {
             type_name,
             marker: hew_parser::ast::ResourceMarker::Linear,
-        } if type_name == "owner.LinearTicket"
+            member,
+        } if type_name == "owner.LinearTicket" && member == "linear"
     ));
+    // The AFFINE veto still stops at `Rc`: a shared handle to a resource is not
+    // itself affine, so this is not an `AffineValue` refusal. It is refused for
+    // the separate ownership reason — an `Rc` member of a value aggregate has no
+    // aggregate-ingress retain, so the composite drop plan would over-release.
     assert!(matches!(
         checker.record_clone_admissibility("SharedWrapper", &[], &span),
-        RecordCloneAdmissibility::Admissible
+        RecordCloneAdmissibility::UnbalancedSharedHandle { member, .. } if member == "shared"
     ));
 }
 
@@ -1130,9 +1154,12 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
     );
 
     let span = Span::from(0..0);
+    // Semantic-handle fields are not affine-clone blockers. The `rc` field is
+    // still refused, but for the ownership reason (no aggregate-ingress retain
+    // for a shared handle inside a value aggregate), never as an affine veto.
     assert!(matches!(
         checker.record_clone_admissibility("HandleWrapper", &[], &span),
-        RecordCloneAdmissibility::Admissible
+        RecordCloneAdmissibility::UnbalancedSharedHandle { member, .. } if member == "rc"
     ));
     assert!(
         matches!(

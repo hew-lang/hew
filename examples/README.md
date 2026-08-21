@@ -30,7 +30,7 @@ this progression:
    directory-module pattern, but with peer files contributing types and trait
    impls.
 3. [`multifile/README.md`](multifile/README.md) / `02_geometry/` — selective
-   `import mod.{ A, B }` from a shared module namespace.
+   `import mod.{A, B}` from a shared module namespace.
 4. [`multifile/README.md`](multifile/README.md) / `03_text_stats/` — nested
    modules where `import parent;` and `import parent.child;` are distinct.
 
@@ -64,7 +64,7 @@ If the diff is empty the output matches exactly. A non-empty diff means the prog
 - **module_generic_boundaries/** -- Small two-file demo showing generic trait APIs crossing a module boundary (`main.hew` + `src/widgets.hew`)
 - **multifile/** -- Progressive multi-file examples showing peer-file type contribution, selective imports, and two-level module hierarchies ([README](multifile/README.md)):
   - `01_shapes/` — directory module with peer-file types + trait impls; bare import + qualified access
-  - `02_geometry/` — peer files sharing a type across functions; selective `import mod.{ A, B }`
+  - `02_geometry/` — peer files sharing a type across functions; selective `import mod.{A, B}`
   - `03_text_stats/` — two-level hierarchy; `import parent;` vs `import parent.child;`
 
 ### From Examples to Stdlib

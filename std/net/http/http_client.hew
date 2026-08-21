@@ -1,7 +1,7 @@
 //! HTTP client compatibility module for outbound requests.
 //!
 //! Provides basic outbound HTTP functionality for native Hew programs via
-//! `import std::net::http::http_client;`.
+//! `import std.net.http.http_client;`.
 //!
 //! This compatibility module now carries the bounded v0.3 client slice:
 //! `request`, `request_string`, `set_timeout`, plus the legacy `get` / `post`
@@ -15,7 +15,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::net::http::http_client;
+//! import std.net.http.http_client;
 //!
 //! fn main() {
 //!     match http_client.get_string("https://example.com") {
@@ -23,7 +23,7 @@
 //!         None => println("request failed"),
 //!     }
 //!
-//!     let headers: Vec<(string, string)> = Vec::new();
+//!     let headers: Vec<(string, string)> = Vec.new();
 //!     headers.push(("Accept", "application/json"));
 //!     let resp = http_client.request("GET", "https://api.example.com/data", "", headers);
 //!     println(resp.status());
@@ -139,7 +139,7 @@ fn content_type_headers(content_type: string) -> Vec<(string, string)> {
 /// # Examples
 ///
 /// ```
-/// let headers: Vec<(string, string)> = Vec::new();
+/// let headers: Vec<(string, string)> = Vec.new();
 /// headers.push(("Accept", "application/json"));
 /// let resp = http_client.request("GET", "https://example.com", "", headers);
 /// println(resp.status());
@@ -161,7 +161,7 @@ pub fn request(method: string, url: string, body: string, headers: Vec<(string, 
 /// # Examples
 ///
 /// ```
-/// let headers: Vec<(string, string)> = Vec::new();
+/// let headers: Vec<(string, string)> = Vec.new();
 /// match http_client.request_string("GET", "https://example.com", "", headers) {
 ///     Some(body) => println(body),
 ///     None => println("request failed"),

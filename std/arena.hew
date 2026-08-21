@@ -13,7 +13,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::arena;
+//! import std.arena;
 //!
 //! fn main() {
 //!     let store: arena.Arena<string> = arena.new();

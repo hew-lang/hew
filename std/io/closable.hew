@@ -7,8 +7,8 @@
 //! # Usage
 //!
 //! ```
-//! import std::net;
-//! import std::io::closable;
+//! import std.net;
+//! import std.io.closable;
 //!
 //! fn serve_one(addr: string) -> Result<(), closable.CloseError> {
 //!     let listener = net.listen(addr);
@@ -52,7 +52,7 @@ pub trait Closable {
 
 /// Structured error type for explicit close operations.
 ///
-/// Returned by `Closable::close()` when the underlying release fails.
+/// Returned by `Closable.close()` when the underlying release fails.
 /// On auto-drop (scope-exit), close errors are silently discarded.
 ///
 /// # Pattern matching
@@ -60,8 +60,8 @@ pub trait Closable {
 /// ```
 /// match handle.close() {
 ///     Ok(()) => {},
-///     Err(CloseError::Io(e)) => println(fs.io_error_message(e)),
-///     Err(CloseError::AlreadyClosed) => {},
+///     Err(CloseError.Io(e)) => println(fs.io_error_message(e)),
+///     Err(CloseError.AlreadyClosed) => {},
 /// }
 /// ```
 pub enum CloseError {

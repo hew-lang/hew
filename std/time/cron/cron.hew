@@ -6,8 +6,8 @@
 //! # Examples
 //!
 //! ```
-//! import std::time::cron;
-//! import std::time::datetime;
+//! import std.time.cron;
+//! import std.time.datetime;
 //!
 //! fn main() {
 //!     let expr = cron.parse("0 */5 * * *");

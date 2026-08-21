@@ -43,6 +43,11 @@ ALL_GROUPS = {
     "suspend-authority",
     "owner-retirement-path",
     "monomorphic-enum-leaf-synthesis",
+    # Applying a call signature to its arguments. One authority
+    # (`apply_instantiated_call_signature_with_assoc`) freshens a generic
+    # callee's type parameters, infers them from the arguments, and records the
+    # instantiation; a hand-rolled arg-vs-parameter loop does none of it.
+    "signature-application",
 }
 SEMANTIC_KEY_BUILDERS = {
     "scoped_module_item_name",
@@ -1064,6 +1069,150 @@ def reject_raw_codegen_call_dispatch(ast_grep: Path, root: Path) -> None:
         )
 
 
+ARG_CHECK_SCOPE_PREFIX = "hew-types/src/"
+ARG_CHECK_PRIMITIVES = frozenset(("check_against", "check_expr_with_expected"))
+
+
+def ranges_by_path(
+    ast_grep: Path, root: Path, kind: str
+) -> defaultdict[str, list[SyntaxRange]]:
+    """Every node of `kind`, grouped by path."""
+    index: defaultdict[str, list[SyntaxRange]] = defaultdict(list)
+    for match in run_query(ast_grep, root, kind=kind):
+        node_span = node_range(match)
+        index[node_span.path].append(node_span)
+    return index
+
+
+def enclosing_function_index(
+    ast_grep: Path, root: Path
+) -> defaultdict[str, list[tuple[SyntaxRange, str]]]:
+    """Every `function_item` range, with its name, grouped by path."""
+    index: defaultdict[str, list[tuple[SyntaxRange, str]]] = defaultdict(list)
+    for match in run_query(ast_grep, root, kind="function_item"):
+        item_range = node_range(match)
+        name = re.search(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)", str(match["text"]))
+        if name is None:
+            continue
+        index[item_range.path].append((item_range, name.group(1)))
+    return index
+
+
+def arg_check_callee_leaves(ast_grep: Path, root: Path) -> list[dict[str, object]]:
+    """Callee-position occurrences of an argument-check primitive.
+
+    Derived from the AST, never from rendered source. A callee's final path
+    segment is a LEAF node the grammar already isolated — `field_identifier` for
+    `recv.check_against(..)`, `identifier` for `Path::check_against(..)` — so
+    reduction is the parse, not a string split. Splitting the call's text on `(`
+    or `::` instead would have been defeated by `(Checker::check_against)(..)`
+    and by `Checker::check_against /* comment */ (..)`, both of which are
+    ordinary call expressions whose rendered text does not reduce.
+
+    Callee position is decided RELATIVE TO THE LEAF'S OWN nearest enclosing
+    call, never globally. A global "outside any call's arguments" test drops
+    `outer(self.check_against(..))`, because the inner callee does sit inside
+    the OUTER call's argument list. The leaf is a callee when it is outside the
+    argument list of the innermost call containing it — which still excludes the
+    primitive passed as an argument value (`register(check_against)`), where
+    that innermost call IS the one whose arguments hold it.
+    """
+    calls = ranges_by_path(ast_grep, root, "call_expression")
+    arguments = ranges_by_path(ast_grep, root, "arguments")
+    leaves: list[dict[str, object]] = []
+    seen: set[tuple[str, int, int]] = set()
+    candidates: list[dict[str, object]] = [
+        match
+        for match in run_query(ast_grep, root, kind="field_identifier")
+        if str(match["text"]) in ARG_CHECK_PRIMITIVES
+    ]
+    for primitive in sorted(ARG_CHECK_PRIMITIVES):
+        candidates.extend(
+            match
+            for match in run_query(ast_grep, root, pattern=primitive)
+            if str(match["text"]) == primitive
+        )
+    for match in candidates:
+        leaf = node_range(match)
+        key = (leaf.path, leaf.byte_start, leaf.byte_end)
+        if key in seen:
+            continue
+        enclosing_calls = [
+            call for call in calls.get(leaf.path, []) if range_contains(call, leaf)
+        ]
+        if not enclosing_calls:
+            continue
+        nearest_call = min(
+            enclosing_calls, key=lambda call: call.byte_end - call.byte_start
+        )
+        # A call's own argument list is the widest `arguments` node inside it;
+        # any other is an argument list of a call nested within this one.
+        own_arguments = [
+            args
+            for args in arguments.get(leaf.path, [])
+            if range_contains(nearest_call, args)
+        ]
+        if own_arguments:
+            widest = max(
+                own_arguments, key=lambda args: args.byte_end - args.byte_start
+            )
+            if range_contains(widest, leaf):
+                continue
+        seen.add(key)
+        leaves.append(match)
+    return leaves
+
+
+def signature_application_findings(ast_grep: Path, root: Path) -> set[Finding]:
+    """Inventory every argument-check primitive call, by enclosing function.
+
+    Applying a call signature means checking each argument against the
+    signature's parameter types. That must happen in ONE place
+    (`apply_instantiated_call_signature_with_assoc`), because that is where a
+    generic callee's type parameters are freshened, inferred from the arguments,
+    and recorded as an instantiation. A hand-rolled arg-check loop skips all
+    three: it is how generic actor receive calls ended up reporting `expected T`
+    and never discharging their obligations.
+
+    The rule is structural and carries no allowlist. It does not inspect the
+    expected-type operand (a name-based version was defeated by a helper taking
+    it as `expected`), it does not match the authority by substring (which would
+    have allowlisted `..._with_assoc_renamed`), and it reduces callees through
+    the parse rather than through rendered text. EVERY primitive call anywhere
+    under `hew-types/src/` is a finding whose form is its enclosing function's
+    exact name, so the inventory records a reviewed count per (function, file) —
+    including the authority's own.
+
+    Residual, stated rather than implied: the inventory is a per-function COUNT,
+    so it cannot see a net-zero relocation — moving a call from one already
+    reviewed function to another leaves both totals unchanged only if the two
+    counts move in opposite directions by the same amount, which the count
+    comparison does not distinguish from no change at all.
+    """
+    functions = enclosing_function_index(ast_grep, root)
+    findings: set[Finding] = set()
+    for match in arg_check_callee_leaves(ast_grep, root):
+        call_range = node_range(match)
+        if not call_range.path.startswith(ARG_CHECK_SCOPE_PREFIX):
+            continue
+        enclosing = [
+            (item_range, name)
+            for item_range, name in functions.get(call_range.path, [])
+            if range_contains(item_range, call_range)
+        ]
+        if not enclosing:
+            raise SystemExit(
+                f"argument-check primitive at {call_range.path}:{call_range.line} has no "
+                "enclosing function; the inventory form would be unattributable"
+            )
+        # Innermost wins, so a nested `fn` owns its own row. A CLOSURE is not a
+        # `function_item`, so a call inside one attributes to the enclosing
+        # function — which is the reviewable unit either way.
+        _, name = min(enclosing, key=lambda item: item[0].byte_end - item[0].byte_start)
+        findings.add(finding("signature-application", name, match))
+    return findings
+
+
 def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange]]:
     test_ranges = test_only_ranges(ast_grep, root)
     findings: set[Finding] = set()
@@ -1082,6 +1231,8 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
             findings.add(
                 finding("mir-ownership-sink", "ownership-classify-call", match)
             )
+
+    findings.update(signature_application_findings(ast_grep, root))
 
     for match in run_query(ast_grep, root, pattern="$R.insert($$$ARGS)"):
         receiver = single_meta(match, "R").split(".")[-1]
@@ -1308,6 +1459,8 @@ def canonical_stage(group: str, form: str, path: str) -> str:
             if path.startswith("hew-codegen-rs/") or path.endswith("model.rs")
             else "stage-4"
         )
+    if group == "signature-application":
+        return "stage-1"
     if group == "string-method-identity":
         if path.startswith(("hew-types/", "hew-hir/", "hew-analysis/")):
             return "stage-1"
@@ -1645,6 +1798,274 @@ def opaque_fact_json(facts: list[OpaqueResourceFact]) -> dict[str, object]:
     }
 
 
+# ── Darwin poisoned-allocator gate ───────────────────────────────────────────
+#
+# `support::leak_slope::run_under_malloc_scribble` and its
+# `require_macos_poisoned_allocator` guard PANIC on a non-Darwin host, by
+# design: `MallocScribble` / `MallocPreScribble` / `MallocGuardEdges` are Darwin
+# libmalloc facilities that are silently ignored elsewhere, so a probe that ran
+# without them detected nothing and must not report success.
+#
+# That guard is correct and it is also a trap for the author: it fires at RUN
+# time, on a host the author usually is not on, so a `#[test]` that reaches it
+# without declaring the host requirement is green on macOS and red on Linux.
+# Four tests across two pull requests landed that way.
+#
+# A test declares the requirement in one of two sanctioned shapes:
+#   * `#[cfg_attr(not(target_os = "macos"), ignore = "...")]` on the `#[test]`,
+#     so a non-Darwin runner records a counted SKIP rather than a failure; or
+#   * the reaching code sits behind `#[cfg(target_os = "macos")]`, so it does
+#     not exist off Darwin at all.
+#
+# WHY this is a walker and not an ast-grep pattern. The call is almost never in
+# the `#[test]` itself: every oracle in the tree routes it through a shared
+# helper (`assert_scribble_clean`, `assert_shape_does_not_over_release`, ...)
+# with the attribute one level up, on the tests that call the helper. The
+# invariant is transitive reachability over a call graph, which a pattern
+# matcher cannot express — a call-site rule would miss exactly the shape that
+# has actually failed. Macro TEMPLATES are walked for the same reason: every
+# test that reached Linux red was generated by a `macro_rules!` arm, so a walker
+# that only saw literal `fn` declarations would miss the whole class.
+
+POISONED_SENTINELS = ("run_under_malloc_scribble", "require_macos_poisoned_allocator")
+POISONED_MACOS_CFG = re.compile(r'#\[\s*cfg\s*\(\s*target_os\s*=\s*"macos"\s*\)\s*\]')
+POISONED_IDENT_CALL = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+POISONED_FN_DECL = re.compile(r"\bfn\s+(\$?[A-Za-z_][A-Za-z0-9_]*)")
+POISONED_SKIP_DIRS = {"target", ".git", ".tmp", "node_modules", ".ast-grep"}
+
+
+def poisoned_mask(src: str) -> str:
+    """Blank comments and string literals, preserving length and newlines.
+
+    Offsets computed on the result index the ORIGINAL text, so brace and
+    bracket matching stays correct even though these files embed Hew sources
+    full of `{{` inside raw strings.
+    """
+    out = list(src)
+    n = len(src)
+
+    def blank(a: int, b: int) -> None:
+        for k in range(a, min(b, n)):
+            if out[k] != "\n":
+                out[k] = " "
+
+    i = 0
+    while i < n:
+        if src.startswith("//", i):
+            j = src.find("\n", i)
+            j = n if j < 0 else j
+            blank(i, j)
+            i = j
+        elif src.startswith("/*", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if src.startswith("/*", j):
+                    depth += 1
+                    j += 2
+                elif src.startswith("*/", j):
+                    depth -= 1
+                    j += 2
+                else:
+                    j += 1
+            blank(i, j)
+            i = j
+        elif src[i] == "r" and i + 1 < n and src[i + 1] in '#"':
+            k = i + 1
+            hashes = 0
+            while k < n and src[k] == "#":
+                hashes += 1
+                k += 1
+            if k < n and src[k] == '"':
+                term = '"' + "#" * hashes
+                j = src.find(term, k + 1)
+                j = n if j < 0 else j + len(term)
+                blank(i, j)
+                i = j
+            else:
+                i += 1
+        elif src[i] == '"':
+            j = i + 1
+            while j < n:
+                if src[j] == "\\":
+                    j += 2
+                    continue
+                if src[j] == '"':
+                    j += 1
+                    break
+                j += 1
+            blank(i, j)
+            i = j
+        else:
+            i += 1
+    return "".join(out)
+
+
+def poisoned_match_delim(masked: str, start: int, open_ch: str, close_ch: str) -> int:
+    """Index just past the delimiter matching the one at `start`."""
+    depth = 0
+    for k in range(start, len(masked)):
+        if masked[k] == open_ch:
+            depth += 1
+        elif masked[k] == close_ch:
+            depth -= 1
+            if depth == 0:
+                return k + 1
+    return len(masked)
+
+
+def poisoned_attribute_spans(masked: str) -> list[tuple[int, int]]:
+    spans = []
+    k = 0
+    while True:
+        k = masked.find("#[", k)
+        if k < 0:
+            return spans
+        end = poisoned_match_delim(masked, k + 1, "[", "]")
+        spans.append((k, end))
+        k = end
+
+
+def poisoned_gated_spans(
+    src: str, masked: str, attrs: list[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """Regions that do not exist off Darwin, from `#[cfg(target_os = "macos")]`."""
+    spans = []
+    for start, end in attrs:
+        if not POISONED_MACOS_CFG.fullmatch(src[start:end].strip()):
+            continue
+        brace = masked.find("{", end)
+        semi = masked.find(";", end)
+        if brace >= 0 and (semi < 0 or brace < semi):
+            spans.append((start, poisoned_match_delim(masked, brace, "{", "}")))
+        elif semi >= 0:
+            spans.append((start, semi + 1))
+    return spans
+
+
+def poisoned_blank_spans(masked: str, spans: list[tuple[int, int]]) -> str:
+    out = list(masked)
+    for a, b in spans:
+        for k in range(a, min(b, len(out))):
+            if out[k] != "\n":
+                out[k] = " "
+    return "".join(out)
+
+
+def poisoned_functions(
+    src: str, masked: str, attrs: list[tuple[int, int]]
+) -> list[dict]:
+    """`fn` items (including `macro_rules!` templates) with their attributes."""
+    items = []
+    for m in POISONED_FN_DECL.finditer(masked):
+        paren = masked.find("(", m.end())
+        if paren < 0:
+            continue
+        after = poisoned_match_delim(masked, paren, "(", ")")
+        brace = masked.find("{", after)
+        semi = masked.find(";", after)
+        if brace < 0 or (0 <= semi < brace):
+            continue  # trait signature, no body
+        attached = []
+        cursor = m.start()
+        while True:
+            prior = [
+                a for a in attrs if a[1] <= cursor and not masked[a[1] : cursor].strip()
+            ]
+            if not prior:
+                break
+            span = max(prior, key=lambda a: a[1])
+            attached.append(src[span[0] : span[1]])
+            cursor = span[0]
+        items.append(
+            {
+                "name": m.group(1),
+                "attrs": attached,
+                "body": (brace, poisoned_match_delim(masked, brace, "{", "}")),
+                "line": src.count("\n", 0, m.start()) + 1,
+            }
+        )
+    return items
+
+
+def poisoned_allocator_file_findings(path: Path, display: str) -> list[str]:
+    src = path.read_text(encoding="utf-8", errors="replace")
+    if not any(s in src for s in POISONED_SENTINELS):
+        return []
+    masked = poisoned_mask(src)
+    attrs = poisoned_attribute_spans(masked)
+    scan = poisoned_blank_spans(masked, poisoned_gated_spans(src, masked, attrs))
+    fns = poisoned_functions(src, masked, attrs)
+
+    names = {f["name"] for f in fns}
+    direct: set[str] = set()
+    calls: dict[str, set[str]] = {}
+    for f in fns:
+        body = scan[f["body"][0] : f["body"][1]]
+        if any(re.search(rf"\b{s}\s*\(", body) for s in POISONED_SENTINELS):
+            direct.add(f["name"])
+        calls[f["name"]] = {
+            c
+            for c in POISONED_IDENT_CALL.findall(body)
+            if c in names and c != f["name"]
+        }
+
+    reaching = set(direct)
+    changed = True
+    while changed:
+        changed = False
+        for name, callees in calls.items():
+            if name not in reaching and callees & reaching:
+                reaching.add(name)
+                changed = True
+
+    findings = []
+    for f in fns:
+        joined = " ".join(f["attrs"])
+        squashed = joined.replace(" ", "")
+        if "#[test]" not in squashed and "#[tokio::test]" not in squashed:
+            continue
+        if f["name"] not in reaching:
+            continue
+        if POISONED_MACOS_CFG.search(joined):
+            continue
+        if (
+            "cfg_attr" in joined
+            and "ignore" in joined
+            and re.search(r'not\s*\(\s*target_os\s*=\s*"macos"\s*\)', joined)
+        ):
+            continue
+        findings.append(
+            f"ungated Darwin poisoned-allocator test at {display}:{f['line']}: "
+            f"`{f['name']}` reaches `run_under_malloc_scribble` / "
+            f"`require_macos_poisoned_allocator` but declares no macOS gate "
+            f'(add #[cfg_attr(not(target_os = "macos"), ignore = "...")] to the test, '
+            f'or put the reaching code behind #[cfg(target_os = "macos")])'
+        )
+    return findings
+
+
+def poisoned_allocator_gate_findings(root: Path) -> tuple[list[str], int]:
+    """Every `#[test]` reaching the Darwin poisoned allocator must gate on it."""
+    findings: list[str] = []
+    reached = 0
+    for path in sorted(root.rglob("*.rs")):
+        if any(part in POISONED_SKIP_DIRS for part in path.parts):
+            continue
+        try:
+            src = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not any(s in src for s in POISONED_SENTINELS):
+            continue
+        reached += 1
+        try:
+            display = str(path.relative_to(root))
+        except ValueError:
+            display = str(path)
+        findings.extend(poisoned_allocator_file_findings(path, display))
+    return findings, reached
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -1733,6 +2154,8 @@ def main() -> int:
             f"forbidden context-free nominal authority at "
             f"{item.path}:{item.line}:{item.column}: {item.text}"
         )
+    poisoned_findings, poisoned_reached = poisoned_allocator_gate_findings(root)
+    failures.extend(poisoned_findings)
     if failures:
         print(
             "structural authority inventory changed; review every explicit form/path target:",
@@ -1746,6 +2169,7 @@ def main() -> int:
         f"{len(expected)} authority form/path rows; "
         f"{len(test_ranges)} parsed test-only item ranges; "
         f"{len(opaque_facts)} AST-derived opaque resource lifecycle candidates; "
+        f"{poisoned_reached} file(s) reaching the Darwin poisoned allocator, all gated; "
         "0 scalar SpanKey -> SiteId authorities"
     )
     return 0

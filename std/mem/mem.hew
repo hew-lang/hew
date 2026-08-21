@@ -1,6 +1,6 @@
 //! Low-level memory primitives (compiler-internal floor).
 //!
-//! `std::mem` is the **memory-intrinsic floor**: the general-purpose heap
+//! `std.mem` is the **memory-intrinsic floor**: the general-purpose heap
 //! allocator and typed-pointer primitives that the generic containers
 //! (`Vec`/`HashMap`/… in future releases) are built on top of.
 //!
@@ -8,7 +8,7 @@
 //! the compiler supplies their semantics directly (the stdlib catalog row
 //! provides the lowering). alloc/realloc/dealloc lower to calls of the
 //! hew-runtime allocator (`hew_alloc`/`hew_realloc`/`hew_dealloc`, wrapping
-//! `std::alloc` with a `Layout::from_size_align` floor); `ptr_offset` lowers
+//! `std.alloc` with a `Layout.from_size_align` floor); `ptr_offset` lowers
 //! to a byte-level LLVM GEP and `ptr_copy` to `@llvm.memcpy`.
 //!
 //! # Safety boundary (A605)
@@ -51,7 +51,7 @@ pub fn realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u
 pub fn dealloc(ptr: *mut u8, size: u64, align: u64) {}
 
 /// Return `ptr.add(byte_offset)` — byte-level pointer arithmetic with the same
-/// contract as Rust's `<*mut T>::add` (A612: byte-level monomorphic, no
+/// contract as Rust's `<*mut T>.add` (A612: byte-level monomorphic, no
 /// element-type scaling here; the caller has already multiplied by the element
 /// size). Lowers to an `inbounds` GEP, so the resulting pointer **must** stay
 /// within the bounds of the same allocation `ptr` points into — pointing one

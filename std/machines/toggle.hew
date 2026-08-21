@@ -2,7 +2,7 @@
 //!
 //! Used by `examples/machine/run_cross_module_toggle.hew` to exercise the
 //! HIR cross-module machine-binding path: a bare `Flip` event and qualified
-//! `Toggle::Off` / `Toggle::On` state ctors referenced from a different
+//! `Toggle.Off` / `Toggle.On` state ctors referenced from a different
 //! module must resolve through `machine_ctor_registry` after the HIR
 //! pre-pass walks `program.module_graph` (see `hew-hir/src/lower.rs`).
 //!

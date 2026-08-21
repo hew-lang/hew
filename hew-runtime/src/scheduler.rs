@@ -1057,12 +1057,12 @@ const SHUTDOWN_QUIESCE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Poll interval for [`quiesce_before_worker_teardown`].
 const SHUTDOWN_QUIESCE_POLL: Duration = Duration::from_millis(1);
 
-/// Wait, bounded, for queued work to run and for every supervised crash it
-/// raised to be ruled on.
+/// Wait, bounded, for queued work to run and for every crash it raised to be
+/// published and ruled on.
 fn quiesce_before_worker_teardown(timeout: Duration) {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        if drain_is_idle() && !crate::exit_status::has_open_supervised_faults() {
+        if drain_is_idle() && !crate::exit_status::has_unsettled_faults() {
             return;
         }
         if std::time::Instant::now() >= deadline {
@@ -2448,6 +2448,15 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
 /// the prior context is restored via `restore_current_context_after_dispatch`,
 /// which walks `resume_context`'s `prev_context`.
 unsafe fn resume_crash_recovery(actor: *mut HewActor, resume_context: *mut HewExecutionContext) {
+    // This frame is a crash teardown, and a crash teardown RELEASES OTHER
+    // THREADS long before it reaches the trap that puts the crash on the
+    // exit-status authority: the parked-ask gate release below, the crash
+    // fallback that resolves the waiter's `await`, the mailbox close, the
+    // queued-ask retirement. Count the crash as in flight from the first
+    // instruction, so a thread woken by any of them cannot read a clean status
+    // over a crash that is already under way.
+    let _crash_publication = crate::exit_status::CrashPublication::begin();
+
     // SAFETY: caller owns `actor` via the Running CAS.
     let a = unsafe { &*actor };
     let actor_arena = a.arena;
@@ -3343,6 +3352,10 @@ fn activate_queued_actor(actor: *mut HewActor) {
                         unsafe { crate::actor::hew_actor_state_lock_acquire_for_context(ec_ptr) }
                             == crate::actor::HEW_ACTOR_STATE_LOCK_OK;
                     if !lock_acquired {
+                        // A refused state lock traps the actor: the same crash
+                        // teardown, counted in flight from its first cleanup
+                        // step for the same reason.
+                        let _crash_publication = crate::exit_status::CrashPublication::begin();
                         // SAFETY: the handler was not entered; this activation
                         // exclusively owns the open dispatch cleanup scope.
                         let outcome = unsafe {
@@ -3456,6 +3469,10 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     let release_result =
                         unsafe { crate::actor::hew_actor_state_lock_release_for_context(ec_ptr) };
                     if release_result != crate::actor::HEW_ACTOR_STATE_LOCK_OK {
+                        // A refused lock release traps the actor: the same
+                        // crash teardown, counted in flight from its first
+                        // cleanup step for the same reason.
+                        let _crash_publication = crate::exit_status::CrashPublication::begin();
                         // SAFETY: dispatch returned and this activation owns
                         // the still-open cleanup scope.
                         let outcome = unsafe {
@@ -3704,6 +3721,17 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     // Recovered from a crash signal (SEGV/BUS/FPE/ILL).
                     // handle_crash_recovery marks the actor as Crashed and
                     // logs the crash to stderr.
+                    //
+                    // Count the crash as in flight from the FIRST instruction
+                    // of the teardown. Everything below releases threads that
+                    // were waiting on this actor — the crash fallback that
+                    // resolves a waiter's `await`, the mailbox close, the
+                    // queued-ask retirement — and all of it runs before
+                    // `handle_crash_recovery` puts the crash on the
+                    // exit-status authority. Without this the woken waiter can
+                    // reach `exit(0)` and read a CLEAN status over the crash
+                    // that released it; on Windows it regularly did.
+                    let _crash_publication = crate::exit_status::CrashPublication::begin();
                     //
                     // Generated actor dispatch wrappers acquire the actor-state
                     // lock before entering the handler body. Signal recovery

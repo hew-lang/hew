@@ -176,6 +176,9 @@ pub(crate) struct ExitStatusAuthority {
     next_id: AtomicU64,
     /// Open records, one id per occupied slot; `0` is free.
     slots: [AtomicU64; MAX_OPEN_RECORDS],
+    /// Crashes whose teardown has begun but whose record has not been opened
+    /// yet. See [`CrashPublication`].
+    publishing: AtomicU64,
 }
 
 impl ExitStatusAuthority {
@@ -189,11 +192,31 @@ impl ExitStatusAuthority {
             terminal: AtomicBool::new(false),
             next_id: AtomicU64::new(1),
             slots: [FREE; MAX_OPEN_RECORDS],
+            publishing: AtomicU64::new(0),
         }
     }
 
     fn record_unrecovered(&self) {
         self.terminal.store(true, Ordering::Release);
+    }
+
+    fn begin_publication(&self) {
+        self.publishing.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn end_publication(&self) {
+        // Saturating: `reset` zeroes the counter for a fresh runtime, so a
+        // guard that outlives a reset must not wrap it to `u64::MAX` and pin
+        // the next run's status at "a crash is in flight" forever.
+        let _ = self
+            .publishing
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                Some(count.saturating_sub(1))
+            });
+    }
+
+    fn publication_in_flight(&self) -> bool {
+        self.publishing.load(Ordering::Acquire) != 0
     }
 
     fn open_record(&self) -> FaultRecord {
@@ -254,7 +277,13 @@ impl ExitStatusAuthority {
     }
 
     fn faulted(&self) -> bool {
-        self.terminal.load(Ordering::Acquire) || self.open_count() > 0
+        self.terminal.load(Ordering::Acquire)
+            || self.open_count() > 0
+            || self.publication_in_flight()
+    }
+
+    fn unsettled(&self) -> bool {
+        self.open_count() > 0 || self.publication_in_flight()
     }
 
     fn reset(&self) {
@@ -262,6 +291,7 @@ impl ExitStatusAuthority {
         for slot in &self.slots {
             slot.store(0, Ordering::Release);
         }
+        self.publishing.store(0, Ordering::Release);
     }
 }
 
@@ -301,13 +331,51 @@ pub(crate) fn supervised_fault_is_open(record: FaultRecord) -> bool {
     AUTHORITY.is_open(record)
 }
 
-/// Whether any supervised crash is still awaiting a ruling.
+/// Whether this runtime's fault accounting is still moving.
 ///
-/// Read by the scheduler's pre-teardown quiesce: workers must not be joined
-/// while a queued ruling could still settle a record, or whether it ran would
-/// decide the program's exit status.
-pub(crate) fn has_open_supervised_faults() -> bool {
-    AUTHORITY.open_count() > 0
+/// True while a crash is mid-publication ([`CrashPublication`]) or a supervised
+/// record is still awaiting a ruling. Read by every termination path before it
+/// resolves an exit code: reading the authority while either is true asks a
+/// question whose answer has not been decided yet, which is what made a
+/// program's exit status depend on which thread ran first.
+pub(crate) fn has_unsettled_faults() -> bool {
+    AUTHORITY.unsettled()
+}
+
+/// A crash whose teardown has started and whose record is not open yet.
+///
+/// Held from the FIRST instruction of a crash-recovery frame — before the
+/// terminal CAS, and therefore before the reply-channel crash fallback, the
+/// mailbox close, and the queued-ask retirement that between them release every
+/// thread waiting on the crashing actor. A thread woken by any of those runs on
+/// immediately, and if the next thing it does is `exit(0)` it reads this
+/// authority.
+///
+/// The scheduler's crash frames cannot open the real record themselves: only
+/// `actor::hew_actor_trap_inner`, at the terminal CAS it wins, knows whether
+/// the crash is supervised and owns the id the supervisor's ruling settles.
+/// Between the wake and that publication the authority would otherwise read
+/// CLEAN over a crash already in progress. This guard closes exactly that
+/// window — it makes the run count as failing for its duration, and every
+/// termination path waits it out ([`has_unsettled_faults`]) rather than
+/// sampling the authority mid-crash.
+///
+/// It is a COUNT, not a record: a frame raises and lowers its own, so a crash
+/// published by another thread can never consume or duplicate it.
+pub(crate) struct CrashPublication;
+
+impl CrashPublication {
+    /// Raise the in-flight count for one crash teardown.
+    pub(crate) fn begin() -> Self {
+        AUTHORITY.begin_publication();
+        Self
+    }
+}
+
+impl Drop for CrashPublication {
+    fn drop(&mut self) {
+        AUTHORITY.end_publication();
+    }
 }
 
 /// True when this runtime carries a fault that was not recovered — either
@@ -356,6 +424,61 @@ pub extern "C" fn hew_runtime_exit_status() -> c_int {
 #[cfg(test)]
 mod tests {
     use super::{exit_code_rule, ExitStatusAuthority, FaultRecord, FaultRuling};
+
+    /// A crash counts as failing from the instant its teardown begins, not from
+    /// the instant its record is opened. The teardown wakes other threads in
+    /// between; whatever they do next — `exit(0)` included — must not be able
+    /// to read a clean status over a crash already under way.
+    #[test]
+    fn a_crash_counts_as_failing_while_its_publication_is_in_flight() {
+        let authority = ExitStatusAuthority::new();
+        assert!(!authority.faulted());
+
+        authority.begin_publication();
+        assert!(
+            authority.faulted(),
+            "a crash in teardown is not a clean run"
+        );
+        assert!(authority.unsettled());
+
+        // The trap opens the real record before the frame lowers its count, so
+        // there is no instant in between at which the run reads clean.
+        let record = authority.open_record();
+        authority.end_publication();
+        assert!(authority.faulted());
+
+        assert!(authority.settle(record, FaultRuling::Handled));
+        assert!(!authority.faulted(), "a recovered crash leaves no residue");
+        assert!(!authority.unsettled());
+    }
+
+    /// Two crashes in flight at once each hold their own count: the first to
+    /// finish publishing must not clear the second's window.
+    #[test]
+    fn concurrent_crash_publications_each_hold_the_status_open() {
+        let authority = ExitStatusAuthority::new();
+        authority.begin_publication();
+        authority.begin_publication();
+        authority.end_publication();
+        assert!(
+            authority.unsettled(),
+            "the second crash is still mid-teardown"
+        );
+        authority.end_publication();
+        assert!(!authority.unsettled());
+    }
+
+    /// A guard that outlives a reset must not wrap the counter and pin the next
+    /// run's status at "a crash is in flight" forever.
+    #[test]
+    fn lowering_a_publication_count_past_zero_stays_at_zero() {
+        let authority = ExitStatusAuthority::new();
+        authority.begin_publication();
+        authority.reset();
+        authority.end_publication();
+        assert!(!authority.unsettled());
+        assert!(!authority.faulted());
+    }
 
     /// A supervised crash counts as failing from the moment it is opened: its
     /// supervisor may never rule, and an unsettled fault must not read as

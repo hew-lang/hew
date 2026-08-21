@@ -127,7 +127,26 @@ HEW_MACOS_LLVM_PREFIX=/opt/homebrew/opt/llvm@22
 LINUX_AARCH64_HOST=user@ubuntu-24-arm-host
 FREEBSD_HOST=user@freebsd-host
 WINDOWS_HOST=user@windows-host
+# Required for Windows validation; build it with `make windows-release-candidate`
+# (archives the committed HEAD tree — Cargo.toml/Cargo.lock/crate sources —
+# since scripts/windows-release-build.ps1 runs `cargo build` on the Windows
+# host itself; it does not consume precompiled artifacts).
+HEW_WINDOWS_CANDIDATE_ARCHIVE=/absolute/path/to/target/hew-windows-candidate.tar.gz
 ```
+
+Build the candidate archive from the repo root before running Windows
+validation:
+
+```bash
+make windows-release-candidate
+export HEW_WINDOWS_CANDIDATE_ARCHIVE="$(pwd)/target/hew-windows-candidate.tar.gz"
+```
+
+The Windows host must also have a populated Cargo cache for the workspace's
+locked dependencies: `windows-release-build.ps1` runs
+`cargo fetch --locked --offline` before building and fails validation outright
+if that cache is missing, so run `cargo fetch --locked` (online) on the
+Windows host at least once beforehand.
 
 Windows hosts also need Visual Studio C++ Build Tools with a Windows SDK and a
 one-time LLVM 22 install that matches the tag release workflow: install into
@@ -138,7 +157,9 @@ for the exact bootstrap command sequence. The validator defaults to
 `LLVM_PREFIX=C:\llvm-22`; it imports `VsDevCmd.bat` for the SDK/CRT environment
 before prepending `C:\llvm-22\bin` to `PATH`. Override with
 `HEW_WINDOWS_LLVM_PREFIX`, `HEW_WINDOWS_CC`, and `HEW_WINDOWS_CXX` if that host
-uses a different compiler driver.
+uses a different compiler driver. Windows validation consumes the configured
+candidate archive without rebuilding it locally. It also runs Cargo offline, so
+the Windows host must have a populated Cargo cache for the locked dependencies.
 
 The macOS validator requires an LLVM 22 root. It first honors
 `HEW_MACOS_LLVM_PREFIX` (or `MACOS_LLVM_PREFIX` in `.env.pre-release`), then
@@ -157,9 +178,10 @@ What `make pre-release` does:
      - Linux aarch64 (optional): stage the local candidate in a fresh remote
        temporary directory, then build on Ubuntu 24.04 arm64 with LLVM 22
        provisioned from `apt.llvm.org/noble`
-     - macOS, FreeBSD, and Windows: stage the local working-tree candidate in
-       a fresh remote temporary directory. Existing host checkouts are never
-       reset, updated, or used as a fallback.
+     - macOS and FreeBSD: stage the local working-tree candidate in a fresh
+       remote temporary directory. Windows stages the configured candidate
+       archive in its own fresh remote directory. Existing host checkouts are
+       never reset, updated, or used as a fallback.
      - Every requested remote platform fails closed when its host is absent or
        unreachable. Narrow `PLATFORMS` explicitly when omitting a host.
      - Windows: require `LLVM_PREFIX`, then compile+run a smoke program so

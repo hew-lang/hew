@@ -1,3 +1,6 @@
+[alias]
+xtask = "run --package xtask --"
+
 # ── Linux linker (x86_64) ─────────────────────────────────────────────────────
 # mold is not forced globally here because it requires a running mold install
 # AND a compatible driver.  Not every Linux workflow or runner has mold; forcing

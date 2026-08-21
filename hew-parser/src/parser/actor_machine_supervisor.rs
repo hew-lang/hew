@@ -6,6 +6,30 @@
 )]
 use super::*;
 
+/// Which side of a machine transition head a state pattern occupies.
+///
+/// The two positions have different grammars on purpose. `Source` is a
+/// pattern matched against the machine's current state — it has no expected
+/// type, carries no bare-variant lint, and therefore has no contextual
+/// (`.Variant`) form. `Target` is an expression checked against the machine's
+/// state enum, so it accepts `.Variant` and the bare form warns with a fix-it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatePatternPosition {
+    Source,
+    Target,
+}
+
+/// A parsed state pattern together with the authored spelling and source span.
+pub(crate) struct StatePattern {
+    /// The flat leaf state name, with any `.`/qualifier prefix stripped.
+    pub name: String,
+    /// True when the author wrote the contextual `.Variant` form. Only ever
+    /// true in `StatePatternPosition::Target`.
+    pub is_contextual: bool,
+    /// Span of the pattern as authored, including a leading `.` when present.
+    pub span: Span,
+}
+
 impl Parser<'_> {
     #[expect(
         clippy::too_many_lines,
@@ -519,10 +543,15 @@ impl Parser<'_> {
         };
 
         self.expect(&Token::Colon)?;
-        let source_state = self.parse_state_pattern()?;
+        let source_state = self.parse_state_pattern(StatePatternPosition::Source)?.name;
         // Hard cutover: `=>` (Token::FatArrow) is the state-routing arrow.
         self.expect(&Token::FatArrow)?;
-        let target_state = self.parse_state_pattern()?;
+        let target = self.parse_state_pattern(StatePatternPosition::Target)?;
+        let StatePattern {
+            name: target_state,
+            is_contextual: target_is_contextual,
+            span: target_span,
+        } = target;
 
         // Optional `reenter` contextual keyword (self-transition Mealy
         // re-entry). Grammar slot: `on E(b): Src => Tgt reenter [when g] [body]`.
@@ -541,13 +570,24 @@ impl Parser<'_> {
         //   on Event: Source => Target { field: expr, ... } ← struct fields, target inferred
         //   on Event: Source => Target { expression }       ← explicit body
         let (body, body_form, body_start, body_end) = if self.eat(&Token::Semicolon) {
-            let span_pos = self.peek_span().start;
-            let body_expr = Expr::Identifier(target_state.clone());
+            // The implicit body is synthesized from the target state, so it is
+            // spanned on the target token — not on whatever token follows the
+            // `;`. Diagnostics on this expression (notably the bare-variant
+            // fix-it that rewrites `Tgt` to `.Tgt`) are only applicable if they
+            // point at the text they ask the author to replace.
+            let body_expr = if target_is_contextual {
+                Expr::ContextVariant(ContextVariantExpr {
+                    name: target_state.clone(),
+                    record: None,
+                })
+            } else {
+                Expr::Identifier(target_state.clone())
+            };
             (
                 body_expr,
                 MachineTransitionBodyForm::Implicit,
-                span_pos,
-                span_pos,
+                target_span.start,
+                target_span.end,
             )
         } else if target_state != "_" && self.is_struct_init_body() {
             let bs = self.peek_span().start;
@@ -564,18 +604,24 @@ impl Parser<'_> {
             }
             self.expect(&Token::RightBrace)?;
             let be = self.peek_span().start;
-            let struct_init = Expr::StructInit {
-                name: target_state.clone(),
-                fields,
-                type_args: None,
-                base: None,
+            // A contextual target keeps its contextual form when it carries a
+            // payload: `=> .Faulted { error }` resolves against the machine's
+            // state enum exactly as `=> .Faulted;` does, and carries no
+            // bare-variant warning.
+            let payload = if target_is_contextual {
+                Expr::ContextVariant(ContextVariantExpr {
+                    name: target_state.clone(),
+                    record: Some(Box::new(ContextVariantRecord { fields, base: None })),
+                })
+            } else {
+                Expr::StructInit {
+                    name: target_state.clone(),
+                    fields,
+                    type_args: None,
+                    base: None,
+                }
             };
-            (
-                struct_init,
-                MachineTransitionBodyForm::PayloadShorthand,
-                bs,
-                be,
-            )
+            (payload, MachineTransitionBodyForm::PayloadShorthand, bs, be)
         } else {
             let bs = self.peek_span().start;
             let block = self.parse_block()?;
@@ -586,13 +632,14 @@ impl Parser<'_> {
         let body = if head_bindings.is_empty() {
             body
         } else {
-            Self::apply_event_head_bindings(&head_bindings, body)
+            Self::apply_event_head_bindings(&head_bindings, body, body_start..body_end)
         };
 
         Some(MachineTransition {
             event_name,
             source_state,
             target_state,
+            target_is_contextual,
             event_bindings: head_bindings,
             composite_prelude_len: 0,
             guard,
@@ -968,7 +1015,11 @@ impl Parser<'_> {
     /// Rewrite a transition body so the named head bindings (`on E(a, b): …`)
     /// are in scope as `let a = event.a; let b = event.b;` prelude statements.
     /// This lowers identically to writing `event.a` directly — no new HIR kind.
-    pub(crate) fn apply_event_head_bindings(bindings: &[String], body: Expr) -> Expr {
+    pub(crate) fn apply_event_head_bindings(
+        bindings: &[String],
+        body: Expr,
+        body_span: Span,
+    ) -> Expr {
         let mut stmts: Vec<Spanned<Stmt>> = Vec::with_capacity(bindings.len());
         for name in bindings {
             let value = Expr::FieldAccess {
@@ -997,19 +1048,67 @@ impl Parser<'_> {
             }
             other => Expr::Block(Block {
                 stmts,
-                trailing_expr: Some(Box::new((other, 0..0))),
+                // Keep the authored body span on the tail expression: the
+                // wrapper is a parser splice, and diagnostics on the body must
+                // still point at the source the author wrote.
+                trailing_expr: Some(Box::new((other, body_span))),
             }),
         }
     }
 
     /// Parse a state pattern: `_` (wildcard) or a state name, optionally a
-    /// dotted qualified name (`Composite.Leaf`). The dotted form is a
-    /// readability aid — the parser strips it to the leaf name, which is what
-    /// reaches the AST (substate names are flat and globally unique).
-    pub(crate) fn parse_state_pattern(&mut self) -> Option<String> {
+    /// contextual (`.Leaf`, target position only) or qualified
+    /// (`Composite.Leaf`) dotted name. The parser strips dotted prefixes so
+    /// the flat leaf name reaches the AST.
+    pub(crate) fn parse_state_pattern(
+        &mut self,
+        position: StatePatternPosition,
+    ) -> Option<StatePattern> {
+        let start = self.peek_span().start;
         if matches!(self.peek(), Some(Token::Identifier(name)) if *name == "_") {
             self.advance();
-            return Some("_".to_string());
+            return Some(StatePattern {
+                name: "_".to_string(),
+                is_contextual: false,
+                span: start..self.last_token_end,
+            });
+        }
+        if self.peek() == Some(&Token::Dot) {
+            // Source states are patterns matched against the current state,
+            // not expressions in the machine's enum context: there is no
+            // expected type there and no bare-variant lint, so `.Src` has no
+            // meaning to preserve. Reject it rather than admit a second
+            // spelling nobody is being migrated towards.
+            if position == StatePatternPosition::Source {
+                let dot = self.peek_span();
+                self.error_at_with_hint(
+                    "a machine transition source state is a pattern and cannot be written with a leading `.`"
+                        .to_string(),
+                    dot,
+                    "write the state name without the leading `.`; the contextual form is only accepted on the transition target",
+                );
+                return None;
+            }
+            self.advance();
+            // `_` is a wildcard, not a variant of the state enum, so there is
+            // no contextual form of it to accept in the target position
+            // either. Reject `._` here so the one spelling of a wildcard
+            // target is `_`, matching the source position and the guide.
+            if matches!(self.peek(), Some(Token::Identifier(name)) if *name == "_") {
+                let span = start..self.peek_span().end;
+                self.error_at_with_hint(
+                    "a machine transition wildcard target is written `_`, not `._`".to_string(),
+                    span,
+                    "remove the leading `.`; `_` matches any state and is not a variant of the state enum",
+                );
+                return None;
+            }
+            let name = self.expect_ident()?;
+            return Some(StatePattern {
+                name,
+                is_contextual: true,
+                span: start..self.last_token_end,
+            });
         }
         let mut name = self.expect_ident()?;
         // Strip any qualifier prefix: `Composite.Leaf` → `Leaf`.
@@ -1017,7 +1116,11 @@ impl Parser<'_> {
             self.advance();
             name = self.expect_ident()?;
         }
-        Some(name)
+        Some(StatePattern {
+            name,
+            is_contextual: false,
+            span: start..self.last_token_end,
+        })
     }
 
     /// Check if the next tokens look like a struct init body: `{ ident: expr }`.

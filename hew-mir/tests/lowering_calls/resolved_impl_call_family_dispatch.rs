@@ -107,7 +107,7 @@ fn build_one_call_module(call: HirExpr) -> HirModule {
     empty_module(vec![HirItem::Function(HirFn {
         id: ids.item(),
         node: ids.node(),
-        declaration: hew_types::DefId::new("main"),
+        declaration: hew_types::DefId::for_test("main"),
         name: "main".to_string(),
         type_params: vec![],
         params: vec![],

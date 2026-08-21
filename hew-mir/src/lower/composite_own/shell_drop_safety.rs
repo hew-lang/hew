@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 //! Shell-drop payload-safety predicate for the enum-composite drop prover.
 //!
 //! Carved out of `composite_own.rs` as a coherent concern (the line-ceiling
@@ -41,7 +46,9 @@ pub(super) fn direct_payload_has_registered_resource_record(
                 } => {
                     args.is_empty()
                         && lifecycle_registry
-                            .resource_record(&hew_types::DefId::new(name))
+                            .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(
+                                name,
+                            ))
                             .is_some()
                 }
                 _ => false,
@@ -305,7 +312,7 @@ fn payload_leaf_is_shell_drop_safe(
         {
             if args.is_empty()
                 && lifecycle_registry
-                    .resource_record(&hew_types::DefId::new(name))
+                    .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(name))
                     .is_some()
             {
                 let opaques: HashSet<&str> =

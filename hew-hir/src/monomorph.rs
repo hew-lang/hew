@@ -970,7 +970,7 @@ mod tests {
         let mut reg = MonoRegistry::with_cap(8);
         let key = MonoKey {
             origin: ItemId(0),
-            declaration: DefId::new("id"),
+            declaration: DefId::for_test("id"),
             linker_symbol: "id".into(),
             type_args: vec![ResolvedTy::I64],
         };
@@ -1214,7 +1214,7 @@ mod tests {
         for i in 0..3 {
             let key = MonoKey {
                 origin: ItemId(0),
-                declaration: DefId::new("id"),
+                declaration: DefId::for_test("id"),
                 linker_symbol: "id".into(),
                 type_args: vec![ResolvedTy::named_user(format!("T{i}"), vec![])],
             };

@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::encoding::toml;
+//! import std.encoding.toml;
 //!
 //! fn main() {
 //!     let doc = toml.parse("[package]\nname = \"hew\"");
@@ -24,9 +24,9 @@ import std.encoding.wire.value_trait;
 /// Structured error type for TOML parsing failures.
 ///
 /// Use `Result<Value, ParseError>` with `try_parse` for structured error
-/// handling. Import `std::encoding::toml` when matching on the returned error
+/// handling. Import `std.encoding.toml` when matching on the returned error
 /// value so you can use the existing unqualified
-/// `ParseError::Invalid(message)` constructor/pattern style.
+/// `ParseError.Invalid(message)` constructor/pattern style.
 pub enum ParseError {
     /// The input was not valid TOML. Carries the native parser message.
     Invalid(string);
@@ -47,7 +47,7 @@ pub type Value {
 /// Methods available on a TOML `Value`.
 ///
 /// Extends the shared opaque-handle contract from
-/// `std::encoding::wire::value_trait`. Canonical methods are redeclared here
+/// `std.encoding.wire.value_trait`. Canonical methods are redeclared here
 /// with TOML-specific docstrings for documentation purposes.
 trait ValueMethods: CanonicalValueMethods {
     /// Return the type tag (0=null reserved, 1=bool, 2=i64, 3=float,
@@ -291,8 +291,8 @@ pub fn parse(s: string) -> Value {
 
 /// Parse a TOML string into a `Value`.
 ///
-/// Returns `Err(ParseError::Invalid(message))` with the native parser message
-/// when parsing fails. Match on `ParseError::Invalid(message)` to recover the
+/// Returns `Err(ParseError.Invalid(message))` with the native parser message
+/// when parsing fails. Match on `ParseError.Invalid(message)` to recover the
 /// original parser message.
 pub fn try_parse(s: string) -> Result<Value, ParseError> {
     let val = parse(s);

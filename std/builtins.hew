@@ -61,9 +61,9 @@ pub enum SendError {
     Backpressure;
 }
 
-/// Error returned when `Node::lookup<T>(name)` cannot resolve `name`.
+/// Error returned when `Node.lookup<T>(name)` cannot resolve `name`.
 ///
-/// Returned as `Err(LookupError::NotFound)` when no actor is registered
+/// Returned as `Err(LookupError.NotFound)` when no actor is registered
 /// under `name` on the current node (or any peer with a gossiped name).
 /// Future variants (e.g. transport-level failures, schema mismatches) are
 /// deferred to follow-on polish; today the runtime collapses every failure
@@ -142,7 +142,7 @@ pub enum AskError {
 
 /// Error arm of `await rx.recv() | after d` and `await stream.recv() | after d`.
 ///
-/// Returned as `Err(TimeoutError::Timeout)` when the deadline fires before an
+/// Returned as `Err(TimeoutError.Timeout)` when the deadline fires before an
 /// item arrives.  Distinguishes a timeout from a closed channel (`Ok(None)`).
 ///
 /// ```hew
@@ -162,7 +162,7 @@ pub enum TimeoutError {
 ///
 /// Prelude-published — like `SendError` / `TimeoutError`, the variants are
 /// nameable in match arms without an explicit import, because `link()` is a
-/// compiler builtin. `std::link_monitor` re-exports the same surface for
+/// compiler builtin. `std.link_monitor` re-exports the same surface for
 /// programs that name `MonitorRef` / `MonitorError` / `PartitionPolicy`.
 ///
 /// `AlreadyLinked` is an idempotent non-fatal condition — callers may treat it
@@ -195,12 +195,12 @@ pub trait ActorMsg {
 /// Trait satisfied by both `LocalPid<A>` and `RemotePid<A>`.
 ///
 /// Future surface target for accepting either local or remote pids. A640:
-/// generic `P: Pid` sends are fail-closed unless `P::Msg` is concretely proven
+/// generic `P: Pid` sends are fail-closed unless `P.Msg` is concretely proven
 /// Serializable; local-only dispatch through `LocalPid<T>` keeps the value
 /// model below.
 ///
 /// ```
-/// fn ping<P: Pid>(p: P, msg: P::Msg) -> Result<(), SendError> {
+/// fn ping<P: Pid>(p: P, msg: P.Msg) -> Result<(), SendError> {
 ///     p.send(msg)
 /// }
 /// ```
@@ -321,7 +321,7 @@ impl<T: ActorMsg> Pid for RemotePid<T> {
 /// `next` takes its receiver mutably (`var self`): iterator implementations
 /// step their internal state in place (cursor advance, decrement remaining,
 /// flush a buffer) and surface successive items through the
-/// `Option<Self::Item>` return. Callers must hold the iterator in a `var`
+/// `Option<Self.Item>` return. Callers must hold the iterator in a `var`
 /// binding so that the mutated receiver remains observable between calls;
 /// binding the iterator with `let` is rejected by the checker with a
 /// "receiver requires mutable binding" diagnostic.
@@ -349,11 +349,11 @@ pub trait Iterator {
 /// `for x in expr { ... }` desugars to `let mut it = expr.into_iter(); loop {
 /// match it.next() { Some(x) => ..., None => break } }` — the iterable on the
 /// right of `in` must implement `IntoIterator`, and the loop binding is typed
-/// as `<Self::IntoIter as Iterator>::Item`.
+/// as `<Self.IntoIter as Iterator>.Item`.
 ///
-/// `IntoIter` carries the `Iterator<Item = Self::Item>` bound so that callers
-/// projecting `<T as IntoIterator>::IntoIter::Item` always agree with
-/// `<T as IntoIterator>::Item`. Concrete `IntoIterator` impls live next to
+/// `IntoIter` carries the `Iterator<Item = Self.Item>` bound so that callers
+/// projecting `<T as IntoIterator>.IntoIter.Item` always agree with
+/// `<T as IntoIterator>.Item`. Concrete `IntoIterator` impls live next to
 /// each collection (`Vec`, `HashSet`, `HashMap`); this trait declaration
 /// reserves the surface only.
 pub trait IntoIterator {
@@ -399,7 +399,7 @@ impl<T> Vec<T> {
 // ---------------------------------------------------------------------------
 /// Cursor iterator over a `Vec<T>` produced by `vec.into_iter()`.
 ///
-/// `VecIter<T>` is the concrete `IntoIterator::IntoIter` for `Vec<T>` — it
+/// `VecIter<T>` is the concrete `IntoIterator.IntoIter` for `Vec<T>` — it
 /// pairs the owned vector with the current `idx` cursor so that
 /// `for x in v { ... }` (for-loop desugar) and the lazy combinators in
 /// `std/iter` can drive iteration through the trait surface rather than the
@@ -461,7 +461,7 @@ impl<T> IntoIterator for Vec<T> {
 /// Cursor iterator over a `HashMap<K, V>` produced by `map.into_iter()`.
 ///
 /// `HashMapIter<K, V>` snapshots the map's keys and values into two parallel
-/// `Vec`s at construction (`HashMap::into_iter`) and walks them by a shared
+/// `Vec`s at construction (`HashMap.into_iter`) and walks them by a shared
 /// `idx`. The keys and values are taken from the SAME map state in the same
 /// projection order, so `ks[i]` and `vs[i]` are the matching key/value of one
 /// entry. Each yielded `(K, V)` is a FRESH, independently-droppable owner: the
@@ -471,7 +471,7 @@ impl<T> IntoIterator for Vec<T> {
 /// with the source map (`drop-allowset-from-value-flow`,
 /// `by-value-heap-params-are-borrows`).
 ///
-/// `next` mirrors `VecIter::next`: read `(ks[idx], vs[idx])`, bump `idx` in
+/// `next` mirrors `VecIter.next`: read `(ks[idx], vs[idx])`, bump `idx` in
 /// place, and return `None` once the cursor passes the snapshot length. The
 /// receiver stays `Live` after exhaustion and drops at scope exit — the
 /// `Iterator` "exhaustion ≠ drop" invariant.
@@ -550,13 +550,13 @@ impl<Y> Iterator for AsyncGenerator<Y> {
 /// trait. A new collection type gets both accessors by writing one `impl` —
 /// no compiler change (the A195 mandate).
 ///
-/// - `get(self, i) -> Option<Self::Output>` is the FUNDAMENTAL safe accessor:
+/// - `get(self, i) -> Option<Self.Output>` is the FUNDAMENTAL safe accessor:
 ///   `None` on out-of-bounds/absent, else `Some(elem)` where the payload is a
 ///   FRESH, independently-droppable owner (retain-share for strings, deep
 ///   clone for owned records/enums, by-value for scalars). The container is
 ///   borrowed, not consumed.
-/// - `at(self, i) -> Self::Output` is the TRAPPING accessor: `c[i]`. It asserts
-///   presence and traps (`TrapKind::IndexOutOfBounds`) on absence.
+/// - `at(self, i) -> Self.Output` is the TRAPPING accessor: `c[i]`. It asserts
+///   presence and traps (`TrapKind.IndexOutOfBounds`) on absence.
 ///
 /// `Idx` is a trait TYPE PARAMETER (not an associated type) so a collection may
 /// index by more than one key type (`Vec`/`bytes`/`string` by `i64`; `HashMap`
@@ -1023,7 +1023,7 @@ pub fn sleep(d: duration) {}
 /// `instant + duration` to construct a future `instant`:
 ///
 /// ```
-/// let deadline = instant::now() + 10ms;
+/// let deadline = instant.now() + 10ms;
 /// sleep_until(deadline);   // wait until 10 ms from now
 /// ```
 ///
@@ -1034,12 +1034,12 @@ pub fn sleep(d: duration) {}
 /// # Examples
 ///
 /// ```
-/// let deadline = instant::now();
+/// let deadline = instant.now();
 /// // ... do work ...
 /// sleep_until(deadline);   // wait until the deadline if not yet reached
 ///
 /// // Sleep for exactly 50 ms from a fixed reference point:
-/// let t0 = instant::now();
+/// let t0 = instant.now();
 /// // ... do work ...
 /// sleep_until(t0 + 50ms);  // accounts for time already spent
 /// ```

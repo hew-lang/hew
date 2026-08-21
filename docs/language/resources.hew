@@ -1,0 +1,39 @@
+//! # Resources
+//!
+//! `#[resource]` marks an owned external handle. Its sibling `impl` declares a
+//! consuming `close` method (written `fn close(value: Type)` in the current
+//! surface; conceptually `close(self)`); the compiler invokes
+//! that release path at scope exit and discards its `Result`. A value is
+//! closed exactly once, including when it is moved through a return or actor
+//! boundary. Early close consumes the value, so a later implicit close cannot
+//! happen.
+//!
+//! ```hew
+//! #[resource]
+//! type Connection {
+//!     id: i64
+//! }
+//!
+//! impl Connection {
+//!     fn close(connection: Connection) {
+//!         print(connection.id);
+//!         println("");
+//!     }
+//! }
+//!
+//! fn main() {
+//!     let connection = Connection { id: 7 };
+//!     println("working");
+//! }
+//! ```
+//!
+//! Resource cleanup is deterministic and field-wise cleanup is reverse
+//! declaration order. `impl Drop for T` is refused: user-defined Drop is not
+//! a cleanup hook in Hew. A resource close method must be in a sibling impl,
+//! not inline in the type body.
+//!
+//! Resource values cannot escape their ownership model. The checker refuses
+//! duplicated use after move, conditional paths that close only some branches,
+//! storing a resource in a machine state, and passing an opaque handle as a
+//! receive parameter. Use an owned typed PID or a plain serializable value at
+//! those boundaries instead.

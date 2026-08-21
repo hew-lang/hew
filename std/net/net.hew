@@ -12,7 +12,7 @@
 //! structured error propagation:
 //!
 //! ```
-//! import std::net;
+//! import std.net;
 //!
 //! fn dial(addr: string) -> Result<Connection, net.NetError> {
 //!     net.try_connect(addr)
@@ -23,8 +23,8 @@
 //!         Ok(conn) => println("connected"),
 //!         Err(e) => {
 //!             match e {
-//!                 NetError::ConnectionRefused(_) => println("nobody home"),
-//!                 NetError::TimedOut(_)          => println("timed out"),
+//!                 NetError.ConnectionRefused(_) => println("nobody home"),
+//!                 NetError.TimedOut(_)          => println("timed out"),
 //!                 _                              => println("network error"),
 //!             }
 //!         },
@@ -35,7 +35,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::net;
+//! import std.net;
 //!
 //! fn main() {
 //!     let listener = net.listen(":9000");
@@ -55,8 +55,8 @@ import std.stream;
 // ── Network error type ────────────────────────────────────────────────
 /// Structured error type for network operations.
 ///
-/// Returned by all `try_*` functions in `net`, `net::tls`, `net::quic`,
-/// `net::http`, `net::websocket`, and `net::dns`.  Use
+/// Returned by all `try_*` functions in `net`, `net.tls`, `net.quic`,
+/// `net.http`, `net.websocket`, and `net.dns`.  Use
 /// `Result<T, NetError>` return types with the `?` operator for
 /// structured error propagation.
 ///
@@ -241,7 +241,7 @@ fn try_endpoint_port(context: string, addr: string, text: string) -> Result<i64,
 /// # Examples
 ///
 /// ```
-/// import std::net;
+/// import std.net;
 ///
 /// match net.try_parse_endpoint("net.connect_timeout", "[::1]:9000") {
 ///     Ok(ep) => println(f"{ep.host} {ep.port}"),
@@ -302,14 +302,14 @@ fn try_parse_bracketed_endpoint(context: string, addr: string) -> Result<Endpoin
     }
 }
 
-/// Construct a `NetError::TimedOut(0)` value without a platform-specific
+/// Construct a `NetError.TimedOut(0)` value without a platform-specific
 /// errno. Useful for in-process deadline expiry where there is no OS error
 /// to map.
 pub fn net_error_timed_out() -> NetError {
     NetError.TimedOut(0)
 }
 
-/// Construct a `NetError::Cancelled(0)` value without a platform-specific
+/// Construct a `NetError.Cancelled(0)` value without a platform-specific
 /// errno. Useful for in-process cancellation where there is no OS error
 /// to map.
 pub fn net_error_cancelled() -> NetError {
@@ -325,7 +325,7 @@ pub fn net_error_cancelled() -> NetError {
 /// timeout (`Connection.set_write_timeout`). If the deadline expires with
 /// the buffer still full, the OS reports `EAGAIN`/`EWOULDBLOCK` (or, on
 /// Windows, a timeout) and the write surfaces as
-/// `WriteError::BackpressureExceeded`. This is the backpressure signal: the
+/// `WriteError.BackpressureExceeded`. This is the backpressure signal: the
 /// downstream cannot keep up, so the producer must slow down, drop, or
 /// buffer at the application layer rather than block its actor indefinitely.
 ///
@@ -506,7 +506,7 @@ trait ConnectionMethods {
     /// Write raw bytes to the connection.
     ///
     /// Returns `Ok(())` once the payload is handed to the OS send buffer.
-    /// Returns `Err(WriteError::BackpressureExceeded(_))` when the send
+    /// Returns `Err(WriteError.BackpressureExceeded(_))` when the send
     /// buffer stays full past the write deadline — the downstream is not
     /// keeping up. Set a bound with `set_write_timeout` before relying on
     /// this; without a timeout a full buffer blocks until it drains.
@@ -568,7 +568,7 @@ trait ConnectionMethods {
 ///     receive fn start(conn: Connection) {
 ///         match conn.attach(this) {
 ///             Ok(()) => {},
-///             Err(AttachError::Refused) => println("attach refused"),
+///             Err(AttachError.Refused) => println("attach refused"),
 ///         }
 ///     }
 ///     receive fn on_data(data: bytes) {
@@ -687,7 +687,7 @@ impl Connection {
     /// The runtime takes over the connection's lifecycle on success, so this
     /// is a terminal transfer just like `close` and `into_stream_sink`. On
     /// refusal the runtime closes the consumed connection before returning
-    /// `Err(AttachError::Refused)`. Every call site is rewritten to
+    /// `Err(AttachError.Refused)`. Every call site is rewritten to
     /// `hew_tcp_attach_local` by the checker/codegen.
     fn attach(consuming self, handler: LocalPid<ConnectionHandler>) -> Result<(), AttachError> {
         Err(AttachError.Refused)
@@ -727,11 +727,11 @@ pub fn listen(addr: string) -> Listener {
 /// # Examples
 ///
 /// ```
-/// import std::net;
+/// import std.net;
 ///
 /// match net.try_listen(":9000") {
 ///     Ok(ln) => { /* accept connections */ },
-///     Err(NetError::AddressInUse(_)) => println("port already taken"),
+///     Err(NetError.AddressInUse(_)) => println("port already taken"),
 ///     Err(e) => println("bind failed"),
 /// }
 /// ```
@@ -770,11 +770,11 @@ pub fn connect(addr: string) -> Connection {
 /// # Examples
 ///
 /// ```
-/// import std::net;
+/// import std.net;
 ///
 /// match net.try_connect("localhost:9000") {
 ///     Ok(conn) => { /* use conn */ },
-///     Err(NetError::ConnectionRefused(_)) => println("nothing listening"),
+///     Err(NetError.ConnectionRefused(_)) => println("nothing listening"),
 ///     Err(e) => println("connect failed"),
 /// }
 /// ```

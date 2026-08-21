@@ -7,8 +7,8 @@
 //! # Examples
 //!
 //! ```
-//! import std::encoding::msgpack;
-//! import std::encoding::hex;
+//! import std.encoding.msgpack;
+//! import std.encoding.hex;
 //!
 //! fn main() {
 //!     let packed = msgpack.from_json("{\"x\": 1}");

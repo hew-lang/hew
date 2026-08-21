@@ -19,8 +19,8 @@ jobs:
           toolchain: stable
       - name: Build hew
         run: cargo build -p hew-cli --bin hew --release
-      - name: Generate stdlib docs
-        run: ./target/release/hew doc std/ --output-dir target/doc/
+      - name: Generate language and stdlib docs
+        run: ./target/release/hew doc std/ docs/language/ --output-dir target/doc/
       - name: Validate generated docs
         run: |
           source_modules="$(find std -type f -name '*.hew' | wc -l | tr -d ' ')"
@@ -33,6 +33,12 @@ jobs:
             echo "::error::Generated documentation index is missing or empty"
             exit 1
           fi
+          for page in language.actors.html language.supervision.html language.machines.html language.concurrency.html language.resources.html 404.html; do
+            if [ ! -s "target/doc/$page" ]; then
+              echo "::error::Generated documentation page is missing: $page"
+              exit 1
+            fi
+          done
           empty_file="$(find target/doc -type f -empty -print -quit)"
           if [ -n "$empty_file" ]; then
             echo "::error::Generated documentation contains an empty file: $empty_file"

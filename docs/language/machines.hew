@@ -1,0 +1,39 @@
+//! # State machines
+//!
+//! A machine declares a closed set of events, states, and transition rules.
+//! `step` mutates a machine value, and `state_name` returns its current state.
+//! Every state/event cell must be covered. `default { state }` is the explicit
+//! no-op stay rule for all cells not otherwise listed.
+//!
+//! ```hew
+//! machine Counter {
+//!     events { Inc; Reset; }
+//!     state Zero;
+//!     state NonZero { value: i64; }
+//!     on Inc: Zero => .NonZero { NonZero { value: 1 } }
+//!     on Inc: NonZero => .NonZero reenter {
+//!         NonZero { value: self.value + 1 }
+//!     }
+//!     on Reset: NonZero => .Zero { .Zero }
+//!     default { state }
+//! }
+//!
+//! fn main() {
+//!     var counter = Counter.Zero;
+//!     counter.step(CounterEvent.Inc);
+//!     counter.step(CounterEvent.Inc);
+//!     println(counter.state_name());
+//! }
+//! ```
+//!
+//! `reenter` marks a self-state transition that re-enters the state's
+//! lifecycle rather than being treated as an ordinary stay. It is useful when
+//! a self-transition must rebuild state or trigger state-entry behavior.
+//! `self.field` reads the source state and `event.field` reads event payload.
+//!
+//! Wildcards are asymmetric: `_` is allowed for a state pattern, but events
+//! must be named explicitly. For example, `on Kill: _ => .Dead { .Dead }`
+//! covers Kill from every state, but there is no wildcard-event spelling.
+//! Explicit cells win over wildcard-state rules. Omitting a cell without a
+//! matching default is a compile error, so state and event exhaustiveness is
+//! enforced rather than inferred at runtime.

@@ -12,7 +12,7 @@ mod template;
 pub use extract::extract_docs;
 pub use highlight::highlight;
 pub use render::{render_index, render_module};
-pub use template::wrap_page;
+pub use template::{not_found_page, wrap_page};
 
 /// Derive a module name from a file path relative to a root directory.
 ///
@@ -192,6 +192,10 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
         let index_html = wrap_page("Index", &index_body, None);
         if let Err(e) = std::fs::write(out.join("index.html"), &index_html) {
             eprintln!("Error writing index.html: {e}");
+            std::process::exit(1);
+        }
+        if let Err(e) = std::fs::write(out.join("404.html"), not_found_page()) {
+            eprintln!("Error writing 404.html: {e}");
             std::process::exit(1);
         }
 

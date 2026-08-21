@@ -1146,7 +1146,7 @@ fn canary6_fstring_interpolation_statement_position_releases_both_temps() {
 /// `lower_function`, so it never called `apply_nested_fresh_string_temp_drops`
 /// at all (a SEPARATE gap from the catalog-name contract row above; every
 /// ordinary function gets the splice for free via `lower_function`'s shared
-/// post-`finalize_blocks` step). The gen-body ramp is emitted as its own MIR
+/// post-`seal_body_blocks` step). The gen-body ramp is emitted as its own MIR
 /// function named `__hew_gen_body_<owner>_<id>`.
 #[test]
 fn canary7_fstring_interpolation_gen_yield_releases_conversion_temp() {

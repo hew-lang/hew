@@ -186,6 +186,300 @@ fn a_heap_env_capture_of_a_domestic_binding_still_owns_it() {
 }
 
 // ---------------------------------------------------------------------------
+// The TRANSITIVE capture: a closure inside a generator body capturing a binding
+// of the ENCLOSING frame. The value has no local slot here — it is loaded out
+// of the generator's own environment by `ClosureEnvFieldLoad` — so the field
+// init records `source_binding = None`.
+//
+// Two independent questions live on that path, and conflating them was the bug:
+//   * can this frame CONSUME an owner (is there a slot)  -> gates `OwnsMoved`
+//   * what is the value's PROVENANCE (the ledger)        -> gates the share
+// ---------------------------------------------------------------------------
+
+/// `make` binds `mk(0)`, the `gen` block captures it, and a closure inside the
+/// generator body captures it AGAIN. `run` forces that inner closure across a
+/// call boundary so the checker classifies it as escaping and its env is
+/// heap-boxed; a stack env is `BorrowsOnly` by construction and would not
+/// discriminate.
+fn transitive_gen(mk: &str, capture: &str) -> IrPipeline {
+    pipeline_with_tc(&format!(
+        "{PRELUDE}{RUN}{mk}\n\
+         fn make() -> Generator<i64, ()> {{\n    \
+         let h = mk(0);\n    gen {{\n        yield run({capture} h.label.len());\n    }}\n}}\n\
+         fn main() -> i64 {{\n    \
+         for value in make() {{\n        println(f\"x={{value}}\");\n    }}\n    0\n}}\n"
+    ))
+}
+
+/// The ownership manifest as it reaches `MakeClosure` — the operand codegen
+/// hands to the heap-box free thunk. `ClosureEnvInit` deciding correctly is
+/// only half the story; the verdict has to travel to the instruction that
+/// synthesises the environment's release authority.
+fn make_closure_env_ownership(p: &IrPipeline) -> Vec<String> {
+    hew_mir::dump_mir(p, DumpStage::Raw)
+        .lines()
+        .filter_map(|line| {
+            let idx = line.find("make_closure ")?;
+            let own = line[idx..].split("env_own=[").nth(1)?;
+            Some(own.trim_end_matches(']').to_string())
+        })
+        .filter(|own| !own.is_empty())
+        .collect()
+}
+
+/// The per-field verdicts `ClosureEnvInit` recorded, in field order.
+fn closure_env_init_ownership(p: &IrPipeline) -> Vec<String> {
+    hew_mir::dump_mir(p, DumpStage::Raw)
+        .lines()
+        .filter(|line| line.contains("closure_env_init"))
+        .flat_map(|line| {
+            line.split("own=")
+                .skip(1)
+                .map(|rest| {
+                    rest.split_whitespace()
+                        .next()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Generator environments that own a captured field, read off the raw MIR's
+/// `make_generator` field plan. This is the counterparty to every assertion
+/// below: the closure env taking nothing is only correct because the generator
+/// env is still there, owning the field.
+fn generator_env_owned_fields(p: &IrPipeline) -> usize {
+    hew_mir::dump_mir(p, DumpStage::Raw)
+        .matches("fields=[owned(")
+        .count()
+}
+
+/// THE FINDING behind the consumable-source gate. `OwnsMoved` is a TRANSFER:
+/// consume the source binding's owner, and install the env destructor as the
+/// release authority. A capture with no local slot cannot do the first half —
+/// there is no `Use` statement to write against a binding with no slot — while
+/// the generator env goes on owning the field regardless. Taking the second
+/// half alone does not transfer anything; it mints a SECOND owner of one value.
+///
+/// It takes an independent SHARE instead. The alternative — plain
+/// `BorrowsOnly` — would be valid only while the generator is alive, and a
+/// closure carrying a transitive capture can outlive its generator; the runtime
+/// oracle `generator_transitive_capture_outliving_its_generator_is_not_a_use_after_free`
+/// pins that end of it.
+///
+/// Exact counts: **0** consumed fields, **1** retained share, **1** owning
+/// generator env — two independent owners, each released exactly once.
+#[test]
+fn a_transitive_move_capture_takes_a_share_not_the_enclosing_envs_owner() {
+    let p = transitive_gen(DOMESTIC_MK, "move ||");
+    assert_eq!(
+        own_moved_env_fields(&p),
+        0,
+        "a `move` capture read out of the enclosing generator env has no owner \
+         here to consume, so it must not claim one: before the gate this was 1, \
+         alongside the generator env's own owner for the same field"
+    );
+    assert_eq!(
+        retained_share_env_fields(&p),
+        1,
+        "it mints its own balancing share instead — `string_share_sink_places` \
+         keys off this verdict, not off the capture mode"
+    );
+    assert_eq!(
+        generator_env_owned_fields(&p),
+        1,
+        "and the generator env keeps its own owner: two owners, two releases"
+    );
+}
+
+/// The control: the identically shaped capture with a local slot in the frame
+/// that materializes it. Here `OwnsMoved` can emit its consuming `Use`, so the
+/// transfer is real and the env destructor legitimately becomes the release
+/// authority. This is what stops the assertion above from being satisfiable by
+/// refusing every `move` capture outright.
+#[test]
+fn a_direct_move_capture_of_a_domestic_binding_still_owns_it() {
+    let p = pipeline_with_tc(&format!(
+        "{PRELUDE}{RUN}{DOMESTIC_MK}\n\
+         fn feed() -> i64 {{\n    let h = mk(0);\n    run(move || h.label.len())\n}}\n\
+         fn main() -> i64 {{\n    println(f\"x={{feed()}}\");\n    0\n}}\n"
+    ));
+    assert_eq!(
+        own_moved_env_fields(&p),
+        1,
+        "the gate is about the availability of a consumable source, not about \
+         `move` captures in general"
+    );
+}
+
+/// The ledger question, which the gate above does NOT answer. A checker-`Borrow`
+/// capture consumes nothing, so the consumable-source gate does not apply to it;
+/// it takes a RETAINED SHARE instead. Minting a share means a retain now and a
+/// release from the env free thunk later — on a handle a declared, non-audited
+/// `extern` still owns, that is a refcount operation against foreign memory.
+///
+/// Keying the proven-foreign query off `source_binding` answered "not foreign"
+/// for every transitively captured field and minted the share anyway. The query
+/// keys off the captured binding, which is a valid ledger key regardless of slot
+/// residency, and the parent's ledger is cloned into every child builder so a
+/// nested body sees the fact.
+#[test]
+fn a_transitive_borrow_capture_of_a_proven_foreign_binding_mints_no_share() {
+    let p = transitive_gen(FOREIGN_MK, "||");
+    assert_eq!(
+        retained_share_env_fields(&p),
+        0,
+        "a read-only capture of a proven-foreign binding must not retain: \
+         before the ledger was keyed by binding this was 1"
+    );
+    assert_eq!(
+        own_moved_env_fields(&p),
+        0,
+        "and it must not consume either"
+    );
+}
+
+/// The domestic control for the share: same shape, same slot-less capture, and
+/// the share is still minted — so the withhold above is provenance-directed
+/// rather than a blanket refusal on the transitive path.
+#[test]
+fn a_transitive_borrow_capture_of_a_domestic_binding_mints_a_share() {
+    let p = transitive_gen(DOMESTIC_MK, "||");
+    assert_eq!(
+        retained_share_env_fields(&p),
+        1,
+        "a domestic read-only capture retains its own share, which the env free \
+         thunk releases independently of the generator env's owner"
+    );
+}
+
+/// Reassignment: `var h` bound from a foreign call and then overwritten with a
+/// domestic value, and the mirror image. The proven-foreign ledger is monotone
+/// per function — nothing retracts the fact — so its answer for `h` is STALE
+/// after the store.
+///
+/// On the transitive path that staleness is structurally moot: the verdict is
+/// decided by the consumable-source gate, which depends on slot residency and
+/// not on provenance at all. Both reassignment directions therefore land on the
+/// same answer, and neither can mint a second owner of the generator env's
+/// field.
+#[test]
+fn a_reassigned_binding_captured_through_an_enclosing_env_takes_no_owner() {
+    for (name, mk_def, second) in [
+        (
+            "foreign then domestic",
+            FOREIGN_MK,
+            "Holder { label: \"d\" + \"omestic\" }",
+        ),
+        (
+            "domestic then foreign",
+            DOMESTIC_MK,
+            "unsafe { host_record() }",
+        ),
+    ] {
+        let p = pipeline_with_tc(&format!(
+            "{PRELUDE}{RUN}{mk_def}\n\
+             fn make() -> Generator<i64, ()> {{\n    \
+             var h = mk(0);\n    h = {second};\n    \
+             gen {{\n        yield run(move || h.label.len());\n    }}\n}}\n\
+             fn main() -> i64 {{\n    \
+             for value in make() {{\n        println(f\"x={{value}}\");\n    }}\n    0\n}}\n"
+        ));
+        assert_eq!(
+            own_moved_env_fields(&p),
+            0,
+            "{name}: a reassigned binding captured through the generator env \
+             must not claim an owner the frame cannot consume"
+        );
+        assert_eq!(
+            generator_env_owned_fields(&p),
+            1,
+            "{name}: the generator env remains the field's single owner"
+        );
+        // The verdict must REACH the instruction that synthesises the free
+        // thunk. Codegen derived that thunk's drop set from the env record's
+        // field types until this manifest was threaded through `MakeClosure`,
+        // so it released a field the environment did not own. Assert the
+        // verdicts are the SAME object at both instructions rather than a
+        // literal: the two reassignment directions land on different verdicts
+        // (the ledger is monotone, so `foreign then domestic` still reads
+        // foreign and takes a bare alias), and what this pins is that whatever
+        // was decided is what codegen receives.
+        assert_eq!(
+            make_closure_env_ownership(&p),
+            closure_env_init_ownership(&p),
+            "{name}: the manifest must travel to `MakeClosure`, not stop at \
+             `ClosureEnvInit`"
+        );
+    }
+}
+
+/// An ESCAPING environment that can neither own the field nor take a share of
+/// it is REFUSED, not silently left aliasing storage the enclosing environment
+/// releases at its own destruction.
+///
+/// `bytes` has no whole-value retain authority, so the share promotion that
+/// rescues a string-tree capture does not apply. The remaining options are a
+/// second owner or a dangling alias — the checker admits yielding this closure
+/// out of the `gen` body, so the alias really can be called after the generator
+/// is destroyed. Neither is emitted.
+#[test]
+fn an_escaping_capture_that_can_be_neither_owned_nor_shared_is_refused() {
+    let p = pipeline_with_tc(
+        r"record Blob { payload: bytes }
+
+fn mk() -> Blob {
+    let b: bytes = bytes.new();
+    b.push(7);
+    Blob { payload: b }
+}
+
+fn make() -> Generator<fn() -> i64, ()> {
+    let h = mk();
+    gen {
+        yield move || h.payload.len();
+    }
+}
+
+fn main() -> i64 {
+    var kept: fn() -> i64 = || 0;
+    for f in make() {
+        kept = f;
+    }
+    kept()
+}
+",
+    );
+    assert!(
+        p.diagnostics.iter().any(|d| matches!(
+            d.kind,
+            hew_mir::MirDiagnosticKind::EscapingCaptureAliasesEnclosingEnv { .. }
+        )),
+        "a non-retainable capture read out of an enclosing env, in an escaping \
+         closure, must fail closed: {:#?}",
+        p.diagnostics
+    );
+}
+
+/// The control: the SAME shape with a retainable field is admitted, because the
+/// environment can take an independent share of it. The refusal is directed at
+/// the absence of a retain authority, not at transitive captures in general.
+#[test]
+fn an_escaping_capture_with_a_retainable_field_is_admitted() {
+    let p = transitive_gen(DOMESTIC_MK, "move ||");
+    assert!(
+        !p.diagnostics.iter().any(|d| matches!(
+            d.kind,
+            hew_mir::MirDiagnosticKind::EscapingCaptureAliasesEnclosingEnv { .. }
+        )),
+        "a string-tree capture takes a share and must not be refused: {:#?}",
+        p.diagnostics
+    );
+}
+
+// ---------------------------------------------------------------------------
 // U1 — pattern payload binders
 // ---------------------------------------------------------------------------
 

@@ -19,6 +19,34 @@ fn is_lambda_pid_ty(ty: &ResolvedTy) -> bool {
     ty.is_builtin(BuiltinType::LambdaPid)
 }
 
+/// Where a closure-environment field reads its initial value from, and
+/// therefore whether this frame holds an owner it can transfer.
+///
+/// This is a different question from provenance. Provenance asks whether the
+/// value is domestic or foreign and is answered by the proven-foreign ledger;
+/// this asks whether an owner exists HERE to be consumed, which is what
+/// `ClosureEnvFieldOwnership::OwnsMoved` promises to do.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum CaptureSource {
+    /// The captured binding has a MIR local slot in this frame, so a consuming
+    /// `Use` statement can transfer its scope-exit owner into the environment.
+    ConsumableLocal,
+    /// The value was loaded out of an ENCLOSING closure or generator
+    /// environment (`capture_env_sources` / `ClosureEnvFieldLoad`). That
+    /// environment still owns the field and this frame has no owner to give.
+    AliasedFromEnclosingEnv,
+}
+
+impl CaptureSource {
+    fn of(source_binding: Option<BindingId>) -> Self {
+        if source_binding.is_some() {
+            Self::ConsumableLocal
+        } else {
+            Self::AliasedFromEnclosingEnv
+        }
+    }
+}
+
 impl Builder {
     /// True when `ty` may be snapshotted into a generator environment with a
     /// total semantic clone and inverse drop.
@@ -186,7 +214,7 @@ impl Builder {
         // preserves the pre-promotion behaviour rather than fabricating an
         // unowned heap box.
         let strategy = layout.allocation_strategy();
-        let (shim_name, _env_ty, env_place, suspends) =
+        let (shim_name, _env_ty, env_place, suspends, manifest) =
             self.materialize_closure_env(expr, params, ret_ty, body, captures, strategy)?;
         // Record the body-suspends verdict so the enclosing `Let` handler can
         // attribute it to the bound binding (the suspendable-callee
@@ -212,12 +240,20 @@ impl Builder {
         self.pending_closure_literal_heap =
             Some(strategy == crate::closure_env::AllocationStrategy::Heap);
 
+        // The env free thunk drops exactly what this manifest says the
+        // environment owns. A `Null` env has no record and therefore no fields.
+        let env_ownership = if env_mode == crate::model::ClosureEnvMode::Null {
+            Vec::new()
+        } else {
+            manifest.iter().map(|field| field.ownership).collect()
+        };
         let closure_place = self.alloc_local(expr.ty.clone());
         self.push_instr(Instr::MakeClosure {
             fn_symbol: shim_name,
             env: env_place,
             dest: closure_place,
             env_mode,
+            env_ownership,
         });
 
         Some(closure_place)
@@ -261,11 +297,89 @@ impl Builder {
     /// That fallback retires when a whole-value retain/clone authority exists
     /// for those leaf classes (copy-on-write north star); extend the predicate, not this
     /// match.
+    ///
+    /// # `OwnsMoved` requires a source this frame can consume
+    ///
+    /// `OwnsMoved` is a TRANSFER, and a transfer has two halves: consume the
+    /// source binding's owner, and install the env destructor as the release
+    /// authority. `CaptureSource::AliasedFromEnclosingEnv` — a capture resolved
+    /// through `capture_env_sources` and loaded out of an ENCLOSING closure or
+    /// generator environment by `ClosureEnvFieldLoad` — has no local slot in
+    /// this frame, so the first half cannot be emitted: there is no `Use`
+    /// statement to write against a binding with no slot, and the enclosing
+    /// environment goes on owning the field regardless. Taking the second half
+    /// alone does not transfer anything; it mints a SECOND owner of one value.
+    ///
+    /// So the unavailability of the consume half is the proof that the own half
+    /// is illegitimate, and `OwnsMoved` is gated on it below — once, after the
+    /// per-strategy match, so no arm can grow its own exception.
+    ///
+    /// The gate does not simply drop to `BorrowsOnly`. An aliasing env field is
+    /// only valid while the environment it read from is alive, and a closure
+    /// carrying a transitive capture CAN outlive its generator (yield the
+    /// closure out of the `gen` body and call it after the generator is
+    /// destroyed — the checker admits this). So where the shape is one the
+    /// recursive string retain fully co-owns (`string_or_bitcopy_tree`), the
+    /// field takes `OwnsClonedOrRetained` instead: the env mints its OWN share,
+    /// its free thunk releases that share, and the enclosing environment keeps
+    /// its owner — two independent owners, each released exactly once, with
+    /// independent lifetimes. `string_share_sink_places` keys off this verdict
+    /// (not off the capture mode), so the balancing retain is minted for a
+    /// `Move` capture on this path exactly as it is for a `Borrow` one.
+    ///
+    /// A shape with bytes/collection/resource leaves has no whole-value retain
+    /// authority yet, so it falls to `BorrowsOnly`: an alias the enclosing
+    /// environment still owns. That is the leak/dangle-if-escaped direction
+    /// rather than the double-free one, and it retires with the copy-on-write
+    /// north star — extend the predicate, not this gate.
+    ///
+    /// `OwnsClonedOrRetained` reached directly is deliberately NOT gated: it
+    /// consumes nothing to begin with.
+    ///
+    /// # The proven-foreign ledger is keyed by the CAPTURED binding
+    ///
+    /// Not by the place the value is read from. `source_binding` answers "can
+    /// this frame consume it"; the binding id answers "what is its provenance",
+    /// and it is a valid ledger key regardless of slot residency. The parent's
+    /// ledger is cloned into every child builder precisely so a nested body
+    /// sees the fact.
     pub(super) fn closure_env_capture_ownership(
         &self,
         strategy: crate::closure_env::AllocationStrategy,
         ty: &ResolvedTy,
-        source_binding: Option<BindingId>,
+        binding: BindingId,
+        source: CaptureSource,
+        mode: hew_types::ClosureCaptureMode,
+    ) -> ClosureEnvFieldOwnership {
+        let ownership = self.closure_env_capture_ownership_by_strategy(strategy, ty, binding, mode);
+        if ownership == ClosureEnvFieldOwnership::OwnsMoved
+            && source == CaptureSource::AliasedFromEnclosingEnv
+        {
+            // Nothing here to consume, so no transfer to claim. Take an
+            // independent share where the shape supports one; otherwise alias
+            // and leave the enclosing environment as the sole release
+            // authority.
+            let ty = self.subst_ty(ty);
+            return if super::composite_own::string_or_bitcopy_tree(
+                &ty,
+                &self.record_field_orders,
+                &self.enum_layouts,
+                &mut HashSet::new(),
+            ) {
+                ClosureEnvFieldOwnership::OwnsClonedOrRetained
+            } else {
+                ClosureEnvFieldOwnership::BorrowsOnly
+            };
+        }
+        ownership
+    }
+
+    /// The per-strategy verdict, before the consumable-source gate above.
+    fn closure_env_capture_ownership_by_strategy(
+        &self,
+        strategy: crate::closure_env::AllocationStrategy,
+        ty: &ResolvedTy,
+        binding: BindingId,
         mode: hew_types::ClosureCaptureMode,
     ) -> ClosureEnvFieldOwnership {
         match strategy {
@@ -274,8 +388,7 @@ impl Builder {
                 let ty = self.subst_ty(ty);
                 let nothing_to_own =
                     ValueClass::of_ty(&ty, &self.type_classes) == ValueClass::BitCopy;
-                let proven_foreign = source_binding
-                    .is_some_and(|binding| self.proven_foreign_bindings.contains(&binding));
+                let proven_foreign = self.proven_foreign_bindings.contains(&binding);
                 if mode == hew_types::ClosureCaptureMode::Move && !nothing_to_own && !proven_foreign
                 {
                     ClosureEnvFieldOwnership::OwnsMoved
@@ -297,8 +410,7 @@ impl Builder {
                 // whose ledger holds the fact, and the parent's ledger is
                 // cloned into every child builder so a nested closure sees it
                 // too.
-                let proven_foreign = source_binding
-                    .is_some_and(|binding| self.proven_foreign_bindings.contains(&binding));
+                let proven_foreign = self.proven_foreign_bindings.contains(&binding);
                 if nothing_to_own || proven_foreign {
                     ClosureEnvFieldOwnership::BorrowsOnly
                 } else if mode == hew_types::ClosureCaptureMode::Borrow
@@ -340,7 +452,7 @@ impl Builder {
         body: &HirExpr,
         captures: &[hew_hir::HirClosureCapture],
         strategy: crate::closure_env::AllocationStrategy,
-    ) -> Option<(String, ResolvedTy, Place, bool)> {
+    ) -> Option<(String, ResolvedTy, Place, bool, Vec<ClosureEnvFieldInit>)> {
         let closure_id = self.next_closure_id;
         self.next_closure_id = self
             .next_closure_id
@@ -448,12 +560,57 @@ impl Builder {
                 continue;
             };
             let field_ty = self.subst_ty(&capture.ty);
+            // Ledger query keys off the captured binding; `source_binding`
+            // answers the separate question of whether this frame holds an
+            // owner it can consume.
             let ownership = self.closure_env_capture_ownership(
                 strategy,
                 &field_ty,
-                source_binding,
+                capture.binding,
+                CaptureSource::of(source_binding),
                 capture.mode,
             );
+            // An ESCAPING environment that can neither own the field nor take a
+            // share of it would be left aliasing storage the enclosing
+            // environment releases at its own destruction — and this closure can
+            // outlive that. Refuse instead of emitting the alias.
+            if strategy == crate::closure_env::AllocationStrategy::Heap
+                && source_binding.is_none()
+                && ownership == ClosureEnvFieldOwnership::BorrowsOnly
+                && crate::model::ty_owns_heap_mir(
+                    &field_ty,
+                    &self.record_field_orders,
+                    &self.enum_layouts,
+                )
+                && !super::composite_own::string_or_bitcopy_tree(
+                    &field_ty,
+                    &self.record_field_orders,
+                    &self.enum_layouts,
+                    &mut HashSet::new(),
+                )
+            {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::EscapingCaptureAliasesEnclosingEnv {
+                        name: capture.name.clone(),
+                        ty: match &field_ty {
+                            ResolvedTy::Named { name, .. } => name.clone(),
+                            other => format!("{other:?}"),
+                        },
+                        site: expr.site,
+                    },
+                    note: format!(
+                        "escaping closure capture `{}` is read out of an enclosing \
+                         closure/generator environment that still owns it, and its type has no \
+                         whole-value retain authority, so this environment can take neither the \
+                         owner nor a share; the closure may outlive that environment and would \
+                         read freed storage. Bind the value into a local of this frame first, or \
+                         capture a field with a retainable type",
+                        capture.name
+                    ),
+                });
+                failed = true;
+                continue;
+            }
             if ownership == ClosureEnvFieldOwnership::OwnsMoved {
                 if let Some(binding) = source_binding {
                     self.statements.push(MirStatement::Use {
@@ -493,7 +650,7 @@ impl Builder {
         let env_place = self.alloc_local(env_ty.clone());
         self.push_instr(Instr::ClosureEnvInit {
             ty: env_ty.clone(),
-            fields: field_pairs,
+            fields: field_pairs.clone(),
             dest: env_place,
         });
 
@@ -512,7 +669,7 @@ impl Builder {
             .any(|b| terminator_is_suspend_carrier(&b.terminator));
         self.generated_functions.push(lowered);
 
-        Some((shim_name, env_ty, env_place, suspends))
+        Some((shim_name, env_ty, env_place, suspends, field_pairs))
     }
 
     /// The module-level lookup tables every child `Builder` (closure shim,

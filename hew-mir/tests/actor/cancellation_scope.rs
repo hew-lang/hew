@@ -88,6 +88,9 @@ const FORK_AWAIT_DRIVER: &str = r"
     }
 ";
 
+const SCOPE_MOVE_CLOSURE_OWNED_CAPTURE: &str =
+    include_str!("../../../tests/vertical-slice/accept/scope_move_closure_owned_capture.hew");
+
 #[test]
 fn fork_binding_awaited_emits_no_must_consume() {
     // `await t` consumes the linear Task<()> handle: the MustConsume exit
@@ -279,24 +282,7 @@ fn fork_string_arg_spawn_env_owns_the_moved_field() {
 
 #[test]
 fn spawned_move_closure_env_owns_its_scope_owned_capture() {
-    let mir = lower_clean_to_mir(
-        r#"
-        actor _Driver {
-            receive fn drive() {
-                let greeting = "hello" + " world";
-                scope {
-                    (move || println(greeting))();
-                };
-            }
-        }
-
-        fn main() -> i64 {
-            let d = spawn _Driver;
-            d.drive();
-            0
-        }
-        "#,
-    );
+    let mir = lower_clean_to_mir(SCOPE_MOVE_CLOSURE_OWNED_CAPTURE);
     let ownership = mir
         .raw_mir
         .iter()
@@ -313,6 +299,53 @@ fn spawned_move_closure_env_owns_its_scope_owned_capture() {
         ownership,
         &[SpawnEnvFieldOwnership::OwnsMoved],
         "the task environment must release the moved capture after the parent transfers it"
+    );
+}
+
+#[test]
+fn spawned_move_closure_parent_and_shim_emit_no_drops_for_moved_capture() {
+    // The parent transfers the string owner into the scope-owned environment,
+    // and the closure shim only reads that environment field. The task Rc
+    // environment callback is therefore the sole release site.
+    let mir = lower_clean_to_mir(SCOPE_MOVE_CLOSURE_OWNED_CAPTURE);
+    let shim_name = mir
+        .raw_mir
+        .iter()
+        .flat_map(|func| &func.blocks)
+        .flat_map(|block| block.instructions.iter())
+        .find_map(|instr| match instr {
+            Instr::SpawnTaskClosure { fn_symbol, .. } => Some(fn_symbol.as_str()),
+            _ => None,
+        })
+        .expect("spawned move closure entry shim");
+
+    // The elaborated receive handler carries the `__recv__` infix; a substring
+    // match on `Driver__run` silently covers nothing, so match the exact names
+    // and prove BOTH halves were visited.
+    let parent_name = "Driver__recv__run";
+    let mut matched = 0_usize;
+    for func in &mir.elaborated_mir {
+        if func.name == parent_name || func.name == shim_name {
+            matched += 1;
+            for (exit, plan) in &func.drop_plans {
+                assert!(
+                    plan.drops.is_empty(),
+                    "{}: expected empty drop plan at {exit:?}, got {:#?}",
+                    func.name,
+                    plan.drops
+                );
+            }
+        }
+    }
+    assert_eq!(
+        matched,
+        2,
+        "both the parent handler `{parent_name}` and the closure shim `{shim_name}` must be \
+         present in the elaborated MIR; saw {matched} of 2 (functions: {:?})",
+        mir.elaborated_mir
+            .iter()
+            .map(|func| func.name.as_str())
+            .collect::<Vec<_>>()
     );
 }
 

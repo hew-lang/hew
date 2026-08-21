@@ -46,9 +46,11 @@
 
 mod support;
 
-use support::leak_slope::{measure_leaks, require_leaks_tool};
+use support::leak_slope::{
+    measure_leaks, measure_leaks_exact, require_leaks_tool, run_under_malloc_scribble,
+};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use support::{describe_output, hew_binary, repo_root, require_codegen};
@@ -190,6 +192,73 @@ fn main() {\n\
 \x20   print(a + b + d);\n\
 \x20   print(\"OK\");\n\
 }\n";
+
+/// Scope-owned moved-capture fixture shared with the vertical-slice and MIR
+/// drop-plan oracles.
+const SCOPE_MOVE_CLOSURE_OWNED_CAPTURE: &str =
+    include_str!("../../tests/vertical-slice/accept/scope_move_closure_owned_capture.hew");
+
+/// A closure inside a `gen` body captures a binding of the ENCLOSING frame.
+/// That value has no local slot in the generator body, so it is read out of the
+/// generator's own environment — which still owns it. The closure is then
+/// YIELDED OUT and called after the `for` loop has destroyed the generator.
+///
+/// This is the shape that decides what a slot-less capture may take. Claiming
+/// the enclosing environment's owner (`own_moved`) mints a second owner of one
+/// value; merely aliasing it (`borrow`) leaves the closure pointing into a
+/// destroyed generator env. Neither survives this program: before the
+/// consumable-source gate it aborts in `hew-cabi`'s `free_cstring` with
+/// "C-string header sentinel missing (corrupted header or double-free)".
+///
+/// Taking an independent SHARE does survive it: the generator env releases its
+/// owner at destruction, the closure env holds its own retained share, and
+/// `after=11` prints from live memory.
+const GEN_TRANSITIVE_CAPTURE_OUTLIVES_GENERATOR: &str = r#"record Holder { label: string }
+
+fn make() -> Generator<fn() -> i64, ()> {
+    let h = Holder { label: "first" + " value" };
+    gen {
+        yield move || h.label.len();
+    }
+}
+
+fn main() -> i64 {
+    var kept: fn() -> i64 = || 0;
+    for f in make() {
+        kept = f;
+    }
+    println(f"after={kept()}");
+    0
+}
+"#;
+
+/// The reassignment twin. `h` is overwritten before the generator captures it,
+/// so the value the closure transitively reads is the SECOND one. A capture
+/// decision that answered from the binding's first value — or that claimed the
+/// generator env's owner — releases the wrong allocation or releases one
+/// allocation twice; the poisoned allocator turns either into an abort before
+/// the checksum prints.
+const GEN_TRANSITIVE_CAPTURE_AFTER_REASSIGN: &str = r#"record Holder { label: string }
+
+fn run(f: fn() -> i64) -> i64 { f() }
+
+fn make() -> Generator<i64, ()> {
+    var h = Holder { label: "first" + " value" };
+    h = Holder { label: "second" + " longer value" };
+    gen {
+        yield run(move || h.label.len());
+    }
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for value in make() {
+        total = total + value;
+    }
+    println(f"total={total}");
+    0
+}
+"#;
 
 // ── leak measurement plumbing (same shape as vec_local_drop_leak_oracle) ────
 
@@ -379,4 +448,262 @@ fn closure_env_shapes_run_clean_under_malloc_scribble() {
          scribbled value indicates a producer-side double-drop of an env field;\n{}",
         describe_output(&output)
     );
+}
+
+/// A heap string moved into a directly-invoked scope closure is released by
+/// the task environment exactly once: no leaked allocation and no second free.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "ownership oracle needs macOS `leaks(1)` and the Darwin poisoned allocator"
+)]
+#[test]
+fn scope_move_closure_owned_capture_has_zero_leaks_and_no_double_free() {
+    require_leaks_tool();
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("scope-move-closure-ownership-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        SCOPE_MOVE_CLOSURE_OWNED_CAPTURE,
+        dir.path(),
+        "scope_move_closure_owned_capture",
+    );
+
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "scope-owned moved capture must not double-free under the poisoned allocator:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "owned heap\n",
+        "the spawned closure must run to completion before ownership is measured"
+    );
+
+    let (count, bytes) = measure_leaks_exact(&bin);
+    assert_eq!(count, 0, "expected 0 leaks, got {count}");
+    assert_eq!(bytes, 0, "expected 0 leaked bytes, got {bytes}");
+    eprintln!("scope moved-capture ownership: 0 leaks, 0 double-frees — PASS");
+}
+
+/// Run a probe binary with NO allocator poisoning, bounded so a hang fails
+/// rather than blocks.
+///
+/// The detector for these two shapes is not the allocator: it is hew-cabi's own
+/// C-string header sentinel, which aborts with "C-string header sentinel missing
+/// (corrupted header or double-free)" on every platform. That check is what
+/// fires on a compiler built from `main` for both shapes below, so the plain run
+/// carries the regression on Linux and Windows as well as macOS. The
+/// poisoned-allocator twins add Darwin's extra sensitivity where it exists.
+fn run_plain(bin: &Path) -> std::process::Output {
+    support::try_run_bounded_command(
+        Command::new(bin),
+        format!("run {} unpoisoned", bin.display()),
+        std::time::Duration::from_secs(90),
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "probe {} did not finish within the bound: {error}. A hung \
+             memory-safety probe has established nothing.",
+            bin.display()
+        )
+    })
+}
+
+/// Assertions shared by the plain and poisoned runs of the outliving shape.
+fn assert_outliving_capture_reads_live_memory(output: &std::process::Output) {
+    assert!(
+        output.status.success(),
+        "a closure carrying a transitive capture must address live memory after \
+         its generator is destroyed — an abort here is the double-free or the \
+         dangling read the capture-ownership verdict decides between;\n{}",
+        describe_output(output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "after=11\n",
+        "the retained share must still hold the captured string's contents;\n{}",
+        describe_output(output)
+    );
+}
+
+/// Assertions shared by the plain and poisoned runs of the reassignment shape.
+fn assert_reassigned_capture_is_released_once(output: &std::process::Output) {
+    assert!(
+        output.status.success(),
+        "a reassigned binding captured through the generator env must not be \
+         released twice;\n{}",
+        describe_output(output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "total=19\n",
+        "the capture must read the SECOND value's length, from live memory;\n{}",
+        describe_output(output)
+    );
+}
+
+/// A transitive capture that OUTLIVES the environment it was read from must
+/// still address live memory. See [`GEN_TRANSITIVE_CAPTURE_OUTLIVES_GENERATOR`]
+/// for why this shape is the discriminator.
+///
+/// Runs everywhere: hew-cabi's header sentinel is the detector, not the
+/// allocator, and a compiler built from `main` aborts this program with exit
+/// 134 under a plain run.
+///
+/// Leaks are deliberately not asserted. The escaping closure pair is bound by a
+/// `for` binder and a `var`, neither of which
+/// `derive_closure_pair_drop_allowed` clears as a sole owner, so its env box is
+/// never freed — the documented fail-closed conservatism in `build_lifo_drops`
+/// ("A binding the prover did not clear leaks; it never double-frees"),
+/// reproducible on `main` with a closure that never touches a generator.
+/// Widening that prover is its own lane; this oracle pins the memory-safety
+/// half, which is the half this seam owns.
+#[test]
+fn generator_transitive_capture_outliving_its_generator_is_not_a_use_after_free() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("gen-transitive-capture-outlives-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        GEN_TRANSITIVE_CAPTURE_OUTLIVES_GENERATOR,
+        dir.path(),
+        "gen_transitive_capture_outlives",
+    );
+
+    assert_outliving_capture_reads_live_memory(&run_plain(&bin));
+}
+
+/// The same shape under Darwin's poisoned allocator, which additionally fills
+/// freed memory so a dangling read cannot coincidentally return the value it
+/// expected. `MallocScribble` / `MallocPreScribble` / `MallocGuardEdges` are
+/// libmalloc facilities and are ignored elsewhere, so this arm skips off macOS —
+/// the plain twin above is the cross-platform coverage.
+#[cfg_attr(not(target_os = "macos"), ignore = "poisoned allocator is macOS-only")]
+#[test]
+fn generator_transitive_capture_outliving_its_generator_survives_the_poisoned_allocator() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("gen-transitive-capture-outlives-poisoned-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        GEN_TRANSITIVE_CAPTURE_OUTLIVES_GENERATOR,
+        dir.path(),
+        "gen_transitive_capture_outlives_poisoned",
+    );
+
+    assert_outliving_capture_reads_live_memory(&run_under_malloc_scribble(&bin));
+}
+
+/// The share the slot-less `move` capture takes must be BALANCED, and the leak
+/// oracle cannot see that here: the escaping pair is bound by a `for` binder and
+/// a `var`, neither of which `derive_closure_pair_drop_allowed` clears, so its
+/// free thunk is never reached and a missing retain would show up as nothing at
+/// all. Prove it structurally on the emitted IR instead — the `+1` at ingress
+/// inside the generator body, and the typed release inside the environment's
+/// free thunk.
+#[test]
+fn generator_transitive_capture_retain_and_release_are_balanced_in_ir() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("gen-transitive-capture-ir-")
+        .tempdir()
+        .expect("tempdir");
+    let name = "gen_transitive_capture_ir";
+    let _ = compile_to_native(GEN_TRANSITIVE_CAPTURE_OUTLIVES_GENERATOR, dir.path(), name);
+    let ll = std::fs::read_to_string(dir.path().join(format!("{name}.ll")))
+        .expect("read emitted closure-capture IR");
+
+    let gen_body = ir_fn_body(&ll, "@__hew_gen_body_make_0")
+        .unwrap_or_else(|| panic!("no generator body in emitted IR:\n{ll}"));
+    assert!(
+        gen_body.contains("hew_string_clone"),
+        "the slot-less `move` capture must mint its own share at ingress — \
+         without the retain the environment's release is unbalanced:\n{gen_body}"
+    );
+
+    let thunk = ir_fn_body(
+        &ll,
+        "@__hew_closure_env_free___hew_closure_invoke___hew_gen_body_make_0_0",
+    )
+    .unwrap_or_else(|| panic!("no closure env free thunk in emitted IR:\n{ll}"));
+    assert!(
+        thunk.contains("__hew_record_drop_inplace_Holder"),
+        "and the environment's free thunk must release that share through the \
+         record's typed release:\n{thunk}"
+    );
+    assert!(
+        thunk.contains("hew_dyn_box_free"),
+        "the box is freed after the field release:\n{thunk}"
+    );
+}
+
+/// Extract an LLVM function body from its `define` line to the closing brace.
+fn ir_fn_body(ll: &str, needle: &str) -> Option<String> {
+    let mut body = String::new();
+    let mut in_fn = false;
+    for line in ll.lines() {
+        if !in_fn {
+            if line.starts_with("define") && line.contains(needle) {
+                in_fn = true;
+                body.push_str(line);
+                body.push('\n');
+            }
+            continue;
+        }
+        body.push_str(line);
+        body.push('\n');
+        if line.starts_with('}') {
+            return Some(body);
+        }
+    }
+    None
+}
+
+/// The reassignment twin of the oracle above: no double free when the
+/// transitively captured binding was overwritten before the capture. Plain run,
+/// so it carries on every platform.
+#[test]
+fn generator_transitive_capture_after_reassignment_does_not_double_free() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("gen-transitive-capture-reassign-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        GEN_TRANSITIVE_CAPTURE_AFTER_REASSIGN,
+        dir.path(),
+        "gen_transitive_capture_reassign",
+    );
+
+    assert_reassigned_capture_is_released_once(&run_plain(&bin));
+}
+
+/// The reassignment shape under Darwin's poisoned allocator. Skips off macOS for
+/// the same reason as its sibling; the plain twin above is the cross-platform
+/// coverage.
+#[cfg_attr(not(target_os = "macos"), ignore = "poisoned allocator is macOS-only")]
+#[test]
+fn generator_transitive_capture_after_reassignment_survives_the_poisoned_allocator() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("gen-transitive-capture-reassign-poisoned-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        GEN_TRANSITIVE_CAPTURE_AFTER_REASSIGN,
+        dir.path(),
+        "gen_transitive_capture_reassign_poisoned",
+    );
+
+    assert_reassigned_capture_is_released_once(&run_under_malloc_scribble(&bin));
 }

@@ -547,13 +547,13 @@ fn pointer_families() -> () [conv=default]
     stmt: bind BindingId(15) values site=SiteId(201) ty=Vec<fn(i64) -> i64>
     stmt: use BindingId(15) values site=SiteId(204) ty=Vec<fn(i64) -> i64> intent=Read
     _1 = move _0
-    _3 = make_closure __hew_named_fn_invoke_identity env=_2 mode=null
+    _3 = make_closure __hew_named_fn_invoke_identity env=_2 mode=null env_own=[]
     call hew_vec_push_ptr(_1, _3) [authority=Compiler(ClosurePairVec(Push))] -> bb2
   bb2:
     stmt: eval site=SiteId(203) ty=()
     stmt: use BindingId(15) values site=SiteId(207) ty=Vec<fn(i64) -> i64> intent=Read
     _4 = const.i64 0
-    _6 = make_closure __hew_named_fn_invoke_identity env=_5 mode=null
+    _6 = make_closure __hew_named_fn_invoke_identity env=_5 mode=null env_own=[]
     call hew_vec_set_ptr(_1, _4, _6) [authority=Compiler(ClosurePairVec(Set))] -> bb3
   bb3:
     stmt: eval site=SiteId(206) ty=()
@@ -562,7 +562,7 @@ fn pointer_families() -> () [conv=default]
   bb4:
     stmt: eval site=SiteId(210) ty=fn(i64) -> i64
     stmt: use BindingId(15) values site=SiteId(213) ty=Vec<fn(i64) -> i64> intent=Read
-    _9 = make_closure __hew_named_fn_invoke_identity env=_8 mode=null
+    _9 = make_closure __hew_named_fn_invoke_identity env=_8 mode=null env_own=[]
     call hew_vec_push_ptr(_1, _9) [authority=Compiler(ClosurePairVec(Push))] -> bb5
   bb5:
     stmt: eval site=SiteId(212) ty=()

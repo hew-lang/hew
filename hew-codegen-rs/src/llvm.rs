@@ -14753,8 +14753,9 @@ fn lower_instruction_with_cancel_drops(
             env,
             dest,
             env_mode,
+            env_ownership,
         } => {
-            lower_make_closure(fn_ctx, fn_symbol, *env, *dest, *env_mode)?;
+            lower_make_closure(fn_ctx, fn_symbol, *env, *dest, *env_mode, env_ownership)?;
             let _ = ctx;
         }
         Instr::ClosureEnvFieldLoad {
@@ -19383,6 +19384,7 @@ fn lower_make_closure(
     env: Place,
     dest: Place,
     env_mode: hew_mir::ClosureEnvMode,
+    env_ownership: &[hew_mir::ClosureEnvFieldOwnership],
 ) -> CodegenResult<()> {
     let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
     let struct_ty = match dest_ty {
@@ -19418,7 +19420,9 @@ fn lower_make_closure(
         // the box's (size, align) statically — the same alloc/dealloc
         // layout-agreement convention as the dyn-Trait vtable slot 0
         // (`emit_dyn_trait_drop_in_place_fns`).
-        hew_mir::ClosureEnvMode::HeapBox => emit_closure_env_heap_box(fn_ctx, fn_symbol, env)?,
+        hew_mir::ClosureEnvMode::HeapBox => {
+            emit_closure_env_heap_box(fn_ctx, fn_symbol, env, env_ownership)?
+        }
     };
     let fn_field = fn_ctx
         .builder
@@ -19516,6 +19520,7 @@ fn emit_closure_env_heap_box<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbol: &str,
     env: Place,
+    env_ownership: &[hew_mir::ClosureEnvFieldOwnership],
 ) -> CodegenResult<PointerValue<'ctx>> {
     let (env_alloca, env_llvm_ty) = place_pointer(fn_ctx, env)?;
     let (env_size, env_align) = abi_size_align(env_llvm_ty, Some(fn_ctx.target_data))?;
@@ -19582,7 +19587,34 @@ fn emit_closure_env_heap_box<'ctx>(
             )));
         }
     };
-    let field_kinds = env_field_drop_kinds(fn_ctx, fn_symbol, env, "closure")?;
+    // The MANIFEST decides what the environment owns, not the field types.
+    // `env_field_drop_kinds` answers "how would this type be released"; the
+    // manifest answers "is this environment the one that must release it". A
+    // `BorrowsOnly` field is owned by someone else — a proven-foreign handle
+    // the host owns, or a field an enclosing environment still owns and this
+    // one only aliases — so releasing it here is a second free. Neutralise
+    // those to the no-op `BitCopy` kind before the thunk is emitted.
+    let field_count = env_struct.count_fields() as usize;
+    if env_ownership.len() != field_count {
+        return Err(CodegenError::FailClosed(format!(
+            "closure environment for `{fn_symbol}` has {field_count} fields but its \
+             ownership manifest has {} entries; the manifest and the env struct have \
+             drifted and the free thunk cannot be derived",
+            env_ownership.len()
+        )));
+    }
+    let field_kinds: Vec<StateFieldCloneKind> =
+        env_field_drop_kinds(fn_ctx, fn_symbol, env, "closure")?
+            .into_iter()
+            .enumerate()
+            .map(|(idx, kind)| {
+                if env_ownership[idx] == hew_mir::ClosureEnvFieldOwnership::BorrowsOnly {
+                    StateFieldCloneKind::BitCopy { size_bytes: 0 }
+                } else {
+                    kind
+                }
+            })
+            .collect();
     let free_thunk = crate::thunks::get_or_emit_closure_env_free_thunk(
         fn_ctx,
         fn_symbol,

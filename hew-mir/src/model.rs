@@ -5184,6 +5184,23 @@ pub enum Instr {
         /// and `Null` stores a null env (named-fn shims and capture-free
         /// escaping closures — the shim never loads the env).
         env_mode: ClosureEnvMode,
+        /// Per-field ownership manifest for the environment record, in field
+        /// order, as decided ONCE by `closure_env_capture_ownership` at the
+        /// literal site.
+        ///
+        /// The `HeapBox` free thunk is the environment's release authority, so
+        /// it must drop exactly the fields this manifest says the environment
+        /// owns. Deriving that set from the env record's field TYPES instead —
+        /// which is what codegen did before this manifest reached it — releases
+        /// every heap-owning field regardless of the verdict, so a
+        /// `BorrowsOnly` field (a proven-foreign capture, or a capture aliased
+        /// out of an enclosing environment that still owns it) was released a
+        /// second time when the box was freed.
+        ///
+        /// Empty for `ClosureEnvMode::Null` (no environment record exists).
+        /// Codegen fail-closes when the length disagrees with the registered
+        /// env struct's field count, mirroring the `SpawnTaskClosure` check.
+        env_ownership: Vec<ClosureEnvFieldOwnership>,
     },
     /// Load one captured field from a closure invoke shim's environment pointer.
     ///
@@ -5301,7 +5318,8 @@ pub enum Instr {
         env_ty: ResolvedTy,
         /// Per-field ownership contract for the Rc task environment. Fork
         /// argument fields transferred from the parent are owned by this
-        /// environment; scope-owned closure captures remain borrowed.
+        /// environment; scope-owned closure captures carry the ownership
+        /// verdict recorded while their closure environment was materialised.
         env_ownership: Vec<SpawnEnvFieldOwnership>,
     },
     /// Run the drop ritual for `place`. Cluster 3 makes this first-class:
@@ -7413,6 +7431,26 @@ pub enum MirDiagnosticKind {
     CannotMaterializeClosureCapture {
         binding: BindingId,
         name: String,
+        site: SiteId,
+    },
+    /// An ESCAPING closure captured a value it can neither own nor safely
+    /// alias: the capture has no local slot in this frame (it is read out of an
+    /// ENCLOSING closure or generator environment that still owns it), and its
+    /// type has no whole-value retain authority, so the environment cannot take
+    /// an independent share of it either.
+    ///
+    /// Aliasing would be the only remaining option, and it is unsound here: the
+    /// checker admits yielding such a closure out of a `gen` body, so the pair
+    /// can be called after the enclosing environment is destroyed and would
+    /// read freed storage. Owning would be a second release of one value.
+    ///
+    /// Refuse at compile time rather than emit either. This retires when a
+    /// whole-value retain/clone authority exists for bytes/collection/resource
+    /// leaves (the copy-on-write north star) — at that point the capture takes
+    /// a share like every retainable shape does, and this arm goes away.
+    EscapingCaptureAliasesEnclosingEnv {
+        name: String,
+        ty: String,
         site: SiteId,
     },
     /// A remote dispatch (`RemotePid<T>` ask/tell) resolved to a

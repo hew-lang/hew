@@ -13463,6 +13463,7 @@ fn lower_instruction_with_cancel_drops(
                 if !matches!(
                     (lhs_resolved_ty, rhs_resolved_ty),
                     (ResolvedTy::Named { .. }, ResolvedTy::Named { .. })
+                        | (ResolvedTy::Tuple(_), ResolvedTy::Tuple(_))
                 ) {
                     return Err(CodegenError::FailClosed(format!(
                         "IntCmp aggregate operands must be named structural-equality types; \

@@ -5,10 +5,8 @@
 //! NUL-terminated. All returned [`HewYamlValue`] pointers are heap-allocated
 //! via `Box` and must be freed with [`hew_yaml_free`].
 use base64::Engine as _;
-use hew_cabi::{
-    cabi::str_to_malloc,
-    vec::{u8_to_hwvec, HewVec},
-};
+use hew_cabi::cabi::str_to_malloc;
+use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
@@ -433,19 +431,23 @@ pub unsafe extern "C" fn hew_yaml_get_string(val: *const HewYamlValue) -> *mut c
 
 /// Get a base64-decoded bytes value from a [`HewYamlValue`].
 ///
-/// Returns a newly allocated [`HewVec`] for valid string inputs. Null,
-/// non-string, or invalid base64 inputs return null and overwrite
-/// [`hew_yaml_last_error`] so callers never observe a stale error from a prior
-/// parse or decode failure.
+/// Returns a newly allocated [`BytesTriple`] for valid string inputs. Null,
+/// non-string, oversized, or invalid base64 inputs return empty bytes and
+/// overwrite [`hew_yaml_last_error`] so callers never observe a stale error from
+/// a prior parse or decode failure.
 ///
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewYamlValue`], or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_yaml_get_bytes(val: *const HewYamlValue) -> *mut HewVec {
+pub unsafe extern "C" fn hew_yaml_get_bytes(val: *const HewYamlValue) -> BytesTriple {
     if val.is_null() {
         set_parse_last_error("invalid YAML bytes: value was null or key not found");
-        return std::ptr::null_mut();
+        return BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
     }
     // SAFETY: val is a valid HewYamlValue pointer per caller contract.
     let v = unsafe { &*val };
@@ -454,15 +456,34 @@ pub unsafe extern "C" fn hew_yaml_get_bytes(val: *const HewYamlValue) -> *mut He
             Ok(decoded) => decoded,
             Err(err) => {
                 set_parse_last_error(format!("invalid YAML bytes: base64 decode failed: {err}"));
-                return std::ptr::null_mut();
+                return BytesTriple {
+                    ptr: std::ptr::null_mut(),
+                    offset: 0,
+                    len: 0,
+                };
             }
         };
+        let Ok(len) = u32::try_from(decoded.len()) else {
+            set_parse_last_error(format!(
+                "invalid YAML bytes: decoded payload of {} bytes exceeds the maximum bytes length",
+                decoded.len()
+            ));
+            return BytesTriple {
+                ptr: std::ptr::null_mut(),
+                offset: 0,
+                len: 0,
+            };
+        };
         clear_parse_last_error();
-        // SAFETY: allocates a new HewVec owned by the caller.
-        unsafe { u8_to_hwvec(&decoded) }
+        // SAFETY: decoded is valid for len bytes and the runtime copies it into the returned bytes.
+        unsafe { hew_bytes_from_static(decoded.as_ptr(), len) }
     } else {
         set_parse_last_error("invalid YAML bytes: value was not a string");
-        std::ptr::null_mut()
+        BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        }
     }
 }
 
@@ -1064,6 +1085,7 @@ pub extern "C" fn hew_yaml_from_null() -> *mut HewYamlValue {
 )]
 mod tests {
     use super::*;
+    use hew_runtime::bytes::hew_bytes_drop;
     use std::ffi::CString;
     use std::fmt::Write as _;
 
@@ -1084,14 +1106,21 @@ mod tests {
         s
     }
 
-    /// Helper: read a bytes `HewVec` pointer and free it.
-    unsafe fn read_and_free_bytes(ptr: *mut HewVec) -> Vec<u8> {
-        assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid bytes HewVec returned by this crate.
-        let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(ptr) };
-        // SAFETY: ptr was allocated by the runtime allocator.
-        unsafe { hew_cabi::vec::hew_vec_free(ptr) };
-        bytes
+    /// Helper: read a bytes triple and release its runtime allocation.
+    unsafe fn read_and_free_bytes(bytes: BytesTriple) -> Vec<u8> {
+        let result = if bytes.len == 0 {
+            Vec::new()
+        } else {
+            assert!(!bytes.ptr.is_null());
+            // SAFETY: bytes.ptr plus offset is valid for bytes.len bytes.
+            unsafe {
+                std::slice::from_raw_parts(bytes.ptr.add(bytes.offset as usize), bytes.len as usize)
+            }
+            .to_vec()
+        };
+        // SAFETY: bytes.ptr is null for empty bytes or owned by the returned triple.
+        unsafe { hew_bytes_drop(bytes.ptr) };
+        result
     }
 
     #[test]
@@ -1966,7 +1995,7 @@ description: a language runtime
             assert!(!field.is_null());
 
             let bytes = hew_yaml_get_bytes(field);
-            assert!(bytes.is_null());
+            assert!(bytes.ptr.is_null());
 
             let err = read_and_free_cstr(hew_yaml_last_error());
             assert!(err.contains("invalid YAML bytes"));
@@ -2009,7 +2038,7 @@ description: a language runtime
             let key = CString::new("b").unwrap();
             let field = hew_yaml_get_field(bad, key.as_ptr());
             assert!(!field.is_null());
-            assert!(hew_yaml_get_bytes(field).is_null());
+            assert!(hew_yaml_get_bytes(field).ptr.is_null());
             assert!(!read_and_free_cstr(hew_yaml_last_error()).is_empty());
             hew_yaml_free(field);
             hew_yaml_free(bad);
@@ -2024,7 +2053,7 @@ description: a language runtime
             let field = hew_yaml_get_field(val, key.as_ptr());
             assert!(field.is_null());
 
-            assert!(hew_yaml_get_bytes(field).is_null());
+            assert!(hew_yaml_get_bytes(field).ptr.is_null());
             let err = read_and_free_cstr(hew_yaml_last_error());
             assert!(err.contains("null") || err.contains("key not found"));
 

@@ -286,8 +286,8 @@ jobs:
             | tee clippy-results.sarif \
             | sarif-fmt
 
-      - name: Verify JIT host ABI classification
-        run: make verify-ffi test-verify-ffi test-python310-toml-compat
+      - name: Verify C ABI surface and JIT host ABI classification
+        run: make cabi-surface-check test-cabi-surface verify-ffi test-verify-ffi test-python310-toml-compat
 
       - name: Legacy path syntax lint
         run: make legacy-path-syntax-lint
@@ -630,14 +630,29 @@ jobs:
   # Produces JUnit XML for GitHub Actions test reporting.
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test:
-    name: Linux gates
+    name: Linux gates (shard ${{ matrix.shard }}/4)
     needs: changes
     runs-on: ubuntu-24.04
-    # A cancelled cold-runner job completed about 105 min of work, then spent
-    # 20 min in its final O2 differential step. That step measures about 33
-    # min warm, yielding about 138 min of expected work. 180 min leaves about
-    # 42 min for cold-runner variance while retaining a finite hung-job limit.
-    timeout-minutes: 180
+    # Four shards of the selected preflight profile. The dispatcher partitions
+    # the profile's command list into four duration-balanced groups and each
+    # job runs `--shard N/4`; the partition is exhaustive and disjoint by
+    # construction, and ordering-dependent commands stay in the same shard, so
+    # the union of the four shards is the same gate set the single serial job
+    # ran. Warm-up is derived per shard, so a shard only builds the artifacts
+    # its own commands need.
+    #
+    # The shard count here and the `/4` denominator below MUST agree — a
+    # mismatch would leave a shard's commands unrun behind green checks.
+    # scripts/tests/test_ci_preflight_dispatcher.py asserts they do.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    # The serial job needed 180 min for about 138 min of expected work. The
+    # heaviest of the four shards is about 31 min of gate work on top of
+    # roughly 15 min of provisioning and warm-up; 90 min leaves generous
+    # cold-runner headroom while retaining a finite hung-job limit.
+    timeout-minutes: 90
     env:
       # mold is installed by the "Install build tools" step below.
       # Use gcc's -fuse-ld=mold flag (no clang-as-driver dependency) to
@@ -753,17 +768,34 @@ jobs:
           CI_PREFLIGHT_BASE: origin/main
           COMPILED_HEW_GATE_OWNER: aggregate
           HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
-        run: scripts/ci-preflight-dispatcher.sh --base origin/main
+        # --fail-fast matches `make preflight`: a red shard stops instead of
+        # spending another 25 min producing a verdict the first failure already
+        # decided. Sharding is what keeps this from narrowing the report —
+        # strategy.fail-fast is false, so the other three shards run to
+        # completion and a broken change still surfaces up to four independent
+        # first failures.
+        #
+        # The dispatcher writes a per-command result table (command, elapsed,
+        # result, first failure line) to $GITHUB_STEP_SUMMARY and emits an
+        # ::error annotation per failed command, so a red shard reports the
+        # failing line at the top of the job instead of only "exit 1".
+        run: scripts/ci-preflight-dispatcher.sh --base origin/main --fail-fast --shard ${{ matrix.shard }}/4
 
       - name: Upload test reports
         if: always() && env.RUN_CODE_PATH == 'true'
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
           report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
-          check_name: Test Results (Linux)
+          check_name: Test Results (Linux shard ${{ matrix.shard }})
 
   # Keep the established required-check name while allowing the Rust and
   # compiled-Hew suites to execute in parallel.
+  #
+  # `needs.build-and-test.result` is the AGGREGATE of the four Linux gate
+  # shards: GitHub reports `success` only when every matrix leg succeeded, and
+  # a cancelled, skipped or failed leg leaves it non-success. That is what lets
+  # the shards multiply without touching branch protection — this job's name,
+  # "Build & test (Linux)", remains the single required context.
   linux-required:
     name: Build & test (Linux)
     needs: [changes, build-and-test, compiled-hew-aggregate]

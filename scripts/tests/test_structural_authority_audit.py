@@ -681,6 +681,144 @@ with tempfile.TemporaryDirectory() as temp:
         "whitespace-qualified non-format macro paths must remain controls"
     )
 
+    # Every argument-check primitive call under hew-types/src/ is inventoried by
+    # its ENCLOSING FUNCTION's exact name. There is no allowlist to defeat: the
+    # authority's own calls are a reviewed row like any other.
+    application_file = work / "hew-types/src/check/methods.rs"
+    application_file.parent.mkdir(parents=True, exist_ok=True)
+    expression_file = work / "hew-types/src/check/expressions.rs"
+    target.write_text("")
+    for source_text, expected_form, description in (
+        (
+            "fn apply_one_arg() { self.check_against(expr, sp, param_ty); }\n",
+            "apply_one_arg",
+            "direct parameter application",
+        ),
+        (
+            "fn launder(&mut self, expr: &Expr, sp: &Span, expected: &Ty) {\n"
+            "    self.check_against(expr, sp, expected);\n"
+            "}\n",
+            "launder",
+            "helper laundering the parameter as `expected`",
+        ),
+        (
+            "fn ufcs_apply() { Self::check_against(self, expr, sp, param_ty); }\n",
+            "ufcs_apply",
+            "UFCS spelling of the primitive",
+        ),
+        (
+            "fn path_apply() { Checker::check_expr_with_expected(self, expr, sp, p); }\n",
+            "path_apply",
+            "fully-pathed spelling of the other primitive",
+        ),
+        (
+            "fn apply_instantiated_call_signature_with_assoc_renamed() {\n"
+            "    self.check_against(expr, sp, param_ty);\n"
+            "}\n",
+            "apply_instantiated_call_signature_with_assoc_renamed",
+            "a name that merely CONTAINS the authority's name",
+        ),
+        (
+            "fn parenthesized_callee() {\n"
+            "    (Checker::check_against)(self, expr, sp, param_ty);\n"
+            "}\n",
+            "parenthesized_callee",
+            "a parenthesized callee, whose call text does not reduce by splitting",
+        ),
+        (
+            "fn commented_callee() {\n"
+            "    Checker::check_against /* still the callee */ (self, e, s, p);\n"
+            "}\n",
+            "commented_callee",
+            "a comment between callee and arguments",
+        ),
+        (
+            "fn nested_in_argument() {\n"
+            "    outer(self.check_against(expr, sp, param_ty));\n"
+            "}\n",
+            "nested_in_argument",
+            "a call nested inside another call's arguments",
+        ),
+        (
+            "fn nested_two_deep() {\n"
+            "    outer(middle(Self::check_against(self, expr, sp, param_ty)));\n"
+            "}\n",
+            "nested_two_deep",
+            "a UFCS call nested two argument lists deep",
+        ),
+    ):
+        application_file.write_text(source_text)
+        set_inventory(work)
+        result = run(work)
+        assert result.returncode != 0, (
+            f"a new {description} must fail the signature-application ratchet"
+        )
+        assert f"signature-application/{expected_form} " in result.stderr, (
+            f"{description} must be attributed to its enclosing function: {result.stderr}"
+        )
+
+    # A nested function owns its own row rather than being absorbed by the
+    # function it sits inside.
+    application_file.write_text(
+        "fn outer_listed() {\n"
+        "    fn inner_helper() { self.check_against(expr, sp, param_ty); }\n"
+        "}\n"
+    )
+    set_inventory(work)
+    result = run(work)
+    assert result.returncode != 0
+    assert "signature-application/inner_helper " in result.stderr, (
+        "the innermost enclosing function must own the finding: " + result.stderr
+    )
+
+    # An extra call inside an ALREADY-reviewed function still fails, because the
+    # inventory records a count and not merely a name.
+    application_file.write_text(
+        "fn reviewed_site() { self.check_against(expr, sp, param_ty); }\n"
+    )
+    set_inventory(
+        work,
+        "signature-application\treviewed_site\thew-types/src/check/methods.rs\t1"
+        "\tstage-1\treviewed\n",
+    )
+    assert run(work).returncode == 0, "a matching reviewed count must pass"
+    application_file.write_text(
+        "fn reviewed_site() {\n"
+        "    self.check_against(expr, sp, param_ty);\n"
+        "    self.check_against(other, sp, param_ty);\n"
+        "}\n"
+    )
+    result = run(work)
+    assert result.returncode != 0, (
+        "a second call inside a reviewed function must move the count and fail"
+    )
+
+    # Callee POSITION is structural too: the primitive named as an argument, or
+    # bound as a value, is not an application.
+    application_file.write_text(
+        "fn passes_the_primitive() { register(check_against); }\n"
+        "fn binds_the_primitive() { let f = self.check_against; }\n"
+        "fn passes_it_nested() { outer(register(check_against)); }\n"
+    )
+    set_inventory(work)
+    assert run(work).returncode == 0, (
+        "the primitive in argument or value position is not a call and must not be "
+        "counted, however deeply the argument list is nested"
+    )
+
+    # expressions.rs is in scope: a one-authority invariant cannot let a helper
+    # hide in the file where the primitives happen to live.
+    application_file.write_text("")
+    expression_file.write_text(
+        "fn hidden_helper() { self.check_against(expr, sp, param_ty); }\n"
+    )
+    set_inventory(work)
+    result = run(work)
+    assert result.returncode != 0, (
+        "argument checking in expressions.rs must be inventoried, not exempt"
+    )
+    assert "signature-application/hidden_helper " in result.stderr
+    expression_file.unlink()
 # ── Darwin poisoned-allocator gate ───────────────────────────────────────────
 #
 # Each case is a minimal test file the audit must accept or reject. The

@@ -57,6 +57,29 @@ ORACLE="$SCRIPT_DIR/ll-byte-identity.sh"
 TMPDIR_BASE="$(mktemp -d /tmp/hew-ll-identity-selftest.XXXXXX)"
 trap 'rm -rf "$TMPDIR_BASE"' EXIT
 
+# Counterfactual replay.  Every oracle invocation below is a COUNTERFACTUAL: the
+# oracle is driven against deliberately mutated IR so this self-test can assert
+# it reacts.  Discarding that output to /dev/null hid it from readers and, worse,
+# left this self-test with no evidence in its log that the bait path ran at all.
+# Replaying it behind the CF- marker keeps it readable, keeps the preflight's
+# first-failure extractor from mistaking it for a verdict, and gives
+# `ci-preflight-dispatcher.sh --check-counterfactual-output` the proof it needs.
+COUNTERFACTUAL_MARKER="CF-"
+
+run_counterfactual() {
+  local label="$1"
+  shift
+  local output=""
+  local status=0
+
+  output="$("$@" 2>&1)" || status=$?
+  printf '%s\n' "${COUNTERFACTUAL_MARKER}[${label}] exit ${status}"
+  if [[ -n "$output" ]]; then
+    printf '%s\n' "$output" | sed "s/^/${COUNTERFACTUAL_MARKER}[${label}] /"
+  fi
+  return "$status"
+}
+
 pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1: $2" >&2; exit 1; }
 
@@ -198,7 +221,7 @@ write_baseline "$C1_BASE/fixture.ll"
 write_content_mutated "$C1_HEAD/fixture.ll"
 
 rc=0
-bash "$ORACLE" "$C1_BASE" "$C1_HEAD" > /dev/null 2>&1 || rc=$?
+run_counterfactual "content-change-caught" bash "$ORACLE" "$C1_BASE" "$C1_HEAD" || rc=$?
 if [[ "$rc" -eq 1 ]]; then
   pass "content-change-caught"
 elif [[ "$rc" -eq 0 ]]; then
@@ -220,7 +243,7 @@ write_reg_baseline "$C2_BASE/fixture.ll"
 write_reg_perturbed "$C2_HEAD/fixture.ll"
 
 rc=0
-bash "$ORACLE" "$C2_BASE" "$C2_HEAD" > /dev/null 2>&1 || rc=$?
+run_counterfactual "register-perturbation-caught" bash "$ORACLE" "$C2_BASE" "$C2_HEAD" || rc=$?
 if [[ "$rc" -eq 1 ]]; then
   pass "register-perturbation-caught"
 elif [[ "$rc" -eq 0 ]]; then
@@ -242,7 +265,7 @@ write_baseline "$C3_BASE/fixture.ll"
 write_baseline "$C3_HEAD/fixture.ll"
 
 rc=0
-bash "$ORACLE" "$C3_BASE" "$C3_HEAD" > /dev/null 2>&1 || rc=$?
+run_counterfactual "baseline-identical" bash "$ORACLE" "$C3_BASE" "$C3_HEAD" || rc=$?
 if [[ "$rc" -eq 0 ]]; then
   pass "baseline-identical"
 else
@@ -263,11 +286,10 @@ write_baseline "$C4_BASE/fixture.ll"
 write_pool_id_reordered "$C4_HEAD/fixture.ll"
 
 rc=0
-bash "$ORACLE" "$C4_BASE" "$C4_HEAD" > /dev/null 2>&1 || rc=$?
+run_counterfactual "pool-id-reordering-transparent" bash "$ORACLE" "$C4_BASE" "$C4_HEAD" || rc=$?
 if [[ "$rc" -eq 0 ]]; then
   pass "pool-id-reordering-transparent"
 else
-  bash "$ORACLE" "$C4_BASE" "$C4_HEAD" 2>&1 || true
   fail "pool-id-reordering-transparent" \
     "oracle exited $rc (expected 0) — false positive on pool-id reordering"
 fi
@@ -286,7 +308,7 @@ write_numeric_const_foo "$C5_BASE/fixture.ll"
 write_numeric_const_bar "$C5_HEAD/fixture.ll"
 
 rc=0
-bash "$ORACLE" "$C5_BASE" "$C5_HEAD" > /dev/null 2>&1 || rc=$?
+run_counterfactual "numeric-const-name-change-caught" bash "$ORACLE" "$C5_BASE" "$C5_HEAD" || rc=$?
 if [[ "$rc" -eq 1 ]]; then
   pass "numeric-const-name-change-caught"
 elif [[ "$rc" -eq 0 ]]; then
@@ -309,11 +331,10 @@ write_numeric_const_foo "$C6_BASE/fixture.ll"
 write_numeric_const_foo_reordered "$C6_HEAD/fixture.ll"
 
 rc=0
-bash "$ORACLE" "$C6_BASE" "$C6_HEAD" > /dev/null 2>&1 || rc=$?
+run_counterfactual "numeric-const-pool-id-reordering-transparent" bash "$ORACLE" "$C6_BASE" "$C6_HEAD" || rc=$?
 if [[ "$rc" -eq 0 ]]; then
   pass "numeric-const-pool-id-reordering-transparent"
 else
-  bash "$ORACLE" "$C6_BASE" "$C6_HEAD" 2>&1 || true
   fail "numeric-const-pool-id-reordering-transparent" \
     "oracle exited $rc (expected 0) — false positive on numeric-const pool-id reordering"
 fi

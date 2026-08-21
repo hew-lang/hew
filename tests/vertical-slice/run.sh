@@ -5248,7 +5248,8 @@ if "${HEW}" check \
   echo "expected record_clone_unclonable_field fixture to fail" >&2
   exit 1
 fi
-grep -q 'contains an opaque field' "${reject_output}"
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -q 'member `inner` contains opaque value' "${reject_output}"
 
 # Affine records are move-only even when their physical fields are all
 # structurally cloneable. Both explicit clone spellings must reject resource
@@ -5290,6 +5291,92 @@ grep -q 'ArrayWrapper.*LinearTicket' "${reject_output}"
 grep -q 'Vec<ResourceToken>.*ResourceToken' "${reject_output}"
 grep -q 'HashMap<string, LinearTicket>.*LinearTicket' "${reject_output}"
 
+# Built-in aggregates and records share the same member-wise clone admission.
+# A resource nested through record -> Option -> tuple must name the exact member
+# path and stop before MIR can manufacture a second owner.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/structural_clone_resource_member.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected structural_clone_resource_member fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'member `item.Some.1`' "${reject_output}"
+grep -q 'affine close contract and no semantic clone' "${reject_output}"
+
+# Equality refusal likewise names the first member without a meaningful
+# structural comparison path.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/structural_equality_function_member.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected structural_equality_function_member fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'member `callback` is ineligible' "${reject_output}"
+grep -qF 'fn(i64) -> i64' "${reject_output}"
+
+# A type parameter's clone capability inside a generic template comes from its
+# declared BOUND. An unbounded `T` grants none, and the refusal names the member
+# path and the parameter rather than deferring to monomorphisation.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/structural_clone_unbounded_generic.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected structural_clone_unbounded_generic fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'member `Some` of type `T`' "${reject_output}"
+grep -q 'has no Clone capability' "${reject_output}"
+
+# Structural equality over a type parameter is admitted in the template and
+# re-decided at instantiation. The CHECKER must refuse an ineligible
+# instantiation and name the member; codegen must never be the first to notice.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/structural_equality_generic_instantiation.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected structural_equality_generic_instantiation fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'member `Some` is ineligible' "${reject_output}"
+grep -qF 'HashMap<string, i64>' "${reject_output}"
+if grep -q 'E_CODEGEN_FRONT_FAIL_CLOSED' "${reject_output}"; then
+  echo "codegen must not be the first to notice an ineligible instantiation" >&2
+  exit 1
+fi
+
+# Method applications record their instantiation through the same authority as
+# free calls: the receiver's type arguments are the only record of what the
+# impl-level parameter became, since the signature lookup already substituted
+# them out.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/structural_equality_method_instantiation.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected structural_equality_method_instantiation fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'member `Some` is ineligible' "${reject_output}"
+grep -qF 'HashMap<string, i64>' "${reject_output}"
+if grep -q 'E_CODEGEN_FRONT_FAIL_CLOSED' "${reject_output}"; then
+  echo "codegen must not be the first to notice a method instantiation" >&2
+  exit 1
+fi
+
+# A refcounted shared handle inside an aggregate has no aggregate-ingress
+# retain, so the composite drop plan would release it once per owner. Fail
+# closed at the checker rather than emitting a program that double-frees.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/structural_clone_rc_member.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected structural_clone_rc_member fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'member `0` of type `Rc<Node>`' "${reject_output}"
+grep -q 'no aggregate-ingress retain' "${reject_output}"
+
 # User-defined GENERIC record `clone` on an instantiation whose type parameter
 # resolves to an opaque handle (`Box<Handle>`) must be rejected too — the
 # admissibility opaque walk is substitution-aware (instantiates `item: T` to
@@ -5300,7 +5387,8 @@ if "${HEW}" check \
   echo "expected generic_record_clone_opaque_leaf fixture to fail" >&2
   exit 1
 fi
-grep -q 'contains an opaque field' "${reject_output}"
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -q 'member `item` contains opaque value' "${reject_output}"
 
 # Enum twin: `clone <enum>` on an enum whose variant payload is an opaque handle
 # must be rejected too — the admissibility opaque walk recurses into enum
@@ -5311,7 +5399,8 @@ if "${HEW}" check \
   echo "expected enum_clone_unclonable_payload fixture to fail" >&2
   exit 1
 fi
-grep -q 'contains an opaque field' "${reject_output}"
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -q 'member `Live.0` contains opaque value' "${reject_output}"
 
 # ---------------------------------------------------------------------------
 # let-destructure: record/struct product-type irrefutable patterns

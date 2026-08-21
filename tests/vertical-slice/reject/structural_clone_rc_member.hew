@@ -1,0 +1,10 @@
+type Node {
+    value: i64;
+}
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let pair: (Rc<Node>, string) = (shared, "tag");
+    let _copied = clone pair;
+    0
+}

@@ -3909,3 +3909,1089 @@ let _b: Result<Cfg, string> = Cfg.from_toml("n = 1");
 // updated `type_satisfies_trait_bound` fallback without changing any
 // existing program behaviour.
 // -------------------------------------------------------------------------
+
+// -------------------------------------------------------------------------
+// Generic structural capability: clone and equality
+//
+// A type parameter's capability INSIDE a generic template comes from its
+// declared bound; the concrete capability is decided at instantiation. These
+// tests pin both halves for `clone` and for structural equality, and pin that
+// the checker — never codegen — is the first to refuse an ineligible
+// instantiation.
+// -------------------------------------------------------------------------
+
+#[test]
+fn bounded_generic_clone_of_builtin_aggregate_is_admitted() {
+    let source = r"
+fn clone_option<T: Clone>(value: Option<T>) -> Option<T> {
+    clone value
+}
+
+fn main() -> i64 {
+    let original: Option<i64> = Some(3);
+    let copied = clone_option(original);
+    match copied {
+        .Some(n) => n,
+        .None => 0,
+    }
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "`T: Clone` grants the template clone capability for `Option<T>`; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn unbounded_generic_clone_of_builtin_aggregate_is_refused() {
+    let source = r"
+fn clone_option<T>(value: Option<T>) -> Option<T> {
+    clone value
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Some` of type `T`")
+                && e.message.contains("has no Clone capability")
+        }),
+        "an unbounded `T` grants no clone capability inside the template; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn bounded_generic_clone_instantiated_with_resource_is_refused() {
+    let source = r"
+#[resource]
+type Token { id: i64; }
+
+impl Token {
+    fn close(self) {}
+}
+
+fn clone_option<T: Clone>(value: Option<T>) -> Option<T> {
+    clone value
+}
+
+fn main() {
+    let held: Option<Token> = Some(Token { id: 1 });
+    let _copied = clone_option(held);
+}
+";
+    let output = check_source(source);
+    assert!(
+        !output.errors.is_empty(),
+        "an affine resource does not satisfy `T: Clone` at instantiation"
+    );
+}
+
+#[test]
+fn generic_equality_with_eligible_instantiation_is_admitted() {
+    let source = r"
+fn same<T>(a: Option<T>, b: Option<T>) -> bool {
+    a == b
+}
+
+fn main() -> i64 {
+    let left: Option<i64> = Some(1);
+    let right: Option<i64> = Some(1);
+    if same(left, right) { 0 } else { 1 }
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "`Option<i64>` has a structural equality path; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_equality_with_ineligible_instantiation_is_refused_by_checker() {
+    let source = r"
+fn same<T>(a: Option<T>, b: Option<T>) -> bool {
+    a == b
+}
+
+fn main() -> i64 {
+    let left: HashMap<string, i64> = HashMap.new();
+    let right: HashMap<string, i64> = HashMap.new();
+    let boxed_left: Option<HashMap<string, i64>> = Some(left);
+    let boxed_right: Option<HashMap<string, i64>> = Some(right);
+    if same(boxed_left, boxed_right) { 0 } else { 1 }
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+        }),
+        "the checker must name the ineligible member and its type at the instantiation; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_equality_ineligible_through_a_generic_caller_is_refused_by_checker() {
+    let source = r"
+fn same<T>(a: Option<T>, b: Option<T>) -> bool {
+    a == b
+}
+
+fn same_twice<U>(a: Option<U>, b: Option<U>) -> bool {
+    same(a, b)
+}
+
+fn main() -> i64 {
+    let left: HashMap<string, i64> = HashMap.new();
+    let right: HashMap<string, i64> = HashMap.new();
+    let boxed_left: Option<HashMap<string, i64>> = Some(left);
+    let boxed_right: Option<HashMap<string, i64>> = Some(right);
+    if same_twice(boxed_left, boxed_right) { 0 } else { 1 }
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+        }),
+        "the requirement must propagate through a generic caller; got: {:?}",
+        output.errors
+    );
+}
+
+// -------------------------------------------------------------------------
+// Refcounted shared handles inside aggregates
+//
+// `clone rc` is a retain and is fine. `clone <aggregate containing an Rc>` is
+// not: aggregate ingress emits no retain while both the source binder and the
+// aggregate's composite drop release the handle, so the inverse drop plan
+// over-releases. Fail closed at the checker until the ingress retain exists.
+// -------------------------------------------------------------------------
+
+#[test]
+fn bare_rc_clone_stays_admitted() {
+    let source = r"
+type Node { value: i64; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let _copied = clone shared;
+    0
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "cloning an `Rc` handle directly is a retain and must stay admitted; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn tuple_clone_with_rc_member_is_refused() {
+    let source = r#"
+type Node { value: i64; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let pair: (Rc<Node>, string) = (shared, "tag");
+    let _copied = clone pair;
+    0
+}
+"#;
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `0` of type `Rc<Node>`")
+                && e.message.contains("no aggregate-ingress retain")
+        }),
+        "a tuple carrying an `Rc` has no balanced clone/drop plan; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn option_clone_with_rc_payload_is_refused() {
+    let source = r"
+type Node { value: i64; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let held: Option<Rc<Node>> = Some(shared);
+    let _copied = clone held;
+    0
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Some` of type `Rc<Node>`")
+                && e.message.contains("no aggregate-ingress retain")
+        }),
+        "`Option<Rc<T>>` shares the tuple refusal; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn result_clone_with_rc_payload_is_refused() {
+    let source = r"
+type Node { value: i64; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let held: Result<Rc<Node>, string> = Ok(shared);
+    let _copied = clone held;
+    0
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Ok` of type `Rc<Node>`")
+                && e.message.contains("no aggregate-ingress retain")
+        }),
+        "`Result<Rc<T>, E>` shares the tuple refusal; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn record_clone_with_rc_field_is_refused() {
+    let source = r#"
+type Node { value: i64; }
+type Holder { r: Rc<Node>; tag: string; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let holder = Holder { r: shared, tag: "tag" };
+    let _copied = clone holder;
+    0
+}
+"#;
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `r` of type `Rc<Node>`")
+                && e.message.contains("no aggregate-ingress retain")
+        }),
+        "the record path carries the same unbalanced drop plan; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clone_with_rc_elements_stays_admitted() {
+    let source = r"
+type Node { value: i64; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let holders: Vec<Rc<Node>> = Vec.new();
+    holders.push(shared);
+    let copied = clone holders;
+
+    copied.len() + holders.len()
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "a heap container clones `Rc` elements through its owned-element thunk, which retains; \
+         got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn tuple_clone_with_vec_of_rc_member_stays_admitted() {
+    let source = r#"
+type Node { value: i64; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let holders: Vec<Rc<Node>> = Vec.new();
+    holders.push(shared);
+    let pair: (Vec<Rc<Node>>, string) = (holders, "tag");
+    let copied = clone pair;
+
+    copied.0.len()
+}
+"#;
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "the value-aggregate position must reset at a heap container boundary; got: {:?}",
+        output.errors
+    );
+}
+
+// -------------------------------------------------------------------------
+// Generic capability: nested positions, method applications, and the walk's
+// own fail-closed edges
+// -------------------------------------------------------------------------
+
+#[test]
+fn bounded_generic_clone_through_a_nested_container_is_admitted() {
+    // The template-capability authority must apply at EVERY position a type
+    // parameter appears, not only at a bare `T`. `Vec<T>` has no `Clone` impl
+    // in the marker registry, so a whole-type lookup vetoed a walk whose every
+    // leaf had already been granted by `T: Clone`.
+    let source = r"
+fn dup<T: Clone>(value: Option<Vec<T>>) -> Option<Vec<T>> {
+    clone value
+}
+
+fn main() -> i64 {
+    let items: Vec<i64> = Vec.new();
+    items.push(1);
+    let held: Option<Vec<i64>> = Some(items);
+    let copied = dup(held);
+    match copied {
+        .Some(v) => v.len(),
+        .None => 0,
+    }
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "`T: Clone` must grant clone capability at every nested position; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn unbounded_generic_clone_through_a_nested_container_is_refused() {
+    let source = r"
+fn dup<T>(value: Option<Vec<T>>) -> Option<Vec<T>> {
+    clone value
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Some.element` of type `T`")
+                && e.message.contains("has no Clone capability")
+        }),
+        "the refusal must name the nested member path, not the whole type; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_method_instantiation_with_ineligible_type_is_refused_by_checker() {
+    // Method applications record their instantiation through the same authority
+    // as free calls. `lookup_named_method_sig` substitutes the impl-level `T`
+    // into the signature and drops it from `sig.type_params`, so the receiver's
+    // type arguments are the only record of what `T` became.
+    let source = r"
+type Holder<T> { left: Option<T>; right: Option<T>; }
+
+impl<T> Holder<T> {
+    fn same(self) -> bool {
+        self.left == self.right
+    }
+}
+
+fn main() -> i64 {
+    let a: HashMap<string, i64> = HashMap.new();
+    let b: HashMap<string, i64> = HashMap.new();
+    let holder = Holder { left: Some(a), right: Some(b) };
+    match holder.same() {
+        true => 0,
+        false => 1,
+    }
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("`Holder::same`")
+                && e.message.contains("member `Some`")
+                && e.message.contains("HashMap<string, i64>")
+        }),
+        "a method instantiation must be refused by the checker, not by codegen; got: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_CODEGEN_FRONT_FAIL_CLOSED")),
+        "codegen must never be the first to notice; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_method_instantiation_with_eligible_type_is_admitted() {
+    let source = r"
+type Holder<T> { left: Option<T>; right: Option<T>; }
+
+impl<T> Holder<T> {
+    fn same(self) -> bool {
+        self.left == self.right
+    }
+}
+
+fn main() -> i64 {
+    let holder = Holder { left: Some(1), right: Some(1) };
+    match holder.same() {
+        true => 0,
+        false => 1,
+    }
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "`Holder<i64>` has a structural equality path; got: {:?}",
+        output.errors
+    );
+}
+
+/// Build a chain of `hops` generic forwarders ending in a structural comparison,
+/// instantiated once with an ineligible type.
+fn generic_forwarder_chain(hops: usize) -> String {
+    use std::fmt::Write as _;
+
+    let mut source =
+        String::from("fn hop_0<T>(a: Option<T>, b: Option<T>) -> bool {\n    a == b\n}\n\n");
+    for hop in 1..=hops {
+        write!(
+            source,
+            "fn hop_{hop}<T>(a: Option<T>, b: Option<T>) -> bool {{\n    \
+             hop_{prev}(a, b)\n}}\n\n",
+            prev = hop - 1
+        )
+        .expect("writing to a String cannot fail");
+    }
+    write!(
+        source,
+        "fn main() -> i64 {{\n    \
+         let left: HashMap<string, i64> = HashMap.new();\n    \
+         let right: HashMap<string, i64> = HashMap.new();\n    \
+         let boxed_left: Option<HashMap<string, i64>> = Some(left);\n    \
+         let boxed_right: Option<HashMap<string, i64>> = Some(right);\n    \
+         match hop_{hops}(boxed_left, boxed_right) {{\n        \
+         true => 0,\n        false => 1,\n    }}\n}}\n"
+    )
+    .expect("writing to a String cannot fail");
+    source
+}
+
+#[test]
+fn generic_instantiation_chain_within_the_hop_budget_still_names_the_member() {
+    let output = check_source(&generic_forwarder_chain(40));
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+        }),
+        "a chain inside the budget must be discharged normally; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_instantiation_chain_past_the_hop_budget_fails_closed_naming_the_chain() {
+    // Past the budget the obligation cannot be discharged. Dropping it would
+    // hand the un-analysed instantiation to codegen, so the checker refuses and
+    // names the chain that hit the limit.
+    let output = check_source(&generic_forwarder_chain(70));
+    let depth_error = output.errors.iter().find(|e| {
+        e.message
+            .contains("generic instantiation chain exceeded 64 hops")
+    });
+    let depth_error = depth_error.unwrap_or_else(|| {
+        panic!(
+            "a chain past the hop budget must be refused, never silently dropped; got: {:?}",
+            output.errors
+        )
+    });
+    assert!(
+        depth_error.message.contains("hop_70") && depth_error.message.contains("hop_6"),
+        "the diagnostic must name the chain that hit the budget; got: {}",
+        depth_error.message
+    );
+}
+
+#[test]
+fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() {
+    // Span offsets are module-local, so two modules can mint the same
+    // (callee, substitution, offset) triple for genuinely different sites.
+    // Without the module in the visited-set key the second one is swallowed.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let type_param = Ty::normalize_named("T".to_string(), vec![]);
+    checker.generic_structural_eq_requirements.insert(
+        "same".to_string(),
+        vec![crate::check::types::GenericStructuralEqRequirement {
+            ty: Ty::builtin_named(crate::BuiltinType::Option, vec![type_param]),
+            owner_type_params: vec!["T".to_string()],
+        }],
+    );
+    let span = Span::from(10..20);
+    let ineligible = Ty::builtin_named(crate::BuiltinType::HashMap, vec![Ty::String, Ty::I64]);
+    for module in ["alpha", "beta"] {
+        checker.generic_fn_instantiation_sites.push(
+            crate::check::types::GenericFnInstantiationSite {
+                caller: None,
+                caller_type_params: Vec::new(),
+                callee: "same".to_string(),
+                substitution: std::collections::HashMap::from([(
+                    "T".to_string(),
+                    ineligible.clone(),
+                )]),
+                span: span.clone(),
+                source_module: Some(module.to_string()),
+            },
+        );
+    }
+
+    checker.finalize_generic_structural_eq();
+
+    let modules: Vec<Option<String>> = checker
+        .errors
+        .iter()
+        .map(|e| e.source_module.clone())
+        .collect();
+    assert_eq!(
+        checker.errors.len(),
+        2,
+        "each module's site must report; got modules {modules:?}"
+    );
+    assert!(
+        modules.contains(&Some("alpha".to_string())) && modules.contains(&Some("beta".to_string())),
+        "both modules must be represented; got {modules:?}"
+    );
+}
+
+#[test]
+fn rc_member_clone_refusal_suggests_no_workaround_that_double_frees() {
+    // Cloning the handle separately and rebuilding the aggregate re-enters the
+    // same missing-ingress-retain path and aborts at `Rc double-free`. The help
+    // text must not send the programmer there.
+    let source = r#"
+type Node { value: i64; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let pair: (Rc<Node>, string) = (shared, "tag");
+    let _copied = clone pair;
+    0
+}
+"#;
+    let output = check_source(source);
+    let refusal = output
+        .errors
+        .iter()
+        .find(|e| e.message.contains("no aggregate-ingress retain"))
+        .expect("the Rc member refusal must fire");
+    let help = refusal.suggestions.join(" ");
+    assert!(
+        help.contains("a fix is pending"),
+        "the help must state the limitation; got: {help}"
+    );
+    assert!(
+        !help.contains("rebuild"),
+        "the help must not suggest rebuilding the aggregate from a separately cloned handle — \
+         that pattern aborts with `Rc double-free`; got: {help}"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Application-authority coverage: actor receive calls, associated-type
+// positions, and type-parameter shadowing
+// -------------------------------------------------------------------------
+
+const GENERIC_RECEIVE_ACTOR: &str = r"
+actor Store {
+    var seen: i64;
+
+    init() {
+        seen = 0;
+    }
+
+    receive fn keep<T>(left: Option<T>, right: Option<T>) -> bool {
+        seen = seen + 1;
+        left == right
+    }
+}
+";
+
+#[test]
+fn generic_receive_call_instantiates_its_type_parameters() {
+    // The receive path used to check arguments against `sig.params` directly,
+    // so a generic handler's `T` was never freshened and every call reported
+    // `expected Option<T>`.
+    let source = format!(
+        "{GENERIC_RECEIVE_ACTOR}
+fn main() -> i64 {{
+    let store: LocalPid<Store> = spawn Store();
+    let left: Option<i64> = Some(1);
+    let right: Option<i64> = Some(1);
+    let out = await store.keep(left, right);
+    match out {{
+        .Ok(v) => match v {{ true => 0, false => 1 }},
+        .Err(_) => 2,
+    }}
+}}
+"
+    );
+    let output = check_source(&source);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("expected `Option<T>`")),
+        "a generic receive handler's type parameters must be instantiated at the call site; \
+         got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_receive_call_with_ineligible_instantiation_is_refused_by_checker() {
+    let source = format!(
+        "{GENERIC_RECEIVE_ACTOR}
+fn main() -> i64 {{
+    let store: LocalPid<Store> = spawn Store();
+    let a: HashMap<string, i64> = HashMap.new();
+    let b: HashMap<string, i64> = HashMap.new();
+    let left: Option<HashMap<string, i64>> = Some(a);
+    let right: Option<HashMap<string, i64>> = Some(b);
+    let out = await store.keep(left, right);
+    match out {{
+        .Ok(v) => match v {{ true => 0, false => 1 }},
+        .Err(_) => 2,
+    }}
+}}
+"
+    );
+    let output = check_source(&source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("`Store::keep`")
+                && e.message.contains("member `Some`")
+                && e.message.contains("HashMap<string, i64>")
+        }),
+        "an actor receive call is an application like any other and must discharge its \
+         obligations; got: {:?}",
+        output.errors
+    );
+}
+
+const CARRIER_TRAIT: &str = r"
+trait Carrier {
+    type Item;
+    fn peek(self) -> Option<Self.Item>;
+}
+
+type IntBox {
+    value: i64;
+}
+
+impl Carrier for IntBox {
+    type Item = i64;
+    fn peek(self) -> Option<i64> {
+        Some(self.value)
+    }
+}
+
+type MapBox {
+    value: i64;
+}
+
+impl Carrier for MapBox {
+    type Item = HashMap<string, i64>;
+    fn peek(self) -> Option<HashMap<string, i64>> {
+        None
+    }
+}
+
+fn same<C: Carrier>(left: Option<C.Item>, right: Option<C.Item>) -> bool {
+    left == right
+}
+";
+
+#[test]
+fn abstract_associated_type_position_is_deferred_not_rejected() {
+    // `C.Item` over an in-scope parameter is in the same position a bare `T` is
+    // in: no concrete leaf yet. Marking it categorically ineligible rejected
+    // every projection, including the ones that are perfectly comparable.
+    let source = format!("{CARRIER_TRAIT}\nfn main() -> i64 {{ 0 }}\n");
+    let output = check_source(&source);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("is not supported because member")),
+        "an abstract associated-type position must defer, not reject in the template; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn associated_type_instantiation_with_eligible_projection_is_admitted() {
+    let source = format!(
+        "{CARRIER_TRAIT}
+fn main() -> i64 {{
+    match same<IntBox>(Some(1), Some(1)) {{
+        true => 0,
+        false => 1,
+    }}
+}}
+"
+    );
+    let output = check_source(&source);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("structural equality")),
+        "`IntBox::Item = i64` projects to an eligible leaf; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn associated_type_instantiation_with_ineligible_projection_is_refused() {
+    // The obligation is substituted AND its projection collapsed before the
+    // eligibility walk, so the diagnostic names the concrete projected type.
+    let source = format!(
+        "{CARRIER_TRAIT}
+fn main() -> i64 {{
+    match same<MapBox>(None, None) {{
+        true => 0,
+        false => 1,
+    }}
+}}
+"
+    );
+    let output = check_source(&source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+        }),
+        "`MapBox::Item = HashMap<string, i64>` has no structural equality path; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn method_type_parameter_shadowing_an_impl_parameter_is_refused() {
+    // Shadowing is refused rather than scoped: `instantiate_named_method_sig`
+    // substitutes the impl's arguments by name and drops every matching name
+    // from the signature, so the method's own parameter cannot survive.
+    let source = r"
+type Holder<T> {
+    value: T;
+}
+
+impl<T> Holder<T> {
+    fn same<T>(self, marker: T) -> bool {
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("method type parameter `T` shadows")
+                && e.message.contains("`impl` block on `Holder`")
+        }),
+        "a shadowing method type parameter must be refused at its declaration; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn renamed_method_type_parameter_is_admitted_and_stays_independent() {
+    // The renamed form is what the diagnostic asks for, and it must actually
+    // work: the method parameter binds `string` while the impl parameter is
+    // `i64`.
+    let source = r#"
+type Holder<T> {
+    value: T;
+}
+
+impl<T> Holder<T> {
+    fn same<U>(self, marker: U) -> bool {
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 {
+    let holder = Holder { value: 1 };
+    match holder.same("text") {
+        true => 0,
+        false => 1,
+    }
+}
+"#;
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "a distinct method type parameter must bind independently of the impl's; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn trait_default_method_type_parameter_shadowing_the_trait_is_refused() {
+    // A trait declaration's own parameter is shadowed just as silently as an
+    // impl block's: `expected T, found string` with no explanation.
+    let source = r"
+trait Choice<T> {
+    fn same<T>(self, marker: T) -> bool {
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    let reports: Vec<&crate::error::TypeError> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.message.contains("method type parameter `T` shadows")
+                && e.message.contains("trait `Choice`")
+        })
+        .collect();
+    assert_eq!(
+        reports.len(),
+        1,
+        "a trait default method's shadow must be refused exactly once (trait signatures are \
+         registered by more than one pass); got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn trait_impl_method_type_parameter_shadowing_the_trait_is_refused() {
+    // The impl block declares no parameters at all here — the shadowed one
+    // belongs to the trait, so the impl-block check alone never sees it.
+    let source = r"
+trait Choice<T> {
+    fn same(self, marker: T) -> bool;
+}
+
+type Holder {
+    value: i64;
+}
+
+impl Choice<i64> for Holder {
+    fn same<T>(self, marker: T) -> bool {
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("method type parameter `T` shadows")
+                && e.message.contains("trait `Choice`")
+        }),
+        "an impl method shadowing the trait's parameter must be refused; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn trait_method_with_a_distinct_type_parameter_is_admitted() {
+    let source = r"
+trait Choice<T> {
+    fn same<U>(self, marker: U) -> bool {
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("shadows the type parameter")),
+        "a distinct trait method parameter must be admitted; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn inline_type_body_method_type_parameter_shadowing_the_type_is_refused() {
+    // A method declared inside the type body shadows the type's own parameter
+    // just as an `impl` block method shadows the impl's.
+    let source = r"
+type Holder<T> {
+    value: T;
+
+    fn same<T>(holder: Holder<T>, marker: T) -> bool {
+        let _ = holder;
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("method type parameter `T` shadows")
+                && e.message.contains("the type `Holder`")
+        }),
+        "an inline type-body method's shadow must be refused; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn inline_type_body_method_with_a_distinct_type_parameter_is_admitted() {
+    let source = r"
+type Holder<T> {
+    value: T;
+
+    fn same<U>(holder: Holder<T>, marker: U) -> bool {
+        let _ = holder;
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("shadows the type parameter")),
+        "a distinct inline type-body method parameter must be admitted; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn shadow_report_is_keyed_by_declaration_not_registering_module() {
+    // An inherited trait default is re-registered under every implementing
+    // module. Keying the dedup by the REGISTERING module emitted one diagnostic
+    // per module, the extra copies landing at unrelated lines in implementors'
+    // files. The key is the declaration's own identity, so re-registration
+    // anywhere reports once.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let method_params = vec![hew_parser::ast::TypeParam {
+        name: "T".to_string(),
+        bounds: vec![],
+    }];
+    let enclosing = vec!["T".to_string()];
+    let decl_span = Span::from(40..60);
+
+    for module_idx in [0_u32, 7, 12] {
+        checker.current_module_idx = module_idx;
+        checker.reject_shadowing_method_type_params(
+            Some(&method_params),
+            &[(enclosing.clone(), "trait `Choice`".to_string())],
+            "carrier.Choice::same",
+            &decl_span,
+        );
+    }
+
+    assert_eq!(
+        checker.errors.len(),
+        1,
+        "one declaration must report once however many modules re-register it; got: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
+fn shadow_report_key_separates_declarations_sharing_a_span() {
+    // Byte offsets are file-local, so two files can place a method at exactly
+    // the same offsets. Keying on the span (and the trait both implement) alone
+    // collided, and the second declaration's diagnostic was swallowed.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let method_params = vec![hew_parser::ast::TypeParam {
+        name: "T".to_string(),
+        bounds: vec![],
+    }];
+    let enclosing = vec!["T".to_string()];
+    let decl_span = Span::from(40..60);
+
+    for owner in ["alpha.Holder::same", "beta.Other::same"] {
+        checker.reject_shadowing_method_type_params(
+            Some(&method_params),
+            &[(enclosing.clone(), "trait `Choice`".to_string())],
+            owner,
+            &decl_span,
+        );
+    }
+
+    assert_eq!(
+        checker.errors.len(),
+        2,
+        "two declarations sharing a byte range are still two declarations; got: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
+fn shadowing_both_the_impl_and_the_trait_reports_once_naming_both() {
+    // `impl<T> Choice<T> for Holder<T> { fn same<T> }` shadows two owners at one
+    // span. That is one mistake, so it is one diagnostic that names both.
+    let source = r"
+trait Choice<T> {
+    fn same(self, marker: T) -> bool;
+}
+
+type Holder<T> {
+    value: T;
+}
+
+impl<T> Choice<T> for Holder<T> {
+    fn same<T>(self, marker: T) -> bool {
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    let reports: Vec<&crate::error::TypeError> = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("method type parameter `T` shadows"))
+        .collect();
+    assert_eq!(
+        reports.len(),
+        1,
+        "one span, one diagnostic; got: {:?}",
+        output.errors
+    );
+    assert!(
+        reports[0].message.contains("the `impl` block on `Holder`")
+            && reports[0].message.contains("trait `Choice`"),
+        "the single diagnostic must name both owners; got: {}",
+        reports[0].message
+    );
+}

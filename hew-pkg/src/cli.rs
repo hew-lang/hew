@@ -176,6 +176,12 @@ pub enum IndexAction {
 pub enum KeyAction {
     /// Generate a new Ed25519 signing keypair
     Generate,
+    /// Register the existing local signing key with the registry
+    Register {
+        /// Use a named registry from config
+        #[arg(long, short = 'r')]
+        registry: Option<String>,
+    },
     /// List registered signing keys
     List,
     /// Look up a signing key by fingerprint
@@ -247,6 +253,7 @@ pub fn dispatch(cmd: &PkgCommand) {
         PkgCommand::Logout => cmd_logout(),
         PkgCommand::Key { action } => match action {
             KeyAction::Generate => cmd_key_generate(),
+            KeyAction::Register { registry: reg } => cmd_key_register(reg.as_deref()),
             KeyAction::List => cmd_key_list(),
             KeyAction::Info { fingerprint } => cmd_key_info(fingerprint),
             KeyAction::Registry => cmd_registry_key(),
@@ -342,7 +349,7 @@ fn make_client(registry_name: Option<&str>) -> client::RegistryClient {
     }
 }
 
-/// Resolve the API token required for a remote publish.
+/// Resolve the API token required for an authenticated registry call.
 ///
 /// Injecting `cred_path` keeps this unit-testable without `$HOME` mutation.
 ///
@@ -352,7 +359,7 @@ fn make_client(registry_name: Option<&str>) -> client::RegistryClient {
 /// stored for the target registry (default or named), or
 /// [`credentials::CredentialError::Parse`]/[`credentials::CredentialError::Io`]
 /// when the credentials file exists but cannot be read.
-fn resolve_publish_token(
+fn resolve_registry_token(
     cred_path: &Path,
     registry_name: Option<&str>,
 ) -> Result<String, credentials::CredentialError> {
@@ -991,7 +998,7 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>, local
         }
         let cred_path = credentials::credentials_path();
         Some(
-            resolve_publish_token(&cred_path, registry_name).unwrap_or_else(|err| {
+            resolve_registry_token(&cred_path, registry_name).unwrap_or_else(|err| {
                 match err {
                     credentials::CredentialError::NotLoggedIn => {
                         eprintln!(
@@ -1602,7 +1609,8 @@ fn cmd_key_generate() {
             "hew key generate: key already exists at {}",
             secret_path.display()
         );
-        eprintln!("Remove it first if you want to regenerate.");
+        eprintln!("Run `hew key register` to register it with the registry,");
+        eprintln!("or remove it first if you want to regenerate.");
         std::process::exit(1);
     }
 
@@ -1617,16 +1625,73 @@ fn cmd_key_generate() {
     println!("  Public:  {}", key_dir.join("id_ed25519.pub").display());
     println!("  Fingerprint: {}", keypair.fingerprint());
 
-    // Try to register the key with the registry.
+    // Try to register the key with the registry. A generated key is usable
+    // for local work without registration, so a failure here is reported and
+    // recovered with `hew key register` rather than losing the new key.
     let cred_path = credentials::credentials_path();
-    if let Ok(token) = credentials::get_token(&cred_path) {
-        let api_client = client::RegistryClient::new().with_token(token);
-        match api_client.register_key(&keypair.public_key_base64()) {
+    if let Ok(token) = resolve_registry_token(&cred_path, None) {
+        match register_signing_key(None, token, &keypair.public_key_base64()) {
             Ok(fp) => println!("Key registered with registry (fingerprint: {fp})"),
-            Err(e) => eprintln!("warning: could not register key with registry: {e}"),
+            Err(e) => {
+                eprintln!("warning: could not register key with registry: {e}");
+                eprintln!("Run `hew key register` once the registry is reachable.");
+            }
         }
     } else {
-        println!("Run `hew login` and re-run to register this key with the registry.");
+        println!("Run `hew login`, then `hew key register`, to register this key.");
+    }
+}
+
+/// Send a public key to a registry's key endpoint.
+///
+/// The one path by which a signing key becomes known to a registry: `hew key
+/// generate` calls it for a key it just created, `hew key register` calls it
+/// for a key that already exists on disk.
+fn register_signing_key(
+    registry_name: Option<&str>,
+    token: String,
+    public_key_b64: &str,
+) -> Result<String, client::ApiError> {
+    let api_client = match registry_name {
+        Some(name) => {
+            let remote = resolve_named_registry_or_exit(name);
+            client::RegistryClient::with_url(remote.api)
+        }
+        None => client::RegistryClient::new(),
+    }
+    .with_token(token);
+    api_client.register_key(public_key_b64)
+}
+
+/// Register the signing key already on disk with the registry.
+///
+/// Publishing signs with `~/.hew/keys/id_ed25519`, and the registry rejects a
+/// signature from a key it does not know. Before this command the only way to
+/// register an existing key was to delete it and generate another, which
+/// invalidates every signature the old key ever made.
+fn cmd_key_register(registry_name: Option<&str>) {
+    let key_dir = signing::default_key_dir();
+    let keypair = match signing::load_keypair(&key_dir) {
+        Ok(kp) => kp,
+        Err(e) => {
+            eprintln!("hew key register: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let cred_path = credentials::credentials_path();
+    let Ok(token) = resolve_registry_token(&cred_path, registry_name) else {
+        eprintln!("hew key register: not logged in");
+        eprintln!("Run `hew login` first.");
+        std::process::exit(1);
+    };
+
+    match register_signing_key(registry_name, token, &keypair.public_key_base64()) {
+        Ok(fp) => println!("Key registered with registry (fingerprint: {fp})"),
+        Err(e) => {
+            eprintln!("hew key register: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -2270,10 +2335,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_publish_token_default_registry_missing_is_not_logged_in() {
+    fn resolve_registry_token_default_registry_missing_is_not_logged_in() {
         let dir = tempfile::tempdir().unwrap();
         let cred_path = dir.path().join("credentials.toml");
-        let result = resolve_publish_token(&cred_path, None);
+        let result = resolve_registry_token(&cred_path, None);
         assert!(matches!(
             result,
             Err(credentials::CredentialError::NotLoggedIn)
@@ -2281,7 +2346,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_publish_token_named_registry_requires_named_token() {
+    fn resolve_registry_token_named_registry_requires_named_token() {
         let dir = tempfile::tempdir().unwrap();
         let cred_path = dir.path().join("credentials.toml");
         credentials::save_credentials(
@@ -2296,7 +2361,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = resolve_publish_token(&cred_path, Some("testreg"));
+        let result = resolve_registry_token(&cred_path, Some("testreg"));
         assert!(matches!(
             result,
             Err(credentials::CredentialError::NotLoggedIn)
@@ -2304,7 +2369,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_publish_token_named_registry_returns_named_token() {
+    fn resolve_registry_token_named_registry_returns_named_token() {
         let dir = tempfile::tempdir().unwrap();
         let cred_path = dir.path().join("credentials.toml");
         let mut registries = std::collections::BTreeMap::new();
@@ -2324,7 +2389,7 @@ mod tests {
         )
         .unwrap();
 
-        let token = resolve_publish_token(&cred_path, Some("testreg")).unwrap();
+        let token = resolve_registry_token(&cred_path, Some("testreg")).unwrap();
         assert_eq!(token, "tok_testreg");
     }
 
@@ -2333,18 +2398,18 @@ mod tests {
     /// different remedies (`hew login` cannot fix a parse error, since
     /// `hew login` also reads through this same file).
     #[test]
-    fn resolve_publish_token_corrupt_credentials_file_is_parse_error() {
+    fn resolve_registry_token_corrupt_credentials_file_is_parse_error() {
         let dir = tempfile::tempdir().unwrap();
         let cred_path = dir.path().join("credentials.toml");
         std::fs::write(&cred_path, "this is not valid toml {{{").unwrap();
 
-        let result = resolve_publish_token(&cred_path, None);
+        let result = resolve_registry_token(&cred_path, None);
         assert!(
             matches!(result, Err(credentials::CredentialError::Parse(_))),
             "expected Parse error, got {result:?}"
         );
 
-        let result = resolve_publish_token(&cred_path, Some("testreg"));
+        let result = resolve_registry_token(&cred_path, Some("testreg"));
         assert!(
             matches!(result, Err(credentials::CredentialError::Parse(_))),
             "expected Parse error, got {result:?}"

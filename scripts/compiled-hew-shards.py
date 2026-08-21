@@ -125,7 +125,20 @@ def report_failures(reports_dir: Path, shard_count: int) -> None:
                 )
                 continue
 
-            root = ET.fromstring(path.read_text(encoding="utf-8"))
+            try:
+                root = ET.fromstring(path.read_text(encoding="utf-8"))
+            except ET.ParseError as error:
+                # This is the diagnostic pass that runs before the aggregate
+                # gate fails the job. Dying here would hide every other
+                # shard's assertions behind one truncated report, so name the
+                # unreadable report and keep going; the aggregate gate still
+                # fails the job on the same malformed input.
+                print(
+                    f"COMPILED_HEW_REPORT_UNREADABLE shard={shard} "
+                    f"suite={label.upper()} path={path}: {error}",
+                    file=sys.stderr,
+                )
+                continue
             for testcase in root.iter("testcase"):
                 failure = testcase.find("failure")
                 if failure is None:

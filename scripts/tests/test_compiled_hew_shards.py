@@ -163,6 +163,16 @@ class CompiledHewShardTests(unittest.TestCase):
         self.assertIn("forced diagnostic text", result.stdout)
         self.assertIn("forced fixture output", result.stdout)
 
+    def test_report_survives_a_malformed_shard_report(self) -> None:
+        values = self.full[0::SHARDS]
+        (self.reports / "hew-o0-shard-1.xml").write_text(
+            "<testsuite><testcase", encoding="utf-8"
+        )
+        write_junit(self.reports / "hew-o2-shard-2.xml", values, failed={values[0]})
+        result = self.report()
+        self.assertIn("COMPILED_HEW_REPORT_UNREADABLE shard=1", result.stderr)
+        self.assertIn("COMPILED_HEW_FAILURE shard=2 suite=O2", result.stdout)
+
 
 class CompiledHewWorkflowContractTests(unittest.TestCase):
     def setUp(self) -> None:

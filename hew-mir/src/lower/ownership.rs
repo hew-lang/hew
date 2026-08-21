@@ -3170,6 +3170,34 @@ impl Builder {
                 value: 1,
             });
         }
+        // The affine refcounted-handle (`Rc` / `Weak`) and user `#[resource]`
+        // release flag belongs on this same seam, for the same reason its two
+        // siblings above do. A flagged binding is deliberately KEPT in
+        // `owned_locals` across its consume so the guard can decide per path,
+        // so `set_owned_local_consumed` below does NOT retire its drop — the
+        // runtime flag is the only thing that can. Recording the transfer only
+        // at the primary `Use{Consume}` lowering left every SYNTHETIC consume
+        // site silent: the array-literal desugar's element move
+        // (`consume_owned_vec_move_array_element`), the actor-message payload,
+        // the by-move closure capture and the returned-binding move all record
+        // the transfer as a dataflow `Consume` alone. That is enough for a
+        // straight-line consume — `filter_drops_by_state` excludes a
+        // `Consumed` binding — but a CONDITIONAL one meets `Live` at the join
+        // and yields `MaybeConsumed`, which the same filter admits as live. The
+        // drop then fires on the path that already transferred the handle, with
+        // the guard still reading 0: `match flag { true => { let v: Vec<Rc<T>>
+        // = [shared]; .. } false => .. }` aborted with `Rc double-free`.
+        //
+        // Setting it here rather than at each site is what closes the class:
+        // every consume that retires ownership already funnels through this
+        // seam, so a new transfer surface cannot be added without the transfer
+        // being recorded. A no-op for every unflagged binding.
+        if let Some(flag) = self.affine_release_flags.get(&id).copied() {
+            self.instructions.push(Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            });
+        }
         // General consume seam: the value is moved out (returned / sent / stored
         // into a longer-lived owner) with no destination local nameable here, so
         // the transferee is `None`; the authority is recorded regardless.

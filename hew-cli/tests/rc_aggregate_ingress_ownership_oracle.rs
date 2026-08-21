@@ -415,7 +415,7 @@ fn main() -> i64 {{
 /// state value leaks once per frame no matter what its payload is. Measured, not
 /// assumed: the identical machine with a `string` payload leaks at the same rate.
 /// That is a machine-composite drop gap, not a refcount-ownership defect, and
-/// pinning it here would ratchet an unrelated lane's debt into this oracle.
+/// pinning it here would ratchet an unrelated defect into this oracle.
 fn machine_payload_source(frames: usize) -> String {
     format!(
         r#"

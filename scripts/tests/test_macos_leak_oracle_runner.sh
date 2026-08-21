@@ -10,10 +10,28 @@ work_dir="$(mktemp -d "${TMPDIR:-/tmp}/hew-leak-runner-selftest.XXXXXX")"
 cleanup_work_dir() { rm -rf "${work_dir}"; }
 trap cleanup_work_dir EXIT
 
+# Counterfactual marker.  Every expect_red case drives the REAL runner against a
+# rigged inventory, so this self-test PASSES while the runner emits genuine
+# rejection diagnostics.  Capturing them silently left a green log with no
+# evidence the bait path ran; replaying them behind the marker keeps them
+# readable, keeps the preflight's first-failure extractor from reporting one as
+# a verdict, and is what
+# `ci-preflight-dispatcher.sh --check-counterfactual-output` looks for.
+COUNTERFACTUAL_MARKER="CF-"
+
+replay_counterfactual() {
+    local label="$1" status="$2" output="$3"
+    printf '%s\n' "${COUNTERFACTUAL_MARKER}[${label}] exit ${status}"
+    if [[ -n "${output}" ]]; then
+        printf '%s\n' "${output}" | sed "s/^/${COUNTERFACTUAL_MARKER}[${label}] /"
+    fi
+}
+
 expect_red() {
     local label="$1" expected="$2" inventory="$3"
     local output rc=0
     output="$("${RUNNER}" --check-inventory-file "${inventory}" 2>&1)" || rc=$?
+    replay_counterfactual "${label}" "${rc}" "${output}"
     if [[ "${rc}" -eq 0 ]]; then
         echo "FAIL ${label}: counterfactual unexpectedly passed" >&2
         exit 1
@@ -84,6 +102,8 @@ source_missing_rc=0
 HEW_LEAK_SOURCE_TESTS_DIR="${synthetic_sources}" \
     "${RUNNER}" --check-inventory-file "${good}" >"${source_missing_output}" 2>&1 \
     || source_missing_rc=$?
+replay_counterfactual "source-discovered-non-oracle" "${source_missing_rc}" \
+    "$(cat "${source_missing_output}")"
 if [[ "${source_missing_rc}" -eq 0 ]]; then
     echo "FAIL source-discovered non-oracle binary: counterfactual unexpectedly passed" >&2
     exit 1

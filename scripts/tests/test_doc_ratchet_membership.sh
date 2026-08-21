@@ -126,6 +126,17 @@ exit 0
 FAKE_HEW_EOF
 chmod +x "$FAKE_HEW"
 
+# Counterfactual marker.  Most run_harness calls below are COUNTERFACTUALS: the
+# real doc-ratchet harness is driven with a fake compiler rigged to fail chosen
+# fences, so this self-test PASSES while the harness emits genuine ratchet
+# failure text ("NOW-FAILS", "NOW-PASSES").  Captured-and-silent output left a
+# green log with no evidence the bait path ran; replaying it behind the marker
+# keeps it readable, keeps the preflight's first-failure extractor from
+# reporting it as a verdict, and is what
+# `ci-preflight-dispatcher.sh --check-counterfactual-output` looks for.
+COUNTERFACTUAL_MARKER="CF-"
+HARNESS_CALL=0
+
 HARNESS_OUTPUT=""
 HARNESS_STATUS=0
 run_harness() {
@@ -142,6 +153,13 @@ run_harness() {
             --outdir "$OUTDIR" \
             --hew-bin "$FAKE_HEW"
     } 2>&1)" || HARNESS_STATUS=$?
+
+    HARNESS_CALL=$(( HARNESS_CALL + 1 ))
+    printf '%s\n' "${COUNTERFACTUAL_MARKER}[harness-${HARNESS_CALL}] exit ${HARNESS_STATUS}"
+    if [[ -n "$HARNESS_OUTPUT" ]]; then
+        printf '%s\n' "$HARNESS_OUTPUT" \
+            | sed "s/^/${COUNTERFACTUAL_MARKER}[harness-${HARNESS_CALL}] /"
+    fi
 }
 
 # First extract the real documentation corpus and discover every non-skipped ID.

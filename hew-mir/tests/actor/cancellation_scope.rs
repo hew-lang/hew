@@ -319,8 +319,14 @@ fn spawned_move_closure_parent_and_shim_emit_no_drops_for_moved_capture() {
         })
         .expect("spawned move closure entry shim");
 
+    // The elaborated receive handler carries the `__recv__` infix; a substring
+    // match on `Driver__run` silently covers nothing, so match the exact names
+    // and prove BOTH halves were visited.
+    let parent_name = "Driver__recv__run";
+    let mut matched = 0_usize;
     for func in &mir.elaborated_mir {
-        if func.name.contains("Driver__run") || func.name == shim_name {
+        if func.name == parent_name || func.name == shim_name {
+            matched += 1;
             for (exit, plan) in &func.drop_plans {
                 assert!(
                     plan.drops.is_empty(),
@@ -331,6 +337,16 @@ fn spawned_move_closure_parent_and_shim_emit_no_drops_for_moved_capture() {
             }
         }
     }
+    assert_eq!(
+        matched,
+        2,
+        "both the parent handler `{parent_name}` and the closure shim `{shim_name}` must be \
+         present in the elaborated MIR; saw {matched} of 2 (functions: {:?})",
+        mir.elaborated_mir
+            .iter()
+            .map(|func| func.name.as_str())
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]

@@ -2870,6 +2870,16 @@ run_accept_expect_stdout "fork_args_spawn"
 # and a heap-string arg. The block form collapses to a nameless scope spawn;
 # the fork-entry shim transfers args the same way as the named form.
 run_accept_expect_stdout "fork_block_args_spawn"
+
+# Accept (scope-owned closure env): a `move` closure invoked directly inside a
+# `scope { }` body captures a runtime-built string. The spawn env ownership
+# manifest marks that field `OwnsMoved`, so the task environment's free thunk is
+# the sole release site — the parent emits no drop for the moved capture. Exit 0
+# with the concatenated string on stdout proves the value survives the transfer
+# and is released exactly once (the leak/double-free oracle lives in
+# `hew-cli/tests/closure_env_drop_leak_oracle.rs`).
+run_accept_expect_stdout "scope_move_closure_owned_capture"
+
 run_accept_expect_status "fork_multi_statement_concurrent" 0
 for marker in first-start second-start first-end second-end complete; do
   grep -qFx -- "${marker}" "${stdout_output}"

@@ -5236,7 +5236,11 @@ impl Checker {
                         })
                         .collect(),
                 };
-                self.check_against(&transition.body.0, &transition.body.1, &expected_machine_ty);
+                self.check_expr_with_expected(
+                    &transition.body.0,
+                    &transition.body.1,
+                    &expected_machine_ty,
+                );
             }
             self.current_machine_transition = None;
             self.env.pop_scope();

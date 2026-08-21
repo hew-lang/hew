@@ -1608,6 +1608,91 @@ impl Checker {
         false
     }
 
+    /// Whether a direct `for value in vec` is admitted for this element type.
+    ///
+    /// Direct Vec iteration uses `VecIter::next`, which clones each element into
+    /// an independent owner. Trait objects are the consuming-iterator exception
+    /// and therefore remain excluded here: the direct-loop checker rejects their
+    /// borrowed-snapshot form.
+    ///
+    /// `type_params` maps the type parameters in scope at the query site to
+    /// their declared bound names. Inside a generic template the element type is
+    /// not a concrete layout yet, so admission must be *proven from the bound*:
+    /// a parameter carrying `Clone` stands for a cloneable element at every
+    /// monomorphisation, and one without it does not. This is stricter than the
+    /// compile-time gate in [`Self::vec_iter_clone_blocker`], which deliberately
+    /// defers an unbounded parameter to MIR's per-monomorphisation clone check —
+    /// deferring is right for admitting real call sites, and wrong for telling a
+    /// user to rewrite code that would then fail to compile for a
+    /// resource-valued instantiation.
+    pub(super) fn supports_direct_vec_iteration(
+        &self,
+        ty: &Ty,
+        type_params: &HashMap<String, Vec<String>>,
+    ) -> bool {
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        if matches!(resolved, Ty::Error | Ty::TraitObject { .. }) {
+            return false;
+        }
+        let Some(witnessed) = Self::clone_proven_witness(&resolved, type_params) else {
+            return false;
+        };
+        let mut visiting = HashSet::new();
+        self.vec_iter_clone_blocker(&witnessed, &mut visiting)
+            .is_none()
+    }
+
+    /// Rewrite every in-scope type-parameter occurrence in `ty` to a concrete
+    /// cloneable witness (`string`), or return `None` when any occurrence has no
+    /// `Clone` bound to prove it with.
+    ///
+    /// Substituting a witness rather than threading a policy flag through the
+    /// blocker recursion keeps one clone-admission authority: the blocker's
+    /// type-parameter arms admit unconditionally, so replacing a `Clone`-bounded
+    /// parameter with a type the blocker already admits produces exactly the
+    /// "proven from the bound" verdict, and an unbounded parameter never reaches
+    /// the blocker at all.
+    fn clone_proven_witness(ty: &Ty, type_params: &HashMap<String, Vec<String>>) -> Option<Ty> {
+        if type_params.is_empty() {
+            return Some(ty.clone());
+        }
+        Some(match ty {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
+                if let Some(bounds) = type_params.get(name) {
+                    if !bounds.iter().any(|bound| bound == "Clone") {
+                        return None;
+                    }
+                    return Some(Ty::String);
+                }
+                let args = args
+                    .iter()
+                    .map(|arg| Self::clone_proven_witness(arg, type_params))
+                    .collect::<Option<Vec<_>>>()?;
+                Ty::Named {
+                    name: name.clone(),
+                    args,
+                    builtin: *builtin,
+                }
+            }
+            Ty::Tuple(items) => Ty::Tuple(
+                items
+                    .iter()
+                    .map(|item| Self::clone_proven_witness(item, type_params))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            Ty::Array(elem, len) => Ty::Array(
+                Box::new(Self::clone_proven_witness(elem, type_params)?),
+                *len,
+            ),
+            Ty::Slice(elem) => Ty::Slice(Box::new(Self::clone_proven_witness(elem, type_params)?)),
+            other => other.clone(),
+        })
+    }
+
     fn validate_hashmap_value_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
         let mut visiting = HashSet::new();
         if let Some(blocker) = self.hashmap_value_clone_blocker(ty, &mut visiting) {

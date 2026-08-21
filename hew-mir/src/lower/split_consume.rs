@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 #[cfg(test)]
 use super::*;
 #[cfg(not(test))]
@@ -1314,7 +1319,7 @@ mod slice3_invariants {
         HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
-            declaration: hew_types::DefId::new("handler"),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path("handler"),
             name: "handler".to_string(),
             type_params: vec![],
             is_generator: false,

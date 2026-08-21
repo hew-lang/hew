@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 use super::{
     base_local, callee_is_resolved_item, callee_returns_fresh_owner,
     field_override_uses_record_field_drop, float_width, generator_yield_instr_escapes,
@@ -6,9 +11,10 @@ use super::{
     ty_is_indirect_enum, user_record_layout_key, BindingId, Builder, BuiltinType, CmpPred,
     Disposition, FailClosedReason, FieldOffset, FloatWidth, HashMap, HashSet, HirExpr, HirExprKind,
     HirLiteral, Instr, IntentKind, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
-    ProjectedPayloadOrigin, ProjectedPayloadProvenance, ProjectedPayloadRejectReason,
-    ProjectedScrutinee, ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SiteId, Terminator,
-    TrapKind, ValueClass, VecElementRelease, SYNTHETIC_PROJECTED_SCRUTINEE_NAME,
+    ProducedValueOwnership, ProjectedPayloadOrigin, ProjectedPayloadProvenance,
+    ProjectedPayloadRejectReason, ProjectedScrutinee, ReleaseSymbolVerdict, ResolvedRef,
+    ResolvedTy, SiteId, Terminator, TrapKind, ValueClass, VecElementRelease,
+    SYNTHETIC_PROJECTED_SCRUTINEE_NAME,
 };
 
 fn is_builtin_option_carrier(ty: &ResolvedTy) -> bool {
@@ -536,7 +542,7 @@ impl Builder {
             } if args.is_empty()
                 && self
                     .lifecycle_registry
-                    .resource_record(&hew_types::DefId::new(name))
+                    .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(name))
                     .is_some() =>
             {
                 ReleaseSymbolVerdict::WiredInPlace(crate::ownership::InPlaceReleaseKind::Record)
@@ -3823,43 +3829,28 @@ impl Builder {
         }
     }
 
-    /// Group A plain-`Call` arm: apply the interim module-fn PARAM-present reject
-    /// (the same rule the preflight admission classifier applies upstream — this
-    /// is the one-authority defence-in-depth for the #2523 twin), rescued by the
-    /// SAME S2b caller arg-scan: a `{PARAM}`-only summary whose every argument is
-    /// provably fresh is a fresh sole owner → `EphemeralTemp` (the twin agrees
-    /// with the preflight's `Admit`). A PARAM-carrying summary that the arg-scan
-    /// cannot rescue (a place/param/aliased-local argument, or a mixed
-    /// `PARAM|OPAQUE` return) → Reject. Every other callee (`∅`/`OPAQUE`-only
-    /// module fn, unknown/cross-module item, extern, builtin, indirect/closure)
-    /// keeps today's `EphemeralTemp` — the interim legacy fail-open window; the
-    /// FULL `OPAQUE`-only reject lands at S4b.
+    /// Group A plain-`Call` arm: the completed HIR produced-value fact is the
+    /// ownership authority. Only an owned call result has a fresh sole-owner
+    /// temp that can be neutralized after moving out a payload. A borrowed result
+    /// may forward caller-visible storage, so its payload move stays rejected.
+    ///
+    /// `NoOwner` retains the existing foreign-result behavior: it does not mint
+    /// a caller-side release and is outside the payload-transfer rule here.
     fn classify_call_arm_scrutinee_origin(&self, scrutinee: &HirExpr) -> ProjectedPayloadOrigin {
-        use crate::return_provenance::AliasBits;
-        if let HirExprKind::Call { callee, args, .. } = &scrutinee.kind {
-            if let HirExprKind::BindingRef {
-                name,
-                resolved: ResolvedRef::Item(id),
-            } = &callee.kind
-            {
-                // An extern callee carries the PLACEHOLDER `ItemId(0)` — never
-                // consult the module summary for it (id collision); the
-                // preflight already rejected any heap-extern scrutinee.
-                if !self.call_scrutinee_provenance.extern_names.contains(name) {
-                    if let Some(bits) = self.call_scrutinee_provenance.provenance.get(id) {
-                        if bits.contains(AliasBits::PARAM) {
-                            if bits.is_params_only() && self.params_only_args_provably_fresh(args) {
-                                return ProjectedPayloadOrigin::EphemeralTemp;
-                            }
-                            return ProjectedPayloadOrigin::Reject(
-                                ProjectedPayloadRejectReason::AliasesCallerStorage,
-                            );
-                        }
-                    }
-                }
+        let ownership = self
+            .param_ownership
+            .produced_value_facts
+            .get(&scrutinee.site)
+            .map_or(ProducedValueOwnership::Unknown, |fact| fact.ownership);
+        match ownership {
+            ProducedValueOwnership::Owned { .. } => ProjectedPayloadOrigin::EphemeralTemp,
+            ProducedValueOwnership::Borrowed | ProducedValueOwnership::ReceiverIdentity => {
+                ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::AliasesCallerStorage)
+            }
+            ProducedValueOwnership::NoOwner | ProducedValueOwnership::Unknown => {
+                ProjectedPayloadOrigin::EphemeralTemp
             }
         }
-        ProjectedPayloadOrigin::EphemeralTemp
     }
 
     /// Group A builtin-collection-getter arm (F1, precursor-independent): resolve
@@ -4519,7 +4510,7 @@ impl Builder {
                                             } if args.is_empty()
                                                 && self
                                                     .lifecycle_registry
-                                                    .resource_record(&hew_types::DefId::new(name))
+                                                    .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(name))
                                                     .is_some()
                                         )
                                     })

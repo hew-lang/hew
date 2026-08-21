@@ -53,7 +53,7 @@ pub fn default_impl_method_declaration(
                 .join(", ")
         )
     };
-    DefId::new(format!(
+    crate::identity::mint_def_id(format!(
         "{nominal}::<default impl {} for {rendered_receiver}>::{method}",
         declaring_trait.full_path(),
     ))
@@ -321,7 +321,7 @@ impl ResolvedTy {
                 builtin: None,
                 ..
             } => Some(NominalInstance {
-                nominal: NominalId::new(name.clone()),
+                nominal: crate::identity::mint_nominal_id(name.clone()),
                 args: args.clone(),
             }),
             _ => None,

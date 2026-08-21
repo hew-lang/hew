@@ -506,6 +506,104 @@ fn main() -> i64 {{
     )
 }
 
+/// ALTERNATING move / no-move, then reassign — the shape that exercises the
+/// `flag == 0` half of the guarded overwrite release.
+///
+/// The two straight reassignment shapes above always transfer before they
+/// reassign, so they only ever prove the `flag == 1` path (skip the release,
+/// the aggregate owns it). Here half the frames never move, so the outgoing
+/// generation is still frame-owned at the store and the release MUST run — the
+/// binding's scope-exit drop discharges only the last generation, so a skipped
+/// release here is a leak that no later drop can recover.
+fn alternating_reassign_source(frames: usize) -> String {
+    format!(
+        r#"
+type Node {{ id: i64; }}
+
+fn frame(flag: bool) -> i64 {{
+    var shared: Rc<Node> = Rc.new(Node {{ id: 7 }});
+    let n = match flag {{
+        true => {{
+            let pair: (Rc<Node>, string) = (shared, "tag");
+            pair.1.len()
+        }}
+        false => 0,
+    }};
+    shared = Rc.new(Node {{ id: 1 }});
+    n + shared.get().id
+}}
+
+fn main() -> i64 {{
+    var total: i64 = 0;
+    for seed in 0..{frames} {{
+        total = total + frame(seed % 2 == 0);
+        println("frame");
+    }}
+    total - {expected}
+}}
+"#,
+        expected = 4 * frames.div_ceil(2) + (frames / 2)
+    )
+}
+
+/// The same alternating boundary over a `Weak` handle, which takes the sibling
+/// release symbol and the sibling drop kind.
+fn alternating_weak_reassign_source(frames: usize) -> String {
+    format!(
+        r#"
+fn frame(flag: bool) -> i64 {{
+    let rc = Rc.new(7);
+    var w: Weak<i64> = rc.downgrade();
+    let n = match flag {{
+        true => {{
+            let pair: (Weak<i64>, string) = (w, "tag");
+            pair.1.len()
+        }}
+        false => 0,
+    }};
+    w = rc.downgrade();
+    n + rc.get()
+}}
+
+fn main() -> i64 {{
+    var total: i64 = 0;
+    for seed in 0..{frames} {{
+        total = total + frame(seed % 2 == 0);
+        println("frame");
+    }}
+    total - {expected}
+}}
+"#,
+        expected = 10 * frames.div_ceil(2) + 7 * (frames / 2)
+    )
+}
+
+/// A reassignment whose RHS RETAINS the same allocation.
+///
+/// `Rc.clone()` may well hand back the handle already in the slot, so this is
+/// the shape the overwrite release must not be vetoed for and must not
+/// double-free on: the retain is lowered before the release, so `+1` strictly
+/// precedes the `-1`. Vetoing it leaks one generation per iteration; running it
+/// unretained would free a live allocation, which the poisoned allocator turns
+/// into an abort on the next read.
+fn retained_self_reassign_source(frames: usize) -> String {
+    format!(
+        r#"
+fn main() -> i64 {{
+    var total: i64 = 0;
+    var shared: Rc<i64> = Rc.new(7);
+    for _seed in 0..{frames} {{
+        shared = shared.clone();
+        total = total + shared.get();
+        println("frame");
+    }}
+    total - {expected}
+}}
+"#,
+        expected = frames * 7
+    )
+}
+
 /// Compile the shape at a fixed frame count and run it under the poisoned
 /// allocator (`MallocScribble` / `MallocPreScribble` / `MallocGuardEdges`).
 ///
@@ -659,6 +757,27 @@ aggregate_ingress_shape!(
     reassign_in_loop_does_not_under_release,
     "reassign_in_loop",
     reassign_in_loop_source
+);
+
+aggregate_ingress_shape!(
+    alternating_reassign_does_not_over_release,
+    alternating_reassign_does_not_under_release,
+    "alternating_reassign",
+    alternating_reassign_source
+);
+
+aggregate_ingress_shape!(
+    alternating_weak_reassign_does_not_over_release,
+    alternating_weak_reassign_does_not_under_release,
+    "alternating_weak_reassign",
+    alternating_weak_reassign_source
+);
+
+aggregate_ingress_shape!(
+    retained_self_reassign_does_not_over_release,
+    retained_self_reassign_does_not_under_release,
+    "retained_self_reassign",
+    retained_self_reassign_source
 );
 
 /// Machine-payload ingress carries the over-release half only; see

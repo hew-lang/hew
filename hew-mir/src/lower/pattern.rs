@@ -4612,6 +4612,11 @@ impl Builder {
                 };
             let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
             let mut call_carrier_match_result_candidates = Vec::new();
+            // Contextual `Sink` handoffs admitted while destructuring this
+            // arm's payload binders. The destructure runs BEFORE the arm's
+            // guard decides, so the slot-clearing instruction is held here and
+            // emitted on the arm-selected edge below.
+            let mut pending_sink_handoffs: Vec<Instr> = Vec::new();
             // Fresh `Some(x)` bindings whose payload owns heap. VecIter clone
             // reads, generator drives, and receiver reads all hand the body a
             // fresh sole owner, so one shared lifecycle releases it at
@@ -4702,6 +4707,23 @@ impl Builder {
                     dest,
                     src: payload_source,
                 });
+                let previous = self.binding_locals.insert(binding.binding, dest);
+                // Clearing the carrier slot here would neutralize it before a
+                // guard on this arm has selected it: a false guard falls
+                // through to a later arm that re-destructures the same slot and
+                // binds a null handle, while this arm's dead binder keeps the
+                // real close authority. Defer to the arm-selected edge — the
+                // same neutralize-before-guard hazard `in_fallthrough_match_guard`
+                // rejects for an in-guard consume.
+                let sink_handoff = self.contextual_sink_payload_handoff(
+                    call_scrutinee_owner.as_ref(),
+                    binding.binding,
+                    payload_source,
+                    dest,
+                    &binding_ty,
+                );
+                let transferred_sink = sink_handoff.is_some();
+                pending_sink_handoffs.extend(sink_handoff);
                 if projected_tuple_owner_active && keep_for_drop_elab {
                     self.push_move_out_neutralize(
                         payload_source,
@@ -4719,7 +4741,6 @@ impl Builder {
                     dest,
                     &binding_ty,
                 );
-                let previous = self.binding_locals.insert(binding.binding, dest);
                 overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
                 // #2523 — record provenance for a heap-owning TOP-LEVEL projected
                 // payload binder so its `Consume`-intent move-out routes through
@@ -4739,6 +4760,20 @@ impl Builder {
                 let is_fresh_owned_frame_payload =
                     arm_is_fresh_owned_vec_iter_some || arm_is_generator_some || arm_is_recv_some;
                 if !is_fresh_owned_frame_payload {
+                    // A binder that took the contextual `Sink` handoff is still a
+                    // projected payload and must route its consumes through the
+                    // same default-deny hook — a guard that consumes it (or moves
+                    // it out) has to be refused fail-closed like any other. Its
+                    // origin is not the generic scrutinee verdict: the handoff's
+                    // admission already PROVED a fresh, solely-owned `Result`
+                    // carrier, which is exactly `EphemeralTemp` — nulling the
+                    // variant slot transfers ownership with no re-readable origin
+                    // left behind.
+                    let origin = if transferred_sink {
+                        ProjectedPayloadOrigin::EphemeralTemp
+                    } else {
+                        scrutinee_origin.clone()
+                    };
                     self.record_projected_payload_provenance(
                         binding.binding,
                         &binding.name,
@@ -4747,7 +4782,7 @@ impl Builder {
                             variant_idx,
                             field_idx: binding.field_idx,
                         },
-                        scrutinee_origin.clone(),
+                        origin,
                         keep_for_drop_elab,
                     );
                 }
@@ -5013,6 +5048,12 @@ impl Builder {
                     });
                     self.start_block(body_entry_bb);
                 }
+            }
+
+            // The arm is now selected on every reaching path: clear the
+            // carrier slots whose payloads this arm's binders own.
+            for instr in pending_sink_handoffs.drain(..) {
+                self.push_instr(instr);
             }
 
             let body_start_block_id = self.current_block_id;

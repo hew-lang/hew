@@ -216,6 +216,7 @@ pub(super) fn elaborate(
         &outbound_records,
         &builder.opaque_handle_names,
         &builder.lifecycle_registry,
+        &builder.fresh_variant_payload_binder_locals,
         &builder.proven_borrow_call_args,
         &builder.module_fn_names,
         &builder.module_generic_fn_names,

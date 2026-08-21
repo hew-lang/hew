@@ -121,6 +121,113 @@ impl crate::return_provenance::LeafPolicy for ClosureStringReturnPolicy<'_> {
 }
 
 impl Builder {
+    /// Emit the handoff immediately. Correct wherever the destructure itself
+    /// only runs on the path that selected the pattern (`if let` / `while let`
+    /// / `let else`). A match arm destructures before its guard decides, so it
+    /// uses [`Self::contextual_sink_payload_handoff`] and emits on the
+    /// arm-selected edge instead.
+    pub(crate) fn transfer_contextual_sink_payload(
+        &mut self,
+        scrutinee_owner: Option<&(BindingId, ResolvedTy)>,
+        binding: BindingId,
+        source: Place,
+        dest: Place,
+        binding_ty: &ResolvedTy,
+    ) -> bool {
+        match self.contextual_sink_payload_handoff(
+            scrutinee_owner,
+            binding,
+            source,
+            dest,
+            binding_ty,
+        ) {
+            Some(instr) => {
+                self.push_instr(instr);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Transfer a runtime-close payload out of a fresh contextual scrutinee.
+    ///
+    /// A builtin `Sink` payload is a nullable handle with a typed runtime close
+    /// descriptor. Once a fresh call carrier is the proven
+    /// owner, moving its active payload into the contextual binder and clearing
+    /// that exact variant slot makes the binder the sole close authority. The
+    /// carrier can still clean up a different active variant on the mismatch
+    /// path, and its drop is a no-op over the cleared handle on the success
+    /// path. User-close resources are deliberately excluded: their close body
+    /// can observe zeroed storage, so nulling a field does not make the shell's
+    /// later user close inert.
+    ///
+    /// Admit the handoff and return the slot-clearing instruction the caller
+    /// must emit on the path that selects this binder. Returning the `Instr`
+    /// rather than pushing it keeps admission (which reads the ownership
+    /// registries as they stand at destructure time) separate from placement.
+    pub(crate) fn contextual_sink_payload_handoff(
+        &mut self,
+        scrutinee_owner: Option<&(BindingId, ResolvedTy)>,
+        binding: BindingId,
+        source: Place,
+        dest: Place,
+        binding_ty: &ResolvedTy,
+    ) -> Option<Instr> {
+        let (owner, owner_ty) = scrutinee_owner?;
+        let source_root = base_local(source)?;
+        let source_is_fresh_owned_result = matches!(
+            (owner_ty, source),
+            (
+                ResolvedTy::Named {
+                    args,
+                    builtin: Some(hew_types::BuiltinType::Result),
+                    ..
+                },
+                Place::MachineVariant {
+                    variant_idx: 0,
+                    field_idx: 0,
+                    ..
+                } | Place::EnumVariant {
+                    variant_idx: 0,
+                    field_idx: 0,
+                    ..
+                }
+            ) if args.first() == Some(binding_ty)
+        ) && self.locals.get(source_root as usize)
+            == Some(owner_ty)
+            && self.binding_locals.get(owner) == Some(&Place::Local(source_root))
+            && self.owned_locals.iter().any(|entry| {
+                entry.binding == *owner
+                    && entry.ty == *owner_ty
+                    && entry.disposition == Disposition::ScopeExit
+            });
+        let dest_is_proven_owner = self.binding_locals.get(&binding) == Some(&dest)
+            && self.owned_locals.iter().any(|entry| {
+                entry.binding == binding
+                    && entry.ty == *binding_ty
+                    && entry.disposition == Disposition::ScopeExit
+            });
+        if !source_is_fresh_owned_result
+            || !dest_is_proven_owner
+            || !matches!(
+                super::drop_plan::resource_drop_fn(binding_ty, &self.type_classes),
+                Some(crate::model::DropFnSpec::Runtime(
+                    hew_types::runtime_call::RuntimeDropDescriptor::SinkClose
+                ))
+            )
+        {
+            return None;
+        }
+        if let Some(local) = base_local(dest) {
+            self.fresh_variant_payload_binder_locals.insert(local);
+        }
+        Some(Instr::NeutralizePayloadSlot {
+            place: source,
+            transferee: Some(dest),
+            authority: crate::model::NeutralizeAuthority::EphemeralTempConsume,
+        })
+    }
+
     pub(crate) fn publish_produced_value_place(&mut self, expr: &HirExpr, place: Place) {
         self.published_value_places.insert(expr.site, place);
         let borrowed_publication = self

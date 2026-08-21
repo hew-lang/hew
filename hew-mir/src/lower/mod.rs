@@ -164,8 +164,9 @@ use self::split_consume::{
     binding_ref_target, check_duplex_split_state, close_alias_binders_forward,
     collect_record_field_binders, descend_match_bound_hop_alias_chain,
     descend_match_bound_hop_aliases, local_is_byte_copy_aggregate, place_is_interior_projection,
-    place_is_tag_read, propagate_whole_value_alias_roots,
-    propagate_whole_value_alias_roots_excluding_moves, validate_cross_block_split_consume,
+    place_is_tag_read, propagate_seeded_whole_value_alias_roots_excluding_moves,
+    propagate_whole_value_alias_roots, propagate_whole_value_alias_roots_excluding_moves,
+    validate_cross_block_split_consume,
 };
 pub use self::suspend_places::instr_source_places;
 pub use self::suspend_places::suspend_kind_source_places;

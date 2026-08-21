@@ -5665,6 +5665,7 @@ struct CompositeHelperHarness<'ctx> {
     /// the composite-helper unit tests, so no bool-field defence path is
     /// taken. Carried so the FnCtx field stays populated.
     record_field_resolved_tys: HashMap<String, Vec<ResolvedTy>>,
+    record_field_names: HashMap<String, Vec<String>>,
     const_globals: ConstGlobalMap<'ctx>,
     lifecycle_registry: hew_hir::LifecycleRegistry,
 }
@@ -5901,6 +5902,7 @@ fn build_harness_with_target_data<'ctx>(
         param_boundary_modes: HashMap::new(),
         actor_layouts: Vec::new(),
         record_field_resolved_tys: HashMap::new(),
+        record_field_names: HashMap::new(),
         const_globals: HashMap::new(),
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
@@ -5970,6 +5972,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
         enum_layouts: &[],
         indirect_enum_owned_locals: HashSet::new(),
         record_field_resolved_tys: &harness.record_field_resolved_tys,
+        record_field_names: &harness.record_field_names,
         // Composite-helper unit tests never lower an
         // `Instr::CoerceToDynTrait`; carry an empty slice so the
         // FnCtx field stays populated. The dyn-trait

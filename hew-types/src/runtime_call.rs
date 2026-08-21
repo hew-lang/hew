@@ -687,6 +687,7 @@ pub enum RuntimeCallFamily {
     StringCharAtUtf8,
     StringCharCount,
     StringConcat,
+    StructuralFormat,
     StringFind,
     StringGet,
     StringIndex,
@@ -1286,6 +1287,7 @@ impl RuntimeCallFamily {
             Self::StringCharAtUtf8 => "hew_string_char_at_utf8",
             Self::StringCharCount => "hew_string_char_count",
             Self::StringConcat => "hew_string_concat",
+            Self::StructuralFormat => "hew_structural_format",
             Self::StringFind => "hew_string_find",
             Self::StringGet => "hew_string_get",
             Self::StringIndex => "hew_string_index",
@@ -1609,6 +1611,7 @@ impl RuntimeCallFamily {
             "hew_string_char_at_utf8" => Self::StringCharAtUtf8,
             "hew_string_char_count" => Self::StringCharCount,
             "hew_string_concat" => Self::StringConcat,
+            "hew_structural_format" => Self::StructuralFormat,
             "hew_string_find" => Self::StringFind,
             "hew_string_get" => Self::StringGet,
             "hew_string_index" => Self::StringIndex,
@@ -2308,6 +2311,7 @@ impl RuntimeCallFamily {
             | F::StringCharAtUtf8
             | F::StringCharCount
             | F::StringConcat
+            | F::StructuralFormat
             | F::StringFind
             | F::StringGet
             | F::StringIndex

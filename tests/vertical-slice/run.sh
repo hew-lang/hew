@@ -413,6 +413,7 @@ if [[ "${arith_status}" -ne 5 ]]; then
 fi
 
 run_accept_expect_stdout "hello_println"
+run_accept_expect_stdout "structural_rendering"
 
 run_accept_expect_status "assert" 0
 
@@ -1210,6 +1211,24 @@ run_accept_expect_stdout "user_resource_close_multiple_types"
 # prints `7` twice and aborts at the resource sentinel. (Cross-eco security
 # gate bug 1.)
 run_accept_expect_stdout "resource_nonreceiver_method_arg_drops_once"
+
+# A fluent builder transfers a consumed child into its receiver while returning
+# that receiver, matching the standard encoding value-tree contract. The accept
+# fixture also pins both explicit release spellings: compiler-visible `close()`
+# and its consuming `free()` compatibility alias. It goes through `compile`, not
+# `check`: its `extern "C"` sinks are the runtime's real json ownership entry
+# points, so link failure is a regression this fixture must surface here rather
+# than only in the fuzz oracle that compiles and runs the whole accept corpus.
+compile_accept "consume_param_transfer_builder"
+
+# Reusing the transferred child must fail at checked MIR with main's concrete
+# consume-parameter diagnostic.
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/consume_param_transfer_builder_use_after_move.hew" \
+    'binding `child` is used after it was consumed' \
+    "consume param transfer builder use after move"
+grep -qF 'MIR kind: UseAfterConsume' "${reject_output}"
 
 # Drop-obligation lattice, `MachineStatePayload` position: a `#[resource]` /
 # `#[linear]` value in a machine state payload has no wired release on
@@ -3740,6 +3759,10 @@ run_accept_expect_status "vec_range_slice_inclusive" 3
 run_accept_expect_stdout "hashmap_values_scalar"
 run_accept_expect_stdout "hashmap_values_string"
 run_accept_expect_status "hashmap_generic_ops" 0
+run_accept_expect_status "temporary_receiver_method" 0
+run_accept_expect_status "temporary_receiver_for" 0
+run_accept_expect_status "temporary_receiver_argument" 0
+run_accept_expect_status "temporary_receiver_binding" 0
 run_accept_expect_stdout "vec_scalar_range_slice"
 run_accept_expect_stdout "vec_string_range_slice"
 run_accept_expect_stdout "vec_record_range_slice"

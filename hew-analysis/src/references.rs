@@ -934,7 +934,7 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let StringPart::Expr(e) = part {
+                if let StringPart::Expr(e) | StringPart::StructuralExpr(e) = part {
                     count_idents_in_expr(&e.0, counts);
                 }
             }

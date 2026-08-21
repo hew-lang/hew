@@ -81,10 +81,10 @@ machine ConnectionLifecycle {
 fn main() {
     var c = Disconnected;
     println(c.state_name());
-    c.step(Connect);
+    c.step(.Connect);
     println(c.state_name());
-    c.step(AuthOk);
+    c.step(.AuthOk);
     println(c.state_name());
-    c.step(Disconnect);
+    c.step(.Disconnect);
     println(c.state_name());
 }

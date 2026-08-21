@@ -80,6 +80,9 @@ const ADMITTED_DECL_VIA_OTHER_SEAM: &[&str] = &[
     "hew_instant_duration_since",
     "hew_instant_elapsed",
     "hew_instant_now",
+    // Compiler intercept: lowered to a generated typed formatter plus builder
+    // calls, never to the sentinel runtime export itself.
+    "hew_structural_format",
     // Vec layout / owned-element getters: declared by the vec-layout decl
     // path keyed on the element descriptor.
     "hew_vec_get_layout",

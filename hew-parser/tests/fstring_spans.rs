@@ -71,7 +71,7 @@ fn fstring_span_simple_identifier() {
                 span.end
             );
         }
-        other @ StringPart::Literal(_) => panic!("expected Expr part, got {other:?}"),
+        other => panic!("expected Expr part, got {other:?}"),
     }
 }
 
@@ -138,7 +138,7 @@ fn fstring_span_binary_expression_inner_nodes() {
                 other => panic!("expected BinaryOp, got {other:?}"),
             }
         }
-        other @ StringPart::Literal(_) => panic!("expected Expr part, got {other:?}"),
+        other => panic!("expected Expr part, got {other:?}"),
     }
 }
 
@@ -171,18 +171,18 @@ fn fstring_span_multiple_interpolations() {
             assert_eq!(span.start, 23, "first expr start (x)");
             assert_eq!(span.end, 24, "first expr end (x)");
         }
-        other @ StringPart::Literal(_) => panic!("expected first Expr, got {other:?}"),
+        other => panic!("expected first Expr, got {other:?}"),
     }
     match &parts[1] {
         StringPart::Literal(s) => assert_eq!(s, " and "),
-        other @ StringPart::Expr(_) => panic!("expected Literal, got {other:?}"),
+        other => panic!("expected Literal, got {other:?}"),
     }
     match &parts[2] {
         StringPart::Expr((_, span)) => {
             assert_eq!(span.start, 31, "second expr start (y)");
             assert_eq!(span.end, 32, "second expr end (y)");
         }
-        other @ StringPart::Literal(_) => panic!("expected second Expr, got {other:?}"),
+        other => panic!("expected second Expr, got {other:?}"),
     }
 }
 

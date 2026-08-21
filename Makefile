@@ -73,7 +73,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check baselines baselines-check
-.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-ci-coverage-check structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
+.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-ci-coverage-check structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -1053,13 +1053,23 @@ test-stdlib-execution-proofs:
 # admission. New examples therefore cannot disappear from the authority by
 # omitting their expectation.
 #
+# One inventory definition, shared by the gate and its regen seam: a corpus that
+# drifts between the two would gate one set of examples and re-record another.
+UX_EXAMPLE_INVENTORY = --label "ux + progressive tutorial" \
+	  --source-root examples/ux \
+	  --source-root examples/progressive
+
 test-ux-examples: hew-native runtime $(LIBHEW_READY) test-example-expectations-selftest
 	@echo "==> Running ux + progressive tutorials against .expected"
 	@python3 scripts/example-expectations.py \
-	  --hew-bin "$(DEBUG_DIR)/hew" \
-	  --label "ux + progressive tutorial" \
-	  --source-root examples/ux \
-	  --source-root examples/progressive
+	  --hew-bin "$(DEBUG_DIR)/hew" $(UX_EXAMPLE_INVENTORY)
+
+# Regen seam: driven only by an explicit
+# `python3 scripts/baselines.py regen --only ux-example-expectations`, never by a
+# blanket regen. An example's output is its user-facing contract.
+ux-examples-expect: hew-native runtime $(LIBHEW_READY)
+	@python3 scripts/example-expectations.py \
+	  --hew-bin "$(DEBUG_DIR)/hew" $(UX_EXAMPLE_INVENTORY) --write-expected
 
 # Run every offline v0.5-surface example against its paired .expected file.
 # Two lanes:
@@ -1088,13 +1098,19 @@ test-ux-examples: hew-native runtime $(LIBHEW_READY) test-example-expectations-s
 # expectations, process failures, timeouts, and output drift all fail the gate.
 # `scanner_tokens.hew` is fully admitted with its repaired five-line output.
 #
+SURFACE_EXAMPLE_INVENTORY = --label "surface" \
+	  --source-root examples/v05/surfaces \
+	  --source examples/net/http_await_service.hew
+
 test-surface-examples: hew-native runtime $(LIBHEW_READY) test-example-expectations-selftest
 	@echo "==> Running v0.5 surface examples against .expected"
 	@python3 scripts/example-expectations.py \
-	  --hew-bin "$(DEBUG_DIR)/hew" \
-	  --label "surface" \
-	  --source-root examples/v05/surfaces \
-	  --source examples/net/http_await_service.hew
+	  --hew-bin "$(DEBUG_DIR)/hew" $(SURFACE_EXAMPLE_INVENTORY)
+
+# Regen seam: see ux-examples-expect.
+surface-examples-expect: hew-native runtime $(LIBHEW_READY)
+	@python3 scripts/example-expectations.py \
+	  --hew-bin "$(DEBUG_DIR)/hew" $(SURFACE_EXAMPLE_INVENTORY) --write-expected
 
 test-example-expectations-selftest:
 	@python3 scripts/tests/test_example_expectations.py

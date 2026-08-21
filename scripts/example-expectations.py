@@ -38,6 +38,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-root", type=Path, action="append", default=[])
     parser.add_argument("--source", type=Path, action="append", default=[])
     parser.add_argument("--timeout-seconds", type=float, default=30.0)
+    parser.add_argument(
+        "--write-expected",
+        action="store_true",
+        help=(
+            "re-record each .expected from the example's own output. This is the "
+            "regen half of the gate, driven by `make baselines` for this member "
+            "only when it is named explicitly -- an example's output is its "
+            "user-facing contract, so a blanket regen must never rewrite it."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -164,6 +174,29 @@ def main() -> None:
         )
         actual = normalized_text(output_bytes, source=f"output from {display(source)}")
 
+        if args.write_expected:
+            # A failing run is never recorded. Re-recording a nonzero exit or a
+            # timeout would turn the regen into a way of blessing a broken
+            # example, which is the one thing this corpus exists to prevent.
+            if status is None:
+                fail(
+                    f"{display(source)} exceeded the runner deadline; "
+                    "a timeout is never recorded as an expectation"
+                )
+            if status != 0:
+                fail(
+                    f"{display(source)} exited with status {status}; "
+                    "a failing run is never recorded as an expectation"
+                )
+            recorded = f"{actual}\n" if actual else ""
+            if expectation.read_text() != recorded:
+                expectation.write_text(recorded)
+                print(f"  RE-RECORDED: {display(expectation)}")
+                failed += 1
+            else:
+                passed += 1
+            continue
+
         reasons: list[str] = []
         if status is None:
             reasons.append(
@@ -182,6 +215,10 @@ def main() -> None:
             failed += 1
         else:
             passed += 1
+
+    if args.write_expected:
+        print(f"  {passed} already current, {failed} re-recorded")
+        return
 
     print(f"  {passed} passed, {failed} failed")
     if failed:

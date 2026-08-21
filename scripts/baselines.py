@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -75,18 +76,22 @@ class Baseline:
     check: str | None = None
     prune_list: str | None = None
     requires: tuple[str, ...] = field(default_factory=tuple)
+    explicit_only: bool = False
 
     def regen_command(self) -> str:
         """The exact command a human runs to bring this baseline current."""
-        if self.regen is not None:
-            return self.regen
-        return f"python3 scripts/baselines.py regen --only {self.id}"
+        if self.explicit_only or self.regen is None:
+            return f"python3 scripts/baselines.py regen --only {self.id}"
+        return self.regen
 
 
 # ── Registry ───────────────────────────────────────────────────────────────────
 #
-# Adding a baseline means adding a row here.  A `*-check` or ratchet gate whose
-# artefact is absent from this registry fails check-gate-reachability (A6).
+# Adding a baseline means adding a row here.  check-gate-reachability's A6
+# discovers comparison targets STRUCTURALLY — from what each Makefile recipe
+# runs and what those scripts read — so a gate that compares against a committed
+# artefact fails the lint until it is registered here or exempted below, whether
+# or not its name looks like a gate.
 #
 # Every command below is a Makefile target, not a driver script: the Makefile
 # already owns the binary paths, the build prerequisites and the ordering, and
@@ -191,6 +196,36 @@ REGISTRY: tuple[Baseline, ...] = (
         check="make checked-mir-run",
     ),
     Baseline(
+        id="ux-example-expectations",
+        summary="ux + progressive tutorial .expected transcripts",
+        tier="compiler",
+        paths=("examples/ux", "examples/progressive"),
+        gates=("test-ux-examples",),
+        regen="make ux-examples-expect",
+        check="make test-ux-examples",
+        # An example's combined stdout/stderr IS its user-facing contract. A
+        # blanket `make baselines` must never rewrite it: that would turn a
+        # behaviour regression into a committed expectation without anyone
+        # deciding to. Changed output stays a gate failure until a human names
+        # this member explicitly, exactly as a NOW-FAILS entry stays an error
+        # until it is fixed. The regen itself refuses to record a nonzero exit
+        # or a timeout at all (example-expectations.py --write-expected).
+        explicit_only=True,
+    ),
+    Baseline(
+        id="surface-example-expectations",
+        summary="v0.5 surface + http flagship .expected transcripts",
+        tier="compiler",
+        paths=(
+            "examples/v05/surfaces",
+            "examples/net/http_await_service.expected",
+        ),
+        gates=("test-surface-examples",),
+        regen="make surface-examples-expect",
+        check="make test-surface-examples",
+        explicit_only=True,
+    ),
+    Baseline(
         id="hew-corpus-expected-failures",
         summary="repo-wide `hew check` sweep ratchet",
         tier="compiler",
@@ -255,30 +290,64 @@ REGISTRY: tuple[Baseline, ...] = (
 # a lint failure — that is the whole point.
 
 EXEMPT_GATES: dict[str, str] = {
-    "baselines-check": "the aggregate check over this registry; it owns no artefact of its own",
-    "check-gate-reachability": "computes the command graph from the tree; compares against no committed file",
-    "test-check-gate-reachability": "self-test for the reachability checker",
-    "check-libhew-fresh": "compares build timestamps, not committed content",
-    "check-sanitizer-gate": "validates the release sanitizer contract in the workflow",
-    "codegen-trap-inventory-check": "counts in-source TRAP-DISPOSITION markers; no committed inventory file",
-    "freebsd-workflow-contract-check": "asserts workflow structure against itself",
-    "hew-fmt-check": "formatter idempotency over the live corpus; nothing committed to regenerate",
-    "lint-ci-coverage-check": "asserts every lint sub-target is reached by CI",
-    "playground-check": "runs the hew-wasm suite; its manifest freshness is the playground-manifest member",
-    "playground-wasi-check": "runs curated playground examples under WASI",
-    "sandbox-parity-coverage-check": "asserts nextest exclusions cover the VM-touching binaries",
-    "test-sandbox-parity-coverage-check": "self-test for the parity coverage checker",
-    "doc-ratchet-selftest": "self-test for the ratchet membership wiring",
-    "ll-golden": "regen half of the ll-goldens member",
-    "checked-mir-golden": "regen half of the checked-mir-goldens member",
-    "checked-mir-expect": "regen half of the checked-mir-expected member",
-    "o2-differential-selftest": "self-test for the -O0/-O2 differential harness",
-    "fuzz-oracle-selftest": "self-test for the fuzz oracle harness",
-    # Not derivable, and deliberately so: the module-size ceiling is a fixed
-    # constant in hew-mir/tests/lower_module_size.rs.  "Regenerating" it would
-    # mean raising it, which is the one thing the ratchet forbids.  It is listed
-    # here so the exclusion is a decision on the record rather than an omission.
-    "lower_module_size": "a fixed line ceiling; carve the module, never re-record the bound",
+    "baselines-check": (
+        "the aggregate check over this registry; it owns no artefact of its own"
+    ),
+    "check-libhew-fresh": (
+        "compares build-input hashes against a stamp under target/; nothing committed"
+    ),
+    "libhew-debug": (
+        "scripts/libhew-freshness.py stamps build inputs; the freshness it reads is a "
+        "build artefact, not a committed one"
+    ),
+    "structural-lint-bootstrap-install": (
+        "provisions the pinned ast-grep toolchain (--install-only); the audit that reads "
+        "the authority inventory is the structural-lint member's gate"
+    ),
+    "fuzz-smoke-bootstrap-install": (
+        "provisions the libFuzzer toolchain; it compares nothing"
+    ),
+    "pre-release": (
+        "validates built release artefacts against the release contract, not the tree "
+        "against a committed file"
+    ),
+    "lint-wasm-todo": (
+        "validates the repository's WASM backlog markers against a hand-authored "
+        "authority; that authority is written by people, not derived from the tree"
+    ),
+    "test-o2-differential": (
+        "compares two runs of the same program (-O0 against -O2). The oracle is "
+        "self-referential; there is no committed artefact to regenerate"
+    ),
+    # The four entries below share one reason, and it is the strongest reason a
+    # comparison can have for staying outside the registry: their expectations
+    # state INTENDED behaviour, so re-recording them from observed output would
+    # make each oracle agree with whatever the compiler currently does. That is
+    # the `oracle-encodes-intent-not-observed-output` failure in LESSONS.md, and
+    # a regen command for these corpora would be a tool for committing it.
+    "test-vertical-slice": (
+        "accept/reject fixture expectations state intended behaviour; they are never "
+        "re-recorded from observed output"
+    ),
+    "test-pkg-import": (
+        "cross-module import oracle; its expectations state intended behaviour"
+    ),
+    "test-package-install": (
+        "package-manager consumer oracle; its expectations state intended behaviour"
+    ),
+    "test-stdlib-execution-proofs": (
+        "each stdlib module's executable proof states intended behaviour"
+    ),
+    "test-migrate-corpus": (
+        "pairs a pre-migration source with the exact post-migration form the migration "
+        "is specified to produce; re-recording it from the migrator's own output would "
+        "make the oracle agree with the migrator"
+    ),
+    # NOT an entry, deliberately: the hew-mir module-size ceiling
+    # (hew-mir/tests/lower_module_size.rs) is a fixed constant compared against
+    # nothing on disk, so A6 never discovers it and an exemption for it would be
+    # dead text. "Regenerating" it would mean raising the ceiling, which is the
+    # one thing that ratchet forbids.
 }
 
 
@@ -410,34 +479,77 @@ def run_requires(member: Baseline) -> int:
 # ── Snapshot / compare, for members with no native freshness check ─────────────
 
 
-def snapshot(paths: tuple[str, ...]) -> dict[str, bytes]:
-    contents: dict[str, bytes] = {}
+@dataclass(frozen=True)
+class Entry:
+    """One filesystem entry as it stood before a regen probe.
+
+    Content alone is not the artefact. A snapshot that recorded only file bytes
+    silently dropped empty directories, flattened symlinks into their targets,
+    and reset the executable bit — so a check over a corpus containing a
+    generated script or a symlinked fixture would "restore" a tree that differs
+    from the one it found. `kind` and `mode` are part of the artefact and are
+    carried through restore.
+    """
+
+    kind: str  # "file" | "dir" | "symlink"
+    mode: int
+    payload: bytes  # file contents, or the symlink target, or empty for a dir
+
+
+def _entry_for(path: Path) -> Entry | None:
+    """Read one entry without following symlinks."""
+    try:
+        stat = path.lstat()
+    except FileNotFoundError:
+        return None
+    mode = stat.st_mode & 0o7777
+    if path.is_symlink():
+        return Entry("symlink", mode, os.readlink(path).encode())
+    if path.is_dir():
+        return Entry("dir", mode, b"")
+    return Entry("file", mode, path.read_bytes())
+
+
+def snapshot(paths: tuple[str, ...]) -> dict[str, Entry]:
+    entries: dict[str, Entry] = {}
     for rel in paths:
         target = ROOT / rel
-        if target.is_dir():
+        entry = _entry_for(target)
+        if entry is None:
+            continue
+        entries[rel] = entry
+        if entry.kind == "dir":
             for child in sorted(target.rglob("*")):
-                if child.is_file():
-                    contents[str(child.relative_to(ROOT))] = child.read_bytes()
-        elif target.is_file():
-            contents[rel] = target.read_bytes()
-    return contents
+                child_entry = _entry_for(child)
+                if child_entry is not None:
+                    entries[str(child.relative_to(ROOT))] = child_entry
+    return entries
 
 
-def restore(before: dict[str, bytes], paths: tuple[str, ...]) -> None:
+def restore(before: dict[str, Entry], paths: tuple[str, ...]) -> None:
     """Put the working tree back exactly as it was before a regen probe."""
     for rel in paths:
         target = ROOT / rel
-        if target.is_dir():
-            shutil.rmtree(target)
-        elif target.is_file():
+        if target.is_symlink() or target.is_file():
             target.unlink()
-    for rel, data in before.items():
+        elif target.is_dir():
+            shutil.rmtree(target)
+    # Shortest path first, so a directory exists before its children land.
+    for rel in sorted(before, key=lambda r: r.count("/")):
+        entry = before[rel]
         target = ROOT / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        if entry.kind == "dir":
+            target.mkdir(exist_ok=True)
+        elif entry.kind == "symlink":
+            target.symlink_to(entry.payload.decode())
+            continue  # a symlink's own mode is not portably settable
+        else:
+            target.write_bytes(entry.payload)
+        os.chmod(target, entry.mode)
 
 
-def describe_drift(before: dict[str, bytes], after: dict[str, bytes]) -> list[str]:
+def describe_drift(before: dict[str, Entry], after: dict[str, Entry]) -> list[str]:
     drift: list[str] = []
     for rel in sorted(set(before) | set(after)):
         if rel not in after:
@@ -445,7 +557,13 @@ def describe_drift(before: dict[str, bytes], after: dict[str, bytes]) -> list[st
         elif rel not in before:
             drift.append(f"added:   {rel}")
         elif before[rel] != after[rel]:
-            drift.append(f"changed: {rel}")
+            was, now = before[rel], after[rel]
+            if was.kind != now.kind:
+                drift.append(f"changed: {rel} ({was.kind} -> {now.kind})")
+            elif was.mode != now.mode:
+                drift.append(f"changed: {rel} (mode {was.mode:o} -> {now.mode:o})")
+            else:
+                drift.append(f"changed: {rel}")
     return drift
 
 
@@ -605,6 +723,15 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 def cmd_regen(args: argparse.Namespace) -> int:
     members = select(args.tier, args.only, [])
+    if not args.only:
+        deferred = [m for m in members if m.explicit_only]
+        members = [m for m in members if not m.explicit_only]
+        for member in deferred:
+            print(
+                f"==> baselines: SKIPPING {member.id} — its artefact is a "
+                f"user-facing contract, so it is only re-recorded when named: "
+                f"{member.regen_command()}"
+            )
     failures: list[str] = []
     for member in members:
         print(

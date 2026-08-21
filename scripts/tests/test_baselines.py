@@ -32,6 +32,15 @@ def check(name: str, condition: bool, detail: str = "") -> None:
     print(f"  FAIL {name}: {detail}")
 
 
+def makefile_recipes() -> dict[str, str]:
+    """Target -> recipe text, parsed the way the reachability checker parses it."""
+    reachability = load_reachability_module()
+    _phony, _prereqs, recipes = reachability.parse_makefile(
+        (ROOT / "Makefile").read_text()
+    )
+    return recipes
+
+
 def makefile_targets() -> set[str]:
     targets: set[str] = set()
     for line in (ROOT / "Makefile").read_text().splitlines():
@@ -100,19 +109,46 @@ def test_every_gate_shaped_target_is_accounted_for() -> None:
     """The closure property: a new baseline cannot enter outside the registry."""
     print("every gate-shaped Makefile target is registered or exempt")
     reachability = load_reachability_module()
-    phony = makefile_targets()
+    recipes = makefile_recipes()
+    unregistered, stale = reachability.baseline_membership_findings(recipes)
     check(
         "the current tree has no unregistered comparison target",
-        reachability.baseline_membership_findings(phony) == [],
-        str(reachability.baseline_membership_findings(phony)),
+        unregistered == [],
+        str(unregistered),
     )
-    # The counterfactual: without it, an assertion that always returns [] would
-    # pass the line above forever.
-    invented = reachability.baseline_membership_findings(phony | {"frobnicate-check"})
+    check("no exemption has expired", stale == [], str(stale))
+
+    discovered = reachability.comparison_targets(recipes)
+    # The .expected corpora are the case that broke the first, name-matching
+    # version of this assertion: nothing about `test-ux-examples` looks like a
+    # baseline gate, and it compares every tutorial against a committed
+    # transcript. Discovery must find them from what the recipe RUNS.
+    for target in ("test-ux-examples", "test-surface-examples"):
+        check(
+            f"{target} is discovered structurally",
+            target in discovered,
+            f"discovered: {sorted(discovered)}",
+        )
+
+    # The counterfactual: an assertion that always returns [] would pass the
+    # lines above forever.
+    invented = dict(recipes)
+    invented["frobnicate"] = "\tpython3 scripts/example-expectations.py --label x\n"
+    new_unregistered, _ = reachability.baseline_membership_findings(invented)
     check(
-        "a new comparison target is rejected until it is registered",
-        [target for target, _ in invented] == ["frobnicate-check"],
-        str(invented),
+        "an unregistered comparison target is rejected",
+        [target for target, _ in new_unregistered] == ["frobnicate"],
+        str(new_unregistered),
+    )
+    # And the other direction: an exemption whose target stopped comparing is
+    # dead text, so it is reported rather than left to accumulate.
+    _, orphaned = reachability.baseline_membership_findings(
+        {k: v for k, v in recipes.items() if k != "test-vertical-slice"}
+    )
+    check(
+        "an exemption for a target that no longer compares is reported",
+        "test-vertical-slice" in orphaned,
+        str(orphaned),
     )
 
 
@@ -211,12 +247,88 @@ def test_lane_relevance_follows_prerequisites() -> None:
     check("an unrelated lane selects nothing", unrelated == [], str(unrelated))
 
 
+def test_snapshot_restores_kind_and_mode() -> None:
+    """A check must leave the tree byte-, mode-, and type-identical."""
+    print("snapshot/restore preserves mode, symlinks and empty directories")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        corpus = root / "corpus"
+        (corpus / "empty").mkdir(parents=True)
+        script = corpus / "run.sh"
+        script.write_text("#!/bin/sh\n")
+        script.chmod(0o755)
+        plain = corpus / "data.txt"
+        plain.write_text("one\n")
+        plain.chmod(0o644)
+        link = corpus / "alias.txt"
+        link.symlink_to("data.txt")
+
+        original_root = baselines.ROOT
+        baselines.ROOT = root
+        try:
+            before = baselines.snapshot(("corpus",))
+            # Simulate a regen that rewrites content, drops the empty directory,
+            # flattens the symlink and resets the executable bit.
+            link.unlink()
+            link.write_text("one\n")
+            (corpus / "empty").rmdir()
+            plain.write_text("two\n")
+            script.chmod(0o644)
+            after = baselines.snapshot(("corpus",))
+            drift = baselines.describe_drift(before, after)
+            baselines.restore(before, ("corpus",))
+            restored = baselines.snapshot(("corpus",))
+        finally:
+            baselines.ROOT = original_root
+
+        check("drift is reported", len(drift) >= 3, str(drift))
+        check(
+            "mode drift is named as mode drift",
+            any("mode" in item for item in drift),
+            str(drift),
+        )
+        check(
+            "restore is exact",
+            restored == before,
+            str(baselines.describe_drift(before, restored)),
+        )
+        check(
+            "the executable bit comes back",
+            script.stat().st_mode & 0o111 != 0,
+            oct(script.stat().st_mode),
+        )
+        check("the symlink comes back a symlink", link.is_symlink(), str(link))
+        check(
+            "the empty directory comes back", (corpus / "empty").is_dir(), str(corpus)
+        )
+
+
+def test_blanket_regen_skips_user_facing_contracts() -> None:
+    """`make baselines` must never silently re-record an example's output."""
+    print("a blanket regen defers explicit-only members")
+    explicit = [m for m in baselines.REGISTRY if m.explicit_only]
+    check(
+        "the example-expectation corpora are explicit-only",
+        {m.id for m in explicit}
+        == {"ux-example-expectations", "surface-example-expectations"},
+        str([m.id for m in explicit]),
+    )
+    for member in explicit:
+        check(
+            f"{member.id}: regen command names the member",
+            f"--only {member.id}" in member.regen_command(),
+            member.regen_command(),
+        )
+
+
 def main() -> int:
     test_registry_is_well_formed()
     test_ratchet_report_parsing()
     test_prune_removes_only_now_passing_entries()
     test_regen_refuses_to_record_a_new_failure()
     test_lane_relevance_follows_prerequisites()
+    test_snapshot_restores_kind_and_mode()
+    test_blanket_regen_skips_user_facing_contracts()
     test_every_gate_shaped_target_is_accounted_for()
     if FAILURES:
         print(f"\nbaselines registry self-test: {len(FAILURES)} failure(s)")

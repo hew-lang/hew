@@ -2093,24 +2093,129 @@ def documented_make_references(root: Path = REPO_ROOT) -> list[MakeReference]:
 # derived baselines that drifted when main moved: goldens, generated consumers,
 # and ratcheted expected-failure lists whose regen commands were scattered
 # across nine places with no single entry point. `scripts/baselines.py` is now
-# that entry point. This assertion keeps it total: a gate-shaped comparison
-# target is either a registered member's gate — so `make baselines` regenerates
-# what it compares against — or it carries a written reason for owning no
-# derived artefact. Adding an eleventh baseline outside the registry is a lint
-# failure, which is the only way the property survives contact with the future.
+# that entry point, and this assertion keeps the set closed.
+#
+# The first version of this assertion matched target NAMES against a pattern.
+# That is the same defect one level up: `test-ux-examples` and
+# `test-surface-examples` compare every tutorial against a committed `.expected`
+# transcript and are named nothing of the kind, so the "closed set" excluded
+# exactly the baselines nobody had thought of — which is the only kind that
+# matters. Discovery is therefore STRUCTURAL: a target is a comparison target
+# when its recipe passes a freshness flag, diffs against a committed path, or
+# runs a script that reads committed baseline artefacts. Script invocations are
+# followed transitively, so `structural-lint` -> `ast-grep-lint.sh` ->
+# `structural-authority-audit.py` -> `structural-authority-inventory.tsv` is one
+# edge, not three chances to miss it.
 
-BASELINE_GATE_RE = re.compile(
-    r"""^(
-          .*-check | check-.* | .*-ratchet | .*-golden | .*-verify | .*-diff
-        | hew-check-all | fuzz-oracle | test-doc-examples | test-core-matrix
-        | test-hew-ratchet | test-stdlib-ratchet | structural-lint
-        )$""",
-    re.VERBOSE,
+# The literals a script must mention to be reading a committed baseline. These
+# are artefact SHAPES, not a list of today's artefacts: a new golden corpus or a
+# new expected-failure list is discovered the moment its reader names it.
+BASELINE_ARTEFACT_MARKERS = (
+    ".expected",
+    "expected-failures",
+    "golden",
+    "-inventory.tsv",
+    "matrix.tsv",
+    "THIRD-PARTY-LICENSES",
+    "manifest.json",
 )
 
+SCRIPT_REFERENCE_RE = re.compile(r"(?:scripts|tests)/[A-Za-z0-9_./-]+\.(?:py|sh)")
+FRESHNESS_FLAG_RE = re.compile(r"(?<![\w-])--(?:check|diff|verify)(?![\w-])")
+DIFF_INVOCATION_RE = re.compile(r"(?<![\w-])diff(?![\w-])")
 
-def baseline_membership_findings(phony: set[str]) -> list[tuple[str, str]]:
-    """Gate-shaped targets that neither own a registered baseline nor are exempt."""
+
+def _script_reads_baseline(rel: str, seen: set[str]) -> bool:
+    """True when this script, or one it invokes, reads a committed baseline."""
+    if rel in seen:
+        return False
+    seen.add(rel)
+    path = REPO_ROOT / rel
+    if not path.is_file():
+        return False
+    text = path.read_text(errors="replace")
+    if any(marker in text for marker in BASELINE_ARTEFACT_MARKERS):
+        return True
+    return any(
+        _script_reads_baseline(ref, seen)
+        for ref in SCRIPT_REFERENCE_RE.findall(text)
+        if ref != rel
+    )
+
+
+SELF_TEST_SCRIPT_RE = re.compile(r"scripts/tests/|self[_-]?test|selftest")
+# `$(MAKE) other-target` is delegation, and `cargo fmt --check` / `hew fmt
+# --check` is formatter idempotency over live sources. Neither compares the tree
+# against a committed artefact, so both are removed before classification rather
+# than exempted target by target.
+DELEGATION_RE = re.compile(r"\$\(MAKE\)[^\n]*")
+FORMATTER_IDEMPOTENCY_RE = re.compile(r"[^\n]*\bfmt\b[^\n]*--check[^\n]*")
+
+
+def _regen_targets() -> set[str]:
+    """The Makefile targets the registry drives to WRITE baselines.
+
+    A regen target names artefacts because it produces them. Holding the
+    producer to "must be registered" would be circular, and reading the set off
+    the registry rather than listing it here means the two cannot drift.
+    """
+    scripts_dir = str(REPO_ROOT / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import baselines
+
+    targets = {"baselines"}
+    for member in baselines.REGISTRY:
+        if member.regen and member.regen.startswith("make "):
+            targets.add(member.regen.split()[1])
+    return targets
+
+
+def comparison_targets(recipes: dict[str, str]) -> dict[str, str]:
+    """Every Makefile target whose recipe compares the tree against a baseline.
+
+    Returns target -> the evidence that classified it, so a finding can say why
+    the target is being held to the registry rather than asserting it.
+
+    Three classes are excluded by construction rather than by exemption, because
+    Several classes are excluded by construction rather than by exemption,
+    because each is structurally incapable of being a baseline comparison: the
+    registry's own regen targets (they WRITE the artefacts), delegation to
+    another target or to the preflight dispatcher (whichever gate runs is
+    classified on its own terms), formatter idempotency over live sources, and
+    harness self-tests (they drive a comparer over synthetic fixtures, never
+    over the tree).
+    """
+    regen = _regen_targets()
+    found: dict[str, str] = {}
+    for target, recipe in sorted(recipes.items()):
+        body = executing_text(recipe)
+        body = DELEGATION_RE.sub("", FORMATTER_IDEMPOTENCY_RE.sub("", body))
+        if not body.strip() or target in regen:
+            continue
+        if "ci-preflight-dispatcher.sh" in body:
+            continue
+        if SELF_TEST_SCRIPT_RE.search(body) or SELF_TEST_SCRIPT_RE.search(target):
+            continue
+        for ref in SCRIPT_REFERENCE_RE.findall(body):
+            if _script_reads_baseline(ref, set()):
+                found[target] = f"recipe runs {ref}, which reads committed baselines"
+                break
+        if target in found:
+            continue
+        if any(marker in body for marker in BASELINE_ARTEFACT_MARKERS):
+            found[target] = "recipe names a committed baseline artefact"
+        elif FRESHNESS_FLAG_RE.search(body):
+            found[target] = "recipe passes a freshness flag (--check/--diff/--verify)"
+        elif DIFF_INVOCATION_RE.search(body):
+            found[target] = "recipe diffs generated output against a committed path"
+    return found
+
+
+def baseline_membership_findings(
+    recipes: dict[str, str],
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """(unregistered comparison targets, stale exemptions)."""
     scripts_dir = str(REPO_ROOT / "scripts")
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
@@ -2118,20 +2223,22 @@ def baseline_membership_findings(phony: set[str]) -> list[tuple[str, str]]:
 
     registered = set(baselines.gate_index())
     exempt = set(baselines.EXEMPT_GATES)
-    return [
+    discovered = comparison_targets(recipes)
+
+    unregistered = [
         (
             target,
-            "this target is gate-shaped, so it is presumed to compare against a "
-            "committed derived artefact. Register that artefact in "
-            "scripts/baselines.py (so `make baselines` regenerates it and "
-            "`make baselines-check` proves it current), or add the target to "
-            "EXEMPT_GATES there with the reason it owns no derived artefact.",
+            f"{why}, so it is presumed to compare against a committed derived "
+            "artefact. Register that artefact in scripts/baselines.py (so "
+            "`make baselines` regenerates it and `make baselines-check` proves "
+            "it current), or add the target to EXEMPT_GATES there with the "
+            "reason it owns no derived artefact.",
         )
-        for target in sorted(phony)
-        if BASELINE_GATE_RE.match(target)
-        and target not in registered
-        and target not in exempt
+        for target, why in sorted(discovered.items())
+        if target not in registered and target not in exempt
     ]
+    stale = sorted(name for name in exempt if name not in discovered)
+    return unregistered, stale
 
 
 def main() -> int:
@@ -2475,17 +2582,26 @@ def main() -> int:
     print(f"    {len(phony) - len(inert)}/{len(phony)} phony targets do work.")
 
     # ── A6: every derived baseline is regenerated by `make baselines` ─────────
-    unregistered = baseline_membership_findings(phony)
-    gate_shaped = [t for t in sorted(phony) if BASELINE_GATE_RE.match(t)]
+    unregistered, stale_exemptions = baseline_membership_findings(recipes)
+    discovered = comparison_targets(recipes)
     print(
-        f"\n==> A6: derived-baseline membership ({len(gate_shaped)} comparison "
-        "target(s))"
+        f"\n==> A6: derived-baseline membership ({len(discovered)} comparison "
+        "target(s) discovered structurally)"
     )
     for target, detail in unregistered:
         findings.fail("A6", f"Makefile: {target}", detail)
+    for name in stale_exemptions:
+        findings.fail(
+            "A6",
+            f"scripts/baselines.py: EXEMPT_GATES[{name!r}]",
+            "this exemption names a target that is no longer a comparison "
+            "target, so it exempts nothing and only records a decision that has "
+            "expired. Delete the entry.",
+        )
     print(
-        f"    {len(gate_shaped) - len(unregistered)}/{len(gate_shaped)} comparison "
-        "targets are registered or reasoned."
+        f"    {len(discovered) - len(unregistered)}/{len(discovered)} comparison "
+        f"targets are registered or reasoned; {len(stale_exemptions)} stale "
+        "exemption(s)."
     )
 
     # ── Verdict ───────────────────────────────────────────────────────────────

@@ -424,18 +424,21 @@ def test_rust_diff_derives_its_warmup_artifacts_before_commands() -> None:
     warmup = result.stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
     assert warmup == (
         f"  - cargo clippy {packages} --tests\n"
-        "  - make hew\n"
-        "  - make wasm-runtime\n"
+        "  - make hew-native-build wasm-runtime-build\n"
         f"  - cargo nextest run --profile ci {packages} --no-run\n"
+        "  - make hew-fmt-property-build\n"
     ), result.stdout
     assert result.stdout.index("Warm-up:\n") < result.stdout.index("Commands:\n")
 
 
 def test_docs_diff_has_no_warmup_block() -> None:
+    """The docs gates declare an empty build form, so nothing is warmed."""
     result = run_dispatcher("docs/hew-language-guide.md")
 
     assert result.returncode == 0, result.stderr
     assert "Warm-up:\n" not in result.stdout, result.stdout
+    makefile = (ROOT / "Makefile").read_text()
+    assert "\ndoc-ratchet-selftest-build:\n\t@:\n" in makefile, makefile
 
 
 def test_no_lane_warms_test_targets_with_all_targets() -> None:
@@ -462,18 +465,181 @@ def test_no_lane_warms_test_targets_with_all_targets() -> None:
         assert "--all-targets" not in warmup, (path, result.stdout)
 
 
-def test_comprehensive_warms_clippy_and_nextest_the_way_the_gates_build() -> None:
-    """The comprehensive lane warms `make lint`'s clippy and `make test`'s binaries."""
+def test_comprehensive_warms_every_gate_through_its_own_build_form() -> None:
+    """The comprehensive lane warms `make lint` and `make test` by name.
+
+    The warm-up is the gate's own `<target>-build`, so the clippy and nextest
+    invocations live once each, next to the gate that runs them.
+    """
     result = run_dispatcher("Makefile")
 
     assert result.returncode == 0, result.stderr
     warmup = result.stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
-    assert "  - cargo clippy --workspace --tests\n" in warmup, result.stdout
-    assert (
-        "  - cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run\n"
-        in warmup
-    ), result.stdout
+    assert "  - make lint-build\n" in warmup, result.stdout
+    assert "  - make test-build\n" in warmup, result.stdout
     assert "  - make test-cabi-build\n" in warmup, result.stdout
+
+    makefile = (ROOT / "Makefile").read_text()
+    assert (
+        "\ntest-build: wasm-runtime runtime $(LIBHEW_READY)\n\tcargo nextest run --workspace --exclude hew-cabi --profile ci --no-run\n"
+        in makefile
+    ), "make test's build form must build its binaries the way make test does"
+    assert (
+        "\nlint-build: structural-lint-bootstrap-install\n\tcargo clippy --workspace --tests\n"
+        in makefile
+    ), "make lint's build form must warm through clippy, without -D warnings"
+
+
+def _selected_commands(stdout: str) -> list[str]:
+    body = stdout.split("Commands:\n", 1)[1]
+    commands = []
+    for line in body.splitlines():
+        if not line.startswith("  - "):
+            break
+        commands.append(line[len("  - ") :].split("  (budget:")[0])
+    return commands
+
+
+def _warmup_commands(stdout: str) -> list[str]:
+    if "Warm-up:\n" not in stdout:
+        return []
+    body = stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
+    return [
+        line[len("  - ") :] for line in body.splitlines() if line.startswith("  - ")
+    ]
+
+
+# One representative changed path per routing lane. Every lane must derive a
+# warm-up for every command it selects; a lane that cannot is a dispatcher that
+# dies before running anything, which is the point of the derivation being
+# fail-closed.
+LANE_PROBES = {
+    "docs-only": "docs/hew-language-guide.md",
+    "scripts-config": "scripts/foo.sh",
+    "grammar": "docs/specs/Hew.g4",
+    "parser": "hew-parser/src/lib.rs",
+    "types": "hew-types/src/lib.rs",
+    "cli": "hew-cli/src/main.rs",
+    "compiler-pipeline": "hew-mir/src/lib.rs",
+    "vertical-slice": "tests/vertical-slice/accept/foo.hew",
+    "observe": "hew-observe/src/lib.rs",
+    "runtime-testkit": "hew-runtime-testkit/src/lib.rs",
+    "hew-tests": "tests/hew/foo.hew",
+    "runtime-net": "hew-runtime/src/lib.rs",
+    "wasm": "hew-wasm/src/lib.rs",
+    "comprehensive": "Cargo.toml",
+}
+
+
+def test_every_lane_derives_a_warmup_for_every_command_it_selects() -> None:
+    for profile, path in LANE_PROBES.items():
+        result = run_dispatcher(path)
+        assert result.returncode == 0, (profile, path, result.stderr)
+        assert f"Selected profile: {profile}" in result.stdout, (path, result.stdout)
+
+
+def explain_warmup(command: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(SCRIPT), "--explain-warmup", command],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_a_gate_with_no_derivable_warmup_is_fatal() -> None:
+    """The fallback used to warm everything and print a note; it now dies.
+
+    Warming the full artifact set for an unmapped command is how a warm-up
+    build diverged from its gate's build in the first place: the fallback was
+    reached silently, so nothing forced the new gate to declare how it builds.
+    """
+    result = explain_warmup("scripts/some-new-gate.sh")
+
+    assert result.returncode != 0, result.stdout
+    assert "has no derivable warm-up" in result.stderr, result.stderr
+    assert "full warm-up set" not in result.stdout, result.stdout
+
+
+def test_a_make_gate_without_a_build_form_is_fatal() -> None:
+    result = explain_warmup("make hew-lsp")
+
+    assert result.returncode != 0, result.stdout
+    assert "declare 'hew-lsp-build' next to 'hew-lsp'" in result.stderr, result.stderr
+
+
+def test_a_make_gate_naming_an_undeclared_target_is_fatal() -> None:
+    """The `grammar` target was dispatched for months after it was deleted."""
+    result = explain_warmup("make grammar")
+
+    assert result.returncode != 0, result.stdout
+    assert "undeclared make target 'grammar'" in result.stderr, result.stderr
+
+
+def test_a_nextest_gate_derives_its_own_invocation_with_no_run() -> None:
+    result = explain_warmup("cargo nextest run --profile ci -p hew-mir")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "cargo nextest run --profile ci -p hew-mir --no-run\n", (
+        result.stdout
+    )
+
+
+def test_a_clippy_gate_derives_its_own_invocation_without_the_deny_flag() -> None:
+    """A lint failure must be the timed gate's verdict, not an aborted warm-up."""
+    result = explain_warmup("cargo clippy -p hew-mir --tests -- -D warnings")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "cargo clippy -p hew-mir --tests\n", result.stdout
+
+
+def test_a_fmt_gate_warms_nothing() -> None:
+    result = explain_warmup("cargo fmt --all -- --check")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "", result.stdout
+
+
+def test_every_dispatched_make_target_exists_in_the_makefile() -> None:
+    makefile = (ROOT / "Makefile").read_text()
+    declared = set()
+    for line in makefile.splitlines():
+        match = re.match(r"^([A-Za-z0-9_][A-Za-z0-9_ .$()-]*):([^=]|$)", line)
+        if match:
+            declared.update(match.group(1).split())
+    for path in LANE_PROBES.values():
+        result = run_dispatcher(path)
+        assert result.returncode == 0, (path, result.stderr)
+        for command in _selected_commands(result.stdout):
+            if not command.startswith("make "):
+                continue
+            for target in command[len("make ") :].split():
+                assert target in declared, (path, command, target)
+
+
+def test_no_warmup_carries_a_flag_its_gate_does_not() -> None:
+    """A warm-up is its gate's command, minus execution — never a second build.
+
+    The 2026-08-20 outage was a warm-up that carried `--all-targets` while its
+    gate carried `--exclude hew-cabi`: two builds, one target dir, two
+    incompatible `serde_core` rlibs. Only `--no-run` may be added.
+    """
+    for path in LANE_PROBES.values():
+        result = run_dispatcher(path)
+        assert result.returncode == 0, (path, result.stderr)
+        gate_flags = set()
+        for command in _selected_commands(result.stdout):
+            gate_flags.update(
+                token for token in command.split() if token.startswith("-")
+            )
+        for warmup in _warmup_commands(result.stdout):
+            if warmup.startswith("make "):
+                continue
+            for token in warmup.split():
+                if not token.startswith("-") or token == "--no-run":
+                    continue
+                assert token in gate_flags, (path, warmup, token)
 
 
 def test_no_warmup_names_a_non_ci_nextest_profile() -> None:
@@ -525,14 +691,15 @@ def test_runtime_net_lane_rebuilds_libhew() -> None:
             f"Expected 'make stdlib' in runtime-net commands for {path}.\n"
             f"stdout:\n{result.stdout}"
         )
-        assert "scripts/check-libhew-fresh.sh" in result.stdout, (
-            f"Expected 'scripts/check-libhew-fresh.sh' in runtime-net commands for {path}.\n"
+        assert "make check-libhew-fresh" in result.stdout, (
+            f"Expected 'make check-libhew-fresh' in runtime-net commands for {path}.\n"
             f"stdout:\n{result.stdout}"
         )
         # Freshness gate must appear before the test command.
-        stdlib_pos = result.stdout.index("make stdlib")
-        fresh_pos = result.stdout.index("scripts/check-libhew-fresh.sh")
-        test_pos = result.stdout.index("make test")
+        commands = _selected_commands(result.stdout)
+        stdlib_pos = commands.index("make stdlib")
+        fresh_pos = commands.index("make check-libhew-fresh")
+        test_pos = next(i for i, c in enumerate(commands) if c.startswith("make test"))
         assert stdlib_pos < fresh_pos < test_pos, (
             f"Expected order: make stdlib < check-libhew-fresh < test.\n"
             f"stdout:\n{result.stdout}"
@@ -841,13 +1008,17 @@ def test_parser_path_runs_formatter_property() -> None:
     result = run_dispatcher("hew-parser/src/fmt.rs")
     assert result.returncode == 0, result.stderr
     assert "Selected profile: parser" in result.stdout, result.stdout
-    assert result.stdout.count("make hew-fmt-property") == 1, result.stdout
+    assert _selected_commands(result.stdout).count("make hew-fmt-property") == 1, (
+        result.stdout
+    )
 
 
 def test_vertical_slice_source_runs_formatter_property() -> None:
     result = run_dispatcher("tests/vertical-slice/accept/example.hew")
     assert result.returncode == 0, result.stderr
-    assert result.stdout.count("make hew-fmt-property") == 1, result.stdout
+    assert _selected_commands(result.stdout).count("make hew-fmt-property") == 1, (
+        result.stdout
+    )
 
 
 def test_std_hew_file_adds_hew_suite_addon() -> None:
@@ -884,12 +1055,15 @@ def test_fallback_lane_includes_hew_suite_ratchets() -> None:
     assert "make test-stdlib-ratchet" in result.stdout, (
         f"Expected 'make test-stdlib-ratchet' in fallback lane.\nstdout:\n{result.stdout}"
     )
-    assert result.stdout.count("make hew-fmt-property") == 1, result.stdout
+    assert _selected_commands(result.stdout).count("make hew-fmt-property") == 1, (
+        result.stdout
+    )
     # Ratchets must appear after make test (Rust suite runs first).
     # The budget annotation "(budget: Xs)" may appear on the same line in dry-run.
-    test_pos = result.stdout.index("  - make test")
-    hew_pos = result.stdout.index("make test-hew-ratchet")
-    stdlib_pos = result.stdout.index("make test-stdlib-ratchet")
+    commands = _selected_commands(result.stdout)
+    test_pos = commands.index("make test")
+    hew_pos = commands.index("make test-hew-ratchet")
+    stdlib_pos = commands.index("make test-stdlib-ratchet")
     assert test_pos < hew_pos, (
         f"Expected make test before make test-hew-ratchet.\nstdout:\n{result.stdout}"
     )
@@ -1161,7 +1335,16 @@ _TESTS = [
     test_rust_diff_derives_its_warmup_artifacts_before_commands,
     test_docs_diff_has_no_warmup_block,
     test_no_lane_warms_test_targets_with_all_targets,
-    test_comprehensive_warms_clippy_and_nextest_the_way_the_gates_build,
+    test_comprehensive_warms_every_gate_through_its_own_build_form,
+    test_every_lane_derives_a_warmup_for_every_command_it_selects,
+    test_a_gate_with_no_derivable_warmup_is_fatal,
+    test_a_make_gate_without_a_build_form_is_fatal,
+    test_a_make_gate_naming_an_undeclared_target_is_fatal,
+    test_a_nextest_gate_derives_its_own_invocation_with_no_run,
+    test_a_clippy_gate_derives_its_own_invocation_without_the_deny_flag,
+    test_a_fmt_gate_warms_nothing,
+    test_every_dispatched_make_target_exists_in_the_makefile,
+    test_no_warmup_carries_a_flag_its_gate_does_not,
     test_no_warmup_names_a_non_ci_nextest_profile,
     test_scripts_config_budget_annotation,
     test_runtime_net_lane_budget_annotation,

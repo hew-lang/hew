@@ -137,23 +137,13 @@ impl Checker {
         }
     }
 
-    /// Verify that `ty` has a `Display` impl reachable by f-string
-    /// interpolation lowering. The Display trait is identified through the
-    /// lang-item registry (`LANG_ITEM_DISPLAY` key) so stdlib can rename or
-    /// move the trait by relocating its `#[lang_item("display")]` attribute
-    /// without code changes here. Mirrors the lookup that
-    /// `lower_display_dispatch` performs in HIR: primitives consult
-    /// `primitive_trait_impls`, user-named types consult `trait_impls_set`,
-    /// and `string` is accepted as a passthrough. Emits a clear
-    /// `BoundsNotSatisfied` diagnostic on miss so the negative gate is
-    /// raised at check time rather than as an opaque HIR/MIR error.
-    pub(super) fn require_display_impl(&mut self, ty: &Ty, span: &Span) {
+    fn display_impl_type(&mut self, ty: &Ty) -> Option<Ty> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         if matches!(resolved, Ty::String) {
-            return;
+            return Some(resolved);
         }
         if matches!(resolved, Ty::Var(_) | Ty::Error) {
-            return;
+            return None;
         }
         // `instant` is a monotonic timestamp that canonicalises to a bare i64 at
         // the MIR boundary; HIR's Display dispatch routes it through the i64
@@ -161,7 +151,7 @@ impl Checker {
         // dedicated `impl Display for instant` body. A monotonic timestamp has
         // no wall-clock meaning, so raw nanos is the honest rendering.
         if resolved.is_instant() {
-            return;
+            return Some(resolved);
         }
         // These compiler carriers have a closed Display ABI selected by their
         // builtin discriminator in HIR/codegen (`hew_*_display`), with the
@@ -183,7 +173,7 @@ impl Checker {
                 ..
             }
         ) {
-            return;
+            return Some(resolved);
         }
         // Resolve the Display trait name through the lang-item registry.
         // No `#[lang_item("display")]` in scope means the program defines no
@@ -192,7 +182,7 @@ impl Checker {
         // above. Falling back to the literal name `"Display"` keeps
         // pre-lang-item check-time tests (no stdlib loaded) working with the
         // implicit naming convention.
-        let (display_trait, display_trait_key) =
+        let (_display_trait, display_trait_key) =
             self.lang_items.get(crate::LANG_ITEM_DISPLAY).map_or_else(
                 || ("Display".to_string(), "Display".to_string()),
                 |binding| {
@@ -207,12 +197,12 @@ impl Checker {
                 .primitive_trait_impls
                 .contains_key(&(canonical.to_string(), display_trait_key.clone()))
             {
-                return;
+                return Some(resolved);
             }
         }
         if let Ty::Named { name, args, .. } = &resolved {
             if self.type_implements_trait_for_ty(&resolved, &display_trait_key) {
-                return;
+                return Some(resolved);
             }
             // A bare type parameter (e.g. `T` in `fn f<T: Display>(x: T)`)
             // carries no registered impl of its own, but the enclosing
@@ -221,9 +211,26 @@ impl Checker {
             // impl is selected per monomorphisation by HIR's static
             // trait-dispatch lowering. Mirrors `type_satisfies_trait_bound`.
             if args.is_empty() && self.type_param_carries_bound(name, &display_trait_key) {
-                return;
+                return Some(resolved);
             }
         }
+        None
+    }
+
+    /// Verify that `ty` has a `Display` impl reachable by f-string
+    /// interpolation lowering.
+    pub(super) fn require_display_impl(&mut self, ty: &Ty, span: &Span) {
+        if matches!(self.subst.resolve(ty), Ty::Var(_) | Ty::Error) {
+            return;
+        }
+        if self.display_impl_type(ty).is_some() {
+            return;
+        }
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        let display_trait = self.lang_items.get(crate::LANG_ITEM_DISPLAY).map_or_else(
+            || "Display".to_string(),
+            |binding| binding.trait_name.clone(),
+        );
         let ty_str = format!("{}", resolved.user_facing());
         self.report_error(
             TypeErrorKind::BoundsNotSatisfied,
@@ -275,9 +282,21 @@ impl Checker {
             Expr::ByteStringLiteral(_) | Expr::ByteArrayLiteral(_) => Ty::Bytes,
             Expr::InterpolatedString(parts) => {
                 for part in parts {
-                    if let StringPart::Expr((expr, expr_span)) = part {
-                        let part_ty = self.synthesize(expr, expr_span);
-                        self.require_display_impl(&part_ty, expr_span);
+                    match part {
+                        StringPart::Literal(_) => {}
+                        StringPart::Expr((expr, expr_span)) => {
+                            let part_ty = self.synthesize(expr, expr_span);
+                            self.require_display_impl(&part_ty, expr_span);
+                        }
+                        StringPart::StructuralExpr((expr, expr_span)) => {
+                            let part_ty = self.synthesize(expr, expr_span);
+                            if let Some(display_ty) = self.display_impl_type(&part_ty) {
+                                self.interpolation_display_types.insert(
+                                    SpanKey::in_module(expr_span, self.current_module_idx),
+                                    display_ty,
+                                );
+                            }
+                        }
                     }
                 }
                 Ty::String
@@ -2544,85 +2563,51 @@ impl Checker {
                     );
                     return Ty::Unit;
                 }
-                // Shape gate: a fork body that is a single bare non-call tail
-                // expression (no stmts, trailing_expr present but not a Call)
-                // must be caught here with the actionable fork-shape message.
-                // Without this gate the body reaches `check_block` against
-                // `Some(&Ty::Unit)`, which emits a generic "type mismatch:
-                // expected `()`, found `<T>`" — unhelpful for the user.
-                //
-                // `fork { 42; }` (with semicolon) becomes a single stmt and
-                // reaches the HIR gate's own ForkBlockBodyUnsupported path,
-                // so we only need to handle the no-semicolon tail case here.
-                if body.stmts.is_empty() {
-                    if let Some(tail) = &body.trailing_expr {
-                        if !matches!(&tail.0, Expr::Call { .. }) {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                span,
-                                "`fork { }` bodies must be a direct function call, \
-                                 e.g. `fork { work() }`; other expression forms are \
-                                 not yet supported"
-                                    .to_string(),
-                            );
-                            return Ty::Unit;
+                // A fork block is a synthesized nullary `move` closure. Reuse
+                // the closure checker so free-variable identity, Send checks,
+                // and move tracking stay on the same capture ledger as every
+                // other scope-owned task environment.
+                let synthetic_body = (Expr::Block(body.clone()), span.clone());
+                let expected_params: &[Ty] = &[];
+                let _ = self.check_lambda(
+                    true,
+                    None,
+                    &[],
+                    None,
+                    &synthetic_body,
+                    Some((expected_params, &Ty::Unit)),
+                    span,
+                    false,
+                );
+
+                // Ordinary parameters are borrowed at Hew call boundaries.
+                // Moving one into a child would let the child outlive the
+                // caller-owned value, so reject it before HIR can manufacture
+                // an owning environment field.
+                let capture_key = SpanKey::in_module(span, self.current_module_idx);
+                if let Some(captures) = self.closure_capture_facts.get(&capture_key).cloned() {
+                    for capture in captures {
+                        let capture_is_copy = capture.ty.is_copy()
+                            || self
+                                .registry
+                                .implements_marker(&capture.ty, MarkerTrait::Copy);
+                        let borrowed_parameter = !capture_is_copy
+                            && self.env.lookup_ref(&capture.name).is_some_and(|binding| {
+                                binding.id == capture.binding_id && binding.is_param()
+                            });
+                        let borrowed_view = matches!(capture.ty, Ty::Borrow { .. });
+                        if borrowed_parameter || borrowed_view {
+                            self.errors.push(TypeError::new(
+                                TypeErrorKind::ForkBorrowCapture {
+                                    binding: capture.name.clone(),
+                                },
+                                capture.use_span,
+                                format!(
+                                    "fork body cannot borrow parent binding `{}` across the child boundary",
+                                    capture.name
+                                ),
+                            ));
                         }
-                    }
-                }
-                // Check the body as an anonymous, unit-returning task context.
-                // `task_scope_depth` stays elevated (the body runs inside the
-                // enclosing scope, it does not open a fresh scope boundary), so a
-                // nested `fork name = call()` inside the body still passes its
-                // position gate. Save/restore `current_return_type` exactly as the
-                // `Expr::GenBlock` arm does so the enclosing function's return
-                // type is not polluted.
-                let prev_return_type = self.current_return_type.take();
-                self.current_return_type = Some(Ty::Unit);
-                self.check_block(body, Some(&Ty::Unit));
-                self.current_return_type = prev_return_type;
-                // Mirror the `ForkChild` ownership gate: mark non-Copy call
-                // arguments as moved into this child task so that parent use
-                // after the fork reports `UseAfterMove`.
-                //
-                // `fork { f(a) }` transfers ownership of non-Copy args to the
-                // child task, exactly as `fork name = f(a)` does. The general
-                // `Expr::Call` arm does NOT mark args moved, so without this
-                // pass a heap `string` arg remains live in the parent scope
-                // and a subsequent use goes unreported — contradicting the
-                // lowering's "parent emits NO drop for moved-in args" contract.
-                //
-                // The accepted single-call form appears in two shapes:
-                //   a) `fork { f(args) }`  — tail expression (no semicolon)
-                //   b) `fork { f(args); }` — single stmt with semicolon
-                // For multi-statement bodies the HIR lowering rejects the fork,
-                // so we only encounter those shapes during type-checking; we
-                // still mark them (each call transfers its non-Copy args) to
-                // keep the ownership contract uniform even when HIR will err.
-                //
-                // WHEN-OBSOLETE: if the general call-arg path gains move-
-                // tracking, this pass (and the ForkChild one) become redundant.
-                macro_rules! mark_call_args_moved {
-                    ($args:expr) => {
-                        for arg in $args {
-                            let (arg_expr, arg_span) = arg.expr();
-                            if let Expr::Identifier(arg_name) = arg_expr {
-                                if let Some(binding_ty) =
-                                    self.env.lookup_ref(arg_name).map(|b| b.ty.clone())
-                                {
-                                    let resolved = self.subst.resolve(&binding_ty);
-                                    self.mark_expr_moved_if_non_copy(arg_expr, arg_span, &resolved);
-                                }
-                            }
-                        }
-                    };
-                }
-                if let Some(tail) = &body.trailing_expr {
-                    if let (Expr::Call { args, .. }, _) = tail.as_ref() {
-                        mark_call_args_moved!(args);
-                    }
-                } else if body.stmts.len() == 1 {
-                    if let (Stmt::Expression((Expr::Call { args, .. }, _)), _) = &body.stmts[0] {
-                        mark_call_args_moved!(args);
                     }
                 }
                 // The fork statement itself produces no value.

@@ -3454,6 +3454,74 @@ mod tests {
         }
     }
 
+    #[test]
+    fn task_env_owner_drops_once_on_completion_crash_and_suspended_cancel() {
+        use std::sync::atomic::AtomicUsize;
+
+        static COMPLETION_DROPS: AtomicUsize = AtomicUsize::new(0);
+        static CRASH_DROPS: AtomicUsize = AtomicUsize::new(0);
+        static CANCEL_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn count_completion_drop(_: *mut u8) {
+            COMPLETION_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+        unsafe extern "C" fn count_crash_drop(_: *mut u8) {
+            CRASH_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+        unsafe extern "C" fn count_cancel_drop(_: *mut u8) {
+            CANCEL_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        COMPLETION_DROPS.store(0, Ordering::SeqCst);
+        CRASH_DROPS.store(0, Ordering::SeqCst);
+        CANCEL_DROPS.store(0, Ordering::SeqCst);
+
+        // SAFETY: each case exclusively owns its scope and task allocations.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_set_env(
+                task,
+                crate::rc::hew_rc_new(ptr::null(), 0, 0, Some(count_completion_drop)).cast(),
+            );
+            hew_task_scope_spawn(scope, task);
+            hew_task_scope_complete_task(scope, task);
+            assert_eq!(COMPLETION_DROPS.load(Ordering::SeqCst), 0);
+            hew_task_scope_destroy(scope);
+            assert_eq!(COMPLETION_DROPS.load(Ordering::SeqCst), 1);
+
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_set_env(
+                task,
+                crate::rc::hew_rc_new(ptr::null(), 0, 0, Some(count_crash_drop)).cast(),
+            );
+            hew_task_scope_spawn(scope, task);
+            (*task).store_state(HewTaskState::Running, Ordering::Release);
+            (*task).thread_handle = Some(std::thread::spawn(|| {
+                panic!("fork child crash oracle");
+            }));
+            hew_task_scope_join_all(scope);
+            assert_eq!(CRASH_DROPS.load(Ordering::SeqCst), 0);
+            hew_task_scope_destroy(scope);
+            assert_eq!(CRASH_DROPS.load(Ordering::SeqCst), 1);
+
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_set_env(
+                task,
+                crate::rc::hew_rc_new(ptr::null(), 0, 0, Some(count_cancel_drop)).cast(),
+            );
+            hew_task_scope_spawn(scope, task);
+            (*task).store_state(HewTaskState::Suspended, Ordering::Release);
+            hew_task_scope_cancel(scope);
+            hew_task_scope_cancel(scope);
+            assert_eq!(CANCEL_DROPS.load(Ordering::SeqCst), 0);
+            hew_task_scope_destroy(scope);
+            assert_eq!(CANCEL_DROPS.load(Ordering::SeqCst), 1);
+        }
+    }
+
     /// Regression test: when `cancel_cleanup_fn` is registered, scope-wide
     /// cancel fires it for every Ready and Suspended task before transitioning
     /// them to `Done(Cancelled)`. This exercises the resource-reclamation path

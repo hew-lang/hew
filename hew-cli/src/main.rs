@@ -679,6 +679,15 @@ fn link_native_object_with_hew_lib(
     bin_path: &Path,
     hew_lib: Option<&Path>,
 ) -> Result<(), ()> {
+    link_native_object_with_hew_lib_and_extra(obj, bin_path, hew_lib, &[])
+}
+
+fn link_native_object_with_hew_lib_and_extra(
+    obj: &Path,
+    bin_path: &Path,
+    hew_lib: Option<&Path>,
+    extra_libs: &[String],
+) -> Result<(), ()> {
     let target = target::TargetSpec::from_requested(None).map_err(|e| {
         eprintln!("Error: cannot determine host target: {e}");
     })?;
@@ -688,7 +697,7 @@ fn link_native_object_with_hew_lib(
     let bin_str = bin_path.to_str().ok_or_else(|| {
         eprintln!("Error: output path is not valid UTF-8");
     })?;
-    crate::link::link_executable_with_hew_lib(obj_str, bin_str, &target, &[], false, hew_lib)
+    crate::link::link_executable_with_hew_lib(obj_str, bin_str, &target, extra_libs, false, hew_lib)
         .map_err(|e| {
             crate::diagnostic::emit_plain_diagnostic_line(&e);
         })
@@ -722,11 +731,6 @@ pub(crate) struct NativeBuildPaths {
     pub(crate) hew_lib: PathBuf,
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "cohesive frontend->MIR->emit->link pipeline already at the line boundary; \
-              threading opt_level tipped it over — splitting it would obscure the linear flow"
-)]
 pub(crate) fn compile_native_from_program(
     program: hew_parser::ast::Program,
     source: &str,
@@ -734,10 +738,36 @@ pub(crate) fn compile_native_from_program(
     output_path: &Path,
     options: &compile::CompileOptions,
 ) -> Result<(), ()> {
+    compile_native_from_program_with_paths(
+        program,
+        source,
+        source_label,
+        output_path,
+        options,
+        None,
+        &[],
+    )
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "cohesive frontend->MIR->emit->link pipeline already at the line boundary; \
+              splitting it would obscure the linear flow"
+)]
+pub(crate) fn compile_native_from_program_with_paths(
+    program: hew_parser::ast::Program,
+    source: &str,
+    source_label: &str,
+    output_path: &Path,
+    options: &compile::CompileOptions,
+    paths: Option<&NativeBuildPaths>,
+    extra_libs: &[String],
+) -> Result<(), ()> {
     let target = target::TargetSpec::from_requested(options.target.as_deref()).map_err(|e| {
         eprintln!("Error: {e}");
     })?;
-    let frontend_options = compile::frontend_options(&target, options);
+    let mut frontend_options = compile::frontend_options(&target, options);
+    frontend_options.module_search_paths = paths.map(|paths| paths.module_search_paths.clone());
     let state = hew_compile::run_program_frontend_to_typecheck(
         program,
         source,
@@ -830,7 +860,12 @@ pub(crate) fn compile_native_from_program(
             let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
                 eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
             })?;
-            link_native_object(obj, output_path)
+            link_native_object_with_hew_lib_and_extra(
+                obj,
+                output_path,
+                paths.map(|paths| paths.hew_lib.as_path()),
+                extra_libs,
+            )
         }
         CompileEmitTarget::Wasm => {
             let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
@@ -1001,32 +1036,6 @@ fn compile_build_binary_with_hew_lib(
             Ok(())
         }
     }
-}
-
-pub(crate) fn compile_test_binary_with_paths(
-    input: &Path,
-    output_path: &Path,
-    paths: &NativeBuildPaths,
-    extra_libs: &[String],
-) -> Result<(), ()> {
-    let target = target::TargetSpec::from_requested(None).map_err(|error| {
-        eprintln!("Error: cannot determine the host target: {error}");
-    })?;
-    let options = compile::CompileOptions {
-        project_dir: Some(paths.project_dir.clone()),
-        module_search_paths: Some(paths.module_search_paths.clone()),
-        ..compile::CompileOptions::default()
-    };
-    compile_build_binary_with_hew_lib(
-        input,
-        output_path,
-        &target,
-        false,
-        hew_codegen_rs::OptLevel::O0,
-        extra_libs,
-        &options,
-        Some(&paths.hew_lib),
-    )
 }
 
 /// Emit a single relocatable object for `hew build --emit-obj`, skipping the

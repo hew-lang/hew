@@ -1871,6 +1871,189 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
     );
 }
 
+#[test]
+fn checker_reuse_does_not_leak_result_shadowing_into_stdlib() {
+    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-types lives under the repo root")
+        .to_path_buf();
+    let string_path = repo_root.join("std/string.hew");
+    let string_source = std::fs::read_to_string(&string_path).expect("read std/string.hew");
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![repo_root.clone()]));
+
+    let first = hew_parser::parse("pub type Result { handle: i64 }\n");
+    assert!(
+        first.errors.is_empty(),
+        "first parse errors: {:?}",
+        first.errors
+    );
+    let first_output = checker.check_program(&first.program);
+    assert!(
+        first_output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::PreludeDeclCollision),
+        "first compile should reject the protected `Result` declaration, got: {:?}",
+        first_output.errors
+    );
+
+    let parsed = hew_parser::parse(&string_source);
+    assert!(
+        parsed.errors.is_empty(),
+        "std/string.hew parse errors: {:?}",
+        parsed.errors
+    );
+    let root_id = ModuleId::root();
+    let mod_id = ModuleId::new(vec!["std".to_string(), "string".to_string()]);
+    let module = Module {
+        id: mod_id.clone(),
+        items: parsed.program.items,
+        imports: vec![],
+        source_paths: vec![string_path],
+        doc: None,
+    };
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(module).unwrap();
+    mg.topo_order = vec![mod_id, root_id];
+    let program = Program {
+        module_graph: Some(mg),
+        items: vec![],
+        module_doc: None,
+    };
+
+    let second_output = checker.check_program(&program);
+    assert!(
+        second_output.errors.is_empty(),
+        "checker reuse leaked `Result` shadowing into std::string: {:?}",
+        second_output.errors
+    );
+}
+
+#[test]
+fn checker_reuse_does_not_leak_type_definitions() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+    let first = hew_parser::parse("pub type Stale { value: i64 }\n");
+    assert!(
+        first.errors.is_empty(),
+        "first parse errors: {:?}",
+        first.errors
+    );
+    let first_output = checker.check_program(&first.program);
+    assert!(
+        first_output.errors.is_empty(),
+        "first compile should be clean, got: {:?}",
+        first_output.errors
+    );
+
+    let second = hew_parser::parse("fn main(value: Stale) {}\n");
+    assert!(
+        second.errors.is_empty(),
+        "second parse errors: {:?}",
+        second.errors
+    );
+    let second_output = checker.check_program(&second.program);
+    assert!(
+        second_output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType && error.message.contains("Stale")
+        }),
+        "second compile accepted Stale leaked from the prior program: {:?}",
+        second_output.errors
+    );
+}
+
+#[test]
+fn checker_reuse_does_not_leak_loaded_handle_methods_into_user_module() {
+    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-types lives under the repo root")
+        .to_path_buf();
+    let mut checker = Checker::new(ModuleRegistry::new(vec![repo_root]));
+
+    let first = hew_parser::parse("import std.net;\n");
+    assert!(
+        first.errors.is_empty(),
+        "first parse errors: {:?}",
+        first.errors
+    );
+    let first_output = checker.check_program(&first.program);
+    assert!(
+        first_output.errors.is_empty(),
+        "first compile should load std.net cleanly, got: {:?}",
+        first_output.errors
+    );
+    assert_eq!(
+        checker
+            .module_registry()
+            .resolve_handle_method("net.Listener", "accept")
+            .as_deref(),
+        Some("hew_tcp_accept"),
+        "first compile should seed the legacy extracted receiver spelling"
+    );
+
+    let second = hew_parser::parse(
+        r"
+        pub type Listener { value: i64; }
+        impl Listener {
+            fn accept(self) -> i64 { self.value }
+        }
+        fn call(listener: Listener) -> i64 { listener.accept() }
+        ",
+    );
+    assert!(
+        second.errors.is_empty(),
+        "second parse errors: {:?}",
+        second.errors
+    );
+    let root_id = ModuleId::root();
+    let module_id = ModuleId::new(vec!["net".to_string()]);
+    let module = Module {
+        id: module_id.clone(),
+        items: second.program.items,
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+    let mut module_graph = ModuleGraph::new(root_id.clone());
+    module_graph
+        .add_module(module)
+        .expect("add user net module");
+    module_graph.topo_order = vec![module_id, root_id];
+    let second_program = Program {
+        module_graph: Some(module_graph),
+        items: vec![],
+        module_doc: None,
+    };
+
+    let second_output = checker.check_program(&second_program);
+    assert!(
+        second_output.errors.is_empty(),
+        "second compile should resolve its own net.Listener::accept: {:?}",
+        second_output.errors
+    );
+    let listener = second_output
+        .type_defs
+        .get("net.Listener")
+        .expect("second compile should publish its own net.Listener declaration");
+    assert!(
+        listener.fields.contains_key("value"),
+        "second compile should retain its own net.Listener fields: {listener:?}"
+    );
+    assert!(
+        !second_output
+            .method_call_rewrites
+            .values()
+            .any(|rewrite| matches!(
+                rewrite,
+                MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                    if c_symbol == "hew_tcp_accept"
+            )),
+        "user net.Listener::accept acquired the cached std.net rewrite: {:?}",
+        second_output.method_call_rewrites
+    );
+}
+
 // --- Reserved compiler type fragments ---
 
 #[test]

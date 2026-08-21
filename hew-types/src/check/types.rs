@@ -207,6 +207,9 @@ pub struct ExternMethodCallIdentity {
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
     pub expr_types: HashMap<SpanKey, Ty>,
+    /// Interpolation operands whose rendering selected an explicit `Display`
+    /// implementation. The value preserves alias identity for HIR dispatch.
+    pub interpolation_display_types: HashMap<SpanKey, Ty>,
     /// Total checker-authored ownership facts for accepted expression results.
     ///
     /// HIR projects this span-keyed table onto stable `SiteId`s. MIR consumes
@@ -1279,6 +1282,7 @@ impl Default for TypeCheckOutput {
     fn default() -> Self {
         Self {
             expr_types: HashMap::new(),
+            interpolation_display_types: HashMap::new(),
             produced_value_ownership: HashMap::new(),
             produced_value_dependencies: HashMap::new(),
             caller_visible_param_projections: HashSet::new(),
@@ -2484,6 +2488,7 @@ pub struct Checker {
     /// Checker-side accumulator for [`TypeCheckOutput::user_clone_record_seeds`].
     pub(super) user_clone_record_seeds: Vec<String>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
+    pub(super) interpolation_display_types: HashMap<SpanKey, Ty>,
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::produced_value_ownership`].
     pub(super) produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
@@ -3338,6 +3343,10 @@ pub struct Checker {
     /// Allows declarations from the compiler-embedded builtin source to
     /// provide names that the prelude protects from user replacement.
     pub(super) checking_embedded_builtins: bool,
+    /// Whether this checker has completed its first `check_program` entry.
+    /// Caller-seeded configuration remains available to the first program;
+    /// every later program starts from structurally fresh program-owned state.
+    pub(super) has_checked_program: bool,
     /// Tracks (span, feature) pairs we've already warned about for WASM limits.
     pub(super) wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
     /// Tracks (span, feature) pairs we've already rejected as errors for WASM.
@@ -3594,6 +3603,7 @@ impl Checker {
             warnings: Vec::new(),
             user_clone_record_seeds: Vec::new(),
             expr_types: HashMap::new(),
+            interpolation_display_types: HashMap::new(),
             produced_value_ownership: HashMap::new(),
             resolved_direct_call_ownership: HashMap::new(),
             resolved_method_call_ownership: HashMap::new(),
@@ -3777,6 +3787,7 @@ impl Checker {
             is_stdlib_source: false,
             in_stdlib_registration: false,
             checking_embedded_builtins: false,
+            has_checked_program: false,
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),
             current_machine_transition: None,

@@ -14,9 +14,9 @@
 //
 // Replace the string literals in main() with real values before running.
 //
-// NOTE: Ok(()) as a match pattern is rejected by the checker when the Ok
+// NOTE: .Ok(()) as a match pattern is rejected by the checker when the .Ok
 // payload type is unit — the checker treats the inner () as a zero-element
-// tuple destructor rather than the unit type.  The workaround is Ok(_).
+// tuple destructor rather than the unit type.  The workaround is .Ok(_).
 // Tracked: see hew-lang/hew#1598
 import std.net.smtp;
 

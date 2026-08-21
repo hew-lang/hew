@@ -199,6 +199,15 @@ fn resolve_exit_code(code: i64) -> i64 {
 }
 
 fn hew_exit_impl(code: i64, terminate: impl FnOnce(i32)) {
+    // Settle the exit-status authority before reading it, exactly as the
+    // shutdown and `main`-return epilogues do. `exit()` is the termination path
+    // MOST likely to sample it mid-crash: the thread that calls it is often the
+    // one the crash teardown just woke, and it arrives while the crashing
+    // worker is still on its way to publishing the fault. Bounded — a crash
+    // that never finishes publishing cannot hold exit open indefinitely.
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::scheduler::quiesce_before_exit_status_read();
+
     let code = resolve_exit_code(code);
     let Ok(code) = i32::try_from(code) else {
         eprintln!("hew_exit: exit code {code} is outside the supported i32 range");
@@ -1056,6 +1065,80 @@ mod exit_code_resolution_tests {
             resolved_exit_code(0),
             1,
             "exit(0) must not mask a crash no supervisor recovered"
+        );
+
+        crate::exit_status::reset_process_exit_status();
+    }
+
+    /// THE WINDOWS FAILURE, as a unit.
+    ///
+    /// The thread that calls `exit(0)` is usually the thread the crash teardown
+    /// just woke — its `await` was resolved by the crash fallback. It therefore
+    /// arrives at the exit-status authority while the crashing worker is still
+    /// on its way to publishing the fault. Reading there must not report
+    /// success.
+    #[test]
+    fn exit_zero_cannot_read_a_clean_status_while_a_crash_is_tearing_down() {
+        let _guard = crate::runtime_test_guard();
+        crate::exit_status::reset_process_exit_status();
+
+        let publication = crate::exit_status::CrashPublication::begin();
+        let crashing_worker = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            crate::exit_status::record_unrecovered_actor_fault();
+            drop(publication);
+        });
+
+        assert_eq!(
+            resolved_exit_code(0),
+            1,
+            "exit(0) must not report success over a crash that is still tearing down"
+        );
+
+        crashing_worker.join().expect("crash teardown thread");
+        crate::exit_status::reset_process_exit_status();
+    }
+
+    /// The other direction of the same rule: a supervised crash whose ruling is
+    /// still in flight is not a failure yet. `exit` waits for the ruling rather
+    /// than sampling the authority mid-decision, so it reports what the same
+    /// program's normal return would.
+    #[test]
+    fn exit_waits_for_a_supervisors_ruling_rather_than_sampling_mid_crash() {
+        let _guard = crate::runtime_test_guard();
+        crate::exit_status::reset_process_exit_status();
+
+        let record = crate::exit_status::open_supervised_fault();
+        let supervisor = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            crate::exit_status::settle_supervised_fault(
+                record,
+                crate::exit_status::FaultRuling::Handled,
+            );
+        });
+
+        assert_eq!(
+            resolved_exit_code(0),
+            0,
+            "a crash the supervisor recovered is not a failed run"
+        );
+
+        supervisor.join().expect("supervisor ruling thread");
+        crate::exit_status::reset_process_exit_status();
+    }
+
+    /// The wait is BOUNDED and fails closed: a ruling that never arrives leaves
+    /// the record open, and open counts as failing.
+    #[test]
+    fn exit_fails_closed_when_a_ruling_never_arrives() {
+        let _guard = crate::runtime_test_guard();
+        crate::exit_status::reset_process_exit_status();
+
+        let _never_ruled = crate::exit_status::open_supervised_fault();
+        assert_eq!(
+            resolved_exit_code(0),
+            1,
+            "a fault nobody ruled on must not exit successfully"
         );
 
         crate::exit_status::reset_process_exit_status();

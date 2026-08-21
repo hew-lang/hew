@@ -1057,12 +1057,12 @@ const SHUTDOWN_QUIESCE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Poll interval for [`quiesce_before_worker_teardown`].
 const SHUTDOWN_QUIESCE_POLL: Duration = Duration::from_millis(1);
 
-/// Wait, bounded, for queued work to run and for every crash it raised to be
-/// published and ruled on.
-fn quiesce_before_worker_teardown(timeout: Duration) {
+/// Wait, bounded, until `settled` holds. The one wait loop every termination
+/// path runs; what each waits FOR is the only thing that differs.
+fn quiesce_until(timeout: Duration, settled: impl Fn() -> bool) {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        if drain_is_idle() && !crate::exit_status::has_unsettled_faults() {
+        if settled() {
             return;
         }
         if std::time::Instant::now() >= deadline {
@@ -1070,6 +1070,31 @@ fn quiesce_before_worker_teardown(timeout: Duration) {
         }
         std::thread::sleep(SHUTDOWN_QUIESCE_POLL);
     }
+}
+
+/// Wait, bounded, for queued work to run and for every crash it raised to be
+/// published and ruled on.
+fn quiesce_before_worker_teardown(timeout: Duration) {
+    quiesce_until(timeout, || {
+        drain_is_idle() && !crate::exit_status::has_unsettled_faults()
+    });
+}
+
+/// Wait, bounded, for the exit-status authority to stop moving.
+///
+/// The precondition for RESOLVING an exit code, and the one every termination
+/// path shares: a crash still publishing its fault, or a record still awaiting
+/// its supervisor's ruling, has no answer yet, so a sample taken there reports
+/// whichever answer the threads happened to reach first.
+///
+/// Deliberately NOT the teardown wait above. `exit()` can be called from inside
+/// an actor's own dispatch, where the scheduler is by definition not idle and
+/// waiting for idleness would spend the whole ceiling on every call. What has to
+/// settle before an exit code is read is the STATUS, not the queue.
+pub(crate) fn quiesce_before_exit_status_read() {
+    quiesce_until(SHUTDOWN_QUIESCE_TIMEOUT, || {
+        !crate::exit_status::has_unsettled_faults()
+    });
 }
 
 pub(crate) fn shutdown_requested() -> bool {

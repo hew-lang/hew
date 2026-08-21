@@ -18,10 +18,13 @@
 //!   separate a per-call leak from baseline noise; the slope does.
 //! * NO OVER-RELEASE — the fix keeps the arm sources in the scope-exit drop set
 //!   and relies on the transferred slot being NULLED, so the release walks a
-//!   null on the path that transferred. If the null were missing, or a release
-//!   fired against the join slot's owner as well, the second free aborts under
-//!   the poisoned allocator. A clean exit with the expected status is the
-//!   oracle.
+//!   null on the path that transferred. If the null were missing, a second free
+//!   of the join slot's allocation reaches the runtime's own double-free guard,
+//!   which aborts the process. That guard is portable, so the over-release
+//!   assertion is a plain bounded run on EVERY platform. A macOS-only sibling
+//!   repeats it under the poisoned allocator, which additionally turns a
+//!   use-after-free READ of freed storage into an abort rather than a silent
+//!   read of stale bytes.
 //!
 //! The shapes cover the CLASS, not one syntax:
 //!
@@ -50,11 +53,14 @@
 
 mod support;
 
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
 use support::leak_slope::{
     assert_frame_slope_below_tolerance_exact_lines, compile_to_native, require_leaks_tool,
     run_under_malloc_scribble,
 };
-use support::{describe_output, require_codegen};
+use support::{describe_output, require_codegen, run_bounded_command};
 
 /// One frame prints exactly one line, so the slope harness pins the drained
 /// iteration count instead of settling for monotonicity.
@@ -284,29 +290,58 @@ fn main() -> i64 {{
     )
 }
 
-/// Compile at a fixed frame count and run under the poisoned allocator
-/// (`MallocScribble` / `MallocPreScribble` / `MallocGuardEdges`).
-///
-/// This is the OVER-release half. The fix keeps every arm source in the
-/// scope-exit drop set and relies on the transferred slot being NULLED; a
-/// missing null makes the source's release a second free of the join slot's
-/// allocation, which the runtime's frees abort on (and which the poisoned
-/// allocator turns into an abort even where the release itself is tolerant).
-/// A probe that exits under its own control with status 0 has proved the
-/// release count is not too high.
-fn assert_shape_does_not_over_release(name: &str, source_fn: fn(usize) -> String) {
-    require_codegen();
+/// Compile the shape at a fixed frame count and return the probe binary. The
+/// tempdir is returned alongside so it outlives the caller's run.
+fn compile_probe(name: &str, source_fn: fn(usize) -> String) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::Builder::new()
         .prefix(&format!("divergent-selection-{name}-"))
         .tempdir()
         .expect("tempdir");
     let binary = compile_to_native(&source_fn(16), dir.path(), name);
+    (dir, binary)
+}
+
+const OVER_RELEASE_EXPLANATION: &str =
+    "a divergent-arm selection transfers ONE allocation into the join slot; the source's retained \
+     scope-exit release must walk a nulled slot on that path, not free the value a second time";
+
+/// The PORTABLE over-release half: a plain bounded run, on every platform.
+///
+/// A second release of the join slot's allocation reaches the runtime's own
+/// double-free guard, which aborts the process, so a probe that exits under its
+/// own control with status 0 has proved the release count is not too high. This
+/// is the assertion that runs on the Linux and FreeBSD lanes, not only on a
+/// macOS box.
+fn assert_shape_does_not_over_release(name: &str, source_fn: fn(usize) -> String) {
+    require_codegen();
+    let (_dir, binary) = compile_probe(name, source_fn);
+    let mut command = Command::new(&binary);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let run = run_bounded_command(command, name.to_string());
+    assert!(
+        run.status.success(),
+        "{name}: {OVER_RELEASE_EXPLANATION}:\n{}",
+        describe_output(&run)
+    );
+}
+
+/// The macOS-only sharpening of the same assertion.
+///
+/// `MallocScribble` / `MallocPreScribble` / `MallocGuardEdges` are Darwin
+/// libmalloc facilities: they turn the WEAKER failure — a release that frees
+/// storage the join slot's owner then reads — into an abort as well, where the
+/// plain run above would read intact bytes and pass.
+fn assert_shape_does_not_over_release_under_poisoned_allocator(
+    name: &str,
+    source_fn: fn(usize) -> String,
+) {
+    require_codegen();
+    let (_dir, binary) = compile_probe(name, source_fn);
     let run = run_under_malloc_scribble(&binary);
     assert!(
         run.status.success(),
-        "{name}: a divergent-arm selection transfers ONE allocation into the join slot; the \
-         source's retained scope-exit release must walk a nulled slot on that path, not free the \
-         value a second time:\n{}",
+        "{name}: {OVER_RELEASE_EXPLANATION}, and the poisoned allocator additionally rejects a \
+         read of storage a premature release already freed:\n{}",
         describe_output(&run)
     );
 }
@@ -318,11 +353,24 @@ fn assert_shape_does_not_under_release(name: &str, source_fn: fn(usize) -> Strin
     assert_frame_slope_below_tolerance_exact_lines(name, source_fn, expected_lines);
 }
 
+/// Three assertions per shape. The over-release assertion runs EVERYWHERE (the
+/// runtime's double-free guard is the portable detector); its poisoned-allocator
+/// sibling and the leak-slope half need Darwin facilities and record a counted
+/// SKIP elsewhere.
 macro_rules! selection_shape {
-    ($over:ident, $under:ident, $name:literal, $source:ident) => {
+    ($over:ident, $poisoned:ident, $under:ident, $name:literal, $source:ident) => {
         #[test]
         fn $over() {
             assert_shape_does_not_over_release($name, $source);
+        }
+
+        #[cfg_attr(
+            not(target_os = "macos"),
+            ignore = "poisoned allocator is macOS-only; absence must be a counted skip"
+        )]
+        #[test]
+        fn $poisoned() {
+            assert_shape_does_not_over_release_under_poisoned_allocator($name, $source);
         }
 
         #[cfg_attr(
@@ -338,6 +386,7 @@ macro_rules! selection_shape {
 
 selection_shape!(
     match_arms_does_not_over_release,
+    match_arms_does_not_over_release_under_poisoned_allocator,
     match_arms_does_not_under_release,
     "match_arms",
     match_arms_source
@@ -345,6 +394,7 @@ selection_shape!(
 
 selection_shape!(
     if_else_arms_does_not_over_release,
+    if_else_arms_does_not_over_release_under_poisoned_allocator,
     if_else_arms_does_not_under_release,
     "if_else_arms",
     if_else_arms_source
@@ -352,6 +402,7 @@ selection_shape!(
 
 selection_shape!(
     nested_arms_does_not_over_release,
+    nested_arms_does_not_over_release_under_poisoned_allocator,
     nested_arms_does_not_under_release,
     "nested_arms",
     nested_arms_source
@@ -359,6 +410,7 @@ selection_shape!(
 
 selection_shape!(
     return_position_does_not_over_release,
+    return_position_does_not_over_release_under_poisoned_allocator,
     return_position_does_not_under_release,
     "return_position",
     return_position_source
@@ -366,6 +418,7 @@ selection_shape!(
 
 selection_shape!(
     diverging_arm_does_not_over_release,
+    diverging_arm_does_not_over_release_under_poisoned_allocator,
     diverging_arm_does_not_under_release,
     "diverging_arm",
     diverging_arm_source
@@ -373,6 +426,7 @@ selection_shape!(
 
 selection_shape!(
     fresh_arm_does_not_over_release,
+    fresh_arm_does_not_over_release_under_poisoned_allocator,
     fresh_arm_does_not_under_release,
     "fresh_arm",
     fresh_arm_source
@@ -380,6 +434,7 @@ selection_shape!(
 
 selection_shape!(
     hashmap_handle_does_not_over_release,
+    hashmap_handle_does_not_over_release_under_poisoned_allocator,
     hashmap_handle_does_not_under_release,
     "hashmap_handle",
     hashmap_source
@@ -387,6 +442,7 @@ selection_shape!(
 
 selection_shape!(
     owned_element_vec_does_not_over_release,
+    owned_element_vec_does_not_over_release_under_poisoned_allocator,
     owned_element_vec_does_not_under_release,
     "owned_element_vec",
     owned_element_vec_source
@@ -394,6 +450,7 @@ selection_shape!(
 
 selection_shape!(
     record_field_does_not_over_release,
+    record_field_does_not_over_release_under_poisoned_allocator,
     record_field_does_not_under_release,
     "record_field",
     record_field_source
@@ -401,6 +458,7 @@ selection_shape!(
 
 selection_shape!(
     source_read_after_selection_does_not_over_release,
+    source_read_after_selection_does_not_over_release_under_poisoned_allocator,
     source_read_after_selection_does_not_under_release,
     "read_after_selection",
     source_read_after_selection_source

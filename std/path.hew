@@ -19,6 +19,8 @@
 //! }
 //! ```
 
+import std.string;
+
 /// The result of a glob expansion.
 ///
 /// Created by `path.glob(pattern)`. Glob results close automatically at scope
@@ -263,19 +265,70 @@ pub fn is_dir(p: string) -> bool {
     }
 }
 
-/// Return the absolute form of a path by joining `p` onto the current
-/// working directory when `p` is relative.
+/// Return the absolute form of a path.
 ///
-/// This does NOT resolve `..` or `.` segments — `absolute("../../etc/passwd")`
-/// returns `<cwd>/../../etc/passwd`, not a cleaned path. There is currently
-/// no `normalize`/`canonicalize` in this module; do not use `absolute()`
-/// alone for containment checks (e.g. "is this path still inside my sandbox
-/// root?") — a `..`-bearing or symlinked input can walk outside any prefix
-/// you check against.
+/// This is a lexical join against the current working directory: it does
+/// NOT resolve `..` or symlinks. `absolute("../../etc/passwd")` returns
+/// `<cwd>/../../etc/passwd`, not a collapsed or containment-checked path.
+/// Pass the result through `normalize` for a lexically clean path, or use
+/// a real symlink-aware `canonicalize` (not yet in std) before treating a
+/// path as safe to open — `normalize` alone does not guard against `..`
+/// escaping through a symlinked directory.
 pub fn absolute(p: string) -> string {
     unsafe {
         hew_path_absolute(p)
     }
+}
+
+/// Lexically clean a path: collapse repeated separators, drop `.` segments,
+/// and resolve `..` segments against the preceding component. Follows Go's
+/// `filepath.Clean` semantics. Does not touch the filesystem — it has no
+/// symlink awareness, so a cleaned path can still escape a directory the
+/// caller intended to stay inside if any component is a symlink. Returns
+/// `"."` for an empty path.
+///
+/// # Examples
+///
+/// ```
+/// import std.path;
+///
+/// path.normalize("/var/www/../../etc/passwd")  // "/etc/passwd"
+/// path.normalize("a/./b/../c")                 // "a/c"
+/// path.normalize("../../etc/passwd")           // "../../etc/passwd"
+/// path.normalize("")                           // "."
+/// ```
+pub fn normalize(p: string) -> string {
+    if p == "" {
+        return ".";
+    }
+    let rooted = p.starts_with("/");
+    let parts = p.split("/");
+    let stack: Vec<string> = Vec.new();
+    for i in 0 .. parts.len() {
+        let seg = parts[i];
+        if seg == "" || seg == "." {
+            continue;
+        }
+        if seg == ".." {
+            if stack.len() > 0 && stack[stack.len() - 1] != ".." {
+                stack.pop();
+            } else if !rooted {
+                stack.push(seg);
+            }
+            // Rooted with an empty (or all-"..") stack: `..` above root
+            // collapses to root, matching filepath.Clean.
+            continue;
+        }
+        stack.push(seg);
+    }
+    let joined = string.join(stack, "/");
+    if rooted {
+        return "/" + joined;
+    }
+    if joined == "" {
+        return ".";
+    }
+    joined
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

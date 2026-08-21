@@ -78,7 +78,7 @@ impl Checker {
             }
         }
 
-        let mut findings: Vec<(Span, String, Option<String>)> = Vec::new();
+        let mut findings: Vec<(Span, String, Option<String>, bool)> = Vec::new();
         for (fn_name, (def_span, stored_module)) in &self.fn_def_spans {
             // Only ROOT free functions are warned (module functions keep
             // their historical exemption); the finding renders the bare
@@ -92,20 +92,44 @@ impl Checker {
             if reachable.contains(fn_name) {
                 continue;
             }
-            findings.push((def_span.clone(), leaf.to_string(), stored_module.clone()));
+            let is_pub = self
+                .fn_visibility
+                .get(fn_name)
+                .is_some_and(|vis| vis.is_pub());
+            findings.push((
+                def_span.clone(),
+                leaf.to_string(),
+                stored_module.clone(),
+                is_pub,
+            ));
         }
         // Route through the lint registry so `dead_code` is configurable
         // (`-A/-W/-D`) and suppressible (`// hew:allow(dead_code)`). The
         // collect-then-emit split releases the `&self.fn_def_spans` borrow
         // before the `&mut self` emit calls. Default level is `Warn`, so the
         // warning still appears exactly as before unless reconfigured.
-        for (def_span, fn_name, stored_module) in findings {
+        for (def_span, fn_name, stored_module, is_pub) in findings {
+            // An unreferenced `pub fn` is dead only from THIS compilation
+            // unit's point of view — it is public API another crate/module
+            // may call. `_`-prefixing it would rename the public surface
+            // (a breaking change) just to silence the lint. Point at the
+            // suppression mechanisms instead; the lint itself still fires
+            // (program-shaped packages should warn on truly dead pub code
+            // until a package/library manifest distinguishes the two).
+            let help = if is_pub {
+                "if this is intentional, suppress with `-A dead_code` or \
+                 `// hew:allow(dead_code)` — a pub fn's leading underscore \
+                 would rename its public API"
+                    .to_string()
+            } else {
+                format!("if this is intentional, prefix with underscore: `_{fn_name}`")
+            };
             self.emit_main_pass_lint(
                 LintId::DeadCode,
                 &def_span,
                 stored_module.as_deref(),
                 format!("function `{fn_name}` is never called"),
-                format!("if this is intentional, prefix with underscore: `_{fn_name}`"),
+                help,
             );
         }
     }

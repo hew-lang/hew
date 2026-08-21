@@ -1,4 +1,4 @@
-//! Tests for the std::path pure helper functions.
+//! Tests for the std.path pure helper functions.
 
 import std.fs;
 
@@ -97,6 +97,60 @@ fn test_extension_returns_empty_string_for_leading_dot_only() {
 #[test]
 fn test_extension_uses_basename_for_full_path() {
     testing.assert_eq_str(path.extension("/home/user/file.txt"), "txt");
+}
+
+// ── normalize ───────────────────────────────────────────────────────────
+#[test]
+fn test_normalize_collapses_dotdot_against_preceding_component() {
+    testing.assert_eq_str(path.normalize("/var/www/../../etc/passwd"), "/etc/passwd");
+}
+
+#[test]
+fn test_normalize_collapses_dot_and_dotdot_in_relative_path() {
+    testing.assert_eq_str(path.normalize("a/./b/../c"), "a/c");
+}
+
+#[test]
+fn test_normalize_preserves_leading_dotdot_on_relative_path() {
+    // A relative path with no earlier component to cancel against keeps the
+    // leading `..` — there is nothing lexical to resolve it to.
+    testing.assert_eq_str(path.normalize("../../etc/passwd"), "../../etc/passwd");
+}
+
+#[test]
+fn test_normalize_empty_path_returns_dot() {
+    testing.assert_eq_str(path.normalize(""), ".");
+}
+
+#[test]
+fn test_normalize_root_stays_root() {
+    testing.assert_eq_str(path.normalize("/"), "/");
+}
+
+#[test]
+fn test_normalize_strips_trailing_slash() {
+    testing.assert_eq_str(path.normalize("/a/b/"), "/a/b");
+}
+
+#[test]
+fn test_normalize_dotdot_above_root_collapses_to_root() {
+    // `..` above the root has nowhere to go; filepath.Clean semantics
+    // collapse it back to root rather than erroring or escaping.
+    testing.assert_eq_str(path.normalize("/../a"), "/a");
+}
+
+#[test]
+fn test_normalize_collapses_repeated_separators() {
+    testing.assert_eq_str(path.normalize("/home//user"), "/home/user");
+}
+
+#[test]
+fn test_normalize_absolute_with_escape_shape_stays_lexically_clean() {
+    // The porters' reported shape: absolute() alone leaves `..` unresolved
+    // (`<cwd>/../../etc/passwd`); normalize(absolute(p)) is the documented
+    // safe pattern for lexical cleanup.
+    let escaped = path.combine("/srv/app/data", "../../etc/passwd");
+    testing.assert_eq_str(path.normalize(escaped), "/srv/etc/passwd");
 }
 
 // ── heap-string regression tests ────────────────────────────────────────

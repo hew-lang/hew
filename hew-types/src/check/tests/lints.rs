@@ -2593,6 +2593,64 @@ fn warn_dead_code_unused_function() {
 }
 
 #[test]
+fn dead_code_pub_fn_suggests_allow_not_underscore() {
+    // D11: `pub fn` is public API — a leading underscore would rename it,
+    // a breaking surface change just to silence an advisory lint. The
+    // suggestion must point at the suppression mechanisms instead.
+    let source = "pub fn reason_unused(x: i64) -> i64 { x + 1 } fn main() { println(1); }";
+    let result = hew_parser::parse(source);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let finding = output
+        .warnings
+        .iter()
+        .find(|w| {
+            w.kind == TypeErrorKind::Lint(LintId::DeadCode) && w.message.contains("reason_unused")
+        })
+        .unwrap_or_else(|| panic!("expected dead code warning: {:?}", output.warnings));
+    assert!(
+        finding
+            .suggestions
+            .iter()
+            .any(|s| s.contains("-A dead_code") || s.contains("hew:allow(dead_code)")),
+        "a pub fn's dead-code suggestion must point at lint suppression: {finding:?}"
+    );
+    assert!(
+        !finding
+            .suggestions
+            .iter()
+            .any(|s| s.contains("_reason_unused")),
+        "a pub fn's dead-code suggestion must not propose an underscore rename \
+         (that renames the public API): {finding:?}"
+    );
+}
+
+#[test]
+fn dead_code_private_fn_still_suggests_underscore() {
+    // The complement: a private (non-pub) unused function is a local
+    // rename-to-suppress decision the author controls, so the existing
+    // underscore-prefix suggestion is unchanged.
+    let source = "fn unused_helper(x: i64) -> i64 { x + 1 } fn main() { println(1); }";
+    let result = hew_parser::parse(source);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let finding = output
+        .warnings
+        .iter()
+        .find(|w| {
+            w.kind == TypeErrorKind::Lint(LintId::DeadCode) && w.message.contains("unused_helper")
+        })
+        .unwrap_or_else(|| panic!("expected dead code warning: {:?}", output.warnings));
+    assert!(
+        finding
+            .suggestions
+            .iter()
+            .any(|s| s.contains("_unused_helper")),
+        "a private fn keeps the underscore-prefix suggestion: {finding:?}"
+    );
+}
+
+#[test]
 fn no_warn_dead_code_main() {
     let source = "fn main() { println(1); }";
     let result = hew_parser::parse(source);
@@ -2753,6 +2811,93 @@ fn warn_named_import_type_unused() {
             .iter()
             .any(|w| w.kind == TypeErrorKind::UnusedImport && w.message.contains("closable")),
         "an unused named import must still warn: {:?}",
+        output.warnings
+    );
+}
+
+// ── Selective-import load-bearing use false positive (D8) ─────────────
+//
+// A selectively-imported type used only through expression-position
+// resolution (a record literal, an enum-variant constructor call) still
+// warned "unused import" — the checker's `import_spans` unused-import
+// table keys each import by the MODULE's short name (`fixture` for
+// `import src.fixture.{Widget}`), but the two credit sites below spliced
+// the resolved owner-qualified identity apart on the FIRST `.` rather than
+// the LAST, so a multi-segment module path (`src.fixture`) mapped to the
+// wrong lexical key (`src` instead of `fixture`) and the credit never
+// landed. Annotation-position resolution already threaded the correct
+// `mark_module_owner_bindings_used` call (post-#2930) and never had this bug.
+
+fn check_resolved_selective_import(child_source: &str, root_source: &str) -> TypeCheckOutput {
+    let child = hew_parser::parse(child_source);
+    assert!(child.errors.is_empty(), "child parse: {:?}", child.errors);
+    let mut root = hew_parser::parse(root_source);
+    assert!(root.errors.is_empty(), "root parse: {:?}", root.errors);
+    let import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("fixture import");
+    import.resolved_items = Some(child.program.items);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&root.program)
+}
+
+const D8_FIXTURE_SOURCE: &str = "pub type Widget { label: string; }\n\
+                                  pub enum Status { Ok(string); Err(string); }\n";
+
+#[test]
+fn no_warn_selective_import_used_only_as_record_literal() {
+    let root = "import src.fixture.{Widget};\n\
+                fn main() { let w = Widget { label: \"hi\" }; println(w.label); }";
+    let output = check_resolved_selective_import(D8_FIXTURE_SOURCE, root);
+    assert!(output.errors.is_empty(), "errors: {:?}", output.errors);
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::UnusedImport),
+        "a selectively-imported type constructed as a record literal must not \
+         warn unused: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn no_warn_selective_import_used_only_as_enum_variant_constructor() {
+    let root = "import src.fixture.{Status};\n\
+                fn main() { let s = Status.Ok(\"done\"); match s { \
+                Status.Ok(m) => println(m), Status.Err(m) => println(m), } }";
+    let output = check_resolved_selective_import(D8_FIXTURE_SOURCE, root);
+    assert!(output.errors.is_empty(), "errors: {:?}", output.errors);
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::UnusedImport),
+        "a selectively-imported enum constructed via its variant constructor \
+         call must not warn unused: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn warn_selective_import_genuinely_unused() {
+    // Negative control: an import present but never referenced anywhere
+    // (no annotation, no construction, no pattern) must still warn.
+    let root = "import src.fixture.{Widget};\nfn main() { println(1); }";
+    let output = check_resolved_selective_import(D8_FIXTURE_SOURCE, root);
+    assert!(output.errors.is_empty(), "errors: {:?}", output.errors);
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::UnusedImport && w.message.contains("fixture")),
+        "a genuinely unused selective import must still warn: {:?}",
         output.warnings
     );
 }

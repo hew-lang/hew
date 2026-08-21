@@ -109,6 +109,60 @@ def parse_junit(path: Path) -> dict[str, str]:
     return outcomes
 
 
+def report_failures(reports_dir: Path, shard_count: int) -> None:
+    """Print every JUnit failure before an aggregate gate exits."""
+    if shard_count < 1:
+        die("shard count must be at least one")
+
+    for shard in range(1, shard_count + 1):
+        for label in ("o0", "o2"):
+            path = reports_dir / f"hew-{label}-shard-{shard}.xml"
+            if not path.is_file():
+                print(
+                    f"COMPILED_HEW_REPORT_MISSING shard={shard} suite={label.upper()} "
+                    f"path={path}",
+                    file=sys.stderr,
+                )
+                continue
+
+            try:
+                root = ET.fromstring(path.read_text(encoding="utf-8"))
+            except ET.ParseError as error:
+                # This is the diagnostic pass that runs before the aggregate
+                # gate fails the job. Dying here would hide every other
+                # shard's assertions behind one truncated report, so name the
+                # unreadable report and keep going; the aggregate gate still
+                # fails the job on the same malformed input.
+                print(
+                    f"COMPILED_HEW_REPORT_UNREADABLE shard={shard} "
+                    f"suite={label.upper()} path={path}: {error}",
+                    file=sys.stderr,
+                )
+                continue
+            for testcase in root.iter("testcase"):
+                failure = testcase.find("failure")
+                if failure is None:
+                    continue
+                identity = normalized_identity(
+                    testcase.get("classname", ""), testcase.get("name", "")
+                )
+                diagnostic_parts = [
+                    part.strip()
+                    for part in (failure.get("message"), failure.text)
+                    if part and part.strip()
+                ]
+                system_out = testcase.findtext("system-out", default="").strip()
+                if system_out:
+                    diagnostic_parts.append(f"output:\n{system_out}")
+                diagnostic = (
+                    "\n".join(diagnostic_parts) or "JUnit failure without a diagnostic"
+                )
+                print(
+                    f"COMPILED_HEW_FAILURE shard={shard} suite={label.upper()} "
+                    f"test={identity}\nassertion:\n{diagnostic}"
+                )
+
+
 def run_command(
     command: list[str], output: Path, stderr: Path, environment: dict[str, str]
 ) -> int:
@@ -304,6 +358,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=Path,
         default=REPO_ROOT / "scripts" / "hew-suite-expected-failures.txt",
     )
+    report_parser = subcommands.add_parser("report")
+    report_parser.add_argument("--reports-dir", type=Path, required=True)
+    report_parser.add_argument("--shard-count", type=int, required=True)
     return parser.parse_args(argv)
 
 
@@ -311,7 +368,7 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     if args.action == "run":
         run_shard(args.compiler.resolve(), args.partition, args.output_dir)
-    else:
+    elif args.action == "aggregate":
         aggregate(
             args.mode,
             args.reports_dir,
@@ -319,6 +376,8 @@ def main(argv: list[str]) -> int:
             args.shard_count,
             args.expected_failures,
         )
+    else:
+        report_failures(args.reports_dir, args.shard_count)
     return 0
 
 

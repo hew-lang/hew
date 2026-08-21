@@ -580,27 +580,41 @@ fn main() -> i64 {{
 
 /// A reassignment whose RHS RETAINS the same allocation.
 ///
-/// `Rc.clone()` may well hand back the handle already in the slot, so this is
-/// the shape the overwrite release must not be vetoed for and must not
-/// double-free on: the retain is lowered before the release, so `+1` strictly
-/// precedes the `-1`. Vetoing it leaks one generation per iteration; running it
-/// unretained would free a live allocation, which the poisoned allocator turns
-/// into an abort on the next read.
+/// `Rc.clone()` hands back the handle already in the slot, so this is the shape
+/// the overwrite release must not be vetoed for and must not double-free on: the
+/// retain is lowered before the release, so `+1` strictly precedes the `-1` and
+/// the count cannot reach zero across the store. Running it unretained would
+/// free a live allocation, which the poisoned allocator turns into an abort on
+/// the next read.
+///
+/// The allocation is made INSIDE the frame, once per iteration, and that is
+/// load-bearing for the leak half. Hoisting it above the loop and self-cloning
+/// in place — the obvious way to write this shape — makes a skipped release
+/// invisible: it only bumps one allocation's refcount, so nothing new is ever
+/// allocated and the leak NODE count stays flat however many iterations run.
+/// Allocating per frame turns the same missing release into one orphaned
+/// allocation per frame, which is what the slope measures. Verified by deleting
+/// the overwrite-release arm: this shape then leaks 1 node per frame, and it was
+/// the only shape in the file that did not notice.
 fn retained_self_reassign_source(frames: usize) -> String {
     format!(
         r#"
+fn frame(seed: i64) -> i64 {{
+    var shared: Rc<i64> = Rc.new(seed);
+    shared = shared.clone();
+    shared.get()
+}}
+
 fn main() -> i64 {{
     var total: i64 = 0;
-    var shared: Rc<i64> = Rc.new(7);
-    for _seed in 0..{frames} {{
-        shared = shared.clone();
-        total = total + shared.get();
+    for seed in 0..{frames} {{
+        total = total + frame(seed);
         println("frame");
     }}
     total - {expected}
 }}
 "#,
-        expected = frames * 7
+        expected = frames * (frames - 1) / 2
     )
 }
 

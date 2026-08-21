@@ -313,6 +313,13 @@ jobs:
       - name: Verify structural lint bootstrap contract
         run: make test-ast-grep-contract test-structural-lint-bootstrap
 
+      # The preflight dispatcher routes every branch gate, so its own routing
+      # and timeout counterfactuals belong on the required job rather than on
+      # the path-filtered scripts job that a compiler-only change skips.
+      # Stub-driven and temporary-tree only; no compiler build.
+      - name: Verify build harness contracts
+        run: make test-build-harness
+
       # >>> CI-PARITY-STEPS
       # This job is an active required status check on main. Keep the workflow
       # contract here unconditionally so nightly/release-gate drift cannot merge

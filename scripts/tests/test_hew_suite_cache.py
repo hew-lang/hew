@@ -64,3 +64,8 @@ def test_cache_key_tracks_fixture_and_compiler_content() -> None:
         compiler.write_text(compiler.read_text() + "# rebuilt\n")
         run(env, expected, work / "report.xml")
         assert counter.read_text() == "xxx"
+
+
+if __name__ == "__main__":
+    test_cache_key_tracks_fixture_and_compiler_content()
+    print("PASS: Hew suite cache reuses only identical source/compiler results")

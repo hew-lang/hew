@@ -142,7 +142,8 @@ run_actor_bounds_trap_fixture() {
   local fixture="$1"
   local expected_diagnostic="$2"
   local expected_actor="${3:-}"
-  run_accept_expect_status "${fixture}" 0
+  local expected_status="${4:-1}"
+  run_accept_expect_status "${fixture}" "${expected_status}"
   grep -qF -- "${expected_diagnostic}" "${stderr_output}"
   if [[ -n "${expected_actor}" ]]; then
     grep -qF -- "${expected_actor}" "${stderr_output}"
@@ -2247,13 +2248,15 @@ if grep -q 'msg_type=-' "${stderr_output}"; then
 fi
 
 # Runtime FFI bounds checks inside actor dispatch must crash only the actor, not
-# the whole process. Each fixture sends a crashing message and then proves actor
-# scheduling still works afterward; the Vec.set fixture also gates on
+# the scheduler. Each fixture sends a crashing message and then proves actor
+# scheduling still works afterward. Unsupervised crashes report exit 1; the
+# Vec.set fixture is supervised, restarts, and also gates on
 # CrashInfo.code == IndexOutOfBounds through its on(crash) handler.
 run_actor_bounds_trap_fixture \
   "vec_set_oob_actor_isolated" \
   "PANIC: Vec.set() index 99 out of bounds (len 1)" \
-  "VecSetCrasher"
+  "VecSetCrasher" \
+  0
 run_actor_bounds_trap_fixture \
   "vec_pop_empty_actor_isolated" \
   "PANIC: Vec.pop() on an empty vector" \

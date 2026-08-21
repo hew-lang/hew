@@ -1160,7 +1160,8 @@ test-stdlib-execution-proofs:
 	@echo "==> Verifying public stdlib execution proofs"
 	HEW_BIN="$(DEBUG_DIR)/hew" scripts/stdlib-execution-proof.sh --check
 
-# Manifest cross-check only; the script never invokes the compiler.
+# The proof runner shells out to a hew-parser example for the production
+# import validation; build it here rather than inside the timed gate.
 test-stdlib-execution-proofs-build:
 	@:
 
@@ -1461,6 +1462,14 @@ freebsd-workflow-contract-check:
 freebsd-workflow-contract-check-build:
 	@:
 
+# The preflight dispatcher resolves every warm-up build form in ONE
+# `make --always-make --dry-run` pass and splits the plan on this marker, so
+# make -- not a scan of this file's text -- decides which rules exist and what
+# they would run. Under --dry-run the marker prints its own echo line; it is
+# never part of a build.
+preflight-plan-mark-%:
+	@echo "==preflight-plan==$*"
+
 # Keep build-system tool verification and every CI installer on one exact pin.
 tool-pin-contract-check:
 	python3 scripts/tests/test_tool_pin_contract.py
@@ -1600,9 +1609,9 @@ codegen-trap-inventory-check:
 test-release-binary:
 	scripts/test-release-binary.sh
 
-# The release binary is built by the gate's own script, which owns the
-# release profile and the smoke run.  There is no build-only form to
-# derive, so this gate is declared as warming nothing.
+# The gate's script builds both release halves before it smoke-tests them
+# (scripts/test-release-binary.sh); the release profile is a cold build and
+# does not belong inside a timed gate.
 test-release-binary-build:
 	@:
 

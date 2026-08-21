@@ -505,10 +505,6 @@ is_scripts_config_path() {
 #
 # A gate with no derivable warm-up is fatal: the fallback that warmed the whole
 # artifact set let a new gate reopen the divergence without anyone deciding to.
-makefile_declares_target() {
-    grep -qE "^$1:" Makefile
-}
-
 add_warmup_command() {
     local candidate="$1"
     local existing
@@ -518,12 +514,92 @@ add_warmup_command() {
     WARMUP_COMMANDS+=("$candidate")
 }
 
-# True when the build form is declared as `<target>:` with `@:` as its whole
-# recipe — the Makefile's way of saying this gate builds nothing.  A target
-# declared more than once (the shard-aggregate branches) never matches, which
-# is the conservative answer.
-makefile_build_form_is_empty() {
-    [[ "$(grep -A 1 -E "^$1:$" Makefile)" == "$1:"$'\n\t@:' ]]
+# Resolve every warm-up build form through make itself, in one pass.
+# `make --always-make --dry-run` prints the commands make WOULD run, with the
+# Makefile's own conditionals applied and freshness taken out of the answer.
+# Reading the Makefile text instead cannot answer this: `test-hew-ratchet-build`
+# and `test-o2-differential-build` are each declared twice, once in a
+# shard-aggregate branch that builds nothing, and a first-match text scan reads
+# that branch's empty recipe as the answer for the branch that builds the
+# compiler.  A missing rule makes the pass fail, so an undeclared build form
+# cannot pass as an empty one.
+#
+# The pass interleaves a marker goal before each build form and splits its
+# output on the marker, so one make invocation answers for every gate.  make
+# builds each target once per invocation, so a form whose only work is a
+# prerequisite an earlier form already covers reports no work of its own — and
+# is left out of the warm-up, which the earlier form has already warmed.
+PLAN_TARGETS_WITH_WORK=""
+
+collect_make_build_targets() {
+    local cmd target
+    local -a targets=()
+    for cmd in "${COMMANDS[@]}"; do
+        [[ "$cmd" == "make "* ]] || continue
+        read -r -a targets <<< "${cmd#make }"
+        for target in "${targets[@]}"; do
+            if [[ "$target" == -* || "$target" == *=* ]]; then
+                die "warm-up derivation for '$cmd' is undefined: only bare make targets are derivable, got '$target'"
+            fi
+            printf '%s\n' "${target}-build"
+        done
+    done
+}
+
+# make --question exits 2 for a target it has no rule for, 0 or 1 otherwise,
+# and runs nothing either way.  Only reached when the plan pass has already
+# failed, so the cost of one invocation per target does not matter.
+make_has_no_rule_for() {
+    local status=0
+    make --question "$1" >/dev/null 2>&1 || status=$?
+    [[ "$status" -eq 2 ]]
+}
+
+diagnose_missing_build_form() {
+    local cmd target
+    local -a targets=()
+    for cmd in "${COMMANDS[@]}"; do
+        [[ "$cmd" == "make "* ]] || continue
+        read -r -a targets <<< "${cmd#make }"
+        for target in "${targets[@]}"; do
+            if make_has_no_rule_for "$target"; then
+                die "gate '$cmd' names an undeclared make target '$target'"
+            fi
+            if make_has_no_rule_for "${target}-build"; then
+                die "gate '$cmd' has no derivable warm-up: declare '${target}-build' next to '${target}' in the Makefile (see test-cabi-build), building what '${target}' needs and running nothing"
+            fi
+        done
+    done
+    die "make could not plan the warm-up for the selected gates"
+}
+
+plan_make_build_forms() {
+    local -a goals=()
+    local target plan line section=""
+    while IFS= read -r target; do
+        [[ -n "$target" ]] || continue
+        case " ${goals[*]-} " in
+            *" $target "*) continue ;;
+        esac
+        goals+=("preflight-plan-mark-${target}" "$target")
+    done < <(collect_make_build_targets)
+    [[ ${#goals[@]} -gt 0 ]] || return 0
+
+    plan="$(make --always-make --dry-run "${goals[@]}" 2>&1)" || diagnose_missing_build_form
+
+    while IFS= read -r line; do
+        case "$line" in
+            *"==preflight-plan=="*)
+                section="${line##*==preflight-plan==}"
+                section="${section%\"}"
+                continue
+                ;;
+        esac
+        [[ -n "$section" ]] || continue
+        [[ -z "${line//[[:space:]]/}" || "$line" == ":" || "$line" == make* ]] && continue
+        PLAN_TARGETS_WITH_WORK="$PLAN_TARGETS_WITH_WORK $section"
+        section=""
+    done <<< "$plan"
 }
 
 derive_make_warmup() {
@@ -533,21 +609,41 @@ derive_make_warmup() {
     local target
     read -r -a targets <<< "${cmd#make }"
     for target in "${targets[@]}"; do
-        if [[ "$target" == -* || "$target" == *=* ]]; then
-            die "warm-up derivation for '$cmd' is undefined: only bare make targets are derivable, got '$target'"
-        fi
-        if ! makefile_declares_target "$target"; then
-            die "gate '$cmd' names an undeclared make target '$target'"
-        fi
-        if ! makefile_declares_target "${target}-build"; then
-            die "gate '$cmd' has no derivable warm-up: declare '${target}-build' next to '${target}' in the Makefile (see test-cabi-build), building what '${target}' needs and running nothing"
-        fi
-        # An empty build form is a declaration that the gate builds nothing,
-        # not a fallback: the target still has to exist to say it.
-        makefile_build_form_is_empty "${target}-build" || build_targets+=("${target}-build")
+        case " $PLAN_TARGETS_WITH_WORK " in
+            *" ${target}-build "*) build_targets+=("${target}-build") ;;
+        esac
     done
-    if [[ ${#build_targets[@]} -gt 0 ]]; then
-        add_warmup_command "make ${build_targets[*]}"
+    [[ ${#build_targets[@]} -gt 0 ]] || return 0
+    add_warmup_command "make ${build_targets[*]}"
+}
+
+# Clippy warms through clippy: its check artifacts carry a different
+# fingerprint from rustc's.  Only the lint arguments after `--` are dropped, so
+# a lint failure is the timed gate's verdict rather than an aborted warm-up.
+# Everything else after `--` is a rustc argument that changes what is compiled,
+# and dropping it would make the warm-up build something other than the gate --
+# the divergence this derivation exists to prevent.
+derive_clippy_warmup() {
+    local cmd="$1"
+    local -a kept=()
+    local head="${cmd%% -- *}"
+    local rest="" token skip=0
+    [[ "$cmd" == *" -- "* ]] && rest="${cmd#* -- }"
+    for token in $rest; do
+        if (( skip == 1 )); then
+            skip=0
+            continue
+        fi
+        case "$token" in
+            -D|-W|-A|-F) skip=1 ;;
+            -D*|-W*|-A*|-F*) ;;
+            *) kept+=("$token") ;;
+        esac
+    done
+    if [[ ${#kept[@]} -gt 0 ]]; then
+        add_warmup_command "$head -- ${kept[*]}"
+    else
+        add_warmup_command "$head"
     fi
 }
 
@@ -557,7 +653,7 @@ derive_warmup() {
         "cargo fmt "*)
             ;;
         "cargo clippy "*)
-            add_warmup_command "${cmd%% -- *}"
+            derive_clippy_warmup "$cmd"
             ;;
         "cargo nextest run "*|"cargo test "*)
             if [[ "$cmd" == *" --no-run"* ]]; then
@@ -588,6 +684,8 @@ while [[ $# -gt 0 ]]; do
         --explain-warmup)
             shift
             [[ $# -gt 0 ]] || die "--explain-warmup requires a command"
+            COMMANDS=("$1")
+            plan_make_build_forms
             derive_warmup "$1"
             [[ ${#WARMUP_COMMANDS[@]} -eq 0 ]] || printf '%s\n' "${WARMUP_COMMANDS[@]}"
             exit 0
@@ -1274,6 +1372,7 @@ esac
 # The command override replaces the gate list with synthetic commands for the
 # failure-policy tests; those are not gates and have nothing to warm.
 if [[ -z "${PREFLIGHT_TEST_COMMANDS:-}" ]]; then
+    plan_make_build_forms
     for cmd in "${COMMANDS[@]}"; do
         derive_warmup "$cmd"
     done

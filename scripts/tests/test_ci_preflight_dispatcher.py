@@ -1,7 +1,9 @@
+import importlib.util
 import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -426,7 +428,6 @@ def test_rust_diff_derives_its_warmup_artifacts_before_commands() -> None:
         f"  - cargo clippy {packages} --tests\n"
         "  - make hew-native-build wasm-runtime-build\n"
         f"  - cargo nextest run --profile ci {packages} --no-run\n"
-        "  - make hew-fmt-property-build\n"
     ), result.stdout
     assert result.stdout.index("Warm-up:\n") < result.stdout.index("Commands:\n")
 
@@ -478,6 +479,8 @@ def test_comprehensive_warms_every_gate_through_its_own_build_form() -> None:
     assert "  - make lint-build\n" in warmup, result.stdout
     assert "  - make test-build\n" in warmup, result.stdout
     assert "  - make test-cabi-build\n" in warmup, result.stdout
+    assert "  - make test-compiler-pipeline-build\n" in warmup, result.stdout
+    assert "  - make sandbox-parity-build\n" in warmup, result.stdout
 
     makefile = (ROOT / "Makefile").read_text()
     assert (

@@ -1,0 +1,18 @@
+type Holder<T> { left: Option<T>; right: Option<T>; }
+
+impl<T> Holder<T> {
+    fn same(self) -> bool {
+        self.left == self.right
+    }
+}
+
+fn main() -> i64 {
+    let first: HashMap<string, i64> = HashMap.new();
+    let second: HashMap<string, i64> = HashMap.new();
+    let holder = Holder { left: Some(first), right: Some(second) };
+
+    match holder.same() {
+        true => 0,
+        false => 1,
+    }
+}

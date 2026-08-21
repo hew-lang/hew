@@ -4,6 +4,7 @@
 )]
 use super::*;
 use crate::check::calls::SignatureArgApplication;
+use crate::check::types::GenericCallee;
 use crate::method_resolution::instantiate_stdlib_method_sig;
 
 pub(super) struct ResolvedDottedTypeHead {
@@ -337,6 +338,11 @@ impl Checker {
                 arity_context: format!("associated function `{method}`"),
             },
             true,
+            Some(GenericCallee::Method {
+                type_name: &head.canonical_type,
+                method,
+                owner_type_args: &explicit_owner_args,
+            }),
         );
         if !explicit_owner_args.is_empty() {
             self.record_concrete_call_type_args(span, &explicit_owner_args);

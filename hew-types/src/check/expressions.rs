@@ -7,7 +7,7 @@ use super::types::GenericLambdaSig;
 )]
 use super::*;
 use crate::check::types::{
-    GenericCallEdge, GenericFnInstantiationSite, GenericStructuralEqRequirement,
+    GenericCallEdge, GenericCallee, GenericFnInstantiationSite, GenericStructuralEqRequirement,
     PendingInstantiation,
 };
 use crate::env::{PlaceConflict, PlacePath};
@@ -4952,7 +4952,7 @@ impl Checker {
         })
     }
 
-    fn current_type_param_names(&self) -> HashSet<String> {
+    pub(super) fn current_type_param_names(&self) -> HashSet<String> {
         let mut names = HashSet::new();
         for frame in &self.current_type_param_bounds {
             names.extend(frame.bounds.keys().cloned());
@@ -5164,7 +5164,7 @@ impl Checker {
     /// in a checked program (`Ty::Never`) and comparing: this reuses the one
     /// substitution traversal instead of adding a second walk that could drift
     /// out of sync with it as `Ty` grows variants.
-    fn ty_mentions_type_params(ty: &Ty, params: &[String]) -> bool {
+    pub(super) fn ty_mentions_type_params(ty: &Ty, params: &[String]) -> bool {
         if params.is_empty() {
             return false;
         }
@@ -5207,47 +5207,103 @@ impl Checker {
         if requirements.iter().any(|existing| existing.ty == *ty) {
             return;
         }
-        requirements.push(GenericStructuralEqRequirement { ty: ty.clone() });
+        requirements.push(GenericStructuralEqRequirement {
+            ty: ty.clone(),
+            owner_type_params: params,
+        });
     }
 
-    /// Record a generic function call site for later obligation discharge.
+    /// The single recording authority for a generic application.
     ///
-    /// Reads the type arguments back out of `call_type_args`, which
-    /// `apply_instantiated_call_signature_with_assoc` has just written for this
-    /// span, so there is exactly one authority for what a call site
-    /// instantiated.
-    pub(super) fn record_generic_fn_instantiation_site(&mut self, callee: &str, span: &Span) {
-        let key = SpanKey::in_module(span, self.current_module_idx);
-        let Some(type_args) = self.call_type_args.get(&key).cloned() else {
+    /// Every application shape — free function, module-qualified function,
+    /// method, actor method, trait-impl method — funnels through
+    /// `apply_instantiated_call_signature_with_assoc`, and that is the only
+    /// caller of this function. Recording anywhere else would reintroduce the
+    /// exact gap this closes: obligations discharged for direct calls only,
+    /// while a method instantiation walked straight into codegen.
+    ///
+    /// Two independent sources pin the callee's parameters and BOTH are merged
+    /// by name: the signature instantiation (method-level parameters) and the
+    /// receiver's type arguments (impl-level parameters, which
+    /// `lookup_named_method_sig` has already substituted out of the signature).
+    pub(super) fn record_generic_application(
+        &mut self,
+        callee: GenericCallee<'_>,
+        sig_type_params: &[String],
+        sig_type_args: &[Ty],
+        span: &Span,
+    ) {
+        // The one place method identity is joined into a `fn_sigs` key.
+        let (callee_key, owner) = match callee {
+            GenericCallee::Function { key } => (key.to_string(), None),
+            GenericCallee::Method {
+                type_name,
+                method,
+                owner_type_args,
+            } => (
+                format!("{type_name}::{method}"),
+                Some((type_name, owner_type_args)),
+            ),
+        };
+        let Some(declared_params) = self
+            .fn_sigs
+            .get(&callee_key)
+            .map(|sig| sig.type_params.clone())
+            .filter(|params| !params.is_empty())
+        else {
             return;
         };
-        let owner = self.current_function.clone();
-        let owner_params = owner
+        let mut substitution: HashMap<String, Ty> = HashMap::new();
+        if sig_type_params.len() == sig_type_args.len() {
+            for (param, arg) in sig_type_params.iter().zip(sig_type_args) {
+                substitution.insert(param.clone(), self.subst.resolve(arg));
+            }
+        }
+        if let Some((owner_name, owner_args)) = owner {
+            let owner_params = self
+                .type_defs
+                .get(owner_name)
+                .map(|type_def| type_def.type_params.clone())
+                .unwrap_or_default();
+            if owner_params.len() == owner_args.len() {
+                for (param, arg) in owner_params.iter().zip(owner_args) {
+                    substitution
+                        .entry(param.clone())
+                        .or_insert_with(|| self.subst.resolve(arg));
+                }
+            }
+        }
+        // Nothing pinned means nothing to discharge; a partially pinned
+        // application still records, and the walk refuses to decide any
+        // obligation whose substituted form is still abstract.
+        if !declared_params
+            .iter()
+            .any(|param| substitution.contains_key(param))
+        {
+            return;
+        }
+        let enclosing = self.current_function.clone();
+        let enclosing_params = enclosing
             .as_ref()
             .and_then(|name| self.fn_sigs.get(name))
             .map_or_else(Vec::new, |sig| sig.type_params.clone());
-        let target_params = self
-            .fn_sigs
-            .get(callee)
-            .map_or_else(Vec::new, |sig| sig.type_params.clone());
         self.generic_fn_instantiation_sites
             .push(GenericFnInstantiationSite {
-                caller: owner,
-                caller_type_params: owner_params,
-                callee: callee.to_string(),
-                callee_type_params: target_params,
-                type_args,
+                caller: enclosing,
+                caller_type_params: enclosing_params,
+                callee: callee_key,
+                substitution,
                 span: span.clone(),
                 source_module: self.current_module.clone(),
             });
     }
 
-    /// Split the recorded call sites into concrete instantiation roots and
-    /// generic → generic edges.
+    /// Split the recorded applications into concrete roots and generic → generic
+    /// edges.
     ///
-    /// A site whose type arguments still name the enclosing generic function's
-    /// own parameters proves nothing on its own; it becomes an edge, reachable
-    /// only once a concrete root pins those parameters.
+    /// An application whose substitution still names the enclosing generic
+    /// function's own parameters proves nothing on its own; it becomes an edge,
+    /// reachable only once a concrete root pins those parameters.
     fn partition_generic_instantiation_sites(
         &self,
         sites: Vec<GenericFnInstantiationSite>,
@@ -5258,25 +5314,32 @@ impl Checker {
         let mut roots: Vec<PendingInstantiation> = Vec::new();
         let mut edges: HashMap<String, Vec<GenericCallEdge>> = HashMap::new();
         for site in sites {
-            let type_args: Vec<Ty> = site
-                .type_args
+            let substitution: HashMap<String, Ty> = site
+                .substitution
                 .iter()
-                .map(|ty| self.subst.resolve(ty).materialize_literal_defaults())
+                .map(|(param, ty)| {
+                    (
+                        param.clone(),
+                        self.subst.resolve(ty).materialize_literal_defaults(),
+                    )
+                })
                 .collect();
-            if Self::ty_list_mentions_type_params(&type_args, &site.caller_type_params) {
+            let still_abstract = substitution
+                .values()
+                .any(|ty| Self::ty_mentions_type_params(ty, &site.caller_type_params));
+            if still_abstract {
                 if let Some(owner) = site.caller {
                     edges.entry(owner).or_default().push(GenericCallEdge {
                         callee: site.callee,
-                        callee_type_params: site.callee_type_params,
-                        type_args,
+                        substitution,
                     });
                 }
                 continue;
             }
             roots.push(PendingInstantiation {
+                chain: vec![site.callee.clone()],
                 callee: site.callee,
-                callee_type_params: site.callee_type_params,
-                type_args,
+                substitution,
                 report_span: site.span,
                 report_module: site.source_module,
                 depth: 0,
@@ -5285,15 +5348,25 @@ impl Checker {
         (roots, edges)
     }
 
+    /// Stable rendering of a substitution, for the visited-set key.
+    fn render_substitution(substitution: &HashMap<String, Ty>) -> String {
+        let mut pairs: Vec<String> = substitution
+            .iter()
+            .map(|(param, ty)| format!("{param}={}", ty.user_facing()))
+            .collect();
+        pairs.sort();
+        pairs.join(", ")
+    }
+
     /// Build the diagnostic for one ineligible instantiation of a generic
-    /// function that compares `template` structurally.
+    /// callee that compares `template` structurally.
     fn generic_structural_eq_instantiation_error(
-        callee: &str,
         template: &Ty,
         concrete: &Ty,
         failure: EqEligibilityFailure,
         pending: &PendingInstantiation,
     ) -> crate::error::TypeError {
+        let callee = &pending.callee;
         let mut err = crate::error::TypeError::new(
             TypeErrorKind::InvalidOperation,
             pending.report_span.clone(),
@@ -5316,19 +5389,50 @@ impl Checker {
         err
     }
 
+    /// Fail-closed diagnostic for an instantiation chain that outruns the hop
+    /// budget.
+    ///
+    /// Dropping the obligation here would hand the un-analysed instantiation to
+    /// codegen — the very thing this pass exists to prevent — so the budget
+    /// refuses the program and names the chain that hit it.
+    fn generic_structural_eq_depth_error(
+        pending: &PendingInstantiation,
+        budget: u32,
+    ) -> crate::error::TypeError {
+        let chain = pending.chain.join(" → ");
+        let mut err = crate::error::TypeError::new(
+            TypeErrorKind::InvalidOperation,
+            pending.report_span.clone(),
+            format!(
+                "structural-equality obligations for this instantiation could not be \
+                 discharged: the generic instantiation chain exceeded {budget} hops \
+                 ({chain}). The checker refuses rather than hand an unanalysed \
+                 instantiation to codegen.",
+            ),
+        )
+        .with_suggestion(
+            "break the generic call chain — give an intermediate function a concrete type \
+             argument, or move the comparison to a non-generic helper"
+                .to_string(),
+        );
+        if let Some(module) = pending.report_module.clone() {
+            err = err.with_source_module(module);
+        }
+        err
+    }
+
     /// Discharge every generic structural-equality obligation against the
     /// concrete instantiations the program actually contains.
     ///
-    /// The walk starts at instantiations whose type arguments are concrete in
-    /// the caller's terms and follows generic → generic call edges, so an
-    /// obligation raised two hops down still lands on the concrete call site
-    /// the programmer wrote. Codegen's `eq_thunk` is therefore never the first
-    /// to notice an ineligible instantiation.
+    /// The walk starts at applications whose substitution is concrete in the
+    /// caller's terms and follows generic → generic call edges, so an obligation
+    /// raised two hops down still lands on the concrete application the
+    /// programmer wrote. Codegen's `eq_thunk` is therefore never the first to
+    /// notice an ineligible instantiation.
     pub(super) fn finalize_generic_structural_eq(&mut self) {
-        // WHY a depth cap: polymorphic recursion (`fn f<T>() { g::<Vec<T>>() }`)
-        // generates an unbounded instantiation chain. Monomorphisation rejects
-        // such programs downstream; the cap keeps this walk terminating without
-        // pretending to have proved anything past it.
+        // WHY a hop budget: polymorphic recursion (`fn f<T>() { g::<Vec<T>>() }`)
+        // generates an unbounded instantiation chain. Exceeding it is reported,
+        // never skipped — see `generic_structural_eq_depth_error`.
         const MAX_INSTANTIATION_DEPTH: u32 = 64;
 
         let requirements = std::mem::take(&mut self.generic_structural_eq_requirements);
@@ -5338,37 +5442,40 @@ impl Checker {
         }
 
         let (roots, edges) = self.partition_generic_instantiation_sites(sites);
-        let mut seen: HashSet<(String, String, usize)> = HashSet::new();
+        let mut seen: HashSet<(String, String, usize, Option<String>)> = HashSet::new();
         let mut work: VecDeque<PendingInstantiation> = roots.into();
         let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
 
         while let Some(pending) = work.pop_front() {
-            if pending.depth > MAX_INSTANTIATION_DEPTH
-                || pending.callee_type_params.len() != pending.type_args.len()
-            {
+            // Span offsets are module-local, so two modules can produce the same
+            // (callee, args, offset) triple for genuinely different sites; the
+            // module completes the identity.
+            if !seen.insert((
+                pending.callee.clone(),
+                Self::render_substitution(&pending.substitution),
+                pending.report_span.start,
+                pending.report_module.clone(),
+            )) {
                 continue;
             }
-            let rendered = pending
-                .type_args
-                .iter()
-                .map(|ty| ty.user_facing().to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            if !seen.insert((pending.callee.clone(), rendered, pending.report_span.start)) {
+            if pending.depth > MAX_INSTANTIATION_DEPTH {
+                new_errors.push(Self::generic_structural_eq_depth_error(
+                    &pending,
+                    MAX_INSTANTIATION_DEPTH,
+                ));
                 continue;
             }
-            let substitution: HashMap<String, Ty> = pending
-                .callee_type_params
-                .iter()
-                .cloned()
-                .zip(pending.type_args.iter().cloned())
-                .collect();
 
             for requirement in requirements.get(&pending.callee).into_iter().flatten() {
                 let concrete = requirement
                     .ty
-                    .substitute_named_params_parallel(&substitution);
+                    .substitute_named_params_parallel(&pending.substitution);
                 if concrete.contains_error() || concrete.has_inference_var() {
+                    continue;
+                }
+                // A parameter no source pinned leaves the obligation abstract;
+                // deciding it here would be guessing.
+                if Self::ty_mentions_type_params(&concrete, &requirement.owner_type_params) {
                     continue;
                 }
                 if let Some(failure) = ty_eq_ineligibility_with_type_params(
@@ -5377,7 +5484,6 @@ impl Checker {
                     &HashSet::new(),
                 ) {
                     new_errors.push(Self::generic_structural_eq_instantiation_error(
-                        &pending.callee,
                         &requirement.ty,
                         &concrete,
                         failure,
@@ -5387,27 +5493,29 @@ impl Checker {
             }
 
             for edge in edges.get(&pending.callee).into_iter().flatten() {
+                let mut chain = pending.chain.clone();
+                chain.push(edge.callee.clone());
                 work.push_back(PendingInstantiation {
                     callee: edge.callee.clone(),
-                    callee_type_params: edge.callee_type_params.clone(),
-                    type_args: edge
-                        .type_args
+                    substitution: edge
+                        .substitution
                         .iter()
-                        .map(|ty| ty.substitute_named_params_parallel(&substitution))
+                        .map(|(param, ty)| {
+                            (
+                                param.clone(),
+                                ty.substitute_named_params_parallel(&pending.substitution),
+                            )
+                        })
                         .collect(),
                     report_span: pending.report_span.clone(),
                     report_module: pending.report_module.clone(),
                     depth: pending.depth + 1,
+                    chain,
                 });
             }
         }
 
         self.errors.extend(new_errors);
-    }
-
-    fn ty_list_mentions_type_params(args: &[Ty], params: &[String]) -> bool {
-        args.iter()
-            .any(|ty| Self::ty_mentions_type_params(ty, params))
     }
 
     fn structural_eq_ineligibility_reason(reason: EqEligibility) -> String {

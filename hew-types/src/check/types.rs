@@ -2193,52 +2193,83 @@ pub(super) struct DeferredBuiltinCloneAdmission {
 pub(super) struct GenericStructuralEqRequirement {
     /// The aggregate type, spelled in the owning function's type parameters.
     pub(super) ty: Ty,
+    /// The owning signature's type parameters, so the discharge walk can tell a
+    /// fully pinned instantiation from one whose substitution left a parameter
+    /// abstract (which it must not decide).
+    pub(super) owner_type_params: Vec<String>,
 }
 
 /// One generic function call site, recorded so structural-equality obligations
 /// can be discharged per instantiation.
 ///
-/// `type_args` are captured in the *caller's* terms: inside a generic caller
-/// they may still name the caller's own parameters, which is what lets
-/// [`Checker::finalize_generic_structural_eq`] walk generic → generic call
-/// edges from a concrete root instead of stopping at the first hop.
 #[derive(Debug, Clone)]
 pub(super) struct GenericFnInstantiationSite {
     pub(super) caller: Option<String>,
     pub(super) caller_type_params: Vec<String>,
     pub(super) callee: String,
-    /// The callee signature's own type-parameter names, snapshotted here
-    /// because `fn_sigs` is no longer addressable by this key once the
-    /// output-boundary pass has run.
-    pub(super) callee_type_params: Vec<String>,
-    pub(super) type_args: Vec<Ty>,
+    /// Partial, name-keyed binding of the callee's type parameters, captured in
+    /// the CALLER's terms: inside a generic caller the values may still name the
+    /// caller's own parameters, which is what lets
+    /// [`Checker::finalize_generic_structural_eq`] walk generic → generic call
+    /// edges from a concrete root instead of stopping at the first hop.
+    pub(super) substitution: HashMap<String, Ty>,
     pub(super) span: Span,
     pub(super) source_module: Option<String>,
 }
 
-/// One generic → generic call edge, in the enclosing generic function's own
-/// type-parameter terms. Following these from a concrete root is what lets an
-/// obligation raised several hops down land on the call site the programmer
-/// actually wrote.
+/// Identity of the callee at a generic application site.
+///
+/// Deliberately carries the PARTS of a method identity rather than a formatted
+/// key: `record_generic_application` is the one place that joins nominal and
+/// method into a `fn_sigs` key, so the string form of method identity is
+/// constructed once instead of at every dispatch site.
+#[derive(Clone, Copy)]
+pub(super) enum GenericCallee<'a> {
+    /// A free or module-qualified function, already keyed by its `fn_sigs` name.
+    Function { key: &'a str },
+    /// A method. `owner_type_args` are the receiver's type arguments, needed
+    /// because `lookup_named_method_sig` instantiates the impl-level parameters
+    /// into the signature and drops them from `sig.type_params` before the
+    /// application ever sees it — so for `Holder<HashMap<string, i64>>::same`
+    /// the signature-level instantiation is EMPTY and the only record of
+    /// `T = HashMap<string, i64>` is the receiver.
+    Method {
+        type_name: &'a str,
+        method: &'a str,
+        owner_type_args: &'a [Ty],
+    },
+}
+
+/// One generic → generic call edge, carrying a partial, NAME-keyed
+/// substitution in the enclosing generic function's own terms.
+///
+/// Name-keyed rather than positional: an impl method's `fn_sigs` type-parameter
+/// list interleaves method-level and impl-level parameters (the impl's are
+/// appended after the method's during registration), and the two are pinned by
+/// different sources at the call site. Zipping by name lets each source
+/// contribute what it knows without any positional assumption, and a parameter
+/// no source pinned simply stays abstract — which the walk then treats as
+/// undischarged rather than silently mis-binding.
 #[derive(Debug, Clone)]
 pub(super) struct GenericCallEdge {
     pub(super) callee: String,
-    pub(super) callee_type_params: Vec<String>,
-    pub(super) type_args: Vec<Ty>,
+    pub(super) substitution: HashMap<String, Ty>,
 }
 
-/// One concrete instantiation queued for structural-equality discharge.
+/// One instantiation queued for structural-equality discharge.
 #[derive(Debug, Clone)]
 pub(super) struct PendingInstantiation {
     pub(super) callee: String,
-    pub(super) callee_type_params: Vec<String>,
-    pub(super) type_args: Vec<Ty>,
-    /// Span and module of the CONCRETE call site the diagnostic points at —
+    pub(super) substitution: HashMap<String, Ty>,
+    /// Span and module of the CONCRETE application the diagnostic points at —
     /// carried unchanged along every edge so a nested obligation still reports
     /// where the program pinned the type arguments.
     pub(super) report_span: Span,
     pub(super) report_module: Option<String>,
     pub(super) depth: u32,
+    /// Callee keys from the concrete root to here, so a chain that outruns the
+    /// hop budget can be named in the diagnostic instead of vanishing.
+    pub(super) chain: Vec<String>,
 }
 
 /// A channel method call rewrite deferred until after all inference has settled.

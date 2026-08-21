@@ -9,6 +9,7 @@ use crate::check::admissibility::{
 };
 use crate::check::calls::SignatureArgApplication;
 use crate::check::dispatch::resolve_method_call;
+use crate::check::types::GenericCallee;
 use crate::check::types::{BareActorResolution, DeferredBuiltinCloneAdmission};
 use crate::hash_eligibility::{ty_is_hash_eligible, HashEligibility};
 use crate::lowering_facts::{
@@ -2029,6 +2030,11 @@ impl Checker {
                 arity_context: format!("method `{method}`"),
             },
             true,
+            Some(GenericCallee::Method {
+                type_name: receiver_type_name,
+                method,
+                owner_type_args: type_args,
+            }),
         );
         self.record_monomorphic_extern_symbol_rewrite_if_any(&sig, &method_key, span);
         Some(applied_sig.return_type)
@@ -2882,6 +2888,11 @@ impl Checker {
                     arity_context: format!("method `{method}`"),
                 },
                 true,
+                Some(GenericCallee::Method {
+                    type_name: &canonical_name,
+                    method,
+                    owner_type_args: type_args,
+                }),
             )
             .return_type;
         // The successful signature lookup and the emitted impl body must use
@@ -3725,13 +3736,19 @@ impl Checker {
     ) {
         let message =
             Self::unbalanced_shared_handle_clone_error_message(receiver_name, type_name, member);
+        // Deliberately NO workaround: cloning the handle on its own and
+        // rebuilding the aggregate re-enters the same ingress path and aborts
+        // at `hew-runtime/src/rc.rs` `Rc double-free`. Suggesting it would hand
+        // the programmer a crash. State the limitation instead.
         self.report_error_with_suggestions(
             TypeErrorKind::UndefinedMethod,
             span,
             message,
             vec![format!(
-                "clone the `{type_name}` handle on its own and rebuild `{receiver_name}` from the \
-                 cloned handle and the remaining members"
+                "this is a known gap in shared-handle ownership, not a property of \
+                 `{receiver_name}`; a fix is pending. Until then keep the `{type_name}` handle \
+                 out of a cloned aggregate — pass the aggregate by move, or hold the handle in a \
+                 collection (`Vec<{type_name}>`), whose element clone retains correctly"
             )],
         );
     }
@@ -4021,17 +4038,29 @@ impl Checker {
             .registry
             .implements_marker(&resolved, MarkerTrait::Clone)
         {
-            None
-        } else {
-            Some(CloneCapabilityBlocker::Missing {
-                member: if path.is_empty() {
-                    "value".to_string()
-                } else {
-                    path.to_string()
-                },
-                member_ty: resolved,
-            })
+            return None;
         }
+        // The template-capability authority applies at EVERY position a type
+        // parameter appears, not just at a bare `T`. Reaching here means the
+        // structural walk above found no blocker, so every type-parameter
+        // position inside `resolved` was already decided by its declared bound.
+        // The marker registry cannot answer for a partially abstract type — it
+        // has no impl for `Vec<T>` — so letting it veto here rejected
+        // `fn dup<T: Clone>(v: Option<Vec<T>>)` even though every leaf was
+        // clonable. An unbounded parameter still refuses, with a member path,
+        // from the recursive call that examined it.
+        let in_scope: Vec<String> = self.current_type_param_names().into_iter().collect();
+        if Self::ty_mentions_type_params(&resolved, &in_scope) {
+            return None;
+        }
+        Some(CloneCapabilityBlocker::Missing {
+            member: if path.is_empty() {
+                "value".to_string()
+            } else {
+                path.to_string()
+            },
+            member_ty: resolved,
+        })
     }
 
     /// Transitive, substitution-aware walk of a (possibly generic) record's
@@ -7224,6 +7253,11 @@ impl Checker {
                 arity_context: format!("method `{method}`"),
             },
             true,
+            Some(GenericCallee::Method {
+                type_name: &canonical,
+                method,
+                owner_type_args: &[],
+            }),
         );
         let method_key = format!("{canonical}::{method}");
         // Concrete-specialised primitive impl (#2270): when the builtin receiver
@@ -7582,6 +7616,11 @@ impl Checker {
                 arity_context: format!("method `{trait_name}.{method_name}`"),
             },
             true,
+            Some(GenericCallee::Method {
+                type_name: &canonical,
+                method: method_name,
+                owner_type_args: &[],
+            }),
         );
         self.record_method_call_receiver_kind(
             span,
@@ -8194,6 +8233,7 @@ impl Checker {
                             module_qualified: true,
                         },
                         true,
+                        Some(GenericCallee::Function { key: &key }),
                     );
                     // Channel constructor: inject a shared type variable so
                     // Sender<T> and Receiver<T> from the same `new` call are
@@ -9046,6 +9086,11 @@ impl Checker {
                                     arity_context: format!("method `{method}`"),
                                 },
                                 true,
+                                Some(GenericCallee::Method {
+                                    type_name: crate::BuiltinType::LocalPid.canonical_name(),
+                                    method,
+                                    owner_type_args: receiver_args,
+                                }),
                             );
                             if method == "send"
                                 && !self.checking_canonical_stdlib_source("std.builtins")
@@ -9182,6 +9227,11 @@ impl Checker {
                                 arity_context: format!("method `{method}`"),
                             },
                             true,
+                            Some(GenericCallee::Method {
+                                type_name: crate::BuiltinType::RemotePid.canonical_name(),
+                                method,
+                                owner_type_args: receiver_args,
+                            }),
                         );
                         let return_type = if method == "ask" {
                             self.project_assoc_types(&applied_sig.return_type)
@@ -9918,6 +9968,11 @@ impl Checker {
                             arity_context: format!("method `{method}`"),
                         },
                         true,
+                        Some(GenericCallee::Method {
+                            type_name: &canonical_receiver_name,
+                            method,
+                            owner_type_args: type_args,
+                        }),
                     );
                     // Actor receive-method dispatch on a bare actor-typed
                     // receiver — e.g. an actor field holding a reference
@@ -10524,6 +10579,11 @@ impl Checker {
                                 arity_context: format!("method `{method}`"),
                             },
                             true,
+                            Some(GenericCallee::Method {
+                                type_name: &declaring_trait,
+                                method,
+                                owner_type_args: &[],
+                            }),
                         );
                         if declaring_trait == "std.builtins.Pid" && method == "send" {
                             // TODO(A640): replace this fail-closed branch with
@@ -10905,6 +10965,9 @@ impl Checker {
                             arity_context: format!("method `{method}`"),
                         },
                         true,
+                        // Dynamic vtable dispatch pins no static instantiation; the concrete
+                        // impl is selected at run time, so there is nothing to discharge here.
+                        None,
                     );
                     if pid_send_dispatch {
                         self.enforce_actor_method_send_args(args);

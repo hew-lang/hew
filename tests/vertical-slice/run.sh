@@ -5324,6 +5324,24 @@ if grep -q 'E_CODEGEN_FRONT_FAIL_CLOSED' "${reject_output}"; then
   exit 1
 fi
 
+# Method applications record their instantiation through the same authority as
+# free calls: the receiver's type arguments are the only record of what the
+# impl-level parameter became, since the signature lookup already substituted
+# them out.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/structural_equality_method_instantiation.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected structural_equality_method_instantiation fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'member `Some` is ineligible' "${reject_output}"
+grep -qF 'HashMap<string, i64>' "${reject_output}"
+if grep -q 'E_CODEGEN_FRONT_FAIL_CLOSED' "${reject_output}"; then
+  echo "codegen must not be the first to notice a method instantiation" >&2
+  exit 1
+fi
+
 # A refcounted shared handle inside an aggregate has no aggregate-ingress
 # retain, so the composite drop plan would release it once per owner. Fail
 # closed at the checker rather than emitting a program that double-frees.

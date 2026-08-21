@@ -4231,3 +4231,278 @@ fn main() -> i64 {
         output.errors
     );
 }
+
+// -------------------------------------------------------------------------
+// Generic capability: nested positions, method applications, and the walk's
+// own fail-closed edges
+// -------------------------------------------------------------------------
+
+#[test]
+fn bounded_generic_clone_through_a_nested_container_is_admitted() {
+    // The template-capability authority must apply at EVERY position a type
+    // parameter appears, not only at a bare `T`. `Vec<T>` has no `Clone` impl
+    // in the marker registry, so a whole-type lookup vetoed a walk whose every
+    // leaf had already been granted by `T: Clone`.
+    let source = r"
+fn dup<T: Clone>(value: Option<Vec<T>>) -> Option<Vec<T>> {
+    clone value
+}
+
+fn main() -> i64 {
+    let items: Vec<i64> = Vec.new();
+    items.push(1);
+    let held: Option<Vec<i64>> = Some(items);
+    let copied = dup(held);
+    match copied {
+        .Some(v) => v.len(),
+        .None => 0,
+    }
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "`T: Clone` must grant clone capability at every nested position; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn unbounded_generic_clone_through_a_nested_container_is_refused() {
+    let source = r"
+fn dup<T>(value: Option<Vec<T>>) -> Option<Vec<T>> {
+    clone value
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Some.element` of type `T`")
+                && e.message.contains("has no Clone capability")
+        }),
+        "the refusal must name the nested member path, not the whole type; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_method_instantiation_with_ineligible_type_is_refused_by_checker() {
+    // Method applications record their instantiation through the same authority
+    // as free calls. `lookup_named_method_sig` substitutes the impl-level `T`
+    // into the signature and drops it from `sig.type_params`, so the receiver's
+    // type arguments are the only record of what `T` became.
+    let source = r"
+type Holder<T> { left: Option<T>; right: Option<T>; }
+
+impl<T> Holder<T> {
+    fn same(self) -> bool {
+        self.left == self.right
+    }
+}
+
+fn main() -> i64 {
+    let a: HashMap<string, i64> = HashMap.new();
+    let b: HashMap<string, i64> = HashMap.new();
+    let holder = Holder { left: Some(a), right: Some(b) };
+    match holder.same() {
+        true => 0,
+        false => 1,
+    }
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("`Holder::same`")
+                && e.message.contains("member `Some`")
+                && e.message.contains("HashMap<string, i64>")
+        }),
+        "a method instantiation must be refused by the checker, not by codegen; got: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_CODEGEN_FRONT_FAIL_CLOSED")),
+        "codegen must never be the first to notice; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_method_instantiation_with_eligible_type_is_admitted() {
+    let source = r"
+type Holder<T> { left: Option<T>; right: Option<T>; }
+
+impl<T> Holder<T> {
+    fn same(self) -> bool {
+        self.left == self.right
+    }
+}
+
+fn main() -> i64 {
+    let holder = Holder { left: Some(1), right: Some(1) };
+    match holder.same() {
+        true => 0,
+        false => 1,
+    }
+}
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "`Holder<i64>` has a structural equality path; got: {:?}",
+        output.errors
+    );
+}
+
+/// Build a chain of `hops` generic forwarders ending in a structural comparison,
+/// instantiated once with an ineligible type.
+fn generic_forwarder_chain(hops: usize) -> String {
+    use std::fmt::Write as _;
+
+    let mut source =
+        String::from("fn hop_0<T>(a: Option<T>, b: Option<T>) -> bool {\n    a == b\n}\n\n");
+    for hop in 1..=hops {
+        write!(
+            source,
+            "fn hop_{hop}<T>(a: Option<T>, b: Option<T>) -> bool {{\n    \
+             hop_{prev}(a, b)\n}}\n\n",
+            prev = hop - 1
+        )
+        .expect("writing to a String cannot fail");
+    }
+    write!(
+        source,
+        "fn main() -> i64 {{\n    \
+         let left: HashMap<string, i64> = HashMap.new();\n    \
+         let right: HashMap<string, i64> = HashMap.new();\n    \
+         let boxed_left: Option<HashMap<string, i64>> = Some(left);\n    \
+         let boxed_right: Option<HashMap<string, i64>> = Some(right);\n    \
+         match hop_{hops}(boxed_left, boxed_right) {{\n        \
+         true => 0,\n        false => 1,\n    }}\n}}\n"
+    )
+    .expect("writing to a String cannot fail");
+    source
+}
+
+#[test]
+fn generic_instantiation_chain_within_the_hop_budget_still_names_the_member() {
+    let output = check_source(&generic_forwarder_chain(40));
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+        }),
+        "a chain inside the budget must be discharged normally; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_instantiation_chain_past_the_hop_budget_fails_closed_naming_the_chain() {
+    // Past the budget the obligation cannot be discharged. Dropping it would
+    // hand the un-analysed instantiation to codegen, so the checker refuses and
+    // names the chain that hit the limit.
+    let output = check_source(&generic_forwarder_chain(70));
+    let depth_error = output.errors.iter().find(|e| {
+        e.message
+            .contains("generic instantiation chain exceeded 64 hops")
+    });
+    let depth_error = depth_error.unwrap_or_else(|| {
+        panic!(
+            "a chain past the hop budget must be refused, never silently dropped; got: {:?}",
+            output.errors
+        )
+    });
+    assert!(
+        depth_error.message.contains("hop_70") && depth_error.message.contains("hop_6"),
+        "the diagnostic must name the chain that hit the budget; got: {}",
+        depth_error.message
+    );
+}
+
+#[test]
+fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() {
+    // Span offsets are module-local, so two modules can mint the same
+    // (callee, substitution, offset) triple for genuinely different sites.
+    // Without the module in the visited-set key the second one is swallowed.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let type_param = Ty::normalize_named("T".to_string(), vec![]);
+    checker.generic_structural_eq_requirements.insert(
+        "same".to_string(),
+        vec![crate::check::types::GenericStructuralEqRequirement {
+            ty: Ty::builtin_named(crate::BuiltinType::Option, vec![type_param]),
+            owner_type_params: vec!["T".to_string()],
+        }],
+    );
+    let span = Span::from(10..20);
+    let ineligible = Ty::builtin_named(crate::BuiltinType::HashMap, vec![Ty::String, Ty::I64]);
+    for module in ["alpha", "beta"] {
+        checker.generic_fn_instantiation_sites.push(
+            crate::check::types::GenericFnInstantiationSite {
+                caller: None,
+                caller_type_params: Vec::new(),
+                callee: "same".to_string(),
+                substitution: std::collections::HashMap::from([(
+                    "T".to_string(),
+                    ineligible.clone(),
+                )]),
+                span: span.clone(),
+                source_module: Some(module.to_string()),
+            },
+        );
+    }
+
+    checker.finalize_generic_structural_eq();
+
+    let modules: Vec<Option<String>> = checker
+        .errors
+        .iter()
+        .map(|e| e.source_module.clone())
+        .collect();
+    assert_eq!(
+        checker.errors.len(),
+        2,
+        "each module's site must report; got modules {modules:?}"
+    );
+    assert!(
+        modules.contains(&Some("alpha".to_string())) && modules.contains(&Some("beta".to_string())),
+        "both modules must be represented; got {modules:?}"
+    );
+}
+
+#[test]
+fn rc_member_clone_refusal_suggests_no_workaround_that_double_frees() {
+    // Cloning the handle separately and rebuilding the aggregate re-enters the
+    // same missing-ingress-retain path and aborts at `Rc double-free`. The help
+    // text must not send the programmer there.
+    let source = r#"
+type Node { value: i64; }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let pair: (Rc<Node>, string) = (shared, "tag");
+    let _copied = clone pair;
+    0
+}
+"#;
+    let output = check_source(source);
+    let refusal = output
+        .errors
+        .iter()
+        .find(|e| e.message.contains("no aggregate-ingress retain"))
+        .expect("the Rc member refusal must fire");
+    let help = refusal.suggestions.join(" ");
+    assert!(
+        help.contains("a fix is pending"),
+        "the help must state the limitation; got: {help}"
+    );
+    assert!(
+        !help.contains("rebuild"),
+        "the help must not suggest rebuilding the aggregate from a separately cloned handle — \
+         that pattern aborts with `Rc double-free`; got: {help}"
+    );
+}

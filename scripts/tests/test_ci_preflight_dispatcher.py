@@ -1388,6 +1388,102 @@ def test_hosted_linux_executes_the_dispatcher_directly() -> None:
     assert "run: make test-hew-ratchet" not in workflow
 
 
+def _trunk_health_step() -> str:
+    """The trunk-health step's shell body, read out of the workflow it runs in."""
+    spec = importlib.util.spec_from_file_location(
+        "check_gate_reachability", ROOT / "scripts" / "check-gate-reachability.py"
+    )
+    assert spec and spec.loader
+    reachability = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = reachability
+    spec.loader.exec_module(reachability)
+    workflow = reachability.parse_yaml(
+        (ROOT / ".github/workflows/ci.yml").read_text(), "ci.yml"
+    )
+    steps = workflow["jobs"]["main-health"]["steps"]
+    bodies = [step["run"] for step in steps if "run" in step]
+    assert len(bodies) == 1, bodies
+    return bodies[0]
+
+
+def _run_trunk_health(
+    gh_stdout: str, gh_status: int, labels: str = "[]"
+) -> subprocess.CompletedProcess[str]:
+    """Run the step with a stubbed `gh`, the way the runner would."""
+    with tempfile.TemporaryDirectory() as work:
+        bin_dir = Path(work) / "bin"
+        bin_dir.mkdir()
+        stub = bin_dir / "gh"
+        stub.write_text(
+            f"#!/bin/sh\ncat <<'STUB_JSON'\n{gh_stdout}\nSTUB_JSON\nexit {gh_status}\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        script = Path(work) / "step.sh"
+        script.write_text(_trunk_health_step(), encoding="utf-8")
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        env["GITHUB_REPOSITORY"] = "hew-lang/hew"
+        env["PR_LABELS"] = labels
+        return subprocess.run(
+            ["bash", str(script)],
+            cwd=work,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+
+_RED_MAIN = (
+    '{"workflow_runs":[{"conclusion":"failure","head_sha":"deadbeef",'
+    '"html_url":"https://example.invalid/run"}]}'
+)
+_GREEN_MAIN = (
+    '{"workflow_runs":[{"conclusion":"success","head_sha":"cafebabe",'
+    '"html_url":"https://example.invalid/run"}]}'
+)
+
+
+def test_trunk_health_blocks_on_a_confirmed_red_main() -> None:
+    result = _run_trunk_health(_RED_MAIN, 0)
+
+    assert result.returncode == 1, result.stdout
+    assert "main is red at deadbeef" in result.stdout, result.stdout
+
+
+def test_trunk_health_passes_on_a_green_main() -> None:
+    result = _run_trunk_health(_GREEN_MAIN, 0)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_trunk_health_fails_open_when_the_api_call_fails() -> None:
+    """This gate stands in front of every job; an API error is not evidence.
+
+    A 404, an expired token or a transient 502 would otherwise skip all
+    thirteen jobs through `needs` — the whole repository down on a read that
+    says nothing about main.
+    """
+    result = _run_trunk_health("gh: not found", 1)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "could not read main's CI status" in result.stdout, result.stdout
+
+
+def test_trunk_health_fails_open_on_an_unreadable_response() -> None:
+    result = _run_trunk_health("<html>502 Bad Gateway</html>", 0)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_labelled_fix_for_main_runs_against_a_red_main() -> None:
+    result = _run_trunk_health(_RED_MAIN, 0, labels='["fix-main"]')
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "labelled fix-main" in result.stdout, result.stdout
+
+
 def test_a_push_to_main_stops_at_the_first_failing_gate() -> None:
     """A red main broadcasts; finishing the other 37 commands proves nothing."""
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
@@ -1564,6 +1660,11 @@ _TESTS = [
     test_selector_exports_fail_closed_compile_requirement,
     test_a_push_to_main_stops_at_the_first_failing_gate,
     test_every_job_waits_for_a_green_main,
+    test_trunk_health_blocks_on_a_confirmed_red_main,
+    test_trunk_health_passes_on_a_green_main,
+    test_trunk_health_fails_open_when_the_api_call_fails,
+    test_trunk_health_fails_open_on_an_unreadable_response,
+    test_a_labelled_fix_for_main_runs_against_a_red_main,
 ]
 
 if __name__ == "__main__":

@@ -66,11 +66,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
-          set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=1" > main-run.json
-          conclusion=$(jq -r '.workflow_runs[0].conclusion // "unknown"' main-run.json)
-          head_sha=$(jq -r '.workflow_runs[0].head_sha // "unknown"' main-run.json)
-          run_url=$(jq -r '.workflow_runs[0].html_url // ""' main-run.json)
+          set -uo pipefail
+          # This gate blocks 13 jobs, so it fails OPEN on anything that is not
+          # a confirmed red main. An API error, a token problem, an empty
+          # response: none of those are evidence about main, and treating them
+          # as evidence would take the whole repository down on a 404.
+          if ! gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=1" > main-run.json; then
+            echo "::warning::could not read main's CI status; running branch gates anyway."
+            exit 0
+          fi
+          conclusion=$(jq -r '.workflow_runs[0].conclusion // "unknown"' main-run.json 2>/dev/null || echo unknown)
+          head_sha=$(jq -r '.workflow_runs[0].head_sha // "unknown"' main-run.json 2>/dev/null || echo unknown)
+          run_url=$(jq -r '.workflow_runs[0].html_url // ""' main-run.json 2>/dev/null || echo "")
           echo "Last completed CI run on main: ${conclusion} at ${head_sha}"
           # Only a run that FAILED is evidence that main is broken. A cancelled
           # run is what the concurrency group does when a newer commit lands,
@@ -80,7 +87,7 @@ jobs:
             failure|timed_out) ;;
             *) exit 0 ;;
           esac
-          if printf '%s' "${PR_LABELS}" | jq -e 'index("fix-main")' > /dev/null; then
+          if printf '%s' "${PR_LABELS}" | jq -e 'index("fix-main")' > /dev/null 2>&1; then
             echo "::notice::main is ${conclusion} at ${head_sha}; running anyway because this pull request is labelled fix-main."
             exit 0
           fi

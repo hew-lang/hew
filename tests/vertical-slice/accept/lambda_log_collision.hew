@@ -9,15 +9,28 @@
 // value (i64 round-trip from ask) so any regression silently routing
 // to the math builtin would fail at run time (incorrect output AND
 // type mismatch — `log` math expects `f64`, not `string`/`i64`).
+//
+// Both lines are emitted through the SAME `log` mailbox on purpose. A tell
+// carries no happens-before edge to anything the caller does afterwards, so
+// printing the ask reply from `main` raced the tell's own `println` and the
+// expected output pinned one of two legal interleavings (observed flipping
+// about 1 run in 200). Routing both through one mailbox makes send order the
+// total order, which is a real ordering edge rather than scheduling luck.
 fn main() {
     let log = actor |s: string| {
         println(f"LOG: {s}");
     };
-    log("hello");
-    let log2 = actor |n: i64| -> i64 { n + 1 };
+    let _ = log("hello");
+    let log2 = actor |n: i64| -> i64 {
+        n + 1
+    };
     let r = log2(41);
     match r {
-        Ok(v) => println(f"ask {v}"),
-        Err(_) => println("ask err"),
+        .Ok(v) => {
+            let _ = log(f"ask {v}");
+        },
+        .Err(_) => {
+            let _ = log("ask err");
+        },
     }
 }

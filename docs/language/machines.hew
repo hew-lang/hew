@@ -10,11 +10,11 @@
 //!     events { Inc; Reset; }
 //!     state Zero;
 //!     state NonZero { value: i64; }
-//!     on Inc: Zero => NonZero { NonZero { value: 1 } }
-//!     on Inc: NonZero => NonZero reenter {
+//!     on Inc: Zero => .NonZero { NonZero { value: 1 } }
+//!     on Inc: NonZero => .NonZero reenter {
 //!         NonZero { value: self.value + 1 }
 //!     }
-//!     on Reset: NonZero => Zero { Zero }
+//!     on Reset: NonZero => .Zero { .Zero }
 //!     default { state }
 //! }
 //!
@@ -32,7 +32,7 @@
 //! `self.field` reads the source state and `event.field` reads event payload.
 //!
 //! Wildcards are asymmetric: `_` is allowed for a state pattern, but events
-//! must be named explicitly. For example, `on Kill: _ => Dead { Dead }`
+//! must be named explicitly. For example, `on Kill: _ => .Dead { .Dead }`
 //! covers Kill from every state, but there is no wildcard-event spelling.
 //! Explicit cells win over wildcard-state rules. Omitting a cell without a
 //! matching default is a compile error, so state and event exhaustiveness is

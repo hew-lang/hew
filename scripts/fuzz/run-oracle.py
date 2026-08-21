@@ -812,13 +812,17 @@ def main() -> int:
     if unexpected_fails:
         print("\nUNEXPECTED FAILURES (not in expected-failures.txt):")
         for v in unexpected_fails:
-            print(f"  {v.classification:20s} {v.path.name}  {v.detail}")
+            # `UNEXPECTED:` / `NOW-PASSES:` is the ratchet verdict vocabulary
+            # shared with every other expected-failure gate in the tree; it is
+            # what scripts/baselines.py reads to prune a list, so the prefix is
+            # load-bearing, not decoration.
+            print(f"  UNEXPECTED: {v.path.name}  {v.classification}  {v.detail}")
         gate_ok = False
 
     if unexpected_passes:
         print("\nUNEXPECTED PASSES (listed in expected-failures.txt but passed):")
         for v in unexpected_passes:
-            print(f"  {v.path.name}  {v.detail}")
+            print(f"  NOW-PASSES: {v.path.name}  {v.detail}")
         gate_ok = False
 
     if gate_ok:

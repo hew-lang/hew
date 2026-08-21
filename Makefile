@@ -29,17 +29,18 @@
 #   make stdlib       — all stdlib packages + combine into libhew.a
 #   make wasm-runtime — WASM runtime + wire JSON/YAML/TOML archives
 #   make wasm         — build hew-wasm (browser WASM via wasm-pack)
-#   make wasm-capability           — regenerate manifest-owned Rust/JSON/docs outputs
+#   make baselines                 — regenerate EVERY committed derived artefact
+#                                    (goldens, generated consumers, manifests,
+#                                    ratcheted expected-failure lists)
+#   make baselines-check           — prove every derived artefact is current, and
+#                                    print the regen command for each stale one
 #   make wasm-capability-check     — verify manifest-owned generated outputs
-#   make playground-manifest       — regenerate examples/playground/manifest.json
 #   make playground-manifest-check — verify examples/playground/manifest.json freshness
-#   make sandbox-fixtures          — regenerate sandbox VM bytecode fixtures from main.hew
 #   make sandbox-fixtures-check    — verify sandbox VM bytecode fixtures are fresh
 #   make sandbox-vm-deps           — install hew-sandbox-vm npm deps (hash-stamped, idempotent)
 #   make sandbox-parity            — native hew run ↔ sandbox VM parity harness
 #   make playground-check          — manifest freshness + full hew-wasm test suite + build hew-wasm
 #   make playground-wasi-check     — focused curated manifest WASI runtime preflight
-#   make licenses                  — regenerate THIRD-PARTY-LICENSES from current Cargo.lock
 #   make licenses-check            — verify THIRD-PARTY-LICENSES is current (used in CI)
 #   make check-gate-reachability   — verify every gate target/crate/exclusion is reached by CI,
 #                                    and every documented make target exists
@@ -71,10 +72,9 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-ci-coverage-check structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan legacy-path-syntax-lint hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability check-counterfactual-output check-counterfactual-output-build sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check tool-pin-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
-.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-ci-coverage-check structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan legacy-path-syntax-lint hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability check-counterfactual-output check-counterfactual-output-build sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check tool-pin-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
-.PHONY: clean install uninstall verify-ffi test-verify-ffi test-cabi-surface cabi-surface-check test-python310-toml-compat
+.PHONY: all build bootstrap install-hooks hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check baselines baselines-check
+.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-cabi-build test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-ci-coverage-check structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan legacy-path-syntax-lint hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability check-counterfactual-output check-counterfactual-output-build sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property tool-pin-contract-check
+.PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
@@ -372,9 +372,36 @@ licenses:
 	cargo about generate about.hbs --workspace > THIRD-PARTY-LICENSES
 
 # Verify THIRD-PARTY-LICENSES is current relative to Cargo.lock and about.hbs.
-# Exits non-zero if the file is stale; run 'make licenses' to regenerate.
+# Exits non-zero if the file is stale; run `make baselines` to regenerate.
 licenses-check:
 	scripts/check-licenses-fresh.sh
+
+# ── Derived baselines ─────────────────────────────────────────────────────
+#
+# scripts/baselines.py is the ONE registry of committed derived artefacts: for
+# each one, the command that regenerates it from source and the gate that
+# compares against it.  Before this existed the nine regen commands were
+# scattered across the Makefile and scripts/, and a baseline that drifted when
+# main moved was discovered only when a 90-minute CI job reached its gate — on
+# an unrelated pull request.
+#
+#   make baselines         regenerate every member
+#   make baselines-check   prove every member is current; name each stale
+#                          artefact and print its exact regen command
+#
+# BASELINE_TIER=fast restricts to members that need no compiler build (what the
+# preflight dispatcher runs before its warm-up).  BASELINE_GATES=<file> further
+# restricts to members whose gate appears in that file's command list.
+BASELINE_TIER ?=
+BASELINE_GATES ?=
+BASELINE_SELECT = $(if $(BASELINE_TIER),--tier $(BASELINE_TIER),)
+BASELINE_SCOPE = $(if $(BASELINE_GATES),--relevant-to-file $(BASELINE_GATES),)
+
+baselines:
+	python3 scripts/baselines.py regen $(BASELINE_SELECT)
+
+baselines-check:
+	python3 scripts/baselines.py check $(BASELINE_SELECT) $(BASELINE_SCOPE)
 
 # Install hew-sandbox-vm's npm dependencies, skipping the install when
 # node_modules already matches package-lock.json (hash-stamped). Split out
@@ -973,10 +1000,12 @@ test-package-install-build: hew-native runtime $(LIBHEW_READY)
 
 # Golden MIR corpus (examples/v05/checked-mir): byte-identical --dump-mir
 # oracle for internal retyping work. `checked-mir-verify` re-dumps every
-# fixture and diffs against the committed goldens; `checked-mir-golden`
-# recaptures them (only in a commit that justifies the dump change).
+# fixture and diffs against the committed goldens; `make baselines` recaptures
+# them (only in a commit that justifies the dump change).
 checked-mir-verify: hew
 	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/checked-mir-corpus.sh verify
+
+# Regen seam (see above): driven by `make baselines`, not run directly.
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 checked-mir-verify-build: hew
@@ -997,6 +1026,8 @@ checked-mir-golden: hew
 checked-mir-run: hew runtime stdlib check-libhew-fresh
 	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/checked-mir-corpus.sh run
 
+# Regen seam (see above): driven by `make baselines`, not run directly.
+
 # Artifacts only: the freshness check belongs to the gate.
 checked-mir-run-build: hew runtime stdlib
 	@:
@@ -1007,11 +1038,13 @@ checked-mir-expect: hew runtime stdlib check-libhew-fresh
 # Per-function .ll byte-identity oracle (tests/ll-oracle/corpus/): proves a
 # pure codegen refactor (dedup, extract-helper, file-split) emits zero changed
 # IR.  `ll-diff` recompiles every fixture and diffs per-function bodies against
-# the committed goldens; `ll-golden` recaptures them (only in a commit that
+# the committed goldens; `make baselines` recaptures them (only in a commit that
 # justifies the IR change, with the diff in the commit body).  Both native and
 # wasm32 targets are covered.
 ll-diff: hew
 	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/ll-corpus.sh verify
+
+# Regen seam (see above): driven by `make baselines`, not run directly.
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 ll-diff-build: hew
@@ -1100,6 +1133,22 @@ test-core-matrix: hew-native runtime $(LIBHEW_READY)
 	@echo "==> Running the core matrix (primitive x operation)"
 	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/core-matrix.py
 
+# Regen seam: driven only by an explicit
+# `python3 scripts/baselines.py regen --only core-matrix-truth-table`.
+core-matrix-record: hew-native runtime $(LIBHEW_READY)
+	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/core-matrix.py --record
+
+# Regen seam: re-dumps every row of the funcupdate/reassign manifest. The dump's
+# function order is nondeterministic, so this is a reviewed act, never a sweep.
+funcupdate-mir-baselines-golden: hew
+	@set -e; \
+	baseline_dir=tests/mir-baselines/funcupdate-reassign; \
+	grep -v '^#' "$$baseline_dir/manifest.tsv" | while IFS="$$(printf '\t')" read -r fixture baseline; do \
+	  [ -n "$$fixture" ] || continue; \
+	  echo "re-dumping $$fixture -> $$baseline"; \
+	  "$(DEBUG_DIR)/hew" compile --dump-mir elab "$$fixture" > "$$baseline_dir/$$baseline"; \
+	done
+
 # Warm-up form for the preflight dispatcher, which derives it by name.
 test-core-matrix-build: hew-native runtime $(LIBHEW_READY)
 	@:
@@ -1146,6 +1195,7 @@ o2-differential-selftest-build:
 # (comment, echoed string, `if: false`, untriggerable workflow) and both filter
 # parsers against their counterfactuals.
 check-gate-reachability: test-check-gate-reachability
+	python3 scripts/tests/test_baselines.py
 	python3 scripts/check-gate-reachability.py
 
 # Python only; no artifacts.
@@ -1199,13 +1249,23 @@ test-stdlib-execution-proofs-build:
 # admission. New examples therefore cannot disappear from the authority by
 # omitting their expectation.
 #
+# One inventory definition, shared by the gate and its regen seam: a corpus that
+# drifts between the two would gate one set of examples and re-record another.
+UX_EXAMPLE_INVENTORY = --label "ux + progressive tutorial" \
+	  --source-root examples/ux \
+	  --source-root examples/progressive
+
 test-ux-examples: hew-native runtime $(LIBHEW_READY) test-example-expectations-selftest
 	@echo "==> Running ux + progressive tutorials against .expected"
 	@python3 scripts/example-expectations.py \
-	  --hew-bin "$(DEBUG_DIR)/hew" \
-	  --label "ux + progressive tutorial" \
-	  --source-root examples/ux \
-	  --source-root examples/progressive
+	  --hew-bin "$(DEBUG_DIR)/hew" $(UX_EXAMPLE_INVENTORY)
+
+# Regen seam: driven only by an explicit
+# `python3 scripts/baselines.py regen --only ux-example-expectations`, never by a
+# blanket regen. An example's output is its user-facing contract.
+ux-examples-expect: hew-native runtime $(LIBHEW_READY)
+	@python3 scripts/example-expectations.py \
+	  --hew-bin "$(DEBUG_DIR)/hew" $(UX_EXAMPLE_INVENTORY) --write-expected
 
 # Artifacts only: the expectations self-test belongs to the gate.
 test-ux-examples-build: hew-native runtime $(LIBHEW_READY)
@@ -1238,13 +1298,19 @@ test-ux-examples-build: hew-native runtime $(LIBHEW_READY)
 # expectations, process failures, timeouts, and output drift all fail the gate.
 # `scanner_tokens.hew` is fully admitted with its repaired five-line output.
 #
+SURFACE_EXAMPLE_INVENTORY = --label "surface" \
+	  --source-root examples/v05/surfaces \
+	  --source examples/net/http_await_service.hew
+
 test-surface-examples: hew-native runtime $(LIBHEW_READY) test-example-expectations-selftest
 	@echo "==> Running v0.5 surface examples against .expected"
 	@python3 scripts/example-expectations.py \
-	  --hew-bin "$(DEBUG_DIR)/hew" \
-	  --label "surface" \
-	  --source-root examples/v05/surfaces \
-	  --source examples/net/http_await_service.hew
+	  --hew-bin "$(DEBUG_DIR)/hew" $(SURFACE_EXAMPLE_INVENTORY)
+
+# Regen seam: see ux-examples-expect.
+surface-examples-expect: hew-native runtime $(LIBHEW_READY)
+	@python3 scripts/example-expectations.py \
+	  --hew-bin "$(DEBUG_DIR)/hew" $(SURFACE_EXAMPLE_INVENTORY) --write-expected
 
 # Artifacts only: the expectations self-test belongs to the gate.
 test-surface-examples-build: hew-native runtime $(LIBHEW_READY)
@@ -1851,6 +1917,13 @@ coverage-branch:
 verify-ffi: cabi-surface-check
 	python3 scripts/verify-ffi-symbols.py --classify stable --validate > /dev/null
 
+# Regen seam: re-records the exact unclassified-ownership count. Records a fall
+# (ABI surface gaining contracts); refuses a rise, which is new unclassified
+# surface and needs a deliberate decision.
+ffi-ownership-ratchet-record:
+	python3 scripts/verify-ffi-symbols.py --classify stable --validate \
+	  --write-ownership-ratchet > /dev/null
+
 # Python only; no artifacts.
 verify-ffi-build:
 	@:
@@ -1861,6 +1934,9 @@ test-verify-ffi:
 # Python only; no artifacts.
 test-verify-ffi-build:
 	@:
+
+cabi-surface:
+	python3 scripts/generate-cabi-surface.py --write
 
 cabi-surface-check:
 	python3 scripts/generate-cabi-surface.py --check

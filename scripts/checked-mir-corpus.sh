@@ -307,7 +307,7 @@ verify)
         for stage in "${STAGES[@]}"; do
             golden_file="$GOLDEN/$name.$stage.mir"
             if [[ ! -f "$golden_file" ]]; then
-                echo "MISSING GOLDEN: $name.$stage.mir (run: make checked-mir-golden)" >&2
+                echo "MISSING GOLDEN: $name.$stage.mir (run: make baselines)" >&2
                 fail=1
                 continue
             fi
@@ -335,13 +335,13 @@ verify)
     # golden edited without recapturing, and a manifest edited without
     # moving the golden, both fail.
     if [[ ! -f "$MANIFEST" ]]; then
-        echo "MISSING MANIFEST: $MANIFEST (run: make checked-mir-golden)" >&2
+        echo "MISSING MANIFEST: $MANIFEST (run: make baselines)" >&2
         fail=1
     else
         render_manifest >"$tmpdir/MANIFEST.sha256"
         if ! diff -u "$MANIFEST" "$tmpdir/MANIFEST.sha256" >"$tmpdir/manifest.diff"; then
             echo "MANIFEST DRIFT: golden/MANIFEST.sha256 does not match the goldens on disk" >&2
-            echo "(run: make checked-mir-golden)" >&2
+            echo "(run: make baselines)" >&2
             head -40 "$tmpdir/manifest.diff" >&2
             fail=1
         fi
@@ -391,7 +391,7 @@ run)
         fi
         if [[ ! -f "$expected" ]]; then
             echo "MISSING EXPECTATION: $name.hew declares main but has no $name.expected" >&2
-            echo "  (run: make checked-mir-expect, or hand-write it if the fixture does not build)" >&2
+            echo "  (run: make baselines, or hand-write it if the fixture does not build)" >&2
             fail=1
             continue
         fi

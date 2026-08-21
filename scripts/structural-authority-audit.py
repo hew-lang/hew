@@ -1504,6 +1504,81 @@ def load_inventory(path: Path) -> dict[tuple[str, str, str], int]:
     return expected
 
 
+def load_inventory_reasons(path: Path) -> dict[tuple[str, str, str], str]:
+    """Reasons keyed by inventory row, so a regen never invents editorial text."""
+    reasons: dict[tuple[str, str, str], str] = {}
+    with path.open(newline="") as handle:
+        source = (line for line in handle if line.strip() and not line.startswith("#"))
+        for row in csv.DictReader(source, delimiter="\t"):
+            reasons[(row["group"], row["form"], row["path"])] = row["reason"]
+    return reasons
+
+
+def render_inventory(
+    path: Path,
+    counts: dict[tuple[str, str, str], int],
+    reasons: dict[tuple[str, str, str], str],
+) -> str:
+    """Rebuild the inventory from observed counts, preserving the prologue.
+
+    Counts are derived, so they are rewritten. Reasons are editorial, so an
+    authority form/path that has never been reviewed cannot be minted here --
+    `write_inventory` refuses instead of authoring a placeholder.
+    """
+    lines = path.read_text().splitlines()
+    prologue = [line for line in lines if line.startswith("#")]
+    header = "group\tform\tpath\tcount\tretirement_stage\treason"
+    rows = [
+        "\t".join(
+            (
+                group,
+                form,
+                target,
+                str(counts[(group, form, target)]),
+                canonical_stage(group, form, target),
+                reasons[(group, form, target)],
+            )
+        )
+        for (group, form, target) in counts
+    ]
+    rows.sort()
+    return "\n".join([*prologue, header, *rows]) + "\n"
+
+
+def write_inventory(
+    path: Path,
+    counts: dict[tuple[str, str, str], int],
+) -> int:
+    """Re-record the inventory counts. A brand-new authority row is an error.
+
+    Dropping to zero and shrinking are the drift this regen exists to absorb:
+    they mean an authority was retired, which is the direction the cutover is
+    supposed to move. A key with no prior row is the opposite -- new authority
+    landed -- and it needs a human reason before it enters the baseline.
+    """
+    reasons = load_inventory_reasons(path)
+    unreviewed = sorted(key for key in counts if key not in reasons)
+    if unreviewed:
+        print(
+            "structural authority inventory: new authority form/path rows cannot be "
+            "auto-recorded; add each row with its reason:",
+            file=sys.stderr,
+        )
+        for group, form, target in unreviewed:
+            print(
+                f"  - {group}\t{form}\t{target}\t{counts[(group, form, target)]}"
+                f"\t{canonical_stage(group, form, target)}\t<reason>",
+                file=sys.stderr,
+            )
+        return 1
+    path.write_text(render_inventory(path, counts, reasons))
+    print(
+        f"structural authority inventory: re-recorded {len(counts)} authority "
+        "form/path rows"
+    )
+    return 0
+
+
 @dataclass(frozen=True, order=True)
 class OpaqueResourceFact:
     """AST-derived, qualified lifecycle fact for one shipped empty handle.
@@ -1999,6 +2074,11 @@ def main() -> int:
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--ast-grep", type=Path)
     parser.add_argument(
+        "--write-inventory",
+        action="store_true",
+        help="re-record inventory counts from the current tree (a baselines regen)",
+    )
+    parser.add_argument(
         "--opaque-resource-facts",
         type=Path,
         help="write AST-derived shipped opaque resource facts (use - for stdout)",
@@ -2032,12 +2112,32 @@ def main() -> int:
             return 0
 
     inventory = args.inventory or root / "scripts/structural-authority-inventory.tsv"
-    expected = load_inventory(inventory)
+    expected = {} if args.write_inventory else load_inventory(inventory)
     findings, test_ranges = discover(ast_grep, root)
 
     actual: defaultdict[tuple[str, str, str], int] = defaultdict(int)
     for item in findings:
         actual[(item.group, item.form, item.path)] += 1
+
+    if args.write_inventory:
+        # A forbidden authority is not drift and is never re-recorded; it stops
+        # the regen exactly as it stops the audit.
+        blocked = [
+            f"forbidden scalar SpanKey -> SiteId authority at "
+            f"{item.path}:{item.line}:{item.column}: {item.text}"
+            for item in scalar_span_site_findings(ast_grep, root, test_ranges)
+        ] + [
+            f"forbidden context-free nominal authority at "
+            f"{item.path}:{item.line}:{item.column}: {item.text}"
+            for item in forbidden_context_free_nominal_findings(
+                ast_grep, root, test_ranges
+            )
+        ]
+        if blocked:
+            print("\n".join(f"  - {item}" for item in blocked), file=sys.stderr)
+            return 1
+        return write_inventory(inventory, dict(actual))
+
     failures = []
     for key in sorted(set(expected) | set(actual)):
         want, got = expected.get(key, 0), actual.get(key, 0)

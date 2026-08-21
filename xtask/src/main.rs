@@ -322,7 +322,7 @@ fn process_fixture(
         Mode::Check => {
             let current = read_json(&bytecode_path)?;
             if current != expected {
-                return Err("bytecode.json is out of date; run make sandbox-fixtures".to_string());
+                return Err("bytecode.json is out of date; run make baselines".to_string());
             }
             println!("OK {}", fixture.name);
         }

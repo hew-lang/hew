@@ -13,6 +13,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "ci-preflight-dispatcher.sh"
 
+# The dispatcher proves the fast-tier derived baselines are current BEFORE it
+# warms anything, so a baseline that drifted when main moved fails in seconds
+# instead of at the far end of the lane. Its command line is fixed so the
+# profile and summary rows stay comparable across runs.
+PRECHECK = (
+    "make baselines-check BASELINE_TIER=fast BASELINE_GATES=.tmp/preflight-lane.txt"
+)
+
 
 def run_dispatcher(
     *paths: str,
@@ -252,18 +260,20 @@ def test_run_all_continues_after_failure_and_profiles_all_commands() -> None:
         profile_entries = json.loads(Path(profile.name).read_text())
 
     assert [entry["cmd"] for entry in profile_entries] == [
+        PRECHECK,
         "true",
         "exit 7",
         "printf '%s' RUN_TWO >/dev/null",
         "printf '%s' RUN_THREE >/dev/null",
     ]
     assert [entry["phase"] for entry in profile_entries] == [
+        "precheck",
         "warm-up",
         "command",
         "command",
         "command",
     ]
-    assert [entry["status"] for entry in profile_entries] == [0, 7, 0, 0]
+    assert [entry["status"] for entry in profile_entries] == [0, 0, 7, 0, 0]
     assert "    exit 7" in result.stdout, result.stdout
     assert "    printf '%s' RUN_TWO >/dev/null" in result.stdout, result.stdout
     assert "    printf '%s' RUN_THREE >/dev/null" in result.stdout, result.stdout
@@ -294,9 +304,13 @@ def test_fail_fast_stops_after_first_failure_and_profiles_only_run_commands() ->
         )
         profile_entries = json.loads(Path(profile.name).read_text())
 
-    assert [entry["cmd"] for entry in profile_entries] == ["true", "exit 7"]
-    assert [entry["phase"] for entry in profile_entries] == ["warm-up", "command"]
-    assert [entry["status"] for entry in profile_entries] == [0, 7]
+    assert [entry["cmd"] for entry in profile_entries] == [PRECHECK, "true", "exit 7"]
+    assert [entry["phase"] for entry in profile_entries] == [
+        "precheck",
+        "warm-up",
+        "command",
+    ]
+    assert [entry["status"] for entry in profile_entries] == [0, 0, 7]
     assert "    exit 7" in result.stdout, result.stdout
     summary = result.stdout.split("==> Preflight summary", 1)[1]
     assert "RUN_TWO" not in summary, result.stdout
@@ -355,10 +369,14 @@ def test_synthetic_timeout_via_run_loop() -> None:
 
     assert result.returncode != 0, result.stdout
     assert "TIMEOUT: 'sleep 30' exceeded 1s budget" in result.stdout, result.stdout
-    assert [entry["phase"] for entry in profile_entries] == ["warm-up", "command"]
-    assert profile_entries[1]["cmd"] == "sleep 30", profile_entries
-    assert profile_entries[1]["status"] in {137, 143}, profile_entries
-    assert 1 <= profile_entries[1]["elapsed_s"] <= 10, profile_entries
+    assert [entry["phase"] for entry in profile_entries] == [
+        "precheck",
+        "warm-up",
+        "command",
+    ]
+    assert profile_entries[2]["cmd"] == "sleep 30", profile_entries
+    assert profile_entries[2]["status"] in {137, 143}, profile_entries
+    assert 1 <= profile_entries[2]["elapsed_s"] <= 10, profile_entries
     summary = result.stdout.split("==> Preflight summary", 1)[1]
     assert "sleep 30" in summary, result.stdout
     assert "[FAILED]" in summary, result.stdout
@@ -381,16 +399,63 @@ def test_profile_json_records_elapsed_for_each_command() -> None:
         profile_entries = json.loads(Path(profile.name).read_text())
 
     assert result.returncode == 1, result.stdout
-    assert [entry["cmd"] for entry in profile_entries] == ["true", "true", "false"]
+    assert [entry["cmd"] for entry in profile_entries] == [
+        PRECHECK,
+        "true",
+        "true",
+        "false",
+    ]
     assert [entry["phase"] for entry in profile_entries] == [
+        "precheck",
         "warm-up",
         "command",
         "command",
     ]
-    assert [entry["status"] for entry in profile_entries] == [0, 0, 1]
+    assert [entry["status"] for entry in profile_entries] == [0, 0, 0, 1]
     for entry in profile_entries:
         assert isinstance(entry["elapsed_s"], int), profile_entries
         assert entry["elapsed_s"] >= 0, profile_entries
+
+
+def test_baseline_precheck_is_listed_before_warmup() -> None:
+    """Derived-baseline staleness must be findable in minutes, not at lane end."""
+    result = run_dispatcher("some-unclassified-root-file.txt")
+    assert result.returncode == 0, result.stderr
+    assert "Baseline precheck:" in result.stdout, result.stdout
+    assert f"  - {PRECHECK}" in result.stdout, result.stdout
+    assert result.stdout.index("Baseline precheck:") < result.stdout.index(
+        "Warm-up:"
+    ), result.stdout
+    assert result.stdout.index("Baseline precheck:") < result.stdout.index(
+        "Commands:"
+    ), result.stdout
+
+
+def test_baseline_precheck_is_scoped_to_the_lane() -> None:
+    """A docs lane must not pay for baselines none of its gates compare against."""
+    result = run_dispatcher("README.md")
+    assert result.returncode == 0, result.stderr
+    lane = [
+        line.removeprefix("  - ").split("  (budget")[0]
+        for line in result.stdout.splitlines()
+        if line.startswith("  - ")
+    ]
+    scoped = subprocess.run(
+        [
+            "python3",
+            "scripts/baselines.py",
+            "check",
+            "--tier",
+            "fast",
+            *[arg for command in lane for arg in ("--relevant-to", command)],
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert scoped.returncode == 0, scoped.stdout + scoped.stderr
+    assert "no members selected" in scoped.stdout, scoped.stdout
 
 
 def test_compile_warmup_runs_first_and_has_a_summary_row() -> None:
@@ -1075,6 +1140,10 @@ def run_with_fake_nextest(version: str) -> subprocess.CompletedProcess[str]:
             "#!/bin/sh\n"
             'if [ "$1" = "nextest" ] && [ "$2" = "--version" ]; then\n'
             f"  printf 'cargo-nextest {version} (deadbeef 2026-01-01)\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            'if [ "$1" = "metadata" ]; then\n'
+            '  printf \'{"packages":[],"target_directory":"target"}\\n\'\n'
             "  exit 0\n"
             "fi\n"
             "exit 0\n",
@@ -2043,6 +2112,23 @@ def test_shard_selection_runs_exactly_its_planned_commands() -> None:
         assert dry_run_commands(result) == plan[index], result.stdout
 
 
+def test_shard_one_owns_the_baseline_precheck() -> None:
+    """The full lane's baseline check runs once before any shard warms artifacts."""
+    paths = _PROFILE_PROBES["comprehensive"]
+    first = run_dispatcher(*paths, extra_args=["--shard", "1/4"])
+    assert first.returncode == 0, first.stderr
+    assert first.stdout.count(f"  - {PRECHECK}") == 1, first.stdout
+    assert first.stdout.index("Baseline precheck:") < first.stdout.index("Warm-up:"), (
+        first.stdout
+    )
+
+    for index in range(2, 5):
+        result = run_dispatcher(*paths, extra_args=["--shard", f"{index}/4"])
+        assert result.returncode == 0, result.stderr
+        assert f"  - {PRECHECK}" not in result.stdout, result.stdout
+        assert "runs in shard 1/4 before warm-up." in result.stdout, result.stdout
+
+
 def test_shard_warmup_is_scoped_to_that_shard_commands() -> None:
     """A shard warms only the artifacts its own commands need."""
     paths = _PROFILE_PROBES["comprehensive"]
@@ -2521,6 +2607,8 @@ _TESTS = [
     test_fail_fast_stops_after_first_failure_and_profiles_only_run_commands,
     test_synthetic_timeout_via_run_loop,
     test_profile_json_records_elapsed_for_each_command,
+    test_baseline_precheck_is_listed_before_warmup,
+    test_baseline_precheck_is_scoped_to_the_lane,
     test_compile_warmup_runs_first_and_has_a_summary_row,
     test_rust_diff_derives_its_warmup_artifacts_before_commands,
     test_docs_diff_has_no_warmup_block,
@@ -2593,6 +2681,7 @@ _TESTS = [
     test_shard_partition_preserves_relative_command_order,
     test_ordering_dependent_commands_share_a_shard,
     test_shard_selection_runs_exactly_its_planned_commands,
+    test_shard_one_owns_the_baseline_precheck,
     test_shard_warmup_is_scoped_to_that_shard_commands,
     test_invalid_shard_specs_fail_closed,
     test_shard_plan_prints_the_full_assignment_and_runs_nothing,

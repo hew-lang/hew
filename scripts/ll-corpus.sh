@@ -113,7 +113,7 @@ verify)
   for tgt in "${TARGETS[@]}"; do
     golden_tgt="$GOLDEN/$tgt"
     if [[ ! -d "$golden_tgt" ]]; then
-      echo "ll-corpus verify: no golden for target $tgt (run: make ll-golden)" >&2
+      echo "ll-corpus verify: no golden for target $tgt (run: make baselines)" >&2
       fail=1
       continue
     fi

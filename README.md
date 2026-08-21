@@ -350,7 +350,7 @@ The sandbox VM (`hew-sandbox-vm`) runs admitted Hew programs in a deterministic 
 This repo carries the analysis-side browser tooling (`hew-wasm`) plus the sandbox bytecode emission crate (`hew-sandbox-wasm`); the downstream browser app and the `hew-sandbox-vm` TypeScript worker are in `hew-lang/playground`.
 
 ```bash
-make playground-manifest        # regenerate examples/playground/manifest.json
+make baselines                  # regenerate every derived artefact, manifest.json included
 make playground-manifest-check  # cheap freshness check for manifest.json only
 make playground-check           # repo-local preflight: manifest freshness + curated analyze smoke + build hew-wasm
 make playground-wasi-check      # focused manifest-driven WASI runtime preflight

@@ -1635,7 +1635,7 @@ if (( needs_ll_diff == 1 )) && [[ "$LANE" != "fallback" ]]; then
     # MIR lowering / codegen emission changed: diff the ll-oracle golden corpus
     # so an emission drift (an epilogue reorder, a changed intrinsic sequence)
     # surfaces locally with the regen instruction instead of costing a hosted
-    # CI cycle.  Intentional drifts regenerate via make ll-golden in the same
+    # CI cycle.  Intentional drifts regenerate via make baselines in the same
     # commit.  Skip when LANE is fallback: it already includes make ll-diff.
     add_command "make ll-diff"
 fi
@@ -1745,6 +1745,8 @@ select_shard_commands() {
     done <<< "$SHARD_PLAN_LINES"
     COMMANDS=("${selected[@]+"${selected[@]}"}")
 }
+
+BASELINE_COMMANDS=("${COMMANDS[@]+"${COMMANDS[@]}"}")
 
 if (( SHARD_COUNT > 0 )) && has_commands; then
     SHARD_PLAN_LINES="$(compute_shard_plan)"
@@ -1906,6 +1908,27 @@ if ! has_commands; then
     exit 0
 fi
 
+# ── Baseline precheck ─────────────────────────────────────────────────────────
+# Committed derived baselines — goldens, generated consumers, ratcheted
+# expected-failure lists — drift whenever main moves under a branch, and every
+# gate that compares against one sits at the far end of this lane.  That is why
+# a stale baseline used to be an hour-deep CI red on an unrelated pull request.
+# The fast-tier members need no compiler build, so they are proved FIRST, before
+# warm-up, and only for the gates this lane actually runs; scripts/baselines.py
+# owns both the membership and the regen command it prints for a stale artefact.
+BASELINE_LANE_FILE=".tmp/preflight-lane.txt"
+BASELINE_PRECHECK="make baselines-check BASELINE_TIER=fast BASELINE_GATES=$BASELINE_LANE_FILE"
+RUN_BASELINE_PRECHECK=1
+if (( SHARD_INDEX > 1 )); then
+    RUN_BASELINE_PRECHECK=0
+fi
+if (( RUN_BASELINE_PRECHECK == 1 )); then
+    echo "Baseline precheck:"
+    echo "  - $BASELINE_PRECHECK"
+else
+    echo "Baseline precheck: runs in shard 1/$SHARD_COUNT before warm-up."
+fi
+
 if [[ ${#WARMUP_COMMANDS[@]} -gt 0 ]]; then
     echo "Warm-up:"
     for cmd in "${WARMUP_COMMANDS[@]}"; do
@@ -2015,6 +2038,7 @@ run_warmup() {
 
 run_timed_command() {
     local cmd="$1"
+    local phase="${2:-command}"
     local cmd_timeout
     local start=$SECONDS
     local status=0
@@ -2061,7 +2085,7 @@ run_timed_command() {
         echo "<-- $cmd  elapsed ${_elapsed_s}s  ok"
     fi
 
-    append_profile_entry "$cmd" "$_elapsed_s" "$status" "command"
+    append_profile_entry "$cmd" "$_elapsed_s" "$status" "$phase"
 
     return "$status"
 }
@@ -2097,7 +2121,24 @@ PREFLIGHT_CMD_ELAPSED=()
 PREFLIGHT_CMD_STATUS=()
 PREFLIGHT_CMD_FAILURE=()
 STOPPED_EARLY=0
-if [[ ${#WARMUP_COMMANDS[@]} -gt 0 ]] && ! run_warmup; then
+PREFLIGHT_PRECHECK_STATUS=0
+PREFLIGHT_PRECHECK_ELAPSED=0
+if (( RUN_BASELINE_PRECHECK == 1 )); then
+    # Shard 1 owns this once-per-lane check and uses the pre-sharded command
+    # list, so baseline members covered by another shard are still checked first.
+    mkdir -p "$(dirname "$REPO_ROOT/$BASELINE_LANE_FILE")"
+    printf '%s\n' "${BASELINE_COMMANDS[@]}" > "$REPO_ROOT/$BASELINE_LANE_FILE"
+    if ! run_timed_command "$BASELINE_PRECHECK" precheck; then
+        PREFLIGHT_PRECHECK_STATUS=1
+        PREFLIGHT_FAILURES+=("baseline precheck")
+        STOPPED_EARLY=1
+    fi
+    PREFLIGHT_PRECHECK_ELAPSED="$_elapsed_s"
+fi
+
+if (( PREFLIGHT_PRECHECK_STATUS != 0 )); then
+    :
+elif [[ ${#WARMUP_COMMANDS[@]} -gt 0 ]] && ! run_warmup; then
     PREFLIGHT_FAILURES+=("warm-up")
     STOPPED_EARLY=1
 else
@@ -2128,6 +2169,13 @@ PREFLIGHT_OVERALL_ELAPSED=$(( SECONDS - PREFLIGHT_OVERALL_START ))
 # Summary table.
 echo ""
 echo "==> Preflight summary (${PREFLIGHT_OVERALL_ELAPSED}s total)"
+if (( RUN_BASELINE_PRECHECK == 1 )); then
+    precheck_status_label="ok"
+    if (( PREFLIGHT_PRECHECK_STATUS != 0 )); then
+        precheck_status_label="FAILED"
+    fi
+    printf "    %s  %ss  [%s]\n" "$BASELINE_PRECHECK" "$PREFLIGHT_PRECHECK_ELAPSED" "$precheck_status_label"
+fi
 if [[ ${#WARMUP_COMMANDS[@]} -gt 0 ]]; then
     warmup_status_label="ok"
     if [[ "$PREFLIGHT_WARMUP_STATUS" -ne 0 ]]; then

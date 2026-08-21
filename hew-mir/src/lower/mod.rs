@@ -626,6 +626,10 @@ struct Builder {
     /// owned publication unless that rewrite has explicitly retired the old
     /// generation first.
     synthetic_owner_publication_sites: HashMap<BindingId, SiteId>,
+    /// User-facing labels for direct-call scrutinee publications, keyed by the
+    /// mint site. The MIR binding keeps its structural synthetic name; only
+    /// obligation diagnostics read this source-shaped label.
+    call_scrutinee_diagnostic_names: HashMap<SiteId, String>,
     /// Synthetic generations minted directly by the checker/HIR produced-value
     /// carrier.  Post-CFG inline releases consume only this subset; legacy
     /// sink owners keep their existing release protocol.

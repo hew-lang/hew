@@ -19,7 +19,7 @@ use super::{
     ClosureEnvFieldOwnership, ClosurePairRhs, Disposition, DropKind, DropPlan, ElabBlock, ElabDrop,
     ElaboratedMirFunction, ExitPath, HashMap, HashSet, HirExpr, HirExprKind, Instr, IntentKind,
     LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, ParamCrashCleanupKind,
-    Place, RawMirFunction, ResolvedRef, ResolvedTy, ScopeId, SuspendKind, Terminator,
+    Place, RawMirFunction, ResolvedRef, ResolvedTy, ScopeId, SiteId, SuspendKind, Terminator,
     TraitObjectStorage, ValueClass, ENTRY_BLOCK_ID,
 };
 #[cfg(test)]
@@ -3037,8 +3037,11 @@ fn apply_balance_terminator(
 /// `Disposition::AliasOf` interior aliases (not independent mints) and
 /// parameter slots (by-value params are caller-retained `CoW` borrows — the
 /// caller owns the release; A278).
-fn tracked_obligation_locals(builder: &Builder) -> BTreeMap<u32, String> {
+fn tracked_obligation_locals_with_sites(
+    builder: &Builder,
+) -> (BTreeMap<u32, String>, BTreeMap<u32, SiteId>) {
     let mut tracked: BTreeMap<u32, String> = BTreeMap::new();
+    let mut mint_sites: BTreeMap<u32, SiteId> = BTreeMap::new();
     for entry in builder.owned_locals_ledger() {
         if matches!(entry.disposition, Disposition::AliasOf) {
             continue;
@@ -3068,9 +3071,29 @@ fn tracked_obligation_locals(builder: &Builder) -> BTreeMap<u32, String> {
         if builder.parameter_locals.contains(&local) {
             continue;
         }
-        tracked.entry(local).or_insert_with(|| entry.name.clone());
+        let site = builder
+            .statements
+            .iter()
+            .find_map(|statement| match statement {
+                MirStatement::Bind { binding, site, .. } if *binding == entry.binding => {
+                    Some(*site)
+                }
+                _ => None,
+            });
+        let name = site
+            .and_then(|site| builder.call_scrutinee_diagnostic_names.get(&site))
+            .cloned()
+            .unwrap_or_else(|| entry.name.clone());
+        tracked.entry(local).or_insert(name);
+        if let Some(site) = site {
+            mint_sites.entry(local).or_insert(site);
+        }
     }
-    tracked
+    (tracked, mint_sites)
+}
+
+fn tracked_obligation_locals(builder: &Builder) -> BTreeMap<u32, String> {
+    tracked_obligation_locals_with_sites(builder).0
 }
 
 /// S1 obligation-balance validation over one elaborated function. See the
@@ -3083,13 +3106,14 @@ pub(super) fn validate_obligation_balance(
     raw: &RawMirFunction,
     builder: &Builder,
 ) -> Vec<MirCheck> {
-    let mut tracked = tracked_obligation_locals(builder);
+    let (mut tracked, mut mint_sites) = tracked_obligation_locals_with_sites(builder);
     // Structural parameter exclusion: `locals[0..params.len()]` ARE the
     // parameter slots (the RawMirFunction invariant). Synthesized bodies can
     // register a param-backed binding without a `parameter_locals` entry;
     // by-value params are caller-retained borrows either way.
     let n_params = u32::try_from(raw.params.len()).unwrap_or(u32::MAX);
     tracked.retain(|local, _| *local >= n_params);
+    mint_sites.retain(|local, _| tracked.contains_key(local));
     if tracked.is_empty() {
         return Vec::new();
     }
@@ -3110,7 +3134,7 @@ pub(super) fn validate_obligation_balance(
         &raw.blocks,
         &raw.suspend_kinds,
         &tracked,
-        &local_types,
+        (&local_types, &mint_sites),
         &builder.parameter_locals,
     )
 }
@@ -3124,7 +3148,7 @@ fn validate_obligation_balance_with(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
     tracked_in: &BTreeMap<u32, String>,
-    local_types: &BTreeMap<u32, String>,
+    diagnostic_info: (&BTreeMap<u32, String>, &BTreeMap<u32, SiteId>),
     parameter_locals: &HashSet<u32>,
 ) -> Vec<MirCheck> {
     // Iteration cap for the monotone worklist. The lattice is finite and the
@@ -3137,7 +3161,7 @@ fn validate_obligation_balance_with(
         blocks,
         suspend_kinds,
         tracked_in,
-        local_types,
+        diagnostic_info,
         parameter_locals,
         iteration_cap,
     )
@@ -3156,12 +3180,13 @@ fn validate_obligation_balance_capped(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
     tracked_in: &BTreeMap<u32, String>,
-    local_types: &BTreeMap<u32, String>,
+    diagnostic_info: (&BTreeMap<u32, String>, &BTreeMap<u32, SiteId>),
     parameter_locals: &HashSet<u32>,
     iteration_cap: usize,
 ) -> Vec<MirCheck> {
     use std::collections::VecDeque;
 
+    let (local_types, mint_sites) = diagnostic_info;
     let mut findings = Vec::new();
     if blocks.is_empty() || tracked_in.is_empty() {
         return findings;
@@ -3391,6 +3416,8 @@ fn validate_obligation_balance_capped(
         }
     }
 
+    let mut under_released: BTreeMap<u32, UnderReleaseAggregate> = BTreeMap::new();
+
     // Verdict per terminal ownership edge: Return folds the ordinary function
     // exit plan; Suspend folds the abandon-only frame plan. The default park
     // edge is not terminal ownership transfer — the owner remains in frame.
@@ -3429,21 +3456,12 @@ fn validate_obligation_balance_capped(
                 } else {
                     ob.mint_lo
                 };
-                findings.push(MirCheck::ObligationUnderReleased {
-                    function: elab.name.clone(),
-                    block,
-                    name: name.clone(),
-                    local_ty: local_types.get(root).cloned().unwrap_or_default(),
-                    hard: retained_path_under_released || ob.explicit_retain_lo,
-                    reason: format!(
-                        "owned local `{name}` reaches {exit_label}[bb{block}] with at least \
-                         {mint_lo} owner mint(s), but at most {discharge_hi} discharge(s) on \
-                         every path modelling: one or more owners have no terminal drop or \
-                         ownership transfer before the exit (mint without discharge = leak)",
-                        mint_lo = reported_mints,
-                        discharge_hi = ob.hi,
-                    ),
-                });
+                let aggregate = under_released.entry(*root).or_default();
+                aggregate.blocks.push(block);
+                aggregate.exits.push(format!("{exit_label}[bb{block}]"));
+                aggregate.hard |= retained_path_under_released || ob.explicit_retain_lo;
+                aggregate.max_mints = aggregate.max_mints.max(reported_mints);
+                aggregate.max_discharges = aggregate.max_discharges.max(ob.hi);
             } else if ob.max_definite > ob.mint_hi {
                 findings.push(MirCheck::ObligationOverReleased {
                     function: elab.name.clone(),
@@ -3461,6 +3479,34 @@ fn validate_obligation_balance_capped(
                 });
             }
         }
+    }
+    for (root, mut aggregate) in under_released {
+        aggregate.blocks.sort_unstable();
+        aggregate.blocks.dedup();
+        aggregate.exits.sort();
+        aggregate.exits.dedup();
+        let name = tracked
+            .get(&root)
+            .cloned()
+            .unwrap_or_else(|| format!("local_{root}"));
+        findings.push(MirCheck::ObligationUnderReleased {
+            function: elab.name.clone(),
+            blocks: aggregate.blocks,
+            site: mint_sites.get(&root).copied().unwrap_or(SiteId(0)),
+            name: name.clone(),
+            local_ty: local_types.get(&root).cloned().unwrap_or_default(),
+            hard: aggregate.hard,
+            reason: format!(
+                "owned value `{name}` has up to {mints} owner mint(s), but at most \
+                 {discharges} discharge(s), on {count} reachable exit path(s): {exits}; \
+                 one or more owners have no terminal drop or ownership transfer before \
+                 those exits (mint without discharge = leak)",
+                mints = aggregate.max_mints,
+                discharges = aggregate.max_discharges,
+                count = aggregate.exits.len(),
+                exits = aggregate.exits.join(", "),
+            ),
+        });
     }
     findings
 }
@@ -9180,3 +9226,11 @@ mod returned_member_read_aliases {
 }
 #[cfg(test)]
 mod obligation_balance_validator;
+#[derive(Default)]
+struct UnderReleaseAggregate {
+    blocks: Vec<u32>,
+    exits: Vec<String>,
+    hard: bool,
+    max_mints: u8,
+    max_discharges: u8,
+}

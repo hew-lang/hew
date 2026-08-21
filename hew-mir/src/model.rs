@@ -6428,9 +6428,11 @@ pub enum MirCheck {
     ObligationUnderReleased {
         /// Function symbol (`ElaboratedMirFunction::name`).
         function: String,
-        /// The unbalanced exit's block id (`return[bbN]`).
-        block: u32,
-        /// Source-level name of the leaked local (diagnostics).
+        /// Every unbalanced exit block for this mint.
+        blocks: Vec<u32>,
+        /// The mint's source site, used as the diagnostic caret anchor.
+        site: SiteId,
+        /// Source-level name or expression label of the leaked local.
         name: String,
         /// Rendered type of the leaked local (`ResolvedTy` Display), carried for
         /// the diagnostic. Empty when the type could not be recovered
@@ -7480,8 +7482,10 @@ pub enum MirDiagnosticKind {
     /// retains are blocking compiler-invariant failures.
     ObligationUnderReleased {
         function: String,
-        block: u32,
+        blocks: Vec<u32>,
+        site: SiteId,
         name: String,
+        local_ty: String,
         hard: bool,
         reason: String,
     },
@@ -8883,8 +8887,10 @@ mod diagnostic_severity_tests {
         // and classified advisory so it warns rather than fails the build.
         let leak = MirDiagnosticKind::ObligationUnderReleased {
             function: "base64$decode".to_string(),
-            block: 20,
+            blocks: vec![20],
+            site: SiteId(20),
             name: "out".to_string(),
+            local_ty: "bytes".to_string(),
             hard: false,
             reason: "mint without discharge = leak".to_string(),
         };
@@ -8899,8 +8905,10 @@ mod diagnostic_severity_tests {
     fn explicit_retain_leak_is_blocking() {
         let leak = MirDiagnosticKind::ObligationUnderReleased {
             function: "f".to_string(),
-            block: 1,
+            blocks: vec![1],
+            site: SiteId(1),
             name: "shared".to_string(),
+            local_ty: "string".to_string(),
             hard: true,
             reason: "retained owner has no release".to_string(),
         };

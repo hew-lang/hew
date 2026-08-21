@@ -726,6 +726,56 @@ pub fn ensure_hew_lib_built_for_target(
     Ok(lib_path)
 }
 
+/// Serialize a host `cargo build -p <package>` staticlib bootstrap and return
+/// the resolved archive path.
+///
+/// `hew-lib` has its own authority ([`ensure_hew_lib_built`]) because it also
+/// publishes a freshness certificate. This covers the other shared-target
+/// staticlibs -- notably `hew-runtime`, which link tests read while a sibling
+/// process could be inside Cargo's non-atomic uplift of the same file.
+///
+/// The archive is rebuilt once per nextest run rather than once per process:
+/// `cargo test` refreshes only the rlib, so an archive cached across commits
+/// must not be trusted, but re-running the build in every one of hundreds of
+/// test processes buys nothing and reopens the uplift window.
+///
+/// # Errors
+///
+/// Returns `Err` if the lock cannot be taken, if the build fails or cannot be
+/// spawned, or if the archive is absent after a successful build.
+pub fn ensure_host_staticlib_built(
+    package: &str,
+    archive: &str,
+    extra_cargo_args: &[&str],
+) -> Result<PathBuf, String> {
+    let repo_root = workspace_root()?;
+    let (target_dir, profile) = target_dir_and_profile(&repo_root);
+    let archive_path = target_dir.join(&profile).join(archive);
+    ensure_built_serialized(
+        &target_dir,
+        &profile,
+        &format!("host-{package}"),
+        &archive_path,
+        || true,
+        |td, prof| {
+            let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+            cmd.args(["build", "-q", "-p", package])
+                .args(extra_cargo_args)
+                .args(profile_args(prof))
+                .env("CARGO_TARGET_DIR", td)
+                .current_dir(&repo_root);
+            let out = cmd
+                .output()
+                .map_err(|e| format!("spawn cargo build -p {package}: {e}"))?;
+            if !out.status.success() {
+                return Err(describe(&format!("cargo build -p {package}"), &out));
+            }
+            Ok(())
+        },
+    )?;
+    Ok(archive_path)
+}
+
 /// Serialize a `cargo build -p <package> --target wasm32-wasip1` staticlib
 /// bootstrap and return the resolved archive path.
 ///

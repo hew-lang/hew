@@ -50,7 +50,7 @@ use support::leak_slope::{
     measure_leaks, measure_leaks_exact, require_leaks_tool, run_under_malloc_scribble,
 };
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use support::{describe_output, hew_binary, repo_root, require_codegen};
@@ -488,18 +488,79 @@ fn scope_move_closure_owned_capture_has_zero_leaks_and_no_double_free() {
     eprintln!("scope moved-capture ownership: 0 leaks, 0 double-frees — PASS");
 }
 
+/// Run a probe binary with NO allocator poisoning, bounded so a hang fails
+/// rather than blocks.
+///
+/// The detector for these two shapes is not the allocator: it is hew-cabi's own
+/// C-string header sentinel, which aborts with "C-string header sentinel missing
+/// (corrupted header or double-free)" on every platform. That check is what
+/// fires on a compiler built from `main` for both shapes below, so the plain run
+/// carries the regression on Linux and Windows as well as macOS. The
+/// poisoned-allocator twins add Darwin's extra sensitivity where it exists.
+fn run_plain(bin: &Path) -> std::process::Output {
+    support::try_run_bounded_command(
+        Command::new(bin),
+        format!("run {} unpoisoned", bin.display()),
+        std::time::Duration::from_secs(90),
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "probe {} did not finish within the bound: {error}. A hung \
+             memory-safety probe has established nothing.",
+            bin.display()
+        )
+    })
+}
+
+/// Assertions shared by the plain and poisoned runs of the outliving shape.
+fn assert_outliving_capture_reads_live_memory(output: &std::process::Output) {
+    assert!(
+        output.status.success(),
+        "a closure carrying a transitive capture must address live memory after \
+         its generator is destroyed — an abort here is the double-free or the \
+         dangling read the capture-ownership verdict decides between;\n{}",
+        describe_output(output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "after=11\n",
+        "the retained share must still hold the captured string's contents;\n{}",
+        describe_output(output)
+    );
+}
+
+/// Assertions shared by the plain and poisoned runs of the reassignment shape.
+fn assert_reassigned_capture_is_released_once(output: &std::process::Output) {
+    assert!(
+        output.status.success(),
+        "a reassigned binding captured through the generator env must not be \
+         released twice;\n{}",
+        describe_output(output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "total=19\n",
+        "the capture must read the SECOND value's length, from live memory;\n{}",
+        describe_output(output)
+    );
+}
+
 /// A transitive capture that OUTLIVES the environment it was read from must
 /// still address live memory. See [`GEN_TRANSITIVE_CAPTURE_OUTLIVES_GENERATOR`]
 /// for why this shape is the discriminator.
 ///
-/// Leaks are deliberately not asserted here. The escaping closure pair is bound
-/// by a `for` binder and a `var`, neither of which
+/// Runs everywhere: hew-cabi's header sentinel is the detector, not the
+/// allocator, and a compiler built from `main` aborts this program with exit
+/// 134 under a plain run.
+///
+/// Leaks are deliberately not asserted. The escaping closure pair is bound by a
+/// `for` binder and a `var`, neither of which
 /// `derive_closure_pair_drop_allowed` clears as a sole owner, so its env box is
-/// never freed — the documented fail-closed conservatism in
-/// `build_lifo_drops` ("A binding the prover did not clear leaks; it never
-/// double-frees"), reproducible on a compiler built from `main` with a closure
-/// that never touches a generator. Widening that prover is its own lane; this
-/// oracle pins the memory-safety half, which is the half this seam owns.
+/// never freed — the documented fail-closed conservatism in `build_lifo_drops`
+/// ("A binding the prover did not clear leaks; it never double-frees"),
+/// reproducible on `main` with a closure that never touches a generator.
+/// Widening that prover is its own lane; this oracle pins the memory-safety
+/// half, which is the half this seam owns.
 #[test]
 fn generator_transitive_capture_outliving_its_generator_is_not_a_use_after_free() {
     require_codegen();
@@ -514,20 +575,30 @@ fn generator_transitive_capture_outliving_its_generator_is_not_a_use_after_free(
         "gen_transitive_capture_outlives",
     );
 
-    let output = run_under_malloc_scribble(&bin);
-    assert!(
-        output.status.success(),
-        "a closure carrying a transitive capture must address live memory after \
-         its generator is destroyed — an abort here is the double-free or the \
-         dangling read the capture-ownership verdict decides between;\n{}",
-        describe_output(&output)
+    assert_outliving_capture_reads_live_memory(&run_plain(&bin));
+}
+
+/// The same shape under Darwin's poisoned allocator, which additionally fills
+/// freed memory so a dangling read cannot coincidentally return the value it
+/// expected. `MallocScribble` / `MallocPreScribble` / `MallocGuardEdges` are
+/// libmalloc facilities and are ignored elsewhere, so this arm skips off macOS —
+/// the plain twin above is the cross-platform coverage.
+#[cfg_attr(not(target_os = "macos"), ignore = "poisoned allocator is macOS-only")]
+#[test]
+fn generator_transitive_capture_outliving_its_generator_survives_the_poisoned_allocator() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("gen-transitive-capture-outlives-poisoned-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        GEN_TRANSITIVE_CAPTURE_OUTLIVES_GENERATOR,
+        dir.path(),
+        "gen_transitive_capture_outlives_poisoned",
     );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "after=11\n",
-        "the retained share must still hold the captured string's contents;\n{}",
-        describe_output(&output)
-    );
+
+    assert_outliving_capture_reads_live_memory(&run_under_malloc_scribble(&bin));
 }
 
 /// The share the slot-less `move` capture takes must be BALANCED, and the leak
@@ -597,7 +668,8 @@ fn ir_fn_body(ll: &str, needle: &str) -> Option<String> {
 }
 
 /// The reassignment twin of the oracle above: no double free when the
-/// transitively captured binding was overwritten before the capture.
+/// transitively captured binding was overwritten before the capture. Plain run,
+/// so it carries on every platform.
 #[test]
 fn generator_transitive_capture_after_reassignment_does_not_double_free() {
     require_codegen();
@@ -612,17 +684,26 @@ fn generator_transitive_capture_after_reassignment_does_not_double_free() {
         "gen_transitive_capture_reassign",
     );
 
-    let output = run_under_malloc_scribble(&bin);
-    assert!(
-        output.status.success(),
-        "a reassigned binding captured through the generator env must not be \
-         released twice;\n{}",
-        describe_output(&output)
+    assert_reassigned_capture_is_released_once(&run_plain(&bin));
+}
+
+/// The reassignment shape under Darwin's poisoned allocator. Skips off macOS for
+/// the same reason as its sibling; the plain twin above is the cross-platform
+/// coverage.
+#[cfg_attr(not(target_os = "macos"), ignore = "poisoned allocator is macOS-only")]
+#[test]
+fn generator_transitive_capture_after_reassignment_survives_the_poisoned_allocator() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("gen-transitive-capture-reassign-poisoned-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        GEN_TRANSITIVE_CAPTURE_AFTER_REASSIGN,
+        dir.path(),
+        "gen_transitive_capture_reassign_poisoned",
     );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "total=19\n",
-        "the capture must read the SECOND value's length, from live memory;\n{}",
-        describe_output(&output)
-    );
+
+    assert_reassigned_capture_is_released_once(&run_under_malloc_scribble(&bin));
 }

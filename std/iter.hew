@@ -7,10 +7,10 @@
 //! through chained constructor calls:
 //!
 //! ```
-//! let doubled_first_two = iter::take(iter::map(it, |x: i64| x * 2), 2);
+//! let doubled_first_two = iter.take(iter.map(it, |x: i64| x * 2), 2);
 //! ```
 //!
-//! `Iterator::next` takes a mutable receiver (`fn next(var self) -> Option<Self::Item>`).
+//! `Iterator.next` takes a mutable receiver (`fn next(var self) -> Option<Self.Item>`).
 //! Call sites write the returned `Self` state back into the caller binding; the
 //! for-loop desugar that will introduce and drive that binding lands in a later
 //! iteration-foundation stage.
@@ -26,8 +26,8 @@
 //!
 //! Terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`,
 //! `sum_f64`, `product`, `product_f64`) consume any `Iterator`. Callers
-//! drive a `Vec<T>` through the lazy surface via `Vec::into_iter()`, e.g.
-//! `iter::collect(iter::map(v.into_iter(), f))`.
+//! drive a `Vec<T>` through the lazy surface via `Vec.into_iter()`, e.g.
+//! `iter.collect(iter.map(v.into_iter(), f))`.
 
 // ---------------------------------------------------------------------------
 // Lazy combinator wrappers

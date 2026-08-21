@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::encoding::csv;
+//! import std.encoding.csv;
 //!
 //! fn main() {
 //!     let table = csv.parse("name,age\nAlice,30\nBob,25");

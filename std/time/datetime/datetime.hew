@@ -7,7 +7,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::time::datetime;
+//! import std.time.datetime;
 //!
 //! fn main() {
 //!     let now = datetime.now_ms();

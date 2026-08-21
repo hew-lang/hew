@@ -812,8 +812,10 @@ fn helper() {  // private to this module
 import network.tcp;                    // Import module
 import network.tcp.Connection;        // Import specific symbol
 import network.tcp.{Connection, connect};  // Import multiple
-import network.tcp.*;                 // Import all public symbols (discouraged)
 ```
+
+Glob imports are rejected. Import the specific symbols required by the module
+instead.
 
 **Module dot-syntax for standard library:**
 
@@ -845,14 +847,14 @@ This provides clean, namespaced access to stdlib functionality. The module name 
 
 | Module             | Example functions                                                                                                                                            |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `std::net::http`   | `http.listen`, `http.accept`, `http.path`, `http.method`, `http.body`, `http.header`, `http.respond`, `http.respond_text`, `http.respond_json`, `http.close` |
-| `std::fs`          | `fs.read`, `fs.write`, `fs.append`, `fs.exists`, `fs.delete`, `fs.size`                                                                                      |
-| `std::io`          | `io.read_line`, `io.write`, `io.write_err`, `io.read_all`                                                                                                    |
-| `std::os`          | `os.args_count`, `os.args`, `os.env`, `os.set_env`, `os.has_env`, `os.cwd`, `os.home_dir`, `os.hostname`, `os.pid`                                           |
-| `std::net`         | `net.listen`, `net.accept`, `net.connect`, `net.try_connect_timeout`, `net.try_parse_endpoint`, `net.read`, `net.try_read`, `net.write`, `net.close`          |
-| `std::text::regex` | `regex.new`, `regex.is_match`, `regex.find`, `regex.replace`                                                                                                 |
-| `std::net::mime`   | `mime.from_path`, `mime.from_ext`, `mime.is_text`                                                                                                            |
-| `std::process`     | `process.run`, `process.try_run`, `process.run_argv`, `process.try_run_argv`, `process.start`, `process.try_start`, `process.try_start_argv`                 |
+| `std.net.http`     | `http.listen`, `http.accept`, `http.path`, `http.method`, `http.body`, `http.header`, `http.respond`, `http.respond_text`, `http.respond_json`, `http.close` |
+| `std.fs`           | `fs.read`, `fs.write`, `fs.append`, `fs.exists`, `fs.delete`, `fs.size`                                                                                     |
+| `std.io`           | `io.read_line`, `io.write`, `io.write_err`, `io.read_all`                                                                                                   |
+| `std.os`           | `os.args_count`, `os.args`, `os.env`, `os.set_env`, `os.has_env`, `os.cwd`, `os.home_dir`, `os.hostname`, `os.pid`                                          |
+| `std.net`          | `net.listen`, `net.accept`, `net.connect`, `net.try_connect_timeout`, `net.try_parse_endpoint`, `net.read`, `net.try_read`, `net.write`, `net.close`         |
+| `std.text.regex`   | `regex.new`, `regex.is_match`, `regex.find`, `regex.replace`                                                                                                |
+| `std.net.mime`     | `mime.from_path`, `mime.from_ext`, `mime.is_text`                                                                                                           |
+| `std.process`      | `process.run`, `process.try_run`, `process.run_argv`, `process.try_run_argv`, `process.start`, `process.try_start`, `process.try_start_argv`                |
 
 Predicate functions (`fs.exists`, `path.exists`, `regex.is_match`, `os.has_env`, `mime.is_text`) return `bool`.
 
@@ -1505,7 +1507,7 @@ produces identical results with or without them.
 | No memory leaks\* | RAII ensures cleanup; cycles in `Rc` can leak (use weak refs)  |
 
 \*Strong reference cycles in `Rc<T>` can leak. Use `Weak<T>` back-edges; there
-is deliberately no empty `Weak::new()` constructor.
+is deliberately no empty `Weak.new()` constructor.
 
 #### 3.7.8 Resource markers (`#[resource]` and `#[linear]`)
 
@@ -1957,7 +1959,7 @@ numbers
     .reduce(|a, b| a + b, 0)        // a: i64 (accumulator), b: i64 (element); seed last
 ```
 
-`Vec::reduce` takes the combining closure first and the seed second
+`Vec.reduce` takes the combining closure first and the seed second
 (`numbers.reduce(|acc, x| acc + x, 0)`). It is `fold` with the argument
 order flipped for chain readability — `fold` takes the seed first
 (`numbers.fold(0, |acc, x| acc + x)`); both fold left over the elements
@@ -2260,7 +2262,7 @@ impl File {
 ### 3.10 Standard Library Architecture
 
 Hew ships its standard library as Hew source under `std/`. Modules are imported
-by path (`import std::math;`, `import std::fs;`) and most high-level APIs are
+by path (`import std.math;`, `import std.fs;`) and most high-level APIs are
 defined in those source modules rather than by a separate metadata system.
 
 #### 3.10.1 Edition 2026 normative stdlib surface
@@ -2277,17 +2279,17 @@ Normative in edition 2026:
   `HashMap<string, V>`, `print`, `println`, `panic`.
 - Concurrency types: `Task<T>`, `Stream<T>`, `Sink<T>`, `ScopeError<E>`,
   `TaskError`, `select` (§4), `after` (§4.11.3).
-- System and I/O: `std::fs`, `std::io`, `std::path`, `std::os`,
-  `std::time`.
-- Formatting: `std::fmt`.
-- Encoding: `std::encoding::json`, `std::encoding::msgpack`.
-- HTTP: `std::net::http` (server + client at the request/response level).
-- Utilities: `std::math`, `std::testing`.
+- System and I/O: `std.fs`, `std.io`, `std.path`, `std.os`,
+  `std.time`.
+- Formatting: `std.fmt`.
+- Encoding: `std.encoding.json`, `std.encoding.msgpack`.
+- HTTP: `std.net.http` (server + client at the request/response level).
+- Utilities: `std.math`, `std.testing`.
 
 See HEW-FUTURE.md §3 for modules that exist in `std/` today but are not yet
-normative — `std::net::dns`, `std::net::tls`, `std::net::quic`,
-`std::net::websocket`, `std::encoding::xml`/`yaml`/`toml`/`csv`,
-`std::text::regex`, `std::process`, `std::encoding::compress`.
+normative — `std.net.dns`, `std.net.tls`, `std.net.quic`,
+`std.net.websocket`, `std.encoding.xml`/`yaml`/`toml`/`csv`,
+`std.text.regex`, `std.process`, `std.encoding.compress`.
 
 #### 3.10.2 Core Traits
 
@@ -2429,14 +2431,14 @@ Rules:
   first entry.
 - The `{}` empty block coerces to `HashMap<K,V>` when the surrounding context
   supplies an expected `HashMap` type.
-- Map literals compile to a `HashMap::new()` followed by one `insert` call per
+- Map literals compile to a `HashMap.new()` followed by one `insert` call per
   entry; no heap-coalescing is performed at compile time.
 
 Available `HashMap` methods:
 
 | Method                    | Returns         | Description                      |
 | ------------------------- | --------------- | -------------------------------- |
-| `HashMap::new()`          | `HashMap<K,V>`  | Create empty map                 |
+| `HashMap.new()`           | `HashMap<K,V>`  | Create empty map                 |
 | `m.get(key)`              | `Option<V>`     | Look up a key                    |
 | `m.insert(key, value)`    | `()`            | Insert or overwrite              |
 | `m.remove(key)`           | `Option<V>`     | Remove a key; `Some(value)` if present, else `None` |
@@ -2452,7 +2454,7 @@ Available `HashSet<T>` methods (supported element types: `i64` and
 
 | Method                    | Returns         | Description                      |
 | ------------------------- | --------------- | -------------------------------- |
-| `HashSet::new()`          | `HashSet<T>`    | Create empty set                 |
+| `HashSet.new()`           | `HashSet<T>`    | Create empty set                 |
 | `s.insert(item)`          | `()`            | Insert; duplicate inserts are a no-op |
 | `s.contains(item)`        | `bool`          | Test membership                  |
 | `s.remove(item)`          | `bool`          | Remove an item; true if present  |
@@ -2563,7 +2565,7 @@ Handle types are opaque — their internal representation is not accessible.
 They can be stored in variables, passed as function arguments, and
 returned from functions.
 
-`net.Listener::accept()` and `net.Connection::read()`'s plain (non-`await`)
+`net.Listener.accept()` and `net.Connection.read()`'s plain (non-`await`)
 forms block the calling thread; inside an actor receive handler this stalls
 the scheduler worker (`hew check`'s `BlockingCallInReceiveFn` warning) — use
 the `await` form there instead. The plain forms remain the intended shape for
@@ -2810,9 +2812,9 @@ The compiler generates the following for every `machine Name { ... }`:
 
 | Generated item              | Usage / behaviour                                                  |
 | ----------------------------| ------------------------------------------------------------------ |
-| State constructors          | `Name::State` (unit) or `Name::State { field: val }` (with data)  |
+| State constructors          | `Name.State` (unit) or `Name.State { field: val }` (with data)  |
 | Companion event enum        | `NameEvent` with variants matching each `event` declaration        |
-| Event constructors          | `NameEvent::EventName` (unit) or `NameEvent::EventName { f: v }`  |
+| Event constructors          | `NameEvent.EventName` (unit) or `NameEvent.EventName { f: v }`  |
 | `m.step(event)`             | Mutates `m` in place; returns `()` — no return value              |
 | `m.state_name()`            | Returns the current state name as `string`                        |
 | Pattern-match support       | Machine values can be matched exactly like enum values             |
@@ -4077,7 +4079,7 @@ Hew tooling provides:
 
 ### 7.3 Encoding Formats
 
-Hew supports multiple encoding formats. The runtime envelope (actor-to-actor transport) uses CBOR (ratified in R62; the CBOR path is the sole internode encoding, HBF retired and migration complete). The `std::encoding::*` surface provides user-level wire type serialization for cross-service and file I/O use cases.
+Hew supports multiple encoding formats. The runtime envelope (actor-to-actor transport) uses CBOR (ratified in R62; the CBOR path is the sole internode encoding, HBF retired and migration complete). The `std.encoding` surface provides user-level wire type serialization for cross-service and file I/O use cases.
 
 #### 7.3.1 MessagePack — Default Binary Encoding
 
@@ -4347,7 +4349,7 @@ Encoders select format based on context:
 | Actor-to-actor (local)  | CBOR           |
 | Actor-to-actor (remote) | CBOR           |
 | HTTP API response       | JSON           |
-| File storage            | user choice (`std::encoding::*`) |
+| File storage            | user choice (`std.encoding`) |
 | Debugging/logging       | JSON           |
 
 Explicit format selection:

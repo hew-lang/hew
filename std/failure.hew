@@ -5,7 +5,7 @@
 //! migration are explicitly deferred, so v0.5 programs must not treat it as
 //! an available hook.
 //!
-//! Import `std::failure` to name `CrashInfo` or `CrashAction` explicitly
+//! Import `std.failure` to name `CrashInfo` or `CrashAction` explicitly
 //! in a `#[on(crash)]` hook's signature.  Both types are also pre-bound
 //! in the inline-test checker (no `std` search path required) via
 //! `register_builtin_failure_surface` so isolated fixtures can pin the
@@ -69,8 +69,8 @@ pub enum CrashAction {
 /// died, drop this work item and re-establish").
 ///
 /// WHEN: the runtime substrate is already in place
-/// (`hew-runtime/src/link.rs::propagate_exit_to_links` enqueues
-/// `HewSysMsg::Exit` in the linked actor's mailbox at the crashed actor's
+/// (`hew-runtime/src/link.rs.propagate_exit_to_links` enqueues
+/// `HewSysMsg.Exit` in the linked actor's mailbox at the crashed actor's
 /// teardown phase, before any supervisor restart decision).  The user-
 /// facing hook attribute that surfaces this delivery is reserved for a
 /// future edition; this type is the stable name it will use.
@@ -93,7 +93,7 @@ pub type CrashNotification {
 /// Class of a crash propagated to a linked actor.
 ///
 /// Mirrors the runtime `ExitReason` discriminator
-/// (`hew-runtime/src/internal/types.rs::ExitReason`) at the integer-tag
+/// (`hew-runtime/src/internal/types.rs.ExitReason`) at the integer-tag
 /// level.  Adding a variant here requires a matching variant on the
 /// runtime side; the converse is not true — the runtime may carry
 /// reason discriminators that are not surfaced to linked actors when

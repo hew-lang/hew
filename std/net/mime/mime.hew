@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::net::mime;
+//! import std.net.mime;
 //!
 //! fn main() {
 //!     let ct = mime.from_path("index.html");

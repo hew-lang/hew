@@ -94,9 +94,9 @@ What to check:
   ``import `greeting` is ambiguous: both ... exist`` — remove or rename one.
 - Other top-level `.hew` files in that directory merge into the same module
   automatically. Subdirectories do not; import child modules explicitly, for
-  example `import text_stats::words;`.
+  example `import text_stats.words;`.
 - Standard library imports are available under the last path segment:
-  `import std::fs;` gives `fs`, and `import std::encoding::json;` gives `json`.
+  `import std.fs;` gives `fs`, and `import std.encoding.json;` gives `json`.
 - Search roots are tried in three tiers; the first tier that produces a
   result wins:
   1. Explicit override — `HEWPATH` (colon-separated entries; each entry is
@@ -115,10 +115,9 @@ What to check:
   undeclared in project metadata, add it with `hew add ...` first.
 - Use the candidate-path list in the module-not-found error to confirm where Hew
   actually looked.
-- `import mod::*;` works, including when the module is only reached through
-  type references (a record field, a signature, or a generic argument). Bare
-  (`import mod;`) and selective (`import mod::{Name}`) imports are equally
-  valid — choose whichever reads better.
+- Glob imports are rejected. Use a bare import (`import mod;`) for namespace
+  access or a selective import (`import mod.{Name}`) for explicitly named
+  symbols.
 - To browse the shipped stdlib, generate docs for it directly:
 
   ```sh

@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::path;
+//! import std.path;
 //!
 //! fn main() {
 //!     let dir = path.dirname("/home/user/file.txt");
@@ -32,7 +32,7 @@ pub type GlobResult {
     handle: GlobResultHandle;
 }
 
-/// Errors produced by `std::path` glob expansion and indexing.
+/// Errors produced by `std.path` glob expansion and indexing.
 pub enum PathError {
     /// The glob walk did not complete — an unreadable directory, an
     /// allocation failure, or a platform with no implementation.

@@ -6,10 +6,10 @@
 //! # Examples
 //!
 //! ```
-//! import std::encoding::base64;
+//! import std.encoding.base64;
 //!
 //! fn main() {
-//!     let data: bytes = bytes::new();
+//!     let data: bytes = bytes.new();
 //!     data.push(72);   // H
 //!     data.push(105);  // i
 //!     let s = base64.encode(data);

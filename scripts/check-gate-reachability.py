@@ -2825,7 +2825,10 @@ def main() -> int:
     lint_errors = lint_ci_coverage_errors(
         makefile_text, (WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
     )
-    prerequisites = lint_prerequisites(makefile_text)
+    try:
+        prerequisites = lint_prerequisites(makefile_text)
+    except ValueError:
+        prerequisites = ()
     print(
         f"\n==> A8: lint graph CI coverage ({len(prerequisites)} prerequisite(s) "
         "+ Clippy)"

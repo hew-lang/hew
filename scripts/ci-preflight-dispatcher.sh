@@ -126,6 +126,93 @@ command_timeout_floor() {
     esac
 }
 
+# Balance weight (seconds) used to partition a profile into shards.
+#
+# The weight is a MEASURED duration, not a hang ceiling: command_timeout_floor
+# carries deliberate 35%-and-more headroom (test-compiler-pipeline's 1800 s
+# ceiling bounds a ~1243 s gate), so packing against floors would mis-rank the
+# long tail.  The values below are the per-command elapsed times from a hosted
+# ubuntu-24.04 Linux-gates run of the comprehensive profile: 7823 s total, of
+# which 754 s was warm-up and the nine commands named here were 5283 s.  The
+# remaining 29 commands each measured at or under 200 s and average about 60 s,
+# which is the default; anything with no entry and no floor takes that default.
+#
+# SHIM SEAM: these are point measurements, refreshed by hand from a
+# --profile-json run.  They become obsolete when the dispatcher reads a
+# committed timing corpus; until then a drifted weight costs balance, never
+# coverage — the partition is exhaustive and disjoint regardless of the weights.
+PREFLIGHT_DEFAULT_COMMAND_WEIGHT=60
+
+command_weight() {
+    local cmd="$1"
+    local floor
+    case "$cmd" in
+        # Measured on the hosted Linux gates job.
+        "make test-compiler-pipeline") echo 1243 ;;
+        "make test") echo 1104 ;;
+        "make hew-check-all") echo 633 ;;
+        "make fuzz-oracle") echo 580 ;;
+        "make hew-fmt-property") echo 567 ;;
+        "make lint") echo 435 ;;
+        "make test-vertical-slice") echo 429 ;;
+        "make sandbox-parity") echo 292 ;;
+        # Not present in the hosted profile (the compiled-Hew aggregate owns
+        # both), so no hosted measurement exists.  Local isolated warm timings
+        # were 1105 s for the ratchet and 1988 s for the two-pass differential.
+        "make test-hew-ratchet") echo 1105 ;;
+        "make test-o2-differential") echo 1988 ;;
+        *)
+            floor="$(command_timeout_floor "$cmd")"
+            if (( floor > 0 && floor < PREFLIGHT_DEFAULT_COMMAND_WEIGHT )); then
+                echo "$floor"
+            else
+                echo "$PREFLIGHT_DEFAULT_COMMAND_WEIGHT"
+            fi
+            ;;
+    esac
+}
+
+# Ordering-dependency groups.  Commands that share a group key are ATOMIC for
+# sharding: they always land in the same shard, in their original relative
+# order, because splitting them would split a producer from its consumer or a
+# gate from the self-test that proves the gate has teeth.
+#
+# Every membership here is a real dependency, not a stylistic pairing:
+#   hew-suites   test-hew-ratchet emits HEW_O0_OUTCOMES_FILE, which
+#                test-o2-differential consumes as its O0 baseline; the
+#                selftest proves that differential gate is falsifiable.
+#   fuzz-oracle  the selftest proves run-oracle.py flags real crashes.
+#   ll-oracle    ll-identity-selftest proves the ll-diff normaliser is not a
+#                no-op that would pass any IR.
+#   checked-mir  verify diffs the golden corpus, run executes it; the run
+#                verdict is only meaningful next to the byte diff.
+#   doc-ratchet  doc-ratchet-selftest proves the doc-example ratchet is
+#                falsifiable.
+#   libhew       check-libhew-fresh.sh certifies the archive `make stdlib`
+#                just produced.
+#   lane-nextest `make hew-native wasm-runtime` builds the compiler and WASM
+#                runtime that the lane's nextest invocations link against.
+command_shard_group() {
+    case "$1" in
+        "make test-hew-ratchet"|"make test-o2-differential"|"make o2-differential-selftest")
+            echo "group:hew-suites" ;;
+        "make fuzz-oracle"|"make fuzz-oracle-selftest")
+            echo "group:fuzz-oracle" ;;
+        "make ll-diff"|"make ll-identity-selftest")
+            echo "group:ll-oracle" ;;
+        "make checked-mir-verify"|"make checked-mir-run")
+            echo "group:checked-mir" ;;
+        "make test-doc-examples"|"make doc-ratchet-selftest")
+            echo "group:doc-ratchet" ;;
+        "make stdlib"|"scripts/check-libhew-fresh.sh")
+            echo "group:libhew" ;;
+        "make hew-native wasm-runtime"|"cargo nextest run "*)
+            echo "group:lane-nextest" ;;
+        *)
+            echo "cmd:$1" ;;
+    esac
+}
+
 command_timeout() {
     local cmd="$1"
     local baseline
@@ -156,10 +243,17 @@ WARMUP_COMMANDS=()
 WARMUP_NOTES=()
 PROFILE_JSON_PATH=""
 GITHUB_OUTPUT_PATH=""
+SHARD_INDEX=0
+SHARD_COUNT=0
+SHARD_PLAN_ONLY=0
+SHARD_PLAN_LINES=""
+PREFLIGHT_SUMMARY_FILE="${PREFLIGHT_SUMMARY_FILE:-.tmp/preflight-summary.md}"
 
 usage() {
     cat <<'EOF'
-Usage: scripts/ci-preflight-dispatcher.sh [--dry-run] [--fail-fast] [--base <ref>] [--profile-json <path>] [--github-output <path>] [--] [path...]
+Usage: scripts/ci-preflight-dispatcher.sh [--dry-run] [--fail-fast] [--base <ref>] [--shard K/N]
+                                         [--shard-plan N] [--profile-json <path>]
+                                         [--github-output <path>] [--] [path...]
 
 Dispatch a conservative local CI preflight based on changed files.
 
@@ -168,16 +262,49 @@ Dispatch a conservative local CI preflight based on changed files.
 - By default, all selected commands run and failures are reported together at the end.
 - --fail-fast           Stop after the first failed command.
 - If the first-slice routing is unclear, the script runs the broader local check profile.
+- --shard K/N           Run only shard K of N.  The selected profile's command list is
+                        partitioned into N duration-balanced groups; every command appears
+                        in exactly one shard and ordering-dependent commands stay together.
+                        K and N must be positive integers with 1 <= K <= N.
+- --shard-plan N        Print the full shard assignment for N shards and exit without
+                        running anything.
 - --profile-json <path> Write command and warm-up timing as a JSON array to <path> (one
                         object per step, with "cmd", "elapsed_s", "status", "phase" fields).
 - --github-output <path> Append the selected profile and compile requirement as
                          GitHub Actions outputs.
+
+Diagnostics: every run writes a per-command result table (command, elapsed, result, first
+failure line) to $PREFLIGHT_SUMMARY_FILE (default .tmp/preflight-summary.md), and, under
+GitHub Actions, to $GITHUB_STEP_SUMMARY plus one ::error annotation per failed command.
 EOF
 }
 
 die() {
     echo "error: $*" >&2
     exit 1
+}
+
+# Reject any shard spec that could silently drop coverage.  A malformed K/N, a
+# zero denominator, or an out-of-range index means the caller's shard set does
+# not partition the command list — fail before a single command runs rather
+# than report a green verdict over an unrun remainder.
+parse_shard_spec() {
+    local spec="$1"
+    [[ "$spec" =~ ^([0-9]+)/([0-9]+)$ ]] \
+        || die "--shard expects K/N with positive integers, got '$spec'"
+    SHARD_INDEX="$((10#${BASH_REMATCH[1]}))"
+    SHARD_COUNT="$((10#${BASH_REMATCH[2]}))"
+    (( SHARD_COUNT >= 1 )) || die "--shard denominator must be >= 1, got '$spec'"
+    (( SHARD_INDEX >= 1 && SHARD_INDEX <= SHARD_COUNT )) \
+        || die "--shard index must satisfy 1 <= K <= N, got '$spec'"
+}
+
+parse_shard_count() {
+    local count="$1"
+    [[ "$count" =~ ^[0-9]+$ ]] \
+        || die "--shard-plan expects a positive integer shard count, got '$count'"
+    SHARD_COUNT="$((10#$count))"
+    (( SHARD_COUNT >= 1 )) || die "--shard-plan count must be >= 1, got '$count'"
 }
 
 append_unique_path() {
@@ -500,6 +627,19 @@ while [[ $# -gt 0 ]]; do
             BASE_REF="$1"
             shift
             ;;
+        --shard)
+            shift
+            [[ $# -gt 0 ]] || die "--shard requires a K/N spec"
+            parse_shard_spec "$1"
+            shift
+            ;;
+        --shard-plan)
+            shift
+            [[ $# -gt 0 ]] || die "--shard-plan requires a shard count"
+            parse_shard_count "$1"
+            SHARD_PLAN_ONLY=1
+            shift
+            ;;
         --profile-json)
             shift
             [[ $# -gt 0 ]] || die "--profile-json requires a path"
@@ -537,6 +677,10 @@ done
 
 if [[ -n "$BASE_REF" ]] && ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
     die "unknown base ref: $BASE_REF"
+fi
+
+if (( SHARD_PLAN_ONLY == 1 && SHARD_INDEX != 0 )); then
+    die "--shard and --shard-plan are mutually exclusive"
 fi
 
 ci_preflight_base_unresolved=0
@@ -1106,6 +1250,98 @@ if [[ -n "${PREFLIGHT_TEST_COMMANDS:-}" ]]; then
     done <<< "$PREFLIGHT_TEST_COMMANDS"
 fi
 
+# ── Shard partitioning ────────────────────────────────────────────────────────
+#
+# The selected profile's command list is partitioned into SHARD_COUNT groups by
+# longest-processing-time-first bin packing over duration-weighted dependency
+# groups.  The partition is a pure function of (command list, SHARD_COUNT), so
+# every shard job computes the same plan from the same diff without exchanging
+# state, and it is exhaustive and disjoint by construction: each dependency
+# group is placed in exactly one bin, and every command belongs to exactly one
+# group.  Within a shard, commands keep their original relative order, so every
+# ordering constraint that held in the unsharded list still holds.
+compute_shard_plan() {
+    local cmd
+    {
+        for cmd in "${COMMANDS[@]}"; do
+            printf '%s\t%s\t%s\n' "$(command_shard_group "$cmd")" "$(command_weight "$cmd")" "$cmd"
+        done
+    } | python3 -c '
+import sys
+
+shard_count = int(sys.argv[1])
+commands = []
+for line in sys.stdin.read().splitlines():
+    if not line:
+        continue
+    group, weight, cmd = line.split("\t", 2)
+    commands.append((group, int(weight), cmd))
+
+order = []
+weights = {}
+for index, (group, weight, _cmd) in enumerate(commands):
+    if group not in weights:
+        weights[group] = 0
+        order.append(group)
+    weights[group] += weight
+
+first_index = {group: order.index(group) for group in order}
+# Longest-processing-time-first: heaviest group to the emptiest bin, ties
+# broken by first appearance then by lowest bin index, so the plan is stable.
+loads = [0] * shard_count
+assignment = {}
+for group in sorted(order, key=lambda g: (-weights[g], first_index[g])):
+    target = min(range(shard_count), key=lambda b: (loads[b], b))
+    assignment[group] = target + 1
+    loads[target] += weights[group]
+
+counts = [0] * shard_count
+for group, weight, cmd in commands:
+    shard = assignment[group]
+    counts[shard - 1] += 1
+    print("ASSIGN\t%d\t%d\t%s" % (shard, weight, cmd))
+for index in range(shard_count):
+    print("TOTAL\t%d\t%d\t%d" % (index + 1, loads[index], counts[index]))
+' "$SHARD_COUNT"
+}
+
+print_shard_plan() {
+    local shard total count line assign_shard weight cmd marker
+    echo "Shard plan: $SHARD_COUNT shard(s), LPT bin packing over duration-weighted dependency groups"
+    for shard in $(seq 1 "$SHARD_COUNT"); do
+        total="$(printf '%s\n' "$SHARD_PLAN_LINES" | awk -F'\t' -v s="$shard" '$1=="TOTAL" && $2==s {print $3}')"
+        count="$(printf '%s\n' "$SHARD_PLAN_LINES" | awk -F'\t' -v s="$shard" '$1=="TOTAL" && $2==s {print $4}')"
+        marker=""
+        if (( SHARD_INDEX == shard )); then
+            marker="  <- selected"
+        fi
+        printf '  shard %s/%s  ~%s min estimated  %s command(s)%s\n' \
+            "$shard" "$SHARD_COUNT" "$(( (total + 30) / 60 ))" "$count" "$marker"
+        while IFS=$'\t' read -r line assign_shard weight cmd; do
+            [[ "$line" == "ASSIGN" && "$assign_shard" == "$shard" ]] || continue
+            printf '      - %s  (weight: %ss)\n' "$cmd" "$weight"
+        done <<< "$SHARD_PLAN_LINES"
+    done
+}
+
+select_shard_commands() {
+    local line assign_shard weight cmd
+    local selected=()
+    while IFS=$'\t' read -r line assign_shard weight cmd; do
+        [[ "$line" == "ASSIGN" && "$assign_shard" == "$SHARD_INDEX" ]] || continue
+        selected+=("$cmd")
+    done <<< "$SHARD_PLAN_LINES"
+    COMMANDS=("${selected[@]+"${selected[@]}"}")
+}
+
+if (( SHARD_COUNT > 0 )) && has_commands; then
+    SHARD_PLAN_LINES="$(compute_shard_plan)"
+fi
+
+if (( SHARD_INDEX > 0 )); then
+    select_shard_commands
+fi
+
 echo "==> Hew CI preflight dispatcher"
 if (( EXPLICIT_PATHS == 1 )); then
     echo "Source: explicit paths"
@@ -1275,7 +1511,7 @@ map_warmup_artifacts() {
             add_warmup_command "make runtime"
             add_warmup_command "make stdlib"
             ;;
-        "make leak-scan"|"make freebsd-workflow-contract-check"|"make test-release-workflow-contract"|"make test-stdlib-execution-proofs"|"make o2-differential-selftest"|"make doc-ratchet-selftest"|"make check-sanitizer-gate"|"make check-gate-reachability"|"make test-leak-oracle-selftest"|"make ll-identity-selftest")
+        "make leak-scan"|"make check-counterfactual-output"|"make freebsd-workflow-contract-check"|"make test-release-workflow-contract"|"make test-stdlib-execution-proofs"|"make o2-differential-selftest"|"make doc-ratchet-selftest"|"make check-sanitizer-gate"|"make check-gate-reachability"|"make test-leak-oracle-selftest"|"make ll-identity-selftest")
             ;;
         "make test")
             # Mirror the target's own order: wasm-runtime/runtime/libhew first,
@@ -1292,7 +1528,7 @@ map_warmup_artifacts() {
     esac
 }
 
-for cmd in "${COMMANDS[@]}"; do
+for cmd in "${COMMANDS[@]+"${COMMANDS[@]}"}"; do
     map_warmup_artifacts "$cmd"
 done
 
@@ -1350,8 +1586,27 @@ for path in "${CHANGED_FILES[@]}"; do
     echo "  - $path"
 done
 
+if [[ -n "$SHARD_PLAN_LINES" ]]; then
+    print_shard_plan
+elif (( SHARD_COUNT > 0 )); then
+    echo "Shard plan: no commands to partition across $SHARD_COUNT shard(s)"
+fi
+
+if (( SHARD_PLAN_ONLY == 1 )); then
+    echo "Shard plan only: no commands executed."
+    exit 0
+fi
+
+if (( SHARD_INDEX > 0 )); then
+    echo "Shard: $SHARD_INDEX/$SHARD_COUNT"
+fi
+
 if ! has_commands; then
-    echo "Commands: none (docs-only)"
+    if (( SHARD_INDEX > 0 )); then
+        echo "Commands: none (this shard's partition is empty)"
+    else
+        echo "Commands: none (docs-only)"
+    fi
     if (( DRY_RUN == 1 )); then
         echo "Dry run: no commands executed."
     fi

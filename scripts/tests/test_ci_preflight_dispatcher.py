@@ -1133,6 +1133,221 @@ def test_selector_exports_fail_closed_compile_requirement() -> None:
     assert "requires_compile=false" in values
 
 
+# ---------------------------------------------------------------------------
+# Shard partitioning
+# ---------------------------------------------------------------------------
+
+# One representative path per routing profile.  A shard partition that loses a
+# command on any of these loses it on a real diff of the same shape.
+_PROFILE_PROBES: dict[str, tuple[str, ...]] = {
+    "comprehensive": ("some-unclassified-root-file.txt",),
+    "scripts-config": ("scripts/foo.sh",),
+    "grammar": ("docs/specs/Hew.g4",),
+    "parser": ("hew-parser/src/lib.rs",),
+    "types": ("hew-types/src/lib.rs",),
+    "cli": ("hew-cli/src/main.rs",),
+    "compiler-pipeline": ("hew-mir/src/lower.rs",),
+    "vertical-slice": ("tests/vertical-slice/accept/x.hew",),
+    "observe": ("hew-observe/src/lib.rs",),
+    "runtime-testkit": ("hew-runtime-testkit/src/lib.rs",),
+    "hew-tests": ("tests/hew/x.hew",),
+    "runtime-net": ("hew-runtime/src/lib.rs",),
+    "wasm": ("hew-wasm/src/lib.rs",),
+    "mixed": ("Cargo.toml", "std/string.hew", "tests/fuzz-oracle/bounds.hew"),
+}
+
+# Independent restatement of the dispatcher's ordering-dependency map.  If a
+# member moves shard, a producer is separated from its consumer or a gate from
+# the self-test that proves it has teeth.
+_DEPENDENCY_GROUPS: tuple[tuple[str, ...], ...] = (
+    (
+        "make test-hew-ratchet",
+        "make test-o2-differential",
+        "make o2-differential-selftest",
+    ),
+    ("make fuzz-oracle", "make fuzz-oracle-selftest"),
+    ("make ll-diff", "make ll-identity-selftest"),
+    ("make checked-mir-verify", "make checked-mir-run"),
+    ("make test-doc-examples", "make doc-ratchet-selftest"),
+    ("make stdlib", "scripts/check-libhew-fresh.sh"),
+)
+
+_SHARD_HEADING_RE = re.compile(r"^  shard (\d+)/(\d+)  ")
+_SHARD_ENTRY_RE = re.compile(r"^      - (.*)  \(weight: (\d+)s\)$")
+
+
+def dry_run_commands(result: subprocess.CompletedProcess[str]) -> list[str]:
+    sections = result.stdout.split("\nCommands:\n", 1)
+    if len(sections) == 1:
+        return []
+    return [
+        line.removeprefix("  - ").split("  (budget:", 1)[0]
+        for line in sections[1].splitlines()
+        if line.startswith("  - ")
+    ]
+
+
+def shard_plan(
+    paths: tuple[str, ...], shards: int, env: dict[str, str] | None = None
+) -> dict[int, list[str]]:
+    result = run_dispatcher(
+        *paths, extra_args=["--shard-plan", str(shards)], dry_run=False, env=env
+    )
+    assert result.returncode == 0, result.stderr
+    plan: dict[int, list[str]] = {index: [] for index in range(1, shards + 1)}
+    current: int | None = None
+    for line in result.stdout.splitlines():
+        heading = _SHARD_HEADING_RE.match(line)
+        if heading is not None:
+            current = int(heading.group(1))
+            assert int(heading.group(2)) == shards, line
+            continue
+        entry = _SHARD_ENTRY_RE.match(line)
+        if entry is not None:
+            assert current is not None, result.stdout
+            plan[current].append(entry.group(1))
+    return plan
+
+
+def test_shard_plan_is_exhaustive_and_disjoint_for_every_profile() -> None:
+    """Every command of every profile lands in exactly one shard, for every N."""
+    for profile, paths in _PROFILE_PROBES.items():
+        unsharded = dry_run_commands(run_dispatcher(*paths))
+        assert unsharded, f"{profile}: expected a nonempty command list"
+        for shards in (1, 2, 3, 4, 5, 8):
+            plan = shard_plan(paths, shards)
+            assigned = [cmd for index in sorted(plan) for cmd in plan[index]]
+            assert len(assigned) == len(unsharded), (
+                f"{profile} N={shards}: {len(assigned)} assigned vs "
+                f"{len(unsharded)} selected"
+            )
+            assert sorted(assigned) == sorted(unsharded), (
+                f"{profile} N={shards}: partition is not the command list"
+            )
+            assert len(set(assigned)) == len(assigned), (
+                f"{profile} N={shards}: a command appears in more than one shard"
+            )
+
+
+def test_shard_partition_preserves_relative_command_order() -> None:
+    """Within a shard, commands keep the order the unsharded profile ran them."""
+    for profile, paths in _PROFILE_PROBES.items():
+        unsharded = dry_run_commands(run_dispatcher(*paths))
+        position = {cmd: index for index, cmd in enumerate(unsharded)}
+        for shards in (2, 3, 4):
+            for index, commands in shard_plan(paths, shards).items():
+                positions = [position[cmd] for cmd in commands]
+                assert positions == sorted(positions), (
+                    f"{profile} N={shards} shard {index}: reordered {commands}"
+                )
+
+
+def test_ordering_dependent_commands_share_a_shard() -> None:
+    """A gate and its producer/self-test are never split across shards."""
+    for profile, paths in _PROFILE_PROBES.items():
+        for shards in (2, 3, 4, 5, 8):
+            plan = shard_plan(paths, shards)
+            location = {
+                cmd: index for index, commands in plan.items() for cmd in commands
+            }
+            for group in _DEPENDENCY_GROUPS:
+                present = [cmd for cmd in group if cmd in location]
+                shards_used = {location[cmd] for cmd in present}
+                assert len(shards_used) <= 1, (
+                    f"{profile} N={shards}: {group} split across {shards_used}"
+                )
+
+
+def test_shard_selection_runs_exactly_its_planned_commands() -> None:
+    """--shard K/N dispatches the plan's shard K, nothing more and nothing less."""
+    paths = _PROFILE_PROBES["comprehensive"]
+    plan = shard_plan(paths, 4)
+    for index in range(1, 5):
+        result = run_dispatcher(*paths, extra_args=["--shard", f"{index}/4"])
+        assert result.returncode == 0, result.stderr
+        assert f"Shard: {index}/4" in result.stdout, result.stdout
+        assert dry_run_commands(result) == plan[index], result.stdout
+
+
+def test_shard_warmup_is_scoped_to_that_shard_commands() -> None:
+    """A shard warms only the artifacts its own commands need."""
+    paths = _PROFILE_PROBES["comprehensive"]
+    plan = shard_plan(paths, 4)
+    workspace_warmup = "cargo nextest run --workspace --exclude hew-cabi"
+    for index in range(1, 5):
+        result = run_dispatcher(*paths, extra_args=["--shard", f"{index}/4"])
+        assert result.returncode == 0, result.stderr
+        warmup = result.stdout.split("Warm-up:\n", 1)
+        warmup = warmup[1].split("\nCommands:\n", 1)[0] if len(warmup) == 2 else ""
+        if "make test" not in plan[index]:
+            assert workspace_warmup not in warmup, (
+                f"shard {index} warms the full workspace nextest without make test"
+            )
+        else:
+            assert workspace_warmup in warmup, warmup
+        if "make lint" not in plan[index]:
+            assert "cargo clippy --workspace --tests" not in warmup, (
+                f"shard {index} warms workspace clippy without make lint"
+            )
+
+
+def test_invalid_shard_specs_fail_closed() -> None:
+    """A spec that cannot partition the list is rejected before anything runs."""
+    for spec in ("0/4", "5/4", "1/0", "abc", "2", "4/", "/4", "-1/4", "1/4/4"):
+        result = run_dispatcher(
+            "some-unclassified-root-file.txt", extra_args=["--shard", spec]
+        )
+        assert result.returncode != 0, f"--shard {spec} was accepted: {result.stdout}"
+        assert "--shard" in result.stderr, result.stderr
+        assert "==> Hew CI preflight dispatcher" not in result.stdout, result.stdout
+
+    missing = subprocess.run(
+        ["bash", str(SCRIPT), "--dry-run", "--shard"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert missing.returncode != 0, missing.stdout
+    assert "--shard requires a K/N spec" in missing.stderr, missing.stderr
+
+    for count in ("0", "-2", "two", ""):
+        result = run_dispatcher(
+            "some-unclassified-root-file.txt", extra_args=["--shard-plan", count]
+        )
+        assert result.returncode != 0, (
+            f"--shard-plan {count!r} was accepted: {result.stdout}"
+        )
+
+    both = run_dispatcher(
+        "some-unclassified-root-file.txt",
+        extra_args=["--shard", "1/4", "--shard-plan", "4"],
+    )
+    assert both.returncode != 0, both.stdout
+    assert "mutually exclusive" in both.stderr, both.stderr
+
+
+def test_shard_plan_prints_the_full_assignment_and_runs_nothing() -> None:
+    result = run_dispatcher(
+        "some-unclassified-root-file.txt",
+        extra_args=["--shard-plan", "4"],
+        dry_run=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Shard plan: 4 shard(s), LPT bin packing" in result.stdout, result.stdout
+    assert result.stdout.count("min estimated") == 4, result.stdout
+    assert "Shard plan only: no commands executed." in result.stdout, result.stdout
+    assert "==> warm-up" not in result.stdout, result.stdout
+
+
+def test_help_documents_the_shard_flags() -> None:
+    result = run_dispatcher_help()
+    assert result.returncode == 0, result.stderr
+    assert "--shard K/N" in result.stdout, result.stdout
+    assert "--shard-plan N" in result.stdout, result.stdout
+    assert "exactly one shard" in result.stdout, result.stdout
+
+
 _TESTS = [
     test_makefile_routes_to_scripts_config_profile,
     test_scripts_path_routes_to_scripts_config_profile,
@@ -1194,6 +1409,15 @@ _TESTS = [
     test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts,
     test_selected_commands_are_unique,
     test_selector_exports_fail_closed_compile_requirement,
+    # Shard partitioning
+    test_shard_plan_is_exhaustive_and_disjoint_for_every_profile,
+    test_shard_partition_preserves_relative_command_order,
+    test_ordering_dependent_commands_share_a_shard,
+    test_shard_selection_runs_exactly_its_planned_commands,
+    test_shard_warmup_is_scoped_to_that_shard_commands,
+    test_invalid_shard_specs_fail_closed,
+    test_shard_plan_prints_the_full_assignment_and_runs_nothing,
+    test_help_documents_the_shard_flags,
 ]
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ scales from a single file to a layered directory structure.
 | # | Directory | What it teaches |
 |---|-----------|-----------------|
 | 1 | `01_shapes/` | Directory-form module; peer files contribute types + trait impls |
-| 2 | `02_geometry/` | Peer-file type sharing; selective `import mod.{ A, B }` |
+| 2 | `02_geometry/` | Peer-file type sharing; selective `import mod.{A, B}` |
 | 3 | `03_text_stats/` | Two-level hierarchy; `import parent;` vs `import parent.child;` |
 
 ---
@@ -73,7 +73,7 @@ statement — they are all part of the same `geo` module.
 `main.hew` uses a selective import:
 
 ```hew
-import geo.{ Point, origin, manhattan, chebyshev, bounding_area };
+import geo.{Point, origin, manhattan, chebyshev, bounding_area};
 
 let o = origin();
 let p = Point { x: 3, y: 4 };
@@ -85,7 +85,7 @@ println(manhattan(o, p));        // 7
 | Style | Syntax | Notes |
 |-------|--------|-------|
 | Bare | `import geo;` | All `pub` names in scope; also available as `geo.name(...)`. No false-positive warning when functions are called. |
-| Selective | `import geo.{ Point, manhattan }` | Only named symbols enter scope. Preferred when callers only need a subset. |
+| Selective | `import geo.{Point, manhattan}` | Only named symbols enter scope. Preferred when callers only need a subset. |
 
 Run it:
 ```sh
@@ -123,7 +123,7 @@ Importing the parent does **not** automatically expose the child:
 
 ```hew
 import text_stats;           // gives text_stats.char_count, etc.
-import text_stats.words;    // gives words.word_count, words.first_word, etc.
+import text_stats.words;     // gives words.word_count, words.first_word, etc.
 ```
 
 This means callers opt into sub-modules explicitly — a standard approach
@@ -153,7 +153,7 @@ The compiler's unused-import checker currently tracks whether an import is
 unqualified type construction or trait usage as evidence of use.  Concretely:
 
 ```hew
-import shapes.{ Circle };   // <-- warning: "unused import: shapes"
+import shapes.{Circle};    // <-- warning: "unused import: shapes"
 let c = Circle { ... };    //     even though Circle came from this import
 ```
 

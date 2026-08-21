@@ -29,7 +29,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::channel::channel;
+//! import std.channel.channel;
 //!
 //! fn main() {
 //!     let (tx, rx) = channel.new(8);

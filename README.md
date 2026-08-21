@@ -126,7 +126,7 @@ of `.hew` files to document.
 - Other top-level `.hew` files inside `foo/` merge into the same module
   automatically.
 - Child directories stay separate submodules, so import them explicitly — for
-  example `import foo::bar;`.
+  example `import foo.bar;`.
 - Start with
   [`examples/directory_module_demo/README.md`](examples/directory_module_demo/README.md)
   for the smallest working layout, then

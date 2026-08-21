@@ -10,7 +10,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::encoding::protobuf;
+//! import std.encoding.protobuf;
 //!
 //! fn main() {
 //!     let msg = protobuf.new();

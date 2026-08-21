@@ -8,13 +8,13 @@
 //! codepoint at position `i`) or by iterating `unicode.runes(s)`.
 //!
 //! The underlying `char_count_utf8` and `codepoint_at_utf8` methods are
-//! exposed on `string` by `std::string` (bound to `hew_string_char_count` and
+//! exposed on `string` by `std.string` (bound to `hew_string_char_count` and
 //! `hew_string_char_at_utf8` in hew-runtime).
 //!
 //! # Examples
 //!
 //! ```
-//! import std::text::unicode;
+//! import std.text.unicode;
 //!
 //! fn main() {
 //!     // Char classification

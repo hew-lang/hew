@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::semaphore;
+//! import std.semaphore;
 //!
 //! fn main() {
 //!     let sem = semaphore.new(3);

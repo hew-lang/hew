@@ -7,7 +7,7 @@
 //! # Client example
 //!
 //! ```
-//! import std::net::websocket;
+//! import std.net.websocket;
 //!
 //! fn main() {
 //!     match websocket.connect("ws://localhost:8080/ws") {
@@ -27,7 +27,7 @@
 //! # Server example
 //!
 //! ```
-//! import std::net::websocket;
+//! import std.net.websocket;
 //!
 //! fn main() {
 //!     match websocket.listen("0.0.0.0:8080") {
@@ -93,8 +93,8 @@ trait ConnMethods {
     /// Receive a message with a per-call deadline.
     ///
     /// `deadline_ms <= 0` disables the deadline and behaves like `recv`.
-    /// Returns `Err(NetError::TimedOut(0))` on deadline expiry. On other
-    /// failures returns `Err(NetError::Other(0))` (WebSocket errors carry
+    /// Returns `Err(NetError.TimedOut(0))` on deadline expiry. On other
+    /// failures returns `Err(NetError.Other(0))` (WebSocket errors carry
     /// no OS errno channel).
     fn recv_timeout(self, deadline_ms: i64) -> Result<Message, net.NetError>;
 

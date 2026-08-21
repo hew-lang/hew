@@ -2,13 +2,13 @@
 //!
 //! Declare your own counters, gauges, and histograms; their live values flow
 //! into the same scrape surface as the runtime built-ins, readable through
-//! `std::observe`.
+//! `std.observe`.
 //!
 //! # Examples
 //!
 //! ```
-//! import std::metrics;
-//! import std::observe;
+//! import std.metrics;
+//! import std.observe;
 //!
 //! fn main() {
 //!     let requests = metrics.counter("app.requests");

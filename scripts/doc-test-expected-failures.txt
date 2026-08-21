@@ -79,7 +79,7 @@ spec-0021   667087144   # SNIPPET: bare `let local_ref = ...` — non-Send captu
 spec-0022   2513387504   # FRAGMENT: actor calls undefined `process()` — allowed-ops illustration
 spec-0023   3898239403   # ERROR-DEMO: intentionally shows non-Send send and non-Send capture errors
 spec-0024   2265846331   # SPEC-BUG: type mismatch in aspirational TCP module example
-spec-0025   3374690289   # FRAGMENT: imports `network::tcp` — hypothetical module, not in stdlib
+spec-0025   3406269624   # FRAGMENT: imports `network.tcp` — hypothetical module, not in stdlib
 spec-0026   593744325   # SNIPPET: bare code after import statement — illustration of import effect
 spec-0027   2603276079   # FRAGMENT: imports `greeting` — multi-file example, module not found
 spec-0030   53697221   # SNIPPET: bare code outside declarations — trait method dispatch illustration

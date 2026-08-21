@@ -5,7 +5,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::crypto::encrypt;
+//! import std.crypto.encrypt;
 //!
 //! fn main() {
 //!     let key = crypto.random_bytes(32);

@@ -5340,8 +5340,10 @@ fn terminator_mint_writes_local(terminator: &Terminator, local: u32) -> bool {
 /// hand-off scans read that authority off the MIR
 /// (`split_consume::is_divergent_selection_transfer_move`) rather than
 /// re-deriving the shape.
-fn neutralize_divergent_selection_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
-    // Heap-owning owned locals of this frame, by backing local id.
+/// Backing locals of this frame's heap-owning owned locals — the only slots a
+/// selection transfer may null. By-value parameters are excluded: they are
+/// caller-retained borrows and the caller owns their release (A278).
+fn frame_owned_heap_locals(builder: &Builder) -> HashSet<u32> {
     let mut candidate_locals: HashSet<u32> = HashSet::new();
     for (binding, _name, ty) in builder.owned_locals_exit_candidates() {
         if !crate::model::ty_owns_heap_mir(&ty, &builder.record_field_orders, &builder.enum_layouts)
@@ -5360,6 +5362,11 @@ fn neutralize_divergent_selection_sources(blocks: &mut [BasicBlock], builder: &m
         }
         candidate_locals.insert(local);
     }
+    candidate_locals
+}
+
+fn neutralize_divergent_selection_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let candidate_locals = frame_owned_heap_locals(builder);
     if candidate_locals.is_empty() {
         return;
     }
@@ -5429,6 +5436,12 @@ fn neutralize_divergent_selection_sources(blocks: &mut [BasicBlock], builder: &m
             ) {
                 continue;
             }
+            // Another authority already nulls this slot at this move (a
+            // whole-carrier or send-transfer consume). Its neutralize is the
+            // same store; a second one is dead weight in the emitted IR.
+            if source_slot_already_neutralized(blocks, site_block, site_index, owned_local) {
+                continue;
+            }
             inserts.push((site_block, site_index, owned_local, transferee));
         }
     }
@@ -5459,6 +5472,27 @@ fn neutralize_divergent_selection_sources(blocks: &mut [BasicBlock], builder: &m
             },
         );
     }
+}
+
+/// Whether the instruction directly after `(site_block, site_index)` already
+/// nulls `local` under some other neutralize authority.
+fn source_slot_already_neutralized(
+    blocks: &[BasicBlock],
+    site_block: u32,
+    site_index: usize,
+    local: u32,
+) -> bool {
+    blocks
+        .iter()
+        .find(|block| block.id == site_block)
+        .and_then(|block| block.instructions.get(site_index + 1))
+        .is_some_and(|instr| {
+            matches!(
+                instr,
+                Instr::NeutralizePayloadSlot { place, .. }
+                    if base_local(*place) == Some(local)
+            )
+        })
 }
 
 /// Whether `local` is READ anywhere reachable from just after the instruction

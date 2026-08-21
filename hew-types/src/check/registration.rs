@@ -6076,8 +6076,7 @@ impl Checker {
                 // `current_module` (None = root): it is the display/provenance
                 // axis, and the legacy root render at publication boundaries
                 // derives from it.
-                let scoped_name = scoped_module_item_name(self.canonical_fn_owner(), &fd.name)
-                    .unwrap_or_else(|| fd.name.clone());
+                let scoped_name = self.canonical_fn_identity(self.canonical_fn_owner(), &fd.name);
                 if let Some((prev_span, _)) = self.fn_def_spans.get(&scoped_name) {
                     // Root diagnostics render the bare leaf, exactly as the
                     // declaration is spelled in source.
@@ -11335,7 +11334,7 @@ impl Checker {
                     }
                 }
                 Item::Function(fd) => {
-                    let qualified = format!("{module_full_path}.{}", fd.name);
+                    let qualified = self.canonical_fn_identity(Some(module_full_path), &fd.name);
                     let surface_qualified = format!("{module_short}.{}", fd.name);
                     // Record visibility for all functions in the visibility table.
                     self.fn_visibility
@@ -11346,9 +11345,6 @@ impl Checker {
                         .or_insert(fd.visibility);
                     self.fn_def_spans
                         .entry(qualified.clone())
-                        .or_insert_with(|| (span.clone(), Some(module_full_path.to_string())));
-                    self.fn_def_spans
-                        .entry(surface_qualified)
                         .or_insert_with(|| (span.clone(), Some(module_full_path.to_string())));
                     // The parsed Hew declaration is the canonical signature
                     // authority.  A registry import may have installed an ABI
@@ -12171,7 +12167,7 @@ impl Checker {
                 .unwrap_or(importer_file_idx);
             match item {
                 Item::Function(fd) => {
-                    let qualified = format!("{module_full_path}.{}", fd.name);
+                    let qualified = self.canonical_fn_identity(Some(module_full_path), &fd.name);
                     let surface_qualified = format!("{module_short}.{}", fd.name);
                     // Record visibility for all functions in the visibility table.
                     self.fn_visibility
@@ -12180,16 +12176,8 @@ impl Checker {
                     self.fn_visibility
                         .entry(surface_qualified.clone())
                         .or_insert(fd.visibility);
-                    // Record fn_def_spans under the SHORT-NAME key so the access-
-                    // allowed check in methods.rs can look up the declaring module's
-                    // FULL path.  `collect_function_item` stores the same span under
-                    // the full-path key (e.g. "subpkg.helper.secret"); we mirror it
-                    // under the short-name key ("helper.secret") used at call sites.
                     self.fn_def_spans
                         .entry(qualified.clone())
-                        .or_insert_with(|| (span.clone(), Some(module_full_path.to_string())));
-                    self.fn_def_spans
-                        .entry(surface_qualified.clone())
                         .or_insert_with(|| (span.clone(), Some(module_full_path.to_string())));
 
                     // The signature is a source declaration fact even though

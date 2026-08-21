@@ -8063,7 +8063,7 @@ impl Checker {
             // lookup. Never recover the owner from the final path segment: two
             // nested stdlib modules may share both a leaf and a function name.
             let canonical_owner = self.canonical_module_import_owner(name);
-            let key = format!("{canonical_owner}.{method}");
+            let key = self.canonical_fn_identity(Some(&canonical_owner), method);
             let looks_like_module_call = !receiver_is_binding
                 && !receiver_is_known_type
                 && (self.module_binding_in_current_file(name)
@@ -8210,12 +8210,7 @@ impl Checker {
                     self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
                 }
                 if let Some(sig) = self.fn_sigs.get(&key).cloned() {
-                    if let Some(caller) = &self.current_function {
-                        self.call_graph
-                            .entry(caller.clone())
-                            .or_default()
-                            .insert(key.clone());
-                    }
+                    self.record_call_edge(&key);
                     self.record_module_qualified_stdlib_call_rewrite_if_any(name, method, span);
                     self.record_module_qualified_user_call_rewrite_if_any(name, method, span);
                     let assoc_bindings = self

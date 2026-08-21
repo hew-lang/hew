@@ -999,7 +999,7 @@ impl Checker {
         // the import table before consulting declaration/export authority so
         // nested modules and aliases retain their exact source identity.
         let canonical_owner = self.canonical_module_import_owner(module_name);
-        let key = format!("{canonical_owner}.{method}");
+        let key = self.canonical_fn_identity(Some(&canonical_owner), method);
         if !self.fn_sigs.contains_key(&key) {
             return None;
         }
@@ -1058,12 +1058,7 @@ impl Checker {
             self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
         }
         let sig = self.fn_sigs.get(&key).cloned()?;
-        if let Some(caller) = &self.current_function {
-            self.call_graph
-                .entry(caller.clone())
-                .or_default()
-                .insert(key.clone());
-        }
+        self.record_call_edge(&key);
         self.record_module_qualified_stdlib_call_rewrite_if_any(module_name, method, span);
         self.record_module_qualified_user_call_rewrite_if_any(module_name, method, span);
         let assoc_bindings = self
@@ -2043,9 +2038,12 @@ impl Checker {
         // produces; the contains_key filter keeps bare registrations
         // (builtins, externs) resolving unchanged (the bare rung is the
         // builtin/extern floor, not a root fallback).
-        let resolved_fn_name = scoped_module_item_name(self.canonical_fn_owner(), &func_name)
-            .filter(|qualified| self.fn_sigs.contains_key(qualified))
-            .unwrap_or_else(|| func_name.clone());
+        let canonical_fn_name = self.canonical_fn_identity(self.canonical_fn_owner(), &func_name);
+        let resolved_fn_name = if self.fn_sigs.contains_key(&canonical_fn_name) {
+            canonical_fn_name
+        } else {
+            func_name.clone()
+        };
         if let Some(sig) = self.fn_sigs.get(&resolved_fn_name).cloned() {
             // Visibility enforcement: check that the caller's module is allowed
             // to reference this function.  We only check when the resolved key
@@ -2083,12 +2081,7 @@ impl Checker {
                 }
             }
 
-            if let Some(caller) = &self.current_function {
-                self.call_graph
-                    .entry(caller.clone())
-                    .or_default()
-                    .insert(resolved_fn_name.clone());
-            }
+            self.record_call_edge(&resolved_fn_name);
             // Mark the originating module as used for unqualified imports
             if let Some(module) = self
                 .unqualified_to_module

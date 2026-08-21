@@ -341,6 +341,48 @@ impl Checker {
         self.fn_sigs.contains_key(&scoped).then_some(scoped)
     }
 
+    /// Return the declaration-table identity for a free function.
+    ///
+    /// `owner` is supplied while minting a declaration or resolving a known
+    /// lexical owner. Without an owner, an already-resolved signature key is
+    /// re-anchored through named-import aliases or its declaration record.
+    /// Actor and method identities use `::` and remain unchanged.
+    pub(super) fn canonical_fn_identity(&self, owner: Option<&str>, name: &str) -> String {
+        if name.contains("::") {
+            return name.to_string();
+        }
+        if let Some(owner) = owner {
+            return scoped_module_item_name(Some(owner), name).unwrap_or_else(|| name.to_string());
+        }
+        if let Some(source) = self.import_fn_name_aliases.get(&(
+            self.current_module.clone(),
+            self.current_module_idx,
+            name.to_string(),
+        )) {
+            return source.clone();
+        }
+        if let Some((_, Some(declaring_module))) = self.fn_def_spans.get(name) {
+            let leaf = name.rsplit('.').next().unwrap_or(name);
+            return scoped_module_item_name(Some(declaring_module), leaf)
+                .unwrap_or_else(|| name.to_string());
+        }
+        name.to_string()
+    }
+
+    /// Record one call edge after canonicalizing both endpoints through the
+    /// declaration identity authority.
+    pub(super) fn record_call_edge(&mut self, target: &str) {
+        let Some(source) = self.current_function.clone() else {
+            return;
+        };
+        let source_identity = self.canonical_fn_identity(None, &source);
+        let target_identity = self.canonical_fn_identity(None, target);
+        self.call_graph
+            .entry(source_identity)
+            .or_default()
+            .insert(target_identity);
+    }
+
     /// When `key` is a ROOT-owned canonical free-fn key (`{root}.{leaf}`),
     /// return its bare leaf; with no minted root identity, a bare free-fn key
     /// IS root-owned and returns itself. `None` for module/method keys.

@@ -870,8 +870,7 @@ impl Checker {
         // rc1-F1 stage A: body checking resolves the same canonical key
         // `register_fn_sig_with_name` minted — root items included — so
         // `current_function` (a `fn_sigs`-family key) is always canonical.
-        let fn_name = scoped_module_item_name(self.canonical_fn_owner(), &fd.name)
-            .unwrap_or_else(|| fd.name.clone());
+        let fn_name = self.canonical_fn_identity(self.canonical_fn_owner(), &fd.name);
         self.check_function_as(fd, &fn_name);
     }
 

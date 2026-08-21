@@ -5340,12 +5340,37 @@ fn terminator_mint_writes_local(terminator: &Terminator, local: u32) -> bool {
 /// hand-off scans read that authority off the MIR
 /// (`split_consume::is_divergent_selection_transfer_move`) rather than
 /// re-deriving the shape.
-/// Backing locals of this frame's heap-owning owned locals — the only slots a
-/// selection transfer may null. By-value parameters are excluded: they are
-/// caller-retained borrows and the caller owns their release (A278).
+/// Backing locals of this frame's MOVE-SEMANTICS owned locals — the only slots
+/// a selection transfer may null.
+///
+/// The classes admitted here are the ones whose every share lowers as a bare
+/// pointer bitcopy with NO retain (the M-COW spine invariant documented on
+/// `derive_local_collection_drop_allowed`): plain and owned-element `Vec`,
+/// `HashMap` / `HashSet` handles, and owned aggregate records. For those,
+/// exactly one live slot owns a given allocation, so nulling the source at a
+/// transfer leaves exactly one owner and the source's release becomes a
+/// null-tolerant no-op.
+///
+/// `string` and `bytes` are deliberately NOT admitted. They mint co-owners
+/// through explicit `StringRetain` / `BytesRetain` markers, so an arm selection
+/// over them already leaves TWO owners each holding a reference and each owing
+/// one release. Nulling the source there would destroy a live reference's
+/// release and leak the retained generation — the opposite of the defect being
+/// fixed (measured: `std$net$http$host_of` lost five releases, `if_key` /
+/// `range_key` / `map_str` lost both of theirs).
+///
+/// By-value parameters are excluded in every class: they are caller-retained
+/// borrows and the caller owns their release (A278).
 fn frame_owned_heap_locals(builder: &Builder) -> HashSet<u32> {
     let mut candidate_locals: HashSet<u32> = HashSet::new();
     for (binding, _name, ty) in builder.owned_locals_exit_candidates() {
+        let move_semantics = builder.binding_ty_is_owned_element_vec(&ty)
+            || builder.binding_ty_is_plain_vec(&ty)
+            || drop_plan::ty_is_local_collection_handle(&ty)
+            || builder.is_owned_aggregate_record_ty(&ty);
+        if !move_semantics {
+            continue;
+        }
         if !crate::model::ty_owns_heap_mir(&ty, &builder.record_field_orders, &builder.enum_layouts)
         {
             continue;
@@ -5365,8 +5390,23 @@ fn frame_owned_heap_locals(builder: &Builder) -> HashSet<u32> {
     candidate_locals
 }
 
-fn neutralize_divergent_selection_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
-    let candidate_locals = frame_owned_heap_locals(builder);
+fn neutralize_divergent_selection_sources(
+    blocks: &mut [BasicBlock],
+    builder: &mut Builder,
+    projection_tainted: &HashSet<u32>,
+) {
+    let mut candidate_locals = frame_owned_heap_locals(builder);
+    // A slot holding an INTERIOR ALIAS of a still-live parent — a match-arm
+    // payload binder over an enum/machine carrier, a record/tuple field load,
+    // a collection element getter — is not a whole-value owner, and its
+    // ownership is governed by the projected-payload provenance machinery
+    // (`NeutralizeAuthority::MoveOutArmConsume` and the alias-binder scans),
+    // not by whole-local move semantics. Nulling such a binder makes its own
+    // release a no-op while the parent's release stays suppressed, so the
+    // payload leaks. Leave the whole alias class to its own authority.
+    let interior_alias = temp_drop::compute_collection_interior_alias_taint(blocks);
+    candidate_locals
+        .retain(|local| !projection_tainted.contains(local) && !interior_alias.contains(local));
     if candidate_locals.is_empty() {
         return;
     }
@@ -5996,7 +6036,7 @@ pub(crate) fn lower_function(
         &projection_tainted,
     );
     neutralize_returned_aggregate_handle_sources(&mut blocks, &mut builder);
-    neutralize_divergent_selection_sources(&mut blocks, &mut builder);
+    neutralize_divergent_selection_sources(&mut blocks, &mut builder, &projection_tainted);
     debug_assert!(
         builder.pending_outbound_actor_args.is_empty(),
         "checked MIR cannot retain unresolved outbound actor arguments"

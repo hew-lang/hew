@@ -214,16 +214,15 @@ fn build_cabi_wrapper_staticlib(dir: &Path, name: &str, lib_rs: &str) -> Option<
     std::fs::write(crate_dir.join("Cargo.toml"), manifest).expect("write fixture Cargo.toml");
     std::fs::write(crate_dir.join("src").join("lib.rs"), lib_rs).expect("write fixture lib.rs");
 
+    // The fixture crate owns this target directory outright, so the build is
+    // legitimately unserialized. `cargo_build_isolated` is where that claim is
+    // checked: it rejects a target directory inside the shared workspace one.
     let target_dir = crate_dir.join("target");
-    let mut cmd = Command::new("cargo");
-    cmd.arg("build")
-        .arg("--offline")
-        .arg("--manifest-path")
-        .arg(crate_dir.join("Cargo.toml"))
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .current_dir(&crate_dir);
-
-    let out = match cmd.output() {
+    let out = match hew_testutil::cargo_build_isolated(
+        &crate_dir.join("Cargo.toml"),
+        &target_dir,
+        &["--offline"],
+    ) {
         Ok(out) => out,
         Err(error) => {
             eprintln!("SKIP: cannot invoke cargo to build hew-cabi wrapper fixture: {error}");

@@ -544,46 +544,55 @@ bb1:                                              ; preds = %bb0
   %helper_crash_cleanup_was_active = load i1, ptr %helper_crash_cleanup_active_1, align 1
   br i1 %helper_crash_cleanup_was_active, label %helper_crash_cleanup_deactivate, label %helper_crash_cleanup_deactivate_merge
 
-bb2:                                              ; preds = %after_cooperate57, %after_cooperate33
+bb2:                                              ; preds = %after_cooperate63, %after_cooperate35
   %helper_crash_cleanup_drop_active = load i1, ptr %helper_crash_cleanup_active_4, align 1
   br i1 %helper_crash_cleanup_drop_active, label %helper_crash_cleanup_retire, label %helper_crash_cleanup_retire_merge
 
 bb3:                                              ; preds = %frame_cleanup_registered11
   store i64 9000, ptr %local_10, align 8
-  %move_load29 = load i64, ptr %local_10, align 8
-  store i64 %move_load29, ptr %local_3, align 8
-  %hew_actor_cooperate30 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel31 = icmp eq i32 %hew_actor_cooperate30, 2
-  br i1 %hew_cooperate_is_cancel31, label %cancel_exit32, label %after_cooperate33
+  %move_load31 = load i64, ptr %local_10, align 8
+  store i64 %move_load31, ptr %local_3, align 8
+  %hew_actor_cooperate32 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel33 = icmp eq i32 %hew_actor_cooperate32, 2
+  br i1 %hew_cooperate_is_cancel33, label %cancel_exit34, label %after_cooperate35
 
 bb4:                                              ; preds = %bb6
   store i64 1, ptr %local_11, align 8
-  %move_load53 = load i64, ptr %local_11, align 8
-  store i64 %move_load53, ptr %local_3, align 8
-  %hew_actor_cooperate54 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel55 = icmp eq i32 %hew_actor_cooperate54, 2
-  br i1 %hew_cooperate_is_cancel55, label %cancel_exit56, label %after_cooperate57
+  %move_load59 = load i64, ptr %local_11, align 8
+  store i64 %move_load59, ptr %local_3, align 8
+  %hew_actor_cooperate60 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel61 = icmp eq i32 %hew_actor_cooperate60, 2
+  br i1 %hew_cooperate_is_cancel61, label %cancel_exit62, label %after_cooperate63
 
 bb5:                                              ; preds = %bb6
-  %helper_crash_cleanup_drop_active77 = load i1, ptr %helper_crash_cleanup_active_4, align 1
-  br i1 %helper_crash_cleanup_drop_active77, label %helper_crash_cleanup_retire78, label %helper_crash_cleanup_retire_merge79
+  %helper_crash_cleanup_drop_active87 = load i1, ptr %helper_crash_cleanup_active_4, align 1
+  br i1 %helper_crash_cleanup_drop_active87, label %helper_crash_cleanup_retire88, label %helper_crash_cleanup_retire_merge89
 
 bb6:                                              ; preds = %frame_cleanup_registered11
   store i64 1, ptr %local_8, align 8
-  %cmp_lhs96 = load i64, ptr %local_5, align 8
-  %cmp_rhs97 = load i64, ptr %local_8, align 8
-  %cmp_bit98 = icmp eq i64 %cmp_lhs96, %cmp_rhs97
-  %cmp_zext99 = zext i1 %cmp_bit98 to i8
-  store i8 %cmp_zext99, ptr %local_9, align 1
-  %cond_load100 = load i8, ptr %local_9, align 1
-  %cond_nz101 = icmp ne i8 %cond_load100, 0
-  br i1 %cond_nz101, label %bb4, label %bb5
+  %cmp_lhs106 = load i64, ptr %local_5, align 8
+  %cmp_rhs107 = load i64, ptr %local_8, align 8
+  %cmp_bit108 = icmp eq i64 %cmp_lhs106, %cmp_rhs107
+  %cmp_zext109 = zext i1 %cmp_bit108 to i8
+  store i8 %cmp_zext109, ptr %local_9, align 1
+  %cond_load110 = load i8, ptr %local_9, align 1
+  %cond_nz111 = icmp ne i8 %cond_load110, 0
+  br i1 %cond_nz111, label %bb4, label %bb5
 
 cancel_exit:                                      ; preds = %entry
-  ret i64 0
+  %hew_runtime_exit_status_call = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted = icmp ne i32 %hew_runtime_exit_status_call, 0
+  br i1 %hew_runtime_faulted, label %hew_exit_status_failed, label %hew_exit_status_continue
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+hew_exit_status_failed:                           ; preds = %cancel_exit
+  call void @hew_exit(i64 1)
+  br label %hew_exit_status_continue
+
+hew_exit_status_continue:                         ; preds = %hew_exit_status_failed, %cancel_exit
+  ret i64 0
 
 helper_crash_cleanup_deactivate:                  ; preds = %bb1
   %helper_crash_cleanup_token = load i64, ptr %helper_crash_cleanup_token_1, align 8
@@ -784,9 +793,9 @@ helper_crash_cleanup_return_retire_1_rejected:    ; preds = %helper_crash_cleanu
 helper_crash_cleanup_return_merge_4:              ; preds = %helper_crash_cleanup_return_retire_4_accepted, %helper_crash_cleanup_return_merge_1
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
   %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
-  %hew_runtime_exit_status_call = call i32 @hew_runtime_exit_status()
-  %hew_runtime_faulted = icmp ne i32 %hew_runtime_exit_status_call, 0
-  %hew_exit_any_failed = or i1 %hew_lambda_drain_failed, %hew_runtime_faulted
+  %hew_runtime_exit_status_call29 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted30 = icmp ne i32 %hew_runtime_exit_status_call29, 0
+  %hew_exit_any_failed = or i1 %hew_lambda_drain_failed, %hew_runtime_faulted30
   br i1 %hew_exit_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 helper_crash_cleanup_return_retire_4:             ; preds = %helper_crash_cleanup_return_merge_1
@@ -804,172 +813,193 @@ helper_crash_cleanup_return_retire_4_rejected:    ; preds = %helper_crash_cleanu
   unreachable
 
 hew_shutdown_exit_failed:                         ; preds = %helper_crash_cleanup_return_merge_4
-  call void @hew_exit(i64 1)
+  %hew_exit_user_code = load i64, ptr %return_slot, align 8
+  %hew_exit_user_code_set = icmp ne i64 %hew_exit_user_code, 0
+  %hew_exit_status_code = select i1 %hew_exit_user_code_set, i64 %hew_exit_user_code, i64 1
+  call void @hew_exit(i64 %hew_exit_status_code)
   br label %hew_shutdown_exit_continue
 
 hew_shutdown_exit_continue:                       ; preds = %hew_shutdown_exit_failed, %helper_crash_cleanup_return_merge_4
   %ret_val = load i64, ptr %return_slot, align 8
   ret i64 %ret_val
 
-cancel_exit32:                                    ; preds = %bb3
-  %helper_crash_cleanup_drop_active34 = load i1, ptr %helper_crash_cleanup_active_4, align 1
-  br i1 %helper_crash_cleanup_drop_active34, label %helper_crash_cleanup_retire35, label %helper_crash_cleanup_retire_merge36
+cancel_exit34:                                    ; preds = %bb3
+  %helper_crash_cleanup_drop_active36 = load i1, ptr %helper_crash_cleanup_active_4, align 1
+  br i1 %helper_crash_cleanup_drop_active36, label %helper_crash_cleanup_retire37, label %helper_crash_cleanup_retire_merge38
 
-after_cooperate33:                                ; preds = %bb3
+after_cooperate35:                                ; preds = %bb3
   br label %bb2
 
-helper_crash_cleanup_retire35:                    ; preds = %cancel_exit32
-  %helper_crash_cleanup_retire_token37 = load i64, ptr %helper_crash_cleanup_token_4, align 8
-  %helper_crash_cleanup_retire_call38 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token37)
-  br i1 %helper_crash_cleanup_retire_call38, label %helper_crash_cleanup_retire_accepted39, label %helper_crash_cleanup_retire_rejected40
+helper_crash_cleanup_retire37:                    ; preds = %cancel_exit34
+  %helper_crash_cleanup_retire_token39 = load i64, ptr %helper_crash_cleanup_token_4, align 8
+  %helper_crash_cleanup_retire_call40 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token39)
+  br i1 %helper_crash_cleanup_retire_call40, label %helper_crash_cleanup_retire_accepted41, label %helper_crash_cleanup_retire_rejected42
 
-helper_crash_cleanup_retire_merge36:              ; preds = %helper_crash_cleanup_retire_accepted39, %cancel_exit32
+helper_crash_cleanup_retire_merge38:              ; preds = %helper_crash_cleanup_retire_accepted41, %cancel_exit34
   call void @"__hew_enum_drop_inplace_Option$$Rc$lNode$g"(ptr %local_4)
-  %resource_drop_flag41 = load i64, ptr %local_2, align 8
-  %resource_drop_not_consumed42 = icmp eq i64 %resource_drop_flag41, 0
-  br i1 %resource_drop_not_consumed42, label %resource_drop_live_only43, label %resource_drop_merge44
+  %resource_drop_flag43 = load i64, ptr %local_2, align 8
+  %resource_drop_not_consumed44 = icmp eq i64 %resource_drop_flag43, 0
+  br i1 %resource_drop_not_consumed44, label %resource_drop_live_only45, label %resource_drop_merge46
 
-helper_crash_cleanup_retire_accepted39:           ; preds = %helper_crash_cleanup_retire35
+helper_crash_cleanup_retire_accepted41:           ; preds = %helper_crash_cleanup_retire37
   store i64 0, ptr %helper_crash_cleanup_token_4, align 8
   store i1 false, ptr %helper_crash_cleanup_active_4, align 1
-  br label %helper_crash_cleanup_retire_merge36
+  br label %helper_crash_cleanup_retire_merge38
 
-helper_crash_cleanup_retire_rejected40:           ; preds = %helper_crash_cleanup_retire35
+helper_crash_cleanup_retire_rejected42:           ; preds = %helper_crash_cleanup_retire37
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
 
-resource_drop_live_only43:                        ; preds = %helper_crash_cleanup_retire_merge36
-  %helper_crash_cleanup_drop_active45 = load i1, ptr %helper_crash_cleanup_active_1, align 1
-  br i1 %helper_crash_cleanup_drop_active45, label %helper_crash_cleanup_retire46, label %helper_crash_cleanup_retire_merge47
+resource_drop_live_only45:                        ; preds = %helper_crash_cleanup_retire_merge38
+  %helper_crash_cleanup_drop_active47 = load i1, ptr %helper_crash_cleanup_active_1, align 1
+  br i1 %helper_crash_cleanup_drop_active47, label %helper_crash_cleanup_retire48, label %helper_crash_cleanup_retire_merge49
 
-resource_drop_merge44:                            ; preds = %helper_crash_cleanup_retire_merge47, %helper_crash_cleanup_retire_merge36
-  ret i64 0
+resource_drop_merge46:                            ; preds = %helper_crash_cleanup_retire_merge49, %helper_crash_cleanup_retire_merge38
+  %hew_runtime_exit_status_call55 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted56 = icmp ne i32 %hew_runtime_exit_status_call55, 0
+  br i1 %hew_runtime_faulted56, label %hew_exit_status_failed57, label %hew_exit_status_continue58
 
-helper_crash_cleanup_retire46:                    ; preds = %resource_drop_live_only43
-  %helper_crash_cleanup_retire_token48 = load i64, ptr %helper_crash_cleanup_token_1, align 8
-  %helper_crash_cleanup_retire_call49 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token48)
-  br i1 %helper_crash_cleanup_retire_call49, label %helper_crash_cleanup_retire_accepted50, label %helper_crash_cleanup_retire_rejected51
+helper_crash_cleanup_retire48:                    ; preds = %resource_drop_live_only45
+  %helper_crash_cleanup_retire_token50 = load i64, ptr %helper_crash_cleanup_token_1, align 8
+  %helper_crash_cleanup_retire_call51 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token50)
+  br i1 %helper_crash_cleanup_retire_call51, label %helper_crash_cleanup_retire_accepted52, label %helper_crash_cleanup_retire_rejected53
 
-helper_crash_cleanup_retire_merge47:              ; preds = %helper_crash_cleanup_retire_accepted50, %resource_drop_live_only43
-  %ref_drop_handle52 = load ptr, ptr %local_1, align 8
-  call void @hew_weak_drop_rc(ptr %ref_drop_handle52)
+helper_crash_cleanup_retire_merge49:              ; preds = %helper_crash_cleanup_retire_accepted52, %resource_drop_live_only45
+  %ref_drop_handle54 = load ptr, ptr %local_1, align 8
+  call void @hew_weak_drop_rc(ptr %ref_drop_handle54)
   store ptr null, ptr %local_1, align 8
-  br label %resource_drop_merge44
+  br label %resource_drop_merge46
 
-helper_crash_cleanup_retire_accepted50:           ; preds = %helper_crash_cleanup_retire46
+helper_crash_cleanup_retire_accepted52:           ; preds = %helper_crash_cleanup_retire48
   store i64 0, ptr %helper_crash_cleanup_token_1, align 8
   store i1 false, ptr %helper_crash_cleanup_active_1, align 1
-  br label %helper_crash_cleanup_retire_merge47
+  br label %helper_crash_cleanup_retire_merge49
 
-helper_crash_cleanup_retire_rejected51:           ; preds = %helper_crash_cleanup_retire46
+helper_crash_cleanup_retire_rejected53:           ; preds = %helper_crash_cleanup_retire48
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
 
-cancel_exit56:                                    ; preds = %bb4
-  %helper_crash_cleanup_drop_active58 = load i1, ptr %helper_crash_cleanup_active_4, align 1
-  br i1 %helper_crash_cleanup_drop_active58, label %helper_crash_cleanup_retire59, label %helper_crash_cleanup_retire_merge60
+hew_exit_status_failed57:                         ; preds = %resource_drop_merge46
+  call void @hew_exit(i64 1)
+  br label %hew_exit_status_continue58
 
-after_cooperate57:                                ; preds = %bb4
+hew_exit_status_continue58:                       ; preds = %hew_exit_status_failed57, %resource_drop_merge46
+  ret i64 0
+
+cancel_exit62:                                    ; preds = %bb4
+  %helper_crash_cleanup_drop_active64 = load i1, ptr %helper_crash_cleanup_active_4, align 1
+  br i1 %helper_crash_cleanup_drop_active64, label %helper_crash_cleanup_retire65, label %helper_crash_cleanup_retire_merge66
+
+after_cooperate63:                                ; preds = %bb4
   br label %bb2
 
-helper_crash_cleanup_retire59:                    ; preds = %cancel_exit56
-  %helper_crash_cleanup_retire_token61 = load i64, ptr %helper_crash_cleanup_token_4, align 8
-  %helper_crash_cleanup_retire_call62 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token61)
-  br i1 %helper_crash_cleanup_retire_call62, label %helper_crash_cleanup_retire_accepted63, label %helper_crash_cleanup_retire_rejected64
+helper_crash_cleanup_retire65:                    ; preds = %cancel_exit62
+  %helper_crash_cleanup_retire_token67 = load i64, ptr %helper_crash_cleanup_token_4, align 8
+  %helper_crash_cleanup_retire_call68 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token67)
+  br i1 %helper_crash_cleanup_retire_call68, label %helper_crash_cleanup_retire_accepted69, label %helper_crash_cleanup_retire_rejected70
 
-helper_crash_cleanup_retire_merge60:              ; preds = %helper_crash_cleanup_retire_accepted63, %cancel_exit56
+helper_crash_cleanup_retire_merge66:              ; preds = %helper_crash_cleanup_retire_accepted69, %cancel_exit62
   call void @"__hew_enum_drop_inplace_Option$$Rc$lNode$g"(ptr %local_4)
-  %resource_drop_flag65 = load i64, ptr %local_2, align 8
-  %resource_drop_not_consumed66 = icmp eq i64 %resource_drop_flag65, 0
-  br i1 %resource_drop_not_consumed66, label %resource_drop_live_only67, label %resource_drop_merge68
+  %resource_drop_flag71 = load i64, ptr %local_2, align 8
+  %resource_drop_not_consumed72 = icmp eq i64 %resource_drop_flag71, 0
+  br i1 %resource_drop_not_consumed72, label %resource_drop_live_only73, label %resource_drop_merge74
 
-helper_crash_cleanup_retire_accepted63:           ; preds = %helper_crash_cleanup_retire59
+helper_crash_cleanup_retire_accepted69:           ; preds = %helper_crash_cleanup_retire65
   store i64 0, ptr %helper_crash_cleanup_token_4, align 8
   store i1 false, ptr %helper_crash_cleanup_active_4, align 1
-  br label %helper_crash_cleanup_retire_merge60
+  br label %helper_crash_cleanup_retire_merge66
 
-helper_crash_cleanup_retire_rejected64:           ; preds = %helper_crash_cleanup_retire59
+helper_crash_cleanup_retire_rejected70:           ; preds = %helper_crash_cleanup_retire65
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
 
-resource_drop_live_only67:                        ; preds = %helper_crash_cleanup_retire_merge60
-  %helper_crash_cleanup_drop_active69 = load i1, ptr %helper_crash_cleanup_active_1, align 1
-  br i1 %helper_crash_cleanup_drop_active69, label %helper_crash_cleanup_retire70, label %helper_crash_cleanup_retire_merge71
+resource_drop_live_only73:                        ; preds = %helper_crash_cleanup_retire_merge66
+  %helper_crash_cleanup_drop_active75 = load i1, ptr %helper_crash_cleanup_active_1, align 1
+  br i1 %helper_crash_cleanup_drop_active75, label %helper_crash_cleanup_retire76, label %helper_crash_cleanup_retire_merge77
 
-resource_drop_merge68:                            ; preds = %helper_crash_cleanup_retire_merge71, %helper_crash_cleanup_retire_merge60
-  ret i64 0
+resource_drop_merge74:                            ; preds = %helper_crash_cleanup_retire_merge77, %helper_crash_cleanup_retire_merge66
+  %hew_runtime_exit_status_call83 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted84 = icmp ne i32 %hew_runtime_exit_status_call83, 0
+  br i1 %hew_runtime_faulted84, label %hew_exit_status_failed85, label %hew_exit_status_continue86
 
-helper_crash_cleanup_retire70:                    ; preds = %resource_drop_live_only67
-  %helper_crash_cleanup_retire_token72 = load i64, ptr %helper_crash_cleanup_token_1, align 8
-  %helper_crash_cleanup_retire_call73 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token72)
-  br i1 %helper_crash_cleanup_retire_call73, label %helper_crash_cleanup_retire_accepted74, label %helper_crash_cleanup_retire_rejected75
+helper_crash_cleanup_retire76:                    ; preds = %resource_drop_live_only73
+  %helper_crash_cleanup_retire_token78 = load i64, ptr %helper_crash_cleanup_token_1, align 8
+  %helper_crash_cleanup_retire_call79 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token78)
+  br i1 %helper_crash_cleanup_retire_call79, label %helper_crash_cleanup_retire_accepted80, label %helper_crash_cleanup_retire_rejected81
 
-helper_crash_cleanup_retire_merge71:              ; preds = %helper_crash_cleanup_retire_accepted74, %resource_drop_live_only67
-  %ref_drop_handle76 = load ptr, ptr %local_1, align 8
-  call void @hew_weak_drop_rc(ptr %ref_drop_handle76)
+helper_crash_cleanup_retire_merge77:              ; preds = %helper_crash_cleanup_retire_accepted80, %resource_drop_live_only73
+  %ref_drop_handle82 = load ptr, ptr %local_1, align 8
+  call void @hew_weak_drop_rc(ptr %ref_drop_handle82)
   store ptr null, ptr %local_1, align 8
-  br label %resource_drop_merge68
+  br label %resource_drop_merge74
 
-helper_crash_cleanup_retire_accepted74:           ; preds = %helper_crash_cleanup_retire70
+helper_crash_cleanup_retire_accepted80:           ; preds = %helper_crash_cleanup_retire76
   store i64 0, ptr %helper_crash_cleanup_token_1, align 8
   store i1 false, ptr %helper_crash_cleanup_active_1, align 1
-  br label %helper_crash_cleanup_retire_merge71
+  br label %helper_crash_cleanup_retire_merge77
 
-helper_crash_cleanup_retire_rejected75:           ; preds = %helper_crash_cleanup_retire70
+helper_crash_cleanup_retire_rejected81:           ; preds = %helper_crash_cleanup_retire76
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
 
-helper_crash_cleanup_retire78:                    ; preds = %bb5
-  %helper_crash_cleanup_retire_token80 = load i64, ptr %helper_crash_cleanup_token_4, align 8
-  %helper_crash_cleanup_retire_call81 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token80)
-  br i1 %helper_crash_cleanup_retire_call81, label %helper_crash_cleanup_retire_accepted82, label %helper_crash_cleanup_retire_rejected83
+hew_exit_status_failed85:                         ; preds = %resource_drop_merge74
+  call void @hew_exit(i64 1)
+  br label %hew_exit_status_continue86
 
-helper_crash_cleanup_retire_merge79:              ; preds = %helper_crash_cleanup_retire_accepted82, %bb5
+hew_exit_status_continue86:                       ; preds = %hew_exit_status_failed85, %resource_drop_merge74
+  ret i64 0
+
+helper_crash_cleanup_retire88:                    ; preds = %bb5
+  %helper_crash_cleanup_retire_token90 = load i64, ptr %helper_crash_cleanup_token_4, align 8
+  %helper_crash_cleanup_retire_call91 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token90)
+  br i1 %helper_crash_cleanup_retire_call91, label %helper_crash_cleanup_retire_accepted92, label %helper_crash_cleanup_retire_rejected93
+
+helper_crash_cleanup_retire_merge89:              ; preds = %helper_crash_cleanup_retire_accepted92, %bb5
   call void @"__hew_enum_drop_inplace_Option$$Rc$lNode$g"(ptr %local_4)
-  %resource_drop_flag84 = load i64, ptr %local_2, align 8
-  %resource_drop_not_consumed85 = icmp eq i64 %resource_drop_flag84, 0
-  br i1 %resource_drop_not_consumed85, label %resource_drop_live_only86, label %resource_drop_merge87
+  %resource_drop_flag94 = load i64, ptr %local_2, align 8
+  %resource_drop_not_consumed95 = icmp eq i64 %resource_drop_flag94, 0
+  br i1 %resource_drop_not_consumed95, label %resource_drop_live_only96, label %resource_drop_merge97
 
-helper_crash_cleanup_retire_accepted82:           ; preds = %helper_crash_cleanup_retire78
+helper_crash_cleanup_retire_accepted92:           ; preds = %helper_crash_cleanup_retire88
   store i64 0, ptr %helper_crash_cleanup_token_4, align 8
   store i1 false, ptr %helper_crash_cleanup_active_4, align 1
-  br label %helper_crash_cleanup_retire_merge79
+  br label %helper_crash_cleanup_retire_merge89
 
-helper_crash_cleanup_retire_rejected83:           ; preds = %helper_crash_cleanup_retire78
+helper_crash_cleanup_retire_rejected93:           ; preds = %helper_crash_cleanup_retire88
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
 
-resource_drop_live_only86:                        ; preds = %helper_crash_cleanup_retire_merge79
-  %helper_crash_cleanup_drop_active88 = load i1, ptr %helper_crash_cleanup_active_1, align 1
-  br i1 %helper_crash_cleanup_drop_active88, label %helper_crash_cleanup_retire89, label %helper_crash_cleanup_retire_merge90
+resource_drop_live_only96:                        ; preds = %helper_crash_cleanup_retire_merge89
+  %helper_crash_cleanup_drop_active98 = load i1, ptr %helper_crash_cleanup_active_1, align 1
+  br i1 %helper_crash_cleanup_drop_active98, label %helper_crash_cleanup_retire99, label %helper_crash_cleanup_retire_merge100
 
-resource_drop_merge87:                            ; preds = %helper_crash_cleanup_retire_merge90, %helper_crash_cleanup_retire_merge79
+resource_drop_merge97:                            ; preds = %helper_crash_cleanup_retire_merge100, %helper_crash_cleanup_retire_merge89
   call void @hew_trap_with_code(i32 208)
   call void @llvm.trap()
   unreachable
 
-helper_crash_cleanup_retire89:                    ; preds = %resource_drop_live_only86
-  %helper_crash_cleanup_retire_token91 = load i64, ptr %helper_crash_cleanup_token_1, align 8
-  %helper_crash_cleanup_retire_call92 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token91)
-  br i1 %helper_crash_cleanup_retire_call92, label %helper_crash_cleanup_retire_accepted93, label %helper_crash_cleanup_retire_rejected94
+helper_crash_cleanup_retire99:                    ; preds = %resource_drop_live_only96
+  %helper_crash_cleanup_retire_token101 = load i64, ptr %helper_crash_cleanup_token_1, align 8
+  %helper_crash_cleanup_retire_call102 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token101)
+  br i1 %helper_crash_cleanup_retire_call102, label %helper_crash_cleanup_retire_accepted103, label %helper_crash_cleanup_retire_rejected104
 
-helper_crash_cleanup_retire_merge90:              ; preds = %helper_crash_cleanup_retire_accepted93, %resource_drop_live_only86
-  %ref_drop_handle95 = load ptr, ptr %local_1, align 8
-  call void @hew_weak_drop_rc(ptr %ref_drop_handle95)
+helper_crash_cleanup_retire_merge100:             ; preds = %helper_crash_cleanup_retire_accepted103, %resource_drop_live_only96
+  %ref_drop_handle105 = load ptr, ptr %local_1, align 8
+  call void @hew_weak_drop_rc(ptr %ref_drop_handle105)
   store ptr null, ptr %local_1, align 8
-  br label %resource_drop_merge87
+  br label %resource_drop_merge97
 
-helper_crash_cleanup_retire_accepted93:           ; preds = %helper_crash_cleanup_retire89
+helper_crash_cleanup_retire_accepted103:          ; preds = %helper_crash_cleanup_retire99
   store i64 0, ptr %helper_crash_cleanup_token_1, align 8
   store i1 false, ptr %helper_crash_cleanup_active_1, align 1
-  br label %helper_crash_cleanup_retire_merge90
+  br label %helper_crash_cleanup_retire_merge100
 
-helper_crash_cleanup_retire_rejected94:           ; preds = %helper_crash_cleanup_retire89
+helper_crash_cleanup_retire_rejected104:          ; preds = %helper_crash_cleanup_retire99
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
@@ -1834,6 +1864,8 @@ declare void @hew_rc_set(ptr, ptr)
 
 declare i1 @hew_cont_crash_cleanup_retire(i64)
 
+declare i32 @hew_runtime_exit_status()
+
 define internal void @__hew_frame_cleanup_5357928e581d821b(ptr %0) {
 entry:
   %ref_drop_handle = load ptr, ptr %0, align 8
@@ -1851,8 +1883,6 @@ entry:
 }
 
 declare i32 @hew_lambda_drain_all(i64)
-
-declare i32 @hew_runtime_exit_status()
 
 ; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64) #1

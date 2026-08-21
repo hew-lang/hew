@@ -34,16 +34,27 @@
 //!    never "was killed".
 //!
 //! macOS-only (`leaks(1)` and the Darwin poisoned allocator); elsewhere the
-//! tests record a counted SKIP.
-
-#![cfg(unix)]
+//! tests record a counted SKIP. That is why this file carries no
+//! `#![cfg(unix)]`: a module-level cfg deletes the tests from the binary on
+//! Windows, which is an INVISIBLE skip — the runner reports neither a pass nor
+//! a skip for a test it never saw. The per-test
+//! `#[cfg_attr(not(target_os = "macos"), ignore = ...)]` is the one gate, and
+//! it makes every non-macOS host — Linux and Windows alike — a skip with a
+//! reason in the run summary.
 
 mod support;
 
 use support::leak_slope::{
     compile_to_native, measure_leaks, run_probe_witness, run_under_malloc_scribble,
 };
-use support::{describe_output, require_codegen};
+use support::{describe_output, require_codegen, run_bounded_command};
+
+use std::process::{Command, Output};
+
+/// Run a compiled probe once and capture its output, bounded.
+fn probe_output(bin: &std::path::Path) -> Output {
+    run_bounded_command(Command::new(bin), format!("probe {}", bin.display()))
+}
 
 /// Low iteration count: exercises the dead-recipient edge enough to clear the
 /// constant runtime baseline without approaching the slope signal.
@@ -122,12 +133,21 @@ fn main() {{
     )
 }
 
-/// Race driver: the crashing fire-and-forget is queued in the MIDDLE of a run
-/// of owned-payload sends, so the sends around it straddle the recipient's
+/// Race driver, in two phases.
+///
+/// Phase 1 queues the crashing fire-and-forget in the MIDDLE of a run of
+/// owned-payload sends, so the sends around it straddle the recipient's
 /// terminal transition — some deliver, some take the stopped-recipient no-op,
-/// and at least one issues while the transition is in flight. Both outcomes now
-/// flow through the same undelivered release edge, so a double release surfaces
-/// here as a poisoned-allocator abort.
+/// and at least one issues while the transition is in flight. That is the
+/// double-release hazard: both outcomes now flow through the same undelivered
+/// release edge.
+///
+/// Phase 2 settles first, then sends the same payloads again. Those sends
+/// cannot deliver — the recipient is terminal and its mailbox is closed — so
+/// the stopped-recipient edge is exercised by construction rather than by
+/// winning a race. The delivered-line count is the witness: `2 * iters` sends
+/// are issued and at most `iters` can ever print, so a run where every send
+/// delivered (the edge never taken, the oracle asserting nothing) is visible.
 fn die_mid_send_source(iters: usize) -> String {
     format!(
         r#"
@@ -148,6 +168,10 @@ fn main() {{
             sink.die();
         }}
         sink.take_string(f"racing-payload-{{i}}".to_upper());
+    }}
+    sleep(200ms);
+    for i in 0..{iters} {{
+        sink.take_string(f"post-crash-payload-{{i}}".to_upper());
     }}
     println("RACE_DONE");
 }}
@@ -191,6 +215,26 @@ fn dead_recipient_send_has_no_per_iteration_payload_leak() {
         "dead-recipient probe printed {high_lines} lines at {HIGH_ITERS} iterations and \
          {low_lines} at {LOW_ITERS}: the send loop did not scale with the iteration count, so \
          the leak numbers below are not slope samples"
+    );
+
+    // Edge witness: the `Sink` is crashed by an `ask` BEFORE the first payload
+    // is sent, so every one of these sends must take the stopped-recipient
+    // edge. A single delivered payload would mean the probe was measuring
+    // ordinary delivery, not the edge under test.
+    let probe_run = probe_output(&bin_low);
+    let probe_stdout = String::from_utf8_lossy(&probe_run.stdout);
+    assert!(
+        probe_stdout.contains("SINK_DEAD"),
+        "dead-recipient probe did not observe the recipient crash, so its sends were not to a \
+         terminal actor:\nstdout:\n{probe_stdout}"
+    );
+    assert!(
+        !probe_stdout.contains("STRING:")
+            && !probe_stdout.contains("RECORD:")
+            && !probe_stdout.contains("VEC:"),
+        "dead-recipient probe delivered a payload: the recipient was live for at least one \
+         send, so the stopped-recipient release edge is not what this slope measures:\n\
+         stdout:\n{probe_stdout}"
     );
 
     let low_leaks = measure_leaks(&bin_low);
@@ -247,10 +291,33 @@ fn recipient_dying_mid_send_does_not_double_release_payload() {
          the mailbox had already taken:\n{}",
         describe_output(&output)
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("RACE_DONE"),
-        "die-mid-send race did not complete its send loop, so it never reached the sends that \
+        stdout.contains("RACE_DONE"),
+        "die-mid-send race did not complete its send loops, so it never reached the sends that \
          straddle the recipient's terminal transition:\n{}",
+        describe_output(&output)
+    );
+
+    // Witness that the stopped-recipient edge was actually taken. The driver
+    // issues 2 * RACE_ITERS sends; every one of the second loop's is to an
+    // actor that is already terminal, so it cannot be enqueued and cannot
+    // print. A run where the delivered count reached the issued count would
+    // mean no send ever reached the edge under test, and the no-abort result
+    // above would be vacuous.
+    let issued = RACE_ITERS * 2;
+    let delivered = stdout.matches("STRING:").count();
+    assert!(
+        delivered <= RACE_ITERS,
+        "die-mid-send race delivered {delivered} of {issued} sends: the post-crash sends reached \
+         a live mailbox, so the stopped-recipient release edge was never exercised and this \
+         probe proves nothing:\n{}",
+        describe_output(&output)
+    );
+    assert!(
+        stdout.contains("STRING:RACING-PAYLOAD-0"),
+        "die-mid-send race delivered nothing at all, so the pre-crash sends never ran and the \
+         crash did not interleave with live delivery:\n{}",
         describe_output(&output)
     );
 }

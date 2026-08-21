@@ -29418,13 +29418,53 @@ fn lower_terminator<'ctx>(
                     &mut fn_ctx.runtime_decls.borrow_mut(),
                     "hew_exit",
                 )?;
+                // The shipped exit-code rule: a deliberate non-zero code the
+                // program returned is already a failure AND carries more
+                // information than `1`, so it must survive the fault report;
+                // only a `0` is replaced. Calling `hew_exit(1)` unconditionally
+                // here overwrote a returned `main` code (a program returning 7
+                // while an actor faulted exited 1). `hew_exit` applies the same
+                // rule again on the runtime side, which is a no-op for the
+                // always-non-zero value selected here and the load-bearing half
+                // for an explicit `exit(0)` in user code.
+                let exit_i64 = fn_ctx.ctx.i64_type();
+                let user_code = if matches!(fn_ctx.return_resolved_ty, ResolvedTy::Unit) {
+                    exit_i64.const_zero()
+                } else if let BasicTypeEnum::IntType(int_ty) = fn_ctx.return_ty {
+                    let loaded = fn_ctx
+                        .builder
+                        .build_load(int_ty, fn_ctx.return_slot, "hew_exit_user_code")
+                        .llvm_ctx("main return slot load for exit code")?
+                        .into_int_value();
+                    fn_ctx
+                        .builder
+                        .build_int_s_extend_or_bit_cast(loaded, exit_i64, "hew_exit_user_code_i64")
+                        .llvm_ctx("main return code widen")?
+                } else {
+                    exit_i64.const_zero()
+                };
+                let user_code_set = fn_ctx
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        user_code,
+                        exit_i64.const_zero(),
+                        "hew_exit_user_code_set",
+                    )
+                    .llvm_ctx("main return code compare")?;
+                let exit_code = fn_ctx
+                    .builder
+                    .build_select(
+                        user_code_set,
+                        user_code,
+                        exit_i64.const_int(1, false),
+                        "hew_exit_status_code",
+                    )
+                    .llvm_ctx("select process exit code")?
+                    .into_int_value();
                 fn_ctx
                     .builder
-                    .build_call(
-                        exit,
-                        &[fn_ctx.ctx.i64_type().const_int(1, false).into()],
-                        "hew_shutdown_exit_call",
-                    )
+                    .build_call(exit, &[exit_code.into()], "hew_shutdown_exit_call")
                     .llvm_ctx("hew_exit shutdown failure call")?;
                 fn_ctx
                     .builder
@@ -31751,7 +31791,91 @@ fn lower_terminator<'ctx>(
     Ok(())
 }
 
+/// Consult the process exit-status authority and fail the process when it
+/// reports an unrecovered actor fault.
+///
+/// The authority must be TOTAL — every way a native `main` can reach its `ret`
+/// consults it — rather than total-by-reachability-argument for the shapes we
+/// happen to enumerate. The `Terminator::Return` epilogue folds the authority
+/// into its shutdown-failure branch; this is the same consult for the SYNTHETIC
+/// returns codegen injects, which are not `Terminator::Return` and so never
+/// reach that epilogue. On those paths the program produced no user exit code,
+/// so the fault's code is `1`.
+///
+/// A no-op for any function that is not a native `main`.
+fn emit_process_exit_status_gate(fn_ctx: &FnCtx<'_, '_>) -> CodegenResult<()> {
+    if !fn_ctx.emit_process_exit_status_epilogue {
+        return Ok(());
+    }
+    let current_fn = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| {
+            CodegenError::FailClosed("exit-status gate has no containing function".into())
+        })?;
+    let status_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_runtime_exit_status",
+    )?;
+    let status = fn_ctx
+        .builder
+        .build_call(status_fn, &[], "hew_runtime_exit_status_call")
+        .llvm_ctx("hew_runtime_exit_status call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_runtime_exit_status returned void".into()))?
+        .into_int_value();
+    let faulted = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::NE,
+            status,
+            fn_ctx.ctx.i32_type().const_zero(),
+            "hew_runtime_faulted",
+        )
+        .llvm_ctx("hew_runtime_exit_status compare")?;
+    let failed_bb = fn_ctx
+        .ctx
+        .append_basic_block(current_fn, "hew_exit_status_failed");
+    let continue_bb = fn_ctx
+        .ctx
+        .append_basic_block(current_fn, "hew_exit_status_continue");
+    fn_ctx
+        .builder
+        .build_conditional_branch(faulted, failed_bb, continue_bb)
+        .llvm_ctx("branch on process exit status")?;
+
+    fn_ctx.builder.position_at_end(failed_bb);
+    let exit = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_exit",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            exit,
+            &[fn_ctx.ctx.i64_type().const_int(1, false).into()],
+            "hew_exit_status_call",
+        )
+        .llvm_ctx("hew_exit process fault call")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(continue_bb)
+        .llvm_ctx("exit-status fallback continuation")?;
+    fn_ctx.builder.position_at_end(continue_bb);
+    Ok(())
+}
+
 fn emit_cancel_trap_or_return(fn_ctx: &FnCtx<'_, '_>) -> CodegenResult<()> {
+    // A synthetic cancel return from `main` leaves the process without ever
+    // reaching the `Terminator::Return` epilogue. Consult the exit-status
+    // authority here too, so it is total by construction.
+    emit_process_exit_status_gate(fn_ctx)?;
     // In a coroutine the function's LLVM return type is the `coro.begin` handle
     // (`ptr`), NOT `fn_ctx.return_ty` (which carries the LOGICAL Hew return type
     // so the body's value lowering still works). A cancel exit here must return

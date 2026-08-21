@@ -340,6 +340,174 @@ fn main() {
 }
 "#;
 
+/// A `temporary` child that CRASHES. Policy declines the restart, so no
+/// recovery happens: declining is not recovering, and the crash owns the exit
+/// status. The supervisor itself keeps running — the fault is reported, not
+/// cascaded.
+const TEMPORARY_CHILD_CRASH: &str = r#"
+actor OneShot {
+    receive fn boom() {
+        panic("temporary child crash")
+    }
+}
+
+actor Probe {
+    receive fn ping() -> i64 {
+        7
+    }
+}
+
+supervisor Pool {
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+
+    child t1: OneShot restart: temporary;
+}
+
+fn main() {
+    let sup = spawn Pool;
+    let probe = spawn Probe;
+    sleep(30ms);
+    let t1 = sup.t1;
+    t1.boom();
+    sleep(300ms);
+    match await probe.ping() {
+        .Ok(v) => println(f"PROBE:{v}"),
+        .Err(_) => println("PROBE_DEAD"),
+    }
+    println("MAIN_DONE");
+}
+"#;
+
+/// An `#[on(crash)]` hook answering `Escalate` on a ROOT supervisor. There is
+/// no parent to escalate to, so the fault reached the top of the supervision
+/// tree with no authority left.
+const ESCALATE_AT_ROOT: &str = r#"
+import std.failure;
+
+actor Worker {
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        CrashAction.Escalate
+    }
+
+    receive fn boom() {
+        panic("crash escalated past the root")
+    }
+}
+
+actor Probe {
+    receive fn ping() -> i64 {
+        7
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+
+    child w: Worker;
+}
+
+fn main() {
+    let sup = spawn App;
+    let probe = spawn Probe;
+    let w = sup.w;
+    w.boom();
+    sleep(300ms);
+    match await probe.ping() {
+        .Ok(v) => println(f"PROBE:{v}"),
+        .Err(_) => println("PROBE_DEAD"),
+    }
+    println("MAIN_DONE");
+}
+"#;
+
+/// A supervised crash queued as `main` returns. The supervisor program takes
+/// the immediate shutdown path, so the crash and its supervisor's ruling both
+/// race the worker join. The exit status must be the ruling's — a restart, so
+/// success — not whichever side of the join the scheduler happened to land on.
+const SUPERVISED_CRASH_RACING_SHUTDOWN: &str = r#"
+actor Flaky {
+    receive fn boom() {
+        panic("supervised crash racing the exit path")
+    }
+}
+
+supervisor Pool {
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+
+    child f1: Flaky;
+}
+
+fn main() {
+    let sup = spawn Pool;
+    sleep(30ms);
+    let f1 = sup.f1;
+    f1.boom();
+    println("MAIN_RETURNS_IMMEDIATELY");
+}
+"#;
+
+/// A non-zero code the program returned, alongside an unrecovered fault. The
+/// chosen code is already a failure and says more than `1`, so it survives.
+const USER_EXIT_CODE_WITH_FAULT: &str = r#"
+actor Loner {
+    receive fn boom() -> i64 {
+        panic("unsupervised crash under a user exit code")
+    }
+}
+
+fn main() -> i64 {
+    let loner = spawn Loner;
+    match await loner.boom() {
+        .Ok(_) => println("LONER_REPLIED"),
+        .Err(_) => println("LONER_CRASHED"),
+    }
+    7
+}
+"#;
+
+/// An explicit `exit(0)` after an unrecovered fault. The `exit` builtin is a
+/// termination path like any other, so it consults the same authority: a zero
+/// cannot report success over a crashed actor nobody recovered.
+const EXPLICIT_EXIT_ZERO_WITH_FAULT: &str = r#"
+actor Loner {
+    receive fn boom() -> i64 {
+        panic("unsupervised crash before an explicit exit(0)")
+    }
+}
+
+fn main() {
+    let loner = spawn Loner;
+    match await loner.boom() {
+        .Ok(_) => println("LONER_REPLIED"),
+        .Err(_) => println("LONER_CRASHED"),
+    }
+    exit(0);
+}
+"#;
+
+/// The same explicit `exit`, with a code the program chose. Nothing overwrites
+/// it, fault or not.
+const EXPLICIT_EXIT_CODE_WITH_FAULT: &str = r#"
+actor Loner {
+    receive fn boom() -> i64 {
+        panic("unsupervised crash before an explicit exit(3)")
+    }
+}
+
+fn main() {
+    let loner = spawn Loner;
+    match await loner.boom() {
+        .Ok(_) => println("LONER_REPLIED"),
+        .Err(_) => println("LONER_CRASHED"),
+    }
+    exit(3);
+}
+"#;
+
 fn compile_fixture(source: &str, dir: &Path, name: &str) -> PathBuf {
     let source_path = dir.join(format!("{name}.hew"));
     std::fs::write(&source_path, source).expect("write chat-room fixture");
@@ -399,6 +567,30 @@ fn assert_fixture_under_every_worker_pool(
     stdout_contains: &[&str],
     stderr_contains: &[&str],
 ) {
+    assert_fixture_counts_under_every_worker_pool(
+        source,
+        name,
+        expected_status,
+        stdout_contains,
+        &[],
+        stderr_contains,
+    );
+}
+
+/// As [`assert_fixture_under_every_worker_pool`], plus minimum OCCURRENCE
+/// counts on stdout.
+///
+/// A bare `contains` cannot distinguish "the child worked" from "the child
+/// worked again after its supervisor restarted it" when both print the same
+/// line — the second occurrence is the whole claim, and only a count sees it.
+fn assert_fixture_counts_under_every_worker_pool(
+    source: &str,
+    name: &str,
+    expected_status: i32,
+    stdout_contains: &[&str],
+    stdout_min_counts: &[(&str, usize)],
+    stderr_contains: &[&str],
+) {
     let dir = tempdir();
     let binary = compile_fixture(source, dir.path(), name);
 
@@ -415,6 +607,14 @@ fn assert_fixture_under_every_worker_pool(
             assert!(
                 stdout.contains(fragment),
                 "{name} under HEW_WORKERS={workers} must print {fragment:?}:\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            );
+        }
+        for (fragment, minimum) in stdout_min_counts {
+            let seen = stdout.matches(fragment).count();
+            assert!(
+                seen >= *minimum,
+                "{name} under HEW_WORKERS={workers} must print {fragment:?} at least {minimum} \
+                 times, saw {seen}:\nstdout:\n{stdout}\nstderr:\n{stderr}",
             );
         }
         for fragment in stderr_contains {
@@ -512,11 +712,16 @@ fn supervisor_program_reports_an_unrelated_unsupervised_crash() {
 #[test]
 fn supervisor_restarting_its_own_child_keeps_the_run_successful() {
     require_codegen();
-    assert_fixture_under_every_worker_pool(
+    // The fixture works the child once BEFORE the crash and once AFTER, so a
+    // bare `contains("WORKED:1")` passes on the pre-crash line alone and says
+    // nothing about the restart. Two occurrences is the claim: the child came
+    // back and served again.
+    assert_fixture_counts_under_every_worker_pool(
         SUPERVISOR_RESTARTS_ITS_CHILD,
         "supervisor_restarts_its_child",
         0,
-        &["WORKED:1", "MAIN_DONE"],
+        &["MAIN_DONE"],
+        &[("WORKED:1", 2)],
         &["supervised child crash"],
     );
 }
@@ -574,5 +779,104 @@ fn crash_on_suspend_resume_fails_the_process_without_cascading() {
         1,
         &["WAITER_CRASHED", "PROBE:7", "MAIN_DONE"],
         &["crash after resuming from suspend"],
+    );
+}
+
+/// A `temporary` child's crash is declined, not recovered: the exit status
+/// reports it while the supervisor keeps serving.
+#[test]
+fn temporary_child_crash_is_not_a_recovery() {
+    require_codegen();
+    assert_fixture_under_every_worker_pool(
+        TEMPORARY_CHILD_CRASH,
+        "temporary_child_crash",
+        1,
+        &["PROBE:7", "MAIN_DONE"],
+        &["temporary child crash"],
+    );
+}
+
+/// `Escalate` at a root supervisor has nowhere to route: the fault reached the
+/// top of the tree unrecovered.
+#[test]
+fn crash_escalated_past_the_root_supervisor_fails_the_process() {
+    require_codegen();
+    assert_fixture_under_every_worker_pool(
+        ESCALATE_AT_ROOT,
+        "escalate_at_root",
+        1,
+        &["PROBE:7", "MAIN_DONE"],
+        &["crash escalated past the root"],
+    );
+}
+
+/// A supervised crash queued as `main` returns is still ruled on: shutdown
+/// quiesces the queued work AND the supervisor decision it raises before
+/// joining workers, so the restart decides the status. Run repeatedly — the
+/// bug this pins was a race, and a single green run cannot see one.
+#[test]
+fn supervised_crash_racing_shutdown_is_still_ruled_on() {
+    require_codegen();
+
+    let dir = tempdir();
+    let binary = compile_fixture(
+        SUPERVISED_CRASH_RACING_SHUTDOWN,
+        dir.path(),
+        "supervised_crash_racing_shutdown",
+    );
+
+    for workers in WORKER_POOLS {
+        for attempt in 0..12 {
+            let output = run_fixture_with_workers(&binary, workers);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "attempt {attempt} under HEW_WORKERS={workers}: the supervisor restarts this \
+                 child, so the run is successful. A 1 here means the worker join beat the \
+                 queued crash or its supervisor's ruling, and the exit status was decided by \
+                 that race:\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            );
+        }
+    }
+}
+
+/// A non-zero code the program returned survives the fault report.
+#[test]
+fn returned_exit_code_survives_an_unrecovered_fault() {
+    require_codegen();
+    assert_fixture_under_every_worker_pool(
+        USER_EXIT_CODE_WITH_FAULT,
+        "user_exit_code_with_fault",
+        7,
+        &["LONER_CRASHED"],
+        &["unsupervised crash under a user exit code"],
+    );
+}
+
+/// `exit(0)` cannot report success over an unrecovered fault.
+#[test]
+fn explicit_exit_zero_does_not_mask_an_unrecovered_fault() {
+    require_codegen();
+    assert_fixture_under_every_worker_pool(
+        EXPLICIT_EXIT_ZERO_WITH_FAULT,
+        "explicit_exit_zero_with_fault",
+        1,
+        &["LONER_CRASHED"],
+        &["unsupervised crash before an explicit exit(0)"],
+    );
+}
+
+/// `exit(code)` keeps the code the program chose.
+#[test]
+fn explicit_exit_code_survives_an_unrecovered_fault() {
+    require_codegen();
+    assert_fixture_under_every_worker_pool(
+        EXPLICIT_EXIT_CODE_WITH_FAULT,
+        "explicit_exit_code_with_fault",
+        3,
+        &["LONER_CRASHED"],
+        &["unsupervised crash before an explicit exit(3)"],
     );
 }

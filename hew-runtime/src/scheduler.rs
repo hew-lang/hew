@@ -977,6 +977,21 @@ pub extern "C" fn hew_sched_shutdown() {
         return;
     };
 
+    // Quiesce before joining workers. Two things must finish first, and both
+    // need a live worker to do it:
+    //
+    //   1. Work already queued at the moment shutdown was requested — including
+    //      the fire-and-forget handler that CRASHES an actor. Joining over it
+    //      makes "did the crash happen at all?" depend on scheduling.
+    //   2. The supervisor decision that crash queues. A supervised crash opens a
+    //      process exit-status record only its supervisor's dispatch can settle,
+    //      so joining with that dispatch queued makes the exit status a race.
+    //
+    // Together these make the immediate (supervisor-program) shutdown path
+    // report the same exit status as the graceful one for the same program.
+    // Both waits are bounded: an actor that never yields cannot hold exit open.
+    quiesce_before_worker_teardown(SHUTDOWN_QUIESCE_TIMEOUT);
+
     teardown_workers(Some(sched as *const Scheduler), None, false);
 
     // Write profile files on exit if HEW_PROF_OUTPUT is set.  Must run BEFORE
@@ -991,6 +1006,30 @@ pub extern "C" fn hew_sched_shutdown() {
     // Workers are joined at this point so no concurrent actor activations can
     // race the hook callbacks.
     crate::session::session_reset();
+}
+
+/// Ceiling on the pre-teardown quiesce. Reached only by a program whose
+/// scheduler never goes idle (an actor spinning without yielding) or whose
+/// supervisor never rules — both already-degenerate cases whose exit is allowed
+/// to cost a bounded wait. A healthy program observes idle on the first poll.
+const SHUTDOWN_QUIESCE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Poll interval for [`quiesce_before_worker_teardown`].
+const SHUTDOWN_QUIESCE_POLL: Duration = Duration::from_millis(1);
+
+/// Wait, bounded, for queued work to run and for every supervised crash it
+/// raised to be ruled on.
+fn quiesce_before_worker_teardown(timeout: Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if drain_is_idle() && !crate::exit_status::has_open_supervised_faults() {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(SHUTDOWN_QUIESCE_POLL);
+    }
 }
 
 pub(crate) fn shutdown_requested() -> bool {

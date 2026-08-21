@@ -3866,23 +3866,40 @@ The `panic()` builtin triggers a controlled crash for testing.
 
 ### 5.8 Process Exit Status (normative)
 
-A Hew program's exit status reports whether every actor fault was recovered.
-`main` exits non-zero when at least one actor fault reached a point with no
-recovery authority left:
+A Hew program's exit code is:
 
-- an actor crashed with no supervisor attached — nothing owned the recovery
+```text
+final = user_code                    if user_code != 0
+      = 1                            if an actor fault went unrecovered
+      = 0                            otherwise
+```
+
+`user_code` is the value `main` returns (0 for a unit `main`) or the argument to
+`exit`. A non-zero code the program chose is never overwritten: it is already a
+failure and carries more information than `1`. A zero never masks a fault. This
+rule applies on EVERY termination path — returning from `main`, and an explicit
+`exit(code)` anywhere — so `exit(0)` cannot report success over a crashed actor.
+
+**An actor fault is unrecovered** when it reaches a point with no recovery
+authority left:
+
+- an actor crashes with no supervisor attached — nothing owns the recovery
   decision; a top-level supervisor actor crashing is this case, since it has no
   supervisor of its own;
-- a supervisor gave up on a fault — restart budget exhausted (§5.4), the child
-  was not restartable, or the restart itself failed — and had no parent to
-  escalate to, so the fault reached the top of the supervision tree unrecovered.
+- a supervisor rules that it cannot recover the fault: the restart budget is
+  exhausted (§5.4), the child is not restartable (`temporary`, or a tripped
+  circuit breaker), the restart itself produces no child, an `#[on(crash)]` hook
+  answers `Kill`, or it answers `Escalate` at a supervisor with no parent;
+- a supervised crash whose supervisor never rules at all — its supervisor was
+  already stopping, its mailbox was closed, or shutdown joined the workers
+  before the queued decision ran. An undelivered decision is not a recovery.
 
-A crash a supervisor HANDLES — restarting the child itself, or escalating to a
-parent that recovers it (§5.5) — leaves the exit status successful. That, and
-only that, keeps a crashed actor out of the exit status. The status is monotonic
-within a run: a later successful restart of one child does not retract an
-earlier unrecovered fault, and a crash raised after shutdown has begun counts
-exactly like one raised mid-run.
+A crash a supervisor HANDLES — restarting the child, scheduling a restart, or
+escalating to a parent that owns the decision (§5.5) — leaves the exit status
+successful. That, and only that, keeps a crashed actor out of the exit status.
+Handling settles only its own fault: a later successful restart of one child
+does not retract an earlier unrecovered fault. A crash raised after shutdown has
+begun counts exactly like one raised mid-run.
 
 The rule does not depend on program shape. A program that contains a supervisor
 and ALSO spawns an unsupervised actor that crashes exits non-zero — the

@@ -6758,8 +6758,11 @@ unsafe fn hew_actor_trap_inner(
     // Store error code only after winning the CAS race.
     a.error_code.store(error_code, Ordering::Release);
     // A supervisor owns the recovery decision for its children. Without one,
-    // this terminal crash is unrecovered: record it on the process exit-status
-    // authority (`exit_status`), which every native shutdown path reads.
+    // this terminal crash is unrecovered by construction: record it on the
+    // process exit-status authority (`exit_status`), which every termination
+    // path reads. A SUPERVISED crash is not settled here — its disposition is
+    // decided later, on the supervisor's own dispatch; it is OPENED at the
+    // notification site below so a decision that never arrives fails closed.
     if terminal == HewActorState::Crashed as i32 && supervisor.is_null() {
         crate::exit_status::record_unrecovered_actor_fault();
     }
@@ -6805,6 +6808,17 @@ unsafe fn hew_actor_trap_inner(
     // to reinterpret.
     if !supervisor.is_null() {
         if let Ok(child_index) = u32::try_from(supervisor_child_index) {
+            // Open the crash's exit-status record BEFORE the notification is
+            // queued. The supervisor's ruling runs on its own dispatch, so
+            // opening afterwards could race a settle that has already run.
+            // Until that ruling arrives the fault counts as failing: a
+            // supervisor that is already stopping, a closed mailbox, or an
+            // immediate `hew_sched_shutdown` joining the workers before the
+            // queued decision runs all leave it open rather than silently
+            // successful.
+            if terminal == HewActorState::Crashed as i32 {
+                crate::exit_status::open_supervised_fault();
+            }
             // SAFETY: supervisor back-pointer was set by hew_supervisor_add_child.
             unsafe {
                 crate::supervisor::hew_supervisor_notify_child_actor_event(
@@ -6815,6 +6829,12 @@ unsafe fn hew_actor_trap_inner(
                     error_code,
                 );
             }
+        } else if terminal == HewActorState::Crashed as i32 {
+            // A supervisor back-pointer with no usable child index names no
+            // roster entry, so no supervisor can ever rule on this crash. That
+            // is the same "no recovery authority" case as an unsupervised
+            // crash, settled immediately rather than left open forever.
+            crate::exit_status::record_unrecovered_actor_fault();
         }
     }
 }

@@ -394,16 +394,25 @@ bb1:                                              ; preds = %bb0
 bb2:                                              ; preds = %bb1
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
   %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
-  %hew_runtime_exit_status_call = call i32 @hew_runtime_exit_status()
-  %hew_runtime_faulted = icmp ne i32 %hew_runtime_exit_status_call, 0
-  %hew_exit_any_failed = or i1 %hew_lambda_drain_failed, %hew_runtime_faulted
+  %hew_runtime_exit_status_call1 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted2 = icmp ne i32 %hew_runtime_exit_status_call1, 0
+  %hew_exit_any_failed = or i1 %hew_lambda_drain_failed, %hew_runtime_faulted2
   br i1 %hew_exit_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 cancel_exit:                                      ; preds = %entry
-  ret i8 0
+  %hew_runtime_exit_status_call = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted = icmp ne i32 %hew_runtime_exit_status_call, 0
+  br i1 %hew_runtime_faulted, label %hew_exit_status_failed, label %hew_exit_status_continue
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+hew_exit_status_failed:                           ; preds = %cancel_exit
+  call void @hew_exit(i64 1)
+  br label %hew_exit_status_continue
+
+hew_exit_status_continue:                         ; preds = %hew_exit_status_failed, %cancel_exit
+  ret i8 0
 
 hew_shutdown_exit_failed:                         ; preds = %bb2
   call void @hew_exit(i64 1)
@@ -1046,9 +1055,9 @@ after_cooperate:                                  ; preds = %entry
 
 declare i32 @hew_actor_cooperate()
 
-declare i32 @hew_lambda_drain_all(i64)
-
 declare i32 @hew_runtime_exit_status()
+
+declare i32 @hew_lambda_drain_all(i64)
 
 ; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64) #0

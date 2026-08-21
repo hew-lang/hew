@@ -1013,11 +1013,20 @@ bb6:                                              ; preds = %bb5
   br i1 %helper_crash_cleanup_drop_active, label %helper_crash_cleanup_retire, label %helper_crash_cleanup_retire_merge
 
 cancel_exit:                                      ; preds = %entry
-  ret i8 0
+  %hew_runtime_exit_status_call = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted = icmp ne i32 %hew_runtime_exit_status_call, 0
+  br i1 %hew_runtime_faulted, label %hew_exit_status_failed, label %hew_exit_status_continue
 
 after_cooperate:                                  ; preds = %entry
   %hew_sched_init_entry_call = call i32 @hew_sched_init()
   br label %bb0
+
+hew_exit_status_failed:                           ; preds = %cancel_exit
+  call void @hew_exit(i64 1)
+  br label %hew_exit_status_continue
+
+hew_exit_status_continue:                         ; preds = %hew_exit_status_failed, %cancel_exit
+  ret i8 0
 
 helper_crash_cleanup_deactivate:                  ; preds = %bb3
   %helper_crash_cleanup_token = load i64, ptr %helper_crash_cleanup_token_12, align 8
@@ -1142,9 +1151,9 @@ helper_crash_cleanup_return_merge_12:             ; preds = %helper_crash_cleanu
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
   %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
   %hew_shutdown_any_failed = or i1 %hew_shutdown_failed, %hew_lambda_drain_failed
-  %hew_runtime_exit_status_call = call i32 @hew_runtime_exit_status()
-  %hew_runtime_faulted = icmp ne i32 %hew_runtime_exit_status_call, 0
-  %hew_exit_any_failed = or i1 %hew_shutdown_any_failed, %hew_runtime_faulted
+  %hew_runtime_exit_status_call45 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted46 = icmp ne i32 %hew_runtime_exit_status_call45, 0
+  %hew_exit_any_failed = or i1 %hew_shutdown_any_failed, %hew_runtime_faulted46
   br i1 %hew_exit_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 helper_crash_cleanup_return_retire_12:            ; preds = %helper_crash_cleanup_retire_merge
@@ -2046,6 +2055,8 @@ declare i1 @hew_dispatch_state_cleanup_begin_replace(ptr, i64)
 
 declare void @hew_dispatch_state_cleanup_prepare(ptr, ptr, i64)
 
+declare i32 @hew_runtime_exit_status()
+
 declare i32 @hew_sched_init()
 
 declare void @hew_wasm_register_actor_meta(ptr)
@@ -2107,8 +2118,6 @@ declare i32 @hew_shutdown_wait()
 declare void @hew_runtime_cleanup_after_main()
 
 declare i32 @hew_lambda_drain_all(i64)
-
-declare i32 @hew_runtime_exit_status()
 
 declare void @hew_string_drop(ptr)
 

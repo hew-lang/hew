@@ -398,7 +398,7 @@ bb2:                                              ; preds = %after_cooperate7, %
   %machine_variant_field_ptr = getelementptr inbounds nuw { i64 }, ptr %machine_payload_ptr, i32 0, i32 0
   br i1 %gen_next_started_set, label %gen_next_resume, label %gen_next_check_done
 
-bb3:                                              ; preds = %after_cooperate16
+bb3:                                              ; preds = %after_cooperate20
   %"hew_gen_coro_destroy drop" = load ptr, ptr %local_4, align 8
   call void @hew_gen_coro_destroy(ptr %"hew_gen_coro_destroy drop")
   store ptr null, ptr %local_4, align 8
@@ -406,16 +406,16 @@ bb3:                                              ; preds = %after_cooperate16
   call void @hew_print_value(i8 1, i64 %print_arg, i1 true)
   br label %bb12
 
-bb4:                                              ; preds = %after_cooperate31, %after_cooperate27
+bb4:                                              ; preds = %after_cooperate43, %after_cooperate35
   %hew_actor_cooperate4 = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel5 = icmp eq i32 %hew_actor_cooperate4, 2
   br i1 %hew_cooperate_is_cancel5, label %cancel_exit6, label %after_cooperate7
 
 bb5:                                              ; preds = %gen_next_cont
-  %machine_payload_ptr8 = getelementptr inbounds nuw %"Option$$i64", ptr %local_6, i32 0, i32 1
-  %machine_variant_field_ptr9 = getelementptr inbounds nuw { i64 }, ptr %machine_payload_ptr8, i32 0, i32 0
-  %move_load10 = load i64, ptr %machine_variant_field_ptr9, align 8
-  store i64 %move_load10, ptr %local_12, align 8
+  %machine_payload_ptr12 = getelementptr inbounds nuw %"Option$$i64", ptr %local_6, i32 0, i32 1
+  %machine_variant_field_ptr13 = getelementptr inbounds nuw { i64 }, ptr %machine_payload_ptr12, i32 0, i32 0
+  %move_load14 = load i64, ptr %machine_variant_field_ptr13, align 8
+  store i64 %move_load14, ptr %local_12, align 8
   %checked_lhs = load i64, ptr %local_3, align 8
   %checked_rhs = load i64, ptr %local_12, align 8
   %with_overflow = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
@@ -424,14 +424,14 @@ bb5:                                              ; preds = %gen_next_cont
   %checked_overflow_widen = zext i1 %checked_overflow to i8
   store i64 %checked_result, ptr %local_13, align 8
   store i8 %checked_overflow_widen, ptr %local_14, align 1
-  %cond_load11 = load i8, ptr %local_14, align 1
-  %cond_nz12 = icmp ne i8 %cond_load11, 0
-  br i1 %cond_nz12, label %bb9, label %bb10
+  %cond_load15 = load i8, ptr %local_14, align 1
+  %cond_nz16 = icmp ne i8 %cond_load15, 0
+  br i1 %cond_nz16, label %bb9, label %bb10
 
 bb6:                                              ; preds = %bb8
-  %hew_actor_cooperate13 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel14 = icmp eq i32 %hew_actor_cooperate13, 2
-  br i1 %hew_cooperate_is_cancel14, label %cancel_exit15, label %after_cooperate16
+  %hew_actor_cooperate17 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel18 = icmp eq i32 %hew_actor_cooperate17, 2
+  br i1 %hew_cooperate_is_cancel18, label %cancel_exit19, label %after_cooperate20
 
 bb7:                                              ; preds = %bb8
   call void @hew_trap_with_code(i32 208)
@@ -440,14 +440,14 @@ bb7:                                              ; preds = %bb8
 
 bb8:                                              ; preds = %gen_next_cont
   store i64 1, ptr %local_10, align 8
-  %cmp_lhs17 = load i64, ptr %local_7, align 8
-  %cmp_rhs18 = load i64, ptr %local_10, align 8
-  %cmp_bit19 = icmp eq i64 %cmp_lhs17, %cmp_rhs18
-  %cmp_zext20 = zext i1 %cmp_bit19 to i8
-  store i8 %cmp_zext20, ptr %local_11, align 1
-  %cond_load21 = load i8, ptr %local_11, align 1
-  %cond_nz22 = icmp ne i8 %cond_load21, 0
-  br i1 %cond_nz22, label %bb6, label %bb7
+  %cmp_lhs25 = load i64, ptr %local_7, align 8
+  %cmp_rhs26 = load i64, ptr %local_10, align 8
+  %cmp_bit27 = icmp eq i64 %cmp_lhs25, %cmp_rhs26
+  %cmp_zext28 = zext i1 %cmp_bit27 to i8
+  store i8 %cmp_zext28, ptr %local_11, align 1
+  %cond_load29 = load i8, ptr %local_11, align 1
+  %cond_nz30 = icmp ne i8 %cond_load29, 0
+  br i1 %cond_nz30, label %bb6, label %bb7
 
 bb9:                                              ; preds = %bb5
   call void @hew_trap_with_code(i32 201)
@@ -455,32 +455,41 @@ bb9:                                              ; preds = %bb5
   unreachable
 
 bb10:                                             ; preds = %bb5
-  %move_load23 = load i64, ptr %local_13, align 8
-  store i64 %move_load23, ptr %local_3, align 8
-  %hew_actor_cooperate24 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel25 = icmp eq i32 %hew_actor_cooperate24, 2
-  br i1 %hew_cooperate_is_cancel25, label %cancel_exit26, label %after_cooperate27
+  %move_load31 = load i64, ptr %local_13, align 8
+  store i64 %move_load31, ptr %local_3, align 8
+  %hew_actor_cooperate32 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel33 = icmp eq i32 %hew_actor_cooperate32, 2
+  br i1 %hew_cooperate_is_cancel33, label %cancel_exit34, label %after_cooperate35
 
 bb11:                                             ; No predecessors!
-  %hew_actor_cooperate28 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel29 = icmp eq i32 %hew_actor_cooperate28, 2
-  br i1 %hew_cooperate_is_cancel29, label %cancel_exit30, label %after_cooperate31
+  %hew_actor_cooperate40 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel41 = icmp eq i32 %hew_actor_cooperate40, 2
+  br i1 %hew_cooperate_is_cancel41, label %cancel_exit42, label %after_cooperate43
 
 bb12:                                             ; preds = %bb3
-  %move_load32 = load i64, ptr %local_3, align 8
-  store i64 %move_load32, ptr %return_slot, align 8
+  %move_load48 = load i64, ptr %local_3, align 8
+  store i64 %move_load48, ptr %return_slot, align 8
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
   %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
-  %hew_runtime_exit_status_call = call i32 @hew_runtime_exit_status()
-  %hew_runtime_faulted = icmp ne i32 %hew_runtime_exit_status_call, 0
-  %hew_exit_any_failed = or i1 %hew_lambda_drain_failed, %hew_runtime_faulted
+  %hew_runtime_exit_status_call49 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted50 = icmp ne i32 %hew_runtime_exit_status_call49, 0
+  %hew_exit_any_failed = or i1 %hew_lambda_drain_failed, %hew_runtime_faulted50
   br i1 %hew_exit_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 cancel_exit:                                      ; preds = %entry
-  ret i64 0
+  %hew_runtime_exit_status_call = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted = icmp ne i32 %hew_runtime_exit_status_call, 0
+  br i1 %hew_runtime_faulted, label %hew_exit_status_failed, label %hew_exit_status_continue
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+hew_exit_status_failed:                           ; preds = %cancel_exit
+  call void @hew_exit(i64 1)
+  br label %hew_exit_status_continue
+
+hew_exit_status_continue:                         ; preds = %hew_exit_status_failed, %cancel_exit
+  ret i64 0
 
 gen_next_resume:                                  ; preds = %bb2
   call void @hew_cont_resume(ptr %gen_next_handle)
@@ -520,31 +529,70 @@ gen_next_cont:                                    ; preds = %gen_next_some, %gen
   br i1 %cond_nz, label %bb5, label %bb8
 
 cancel_exit6:                                     ; preds = %bb4
-  ret i64 0
+  %hew_runtime_exit_status_call8 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted9 = icmp ne i32 %hew_runtime_exit_status_call8, 0
+  br i1 %hew_runtime_faulted9, label %hew_exit_status_failed10, label %hew_exit_status_continue11
 
 after_cooperate7:                                 ; preds = %bb4
   br label %bb2
 
-cancel_exit15:                                    ; preds = %bb6
+hew_exit_status_failed10:                         ; preds = %cancel_exit6
+  call void @hew_exit(i64 1)
+  br label %hew_exit_status_continue11
+
+hew_exit_status_continue11:                       ; preds = %hew_exit_status_failed10, %cancel_exit6
   ret i64 0
 
-after_cooperate16:                                ; preds = %bb6
+cancel_exit19:                                    ; preds = %bb6
+  %hew_runtime_exit_status_call21 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted22 = icmp ne i32 %hew_runtime_exit_status_call21, 0
+  br i1 %hew_runtime_faulted22, label %hew_exit_status_failed23, label %hew_exit_status_continue24
+
+after_cooperate20:                                ; preds = %bb6
   br label %bb3
 
-cancel_exit26:                                    ; preds = %bb10
+hew_exit_status_failed23:                         ; preds = %cancel_exit19
+  call void @hew_exit(i64 1)
+  br label %hew_exit_status_continue24
+
+hew_exit_status_continue24:                       ; preds = %hew_exit_status_failed23, %cancel_exit19
   ret i64 0
 
-after_cooperate27:                                ; preds = %bb10
+cancel_exit34:                                    ; preds = %bb10
+  %hew_runtime_exit_status_call36 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted37 = icmp ne i32 %hew_runtime_exit_status_call36, 0
+  br i1 %hew_runtime_faulted37, label %hew_exit_status_failed38, label %hew_exit_status_continue39
+
+after_cooperate35:                                ; preds = %bb10
   br label %bb4
 
-cancel_exit30:                                    ; preds = %bb11
+hew_exit_status_failed38:                         ; preds = %cancel_exit34
+  call void @hew_exit(i64 1)
+  br label %hew_exit_status_continue39
+
+hew_exit_status_continue39:                       ; preds = %hew_exit_status_failed38, %cancel_exit34
   ret i64 0
 
-after_cooperate31:                                ; preds = %bb11
+cancel_exit42:                                    ; preds = %bb11
+  %hew_runtime_exit_status_call44 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted45 = icmp ne i32 %hew_runtime_exit_status_call44, 0
+  br i1 %hew_runtime_faulted45, label %hew_exit_status_failed46, label %hew_exit_status_continue47
+
+after_cooperate43:                                ; preds = %bb11
   br label %bb4
+
+hew_exit_status_failed46:                         ; preds = %cancel_exit42
+  call void @hew_exit(i64 1)
+  br label %hew_exit_status_continue47
+
+hew_exit_status_continue47:                       ; preds = %hew_exit_status_failed46, %cancel_exit42
+  ret i64 0
 
 hew_shutdown_exit_failed:                         ; preds = %bb12
-  call void @hew_exit(i64 1)
+  %hew_exit_user_code = load i64, ptr %return_slot, align 8
+  %hew_exit_user_code_set = icmp ne i64 %hew_exit_user_code, 0
+  %hew_exit_status_code = select i1 %hew_exit_user_code_set, i64 %hew_exit_user_code, i64 1
+  call void @hew_exit(i64 %hew_exit_status_code)
   br label %hew_shutdown_exit_continue
 
 hew_shutdown_exit_continue:                       ; preds = %hew_shutdown_exit_failed, %bb12
@@ -1407,6 +1455,8 @@ after_cooperate:                                  ; preds = %entry
 
 declare i32 @hew_actor_cooperate()
 
+declare i32 @hew_runtime_exit_status()
+
 declare ptr @hew_cont_frame_alloc(i64)
 
 declare i1 @hew_cont_done(ptr)
@@ -1424,8 +1474,6 @@ declare void @hew_trap_with_code(i32)
 declare void @llvm.trap() #2
 
 declare i32 @hew_lambda_drain_all(i64)
-
-declare i32 @hew_runtime_exit_status()
 
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: read)
 declare token @llvm.coro.id(i32, ptr readnone, ptr readonly captures(none), ptr) #3

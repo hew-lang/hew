@@ -171,12 +171,35 @@ mod arena_instance_id_tests {
 pub unsafe extern "C" fn hew_wasm_register_actor_meta(_meta: *const c_void) {}
 
 /// Terminate the current process with a Hew integer exit code.
+///
+/// The requested code is not the final one: every termination path routes
+/// through the process exit-status rule (`exit_status::final_exit_code`), so a
+/// deliberate non-zero code is kept as-is and a zero can never mask an
+/// unrecovered actor fault. Without that, `exit(0)` from user code — or a
+/// library's clean-shutdown helper — silently reported success over a crashed
+/// actor that no supervisor recovered.
 #[no_mangle]
 pub extern "C" fn hew_exit(code: i64) {
     hew_exit_impl(code, hew_exit_process_terminate);
 }
 
+/// Apply the process exit-status rule to a requested exit code.
+///
+/// wasm32 has no exit-status authority (backlog id `actor-exit-status`; see the
+/// `exit_status` module docs), so the requested code passes through unchanged
+/// there.
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_exit_code(code: i64) -> i64 {
+    crate::exit_status::final_exit_code(code)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn resolve_exit_code(code: i64) -> i64 {
+    code
+}
+
 fn hew_exit_impl(code: i64, terminate: impl FnOnce(i32)) {
+    let code = resolve_exit_code(code);
     let Ok(code) = i32::try_from(code) else {
         eprintln!("hew_exit: exit code {code} is outside the supported i32 range");
         std::process::abort();

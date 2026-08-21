@@ -16,7 +16,10 @@
 // `Worker` crashes. After the fix, the process survives and the independent
 // `Probe` actor still answers a fresh `ask`, proving the scheduler stayed
 // healthy through the escalation — not just that the process happened to
-// exit before the abort landed.
+// exit before the abort landed. The probe's answer is printed rather than
+// returned: escalating past the root leaves the crash unrecovered, so it owns
+// the process exit status (HEW-SPEC-2026 §5.8, exit 1). Surviving-and-healthy
+// versus SIGABRT is what this fixture pins, and exit 1 still carries it.
 import std.failure;
 
 actor Worker {
@@ -43,7 +46,7 @@ supervisor App {
     child w: Worker;
 }
 
-fn main() -> i64 {
+fn main() {
     let sup = spawn App;
     let probe = spawn Probe;
     let w = sup.w;
@@ -53,8 +56,9 @@ fn main() -> i64 {
     // Give the crash-handling dispatch time to run to completion. A
     // pre-fix binary aborts the whole process during this window.
     sleep(300ms);
-    match await probe.ping() {
-        Ok(v) => v,
-        Err(_) => 1,
-    }
+    let probed = match await probe.ping() {
+        .Ok(v) => v,
+        .Err(_) => 1,
+    };
+    println(f"PROBE:{probed}");
 }

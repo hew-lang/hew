@@ -1934,7 +1934,7 @@ run_accept_expect_status "on_crash_action_restart_real_crash" 43
 # the call like the sibling stop_and_maybe_escalate, so the escalation is a
 # safe no-op: the process survives and an independent probe actor still
 # answers, proving the scheduler stayed healthy through the crash.
-run_accept_expect_status "on_crash_escalate_root" 0
+run_accept_expect_status_and_stdout "on_crash_escalate_root" 1
 
 # Accept: #[on(exit)] linked-actor exit hook compiles end-to-end (M-7-R). The
 # checker accepts `fn on_peer_exit(note: CrashNotification)`; MIR emits

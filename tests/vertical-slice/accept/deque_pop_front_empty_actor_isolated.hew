@@ -1,5 +1,6 @@
 import std.deque;
 
+// EXIT: 1
 actor DequePopFrontCrasher {
     receive fn boom() {
         let dq = deque.new();

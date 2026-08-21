@@ -1,3 +1,4 @@
+// EXIT: 1
 actor StringIndexCrasher {
     receive fn boom() {
         let s: string = "abc";
@@ -21,4 +22,3 @@ fn main() -> i64 {
         Err(_) => 1,
     }
 }
-

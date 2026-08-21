@@ -718,6 +718,20 @@ with tempfile.TemporaryDirectory() as temp:
             "apply_instantiated_call_signature_with_assoc_renamed",
             "a name that merely CONTAINS the authority's name",
         ),
+        (
+            "fn parenthesized_callee() {\n"
+            "    (Checker::check_against)(self, expr, sp, param_ty);\n"
+            "}\n",
+            "parenthesized_callee",
+            "a parenthesized callee, whose call text does not reduce by splitting",
+        ),
+        (
+            "fn commented_callee() {\n"
+            "    Checker::check_against /* still the callee */ (self, e, s, p);\n"
+            "}\n",
+            "commented_callee",
+            "a comment between callee and arguments",
+        ),
     ):
         application_file.write_text(source_text)
         set_inventory(work)
@@ -763,6 +777,17 @@ with tempfile.TemporaryDirectory() as temp:
     result = run(work)
     assert result.returncode != 0, (
         "a second call inside a reviewed function must move the count and fail"
+    )
+
+    # Callee POSITION is structural too: the primitive named as an argument, or
+    # bound as a value, is not an application.
+    application_file.write_text(
+        "fn passes_the_primitive() { register(check_against); }\n"
+        "fn binds_the_primitive() { let f = self.check_against; }\n"
+    )
+    set_inventory(work)
+    assert run(work).returncode == 0, (
+        "the primitive in argument or value position is not a call and must not be counted"
     )
 
     # expressions.rs is in scope: a one-authority invariant cannot let a helper

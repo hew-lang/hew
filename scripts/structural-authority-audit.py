@@ -1073,20 +1073,15 @@ ARG_CHECK_SCOPE_PREFIX = "hew-types/src/"
 ARG_CHECK_PRIMITIVES = frozenset(("check_against", "check_expr_with_expected"))
 
 
-def callee_leaf(call_text: str) -> str | None:
-    """Final path/field segment of a call expression's callee.
-
-    Form-agnostic on purpose: `self.check_against(..)`,
-    `Self::check_against(self, ..)` and `Checker::check_against(..)` all reduce
-    to `check_against`, so a UFCS spelling cannot slip past a method-call
-    pattern.
-    """
-    head = call_text.split("(", 1)[0]
-    if not head:
-        return None
-    leaf = head.replace("::", ".").split(".")[-1]
-    leaf = leaf.strip()
-    return leaf or None
+def ranges_by_path(
+    ast_grep: Path, root: Path, kind: str
+) -> defaultdict[str, list[SyntaxRange]]:
+    """Every node of `kind`, grouped by path."""
+    index: defaultdict[str, list[SyntaxRange]] = defaultdict(list)
+    for match in run_query(ast_grep, root, kind=kind):
+        node_span = node_range(match)
+        index[node_span.path].append(node_span)
+    return index
 
 
 def enclosing_function_index(
@@ -1103,6 +1098,48 @@ def enclosing_function_index(
     return index
 
 
+def arg_check_callee_leaves(ast_grep: Path, root: Path) -> list[dict[str, object]]:
+    """Callee-position occurrences of an argument-check primitive.
+
+    Derived from the AST, never from rendered source. A callee's final path
+    segment is a LEAF node the grammar already isolated — `field_identifier` for
+    `recv.check_against(..)`, `identifier` for `Path::check_against(..)` — so
+    reduction is the parse, not a string split. Callee position is likewise
+    structural: the leaf lies inside a `call_expression` and outside that call's
+    `arguments`. Splitting the call's text on `(` or `::` instead would have
+    been defeated by `(Checker::check_against)(..)` and by
+    `Checker::check_against /* comment */ (..)`, both of which are ordinary
+    call expressions whose rendered text does not reduce.
+    """
+    calls = ranges_by_path(ast_grep, root, "call_expression")
+    arguments = ranges_by_path(ast_grep, root, "arguments")
+    leaves: list[dict[str, object]] = []
+    seen: set[tuple[str, int, int]] = set()
+    candidates: list[dict[str, object]] = [
+        match
+        for match in run_query(ast_grep, root, kind="field_identifier")
+        if str(match["text"]) in ARG_CHECK_PRIMITIVES
+    ]
+    for primitive in sorted(ARG_CHECK_PRIMITIVES):
+        candidates.extend(
+            match
+            for match in run_query(ast_grep, root, pattern=primitive)
+            if str(match["text"]) == primitive
+        )
+    for match in candidates:
+        leaf = node_range(match)
+        key = (leaf.path, leaf.byte_start, leaf.byte_end)
+        if key in seen:
+            continue
+        if not any(range_contains(call, leaf) for call in calls.get(leaf.path, [])):
+            continue
+        if any(range_contains(args, leaf) for args in arguments.get(leaf.path, [])):
+            continue
+        seen.add(key)
+        leaves.append(match)
+    return leaves
+
+
 def signature_application_findings(ast_grep: Path, root: Path) -> set[Finding]:
     """Inventory every argument-check primitive call, by enclosing function.
 
@@ -1116,20 +1153,22 @@ def signature_application_findings(ast_grep: Path, root: Path) -> set[Finding]:
 
     The rule is structural and carries no allowlist. It does not inspect the
     expected-type operand (a name-based version was defeated by a helper taking
-    it as `expected`), and it does not match the authority by substring (which
-    would have allowlisted `..._with_assoc_renamed`). Instead EVERY call of a
-    primitive anywhere under `hew-types/src/` is a finding whose form is its
-    enclosing function's exact name, so the inventory records a reviewed count
-    per (function, file) — including the authority's own. A call added in a new
-    function fails the lint; so does an extra call inside a function already
-    listed, because the count moves.
+    it as `expected`), it does not match the authority by substring (which would
+    have allowlisted `..._with_assoc_renamed`), and it reduces callees through
+    the parse rather than through rendered text. EVERY primitive call anywhere
+    under `hew-types/src/` is a finding whose form is its enclosing function's
+    exact name, so the inventory records a reviewed count per (function, file) —
+    including the authority's own.
+
+    Residual, stated rather than implied: the inventory is a per-function COUNT,
+    so it cannot see a net-zero relocation — moving a call from one already
+    reviewed function to another leaves both totals unchanged only if the two
+    counts move in opposite directions by the same amount, which the count
+    comparison does not distinguish from no change at all.
     """
     functions = enclosing_function_index(ast_grep, root)
     findings: set[Finding] = set()
-    for match in run_query(ast_grep, root, kind="call_expression"):
-        leaf = callee_leaf(str(match["text"]))
-        if leaf not in ARG_CHECK_PRIMITIVES:
-            continue
+    for match in arg_check_callee_leaves(ast_grep, root):
         call_range = node_range(match)
         if not call_range.path.startswith(ARG_CHECK_SCOPE_PREFIX):
             continue
@@ -1143,8 +1182,9 @@ def signature_application_findings(ast_grep: Path, root: Path) -> set[Finding]:
                 f"argument-check primitive at {call_range.path}:{call_range.line} has no "
                 "enclosing function; the inventory form would be unattributable"
             )
-        # Innermost wins: a closure or nested fn inside a listed function is its
-        # own reviewed site, not absorbed into the outer one.
+        # Innermost wins, so a nested `fn` owns its own row. A CLOSURE is not a
+        # `function_item`, so a call inside one attributes to the enclosing
+        # function — which is the reviewable unit either way.
         _, name = min(enclosing, key=lambda item: item[0].byte_end - item[0].byte_start)
         findings.add(finding("signature-application", name, match))
     return findings

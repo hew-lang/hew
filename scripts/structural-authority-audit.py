@@ -1104,12 +1104,18 @@ def arg_check_callee_leaves(ast_grep: Path, root: Path) -> list[dict[str, object
     Derived from the AST, never from rendered source. A callee's final path
     segment is a LEAF node the grammar already isolated — `field_identifier` for
     `recv.check_against(..)`, `identifier` for `Path::check_against(..)` — so
-    reduction is the parse, not a string split. Callee position is likewise
-    structural: the leaf lies inside a `call_expression` and outside that call's
-    `arguments`. Splitting the call's text on `(` or `::` instead would have
-    been defeated by `(Checker::check_against)(..)` and by
-    `Checker::check_against /* comment */ (..)`, both of which are ordinary
-    call expressions whose rendered text does not reduce.
+    reduction is the parse, not a string split. Splitting the call's text on `(`
+    or `::` instead would have been defeated by `(Checker::check_against)(..)`
+    and by `Checker::check_against /* comment */ (..)`, both of which are
+    ordinary call expressions whose rendered text does not reduce.
+
+    Callee position is decided RELATIVE TO THE LEAF'S OWN nearest enclosing
+    call, never globally. A global "outside any call's arguments" test drops
+    `outer(self.check_against(..))`, because the inner callee does sit inside
+    the OUTER call's argument list. The leaf is a callee when it is outside the
+    argument list of the innermost call containing it — which still excludes the
+    primitive passed as an argument value (`register(check_against)`), where
+    that innermost call IS the one whose arguments hold it.
     """
     calls = ranges_by_path(ast_grep, root, "call_expression")
     arguments = ranges_by_path(ast_grep, root, "arguments")
@@ -1131,10 +1137,27 @@ def arg_check_callee_leaves(ast_grep: Path, root: Path) -> list[dict[str, object
         key = (leaf.path, leaf.byte_start, leaf.byte_end)
         if key in seen:
             continue
-        if not any(range_contains(call, leaf) for call in calls.get(leaf.path, [])):
+        enclosing_calls = [
+            call for call in calls.get(leaf.path, []) if range_contains(call, leaf)
+        ]
+        if not enclosing_calls:
             continue
-        if any(range_contains(args, leaf) for args in arguments.get(leaf.path, [])):
-            continue
+        nearest_call = min(
+            enclosing_calls, key=lambda call: call.byte_end - call.byte_start
+        )
+        # A call's own argument list is the widest `arguments` node inside it;
+        # any other is an argument list of a call nested within this one.
+        own_arguments = [
+            args
+            for args in arguments.get(leaf.path, [])
+            if range_contains(nearest_call, args)
+        ]
+        if own_arguments:
+            widest = max(
+                own_arguments, key=lambda args: args.byte_end - args.byte_start
+            )
+            if range_contains(widest, leaf):
+                continue
         seen.add(key)
         leaves.append(match)
     return leaves

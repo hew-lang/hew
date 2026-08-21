@@ -732,6 +732,20 @@ with tempfile.TemporaryDirectory() as temp:
             "commented_callee",
             "a comment between callee and arguments",
         ),
+        (
+            "fn nested_in_argument() {\n"
+            "    outer(self.check_against(expr, sp, param_ty));\n"
+            "}\n",
+            "nested_in_argument",
+            "a call nested inside another call's arguments",
+        ),
+        (
+            "fn nested_two_deep() {\n"
+            "    outer(middle(Self::check_against(self, expr, sp, param_ty)));\n"
+            "}\n",
+            "nested_two_deep",
+            "a UFCS call nested two argument lists deep",
+        ),
     ):
         application_file.write_text(source_text)
         set_inventory(work)
@@ -784,10 +798,12 @@ with tempfile.TemporaryDirectory() as temp:
     application_file.write_text(
         "fn passes_the_primitive() { register(check_against); }\n"
         "fn binds_the_primitive() { let f = self.check_against; }\n"
+        "fn passes_it_nested() { outer(register(check_against)); }\n"
     )
     set_inventory(work)
     assert run(work).returncode == 0, (
-        "the primitive in argument or value position is not a call and must not be counted"
+        "the primitive in argument or value position is not a call and must not be "
+        "counted, however deeply the argument list is nested"
     )
 
     # expressions.rs is in scope: a one-authority invariant cannot let a helper

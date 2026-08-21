@@ -21,7 +21,7 @@ pub machine Lifecycle<T> {
     state Faulted { error: Error; }
 
     on Initialise: Created => Initialising {
-        Initialising
+        .Initialising
     }
     on Initialise: _ => _ {
         state
@@ -33,10 +33,10 @@ pub machine Lifecycle<T> {
         state
     }
     on Stop: Running => Stopping {
-        Stopping
+        .Stopping
     }
     on Stop: Stopping => Stopped {
-        Stopped
+        .Stopped
     }
     on Stop: _ => _ {
         state

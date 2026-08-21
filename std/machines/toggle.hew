@@ -21,9 +21,9 @@ pub machine Toggle {
     state On;
 
     on Flip: Off => On {
-        On
+        .On
     }
     on Flip: On => Off {
-        Off
+        .Off
     }
 }

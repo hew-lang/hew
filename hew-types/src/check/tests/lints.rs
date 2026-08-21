@@ -1121,6 +1121,108 @@ fn needless_range_loop_flags_index_access() {
 }
 
 #[test]
+fn needless_range_loop_not_flagged_when_vec_element_lacks_semantic_clone() {
+    let (errors, warnings) = parse_and_check(
+        r"
+        actor Client {
+            receive fn deliver() {}
+        }
+
+        fn broadcast(clients: Vec<LocalPid<Client>>) {
+            for i in 0..clients.len() {
+                clients[i].deliver();
+            }
+        }
+        ",
+    );
+    assert!(
+        errors.is_empty(),
+        "the indexed LocalPid broadcast must type-check: {errors:?}"
+    );
+    assert_eq!(
+        count_needless_range_loop(&warnings),
+        0,
+        "the lint must not suggest direct Vec iteration when VecIter cannot clone the element: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_range_loop_not_flagged_for_unbounded_generic_element() {
+    let (errors, warnings) = parse_and_check(
+        r"
+        fn scan<T>(xs: Vec<T>) -> i64 {
+            var seen = 0;
+            for i in 0..xs.len() {
+                let _ = xs[i];
+                seen = seen + 1;
+            }
+            seen
+        }
+        ",
+    );
+    assert!(
+        errors.is_empty(),
+        "the generic template must type-check: {errors:?}"
+    );
+    assert_eq!(
+        count_needless_range_loop(&warnings),
+        0,
+        "an unbounded `T` has no proven clone, so the direct-iteration rewrite is not \
+         guaranteed to compile at every monomorphisation: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_range_loop_flags_clone_bounded_generic_element() {
+    let (errors, warnings) = parse_and_check(
+        r"
+        fn scan<T: Clone>(xs: Vec<T>) -> i64 {
+            var seen = 0;
+            for i in 0..xs.len() {
+                let _ = xs[i];
+                seen = seen + 1;
+            }
+            seen
+        }
+        ",
+    );
+    assert!(
+        errors.is_empty(),
+        "the generic template must type-check: {errors:?}"
+    );
+    assert_eq!(
+        count_needless_range_loop(&warnings),
+        1,
+        "`T: Clone` proves the element clones, so the rewrite is suggestible: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_range_loop_not_flagged_for_unbounded_generic_inside_container() {
+    let (errors, warnings) = parse_and_check(
+        r"
+        fn scan<T>(xs: Vec<Option<T>>) -> i64 {
+            var seen = 0;
+            for i in 0..xs.len() {
+                let _ = xs[i];
+                seen = seen + 1;
+            }
+            seen
+        }
+        ",
+    );
+    assert!(
+        errors.is_empty(),
+        "the generic template must type-check: {errors:?}"
+    );
+    assert_eq!(
+        count_needless_range_loop(&warnings),
+        0,
+        "an unbounded `T` nested in the element type is equally unproven: {warnings:?}"
+    );
+}
+
+#[test]
 fn needless_range_loop_flags_get_access() {
     let (errors, warnings) =
         parse_and_check("fn scan(xs: Vec<i64>) { for i in 0..xs.len() { let _ = xs.get(i); } }");

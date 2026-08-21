@@ -5467,10 +5467,20 @@ impl Checker {
             }
 
             for requirement in requirements.get(&pending.callee).into_iter().flatten() {
-                let concrete = requirement
-                    .ty
-                    .substitute_named_params_parallel(&pending.substitution);
-                if concrete.contains_error() || concrete.has_inference_var() {
+                // Substitute, then collapse any associated-type projection the
+                // substitution just made resolvable (`Option<C::Item>` with
+                // `C = IntBox` becomes `Option<i64>`). A projection that
+                // survives collapse has an unresolved carrier: the instantiation
+                // is not decidable here, so do not answer for it.
+                let concrete = self.project_assoc_types(
+                    &requirement
+                        .ty
+                        .substitute_named_params_parallel(&pending.substitution),
+                );
+                if concrete.contains_error()
+                    || concrete.has_inference_var()
+                    || concrete.contains_assoc_type()
+                {
                     continue;
                 }
                 // A parameter no source pinned leaves the obligation abstract;

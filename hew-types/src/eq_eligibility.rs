@@ -130,11 +130,29 @@ fn eq_ineligibility(
         | Ty::Pointer { .. }
         | Ty::Borrow { .. }
         | Ty::TraitObject { .. }
-        | Ty::Task(_)
-        | Ty::AssocType { .. } => Some(EqEligibilityFailure {
+        | Ty::Task(_) => Some(EqEligibilityFailure {
             reason: EqEligibility::IneligibleOwned(ty.clone()),
             member: String::new(),
         }),
+        // An associated-type projection over an in-scope type parameter
+        // (`C::Item` inside `fn same<C: Carrier>`) is in exactly the position a
+        // bare `T` is in: there is no concrete leaf to walk yet. Defer it like
+        // an abstract parameter and let the instantiation decide, rather than
+        // calling it ineligible and rejecting every eligible projection.
+        //
+        // A projection over a carrier that is NOT abstract reached here with
+        // collapse already having failed, so nothing further will resolve it —
+        // fail closed.
+        Ty::AssocType { base, .. } => {
+            if assoc_carrier_is_abstract(base, type_params) {
+                None
+            } else {
+                Some(EqEligibilityFailure {
+                    reason: EqEligibility::IneligibleOwned(ty.clone()),
+                    member: String::new(),
+                })
+            }
+        }
         Ty::Named { name, args, .. } => match type_defs.get(name).or_else(|| {
             name.split_once('.')
                 .and_then(|(_, local)| type_defs.get(local))
@@ -167,6 +185,18 @@ fn eq_ineligibility(
             reason: EqEligibility::IneligibleManaged(ty.clone()),
             member: String::new(),
         }),
+    }
+}
+
+/// True when an associated-type projection's carrier is an in-scope type
+/// parameter (directly, or through a chain of further projections).
+///
+/// `C::Item` inside `fn same<C: Carrier>` is abstract; `IntBox::Item` is not.
+fn assoc_carrier_is_abstract(base: &Ty, type_params: &HashSet<String>) -> bool {
+    match base {
+        Ty::Named { name, args, .. } => args.is_empty() && type_params.contains(name),
+        Ty::AssocType { base, .. } => assoc_carrier_is_abstract(base, type_params),
+        _ => false,
     }
 }
 

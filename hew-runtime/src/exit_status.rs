@@ -65,8 +65,10 @@
 //! 3. A transfer that FAILS settles `Unrecovered`, never `Handled`: a null
 //!    parent actor, an un-representable child-supervisor index, a refused
 //!    `send_system_message` to a stopped or closed parent, a refused timer
-//!    admission, a failed timer thread spawn. Handing a record to an authority
-//!    that never receives it is not recovery.
+//!    admission, a failed timer thread spawn, or an armed timer SHUTDOWN
+//!    CANCELS before it fires. Handing a record to an authority that never
+//!    receives it — or cancelling that authority before it acts — is not
+//!    recovery.
 //! 4. A record whose ruling never arrives stays Open, and Open counts as
 //!    failing. Shutdown quiesces (bounded) so a ruling that IS coming lands
 //!    first; what remains open after that genuinely never came.
@@ -234,6 +236,16 @@ impl ExitStatusAuthority {
         false
     }
 
+    /// Whether this exact record is still awaiting a ruling.
+    #[cfg(test)]
+    fn is_open(&self, record: FaultRecord) -> bool {
+        record.is_some()
+            && self
+                .slots
+                .iter()
+                .any(|slot| slot.load(Ordering::Acquire) == record.0)
+    }
+
     fn open_count(&self) -> usize {
         self.slots
             .iter()
@@ -278,6 +290,15 @@ pub(crate) fn open_supervised_fault() -> FaultRecord {
 /// Apply an authority's ruling to one record.
 pub(crate) fn settle_supervised_fault(record: FaultRecord, ruling: FaultRuling) {
     AUTHORITY.settle(record, ruling);
+}
+
+/// Whether ONE named record is still awaiting a ruling.
+///
+/// Tests assert on their own record rather than on the table's total, so a
+/// record another test opens concurrently cannot confound the answer.
+#[cfg(test)]
+pub(crate) fn supervised_fault_is_open(record: FaultRecord) -> bool {
+    AUTHORITY.is_open(record)
 }
 
 /// Whether any supervised crash is still awaiting a ruling.

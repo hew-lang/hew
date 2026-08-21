@@ -3908,8 +3908,9 @@ authority left:
   circuit breaker), the restart itself produces no child, an `#[on(crash)]` hook
   answers `Kill`, or it answers `Escalate` at a supervisor with no parent;
 - a TRANSFER fails: the parent is stopped or closed and never receives the
-  escalation, or the restart timer cannot be armed. Handing a record to an
-  authority that never receives it is not a recovery;
+  escalation, the restart timer cannot be armed, or shutdown CANCELS an armed
+  timer before it fires. Handing a record to an authority that never receives
+  it — or cancelling that authority before it acts — is not a recovery;
 - a supervised crash whose supervisor never rules at all — its supervisor was
   already stopping, its mailbox was closed, or shutdown joined the workers
   before the queued decision ran. An undelivered decision is not a recovery.

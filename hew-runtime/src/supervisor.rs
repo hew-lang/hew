@@ -846,16 +846,22 @@ struct RestartTimerLease {
 impl RestartTimerLease {
     /// Wait interruptibly, then perform the raw supervisor access while the
     /// cancellation mutex excludes shutdown from publishing cancellation.
-    fn wait_and_run(self, delay: Duration, on_elapsed: impl FnOnce()) {
+    ///
+    /// Returns what `on_elapsed` reported, and `false` when cancellation
+    /// preempted the wait so `on_elapsed` never ran at all. The two are
+    /// deliberately the same answer to the caller: a timer that was cancelled
+    /// performed no work, exactly like a timer whose work failed.
+    fn wait_and_run(self, delay: Duration, on_elapsed: impl FnOnce() -> bool) -> bool {
         let deadline = Instant::now() + delay;
         let mut state = self.control.state.lock_or_recover();
+        let mut elapsed_result = false;
         loop {
             if state.cancelled {
                 break;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                on_elapsed();
+                elapsed_result = on_elapsed();
                 break;
             }
             let (next, _) = self
@@ -865,6 +871,7 @@ impl RestartTimerLease {
             state = next;
         }
         drop(state);
+        elapsed_result
     }
 }
 
@@ -1631,6 +1638,11 @@ fn apply_restart_backoff(spec: &mut InternalChildSpec) {
 /// refused admission or a failed spawn means no restart will ever be attempted,
 /// so the caller settles the record `Unrecovered`: requesting a timer is not a
 /// recovery, an armed one that fires is.
+///
+/// Once armed, the timer thread owns the record and settles it on every ending
+/// it can have: a restart that runs rules through the `DelayedRestart` dispatch,
+/// while a wake-up that reaches nobody and a cancellation that preempts the
+/// wait both settle `Unrecovered` here.
 fn schedule_delayed_restart(
     sup: *mut HewSupervisor,
     child_identity: u64,
@@ -1646,7 +1658,7 @@ fn schedule_delayed_restart(
     let spawn_result = std::thread::Builder::new()
         .name("hew-supervisor-restart-timer".to_owned())
         .spawn(move || {
-            timer.wait_and_run(delay, || {
+            let delivered = timer.wait_and_run(delay, || {
                 let sup_ptr = sup_addr as *mut HewSupervisor;
                 // SAFETY: the timer lease's pending count keeps `sup_ptr`
                 // allocated, and its state mutex excludes cancellation for the
@@ -1654,35 +1666,42 @@ fn schedule_delayed_restart(
                 // closure can never run.
                 unsafe {
                     let self_actor = (*sup_ptr).self_actor;
-                    let delivered = if !(*sup_ptr).cancelled.load(Ordering::Acquire)
-                        && (*sup_ptr).running.load(Ordering::Acquire) != 0
-                        && !self_actor.is_null()
+                    if (*sup_ptr).cancelled.load(Ordering::Acquire)
+                        || (*sup_ptr).running.load(Ordering::Acquire) == 0
+                        || self_actor.is_null()
                     {
-                        let event = DelayedRestartEvent {
-                            child_identity,
-                            fault_record: record.as_raw(),
-                        };
-                        actor::send_system_message(
-                            self_actor,
-                            HewSysMsg::DelayedRestart,
-                            (&raw const event).cast::<c_void>().cast_mut(),
-                            std::mem::size_of::<DelayedRestartEvent>(),
-                        )
-                    } else {
-                        false
-                    };
-                    if !delivered {
-                        // The timer fired but its wake-up reached nobody: the
-                        // supervisor was cancelled or stopped, or the mailbox
-                        // refused it. No restart will happen, and the record
-                        // this timer owned has no other authority left.
-                        crate::exit_status::settle_supervised_fault(
-                            record,
-                            FaultRuling::Unrecovered,
-                        );
+                        return false;
                     }
+                    let event = DelayedRestartEvent {
+                        child_identity,
+                        fault_record: record.as_raw(),
+                    };
+                    actor::send_system_message(
+                        self_actor,
+                        HewSysMsg::DelayedRestart,
+                        (&raw const event).cast::<c_void>().cast_mut(),
+                        std::mem::size_of::<DelayedRestartEvent>(),
+                    )
                 }
             });
+            if !delivered {
+                // THE TIMER'S ONE SETTLEMENT SITE, covering both ways an armed
+                // timer can end without a restart: it fired and its wake-up
+                // reached nobody (supervisor cancelled or stopped, mailbox
+                // refused), or shutdown CANCELLED it before it ever fired, so
+                // the closure above never ran. Either way no restart will be
+                // attempted and the record this timer owned has no authority
+                // left. Leaving the cancelled case Open would still fail
+                // closed on the exit code, but it strands the record: shutdown
+                // waits out its whole quiescence period
+                // (`scheduler::drain_is_idle` + `has_open_supervised_faults`)
+                // for a ruling that can no longer arrive.
+                //
+                // Settled outside `wait_and_run` so the cancellation mutex is
+                // released first: the authority is a lock-free atomic table and
+                // must not extend a lock shutdown is waiting on.
+                crate::exit_status::settle_supervised_fault(record, FaultRuling::Unrecovered);
+            }
         });
     if let Err(error) = spawn_result {
         // The failed builder drops the closure and therefore its timer lease,
@@ -4483,6 +4502,53 @@ mod tests {
             assert!(
                 crate::runtime::default_runtime_ptr(Ordering::Acquire).is_null(),
                 "one cleanup call must reclaim the runtime after cancellable timers drain"
+            );
+        }
+    }
+
+    /// SHUTDOWN CANCELS AN ARMED TIMER. The timer thread breaks out of its wait
+    /// without ever running the restart, so the record the arming TRANSFERRED to
+    /// it must be settled at the cancel site.
+    ///
+    /// Leaving it Open still fails closed on the exit code, but the transition
+    /// is incomplete and it is not free: `hew_shutdown_wait` holds the runtime
+    /// open for its whole quiescence period (`drain_is_idle` is gated on
+    /// `has_open_supervised_faults`) waiting for a ruling that can no longer
+    /// arrive, because the only authority that could have made it was cancelled.
+    #[test]
+    fn cancelling_an_armed_restart_timer_settles_its_record() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the supervisor outlives the timer lease, which drains before
+        // this body returns.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            let timers = Arc::clone(&(*sup).restart_timers);
+            let record = crate::exit_status::open_supervised_fault();
+            assert!(
+                crate::exit_status::supervised_fault_is_open(record),
+                "a freshly opened record awaits a ruling"
+            );
+
+            assert!(
+                schedule_delayed_restart(sup, 0, Duration::from_secs(30), record),
+                "the timer is admitted and spawned, so the record is armed"
+            );
+            assert_eq!(timers.pending_for_test(), 1);
+            assert!(
+                crate::exit_status::supervised_fault_is_open(record),
+                "arming TRANSFERS the record to the timer; it does not settle it"
+            );
+
+            timers.cancel();
+            assert!(
+                timers.wait_for_drain(Instant::now() + Duration::from_secs(5)),
+                "cancellation must wake the 30-second backoff"
+            );
+
+            assert!(
+                !crate::exit_status::supervised_fault_is_open(record),
+                "a cancelled timer attempts no restart, so it settles the record \
+                 it owned instead of stranding it Open for the shutdown quiesce"
             );
         }
     }

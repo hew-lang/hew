@@ -190,7 +190,7 @@ fn exact_opaque_resource_close_is_registered_directly_and_when_wrapped() {
                 name,
                 close: ResourceCloseAuthority::User(lifecycle),
             }]) if name == "Dq"
-                && lifecycle.resource_declaration == hew_types::DefId::new("Dq")
+                && lifecycle.resource_declaration == hew_types::DefId::for_test("Dq")
         ),
         "the exact inherent close body must classify Dq as a typed resource: {:?}",
         direct.state_field_clone_kinds
@@ -209,7 +209,7 @@ fn exact_opaque_resource_close_is_registered_directly_and_when_wrapped() {
     assert!(
         pipeline
             .lifecycle_registry
-            .opaque_resource(&hew_types::DefId::new("Dq"))
+            .opaque_resource(&hew_types::DefId::for_test("Dq"))
             .is_some(),
         "the exact Dq lifecycle must survive in the immutable registry",
     );
@@ -272,7 +272,7 @@ fn main() {{}}
                     name: actual,
                     close: ResourceCloseAuthority::User(lifecycle),
                 }]) if actual == name
-                    && lifecycle.resource_declaration == hew_types::DefId::new(name)
+                    && lifecycle.resource_declaration == hew_types::DefId::for_test(name)
             ),
             "root opaque user `{name}` must keep its exact user lifecycle: {:?}",
             keeper.state_field_clone_kinds
@@ -280,7 +280,7 @@ fn main() {{}}
         assert!(
             pipeline
                 .lifecycle_registry
-                .opaque_resource(&hew_types::DefId::new(name))
+                .opaque_resource(&hew_types::DefId::for_test(name))
                 .is_some(),
             "root opaque user `{name}` must be present in the exact lifecycle registry"
         );

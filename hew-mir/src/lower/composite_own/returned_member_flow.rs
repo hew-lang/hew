@@ -72,10 +72,21 @@ pub(super) fn compute_returned_flow_locals(blocks: &[BasicBlock]) -> HashSet<u32
                     // Whole-value rebind/temp: `Move { dest: in-set, src }`
                     // means `src` flowed onward into a local that reaches the
                     // ReturnSlot, so `src` reaches it too.
+                    // A divergent-arm selection transfer nulls `src` right
+                    // after this move, so the source does NOT flow to the
+                    // caller: the value the caller receives lives only in
+                    // `dest`, and on every path that took a different arm the
+                    // source still owns its own value and must keep its
+                    // scope-exit release. Following the edge here would strip
+                    // that release path-insensitively (the losing-arm leak).
                     Instr::Move { dest, src }
                         if matches!(dest, Place::Local(_))
                             && base_local(*dest)
-                                .is_some_and(|dl| flows_to_return.contains(&dl)) =>
+                                .is_some_and(|dl| flows_to_return.contains(&dl))
+                            && !crate::lower::split_consume::is_divergent_selection_transfer_move(
+                                block,
+                                instr_index,
+                            ) =>
                     {
                         changed |= add_member(src, &mut flows_to_return);
                     }

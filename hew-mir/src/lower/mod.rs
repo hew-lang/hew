@@ -102,7 +102,7 @@ use self::actor_state_handle::{
 };
 #[cfg(not(test))]
 use self::cfg_util::{
-    block_by_id, blocks_reachable_from, call_terminator_next,
+    block_by_id, block_dominators, blocks_reachable_from, call_terminator_next,
     local_is_rewritten_after_current_iteration, local_is_used_after, shift_instr_spans_on_insert,
 };
 #[cfg(not(test))]
@@ -5221,6 +5221,297 @@ fn prepare_outbound_actor_payloads(
     }
 }
 
+/// Maximum single-writer copy hops walked back from a join slot's direct source
+/// to the owned local that produced it. The `if`/`else` value lowering inserts
+/// exactly one temp; the bound keeps the walk terminating on any future shape
+/// without special-casing a depth.
+const SELECTION_SOURCE_CHAIN_LIMIT: usize = 8;
+
+/// Resolve a join-slot move site to the `(block, instr_index, owned_local,
+/// transferee)` at which an owned local's value leaves its slot.
+///
+/// Returns the site itself when the move's source is already an owned local.
+/// Otherwise the source is a temp; the walk follows it back while it has
+/// EXACTLY ONE writer and that writer is a whole-local `Move`. A temp with
+/// several writers, or one produced by a call/constructor rather than a copy,
+/// resolves to `None` (fail-closed: the shape keeps its pre-existing posture).
+fn resolve_selection_source(
+    blocks: &[BasicBlock],
+    candidate_locals: &HashSet<u32>,
+    block_id: u32,
+    instr_index: usize,
+    src_local: u32,
+    dest_local: u32,
+) -> Option<(u32, usize, u32, u32)> {
+    let mut site = (block_id, instr_index, src_local, dest_local);
+    for _ in 0..SELECTION_SOURCE_CHAIN_LIMIT {
+        if candidate_locals.contains(&site.2) {
+            return Some(site);
+        }
+        let (writer_block, writer_index, inner) = sole_whole_local_move_writer(blocks, site.2)?;
+        site = (writer_block, writer_index, inner, site.2);
+    }
+    None
+}
+
+/// The single defining site of `local` when it is written exactly once, by a
+/// whole-local `Move`, and never by a terminator. Returns
+/// `(block_id, instr_index, source_local)`.
+fn sole_whole_local_move_writer(blocks: &[BasicBlock], local: u32) -> Option<(u32, usize, u32)> {
+    let mut found: Option<(u32, usize, u32)> = None;
+    for block in blocks {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            if !dataflow::instr_write_places(instr)
+                .into_iter()
+                .any(|place| base_local(place) == Some(local))
+            {
+                continue;
+            }
+            let Instr::Move {
+                dest: Place::Local(dest_local),
+                src: Place::Local(source_local),
+            } = instr
+            else {
+                return None;
+            };
+            if *dest_local != local {
+                return None;
+            }
+            if found.is_some() {
+                return None;
+            }
+            found = Some((block.id, instr_index, *source_local));
+        }
+        if terminator_mint_writes_local(&block.terminator, local) {
+            return None;
+        }
+    }
+    found
+}
+
+/// Whether a terminator defines `local` (a call result, ask reply slot, select
+/// arm binding, …). Such a local is a fresh producer, not a copy of an owned
+/// local, so the selection-source walk stops there.
+fn terminator_mint_writes_local(terminator: &Terminator, local: u32) -> bool {
+    drop_plan::terminator_mint_places(terminator)
+        .into_iter()
+        .any(|place| base_local(place) == Some(local))
+}
+
+/// Null a whole owned local after a DIVERGENT-ARM VALUE SELECTION moved it into
+/// a branch-join result slot.
+///
+/// `let out = match c { true => a, false => b };` (and the if/else, nested, and
+/// return-position forms) lowers to one join slot written by a whole-value
+/// `Move` on each arm. The join slot ends up holding exactly ONE of the
+/// sources; every other source still owns a live allocation nothing releases.
+///
+/// Before this pass the join slot was reachable from two distinct alias roots,
+/// so `propagate_whole_value_alias_roots` evicted it as conflicted and the
+/// escape scans read each arm's `Move` as an ownership escape — which excluded
+/// EVERY arm source from the scope-exit drop set. The join slot's own owner
+/// then freed the selected value and the losing arm's value leaked, once per
+/// call (`Vec<i64>`: 2 leak nodes / 144 B per frame).
+///
+/// The rewrite makes the transfer physical instead of inferred: after the arm's
+/// `Move`, the source slot is zeroed. Ownership is then unambiguous on every
+/// path — the join slot owns what it received, and each source owns its own
+/// value on the paths where its `Move` never ran. The source keeps its ordinary
+/// scope-exit release, which walks a nulled slot (a null-tolerant no-op) on the
+/// transferring path and frees normally everywhere else. No runtime flag, no
+/// per-exit path reconstruction: the LESSON is `raii-null-after-move`.
+///
+/// FAIL-CLOSED admission. A source is rewritten only when
+///   * the join slot has TWO OR MORE distinct whole-local `Move` sources — the
+///     structural signature of an arm selection. A single-source slot is an
+///     ordinary rebind, already handled by the alias machinery, and is left
+///     byte-identical;
+///   * the source is a heap-owning owned local of this frame (never a
+///     parameter: by-value params are caller-retained borrows); and
+///   * the source local has NO READ on any path after the transfer site. A
+///     read after the selection (`let out = match c { true => a, .. }; a.len()`)
+///     is accepted today as an aliasing read of the still-live source slot;
+///     nulling under it would turn a leak into a use-after-move fault. Those
+///     shapes keep the pre-existing leak posture until the surface decides the
+///     read is an error.
+///
+/// The paired `NeutralizePayloadSlot` carries
+/// [`NeutralizeAuthority::DivergentSelectionTransfer`], and the alias / escape /
+/// hand-off scans read that authority off the MIR
+/// (`split_consume::is_divergent_selection_transfer_move`) rather than
+/// re-deriving the shape.
+fn neutralize_divergent_selection_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    // Heap-owning owned locals of this frame, by backing local id.
+    let mut candidate_locals: HashSet<u32> = HashSet::new();
+    for (binding, _name, ty) in builder.owned_locals_exit_candidates() {
+        if !crate::model::ty_owns_heap_mir(&ty, &builder.record_field_orders, &builder.enum_layouts)
+        {
+            continue;
+        }
+        let Some(local) = builder
+            .binding_locals
+            .get(&binding)
+            .and_then(|p| base_local(*p))
+        else {
+            continue;
+        };
+        if builder.parameter_locals.contains(&local) {
+            continue;
+        }
+        candidate_locals.insert(local);
+    }
+    if candidate_locals.is_empty() {
+        return;
+    }
+
+    // A transfer is CONDITIONAL when its block does not dominate every return
+    // exit: some path reaches an exit WITHOUT executing the move, and on that
+    // path the source still owns its own value and owes its own release. That
+    // is the arm-selection signature — `match`/`if` value arms, nested arms, a
+    // selection whose sibling arm diverges, and a rebind sitting behind an
+    // earlier guard return. A move that dominates every return hands ownership
+    // over on ALL paths; the existing alias machinery already resolves it and
+    // it is left byte-identical here.
+    let dominators = block_dominators(blocks);
+    let return_exits: Vec<u32> = blocks
+        .iter()
+        .filter(|block| matches!(block.terminator, Terminator::Return))
+        .map(|block| block.id)
+        .filter(|id| dominators.contains_key(id))
+        .collect();
+    if return_exits.is_empty() {
+        return;
+    }
+
+    let mut inserts: Vec<(u32, usize, u32, u32)> = Vec::new();
+    for block in blocks.iter() {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            let Instr::Move {
+                dest: Place::Local(dest_local),
+                src: Place::Local(src_local),
+            } = instr
+            else {
+                continue;
+            };
+            if dest_local == src_local {
+                continue;
+            }
+            let conditional = return_exits.iter().any(|exit| {
+                dominators
+                    .get(exit)
+                    .is_some_and(|doms| !doms.contains(&block.id))
+            });
+            if !conditional {
+                continue;
+            }
+            // `if`/`else` value lowering copies each arm's value through a
+            // per-arm temp before the join slot (`_6 = move _4; _5 = move _6`),
+            // so the join slot's direct source is a temp. Walk back through
+            // that single-writer copy chain to the owned local it started at
+            // and neutralize THERE — the temp holds the value from that point
+            // on, exactly as in the direct `match` form.
+            let Some((site_block, site_index, owned_local, transferee)) = resolve_selection_source(
+                blocks,
+                &candidate_locals,
+                block.id,
+                instr_index,
+                *src_local,
+                *dest_local,
+            ) else {
+                continue;
+            };
+            if local_read_after_site(
+                blocks,
+                &builder.suspend_kinds,
+                owned_local,
+                site_block,
+                site_index,
+            ) {
+                continue;
+            }
+            inserts.push((site_block, site_index, owned_local, transferee));
+        }
+    }
+    inserts.sort_unstable();
+    inserts.dedup();
+    if inserts.is_empty() {
+        return;
+    }
+
+    // Insert back-to-front per block so earlier recorded indices stay valid.
+    inserts.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    for (block_id, instr_index, owned_local, transferee) in inserts {
+        let Some(block) = blocks.iter_mut().find(|block| block.id == block_id) else {
+            continue;
+        };
+        let at = instr_index + 1;
+        cfg_util::shift_instr_spans_on_insert(
+            &mut builder.instr_spans,
+            block_id,
+            u32::try_from(at).unwrap_or(u32::MAX),
+        );
+        block.instructions.insert(
+            at,
+            Instr::NeutralizePayloadSlot {
+                place: Place::Local(owned_local),
+                transferee: Some(Place::Local(transferee)),
+                authority: crate::model::NeutralizeAuthority::DivergentSelectionTransfer,
+            },
+        );
+    }
+}
+
+/// Whether `local` is READ anywhere reachable from just after the instruction
+/// at `(site_block, site_index)`.
+///
+/// Scans the remainder of the site block plus every block reachable from it. A
+/// site block that is reachable from itself (a loop body) is scanned in full,
+/// because its earlier instructions execute again. Over-approximates reads
+/// (every source place of every instruction and terminator counts), so the
+/// caller's admission can only be too conservative, never too permissive.
+fn local_read_after_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    local: u32,
+    site_block: u32,
+    site_index: usize,
+) -> bool {
+    let reachable = cfg_util::blocks_reachable_from(blocks, site_block);
+    let site_on_cycle = reachable.contains(&site_block);
+    let reads = |place: Place| base_local(place) == Some(local);
+    for block in blocks {
+        let is_site = block.id == site_block;
+        if !is_site && !reachable.contains(&block.id) {
+            continue;
+        }
+        // The transfer move itself reads the source — that is the read this
+        // neutralize pairs with, never an observation of the nulled slot. On a
+        // loop back-edge the rest of the site block IS re-entered, so only the
+        // transfer instruction is exempt there; everything else in the block
+        // still counts.
+        let start = if is_site && !site_on_cycle {
+            site_index + 1
+        } else {
+            0
+        };
+        for (instr_index, instr) in block.instructions.iter().enumerate().skip(start) {
+            if is_site && instr_index == site_index {
+                continue;
+            }
+            if instr_source_places(instr).into_iter().any(reads) {
+                return true;
+            }
+        }
+        if terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+            .into_iter()
+            .any(reads)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Null scalar handle sources after an exact tuple/record constructor has
 /// moved them into a value that reaches the return slot.
 ///
@@ -5671,6 +5962,7 @@ pub(crate) fn lower_function(
         &projection_tainted,
     );
     neutralize_returned_aggregate_handle_sources(&mut blocks, &mut builder);
+    neutralize_divergent_selection_sources(&mut blocks, &mut builder);
     debug_assert!(
         builder.pending_outbound_actor_args.is_empty(),
         "checked MIR cannot retain unresolved outbound actor arguments"

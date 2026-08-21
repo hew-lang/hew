@@ -4629,6 +4629,23 @@ pub enum NeutralizeAuthority {
     /// aggregate `dest`; nulling the source leaves the returned aggregate as
     /// the sole close authority. `transferee` is that constructor destination.
     ReturnedAggregateMemberConsume,
+    /// A DIVERGENT-ARM VALUE SELECTION: two or more mutually-exclusive control
+    /// paths each move a whole owned local into the same branch-join result
+    /// slot (`let out = match c { true => a, false => b };`, the if/else and
+    /// nested-match forms, and the same shape in return position). The join
+    /// slot ends up holding exactly ONE of the sources; every other source
+    /// still owns its own live allocation on the path it did not transfer on.
+    ///
+    /// Nulling the transferred source turns the whole group back into
+    /// exactly-one ownership per path: the source's scope-exit release walks a
+    /// nulled slot (null-tolerant no-op) on the path that transferred, and
+    /// releases normally on every path that did not. `transferee` is the join
+    /// slot the `Move` immediately above wrote.
+    ///
+    /// Emitted by `neutralize_divergent_selection_sources`
+    /// (`hew-mir/src/lower/mod.rs`) only when the source has no read after the
+    /// transfer site, so nulling can never be observed as a use-after-move.
+    DivergentSelectionTransfer,
 }
 
 impl NeutralizeAuthority {
@@ -4643,7 +4660,8 @@ impl NeutralizeAuthority {
         match self {
             NeutralizeAuthority::SendTransferLastUse
             | NeutralizeAuthority::WholeCarrierConsume
-            | NeutralizeAuthority::ReturnedAggregateMemberConsume => true,
+            | NeutralizeAuthority::ReturnedAggregateMemberConsume
+            | NeutralizeAuthority::DivergentSelectionTransfer => true,
             NeutralizeAuthority::MoveOutArmConsume | NeutralizeAuthority::EphemeralTempConsume => {
                 false
             }

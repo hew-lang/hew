@@ -24,12 +24,12 @@ use super::*;
 use super::{
     aggregate_projection_transfer_dests, alias_projection_chain_owner_seeds,
     attribute_field_binder_provenance, attribute_payload_binder_root, base_local,
-    binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator, blocks_reachable_from,
-    bytes_interior_producer_dest, bytes_place_is_typed, bytes_runtime_arg_is_borrow,
-    bytes_share_sink_places, close_alias_binders_forward, collect_record_field_binders,
-    compute_collection_interior_alias_taint, descend_match_bound_hop_alias_chain,
-    descend_match_bound_hop_aliases, forward_move_closure, instr_escape_places,
-    instr_source_places, local_is_byte_copy_aggregate, note_payload_escape,
+    binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator, block_dominators,
+    blocks_reachable_from, bytes_interior_producer_dest, bytes_place_is_typed,
+    bytes_runtime_arg_is_borrow, bytes_share_sink_places, close_alias_binders_forward,
+    collect_record_field_binders, compute_collection_interior_alias_taint,
+    descend_match_bound_hop_alias_chain, descend_match_bound_hop_aliases, forward_move_closure,
+    instr_escape_places, instr_source_places, local_is_byte_copy_aggregate, note_payload_escape,
     place_is_interior_projection, place_is_tag_read, propagate_payload_binder_root,
     propagate_whole_value_alias_roots, readmit_retained_bytes_tuple_roots, render_owned_handle_ty,
     retained_string_terminator_drop_safe, shift_instr_spans_on_insert,
@@ -2402,6 +2402,24 @@ pub(super) fn derive_owned_record_drop_allowed(
             if initializes_generator_env_snapshot(instr, &generator_env_inits) {
                 continue;
             }
+            // A divergent-arm selection transfer zeroes every heap leaf of its
+            // source record in the very next instruction, so neither the `Move`
+            // nor the paired neutralize reads ownership out of the source: the
+            // source keeps its (now null-tolerant) `RecordInPlace` release for
+            // every path that did NOT execute the transfer. Reading either as
+            // an escape is what left the losing arm's record unreleased.
+            if super::split_consume::is_divergent_selection_transfer_move(block, instr_index) {
+                continue;
+            }
+            if matches!(
+                instr,
+                Instr::NeutralizePayloadSlot {
+                    authority: crate::model::NeutralizeAuthority::DivergentSelectionTransfer,
+                    ..
+                }
+            ) {
+                continue;
+            }
             // A supported inline-enum overwrite releases before storing, so
             // only its destination base is an interior mutation; the source
             // remains on the ordinary owning-sink scan below.
@@ -2819,8 +2837,26 @@ pub(super) fn derive_local_collection_drop_allowed(
     };
 
     for block in blocks {
-        for instr in &block.instructions {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
             if initializes_generator_env_snapshot(instr, &generator_env_inits) {
+                continue;
+            }
+            // A divergent-arm selection transfer nulls its source slot in the
+            // very next instruction, so neither the `Move` nor the paired
+            // neutralize reads ownership out of the source: the source keeps
+            // its own (now null-tolerant) scope-exit release for every path
+            // that did NOT execute the transfer. Treating either as an escape
+            // is what left the losing arm's value unreleased.
+            if super::split_consume::is_divergent_selection_transfer_move(block, instr_index) {
+                continue;
+            }
+            if matches!(
+                instr,
+                Instr::NeutralizePayloadSlot {
+                    authority: crate::model::NeutralizeAuthority::DivergentSelectionTransfer,
+                    ..
+                }
+            ) {
                 continue;
             }
             // A `Move` discriminates a benign whole-value hand-off (dest is
@@ -3565,70 +3601,6 @@ fn whole_local_write_sites(blocks: &[BasicBlock], local: u32) -> Option<Vec<Inst
         }
     }
     Some(sites)
-}
-
-fn block_dominators(blocks: &[BasicBlock]) -> HashMap<u32, HashSet<u32>> {
-    let Some(entry) = blocks.first().map(|block| block.id) else {
-        return HashMap::new();
-    };
-    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|block| (block.id, block)).collect();
-    if by_id.len() != blocks.len() {
-        return HashMap::new();
-    }
-
-    let mut reachable = blocks_reachable_from(blocks, entry);
-    reachable.insert(entry);
-    let mut predecessors: HashMap<u32, HashSet<u32>> = HashMap::new();
-    for block in blocks {
-        for successor in block.successors() {
-            if reachable.contains(&block.id) && reachable.contains(&successor) {
-                predecessors.entry(successor).or_default().insert(block.id);
-            }
-        }
-    }
-
-    let mut dominators: HashMap<u32, HashSet<u32>> = reachable
-        .iter()
-        .copied()
-        .map(|block| {
-            if block == entry {
-                (block, HashSet::from([entry]))
-            } else {
-                (block, reachable.clone())
-            }
-        })
-        .collect();
-    loop {
-        let mut changed = false;
-        for &block in &reachable {
-            if block == entry {
-                continue;
-            }
-            let Some(preds) = predecessors.get(&block) else {
-                dominators.remove(&block);
-                continue;
-            };
-            let mut pred_dominators = preds
-                .iter()
-                .filter_map(|pred| dominators.get(pred).cloned());
-            let Some(mut next) = pred_dominators.next() else {
-                dominators.remove(&block);
-                continue;
-            };
-            for pred_doms in pred_dominators {
-                next.retain(|dominator| pred_doms.contains(dominator));
-            }
-            next.insert(block);
-            if dominators.get(&block) != Some(&next) {
-                dominators.insert(block, next);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    dominators
 }
 
 fn instr_site_dominates(

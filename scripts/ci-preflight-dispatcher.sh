@@ -1461,6 +1461,26 @@ run_timed_command() {
     return "$status"
 }
 
+# Toolchain pin. The workflows installed whatever taiki-e/install-action
+# resolved that hour, so `--no-pager` (0.9.120 and later) was accepted or
+# rejected by the same commit on different days: three reds, each after a full
+# job. The pin is declared at the install site and read back here.
+assert_nextest_pin() {
+    local pin installed oldest
+    pin="$(sed -n 's/^[[:space:]]*tools: nextest@\([0-9][0-9.]*\).*/\1/p' .github/workflows/ci.yml | head -1)"
+    [[ -n "$pin" ]] || die "no pinned cargo-nextest version in .github/workflows/ci.yml (write 'tools: nextest@X.Y.Z')"
+    installed="$(cargo nextest --version 2>/dev/null | sed -n 's/^cargo-nextest \([0-9][0-9.]*\).*/\1/p' | head -1)"
+    [[ -n "$installed" ]] || die "cargo-nextest is not installed; every test gate runs through it (cargo install cargo-nextest --locked)"
+    oldest="$(printf '%s\n%s\n' "$pin" "$installed" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)"
+    [[ "$installed" == "$pin" || "$oldest" == "$pin" ]] ||
+        die "cargo-nextest $installed is older than the CI pin $pin; it rejects flags the gates pass (cargo install cargo-nextest --locked)"
+    echo "cargo-nextest $installed satisfies the CI pin $pin"
+}
+
+if [[ "$REQUIRES_COMPILE" == "true" ]]; then
+    assert_nextest_pin
+fi
+
 PREFLIGHT_FAILURES=()
 PREFLIGHT_EXECUTED_COMMANDS=()
 PREFLIGHT_CMD_ELAPSED=()

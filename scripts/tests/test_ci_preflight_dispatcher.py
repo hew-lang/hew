@@ -665,6 +665,63 @@ def test_scripts_config_budget_annotation() -> None:
     )
 
 
+def run_with_fake_nextest(version: str) -> subprocess.CompletedProcess[str]:
+    """Run a compiling lane with `cargo nextest --version` reporting `version`."""
+    with tempfile.TemporaryDirectory() as bin_dir:
+        fake_cargo = Path(bin_dir) / "cargo"
+        fake_cargo.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "nextest" ] && [ "$2" = "--version" ]; then\n'
+            f"  printf 'cargo-nextest {version} (deadbeef 2026-01-01)\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        fake_cargo.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        env["PREFLIGHT_TEST_ALLOW_OVERRIDE"] = "1"
+        env["PREFLIGHT_TEST_COMMANDS"] = "true"
+        return subprocess.run(
+            ["bash", str(SCRIPT), "--", "hew-parser/src/lib.rs"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+
+
+def test_a_nextest_older_than_the_ci_pin_stops_the_preflight() -> None:
+    """Three reds were an unpinned nextest rejecting a flag the gates pass."""
+    result = run_with_fake_nextest("0.9.99")
+
+    assert result.returncode != 0, result.stdout
+    assert "older than the CI pin" in result.stderr, result.stderr
+    assert "==> true" not in result.stdout, result.stdout
+
+
+def test_a_nextest_at_or_above_the_ci_pin_runs_the_gates() -> None:
+    result = run_with_fake_nextest("0.9.120")
+
+    assert result.returncode == 0, result.stderr
+    assert "satisfies the CI pin 0.9.120" in result.stdout, result.stdout
+
+
+def test_every_nextest_install_site_declares_the_same_pin() -> None:
+    """The dispatcher reads the pin from the install site, so the sites must agree."""
+    pins = set()
+    for workflow in sorted((ROOT / ".github").rglob("*.yml")):
+        text = workflow.read_text()
+        pins.update(re.findall(r"tools: nextest@([0-9.]+)", text))
+        pins.update(re.findall(r"cargo install cargo-nextest@([0-9.]+)", text))
+        assert not re.search(r"tools: nextest(?![@,\w.-])", text), workflow
+        assert not re.search(r"cargo install cargo-nextest(?!@)", text), workflow
+    assert len(pins) == 1, pins
+
+
 def test_runtime_net_lane_budget_annotation() -> None:
     """runtime-net lane (narrow) shows 180s budget in dry-run."""
     result = run_dispatcher("hew-runtime/src/actor.rs")
@@ -1345,6 +1402,9 @@ _TESTS = [
     test_a_fmt_gate_warms_nothing,
     test_every_dispatched_make_target_exists_in_the_makefile,
     test_no_warmup_carries_a_flag_its_gate_does_not,
+    test_a_nextest_older_than_the_ci_pin_stops_the_preflight,
+    test_a_nextest_at_or_above_the_ci_pin_runs_the_gates,
+    test_every_nextest_install_site_declares_the_same_pin,
     test_no_warmup_names_a_non_ci_nextest_profile,
     test_scripts_config_budget_annotation,
     test_runtime_net_lane_budget_annotation,

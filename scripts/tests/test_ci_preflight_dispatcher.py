@@ -1348,6 +1348,35 @@ def test_help_documents_the_shard_flags() -> None:
     assert "exactly one shard" in result.stdout, result.stdout
 
 
+def test_hosted_linux_matrix_matches_the_dispatcher_shard_denominator() -> None:
+    """Branch protection stays honest only if the matrix covers every shard.
+
+    A matrix of [1,2,3] against `--shard N/4` would silently never run shard 4:
+    its commands would vanish from CI while every required check stayed green.
+    """
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    start = workflow.index("  build-and-test:\n")
+    following = re.search(r"^  [a-z][a-z0-9-]*:\n", workflow[start + 1 :], re.MULTILINE)
+    job = workflow[start : start + 1 + following.start()]
+
+    matrix = re.search(r"matrix:\n\s+shard: \[([0-9, ]+)\]", job)
+    assert matrix is not None, job
+    shards = [int(value) for value in matrix.group(1).split(",")]
+    assert shards == list(range(1, len(shards) + 1)), shards
+
+    denominators = re.findall(
+        r"ci-preflight-dispatcher\.sh --base origin/main --fail-fast "
+        r"--shard \$\{\{ matrix\.shard \}\}/(\d+)",
+        job,
+    )
+    assert denominators, job
+    assert {int(value) for value in denominators} == {len(shards)}, denominators
+
+    required = workflow[workflow.index("  linux-required:\n") :]
+    assert "name: Build & test (Linux)" in required, required
+    assert "needs.build-and-test.result" in required, required
+
+
 _TESTS = [
     test_makefile_routes_to_scripts_config_profile,
     test_scripts_path_routes_to_scripts_config_profile,
@@ -1418,6 +1447,7 @@ _TESTS = [
     test_invalid_shard_specs_fail_closed,
     test_shard_plan_prints_the_full_assignment_and_runs_nothing,
     test_help_documents_the_shard_flags,
+    test_hosted_linux_matrix_matches_the_dispatcher_shard_denominator,
 ]
 
 if __name__ == "__main__":

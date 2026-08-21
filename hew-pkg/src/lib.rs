@@ -11,6 +11,7 @@ pub mod happy_eyeballs;
 pub mod index;
 pub mod manifest;
 pub mod native;
+pub mod project;
 pub mod registry;
 pub mod resolver;
 pub mod signing;

@@ -1713,6 +1713,10 @@ pub enum HirExprKind {
     ForkBlock {
         body: HirBlock,
         task_ty: ResolvedTy,
+        /// Free variables transferred into the scope-owned task environment.
+        /// Non-Copy fields use `Move`; borrowed captures are rejected before
+        /// HIR lowering.
+        captures: Vec<HirClosureCapture>,
     },
     /// `after(duration) { ... }` inside a scope. The clause is the lexical
     /// deadline edge that later MIR slices lower to scope-token cancellation.

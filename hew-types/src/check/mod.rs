@@ -449,7 +449,11 @@ impl Checker {
                   would only obscure the pipeline order"
     )]
     pub fn check_program(&mut self, program: &Program) -> TypeCheckOutput {
-        self.root_value_bindings.clear();
+        if self.has_checked_program {
+            self.reset_for_program();
+        } else {
+            self.has_checked_program = true;
+        }
         // Mint the compile's module identities FIRST (rc1-F1 stage A): every
         // registration pass below resolves declaration identity through this
         // table, so it must be complete before any key is minted.
@@ -1349,6 +1353,7 @@ impl Checker {
 
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
+            interpolation_display_types: std::mem::take(&mut self.interpolation_display_types),
             produced_value_ownership,
             produced_value_dependencies,
             caller_visible_param_projections: std::mem::take(
@@ -1474,6 +1479,39 @@ impl Checker {
         output.cycle_capable_actors = cycle_capable;
 
         output
+    }
+
+    /// Restore the checker to the same program-owned state as a fresh instance.
+    ///
+    /// A checker may be reused by front ends, but every table populated while
+    /// checking one program must be absent from the next program.  Rebuilding
+    /// the checker is less error-prone than maintaining a second, incomplete
+    /// list of registries whenever a new checker-side cache is added. The
+    /// module registry preserves only parsed module data; its active modules
+    /// and derived handle/drop metadata are structurally replaced.
+    fn reset_for_program(&mut self) {
+        let module_registry = std::mem::replace(
+            &mut self.module_registry,
+            crate::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .for_new_program();
+        let wasm_target = self.wasm_target;
+        let repl_fragment = self.repl_fragment;
+        let is_stdlib_source = self.is_stdlib_source;
+        let checking_embedded_builtins = self.checking_embedded_builtins;
+        let consume_receiver_methods = std::mem::take(&mut self.consume_receiver_methods);
+        let lint_levels = self.lint_levels.clone();
+        let lint_sources = self.lint_sources.clone();
+
+        *self = Self::new(module_registry);
+        self.wasm_target = wasm_target;
+        self.repl_fragment = repl_fragment;
+        self.is_stdlib_source = is_stdlib_source;
+        self.checking_embedded_builtins = checking_embedded_builtins;
+        self.has_checked_program = true;
+        self.consume_receiver_methods = consume_receiver_methods;
+        self.lint_levels = lint_levels;
+        self.lint_sources = lint_sources;
     }
 
     /// The canonical prelude is an import-only authority manifest: its imports
@@ -2517,7 +2555,7 @@ impl Checker {
             }
             Expr::InterpolatedString(parts) => {
                 for part in parts {
-                    if let StringPart::Expr((e, s)) = part {
+                    if let StringPart::Expr((e, s)) | StringPart::StructuralExpr((e, s)) = part {
                         self.classify_escapes_in_expr(e, s, in_fork, AnonContext::Other);
                     }
                 }
@@ -2967,7 +3005,7 @@ fn collect_lambda_spans_in_expr(
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let StringPart::Expr((e, s)) = part {
+                if let StringPart::Expr((e, s)) | StringPart::StructuralExpr((e, s)) = part {
                     collect_lambda_spans_in_expr(e, s, out);
                 }
             }

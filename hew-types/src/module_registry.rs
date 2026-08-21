@@ -11,14 +11,31 @@ use hew_parser::module::ModuleId;
 
 use crate::stdlib_loader::{load_module_checked, ModuleInfo};
 
-/// On-demand module loader and cache.
+/// Parsed module data that may be reused across checker runs.
+#[derive(Debug, Default)]
+struct ModuleParseCache {
+    modules: HashMap<ModuleId, ModuleInfo>,
+}
+
+/// Module declarations and derived metadata visible to one checked program.
+#[derive(Debug, Clone, Default)]
+struct ProgramModuleState {
+    modules: HashMap<ModuleId, ModuleInfo>,
+    handle_types: HashSet<String>,
+    resource_wrapper_types: HashSet<String>,
+    drop_types: HashSet<String>,
+    drop_funcs: HashMap<String, String>,
+}
+
+/// On-demand module loader with a persistent parse cache and per-program state.
 ///
 /// Replaces the baked-in `stdlib_generated.rs` tables. Discovers modules
 /// by searching the filesystem and parsing `.hew` files at user compile time.
 #[derive(Debug)]
 pub struct ModuleRegistry {
-    /// Cached module info, keyed by module id (e.g. `["std", "encoding", "json"]`).
-    modules: HashMap<ModuleId, ModuleInfo>,
+    cache: ModuleParseCache,
+    configured: ProgramModuleState,
+    active: ProgramModuleState,
     /// Ordered search paths for module resolution.
     search_paths: Vec<PathBuf>,
     /// Compiler-owned root that may confer stdlib-only authority.
@@ -28,16 +45,6 @@ pub struct ModuleRegistry {
     /// `search_paths`, which may contain project-, cwd-, or environment-owned
     /// roots.
     compiler_stdlib_root: Option<PathBuf>,
-    /// Accumulated handle types from all loaded modules.
-    handle_types: HashSet<String>,
-    /// Accumulated fielded `#[resource]` handle-wrapper types from all loaded
-    /// modules. Kept short-name-disjoint from `handle_types` (asserted at load)
-    /// so a bare-name receiver never resolves a wrapper as an opaque handle.
-    resource_wrapper_types: HashSet<String>,
-    /// Accumulated drop types from all loaded modules.
-    drop_types: HashSet<String>,
-    /// Accumulated drop functions from all loaded modules: `type_name` → C func name.
-    drop_funcs: HashMap<String, String>,
 }
 
 /// Parse a canonical dotted module identity at the registry boundary.
@@ -409,7 +416,13 @@ impl ModuleRegistry {
     /// `std.channel.channel`: declaration proof and the identity it publishes
     /// must come from the same selected source.
     fn exact_module_source_type_owner(&self, owner: &str, leaf: &str) -> Option<String> {
-        if let Some(info) = self.modules.get(&module_id_from_identity(owner)) {
+        let module_id = module_id_from_identity(owner);
+        if let Some(info) = self
+            .active
+            .modules
+            .get(&module_id)
+            .or_else(|| self.cache.modules.get(&module_id))
+        {
             if !Self::module_info_declares_nominal(info, leaf) {
                 return None;
             }
@@ -460,7 +473,7 @@ impl ModuleRegistry {
         let (owner, leaf) = name.rsplit_once('.')?;
         if owner.contains('.') {
             let module_id = module_id_from_identity(owner);
-            let (stored_id, info) = self.modules.get_key_value(&module_id)?;
+            let (stored_id, info) = self.active.modules.get_key_value(&module_id)?;
             let mut matches = Self::receiver_spellings(info, method_receiver)
                 .into_iter()
                 .filter(|spelling| crate::short_name(spelling) == leaf)
@@ -475,6 +488,7 @@ impl ModuleRegistry {
         }
 
         let mut matches = self
+            .active
             .modules
             .iter()
             .filter(|(_, info)| {
@@ -521,13 +535,31 @@ impl ModuleRegistry {
     #[must_use]
     pub fn new(search_paths: Vec<PathBuf>) -> Self {
         Self {
-            modules: HashMap::new(),
+            cache: ModuleParseCache::default(),
+            configured: ProgramModuleState::default(),
+            active: ProgramModuleState::default(),
             search_paths,
             compiler_stdlib_root: compiler_stdlib_root(),
-            handle_types: HashSet::new(),
-            resource_wrapper_types: HashSet::new(),
-            drop_types: HashSet::new(),
-            drop_funcs: HashMap::new(),
+        }
+    }
+
+    /// Retain parsed module data while discarding every resolution surface from
+    /// the completed program. Explicit caller configuration is re-seeded.
+    pub(crate) fn for_new_program(self) -> Self {
+        let Self {
+            cache,
+            configured,
+            active: _,
+            search_paths,
+            compiler_stdlib_root,
+        } = self;
+        let active = configured.clone();
+        Self {
+            cache,
+            configured,
+            active,
+            search_paths,
+            compiler_stdlib_root,
         }
     }
 
@@ -562,7 +594,7 @@ impl ModuleRegistry {
     /// for resolution and parsing.
     ///
     /// On success, the module's handle types and drop types are accumulated into
-    /// the registry-wide sets.
+    /// the active program's registry sets.
     ///
     /// # Errors
     ///
@@ -580,56 +612,23 @@ impl ModuleRegistry {
         let id = module_id_from_identity(module_path);
         let loader_path = id.path.join("::");
 
-        // Already cached — return it.
-        if self.modules.contains_key(&id) {
-            return Ok(&self.modules[&id]);
+        if self.active.modules.contains_key(&id) {
+            return Ok(&self.active.modules[&id]);
         }
-        // Try each search path in order.
+        if let Some(info) = self.cache.modules.get(&id).cloned() {
+            return Ok(self.activate_module(&id, info));
+        }
+
         for search_path in &self.search_paths {
             if let Some(info) = load_module_checked(&loader_path, search_path)? {
-                // Accumulate handle types, wrapper types, and drop types.
-                for ht in &info.handle_types {
-                    self.handle_types.insert(ht.clone());
-                }
-                for wt in &info.resource_wrapper_types {
-                    self.resource_wrapper_types.insert(wt.clone());
-                }
-                for dt in &info.drop_types {
-                    self.drop_types.insert(dt.clone());
-                }
-                for (ty, func) in &info.drop_funcs {
-                    self.drop_funcs.insert(ty.clone(), func.clone());
-                }
-
-                // Fail closed: a fielded `#[resource]` handle-wrapper must never
-                // share its short name with a fieldless `#[opaque]` handle.
-                // `Checker::receiver_is_opaque_handle` qualifies a bare receiver
-                // name against `handle_types` by short name, so such a collision
-                // would silently re-admit the wrapper to the by-value handle-method
-                // rewrite (passing the whole struct to a pointer-typed extern). The
-                // current stdlib is disjoint (`Pattern` vs `PatternHandle`); trip
-                // loudly if a future module introduces a collision instead of
-                // miscompiling it.
-                if let Some((wrapper, handle)) =
-                    crate::stdlib_loader::resource_wrapper_shadowing_handle(
-                        &self.handle_types,
-                        &self.resource_wrapper_types,
-                    )
-                {
-                    panic!(
-                        "stdlib invariant violated: #[resource] handle-wrapper `{wrapper}` \
-                         shares its short name with fieldless #[opaque] handle `{handle}` — \
-                         rename one so handle-method dispatch cannot misclassify the wrapper \
-                         as an opaque handle"
-                    );
-                }
-
                 let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
                 let canonical_owner =
                     canonical_source_module_identity(&id.path.join("."), &source_paths);
                 let canonical_id = module_id_from_identity(&canonical_owner);
-                self.modules.insert(canonical_id.clone(), info);
-                return Ok(&self.modules[&canonical_id]);
+                self.cache
+                    .modules
+                    .insert(canonical_id.clone(), info.clone());
+                return Ok(self.activate_module(&canonical_id, info));
             }
         }
 
@@ -639,11 +638,41 @@ impl ModuleRegistry {
         })
     }
 
+    fn activate_module(&mut self, id: &ModuleId, info: ModuleInfo) -> &ModuleInfo {
+        self.active
+            .handle_types
+            .extend(info.handle_types.iter().cloned());
+        self.active
+            .resource_wrapper_types
+            .extend(info.resource_wrapper_types.iter().cloned());
+        self.active
+            .drop_types
+            .extend(info.drop_types.iter().cloned());
+        self.active
+            .drop_funcs
+            .extend(info.drop_funcs.iter().cloned());
+
+        if let Some((wrapper, handle)) = crate::stdlib_loader::resource_wrapper_shadowing_handle(
+            &self.active.handle_types,
+            &self.active.resource_wrapper_types,
+        ) {
+            panic!(
+                "stdlib invariant violated: #[resource] handle-wrapper `{wrapper}` \
+               shares its short name with fieldless #[opaque] handle `{handle}` — \
+               rename one so handle-method dispatch cannot misclassify the wrapper \
+               as an opaque handle"
+            );
+        }
+
+        self.active.modules.insert(id.clone(), info);
+        &self.active.modules[id]
+    }
+
     /// Return cached module info if it has already been loaded.
     #[must_use]
     pub fn get(&self, module_path: &str) -> Option<&ModuleInfo> {
         let id = module_id_from_identity(module_path);
-        self.modules.get(&id)
+        self.active.modules.get(&id)
     }
 
     /// Check if a fully-qualified name is a handle type across all loaded modules.
@@ -717,6 +746,7 @@ impl ModuleRegistry {
         canonical_owner: &str,
     ) -> Option<String> {
         let info = self
+            .active
             .modules
             .get(&module_id_from_identity(canonical_owner))?;
         let extracted_owner = canonical_owner
@@ -781,7 +811,7 @@ impl ModuleRegistry {
     /// Check if a fully-qualified name is a drop type across all loaded modules.
     #[must_use]
     pub fn is_drop_type(&self, name: &str) -> bool {
-        self.drop_types.contains(name)
+        self.active.drop_types.contains(name)
     }
 
     /// Return the C drop function for a fully-qualified type name, if known.
@@ -790,13 +820,14 @@ impl ModuleRegistry {
     /// is a direct C call (the common stdlib pattern).
     #[must_use]
     pub fn drop_func_for(&self, type_name: &str) -> Option<&str> {
-        self.drop_funcs.get(type_name).map(String::as_str)
+        self.active.drop_funcs.get(type_name).map(String::as_str)
     }
 
     /// Return all `(type_name, c_drop_func)` pairs from all loaded modules.
     #[must_use]
     pub fn all_drop_funcs(&self) -> Vec<(String, String)> {
-        self.drop_funcs
+        self.active
+            .drop_funcs
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
@@ -813,7 +844,7 @@ impl ModuleRegistry {
     /// Return all handle types from all loaded modules.
     #[must_use]
     pub fn all_handle_types(&self) -> Vec<String> {
-        self.handle_types.iter().cloned().collect()
+        self.active.handle_types.iter().cloned().collect()
     }
 
     /// Resolve a module-qualified call to a C symbol.
@@ -832,7 +863,7 @@ impl ModuleRegistry {
         };
 
         let exact_id = module_id_from_identity(module_path);
-        self.modules.get(&exact_id).and_then(symbol_for)
+        self.active.modules.get(&exact_id).and_then(symbol_for)
     }
 
     /// Resolve a handle method to its C symbol.
@@ -892,11 +923,12 @@ impl ModuleRegistry {
     /// requiring real `.hew` module files on disk.
     #[cfg(test)]
     pub(crate) fn insert_handle_type_for_test(&mut self, qualified_name: String) {
-        self.handle_types.insert(qualified_name.clone());
+        self.active.handle_types.insert(qualified_name.clone());
         let owner = qualified_name
             .rsplit_once('.')
             .map_or("test_handles", |(owner, _)| owner);
         let info = self
+            .active
             .modules
             .entry(module_id_from_identity(owner))
             .or_insert_with(|| ModuleInfo {
@@ -915,12 +947,15 @@ impl ModuleRegistry {
         if !info.handle_types.contains(&qualified_name) {
             info.handle_types.push(qualified_name);
         }
+        self.configured = self.active.clone();
     }
 
     #[cfg(test)]
     pub(crate) fn insert_module_info_for_test(&mut self, canonical_owner: &str, info: ModuleInfo) {
-        self.modules
+        self.active
+            .modules
             .insert(module_id_from_identity(canonical_owner), info);
+        self.configured = self.active.clone();
     }
 }
 
@@ -1471,15 +1506,15 @@ mod tests {
         }
 
         let mut reg = ModuleRegistry::new(Vec::new());
-        reg.modules.insert(
+        reg.active.modules.insert(
             ModuleId::new(vec!["vendor_a".into(), "nested".into(), "shared".into()]),
             module_info("run", "vendor_a_shared_run"),
         );
-        reg.modules.insert(
+        reg.active.modules.insert(
             ModuleId::new(vec!["vendor_b".into(), "nested".into(), "shared".into()]),
             module_info("run", "vendor_b_shared_run"),
         );
-        reg.modules.insert(
+        reg.active.modules.insert(
             ModuleId::new(vec!["vendor_c".into(), "nested".into(), "unique".into()]),
             module_info("run", "vendor_c_unique_run"),
         );
@@ -1577,11 +1612,11 @@ mod tests {
         }
 
         let mut reg = ModuleRegistry::new(Vec::new());
-        reg.modules.insert(
+        reg.active.modules.insert(
             module_id_from_identity("vendor_a.text.regex"),
             shared_info("vendor_a_clone", true),
         );
-        reg.modules.insert(
+        reg.active.modules.insert(
             module_id_from_identity("vendor_b.text.regex"),
             shared_info("vendor_b_clone", false),
         );

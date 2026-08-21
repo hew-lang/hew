@@ -3531,6 +3531,29 @@ impl Builder {
                                 Some(&expr.ty),
                             );
                         }
+                        if family == &hew_types::runtime_call::RuntimeCallFamily::StructuralFormat {
+                            if args.len() != 1 {
+                                self.diagnostics.push(MirDiagnostic {
+                                    kind: MirDiagnosticKind::NotYetImplemented {
+                                        construct: "structural format arity".to_string(),
+                                        site: expr.site,
+                                    },
+                                    note: format!(
+                                        "structural formatting expects one argument, got {}",
+                                        args.len()
+                                    ),
+                                });
+                                return None;
+                            }
+                            let value = self.lower_value(&args[0])?;
+                            let dest = self.alloc_local(ResolvedTy::String);
+                            self.push_runtime_call(
+                                "hew_structural_format",
+                                vec![value],
+                                Some(dest),
+                            );
+                            return Some(dest);
+                        }
                         // `runtime_symbol_for_call_expr` handled the ABI subset
                         // above.  The remaining typed families are the explicit
                         // direct/codegen-intercept partition.
@@ -4850,7 +4873,9 @@ impl Builder {
                 bound,
                 source_anchor: _,
             } => self.lower_spawned_call_task(callee, args, task_ty, *bound, expr.site),
-            HirExprKind::ForkBlock { body, .. } => self.lower_fork_block_task(body, expr.site),
+            HirExprKind::ForkBlock { body, captures, .. } => {
+                self.lower_fork_block_task(body, captures, expr.site)
+            }
             HirExprKind::ScopeDeadline { duration, body } => {
                 self.lower_scope_deadline(duration, body, expr.site)
             }
@@ -5751,6 +5776,12 @@ impl Builder {
                 // COPY-IN param embeds stay caller-borrowed; only the source
                 // temp's independently retained string share gains an owner.
                 self.finalize_vec_copy_in_source_owner(&callee, args, &arg_places);
+                let receiver_contract = crate::runtime_symbols::callee_ownership_contract(&callee);
+                if receiver_contract.borrows_vec_receiver()
+                    || receiver_contract.borrows_collection_receiver()
+                {
+                    self.finalize_borrowed_receiver_owner(receiver, receiver_place);
+                }
                 let dest = if matches!(ret_ty, ResolvedTy::Unit) {
                     None
                 } else {

@@ -247,11 +247,7 @@ fn fork_block_empty_rejected() {
 }
 
 #[test]
-fn fork_block_multi_statement_rejected() {
-    // Fail-closed: a multi-statement fork body is type-checked by the checker
-    // (post RI-08 fold), but MIR cannot yet spawn it. It rejects here at the
-    // earliest clean point with an actionable diagnostic rather than reaching
-    // MIR as a less-legible NotYetImplemented.
+fn fork_block_multi_statement_accepted() {
     let source = r"
         fn a() {}
         fn b() {}
@@ -266,62 +262,42 @@ fn fork_block_multi_statement_rejected() {
     ";
     let output = lower(source);
 
-    // Pin the fail-closed diagnostic: it must be the typed shape gate AND carry
-    // an actionable message that names the workaround, so a future refactor
-    // cannot silently degrade it to an opaque NotYetImplemented.
-    let multi_stmt_gate = output.diagnostics.iter().find(|d| {
-        matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. })
-            && d.note.contains("multi-statement")
-    });
-    let multi_stmt_gate = multi_stmt_gate.unwrap_or_else(|| {
-        panic!(
-            "Multi-statement fork block must emit an actionable ForkBlockBodyUnsupported; \
-             got: {:#?}",
-            output.diagnostics
-        )
-    });
     assert!(
-        multi_stmt_gate.note.contains("not yet supported")
-            && multi_stmt_gate.note.contains("fork { the_fn() }"),
-        "multi-statement reject must name the workaround; got note: {:?}",
-        multi_stmt_gate.note
+        !output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. })),
+        "multi-statement fork body must pass the retired shape gate: {:#?}",
+        output.diagnostics
     );
-
-    let result = output.into_result();
     assert!(
-        result.is_err(),
-        "into_result() must return Err for multi-statement fork block"
+        output.into_result().is_ok(),
+        "multi-statement fork block must produce executable HIR"
     );
 }
 
 #[test]
-fn fork_block_not_call_rejected() {
-    // Fail-closed: a non-call fork body (here a bare literal) is type-checked by
-    // the checker, but MIR can only spawn a direct function call. It rejects
-    // here with an actionable diagnostic rather than reaching MIR.
+fn fork_block_non_call_statement_accepted() {
     let source = r"
         fn main() {
             scope {
-                fork { 42 }
+                fork { let answer = 42; }
             }
         }
     ";
     let output = lower(source);
 
-    let has_fork_block_unsupported = output
-        .diagnostics
-        .iter()
-        .any(|d| matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. }));
     assert!(
-        has_fork_block_unsupported,
-        "Non-call fork block must emit ForkBlockBodyUnsupported; got: {:#?}",
+        !output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. })),
+        "non-call unit body must pass the retired shape gate: {:#?}",
         output.diagnostics
     );
-
-    let result = output.into_result();
     assert!(
-        result.is_err(),
-        "into_result() must return Err for non-call fork block"
+        output.into_result().is_ok(),
+        "non-call fork body must produce executable HIR"
     );
 }
 
@@ -495,9 +471,8 @@ fn await_expression_parses() {
 
 #[test]
 fn multiple_gates_can_fire() {
-    // Multiple violations in one program should all be reported. The non-empty
-    // `after(...)` body is no longer a HIR violation (the body-shape gate is
-    // retired); the two unsupported fork-block shapes are still reported.
+    // The non-empty fork and deadline bodies are accepted; only the empty fork
+    // remains a shape violation.
     let source = r"
         fn main() {
             scope {
@@ -519,8 +494,8 @@ fn multiple_gates_can_fire() {
         .count();
 
     assert!(
-        fork_gate_count >= 2,
-        "Expected at least 2 fork-block gate diagnostics; got: {:#?}",
+        fork_gate_count == 1,
+        "Expected exactly the empty fork-block diagnostic; got: {:#?}",
         output.diagnostics
     );
 

@@ -15,8 +15,207 @@
 use crate::cabi::{alloc_cstring_data, cstr_to_str, cstring_retain, free_cstring, malloc_cstring};
 use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
 use crate::trap_code::{fmt_decimal_i64, fmt_decimal_usize, runtime_bounds_trap};
-use std::ffi::CStr;
+use std::ffi::{c_void, CStr};
+use std::fmt::Write as _;
 use std::os::raw::c_char;
+
+pub type HewStructuralFormatFn = unsafe extern "C" fn(*mut c_void, *const c_void);
+
+#[derive(Debug, Default)]
+pub struct HewStringBuilder {
+    bytes: Vec<u8>,
+}
+
+/// Compiler-intercept sentinel. Generated code lowers this symbol to typed
+/// formatter thunks before link time; a direct call is always a compiler bug.
+///
+/// # Safety
+///
+/// This function must never be called; it aborts unconditionally.
+#[no_mangle]
+#[expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "the sentinel's only operation is unconditional process abort"
+)]
+pub unsafe extern "C" fn hew_structural_format(_value: *const c_void) -> *mut c_char {
+    unsafe { libc::abort() }
+}
+
+#[expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "callers preserve the builder allocation for the complete formatting traversal"
+)]
+pub(crate) unsafe fn structural_builder_append(builder: *mut c_void, bytes: &[u8]) {
+    if builder.is_null() {
+        unsafe { libc::abort() };
+    }
+    let builder = unsafe { &mut *builder.cast::<HewStringBuilder>() };
+    builder.bytes.extend_from_slice(bytes);
+}
+
+#[no_mangle]
+pub extern "C" fn hew_string_builder_new() -> *mut c_void {
+    Box::into_raw(Box::new(HewStringBuilder::default())).cast()
+}
+
+/// Append a borrowed C string.
+///
+/// # Safety
+///
+/// `builder` must be live and `value` must be null or NUL-terminated.
+#[no_mangle]
+#[expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "the function validates null and borrows both inputs for the call"
+)]
+pub unsafe extern "C" fn hew_string_builder_append_cstr(
+    builder: *mut c_void,
+    value: *const c_char,
+) {
+    if value.is_null() {
+        unsafe { structural_builder_append(builder, b"<null>") };
+        return;
+    }
+    let bytes = unsafe { CStr::from_ptr(value) }.to_bytes();
+    unsafe { structural_builder_append(builder, bytes) };
+}
+
+/// Append a signed integer.
+///
+/// # Safety
+///
+/// `builder` must be a live structural string builder.
+#[no_mangle]
+#[expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "the builder pointer is valid by the FFI contract"
+)]
+pub unsafe extern "C" fn hew_string_builder_append_i64(builder: *mut c_void, value: i64) {
+    let mut text = String::new();
+    let _ = write!(text, "{value}");
+    unsafe { structural_builder_append(builder, text.as_bytes()) };
+}
+
+/// Append an unsigned integer.
+///
+/// # Safety
+///
+/// `builder` must be a live structural string builder.
+#[no_mangle]
+#[expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "the builder pointer is valid by the FFI contract"
+)]
+pub unsafe extern "C" fn hew_string_builder_append_u64(builder: *mut c_void, value: u64) {
+    let mut text = String::new();
+    let _ = write!(text, "{value}");
+    unsafe { structural_builder_append(builder, text.as_bytes()) };
+}
+
+/// Append a floating-point value.
+///
+/// # Safety
+///
+/// `builder` must be a live structural string builder.
+#[no_mangle]
+#[expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "the builder pointer is valid by the FFI contract"
+)]
+pub unsafe extern "C" fn hew_string_builder_append_f64(builder: *mut c_void, value: f64) {
+    let mut text = String::new();
+    let _ = write!(text, "{value}");
+    unsafe { structural_builder_append(builder, text.as_bytes()) };
+}
+
+/// Append a Hew boolean byte.
+///
+/// # Safety
+///
+/// `builder` must be a live structural string builder.
+#[no_mangle]
+#[expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "the builder pointer is valid by the FFI contract"
+)]
+pub unsafe extern "C" fn hew_string_builder_append_bool(builder: *mut c_void, value: u8) {
+    unsafe {
+        structural_builder_append(builder, if value == 0 { b"false" } else { b"true" });
+    }
+}
+
+/// Append a Unicode scalar value.
+///
+/// # Safety
+///
+/// `builder` must be a live structural string builder.
+#[no_mangle]
+#[expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "the builder pointer is valid by the FFI contract"
+)]
+pub unsafe extern "C" fn hew_string_builder_append_char(builder: *mut c_void, value: u32) {
+    let ch = char::from_u32(value).unwrap_or(char::REPLACEMENT_CHARACTER);
+    let mut bytes = [0u8; 4];
+    unsafe { structural_builder_append(builder, ch.encode_utf8(&mut bytes).as_bytes()) };
+}
+
+/// Append an opaque identity without exposing its representation bits.
+///
+/// # Safety
+///
+/// `builder` must be live and `type_name` must be null or NUL-terminated.
+#[no_mangle]
+#[expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "the function borrows the validated builder and optional C string"
+)]
+pub unsafe extern "C" fn hew_string_builder_append_identity(
+    builder: *mut c_void,
+    type_name: *const c_char,
+    identity: *const c_void,
+) {
+    let name = if type_name.is_null() {
+        "<opaque>"
+    } else {
+        unsafe { CStr::from_ptr(type_name) }
+            .to_str()
+            .unwrap_or("<opaque>")
+    };
+    let mut text = String::new();
+    let _ = write!(text, "<{name}@{identity:p}>");
+    unsafe { structural_builder_append(builder, text.as_bytes()) };
+}
+
+/// Finish the builder and transfer one owned Hew string to the caller.
+///
+/// # Safety
+///
+/// `builder` must be a live pointer returned by [`hew_string_builder_new`] and
+/// must not be used again after this call.
+#[no_mangle]
+#[expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "this boundary consumes the unique builder allocation and initializes the returned C string"
+)]
+pub unsafe extern "C" fn hew_string_builder_finish(builder: *mut c_void) -> *mut c_char {
+    if builder.is_null() {
+        unsafe { libc::abort() };
+    }
+    let builder = unsafe { Box::from_raw(builder.cast::<HewStringBuilder>()) };
+    let Some(alloc_size) = builder.bytes.len().checked_add(1) else {
+        unsafe { libc::abort() };
+    };
+    let result = alloc_cstring_data(alloc_size).cast::<u8>();
+    cabi_guard!(result.is_null(), result.cast::<c_char>());
+    if !builder.bytes.is_empty() {
+        unsafe {
+            std::ptr::copy_nonoverlapping(builder.bytes.as_ptr(), result, builder.bytes.len());
+        }
+    }
+    unsafe { *result.add(builder.bytes.len()) = 0 };
+    result.cast()
+}
 
 /// Write a message to stderr.
 ///

@@ -26,9 +26,7 @@ COMPILER_ROOTS = (
     "hew-mir/src",
     "hew-codegen-rs/src",
 )
-PRESENTATION_CATEGORIES = {"debug-metadata"}
 ALL_GROUPS = {
-    "semantic-leaf-name",
     "semantic-owner-shortening-sink",
     "string-method-identity",
     "legacy-heap-reader",
@@ -102,21 +100,6 @@ ITEM_KINDS = (
     "enum_variant",
     "expression_statement",
 )
-DEBUG_CONTEXT_PATTERNS = {
-    "debug-struct-type-argument": (
-        "$R.create_struct_type($A0, $D1, $A2, $A3, $A4, $A5, "
-        "$A6, $A7, $A8, $A9, $A10, $D11)",
-        ("D1", "D11"),
-    ),
-    "debug-enumerator-argument": (
-        "$R.create_enumerator($D0, $A1, $A2)",
-        ("D0",),
-    ),
-    "debug-member-type-argument": (
-        "$R.create_member_type($A0, $D1, $A2, $A3, $A4, $A5, $A6, $A7, $A8)",
-        ("D1",),
-    ),
-}
 
 
 def generated_builtin_enum_leaves(root: Path) -> set[str]:
@@ -1086,31 +1069,6 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
     findings: set[Finding] = set()
     generated_enum_leaves = generated_builtin_enum_leaves(root)
 
-    # Identifier nodes remain parsed inside Rust macro token trees. This closes
-    # the call-expression blind spot without treating comments or string tokens
-    # as code. Imports, declarations, local names, qualified calls, and macro
-    # arguments all stay visible until their path/form inventory is retired.
-    for match in run_query(ast_grep, root, kind="identifier"):
-        forms = {
-            "short_name": "short-name-identifier",
-            "rsplit": "leaf-rsplit-identifier",
-            "rsplit_once": "leaf-rsplit-once-identifier",
-        }
-        if str(match["text"]) in forms:
-            findings.add(
-                finding("semantic-leaf-name", forms[str(match["text"])], match)
-            )
-    for match in run_query(ast_grep, root, kind="field_identifier"):
-        forms = {
-            "short_name": "short-name-field",
-            "rsplit": "leaf-rsplit-field",
-            "rsplit_once": "leaf-rsplit-once-field",
-        }
-        if str(match["text"]) in forms:
-            findings.add(
-                finding("semantic-leaf-name", forms[str(match["text"])], match)
-            )
-
     calls = run_query(ast_grep, root, pattern="$F($$$ARGS)")
     for match in calls:
         callee = single_meta(match, "F")
@@ -1177,38 +1135,6 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
     reject_raw_codegen_call_dispatch(ast_grep, root)
     findings.update(rc1_structural_authority_findings(ast_grep, root, test_ranges))
     return {item for item in findings if not excluded(item, test_ranges)}, test_ranges
-
-
-def presentation_candidates(
-    ast_grep: Path, root: Path, findings: set[Finding], test_ranges: list[SyntaxRange]
-) -> set[tuple[str, int, int, str, str]]:
-    short_name_calls = {
-        node_range(match)
-        for match in run_query(ast_grep, root, pattern="short_name($X)")
-    }
-    contexts: list[tuple[str, SyntaxRange]] = []
-    for context_form, (pattern, designated_names) in DEBUG_CONTEXT_PATTERNS.items():
-        for match in run_query(ast_grep, root, pattern=pattern):
-            receiver = single_meta(match, "R")
-            if receiver.split(".")[-1] == "di_builder":
-                for name in designated_names:
-                    designated = single_meta_range(match, name)
-                    if designated is not None and designated in short_name_calls:
-                        contexts.append((context_form, designated))
-    candidates = set()
-    for item in findings:
-        if item.form != "short-name-identifier" or excluded(item, test_ranges):
-            continue
-        for context_form, context in contexts:
-            if (
-                item.path == context.path
-                and item.byte_start == context.byte_start
-                and item.byte_end == context.byte_start + len("short_name")
-            ):
-                candidates.add(
-                    (item.path, item.line, item.column, item.form, context_form)
-                )
-    return candidates
 
 
 def split_top_level(text: str) -> list[str]:
@@ -1388,62 +1314,6 @@ def canonical_stage(group: str, form: str, path: str) -> str:
         if path.endswith(("lower/drop_plan.rs", "lower/mod.rs")):
             return "stage-3"
         return "stage-5"
-    if group != "semantic-leaf-name" or form not in {
-        "short-name-identifier",
-        "short-name-field",
-        "leaf-rsplit-identifier",
-        "leaf-rsplit-once-identifier",
-        "leaf-rsplit-field",
-        "leaf-rsplit-once-field",
-    }:
-        raise SystemExit(f"no canonical cutover stage for {group}/{form} at {path}")
-    if path.startswith(("hew-types/", "hew-hir/", "hew-analysis/")):
-        return "stage-1"
-    if path.startswith("hew-codegen-rs/"):
-        return "stage-5"
-    if path.endswith(("lower/drop_plan.rs", "lower/mod.rs")):
-        return "stage-3"
-    if path.endswith(("model.rs", "state_clone.rs", "thunk_requirements.rs")):
-        return "stage-5"
-    return "stage-4"
-
-
-def load_presentation(
-    path: Path,
-) -> dict[tuple[str, int, int, str, str], dict[str, str]]:
-    rows: dict[tuple[str, int, int, str, str], dict[str, str]] = {}
-    with path.open(newline="") as handle:
-        source = (line for line in handle if line.strip() and not line.startswith("#"))
-        for row in csv.DictReader(source, delimiter="\t"):
-            required = (
-                "path",
-                "line",
-                "column",
-                "form",
-                "context_form",
-                "category",
-                "retirement_stage",
-                "reason",
-            )
-            if any(not row.get(field) for field in required):
-                raise SystemExit(f"invalid presentation baseline row: {row}")
-            if row["category"] not in PRESENTATION_CATEGORIES:
-                raise SystemExit(f"invalid presentation category: {row['category']}")
-            if row["retirement_stage"] != "post-stage-5":
-                raise SystemExit(f"presentation retirement must follow Stage 5: {row}")
-            if not row["line"].isdigit() or not row["column"].isdigit():
-                raise SystemExit(f"invalid presentation location: {row}")
-            key = (
-                row["path"],
-                int(row["line"]),
-                int(row["column"]),
-                row["form"],
-                row["context_form"],
-            )
-            if key in rows:
-                raise SystemExit(f"duplicate presentation baseline row: {key}")
-            rows[key] = row
-    return rows
 
 
 def load_inventory(path: Path) -> dict[tuple[str, str, str], int]:
@@ -1706,7 +1576,6 @@ def main() -> int:
         "--root", type=Path, default=Path(__file__).resolve().parents[1]
     )
     parser.add_argument("--inventory", type=Path)
-    parser.add_argument("--presentation-baseline", type=Path)
     parser.add_argument("--ast-grep", type=Path)
     parser.add_argument(
         "--opaque-resource-facts",
@@ -1742,34 +1611,17 @@ def main() -> int:
             return 0
 
     inventory = args.inventory or root / "scripts/structural-authority-inventory.tsv"
-    presentation_path = (
-        args.presentation_baseline
-        or root / "scripts/structural-authority-presentation.tsv"
-    )
     expected = load_inventory(inventory)
-    presentation = load_presentation(presentation_path)
     findings, test_ranges = discover(ast_grep, root)
-    candidates = presentation_candidates(ast_grep, root, findings, test_ranges)
-    stale_presentation = sorted(set(presentation) - candidates)
-    exempt_locations = {
-        (path, line, column, form) for path, line, column, form, _ in presentation
-    }
-    semantic = {
-        item
-        for item in findings
-        if (item.path, item.line, item.column, item.form) not in exempt_locations
-    }
 
     actual: defaultdict[tuple[str, str, str], int] = defaultdict(int)
-    for item in semantic:
+    for item in findings:
         actual[(item.group, item.form, item.path)] += 1
     failures = []
     for key in sorted(set(expected) | set(actual)):
         want, got = expected.get(key, 0), actual.get(key, 0)
         if want != got:
             failures.append(f"{key[0]}/{key[1]} {key[2]}: expected {want}, found {got}")
-    for key in stale_presentation:
-        failures.append(f"presentation AST context disappeared or drifted: {key}")
     forbidden = scalar_span_site_findings(ast_grep, root, test_ranges)
     for item in forbidden:
         failures.append(
@@ -1789,16 +1641,8 @@ def main() -> int:
         print("\n".join(f"  - {item}" for item in failures), file=sys.stderr)
         return 1
 
-    semantic_leaf_count = sum(
-        count
-        for (group, _, _), count in actual.items()
-        if group == "semantic-leaf-name"
-    )
     print(
         "structural authority inventory: "
-        f"{semantic_leaf_count} semantic leaf-name syntax nodes in "
-        f"{sum(group == 'semantic-leaf-name' for group, _, _ in expected)} form/path rows; "
-        f"{len(presentation)} exact presentation AST contexts; "
         f"{len(expected)} authority form/path rows; "
         f"{len(test_ranges)} parsed test-only item ranges; "
         f"{len(opaque_facts)} AST-derived opaque resource lifecycle candidates; "

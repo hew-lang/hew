@@ -923,12 +923,17 @@ impl Builder {
                 });
             }
         }
-        let blocks = builder.finalize_blocks(Terminator::Return);
-
-        let thir_statements: Vec<MirStatement> = blocks
-            .iter()
-            .flat_map(|b| b.statements.iter().cloned())
-            .collect();
+        // Synthesised fork trampoline: no user body, so the shared pipeline has
+        // nothing to splice today. It still finishes through the one seam, so a
+        // future pass cannot be silently absent here either.
+        let super::FinalizedBody {
+            blocks,
+            thir_statements,
+        } = super::finalize_body(
+            &mut builder,
+            super::BodySeal::Cursor(Terminator::Return),
+            super::BodyFinalizeSpec::nested_body(),
+        );
         let thir = ThirFunction {
             name: shim_name.to_string(),
             return_ty: ResolvedTy::Unit,

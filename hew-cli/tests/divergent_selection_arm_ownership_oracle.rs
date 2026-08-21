@@ -37,6 +37,10 @@
 //! * a selection whose sibling arm DIVERGES (`return` from one arm), where the
 //!   early exit still owns the un-transferred source;
 //! * an arm producing a FRESH value rather than naming a local;
+//! * the selection inside a CLOSURE body and inside a GENERATOR body — body
+//!   kinds lowered by their own ramps. Each ramp used to run a hand-rolled
+//!   partial copy of the ownership pipeline, so a pass registered on the
+//!   free-function path alone was silently absent there;
 //! * the leaf classes that reach different drop provers: plain `Vec<i64>`,
 //!   owned-element `Vec<string>`, a `HashMap` handle, and a record whose field
 //!   owns a Vec (the composite `RecordInPlace` release).
@@ -246,6 +250,59 @@ fn probe(c: bool) -> i64 {{
     )
 }
 
+/// The selection inside a CLOSURE body. Closure shims are lowered by their own
+/// ramp; before that ramp was routed through the shared body-finalization seam
+/// it ran a partial copy of the ownership pipeline, so this shape leaked a
+/// whole Vec per call while the identical free-function shape did not.
+fn closure_body_source(frames: usize) -> String {
+    format!(
+        "{MAKE_VEC}
+fn probe(c: bool) -> i64 {{
+    let pick = |flag: bool| -> i64 {{
+        let a = make();
+        let b = make();
+        let out = match flag {{ true => a, false => b }};
+        out.len()
+    }};
+    pick(c)
+}}
+{}",
+        driver(frames)
+    )
+}
+
+/// The selection inside a GENERATOR body — the second ramp with its own
+/// pipeline copy. One selection per resumed iteration, so a per-frame leak here
+/// scales with the yielded element count rather than the call count.
+fn generator_body_source(frames: usize) -> String {
+    format!(
+        "{MAKE_VEC}
+gen fn picks(n: i64) -> i64 {{
+    var i: i64 = 0;
+    while i < n {{
+        let a = make();
+        let b = make();
+        let out = match i % 2 == 0 {{ true => a, false => b }};
+        yield out.len();
+        i = i + 1;
+    }}
+}}
+
+fn main() -> i64 {{
+    var total: i64 = 0;
+    for value in picks({frames}) {{
+        total = total + value;
+        println(\"frame\");
+    }}
+    match total >= 0 {{
+        true => 0,
+        false => 1,
+    }}
+}}
+"
+    )
+}
+
 /// A record VALUE whose field owns a Vec. Its release is the composite
 /// `RecordInPlace` thunk, a different drop prover from the leaf handle classes.
 fn record_field_source(frames: usize) -> String {
@@ -446,6 +503,22 @@ selection_shape!(
     owned_element_vec_does_not_under_release,
     "owned_element_vec",
     owned_element_vec_source
+);
+
+selection_shape!(
+    closure_body_does_not_over_release,
+    closure_body_does_not_over_release_under_poisoned_allocator,
+    closure_body_does_not_under_release,
+    "closure_body",
+    closure_body_source
+);
+
+selection_shape!(
+    generator_body_does_not_over_release,
+    generator_body_does_not_over_release_under_poisoned_allocator,
+    generator_body_does_not_under_release,
+    "generator_body",
+    generator_body_source
 );
 
 selection_shape!(

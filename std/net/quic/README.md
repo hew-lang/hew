@@ -23,7 +23,7 @@ and the last observed error without consuming anything.
 ### Server
 
 ```hew
-import std::net::quic;
+import std.net.quic;
 
 fn main() {
     let ep = quic.new_server(":4433");
@@ -41,7 +41,7 @@ fn main() {
 ### Client
 
 ```hew
-import std::net::quic;
+import std.net.quic;
 
 fn main() {
     let ep = quic.new_client();

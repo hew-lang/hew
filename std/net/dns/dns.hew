@@ -5,7 +5,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::net::dns;
+//! import std.net.dns;
 //!
 //! fn main() {
 //!     let addrs = dns.resolve("localhost");
@@ -38,7 +38,7 @@ pub fn resolve(hostname: string) -> Vec<string> {
 
 /// Resolve a hostname to all associated IP addresses.
 ///
-/// Returns `Err(NetError::Other(0))` when the hostname cannot be resolved.
+/// Returns `Err(NetError.Other(0))` when the hostname cannot be resolved.
 /// Use this when structured error handling with `?` is preferred over an
 /// empty-vector sentinel.
 ///
@@ -71,7 +71,7 @@ pub fn lookup_host(hostname: string) -> string {
 
 /// Resolve a hostname to its first IP address.
 ///
-/// Returns `Err(NetError::Other(0))` when the hostname cannot be resolved.
+/// Returns `Err(NetError.Other(0))` when the hostname cannot be resolved.
 /// Use this when structured error handling with `?` is preferred over an
 /// empty-string sentinel.
 ///

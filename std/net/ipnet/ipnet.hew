@@ -5,7 +5,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::net::ipnet;
+//! import std.net.ipnet;
 //!
 //! fn main() {
 //!     if ipnet.is_valid("192.168.1.1") {

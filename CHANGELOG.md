@@ -5,7 +5,7 @@
 ### Changed (breaking)
 
 - **We have adopted one dotted path surface throughout Hew.** `::` path
-  separators, Rust-style turbofish generic application (`::<...>`), and glob
+  separators, Rust-style turbofish generic application, and glob
   imports are retired. Write dotted paths, explicit `.{ Name, Other }`
   selections, ordinary Hew generic application (`name<T>(...)`), and
   contextual `.Variant` patterns and constructors instead. Each retired

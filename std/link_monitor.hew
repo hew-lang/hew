@@ -1,6 +1,6 @@
 //! Actor monitor / link handle helpers.
 //!
-//! Import `std::link_monitor` when you want to name `MonitorRef`,
+//! Import `std.link_monitor` when you want to name `MonitorRef`,
 //! `MonitorError`, or `PartitionPolicy` explicitly. `monitor(LocalPid)` and
 //! `monitor(RemotePid)` return `Result<MonitorRef, MonitorError>`; `link(actor)` returns
 //! `Result<(), LinkError>` — `LinkError` is prelude-published from
@@ -127,7 +127,7 @@ impl MonitorRef {
 /// outside an actor dispatch, where a partition policy has no meaning.
 ///
 /// The tag mapping is exhaustive: every `PartitionPolicy` variant maps to the
-/// runtime discriminant it mirrors (`execution_context::PartitionPolicy`). A
+/// runtime discriminant it mirrors (`execution_context.PartitionPolicy`). A
 /// new variant is a compile error here until it is mapped, so the surface can
 /// never silently send an unmapped policy.
 pub fn set_partition_policy(policy: PartitionPolicy) -> bool {

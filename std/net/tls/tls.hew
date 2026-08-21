@@ -7,8 +7,8 @@
 //! # Examples
 //!
 //! ```
-//! import std::net;
-//! import std::net::tls;
+//! import std.net;
+//! import std.net.tls;
 //!
 //! fn main() {
 //!     let stream = tls.connect("example.com", 443);
@@ -88,7 +88,7 @@ fn tls_read_result(raw: TlsReadFfiResult) -> Result<bytes, net.NetError> { // IN
 /// # Example
 ///
 /// ```
-/// import std::net::tls;
+/// import std.net.tls;
 ///
 /// actor TlsEcho {
 ///     let stream: tls.TlsStream;

@@ -442,6 +442,7 @@ helper_crash_cleanup_guard_merge:                 ; preds = %frame_cleanup_regis
   %rc_set_handle = load ptr, ptr %local_5, align 4
   call void @hew_rc_set(ptr %rc_set_handle, ptr %local_14)
   store i8 0, ptr %local_15, align 1
+  store i64 1, ptr %local_9, align 8
   %move_load12 = load ptr, ptr %local_8, align 4
   store ptr %move_load12, ptr %return_slot, align 4
   %resource_drop_flag = load i64, ptr %local_6, align 8

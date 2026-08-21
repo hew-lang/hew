@@ -39,23 +39,21 @@ machine Bounded<T: Resource> {
     state Idle;
     state Holding { handle: T; }
 
-    on Start(handle): Idle => Holding { handle: handle }
-    on Finish: Holding => Idle;
-    on Start: _ => _ {
-
-        // Acquire: Idle + Start => Holding. The head binding names the payload.
-
-        // Release: Holding + Finish => Idle.
-
-        // Already holding or already idle: ignore.
-        state
+    on Start: Idle => Holding {
+        Holding { handle: event.handle }
     }
-    on Finish: _ => _ {
-        state
+    on Finish: Holding => Idle {
+        Idle
+    }
+    on Start: Holding => Holding reenter {
+        Holding { handle: self.handle }
+    }
+    on Finish: Idle => Idle reenter {
+        Idle
     }
 }
 
 fn main() {
     let f = File { raw: 7 };
-    let holder: Bounded<File> = Holding { handle: f };
+    let _holder: Bounded<File> = Bounded.Holding { handle: f };
 }

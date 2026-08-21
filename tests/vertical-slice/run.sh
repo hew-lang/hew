@@ -1612,16 +1612,20 @@ run_accept_expect_status "ask_reply_owned_select_loser" 18
 
 # A fresh owned string produced by an await is moved into its lexical binding
 # before the later handled actor panic. The crash cleanup must drop it exactly
-# once, and the actor balance oracle must remain exact.
-run_accept_expect_status "await_owned_string_crash_cleanup" 0 HEW_ACTOR_LEAK_CHECK=1
+# once, the actor balance oracle must remain exact, and the unrecovered actor
+# panic must fail the process after the recovery output settles.
+run_accept_expect_status "await_owned_string_crash_cleanup" 1 HEW_ACTOR_LEAK_CHECK=1
 grep -qF -- "used=fresh-value" "${stdout_output}"
 grep -qF -- "handled-crash" "${stdout_output}"
+grep -qF -- "handled crash after fresh string use" "${stderr_output}"
 
 # The select winner writes an owned string directly into its binding. Prove the
-# shared winner tail arms that slot before a later handled actor panic.
-run_accept_expect_status "select_owned_string_crash_cleanup" 0 HEW_ACTOR_LEAK_CHECK=1
+# shared winner tail arms that slot before a later handled actor panic, while
+# the unrecovered crash still fails the process.
+run_accept_expect_status "select_owned_string_crash_cleanup" 1 HEW_ACTOR_LEAK_CHECK=1
 grep -qF -- "selected=selected-value" "${stdout_output}"
 grep -qF -- "select-handled-crash" "${stdout_output}"
+grep -qF -- "handled crash after select string use" "${stderr_output}"
 
 # Owned-string ask reply + `after` timeout (#1739/#1735): SlowWorker's owned
 # reply always arrives after the 10 ms deadline, so the after-arm wins and the
@@ -2229,8 +2233,9 @@ grep -q 'hew: trap in main context' "${stderr_output}"
 # emit an opaque msg_type integer. The fixture spawns an actor that triggers
 # an OOB trap in its handler; handle_crash_recovery_impl must resolve the
 # handler name from the registry ("Crasher::on_trigger") rather than printing
-# "msg_type=-N". Exit 0 (main returns after sleep; crash is unsupervised).
-run_accept_expect_status "crash_actor_context_diagnostic" 0
+# "msg_type=-N". The unsupervised crash must also report exit 1 after main's
+# sleep gives the diagnostic time to settle.
+run_accept_expect_status "crash_actor_context_diagnostic" 1
 grep -q 'Crasher' "${stderr_output}"
 if grep -q 'msg_type=-' "${stderr_output}"; then
   echo "crash_actor_context_diagnostic: stderr still contains opaque msg_type=-N format" >&2

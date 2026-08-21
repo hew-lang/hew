@@ -4874,7 +4874,7 @@ pub fn lower_program_with_mono_cap(
                     items.push(HirItem::ExternFn(crate::node::HirExternFn {
                         id: ctx.ids.item(),
                         node: ctx.ids.node(),
-                        declaration: hew_types::DefId::new(
+                        declaration: hew_types::DefId::legacy_reconstruct_from_full_path(
                             ctx.current_module_name.as_ref().map_or_else(
                                 || func.name.clone(),
                                 |module| format!("{module}.{}", func.name),
@@ -5214,10 +5214,10 @@ pub fn lower_program_with_mono_cap(
                                 items.push(HirItem::ExternFn(crate::node::HirExternFn {
                                     id: ctx.ids.item(),
                                     node: ctx.ids.node(),
-                                    declaration: hew_types::DefId::new(format!(
-                                        "{source_module}.{}",
-                                        func.name
-                                    )),
+                                    declaration:
+                                        hew_types::DefId::legacy_reconstruct_from_full_path(
+                                            format!("{source_module}.{}", func.name),
+                                        ),
                                     name: func.name.clone(),
                                     abi: block.abi.clone(),
                                     param_tys,
@@ -13488,10 +13488,12 @@ impl LowerCtx {
             .get(name)
             .cloned()
             .unwrap_or_else(|| {
-                hew_types::DefId::new(self.current_module_name.as_ref().map_or_else(
-                    || func.name.clone(),
-                    |module| format!("{module}.{}", func.name),
-                ))
+                hew_types::DefId::legacy_reconstruct_from_full_path(
+                    self.current_module_name.as_ref().map_or_else(
+                        || func.name.clone(),
+                        |module| format!("{module}.{}", func.name),
+                    ),
+                )
             });
 
         self.push_scope();
@@ -13993,7 +13995,7 @@ impl LowerCtx {
         HirTypeDecl {
             id,
             node: self.ids.node(),
-            declaration: hew_types::DefId::new(decl.name.clone()),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(decl.name.clone()),
             name: decl.name.clone(),
             // Root/local identity by default; the imported-module carrier
             // (`lower_imported_type_decl`) stamps `Some(module_short)` for
@@ -14091,7 +14093,10 @@ impl LowerCtx {
         module_name: &str,
     ) -> HirTypeDecl {
         let mut lowered = self.lower_type_decl(decl, span);
-        lowered.declaration = hew_types::DefId::new(format!("{module_name}.{}", decl.name));
+        lowered.declaration = hew_types::DefId::legacy_reconstruct_from_full_path(format!(
+            "{module_name}.{}",
+            decl.name
+        ));
         lowered.defining_module = Some(module_name.to_string());
         lowered
     }
@@ -36251,7 +36256,7 @@ impl Sample for Broken {
             "parse errors: {:#?}",
             parsed.errors
         );
-        let owner = hew_types::DefId::new("support.greeting.Greet");
+        let owner = hew_types::DefId::for_test("support.greeting.Greet");
         let bindings = ["simple", "greeting"]
             .into_iter()
             .map(|method| {
@@ -36259,7 +36264,7 @@ impl Sample for Broken {
                     (None, 7, "Greet".to_string(), method.to_string()),
                     (
                         owner.clone(),
-                        hew_types::DefId::new(format!("{}::{method}", owner.full_path())),
+                        hew_types::DefId::for_test(format!("{}::{method}", owner.full_path())),
                     ),
                 )
             })
@@ -36281,12 +36286,12 @@ impl Sample for Broken {
             MONOMORPHISATION_REGISTRY_CAP,
             TargetArch::host(),
         );
-        let owner = hew_types::DefId::new("support.greeting.Greet");
+        let owner = hew_types::DefId::for_test("support.greeting.Greet");
         ctx.trait_method_ids_by_binding.insert(
             (None, 7, "Greet".to_string(), "greeting".to_string()),
             (
                 owner.clone(),
-                hew_types::DefId::new("support.greeting.Greet::greeting"),
+                hew_types::DefId::for_test("support.greeting.Greet::greeting"),
             ),
         );
 
@@ -36298,8 +36303,8 @@ impl Sample for Broken {
         ctx.trait_method_ids_by_binding.insert(
             (None, 8, "Greet".to_string(), "greeting".to_string()),
             (
-                hew_types::DefId::new("other.greeting.Greet"),
-                hew_types::DefId::new("other.greeting.Greet::greeting"),
+                hew_types::DefId::for_test("other.greeting.Greet"),
+                hew_types::DefId::for_test("other.greeting.Greet::greeting"),
             ),
         );
         assert_eq!(
@@ -36331,8 +36336,9 @@ impl Sample for Broken {
                 "std.builtins.Display",
             ),
         ] {
-            let prelude_trait = hew_types::DefId::new(prelude_owner);
-            let prelude_method = hew_types::DefId::new(format!("{prelude_owner}::{method_name}"));
+            let prelude_trait = hew_types::DefId::for_test(prelude_owner);
+            let prelude_method =
+                hew_types::DefId::for_test(format!("{prelude_owner}::{method_name}"));
             ctx.lang_items.insert(
                 lang_item.key(),
                 hew_types::LangItemBinding {
@@ -36343,8 +36349,9 @@ impl Sample for Broken {
                 },
             );
 
-            let local_trait = hew_types::DefId::new(format!("app.{trait_name}"));
-            let local_method = hew_types::DefId::new(format!("app.{trait_name}::{method_name}"));
+            let local_trait = hew_types::DefId::for_test(format!("app.{trait_name}"));
+            let local_method =
+                hew_types::DefId::for_test(format!("app.{trait_name}::{method_name}"));
             ctx.trait_method_ids.insert(
                 format!("app.{trait_name}::{method_name}"),
                 (local_trait.clone(), local_method.clone()),
@@ -36357,9 +36364,9 @@ impl Sample for Broken {
             ctx.trait_method_ids
                 .remove(&format!("app.{trait_name}::{method_name}"));
 
-            let imported_trait = hew_types::DefId::new(format!("vendor.{trait_name}"));
+            let imported_trait = hew_types::DefId::for_test(format!("vendor.{trait_name}"));
             let imported_method =
-                hew_types::DefId::new(format!("vendor.{trait_name}::{method_name}"));
+                hew_types::DefId::for_test(format!("vendor.{trait_name}::{method_name}"));
             ctx.trait_method_ids_by_binding.insert(
                 (
                     Some("app".to_string()),
@@ -36474,7 +36481,7 @@ impl Widget {
                 _ => None,
             })
             .expect("fixture impl");
-        let declaration = hew_types::DefId::new(
+        let declaration = hew_types::DefId::for_test(
             "fixture.owner.Widget::<impl inherent for fixture.owner.Widget>::run",
         );
 
@@ -36517,10 +36524,10 @@ impl Widget {
             MONOMORPHISATION_REGISTRY_CAP,
             TargetArch::host(),
         );
-        let left = hew_types::DefId::new(
+        let left = hew_types::DefId::for_test(
             "left.render.Result::<impl inherent for left.render.Result>::echo",
         );
-        let right = hew_types::DefId::new(
+        let right = hew_types::DefId::for_test(
             "right.render.Result::<impl inherent for right.render.Result>::echo",
         );
         ctx.impl_method_body_symbols
@@ -40520,7 +40527,7 @@ impl Widget {
         let decl = HirTypeDecl {
             id: ItemId(0),
             node: HirNodeId(0),
-            declaration: hew_types::DefId::new("app.Handle"),
+            declaration: hew_types::DefId::for_test("app.Handle"),
             name: "Handle".to_string(),
             defining_module: None,
             marker: ResourceMarker::Resource,

@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 use super::{
     build_down_hook_body, build_exit_hook_body, crash_action_return_ty,
     is_canonical_lifecycle_named_ty, is_crash_info_payload_ty, lower_function, resource_drop_fn,
@@ -234,7 +239,10 @@ fn lower_actor_receive_handlers(
         let synthetic_fn = HirFn {
             id: actor.id,
             node: actor.node,
-            declaration: hew_types::DefId::new(format!("{}::{}", actor.name, handler.name)),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
+                "{}::{}",
+                actor.name, handler.name
+            )),
             name: format!("{}::{}", actor.name, handler.name),
             type_params: Vec::new(),
             params,
@@ -424,7 +432,10 @@ fn lower_actor_init_handler(
     let synthetic_fn = HirFn {
         id: actor.id,
         node: actor.node,
-        declaration: hew_types::DefId::new(format!("{}::init", actor.name)),
+        declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
+            "{}::init",
+            actor.name
+        )),
         name: format!("{}::init", actor.name),
         type_params: Vec::new(),
         params: init.params.clone(),
@@ -519,7 +530,10 @@ fn lower_actor_lifecycle_handlers(
                 let synthetic_fn = HirFn {
                     id: actor.id,
                     node: actor.node,
-                    declaration: hew_types::DefId::new(format!("{}::{}", actor.name, hook.name)),
+                    declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
+                        "{}::{}",
+                        actor.name, hook.name
+                    )),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
                     params: hook.params.clone(),
@@ -575,7 +589,10 @@ fn lower_actor_lifecycle_handlers(
                 let synthetic_fn = HirFn {
                     id: actor.id,
                     node: actor.node,
-                    declaration: hew_types::DefId::new(format!("{}::{}", actor.name, hook.name)),
+                    declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
+                        "{}::{}",
+                        actor.name, hook.name
+                    )),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
                     params: hook.params.clone(),
@@ -853,7 +870,10 @@ fn lower_actor_lifecycle_handlers(
                 let synthetic_fn = HirFn {
                     id: actor.id,
                     node: actor.node,
-                    declaration: hew_types::DefId::new(format!("{}::{}", actor.name, hook.name)),
+                    declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
+                        "{}::{}",
+                        actor.name, hook.name
+                    )),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
                     params: abi_params,
@@ -968,7 +988,10 @@ fn lower_actor_lifecycle_handlers(
                 let synthetic_fn = HirFn {
                     id: actor.id,
                     node: actor.node,
-                    declaration: hew_types::DefId::new(format!("{}::{}", actor.name, hook.name)),
+                    declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
+                        "{}::{}",
+                        actor.name, hook.name
+                    )),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
                     params: abi_params,
@@ -1088,7 +1111,10 @@ fn lower_actor_lifecycle_handlers(
                 let synthetic_fn = HirFn {
                     id: actor.id,
                     node: actor.node,
-                    declaration: hew_types::DefId::new(format!("{}::{}", actor.name, hook.name)),
+                    declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
+                        "{}::{}",
+                        actor.name, hook.name
+                    )),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
                     params: abi_params,
@@ -2605,7 +2631,10 @@ pub(super) fn lower_supervisor_bootstrap(
     let synthetic_fn = HirFn {
         id: sup.id,
         node: sup.node,
-        declaration: hew_types::DefId::new(format!("{}::__bootstrap", sup.name)),
+        declaration: hew_types::DefId::legacy_reconstruct_from_full_path(format!(
+            "{}::__bootstrap",
+            sup.name
+        )),
         name: format!("{}::__bootstrap", sup.name),
         type_params: Vec::new(),
         params: bootstrap_params,

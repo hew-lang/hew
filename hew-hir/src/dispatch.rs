@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 //! Structured static-trait-dispatch lookup.
 //!
 //! `CallTraitMethodStatic` carries a checker-selected `CallTarget` containing
@@ -73,7 +78,7 @@ pub fn build_trait_impl_method_index(
         // concrete instance args. A specialised impl retains the concrete args
         // structurally instead of encoding them into a mangled string key.
         let self_type = NominalInstance {
-            nominal: NominalId::new(block.self_type_name.clone()),
+            nominal: NominalId::legacy_reconstruct_from_full_path(block.self_type_name.clone()),
             args: if block.type_params.is_empty() {
                 block.self_type_concrete_args.clone()
             } else {
@@ -216,73 +221,73 @@ pub fn receiver_self_type_for_impl_lookup_instance(ty: &ResolvedTy) -> Option<No
                 _ => return None,
             };
             Some(NominalInstance {
-                nominal: NominalId::new(nominal),
+                nominal: NominalId::legacy_reconstruct_from_full_path(nominal),
                 args: args.clone(),
             })
         }
         ResolvedTy::Named { .. } => ty.nominal_instance(),
         ResolvedTy::I8 => Some(NominalInstance {
-            nominal: NominalId::new("i8"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("i8"),
             args: Vec::new(),
         }),
         ResolvedTy::I16 => Some(NominalInstance {
-            nominal: NominalId::new("i16"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("i16"),
             args: Vec::new(),
         }),
         ResolvedTy::I32 => Some(NominalInstance {
-            nominal: NominalId::new("i32"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("i32"),
             args: Vec::new(),
         }),
         ResolvedTy::I64 => Some(NominalInstance {
-            nominal: NominalId::new("i64"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("i64"),
             args: Vec::new(),
         }),
         ResolvedTy::U8 => Some(NominalInstance {
-            nominal: NominalId::new("u8"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("u8"),
             args: Vec::new(),
         }),
         ResolvedTy::U16 => Some(NominalInstance {
-            nominal: NominalId::new("u16"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("u16"),
             args: Vec::new(),
         }),
         ResolvedTy::U32 => Some(NominalInstance {
-            nominal: NominalId::new("u32"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("u32"),
             args: Vec::new(),
         }),
         ResolvedTy::U64 => Some(NominalInstance {
-            nominal: NominalId::new("u64"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("u64"),
             args: Vec::new(),
         }),
         ResolvedTy::Isize => Some(NominalInstance {
-            nominal: NominalId::new("isize"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("isize"),
             args: Vec::new(),
         }),
         ResolvedTy::Usize => Some(NominalInstance {
-            nominal: NominalId::new("usize"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("usize"),
             args: Vec::new(),
         }),
         ResolvedTy::F32 => Some(NominalInstance {
-            nominal: NominalId::new("f32"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("f32"),
             args: Vec::new(),
         }),
         ResolvedTy::F64 => Some(NominalInstance {
-            nominal: NominalId::new("f64"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("f64"),
             args: Vec::new(),
         }),
         ResolvedTy::Bool => Some(NominalInstance {
-            nominal: NominalId::new("bool"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("bool"),
             args: Vec::new(),
         }),
         ResolvedTy::Char => Some(NominalInstance {
-            nominal: NominalId::new("char"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("char"),
             args: Vec::new(),
         }),
         ResolvedTy::String => Some(NominalInstance {
-            nominal: NominalId::new("string"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("string"),
             args: Vec::new(),
         }),
         ResolvedTy::Bytes => Some(NominalInstance {
-            nominal: NominalId::new("bytes"),
+            nominal: NominalId::legacy_reconstruct_from_full_path("bytes"),
             args: Vec::new(),
         }),
         _ => None,
@@ -321,16 +326,16 @@ mod tests {
 
     #[test]
     fn canonical_static_dispatch_keeps_same_leaf_declarations_distinct() {
-        let alpha_trait = DefId::new("alpha.Render");
-        let alpha_method = DefId::new("alpha.Render::show");
-        let beta_trait = DefId::new("beta.Render");
-        let beta_method = DefId::new("beta.Render::show");
+        let alpha_trait = DefId::for_test("alpha.Render");
+        let alpha_method = DefId::for_test("alpha.Render::show");
+        let beta_trait = DefId::for_test("beta.Render");
+        let beta_method = DefId::for_test("beta.Render::show");
         let alpha_thing = NominalInstance {
-            nominal: NominalId::new("alpha.Thing"),
+            nominal: NominalId::for_test("alpha.Thing"),
             args: Vec::new(),
         };
         let beta_thing = NominalInstance {
-            nominal: NominalId::new("beta.Thing"),
+            nominal: NominalId::for_test("beta.Thing"),
             args: Vec::new(),
         };
         let mut index = HashMap::new();
@@ -369,18 +374,18 @@ mod tests {
 
     #[test]
     fn canonical_static_dispatch_prefers_specialized_instance_then_exact_generic() {
-        let trait_id = DefId::new("render.Render");
-        let method_id = DefId::new("render.Render::show");
+        let trait_id = DefId::for_test("render.Render");
+        let method_id = DefId::for_test("render.Render::show");
         let generic = NominalInstance {
-            nominal: NominalId::new("pkg.Box"),
+            nominal: NominalId::for_test("pkg.Box"),
             args: Vec::new(),
         };
         let i64_instance = NominalInstance {
-            nominal: NominalId::new("pkg.Box"),
+            nominal: NominalId::for_test("pkg.Box"),
             args: vec![ResolvedTy::I64],
         };
         let string_instance = NominalInstance {
-            nominal: NominalId::new("pkg.Box"),
+            nominal: NominalId::for_test("pkg.Box"),
             args: vec![ResolvedTy::String],
         };
         let mut index = HashMap::new();

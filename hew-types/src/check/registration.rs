@@ -497,7 +497,7 @@ fn validated_resource_candidate(
     producer_symbol: &str,
 ) -> OpaqueResourceLifecycleCandidate {
     OpaqueResourceLifecycleCandidate {
-        resource_declaration: crate::DefId::new(typed_result.resource_type),
+        resource_declaration: crate::identity::mint_def_id(typed_result.resource_type),
         resource_type: typed_result.resource_type.to_string(),
         owner_module: typed_result.owner_module.to_string(),
         close_declaration,
@@ -713,7 +713,7 @@ fn derive_opaque_resource_candidate_graph(
                     release_symbol,
                     kind,
                 } => {
-                    conflicted_types.insert(crate::DefId::new(resource_type.clone()));
+                    conflicted_types.insert(crate::identity::mint_def_id(resource_type.clone()));
                     graph.conflicts.push(OpaqueResourceLifecycleConflict {
                         resource_type,
                         producer_symbol: (*producer_symbol).to_string(),
@@ -5457,7 +5457,7 @@ impl Checker {
     /// are still caught: that path runs through `register_trait_lang_items`,
     /// which owns `lang_item_spans`.
     pub(super) fn seed_trait_lang_items(&mut self, td: &TraitDecl) {
-        let trait_id = crate::DefId::new(self.trait_ref_lookup_key(&td.name));
+        let trait_id = crate::identity::mint_def_id(self.trait_ref_lookup_key(&td.name));
         if let Some(key) = &td.lang_item {
             if self.lang_items.get(key).is_none() {
                 self.lang_items.insert(
@@ -5481,7 +5481,7 @@ impl Checker {
                                 trait_name: td.name.clone(),
                                 trait_id: trait_id.clone(),
                                 method_name: Some(m.name.clone()),
-                                method_id: Some(crate::DefId::new(format!(
+                                method_id: Some(crate::identity::mint_def_id(format!(
                                     "{}::{}",
                                     trait_id.full_path(),
                                     m.name
@@ -5509,7 +5509,7 @@ impl Checker {
     /// Duplicate keys raise `TypeError::duplicate_definition` against the
     /// trait's span so the registry remains one-binding-per-key.
     pub(super) fn register_trait_lang_items(&mut self, td: &TraitDecl, span: Span) {
-        let trait_id = crate::DefId::new(self.trait_ref_lookup_key(&td.name));
+        let trait_id = crate::identity::mint_def_id(self.trait_ref_lookup_key(&td.name));
         if let Some(key) = &td.lang_item {
             if let Some(prev) = self.lang_item_spans.insert(key.clone(), span.clone()) {
                 self.errors
@@ -5543,7 +5543,7 @@ impl Checker {
                                 trait_name: td.name.clone(),
                                 trait_id: trait_id.clone(),
                                 method_name: Some(m.name.clone()),
-                                method_id: Some(crate::DefId::new(format!(
+                                method_id: Some(crate::identity::mint_def_id(format!(
                                     "{}::{}",
                                     trait_id.full_path(),
                                     m.name
@@ -6356,7 +6356,9 @@ impl Checker {
                                     let declaration = crate::default_impl_method_declaration(
                                         &declaring_trait,
                                         &crate::NominalInstance {
-                                            nominal: crate::NominalId::new(receiver_name),
+                                            nominal: crate::identity::mint_nominal_id(
+                                                receiver_name,
+                                            ),
                                             args: receiver_args,
                                         },
                                         &m.name,
@@ -6627,8 +6629,9 @@ impl Checker {
                 || self.trait_ref_lookup_key(trait_name),
                 |module| format!("{module}.{trait_name}"),
             );
-        let trait_id = crate::DefId::new(declaration_key.clone());
-        let method_id = crate::DefId::new(format!("{}::{}", trait_id.full_path(), method.name));
+        let trait_id = crate::identity::mint_def_id(declaration_key.clone());
+        let method_id =
+            crate::identity::mint_def_id(format!("{}::{}", trait_id.full_path(), method.name));
         let ids = (trait_id, method_id);
         self.trait_method_ids
             .insert(ids.1.full_path().to_string(), ids.clone());
@@ -7817,7 +7820,7 @@ impl Checker {
                 }
             },
         );
-        crate::DefId::new(format!(
+        crate::identity::mint_def_id(format!(
             "{receiver}::<impl {trait_identity} for {declared_receiver}>::{}",
             method.name
         ))
@@ -9631,7 +9634,7 @@ impl Checker {
         consuming_params: &[bool],
         f: &hew_parser::ast::ExternFnDecl,
     ) {
-        let declaration = crate::DefId::new(key.to_string());
+        let declaration = crate::identity::mint_def_id(key.to_string());
         if source_symbol.is_empty() {
             // Template declarations (`#[extern_symbol("…{T}…")]`) have no
             // call-independent symbol and therefore no symbol-keyed contract
@@ -9921,7 +9924,7 @@ impl Checker {
             self.fn_sigs.insert(key.clone(), sig);
             self.source_extern_declarations
                 .push(SourceExternDeclaration {
-                    declaration: crate::DefId::new(key.clone()),
+                    declaration: crate::identity::mint_def_id(key.clone()),
                     symbol: source_symbol,
                     symbol_template: source_symbol_template,
                     signature_key: key.clone(),
@@ -10078,7 +10081,7 @@ impl Checker {
             };
             self.fn_sigs.insert(key.clone(), sig);
             self.extern_table
-                .register_declaration_only(crate::DefId::new(key));
+                .register_declaration_only(crate::identity::mint_def_id(key));
         }
 
         // The typed-serialise send takes the value by reference plus the
@@ -10096,7 +10099,7 @@ impl Checker {
             };
             self.fn_sigs.insert(send_key.clone(), sig);
             self.extern_table
-                .register_declaration_only(crate::DefId::new(send_key));
+                .register_declaration_only(crate::identity::mint_def_id(send_key));
         }
     }
 
@@ -10440,7 +10443,9 @@ impl Checker {
                             ..FnSig::default()
                         };
                         self.extern_table
-                            .register_declaration_only(crate::DefId::new(func.name.clone()));
+                            .register_declaration_only(crate::identity::mint_def_id(
+                                func.name.clone(),
+                            ));
                         self.fn_sigs.insert(func.name, sig);
                     }
 
@@ -10521,7 +10526,7 @@ impl Checker {
                             self.fn_sigs.entry(key.clone()).or_insert(sig);
                             if !source_sig_exists && wrapper_sig.is_none() {
                                 self.extern_table
-                                    .register_declaration_only(crate::DefId::new(key));
+                                    .register_declaration_only(crate::identity::mint_def_id(key));
                             }
                         }
                     }
@@ -12371,14 +12376,17 @@ impl Checker {
                     // published bare name. Record the checker-owned declaration
                     // IDs under that binding too, so call-target selection never
                     // has to recover an owner from the trait's leaf spelling.
-                    let trait_id = crate::DefId::new(qualified.clone());
+                    let trait_id = crate::identity::mint_def_id(qualified.clone());
                     let qualified_binding = format!("{module_short}.{}", tr.name);
                     for trait_item in &tr.items {
                         let TraitItem::Method(method) = trait_item else {
                             continue;
                         };
-                        let method_id =
-                            crate::DefId::new(format!("{}::{}", trait_id.full_path(), method.name));
+                        let method_id = crate::identity::mint_def_id(format!(
+                            "{}::{}",
+                            trait_id.full_path(),
+                            method.name
+                        ));
                         self.trait_method_ids_by_binding.insert(
                             (
                                 self.current_module.clone(),
@@ -12442,7 +12450,7 @@ impl Checker {
                             let TraitItem::Method(method) = trait_item else {
                                 continue;
                             };
-                            let method_id = crate::DefId::new(format!(
+                            let method_id = crate::identity::mint_def_id(format!(
                                 "{}::{}",
                                 trait_id.full_path(),
                                 method.name

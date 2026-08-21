@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 //! Per-actor state-field clone/drop classification (W2.002 Stage 1).
 //!
 //! This module is the MIR-layer substrate the W2.002 codegen lane consumes
@@ -2476,9 +2481,9 @@ mod tests {
 
     fn lifecycle(name: &str, close: &str) -> hew_hir::OpaqueResourceLifecycle {
         hew_hir::OpaqueResourceLifecycle {
-            resource_declaration: hew_types::DefId::new(name),
-            close_declaration: hew_types::DefId::new(close),
-            release_declaration: hew_types::DefId::new(close),
+            resource_declaration: hew_types::DefId::legacy_reconstruct_from_full_path(name),
+            close_declaration: hew_types::DefId::legacy_reconstruct_from_full_path(close),
+            release_declaration: hew_types::DefId::legacy_reconstruct_from_full_path(close),
             close_symbol: close.to_string(),
             release_symbol: close.to_string(),
             discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,

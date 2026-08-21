@@ -51,6 +51,11 @@ jobs:
             # Bootstrap pkg through the base utility before reading package catalogues.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
+            # unpinned-by-design(wasmtime): the guest installs from pkg, which serves
+            # one wasmtime per quarterly branch and takes no version selector. The
+            # alternative is building wasmtime from source inside a VM step that
+            # already runs near its time limit. Every other runner takes the pinned
+            # release asset.
             pkg install -y -r FreeBSD llvm22 gdb rustup-init python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
             pw useradd -n hew-ci -m -s /bin/sh
 

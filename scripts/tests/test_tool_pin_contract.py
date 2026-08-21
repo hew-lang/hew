@@ -235,6 +235,193 @@ def test_flag_contract_rejects_an_unrecorded_flag() -> None:
     raise AssertionError("the flag contract accepted a flag with no recorded minimum")
 
 
+# ── Every install site, not just the ones spelled out above ──────────────────
+#
+# The assertions above prove the pinned strings are PRESENT. Presence is not
+# exclusivity: a second `cargo install cargo-nextest`, a `brew install
+# wasmtime`, or a wasmtime.dev/install.sh line added next to them installs a
+# different version and passes every one of those assertions. So every install
+# site for a pinned tool is enumerated here and each one has to carry the pin.
+#
+# A site that genuinely cannot take a version (the FreeBSD guest's `pkg
+# install`) says so on the line above with `unpinned-by-design(<tool>)` and a
+# reason. That is a declaration in the file the contract reads, not a list of
+# exemptions kept somewhere else.
+
+TOOL_CRATES = {
+    "cargo-nextest": "NEXTEST",
+    "cargo-deny": "CARGO_DENY",
+    "cargo-about": "CARGO_ABOUT",
+    "cargo-llvm-cov": "LLVM_COV",
+}
+TOOL_BINARIES = {"wasmtime": "WASMTIME", "wasm-pack": "WASM_PACK"}
+INSTALL_ACTION_TOOLS = {
+    "nextest": "NEXTEST",
+    "cargo-nextest": "NEXTEST",
+    "cargo-deny": "CARGO_DENY",
+    "cargo-about": "CARGO_ABOUT",
+    "cargo-llvm-cov": "LLVM_COV",
+    "wasm-pack": "WASM_PACK",
+}
+
+
+def _marked_unpinned(lines: list[str], index: int, tool: str) -> bool:
+    """`unpinned-by-design(<tool>)` on the line itself or in the comment above."""
+    marker = f"unpinned-by-design({tool})"
+    for candidate in lines[max(0, index - 6) : index + 1]:
+        if marker in candidate:
+            return True
+    return False
+
+
+def install_sites(text: str, source: str) -> list[tuple[str, str, str | None]]:
+    """(source:line, tool key, pinned version or None) for every install site."""
+    sites: list[tuple[str, str, str | None]] = []
+    lines = text.splitlines()
+    for index, raw in enumerate(lines):
+        line = raw.strip()
+        where = f"{source}:{index + 1}"
+        if line.startswith("#"):
+            continue
+
+        match = re.match(r"tools:\s*(.+)$", line)
+        if match:
+            for entry in match.group(1).split(","):
+                entry = entry.strip().strip("'\"")
+                name, _, version = entry.partition("@")
+                key = INSTALL_ACTION_TOOLS.get(name)
+                if key:
+                    sites.append((where, key, version or None))
+            continue
+
+        match = re.search(r"cargo install ([A-Za-z0-9_-]+)([^\n]*)", line)
+        if match and match.group(1) in TOOL_CRATES:
+            crate, rest = match.group(1), match.group(2)
+            version = None
+            at_pin = re.match(r"@([0-9][0-9A-Za-z.\-+]*)", rest)
+            flag_pin = re.search(r"--version[= ]([0-9][0-9A-Za-z.\-+]*)", rest)
+            if at_pin:
+                version = at_pin.group(1)
+            elif flag_pin:
+                version = flag_pin.group(1)
+            sites.append((where, TOOL_CRATES[crate], version))
+            continue
+
+        for tool, key in TOOL_BINARIES.items():
+            if re.search(rf"brew install [^\n]*\b{tool}\b", line) or re.search(
+                rf"pkg install [^\n]*\b{tool}\b", line
+            ):
+                sites.append(
+                    (
+                        where,
+                        key,
+                        "unpinned-by-design"
+                        if _marked_unpinned(lines, index, tool)
+                        else None,
+                    )
+                )
+        if "gh release download" in line or "gh release download" in " ".join(
+            lines[index : index + 3]
+        ):
+            window = " ".join(lines[index : index + 3])
+            if "bytecodealliance/wasmtime" in window and "gh release download" in line:
+                tag = line.split("gh release download", 1)[1].strip().split()[0]
+                tag = tag.strip("\"'")
+                # WASMTIME_TAG is asserted equal to WASMTIME_VERSION above, so
+                # either name is the one pin; a literal tag is not.
+                if "WASMTIME_VERSION" in tag or "WASMTIME_TAG" in tag:
+                    sites.append((where, "WASMTIME", PINS["WASMTIME"][1]))
+                else:
+                    sites.append((where, "WASMTIME", tag or None))
+                continue
+
+        if "wasmtime.dev/install.sh" in line:
+            version = None
+            match = re.search(r"--version[= ]([A-Za-z0-9.\-+]+)", line)
+            if match:
+                version = match.group(1)
+            elif _marked_unpinned(lines, index, "wasmtime"):
+                version = "unpinned-by-design"
+            sites.append((where, "WASMTIME", version))
+    return sites
+
+
+def _assert_every_site_pinned(sites: list[tuple[str, str, str | None]]) -> None:
+    for where, key, version in sites:
+        assert version is not None, (
+            f"{where}: installs {PINS[key][0]} without a version. Pin it to "
+            f"{PINS[key][1]}, or write `unpinned-by-design({PINS[key][0]})` with "
+            f"a reason on the line above if the installer takes no version."
+        )
+        if version == "unpinned-by-design":
+            continue
+        expected = PINS[key][1]
+        assert version.lstrip("v") == expected.lstrip("v"), (
+            f"{where}: installs {PINS[key][0]} {version}, but the contract pins "
+            f"{expected}"
+        )
+
+
+def _workflow_sources() -> list[tuple[str, str]]:
+    root = ROOT / ".github"
+    return [
+        (str(path.relative_to(ROOT)), path.read_text())
+        for path in sorted(root.rglob("*.yml"))
+    ]
+
+
+def test_every_install_site_carries_the_pin() -> None:
+    total = 0
+    for source, text in _workflow_sources():
+        sites = install_sites(text, source)
+        total += len(sites)
+        _assert_every_site_pinned(sites)
+    assert total >= 12, f"only {total} install sites found; the scan lost its subject"
+
+
+def test_the_enumeration_rejects_a_second_unpinned_installer() -> None:
+    text = (
+        "      - run: cargo install cargo-nextest@0.9.120 --locked\n"
+        "      - run: cargo install cargo-nextest --locked\n"
+    )
+    try:
+        _assert_every_site_pinned(install_sites(text, "fixture.yml"))
+    except AssertionError as error:
+        assert "without a version" in str(error), error
+        return
+    raise AssertionError("an unpinned installer beside a pinned one was accepted")
+
+
+def test_the_enumeration_rejects_an_unpinned_package_manager_install() -> None:
+    try:
+        _assert_every_site_pinned(
+            install_sites("          brew install wasmtime\n", "fixture.yml")
+        )
+    except AssertionError as error:
+        assert "without a version" in str(error), error
+        return
+    raise AssertionError("`brew install wasmtime` was accepted with no declaration")
+
+
+def test_the_enumeration_accepts_a_declared_unpinnable_install() -> None:
+    text = (
+        "          # unpinned-by-design(wasmtime): pkg serves one per branch.\n"
+        "          pkg install -y -r FreeBSD wasmtime\n"
+    )
+    _assert_every_site_pinned(install_sites(text, "fixture.yml"))
+
+
+def test_the_enumeration_rejects_an_install_site_at_the_wrong_version() -> None:
+    try:
+        _assert_every_site_pinned(
+            install_sites("          tools: nextest@0.9.99\n", "fixture.yml")
+        )
+    except AssertionError as error:
+        assert "the contract pins" in str(error), error
+        return
+    raise AssertionError("an install site at the wrong version was accepted")
+
+
 if __name__ == "__main__":
     test_workflow_pins_match_the_xtask_graph()
     test_pin_contract_rejects_workflow_drift()
@@ -242,3 +429,8 @@ if __name__ == "__main__":
     test_pinned_nextest_accepts_every_scripted_flag()
     test_flag_contract_rejects_a_flag_newer_than_the_pin()
     test_flag_contract_rejects_an_unrecorded_flag()
+    test_every_install_site_carries_the_pin()
+    test_the_enumeration_rejects_a_second_unpinned_installer()
+    test_the_enumeration_rejects_an_unpinned_package_manager_install()
+    test_the_enumeration_accepts_a_declared_unpinnable_install()
+    test_the_enumeration_rejects_an_install_site_at_the_wrong_version()

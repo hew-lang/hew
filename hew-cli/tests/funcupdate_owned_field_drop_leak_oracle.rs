@@ -508,6 +508,115 @@ fn carry_bytes_field_source(frames: usize) -> String {
     )
 }
 
+// The tuple-carry sources below measure the heap-owning-TUPLE field carry in
+// BOTH drop orders, because the two orders exercise different halves of the
+// transfer:
+//
+//   * ESCAPE order — the result leaves the frame that consumed the base, so the
+//     base's frame teardown runs while the carried tuple is still live. A carry
+//     that failed to hand the tuple over frees it here (use-after-free) or never
+//     frees it (leak).
+//   * SAME-FRAME order — base and result both die at one scope exit, result
+//     first. A carry that transferred without excluding the base releases the
+//     tuple twice.
+//
+// Neither source READS the carried tuple back: a tuple-field read seeds an
+// owned-field binder that the record prover conservatively treats as an escape,
+// excluding the whole record from its `RecordInPlace` drop. That exclusion leaks
+// on `main` today with no functional update in sight, and would swamp the signal
+// these fixtures exist to measure. Value-level read-back of the carried leaves
+// is pinned separately by `accept_carry_nested_and_collection_bearing_tuples`
+// in `funcupdate_consume_semantics.rs`.
+
+/// Carry a `(string, i64)` tuple field, ESCAPE drop order: the update happens in
+/// a helper whose result is returned, so the consumed base dies one frame below
+/// the surviving carry.
+fn carry_tuple_field_escape_source(frames: usize) -> String {
+    format!(
+        "import std.string;\n\
+         \n\
+         record Pair {{\n\
+         \x20   keep: (string, i64),\n\
+         \x20   churn: string,\n\
+         }}\n\
+         \n\
+         fn step() -> Pair {{\n\
+         \x20   let b = Pair {{ keep: (string.repeat(\"k\", 32), 1), churn: string.repeat(\"a\", 32) }};\n\
+         \x20   Pair {{ churn: string.repeat(\"b\", 32), ..b }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let r = step();\n\
+         \x20       total = total + r.churn.len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Carry a `(string, i64)` tuple field, SAME-FRAME drop order: base and result
+/// are two bindings in one loop-body scope, so the result is released first and
+/// the consumed base's teardown follows immediately.
+fn carry_tuple_field_same_frame_source(frames: usize) -> String {
+    format!(
+        "import std.string;\n\
+         \n\
+         record Pair {{\n\
+         \x20   keep: (string, i64),\n\
+         \x20   churn: string,\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let b = Pair {{ keep: (string.repeat(\"k\", 32), 1), churn: string.repeat(\"a\", 32) }};\n\
+         \x20       let s = Pair {{ churn: string.repeat(\"b\", 32), ..b }};\n\
+         \x20       total = total + s.churn.len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Carry a `(Inner, i64)` tuple field — the carried heap leaf is two layers
+/// down (tuple element → record field). Escape drop order.
+fn carry_tuple_of_record_field_source(frames: usize) -> String {
+    format!(
+        "import std.string;\n\
+         \n\
+         record Inner {{\n\
+         \x20   label: string,\n\
+         \x20   n: i64,\n\
+         }}\n\
+         record Pair {{\n\
+         \x20   keep: (Inner, i64),\n\
+         \x20   churn: string,\n\
+         }}\n\
+         \n\
+         fn step() -> Pair {{\n\
+         \x20   let b = Pair {{ keep: (Inner {{ label: string.repeat(\"k\", 32), n: 1 }}, 1), churn: string.repeat(\"a\", 32) }};\n\
+         \x20   Pair {{ churn: string.repeat(\"b\", 32), ..b }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let r = step();\n\
+         \x20       total = total + r.churn.len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
 // ── plumbing (same shape as bytes_drop_leak_oracle) ───────────────────────
 
 /// Compile `source` to a native binary via `hew compile --emit-dir` and
@@ -842,4 +951,48 @@ fn funcupdate_carry_hashset_field_no_per_frame_leak_slope() {
 #[test]
 fn funcupdate_carry_bytes_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("funcupdate_carry_bytes_field", carry_bytes_field_source);
+}
+
+/// Carried `(string, i64)` tuple field, ESCAPE drop order: the result outlives
+/// the frame that consumed the base. Slope 0 — the tuple's allocation is handed
+/// over once and released once.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn funcupdate_carry_tuple_field_escape_order_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "funcupdate_carry_tuple_field_escape",
+        carry_tuple_field_escape_source,
+    );
+}
+
+/// Carried `(string, i64)` tuple field, SAME-FRAME drop order: result and
+/// consumed base die at one scope exit. Slope 0, and no crash — a transfer that
+/// left the base owning the tuple would double-free here.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn funcupdate_carry_tuple_field_same_frame_order_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "funcupdate_carry_tuple_field_same_frame",
+        carry_tuple_field_same_frame_source,
+    );
+}
+
+/// Carried `(Inner, i64)` tuple field: the heap leaf sits a tuple element AND a
+/// record field deep, so the transfer must carry the whole nested obligation.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn funcupdate_carry_tuple_of_record_field_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "funcupdate_carry_tuple_of_record_field",
+        carry_tuple_of_record_field_source,
+    );
 }

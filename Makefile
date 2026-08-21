@@ -143,7 +143,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check baselines baselines-check
-.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-cabi-build test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-ci-coverage-check structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan legacy-path-syntax-lint hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability check-counterfactual-output check-counterfactual-output-build sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property tool-pin-contract-check
+.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-cabi-build test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-ci-coverage-check structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan legacy-path-syntax-lint hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability check-counterfactual-output check-counterfactual-output-build sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property tool-pin-contract-check test-build-harness forced-cancel-composite-check
 .PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -1635,6 +1635,21 @@ else
 	scripts/asan-fixture-check.sh
 endif
 
+# Dynamic proof that a TaskEntry adapter's cancel-exit never publishes a
+# substitute composite return value as a task result.
+#
+# This gate is NOT superseded by the Rust suites that surround it.
+# hew-codegen-rs/tests/emission/task_entry_cancel_composite_emission.rs pins the
+# emitted IR shape, and hew-cli/tests/task_entry_composite_cancel_e2e.rs covers
+# the sibling non-cancelled paths -- neither can force the cancel edge, because
+# the trigger needs a task's own entry-block cooperate check to observe
+# cancellation before the body stores anything. Only a program linked against
+# libhew built with hew-runtime/forced-cancel-test can do that, which is why
+# this lives in a script with its own isolated target directory rather than in
+# the workspace test run.
+forced-cancel-composite-check:
+	bash scripts/forced-cancel-composite-check.sh
+
 # Platform-independent counterfactuals for the ASan/LSan sentinel: a genuine
 # sanitizer diagnostic must be accepted, while a bare non-zero probe exit must
 # stay red instead of certifying instrumentation that never reported a leak.
@@ -1883,6 +1898,24 @@ test-release-workflow-contract:
 
 # Python only; no artifacts.
 test-release-workflow-contract-build:
+	@:
+
+# Counterfactuals for the build harness itself: the preflight dispatcher's
+# routing and timeout behaviour, the CI playground path filter, the libhew
+# freshness stamp, and the Hew-suite result cache. Each of these was written
+# alongside the tool it checks and then attached to nothing, so it executed in
+# no job at all -- the state check-gate-reachability.py's A6 assertion now
+# refuses for every scripts/tests/ file. All five use stubs or temporary trees;
+# none needs a built compiler.
+test-build-harness:
+	python3 scripts/tests/test_ci_preflight_dispatcher.py
+	bash scripts/tests/test_ci_preflight_timeout.sh
+	python3 scripts/tests/test_playground_path_filter_oracle.py
+	python3 scripts/tests/test_libhew_freshness.py
+	python3 scripts/tests/test_hew_suite_cache.py
+
+# Python and shell only; no artifacts.
+test-build-harness-build:
 	@:
 
 # Scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths)

@@ -6000,8 +6000,8 @@ pub(in crate::lower) struct FinalizedBody {
 /// call for exactly that reason.
 ///
 /// [`Builder::seal_body_blocks`] is called from here and nowhere else. The
-/// `single_body_finalization_seam` test holds that structurally, so a new ramp
-/// cannot quietly grow a sixth pipeline.
+/// `seal_body_blocks_is_called_only_from_the_finalization_seam` test holds that
+/// structurally, so a new ramp cannot quietly grow an eighth pipeline.
 pub(in crate::lower) fn finalize_body(
     builder: &mut Builder,
     seal: BodySeal,
@@ -7819,8 +7819,8 @@ impl Builder {
     /// neutralizes). [`finalize_body`] is the sole caller for that reason — it
     /// seals and then runs that pipeline, so every body kind gets the same one.
     /// Calling this directly produces blocks that look finished and silently
-    /// leak; the `single_body_finalization_seam` test holds the single-caller
-    /// property structurally.
+    /// leak; the `seal_body_blocks_is_called_only_from_the_finalization_seam`
+    /// test holds the single-caller property structurally.
     fn seal_body_blocks(&mut self, terminator: Terminator) -> Vec<BasicBlock> {
         self.reject_buffered_capture_env_owned_moves();
         let mut blocks = std::mem::take(&mut self.pending_blocks);

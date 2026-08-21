@@ -9,10 +9,17 @@
 // after the in-window restart budget is spent.
 //
 // Once the child is down, a tell through the handle is dropped (no-op) and an
-// ask returns Err(AskError) — both recoverable, NEITHER a SIGTRAP. Exit 9 is the
-// sentinel proving the tell dropped without trapping AND the ask reached the
+// ask returns Err(AskError) — both recoverable, NEITHER a SIGTRAP. The `9`
+// sentinel proves the tell dropped without trapping AND the ask reached the
 // recoverable Err arm. Pre-F-04 the send/ask through the stale handle trapped
 // (HEW_TRAP_ACTOR_SEND_FAILED → exit 133).
+//
+// The sentinel is printed, not returned: this program exhausts a ROOT
+// supervisor's restart budget, so the fault reached the top of the supervision
+// tree unrecovered and owns the process exit status (HEW-SPEC-2026 §5.8, exit
+// 1). The claim under test is "recoverable, not a trap" — distinguishing 1 from
+// a SIGTRAP's 133 still carries that, and the printed sentinel carries which
+// recoverable arm ran.
 actor Worker {
     var value: i64 = 5;
     receive fn tick() {
@@ -49,8 +56,10 @@ fn main() -> i64 {
     // Tell to a permanently-dead child: dropped recoverably, NOT a trap.
     w.tick();
     // Ask a permanently-dead child: recoverable Err, NOT a trap.
-    match await w.get_value() {
-        Ok(_) => 3,
-        Err(_) => 9,
-    }
+    let sentinel = match await w.get_value() {
+        .Ok(_) => 3,
+        .Err(_) => 9,
+    };
+    println(f"DEAD_CHILD:{sentinel}");
+    0
 }

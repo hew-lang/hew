@@ -310,7 +310,10 @@ pub extern "C" fn hew_shutdown_wait() -> c_int {
         match shutdown_phase_load(Ordering::Acquire) {
             PHASE_RUNNING => return -1,
             PHASE_DONE => {
-                return if crate::actor::unsupervised_actor_crashed() {
+                // Same authority codegen reads via `hew_runtime_exit_status`
+                // on every shutdown path; surfaced here as `-3` for embedders
+                // that block on the wait instead.
+                return if crate::exit_status::unrecovered_actor_fault() {
                     -3
                 } else {
                     0

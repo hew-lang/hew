@@ -2601,7 +2601,10 @@ helper_crash_cleanup_return_retire_68_rejected:   ; preds = %helper_crash_cleanu
 helper_crash_cleanup_return_merge_70:             ; preds = %helper_crash_cleanup_return_retire_70_accepted, %helper_crash_cleanup_return_merge_68
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
   %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
-  br i1 %hew_lambda_drain_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
+  %hew_runtime_exit_status_call = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted = icmp ne i32 %hew_runtime_exit_status_call, 0
+  %hew_exit_any_failed = or i1 %hew_lambda_drain_failed, %hew_runtime_faulted
+  br i1 %hew_exit_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 helper_crash_cleanup_return_retire_70:            ; preds = %helper_crash_cleanup_return_merge_68
   %helper_crash_cleanup_return_retire_70_call = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_return_token_70)
@@ -3340,6 +3343,8 @@ entry:
 declare i1 @hew_hashset_contains_layout(ptr, ptr)
 
 declare i32 @hew_lambda_drain_all(i64)
+
+declare i32 @hew_runtime_exit_status()
 
 ; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64) #1

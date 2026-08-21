@@ -471,7 +471,10 @@ bb12:                                             ; preds = %bb3
   store i64 %move_load32, ptr %return_slot, align 8
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
   %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
-  br i1 %hew_lambda_drain_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
+  %hew_runtime_exit_status_call = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted = icmp ne i32 %hew_runtime_exit_status_call, 0
+  %hew_exit_any_failed = or i1 %hew_lambda_drain_failed, %hew_runtime_faulted
+  br i1 %hew_exit_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 cancel_exit:                                      ; preds = %entry
   ret i64 0
@@ -1421,6 +1424,8 @@ declare void @hew_trap_with_code(i32)
 declare void @llvm.trap() #2
 
 declare i32 @hew_lambda_drain_all(i64)
+
+declare i32 @hew_runtime_exit_status()
 
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: read)
 declare token @llvm.coro.id(i32, ptr readnone, ptr readonly captures(none), ptr) #3

@@ -4928,6 +4928,14 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // either initiate entry point; emitted by the implicit main-exit drain
         // epilogue immediately after its implicit initiate call.
         "hew_shutdown_wait" => i32_ty.fn_type(&[], false),
+        // hew_runtime_exit_status() -> i32
+        // (`hew-runtime/src/exit_status.rs`). The ONE process exit-status
+        // authority: `1` when an actor fault reached a point with no recovery
+        // authority left (unsupervised crash, or a root supervisor that gave
+        // up), `0` otherwise. Emitted on every native `main` return after the
+        // program's drain/shutdown epilogue, whichever epilogue that was.
+        // Safe on a never-initialized runtime: nothing crashed, so `0`.
+        "hew_runtime_exit_status" => i32_ty.fn_type(&[], false),
         // hew_duplex_pair(s_cap: usize, r_cap: usize,
         //                 out_a: *mut *mut HewDuplexHandle,
         //                 out_b: *mut *mut HewDuplexHandle) -> i32

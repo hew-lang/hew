@@ -1818,18 +1818,20 @@ run_accept_expect_status "supervisor_fungible_reresolve" 7
 
 # F-04 fail-closed: a send/ask through a fungible reference to a permanently-dead
 # child fail-closes recoverably (dropped tell, Err ask), NEVER a trap. Exhausts
-# the restart budget, then tells + asks the down child. Exit 9 = the recoverable
-# Err arm reached without a SIGTRAP. Pre-F-04 the stale-handle send trapped
-# (exit 133).
-run_accept_expect_status "supervisor_fungible_dead_child" 9
+# the restart budget, then tells + asks the down child. Stdout `DEAD_CHILD:9` =
+# the recoverable Err arm reached without a SIGTRAP. Exit 1 (not 0) because
+# exhausting a ROOT supervisor's budget leaves the fault unrecovered and it owns
+# the exit status; pre-F-04 the stale-handle send trapped (exit 133).
+run_accept_expect_status_and_stdout "supervisor_fungible_dead_child" 1
 
 # F-04 fail-closed for the SELECT-ask path: a `select` arm asking a fungible
 # reference to a permanently-dead child skips the dead arm (never ready) and
-# falls through to its `after` arm, NEVER a trap. Exit 46 = the single-shot ask
-# Err arm (20) plus the select's after-arm sentinel (25) plus 1. Pre-F-04 the
-# select-ask setup status was treated as process-fatal and trapped (exit 133),
-# even though the tell + single-shot ask siblings already fail-closed.
-run_accept_expect_status "supervisor_fungible_dead_child_select" 46
+# falls through to its `after` arm, NEVER a trap. Stdout `DEAD_CHILD_SELECT:46` =
+# the single-shot ask Err arm (20) plus the select's after-arm sentinel (25) plus
+# 1. Exit 1 for the same reason as its sibling above. Pre-F-04 the select-ask
+# setup status was treated as process-fatal and trapped (exit 133), even though
+# the tell + single-shot ask siblings already fail-closed.
+run_accept_expect_status_and_stdout "supervisor_fungible_dead_child_select" 1
 
 # Lifecycle-under-supervision: a supervised actor's init() / #[on(start)] must
 # fire on BOTH the initial supervised spawn AND a supervisor-triggered restart.

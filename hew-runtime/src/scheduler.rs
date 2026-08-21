@@ -752,7 +752,7 @@ pub extern "C" fn hew_sched_init() -> c_int {
         // Another thread beat us — `install_default` already dropped ours.
         return 0;
     }
-    actor::reset_unsupervised_actor_crash();
+    crate::exit_status::reset_process_exit_status();
     reopen_admission_gates();
 
     // Ignore SIGPIPE process-wide, before ANY background thread is spawned or

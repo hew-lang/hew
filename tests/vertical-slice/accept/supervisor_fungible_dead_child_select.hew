@@ -10,11 +10,17 @@
 //
 // Once the child is down, a single-shot ask returns Err (the recoverable arm,
 // 20) and the select's dead-child ask arm is skipped so the `after 100ms` arm
-// wins (25). Exit 46 = 20 + 25 + 1, the sentinel proving BOTH the single-shot
-// ask Err'd AND the select reached its after arm — neither trapped. Pre-F-04 the
-// select-ask through the dead handle issued a failed setup status that codegen
-// treated as process-fatal (HEW_TRAP_ACTOR_SEND_FAILED → SIGTRAP, exit 133),
-// even though the tell + single-shot ask siblings already fail-closed.
+// wins (25). The printed `46` = 20 + 25 + 1 is the sentinel proving BOTH the
+// single-shot ask Err'd AND the select reached its after arm — neither trapped.
+// Pre-F-04 the select-ask through the dead handle issued a failed setup status
+// that codegen treated as process-fatal (HEW_TRAP_ACTOR_SEND_FAILED → SIGTRAP,
+// exit 133), even though the tell + single-shot ask siblings already
+// fail-closed.
+//
+// The sentinel is printed, not returned: exhausting a ROOT supervisor's restart
+// budget leaves the fault unrecovered at the top of the supervision tree, so it
+// owns the process exit status (HEW-SPEC-2026 §5.8, exit 1). Exit 1 versus a
+// SIGTRAP's 133 still carries the no-trap claim.
 actor Worker {
     var value: i64 = 5;
     receive fn get_value() -> i64 {
@@ -47,8 +53,8 @@ fn main() -> i64 {
 
     // Single-shot ask to a permanently-dead child: recoverable Err, NOT a trap.
     let ask_code = match await w.get_value() {
-        Ok(_) => 1,
-        Err(_) => 20,
+        .Ok(_) => 1,
+        .Err(_) => 20,
     };
     // Select-ask through the same dead fungible handle: the dead-child arm is
     // skipped (never ready), so the `after` arm wins — NOT a trap.
@@ -56,9 +62,11 @@ fn main() -> i64 {
         reply from w.get_value() => reply,
         after 100ms => 25,
     };
-    if ask_code == 20 && select_code == 25 {
+    let sentinel = if ask_code == 20 && select_code == 25 {
         46
     } else {
         ask_code + select_code
-    }
+    };
+    println(f"DEAD_CHILD_SELECT:{sentinel}");
+    0
 }

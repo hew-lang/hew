@@ -5940,6 +5940,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
         emit_runtime_cleanup_epilogue: false,
         emit_wasm_runtime_exit: false,
         emit_lambda_drain_epilogue: false,
+        emit_process_exit_status_epilogue: false,
         target_data: &harness.target_data,
         builder,
         representation_loan_params: &harness.representation_loan_params,

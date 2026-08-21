@@ -33,21 +33,6 @@ use crate::reply_channel::{self, HewReplyChannel};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::scheduler;
 
-// An unsupervised actor has no recovery authority. Record its crash so the
-// generated main-exit drain can report a failed process rather than success.
-#[cfg(not(target_arch = "wasm32"))]
-static UNSUPERVISED_ACTOR_CRASHED: AtomicBool = AtomicBool::new(false);
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn unsupervised_actor_crashed() -> bool {
-    UNSUPERVISED_ACTOR_CRASHED.load(Ordering::Acquire)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn reset_unsupervised_actor_crash() {
-    UNSUPERVISED_ACTOR_CRASHED.store(false, Ordering::Release);
-}
-
 // ── Crash teardown ordering hook ─────────────────────────────────────────
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -6773,9 +6758,10 @@ unsafe fn hew_actor_trap_inner(
     // Store error code only after winning the CAS race.
     a.error_code.store(error_code, Ordering::Release);
     // A supervisor owns the recovery decision for its children. Without one,
-    // this terminal crash is unrecovered and must make main's exit non-zero.
+    // this terminal crash is unrecovered: record it on the process exit-status
+    // authority (`exit_status`), which every native shutdown path reads.
     if terminal == HewActorState::Crashed as i32 && supervisor.is_null() {
-        UNSUPERVISED_ACTOR_CRASHED.store(true, Ordering::Release);
+        crate::exit_status::record_unrecovered_actor_fault();
     }
     if terminal == HewActorState::Crashed as i32 {
         let scope = crate::task_scope::current_task_scope();

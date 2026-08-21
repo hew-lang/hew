@@ -490,12 +490,9 @@ bb0:                                              ; preds = %entry
   %actor_id = load i64, ptr %actor_id_slot, align 8
   %hew_actor_send_by_id_call = call i32 @hew_actor_send_by_id(i64 %actor_id, ptr null, i32 1995638644, ptr %local_3, i64 ptrtoint (ptr getelementptr (i64, ptr null, i32 1) to i64))
   %send_not_ok = icmp ne i32 %hew_actor_send_by_id_call, 0
-  %send_recipient_stopped = icmp eq i32 %hew_actor_send_by_id_call, -2
-  %send_recipient_running = xor i1 %send_recipient_stopped, true
-  %send_must_trap = and i1 %send_not_ok, %send_recipient_running
-  br i1 %send_must_trap, label %actor_send_fail, label %bb1
+  br i1 %send_not_ok, label %actor_send_undelivered, label %bb1
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %actor_send_undelivered, %bb0
   store i64 42, ptr %local_4, align 8
   %"actor_ask receiver" = load ptr, ptr %local_2, align 8
   %hew_actor_ask_call = call ptr @hew_actor_ask(ptr %"actor_ask receiver", i32 311929158, ptr %local_4, i64 ptrtoint (ptr getelementptr (i64, ptr null, i32 1) to i64))
@@ -529,7 +526,10 @@ bb3:                                              ; preds = %after_cooperate20, 
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
   %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
   %hew_shutdown_any_failed = or i1 %hew_shutdown_failed, %hew_lambda_drain_failed
-  br i1 %hew_shutdown_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
+  %hew_runtime_exit_status_call = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted = icmp ne i32 %hew_runtime_exit_status_call, 0
+  %hew_exit_any_failed = or i1 %hew_shutdown_any_failed, %hew_runtime_faulted
+  br i1 %hew_exit_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 bb4:                                              ; preds = %bb2
   %machine_payload_ptr7 = getelementptr inbounds nuw %"Result$$i64$std$mbuiltins$mAskError", ptr %local_8, i32 0, i32 1
@@ -572,7 +572,11 @@ bb9:                                              ; preds = %bb5
   %hew_cooperate_is_cancel18 = icmp eq i32 %hew_actor_cooperate17, 2
   br i1 %hew_cooperate_is_cancel18, label %cancel_exit19, label %after_cooperate20
 
-actor_send_fail:                                  ; preds = %bb0
+actor_send_undelivered:                           ; preds = %bb0
+  %send_recipient_stopped = icmp eq i32 %hew_actor_send_by_id_call, -2
+  br i1 %send_recipient_stopped, label %bb1, label %actor_send_fail
+
+actor_send_fail:                                  ; preds = %actor_send_undelivered
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
@@ -1477,6 +1481,8 @@ declare i32 @hew_shutdown_wait()
 declare void @hew_runtime_cleanup_after_main()
 
 declare i32 @hew_lambda_drain_all(i64)
+
+declare i32 @hew_runtime_exit_status()
 
 declare i32 @hew_actor_cooperate()
 

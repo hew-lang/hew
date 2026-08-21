@@ -800,6 +800,10 @@ pub mod scheduler;
 pub mod scheduler_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod shutdown;
+// One authority for "what exit status must this program report": read on every
+// native shutdown path, not just the implicit actor-drain one.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod exit_status;
 // `signal` owns native signal recovery and also provides the target-neutral
 // crash-recovery ABI stubs used by continuation state-cleanup on WASI.  Keep
 // the module available on wasm32: its internal platform layer selects no-op

@@ -21,7 +21,8 @@
 # map_literal_empty_annotated.hew, array_repeat_int_sum.hew, and
 # array_repeat_runtime_count.hew are intentionally absent: they must pass.
 #
-# Total: 28 known-failing entries (28 intentional-trap/abort fixtures).
+# Total: 39 known-failing entries (28 intentional-trap/abort fixtures plus 11
+# actor-isolated crash fixtures that report a non-zero exit status).
 #
 # Intentional aborts/traps: fixtures in tests/vertical-slice/accept/ that are
 # designed to trap or abort at runtime as their correctness proof.  Listed here
@@ -58,3 +59,25 @@ wire_cbor_enum_arity_mismatch_traps.hew  # intentional trap: decoding an enum pa
 int_negate_runtime_min_traps.hew  # intentional trap: negating a runtime i32::MIN value (-n for non-literal n; literal -<digits> folds at compile time) → IntegerOverflow signal (SIGILL x86_64 / SIGTRAP aarch64)
 receive_gen_fn_fault_trap.hew  # intentional abort: a receive-gen producer that traps mid-stream (div-by-zero after its first yield) fault-closes the stream so the consumer observes the fault → SIGABRT (signal 6)
 receive_gen_fn_teardown_fault.hew  # intentional abort: a receive-gen producer torn down (actor stopped) while its stream is live and parked fault-closes the stream so the consumer observes the fault → SIGABRT (signal 6)
+
+# Actor-isolated crash fixtures (`*_actor_isolated.hew`). Each crashes ONE
+# unsupervised actor and then proves an independent probe actor still answers:
+# the crash is isolated, not cascaded. Their exit status is now non-zero,
+# because an actor fault that no supervisor recovered owns the process exit
+# status (HEW-SPEC-2026 §5.8) — the isolation proof lives in the probe's reply
+# and each fixture's `// EXIT: 1` annotation, not in a zero status. The oracle
+# classifies a clean non-zero exit with a PANIC diagnostic as `runtime-abort`,
+# so they are registered here for the same reason as the sibling trap fixtures:
+# the failure is the fixture's correctness proof, and a fixture that stopped
+# reporting it would be the regression.
+bytes_index_oob_actor_isolated.hew       # intentional actor crash: out-of-bounds bytes index inside a receive handler; probe survives, process exits 1
+bytes_pop_empty_actor_isolated.hew       # intentional actor crash: empty bytes.pop() inside a receive handler; probe survives, process exits 1
+bytes_set_oob_actor_isolated.hew         # intentional actor crash: out-of-bounds bytes.set() inside a receive handler; probe survives, process exits 1
+bytes_slice_oob_actor_isolated.hew       # intentional actor crash: out-of-bounds bytes slice inside a receive handler; probe survives, process exits 1
+deque_pop_back_empty_actor_isolated.hew  # intentional actor crash: empty Deque.pop_back() inside a receive handler; probe survives, process exits 1
+deque_pop_front_empty_actor_isolated.hew # intentional actor crash: empty Deque.pop_front() inside a receive handler; probe survives, process exits 1
+string_index_oob_actor_isolated.hew      # intentional actor crash: out-of-bounds string index inside a receive handler; probe survives, process exits 1
+string_slice_oob_actor_isolated.hew      # intentional actor crash: out-of-bounds string slice inside a receive handler; probe survives, process exits 1
+vec_pop_empty_actor_isolated.hew         # intentional actor crash: empty Vec.pop() inside a receive handler; probe survives, process exits 1
+vec_remove_layout_oob_actor_isolated.hew # intentional actor crash: out-of-bounds Vec.remove() on a layout-carrying element type inside a receive handler; probe survives, process exits 1
+vec_remove_oob_actor_isolated.hew        # intentional actor crash: out-of-bounds Vec.remove() inside a receive handler; probe survives, process exits 1

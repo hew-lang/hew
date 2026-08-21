@@ -1416,6 +1416,10 @@ codegen-stable = [
   "hew_reply_channel_await_status",
   "hew_reply_channel_cancel_cleanup",
   "hew_reply_channel_set_await_cancel",
+  # The process exit-status authority, read by the epilogue codegen emits on
+  # every native `main` return. A pure query of one runtime fact (did an actor
+  # fault go unrecovered), so it carries no capability.
+  "hew_runtime_exit_status",
   "hew_sched_init",
   "hew_ser_free_bytes",
   # SYSTEM-LANE PROVENANCE BOUNDARY. Takes a `HewChildSpec` whose
@@ -1944,6 +1948,15 @@ stops the call site from being read as an independent lane operation."""
 # the boundary.
 [[ownership.contracts]]
 symbol = "hew_arena_instance_id_new"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+# Scalar i32 exit-status query (hew-runtime/src/exit_status.rs); no parameters,
+# nothing owned crosses the boundary.
+[[ownership.contracts]]
+symbol = "hew_runtime_exit_status"
 result = "none"
 params = []
 release-symbol = ""

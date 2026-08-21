@@ -1785,6 +1785,13 @@ fn take_child_slot_for_event(
 }
 
 /// Stop this supervisor, notify waiters, and escalate to the parent if present.
+///
+/// Every caller reaches here because this supervisor could NOT recover a child
+/// fault: restart budget exhausted, the child was not restartable, or the
+/// restart itself failed. With a parent, recovery authority moves up the tree
+/// and the parent's own decision settles the fault. WITHOUT a parent this is
+/// the top of the supervision tree, so the fault is unrecovered and owns the
+/// process exit status (`exit_status`) exactly like an unsupervised crash.
 fn stop_and_maybe_escalate(sup: *mut HewSupervisor) {
     // SAFETY: callers keep the allocation live through cancellation.
     publish_supervisor_cancellation(sup);
@@ -1794,6 +1801,8 @@ fn stop_and_maybe_escalate(sup: *mut HewSupervisor) {
     // SAFETY: callers keep the supervisor allocation live through escalation.
     if unsafe { !(*sup).parent.is_null() } {
         escalate_to_parent(sup);
+    } else {
+        crate::exit_status::record_unrecovered_actor_fault();
     }
 }
 

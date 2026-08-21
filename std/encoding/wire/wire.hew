@@ -1,4 +1,4 @@
-//! Wire format substrate for `std::encoding::wire`.
+//! Wire format substrate for `std.encoding.wire`.
 //!
 //! The `#[wire]` attribute, not this module, is what most code reaches for.
 //! Attach it to a `type` declaration to make it network-serializable:
@@ -39,7 +39,7 @@
 //!
 //! **Current scope:** `#[wire]` round-trips reliably for a type declared and
 //! used within a single module. A `#[wire]` type imported into another
-//! module (`import src::env::{Env}; Env.from_json(...)`) does not yet
+//! module (`import src.env.{Env}; Env.from_json(...)`) does not yet
 //! round-trip — cross-module wire codec emission is a tracked gap, not
 //! intended behaviour. Keep `#[wire]` types same-module until that lands.
 //!

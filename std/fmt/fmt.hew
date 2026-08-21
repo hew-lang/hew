@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::fmt;
+//! import std.fmt;
 //!
 //! fn main() {
 //!     println(fmt.to_hex(255));         // "ff"
@@ -157,7 +157,7 @@ fn hex_digit(d: i64) -> string {
 /// Pad a string on the left to reach the given width.
 ///
 /// If `s` is already at least `width` characters, returns `s` unchanged.
-/// Delegates to `string.pad_left` — prefer that form when importing `std::string`
+/// Delegates to `string.pad_left` — prefer that form when importing `std.string`
 /// directly; `fmt.pad_left` is a convenience for code that already imports `fmt`.
 ///
 /// # Examples
@@ -173,7 +173,7 @@ pub fn pad_left(s: string, width: i64, fill: string) -> string {
 /// Pad a string on the right to reach the given width.
 ///
 /// If `s` is already at least `width` characters, returns `s` unchanged.
-/// Delegates to `string.pad_right` — prefer that form when importing `std::string`
+/// Delegates to `string.pad_right` — prefer that form when importing `std.string`
 /// directly; `fmt.pad_right` is a convenience for code that already imports `fmt`.
 ///
 /// # Examples

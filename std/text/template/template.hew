@@ -41,7 +41,7 @@
 //!
 //! WHY (flat design): `Vec<Entry>` where `Entry` carries a `Vec` field is
 //! rejected by the v0.5 codegen-front ("recursive owned clone/drop thunk
-//! synthesis not implemented").  Recursive enum variants (`Value::List(Vec<Value>)`)
+//! synthesis not implemented").  Recursive enum variants (`Value.List(Vec<Value>)`)
 //! trigger the same limit.  The flat parallel-vec layout works within these
 //! constraints with no expressiveness loss for the basic template surface.
 //!
@@ -54,13 +54,13 @@
 //! # Examples
 //!
 //! ```
-//! import std::text::template;
+//! import std.text.template;
 //!
 //! fn main() {
 //!     let ctx = template.new_ctx();
 //!     template.ctx_set_str(ctx, "name", "Alice");
 //!     template.ctx_set_int(ctx, "age", 30);
-//!     let items: Vec<string> = Vec::new();
+//!     let items: Vec<string> = Vec.new();
 //!     items.push("red");
 //!     items.push("green");
 //!     template.ctx_set_list(ctx, "colours", items);
@@ -557,7 +557,7 @@ pub fn render_template(t: Template, ctx: Ctx) -> string {
 /// # Examples
 ///
 /// ```
-/// import std::text::template;
+/// import std.text.template;
 ///
 /// fn main() {
 ///     let ctx = template.new_ctx();
@@ -615,7 +615,7 @@ pub fn ctx_set_bool(ctx: Ctx, key: string, val: bool) {
 /// # Examples
 ///
 /// ```
-/// let colours: Vec<string> = Vec::new();
+/// let colours: Vec<string> = Vec.new();
 /// colours.push("red");
 /// colours.push("blue");
 /// template.ctx_set_list(ctx, "colours", colours);
@@ -640,7 +640,7 @@ pub fn ctx_set_list(ctx: Ctx, key: string, items: Vec<string>) {
 /// # Examples
 ///
 /// ```
-/// import std::text::template;
+/// import std.text.template;
 ///
 /// fn main() {
 ///     let ctx = template.new_ctx();

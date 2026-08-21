@@ -32,7 +32,7 @@ pub fn index_of_i64(v: Vec<i64>, val: i64) -> Option<i64> { // INTERNAL-ABI: i64
 /// # Examples
 ///
 /// ```
-/// let v: Vec<f64> = Vec::new();
+/// let v: Vec<f64> = Vec.new();
 /// v.push(1.5);
 /// v.push(2.5);
 /// println(vec.index_of_f64(v, 2.5));  // Some(1)
@@ -53,7 +53,7 @@ pub fn index_of_f64(v: Vec<f64>, val: f64) -> Option<i64> {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<string> = Vec::new();
+/// let v: Vec<string> = Vec.new();
 /// v.push("a");
 /// v.push("b");
 /// println(vec.index_of_str(v, "b"));   // Some(1)

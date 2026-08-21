@@ -5,7 +5,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::crypto::jwt;
+//! import std.crypto.jwt;
 //!
 //! fn main() {
 //!     match jwt.try_encode("{\"sub\":\"1234\"}", "secret", "HS256") {

@@ -7,8 +7,8 @@
 //! # Examples
 //!
 //! ```
-//! import std::crypto::crypto;
-//! import std::encoding::hex;
+//! import std.crypto.crypto;
+//! import std.encoding.hex;
 //!
 //! fn main() {
 //!     let hash = crypto.sha256("A".to_bytes());
@@ -19,7 +19,7 @@
 //! `"...".to_bytes()` is the canonical string-to-`bytes` conversion — use it
 //! to build the `bytes` payload any hashing/HMAC/network function here
 //! expects from a `string` you already have, instead of hand-rolling a
-//! `bytes` buffer byte-by-byte with `bytes::new()` + `.push()`.
+//! `bytes` buffer byte-by-byte with `bytes.new()` + `.push()`.
 
 /// Compute the SHA-256 hash of `data`, returning a 32-byte digest.
 pub fn sha256(data: bytes) -> bytes {

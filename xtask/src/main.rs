@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::Value;
 
+mod build_system;
+
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
 const DEFERRED_BLOCK_START: &str = "```json sandbox-fixtures-deferred";
 const DEFERRED_BLOCK_END: &str = "```";
@@ -56,6 +58,9 @@ fn main() {
 
 fn run() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.first().map(String::as_str) != Some("sandbox-fixtures") {
+        return build_system::run(&args, &workspace_root()?);
+    }
     let options = parse_options(&args)?;
     let repo_root = workspace_root()?;
     std::env::set_var("HEWPATH", &repo_root);

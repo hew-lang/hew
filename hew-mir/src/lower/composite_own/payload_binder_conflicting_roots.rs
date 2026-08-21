@@ -123,6 +123,7 @@ fn conflicting_payload_binder_roots_exclude_both_composites_on_escape() {
         &[],
         &[],
         &hew_hir::LifecycleRegistry::default(),
+        &HashSet::new(),
         &HashMap::new(),
         &HashSet::new(),
         &HashSet::new(),

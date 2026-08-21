@@ -7,7 +7,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::string;
+//! import std.string;
 //!
 //! fn main() {
 //!     let s = string.from_int(42);        // "42"
@@ -624,7 +624,7 @@ pub fn replace(s: string, old: string, new_val: string) -> string {
 /// # Examples
 ///
 /// ```
-/// import std::string;
+/// import std.string;
 ///
 /// let parts = string.split("a,b,c", ",");  // ["a", "b", "c"]
 /// let trail = string.split("a,b,", ",");   // ["a", "b", ""]
@@ -647,7 +647,7 @@ pub fn split(s: string, sep: string) -> Vec<string> {
 /// # Examples
 ///
 /// ```
-/// import std::string;
+/// import std.string;
 ///
 /// let lines = string.lines("foo\nbar");   // ["foo", "bar"]
 /// let crlf  = string.lines("a\r\nb");    // ["a", "b"]
@@ -687,7 +687,7 @@ pub fn lines(s: string) -> Vec<string> {
 /// # Examples
 ///
 /// ```
-/// import std::string;
+/// import std.string;
 ///
 /// let s = string.join(["a", "b", "c"], ", ");  // "a, b, c"
 /// let e = string.join([], ",");                // ""
@@ -788,7 +788,7 @@ impl string {
         None
     }
     /// Return the `char` at codepoint-index `index`, or `None` when the index
-    /// is out of bounds. This is the non-trapping `Index::get` accessor,
+    /// is out of bounds. This is the non-trapping `Index.get` accessor,
     /// de-aliased from the trapping `s[i]` sugar (which aborts on OOB).
     #[extern_symbol(hew_string_get)]
     fn get(s: string, index: i64) -> Option<char> {
@@ -832,7 +832,7 @@ impl string {
 /// # Examples
 ///
 /// ```
-/// import std::string;
+/// import std.string;
 ///
 /// // Implement for custom types:
 /// // impl ToString for MyType {

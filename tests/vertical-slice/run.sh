@@ -491,7 +491,16 @@ expect_check_fail_contains \
 # bindings + a helper chain) must keep compiling and produce deterministic
 # output — the D108 non-regression the return-provenance preflight protects.
 run_accept_expect_stdout "call_scrutinee_fresh_forwarder_release"
+run_accept_expect_stdout "json_try_parse_direct_match_payload"
 run_accept_expect_stdout "enum_mixed_leaf_resource_drop"
+
+# A call result is movable only when it is a fresh owner. A parameter forwarder
+# returns caller-visible storage, so matching its heap payload must keep the
+# aliasing rejection rather than treating all Result returns as fresh.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/match_result_param_alias_payload.hew" \
+  "may alias caller storage" \
+  "match_result_param_alias_payload"
 
 # Close-obligated collection borrows: `v[i]` over a `#[resource]`-bearing
 # element is a BORROW (the collection is the single release authority), and

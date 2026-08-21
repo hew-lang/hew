@@ -9,13 +9,13 @@
 //! # Examples
 //!
 //! ```
-//! import std::process;
+//! import std.process;
 //!
 //! fn main() {
 //!     let shell_output = process.run("echo hello");
 //!     println(shell_output);
 //!
-//!     let args: Vec<string> = Vec::new();
+//!     let args: Vec<string> = Vec.new();
 //!     args.push("<%s>|<%s>");
 //!     args.push("hello world");
 //!     args.push("hew");
@@ -273,7 +273,7 @@ pub fn start(command: string) -> Child {
 
 /// Start a child process through the system shell without blocking.
 ///
-/// Returns `Err(ProcessError::LaunchFailed)` when the child could not be
+/// Returns `Err(ProcessError.LaunchFailed)` when the child could not be
 /// launched, rather than a handle that is not backed by a running process.
 pub fn try_start(command: string) -> Result<Child, ProcessError> {
     unsafe {
@@ -291,7 +291,7 @@ pub fn try_start(command: string) -> Result<Child, ProcessError> {
 
 /// Start a child process without the shell using a `Vec<string>` argv surface.
 ///
-/// Returns `Err(ProcessError::LaunchFailed)` when the executable cannot be
+/// Returns `Err(ProcessError.LaunchFailed)` when the executable cannot be
 /// launched — a missing command is reported here rather than surfacing as a
 /// handle that never referred to a process.
 pub fn try_start_argv(command: string, args: Vec<string>) -> Result<Child, ProcessError> {

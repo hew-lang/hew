@@ -240,7 +240,7 @@ fn machine_mono_fails_closed_when_unresolved_type_var_survives() {
     let touch_fn = HirFn {
         id: ItemId(1),
         node: HirNodeId(4),
-        declaration: hew_types::DefId::new("touch"),
+        declaration: hew_types::DefId::for_test("touch"),
         name: "touch".to_string(),
         type_params: vec!["T".to_string()],
         params: vec![],
@@ -260,7 +260,7 @@ fn machine_mono_fails_closed_when_unresolved_type_var_survives() {
     let mono = MonomorphizedFn {
         key: MonoKey {
             origin: ItemId(1),
-            declaration: hew_types::DefId::new("touch"),
+            declaration: hew_types::DefId::for_test("touch"),
             linker_symbol: "touch".to_string(),
             type_args: vec![abstract_t.clone()],
         },
@@ -485,7 +485,7 @@ fn machine_mono_emits_cap_diagnostic_when_distinct_instantiations_exceed_cap() {
     let make_fn = HirFn {
         id: ItemId(1),
         node: HirNodeId(4),
-        declaration: hew_types::DefId::new("make"),
+        declaration: hew_types::DefId::for_test("make"),
         name: "make".to_string(),
         type_params: vec!["T".to_string()],
         params: vec![],
@@ -508,7 +508,7 @@ fn machine_mono_emits_cap_diagnostic_when_distinct_instantiations_exceed_cap() {
         .map(|(i, ty)| MonomorphizedFn {
             key: MonoKey {
                 origin: ItemId(1),
-                declaration: hew_types::DefId::new("make"),
+                declaration: hew_types::DefId::for_test("make"),
                 linker_symbol: "make".to_string(),
                 type_args: vec![ty.clone()],
             },

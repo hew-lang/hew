@@ -235,7 +235,7 @@ fn synth_fn_with_tail(name: &str, item_id: u32, tail: HirExpr) -> HirItem {
     HirItem::Function(HirFn {
         id: ItemId(item_id),
         node: HirNodeId(0),
-        declaration: hew_types::DefId::new(name),
+        declaration: hew_types::DefId::for_test(name),
         name: name.to_string(),
         type_params: Vec::new(),
         params: vec![unit_binding("_unused")],
@@ -301,7 +301,7 @@ fn item_callee_referencing_module_fn_does_not_emit_diagnostic() {
     let target = HirItem::Function(HirFn {
         id: ItemId(99),
         node: HirNodeId(0),
-        declaration: hew_types::DefId::new("real_callee"),
+        declaration: hew_types::DefId::for_test("real_callee"),
         name: "real_callee".to_string(),
         type_params: Vec::new(),
         params: Vec::new(),
@@ -389,7 +389,7 @@ fn binding_callee_does_not_emit_indirect_call_unsupported() {
     let main = HirItem::Function(HirFn {
         id: ItemId(0),
         node: HirNodeId(0),
-        declaration: hew_types::DefId::new("main"),
+        declaration: hew_types::DefId::for_test("main"),
         name: "main".to_string(),
         type_params: Vec::new(),
         params: Vec::new(),
@@ -456,7 +456,7 @@ fn walker_recurses_into_let_stmt_initializer() {
     let main = HirItem::Function(HirFn {
         id: ItemId(0),
         node: HirNodeId(0),
-        declaration: hew_types::DefId::new("main"),
+        declaration: hew_types::DefId::for_test("main"),
         name: "main".to_string(),
         type_params: Vec::new(),
         params: Vec::new(),

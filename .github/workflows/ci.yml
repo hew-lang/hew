@@ -89,6 +89,10 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   changes:
     name: Detect changes
+    # Every job that runs anything needs this one, so the trunk-health gate
+    # hangs here rather than on a hand-kept list of jobs: a job added later
+    # inherits it by construction.
+    needs: main-health
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -203,7 +207,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   docs-and-scripts:
     name: Docs & scripts gates
-    needs: [changes, main-health]
+    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -407,6 +411,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   license-check:
     name: License policy (cargo deny + THIRD-PARTY-LICENSES freshness)
+    needs: main-health
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -675,7 +680,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test:
     name: Linux gates
-    needs: [changes, main-health]
+    needs: changes
     runs-on: ubuntu-24.04
     # A cancelled cold-runner job completed about 105 min of work, then spent
     # 20 min in its final O2 differential step. That step measures about 33

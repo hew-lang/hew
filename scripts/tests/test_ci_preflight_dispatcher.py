@@ -1397,11 +1397,36 @@ def test_a_push_to_main_stops_at_the_first_failing_gate() -> None:
     assert workflow.count("args+=(--fail-fast)") == 2, workflow
 
 
-def test_branch_gates_wait_for_a_green_main() -> None:
+def test_every_job_waits_for_a_green_main() -> None:
+    """A red main must not reach any job, including ones added later.
+
+    On 2026-08-20 eleven branch runs reported one defect on main. The gate
+    hangs off `changes`, which every job that runs anything already needs, so
+    the fan-out is structural rather than a list somebody has to remember.
+    """
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-    assert "  main-health:" in workflow, workflow
-    assert "needs: [changes, main-health]" in workflow, workflow
     assert "main is red at ${head_sha}; fix main first" in workflow, workflow
+
+    # The reachability gate's stdlib-only workflow parser: no Python gate in
+    # scripts/ may need a pip step to run on a fresh checkout.
+    spec = importlib.util.spec_from_file_location(
+        "check_gate_reachability", ROOT / "scripts" / "check-gate-reachability.py"
+    )
+    assert spec and spec.loader
+    reachability = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = reachability
+    spec.loader.exec_module(reachability)
+    document = reachability.parse_yaml(workflow, "ci.yml")
+    jobs = document["jobs"]
+    assert "main-health" in jobs, sorted(jobs)
+
+    def waits(name: str) -> bool:
+        needs = jobs[name].get("needs") or []
+        needs = [needs] if isinstance(needs, str) else needs
+        return "main-health" in needs or any(waits(dep) for dep in needs)
+
+    ungated = sorted(name for name in jobs if name != "main-health" and not waits(name))
+    assert not ungated, ungated
 
 
 def test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts() -> None:
@@ -1535,7 +1560,7 @@ _TESTS = [
     test_selected_commands_are_unique,
     test_selector_exports_fail_closed_compile_requirement,
     test_a_push_to_main_stops_at_the_first_failing_gate,
-    test_branch_gates_wait_for_a_green_main,
+    test_every_job_waits_for_a_green_main,
 ]
 
 if __name__ == "__main__":

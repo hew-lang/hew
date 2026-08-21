@@ -198,6 +198,68 @@ fn main() {\n\
 const SCOPE_MOVE_CLOSURE_OWNED_CAPTURE: &str =
     include_str!("../../tests/vertical-slice/accept/scope_move_closure_owned_capture.hew");
 
+/// A closure inside a `gen` body captures a binding of the ENCLOSING frame.
+/// That value has no local slot in the generator body, so it is read out of the
+/// generator's own environment — which still owns it. The closure is then
+/// YIELDED OUT and called after the `for` loop has destroyed the generator.
+///
+/// This is the shape that decides what a slot-less capture may take. Claiming
+/// the enclosing environment's owner (`own_moved`) mints a second owner of one
+/// value; merely aliasing it (`borrow`) leaves the closure pointing into a
+/// destroyed generator env. Neither survives this program: before the
+/// consumable-source gate it aborts in `hew-cabi`'s `free_cstring` with
+/// "C-string header sentinel missing (corrupted header or double-free)".
+///
+/// Taking an independent SHARE does survive it: the generator env releases its
+/// owner at destruction, the closure env holds its own retained share, and
+/// `after=11` prints from live memory.
+const GEN_TRANSITIVE_CAPTURE_OUTLIVES_GENERATOR: &str = r#"record Holder { label: string }
+
+fn make() -> Generator<fn() -> i64, ()> {
+    let h = Holder { label: "first" + " value" };
+    gen {
+        yield move || h.label.len();
+    }
+}
+
+fn main() -> i64 {
+    var kept: fn() -> i64 = || 0;
+    for f in make() {
+        kept = f;
+    }
+    println(f"after={kept()}");
+    0
+}
+"#;
+
+/// The reassignment twin. `h` is overwritten before the generator captures it,
+/// so the value the closure transitively reads is the SECOND one. A capture
+/// decision that answered from the binding's first value — or that claimed the
+/// generator env's owner — releases the wrong allocation or releases one
+/// allocation twice; the poisoned allocator turns either into an abort before
+/// the checksum prints.
+const GEN_TRANSITIVE_CAPTURE_AFTER_REASSIGN: &str = r#"record Holder { label: string }
+
+fn run(f: fn() -> i64) -> i64 { f() }
+
+fn make() -> Generator<i64, ()> {
+    var h = Holder { label: "first" + " value" };
+    h = Holder { label: "second" + " longer value" };
+    gen {
+        yield run(move || h.label.len());
+    }
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for value in make() {
+        total = total + value;
+    }
+    println(f"total={total}");
+    0
+}
+"#;
+
 // ── leak measurement plumbing (same shape as vec_local_drop_leak_oracle) ────
 
 /// Compile `source` to a native binary via `hew compile --emit-dir` and return
@@ -424,4 +486,77 @@ fn scope_move_closure_owned_capture_has_zero_leaks_and_no_double_free() {
     assert_eq!(count, 0, "expected 0 leaks, got {count}");
     assert_eq!(bytes, 0, "expected 0 leaked bytes, got {bytes}");
     eprintln!("scope moved-capture ownership: 0 leaks, 0 double-frees — PASS");
+}
+
+/// A transitive capture that OUTLIVES the environment it was read from must
+/// still address live memory. See [`GEN_TRANSITIVE_CAPTURE_OUTLIVES_GENERATOR`]
+/// for why this shape is the discriminator.
+///
+/// Leaks are deliberately not asserted here. The escaping closure pair is bound
+/// by a `for` binder and a `var`, neither of which
+/// `derive_closure_pair_drop_allowed` clears as a sole owner, so its env box is
+/// never freed — the documented fail-closed conservatism in
+/// `build_lifo_drops` ("A binding the prover did not clear leaks; it never
+/// double-frees"), reproducible on a compiler built from `main` with a closure
+/// that never touches a generator. Widening that prover is its own lane; this
+/// oracle pins the memory-safety half, which is the half this seam owns.
+#[test]
+fn generator_transitive_capture_outliving_its_generator_is_not_a_use_after_free() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("gen-transitive-capture-outlives-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        GEN_TRANSITIVE_CAPTURE_OUTLIVES_GENERATOR,
+        dir.path(),
+        "gen_transitive_capture_outlives",
+    );
+
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "a closure carrying a transitive capture must address live memory after \
+         its generator is destroyed — an abort here is the double-free or the \
+         dangling read the capture-ownership verdict decides between;\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "after=11\n",
+        "the retained share must still hold the captured string's contents;\n{}",
+        describe_output(&output)
+    );
+}
+
+/// The reassignment twin of the oracle above: no double free when the
+/// transitively captured binding was overwritten before the capture.
+#[test]
+fn generator_transitive_capture_after_reassignment_does_not_double_free() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("gen-transitive-capture-reassign-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        GEN_TRANSITIVE_CAPTURE_AFTER_REASSIGN,
+        dir.path(),
+        "gen_transitive_capture_reassign",
+    );
+
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "a reassigned binding captured through the generator env must not be \
+         released twice;\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "total=19\n",
+        "the capture must read the SECOND value's length, from live memory;\n{}",
+        describe_output(&output)
+    );
 }

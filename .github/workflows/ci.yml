@@ -351,9 +351,7 @@ jobs:
         run: make sandbox-parity-coverage-check
 
       - name: Assert complete lint authority coverage
-        run: |
-          python3 scripts/tests/test_check_lint_ci_coverage.py
-          python3 scripts/check-lint-ci-coverage.py
+        run: make lint-ci-coverage-check
 
   # ─────────────────────────────────────────────────────────────────────────
   # License gate — enforce the deny.toml allow-list so no copyleft or unknown

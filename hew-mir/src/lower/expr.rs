@@ -205,6 +205,61 @@ enum VecIterStaticNextLowering {
 }
 
 impl Builder {
+    /// Whether a functional-update CARRY of a non-overridden field of type
+    /// `ty` soundly transfers that field's ownership out of the consumed base.
+    ///
+    /// The carry is a shallow `RecordFieldLoad` into the result's
+    /// `RecordInit`. It is sound only when the field's whole drop obligation
+    /// travels with that one shallow read:
+    ///   * `BitCopy` / `View` — no heap ownership; nothing to transfer.
+    ///   * a single-pointer COW / handle leaf (string, bytes, `Vec`,
+    ///     `HashMap`, `HashSet`, `Generator`) — `project_field_inline_drop_-
+    ///     symbol` is `Wired`, so the one allocation is released exactly once.
+    ///   * an owned user record — `is_owned_aggregate_record_ty`; the nested
+    ///     record's heap leaves ride its `RecordInPlace` spine.
+    ///   * a heap-owning tuple **each of whose elements is itself carry-sound
+    ///     by this same rule**. The tuple is not a transfer boundary in its
+    ///     own right: a tuple element whose bare form has no sound carry has
+    ///     no sound carry inside a tuple either. Admitting one — an
+    ///     `Option<owned>` element, say — excludes the consumed base from its
+    ///     `RecordInPlace` drop without the result taking over the element's
+    ///     obligation, and the base's payload is never released (a leak, pinned
+    ///     by `reject_carry_tuple_of_option_field`).
+    ///
+    /// Every other owned field type fails closed: a closure / `fn` /
+    /// trait-object capture env, an `@resource` / cancellation-token / task
+    /// handle, a bare `Option<owned>` or enum-with-heap, and any
+    /// `Unknown`-class owned Named type. Lifting a specific type's carry is
+    /// tracked in hew-lang/hew#2207.
+    fn carry_transfers_field_ownership(&self, ty: &ResolvedTy) -> bool {
+        if matches!(
+            ValueClass::of_ty(ty, &self.type_classes),
+            ValueClass::BitCopy | ValueClass::View
+        ) {
+            return true;
+        }
+        if matches!(
+            self.project_field_inline_drop_symbol(ty),
+            ReleaseSymbolVerdict::Wired(_)
+        ) {
+            return true;
+        }
+        if self.is_owned_aggregate_record_ty(ty) {
+            return true;
+        }
+        let ResolvedTy::Tuple(elems) = ty else {
+            return false;
+        };
+        crate::lower::drop_plan::ty_is_heap_owning_tuple(
+            ty,
+            &self.record_field_orders,
+            &self.enum_layouts,
+            &self.lifecycle_registry,
+        ) && elems
+            .iter()
+            .all(|elem| self.carry_transfers_field_ownership(elem))
+    }
+
     /// Lower the exact builtin `Iterator::next` dispatch for `VecIter<T>`.
     ///
     /// HIR expands direct `cursor.next()` syntax before generic functions are
@@ -4428,67 +4483,22 @@ impl Builder {
                 // Fail-closed CARRY pre-flight (complement of the override
                 // pre-flight above). A NON-overridden owned field is CARRIED out
                 // of the consumed base into the new record by a shallow
-                // `RecordFieldLoad`, with the base excluded from its composite
-                // `RecordInPlace` drop (`derive_owned_record_drop_allowed`). That
-                // shallow move soundly transfers ownership ONLY for field types
-                // whose whole value is one pointer / handle (or a record of such):
-                //   * `BitCopy` / `View` — no heap ownership; nothing to transfer
-                //     or to double-free.
-                //   * single-pointer COW / handle leaves (string, bytes, `Vec`,
-                //     `HashMap`, `HashSet`, `Generator`) — `project_field_inline_-
-                //     drop_symbol` is `Some`; the binder-escape exclusion hands the
-                //     one allocation to the result, freed exactly once.
-                //   * owned user records — `is_owned_aggregate_record_ty`; the
-                //     nested record's heap leaves transfer with the base excluded
-                //     (the binder-detection fix that also recognises nested records
-                //     as heap-owning binders).
-                //   * heap-owning tuples — `ty_is_heap_owning_tuple`; the tuple-
-                //     typed `RecordFieldLoad` destination is a heap-owning field
-                //     binder in `derive_owned_record_drop_allowed`. Its escape into
-                //     the result's `RecordInit` triggers that prover's escape rule,
-                //     which excludes the consumed base root from `RecordInPlace` and
-                //     transfers the tuple's complete nested drop obligation to the
-                //     result. This also covers tuple elements that are `Option` or
-                //     user-enum payloads; the tuple shape is the transfer boundary,
-                //     and the owning-record escape rule is the proof that keeps the
-                //     carry sound.
-                // Every OTHER owned field type has NO sound shallow carry and
-                // would be released twice — once by the base's in-place drop and
-                // once by the result's drop (a double-free / use-after-free at
-                // teardown):
-                //   * a closure / `fn` / trait-object value (`PersistentShare`) is
-                //     a heap-boxed capture env with no retain/release carry spine;
-                //   * an `@resource` / `CancellationToken` / `Task` handle is a
-                //     single-release affine/linear value the inline-drop authority
-                //     does not cover here;
-                //   * an owned composite the leaf authority does not cover
-                //     (bare `Option<owned>`, bare enum-with-heap, a non-heap tuple
-                //     conservatively classified outside `BitCopy`, or any
-                //     `Unknown`-class owned Named type).
-                // Fail closed with an NYI diagnostic mirroring the override
-                // pre-flight rather than emit the double-free. Lifting a specific
-                // type's carry is tracked in hew-lang/hew#2207 (closure/`fn` env
-                // carry needs the env retain/release spine that clone also lacks).
+                // `RecordFieldLoad`. `carry_transfers_field_ownership` is the
+                // single authority for which field types that shallow read can
+                // carry; it applies ONE rule at every nesting depth, so a tuple
+                // admits exactly the element types the same field would admit
+                // bare. Fail closed with an NYI diagnostic mirroring the
+                // override pre-flight rather than emit a double-free or a silent
+                // leak. Lifting a specific type's carry is tracked in
+                // hew-lang/hew#2207 (closure/`fn` env carry needs the env
+                // retain/release spine that clone also lacks).
                 if base_place.is_some() {
                     for (fname, fty) in &field_order {
                         if explicit.contains_key(fname.as_str()) {
                             continue; // Overridden — handled by the override path.
                         }
                         let subst_fty = self.subst_ty(fty);
-                        let vc = ValueClass::of_ty(&subst_fty, &self.type_classes);
-                        let sound_carry = matches!(vc, ValueClass::BitCopy | ValueClass::View)
-                            || matches!(
-                                self.project_field_inline_drop_symbol(&subst_fty),
-                                ReleaseSymbolVerdict::Wired(_)
-                            )
-                            || self.is_owned_aggregate_record_ty(&subst_fty)
-                            || crate::lower::drop_plan::ty_is_heap_owning_tuple(
-                                &subst_fty,
-                                &self.record_field_orders,
-                                &self.enum_layouts,
-                                &self.lifecycle_registry,
-                            );
-                        if sound_carry {
+                        if self.carry_transfers_field_ownership(&subst_fty) {
                             continue;
                         }
                         self.diagnostics.push(MirDiagnostic {
@@ -4501,14 +4511,18 @@ impl Builder {
                                 "field `{fname}` of `{name}` has owned type `{ty}` whose \
                                  ownership cannot be transferred by the functional-update's \
                                  shallow field carry: a closure / `fn` / trait-object capture \
-                                 env, an `@resource` / cancellation-token / task handle, or an \
-                                 unsupported owned composite (including bare `Option` / enum \
-                                 fields and conservatively rejected non-heap tuples). \
-                                 The `..base` consumes the base, so the base's scope-exit drop \
-                                 and the new record's drop would both release this carried field \
-                                 — a double-free. Set `{fname}` explicitly to a fresh value in \
-                                 the update instead of carrying it through `..base`, or clone \
-                                 the base into a fresh owned value first.",
+                                 env, an `@resource` / cancellation-token / task handle, an \
+                                 `Option` or enum value, or a tuple containing one of those. \
+                                 A tuple is carried only when EVERY element could be carried \
+                                 as a field in its own right, so wrapping an unsupported type \
+                                 in a tuple does not admit it. A non-heap tuple such as \
+                                 `(i64, i64)` is also still rejected — conservatively, not \
+                                 because carrying it is unsound. \
+                                 The `..base` consumes the base, so carrying this field would \
+                                 either release it twice (a double-free) or leave nothing \
+                                 owning it (a leak). Set `{fname}` explicitly to a fresh value \
+                                 in the update instead of carrying it through `..base`, or \
+                                 clone the base into a fresh owned value first.",
                                 ty = subst_fty.user_facing(),
                             ),
                         });

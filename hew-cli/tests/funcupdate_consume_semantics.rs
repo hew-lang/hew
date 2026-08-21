@@ -1527,12 +1527,17 @@ fn main() {
 /// `RecordInPlace`. The result therefore receives the tuple's complete nested
 /// drop obligation without the base releasing it a second time.
 ///
-/// Verified on Linux under glibc's `MALLOC_CHECK_=3 MALLOC_PERTURB_=165` with a
-/// flat RSS profile across a 4x frame sweep, matching the known-sound record
-/// carry as a positive control. Guard Malloc + `MallocScribble` remains the
-/// authoritative Darwin oracle and was verified independently in review. Bare
-/// `Option` / enum fields, closures, and handles remain fail-closed; an `Option`
-/// or enum nested inside the admitted tuple transfer boundary is covered below.
+/// A tuple is admitted only when EVERY element is itself carry-sound by the
+/// same rule that governs a bare field (`carry_transfers_field_ownership`), so
+/// the tuple is not a transfer boundary of its own: `Option` / enum elements,
+/// closures, and handles stay fail-closed inside a tuple exactly as they do
+/// bare (`reject_carry_tuple_of_option_field`,
+/// `reject_carry_tuple_of_enum_field`).
+///
+/// This test pins CHECK-and-RUN correctness only. The per-frame allocation
+/// evidence is the authoritative macOS `leaks(1)` oracle in
+/// `funcupdate_tuple_carry_*` (`funcupdate_owned_field_drop_leak_oracle.rs`),
+/// which measures both drop orders.
 #[test]
 fn accept_carry_tuple_of_owned_field() {
     let source = r#"
@@ -1561,11 +1566,9 @@ fn main() {
 }
 
 /// Widened shapes for the same lift: nested tuples, a tuple carrying a `Vec`,
-/// an owned record, an `Option` payload, or a user-enum payload. Each must accept
-/// AND run correctly — checking alone would not discriminate a sound carry from
-/// one that double-frees at teardown. The latter two fixtures pin the full
-/// admitted scope: bare `Option` / enum fields remain rejected, but their drop
-/// obligations transfer soundly when the tuple is the carried field boundary.
+/// and a tuple carrying an owned record. Each must accept AND run correctly —
+/// checking alone would not discriminate a sound carry from one that
+/// double-frees at teardown, so every case reads a carried leaf back out.
 #[test]
 fn accept_carry_nested_and_collection_bearing_tuples() {
     let cases: &[(&str, &str)] = &[
@@ -1590,7 +1593,7 @@ fn mk() -> T {
     let b = T { pair: ((string.repeat("k", 32), 1), (string.repeat("m", 32), 2)), tag: string.repeat("x", 32) };
     T { tag: string.repeat("y", 32), ..b }
 }
-fn main() { let r = mk(); println(r.tag); }
+fn main() { let r = mk(); println(r.tag); let first = r.pair.0; println(first.0); }
 "#,
         ),
         (
@@ -1604,7 +1607,15 @@ fn mk() -> T {
     let b = T { pair: (v, 7), tag: string.repeat("x", 32) };
     T { tag: string.repeat("y", 32), ..b }
 }
-fn main() { let r = mk(); println(r.tag); println(r.pair.0.len()); }
+fn main() {
+    let r = mk();
+    println(r.tag);
+    let items = r.pair.0;
+    match items.get(0) {
+        .Some(first) => println(first),
+        .None => println("empty"),
+    }
+}
 "#,
         ),
         (
@@ -1617,34 +1628,7 @@ fn mk() -> T {
     let b = T { pair: (Inner { label: string.repeat("k", 32), n: 1 }, 7), tag: string.repeat("x", 32) };
     T { tag: string.repeat("y", 32), ..b }
 }
-fn main() { let r = mk(); println(r.tag); }
-"#,
-        ),
-        (
-            "tuple carrying an Option payload",
-            r#"
-import std.string;
-record Inner { label: string, n: i64 }
-record T { pair: (Option<Inner>, i64), tag: string }
-fn mk() -> T {
-    let b = T { pair: (Some(Inner { label: string.repeat("k", 32), n: 1 }), 7), tag: string.repeat("x", 32) };
-    T { tag: string.repeat("y", 32), ..b }
-}
-fn main() { let r = mk(); println(r.tag); }
-"#,
-        ),
-        (
-            "tuple carrying a user-enum payload",
-            r#"
-import std.string;
-record Inner { label: string, n: i64 }
-enum Payload { Value(Inner); Empty; }
-record T { pair: (Payload, i64), tag: string }
-fn mk() -> T {
-    let b = T { pair: (Value(Inner { label: string.repeat("k", 32), n: 1 }), 7), tag: string.repeat("x", 32) };
-    T { tag: string.repeat("y", 32), ..b }
-}
-fn main() { let r = mk(); println(r.tag); }
+fn main() { let r = mk(); println(r.tag); println(r.pair.0.label); }
 "#,
         ),
     ];
@@ -1658,7 +1642,86 @@ fn main() { let r = mk(); println(r.tag); }
             out.contains(&"y".repeat(32)),
             "{name}: carry must override tag; got:\n{out}"
         );
+        assert!(
+            out.contains(&"k".repeat(32)),
+            "{name}: carry must preserve the carried tuple's owned leaf; got:\n{out}"
+        );
     }
+}
+
+/// A tuple whose element is an `Option<owned>` must FAIL `hew check`, exactly
+/// as the bare `Option<owned>` field does (`reject_carry_option_of_owned_field`).
+///
+/// The tuple is not a transfer boundary that rescues an element with no sound
+/// carry. Admitting this shape excluded the consumed base from its
+/// `RecordInPlace` drop WITHOUT the result taking over the optional's payload:
+/// `leaks --atExit` counted exactly one leaked payload allocation per frame,
+/// both when the result escaped its constructing frame and when base and result
+/// died in the same frame, while the identical record shape built WITHOUT a
+/// functional update leaked nothing. `Option<string>` leaks the same way, so it
+/// is the optional's shape that has no carry, not the payload's.
+#[test]
+fn reject_carry_tuple_of_option_field() {
+    let source = r#"
+import std.string;
+record Inner { label: string, n: i64 }
+record T { pair: (Option<Inner>, i64), tag: string }
+fn mk() -> T {
+    let b = T { pair: (Some(Inner { label: string.repeat("k", 32), n: 1 }), 7), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() {
+    let r = mk();
+    println(r.tag);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "Option-in-tuple carry must fail check — admitting it leaks the optional's payload \
+         once per frame; got success:\n{out}"
+    );
+    assert!(
+        out.contains("carry of owned non-record field") || out.contains("E_NOT_YET_IMPLEMENTED"),
+        "expected the fail-closed carry diagnostic; got:\n{out}"
+    );
+}
+
+/// A tuple whose element is a heap-payload user enum must FAIL `hew check`,
+/// matching the bare enum field.
+///
+/// This shape measures clean today, unlike the `Option` element above. It stays
+/// rejected because the carry rule is ONE rule at every nesting depth: a tuple
+/// admits exactly the element types the same field admits bare. Lifting the enum
+/// carry lifts both forms together, with one soundness argument and one leak
+/// oracle, rather than leaving a bare-rejects/tuple-admits split whose only
+/// justification is that nobody has measured the bare form yet.
+#[test]
+fn reject_carry_tuple_of_enum_field() {
+    let source = r#"
+import std.string;
+record Inner { label: string, n: i64 }
+enum Payload { Value(Inner); Empty; }
+record T { pair: (Payload, i64), tag: string }
+fn mk() -> T {
+    let b = T { pair: (.Value(Inner { label: string.repeat("k", 32), n: 1 }), 7), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() {
+    let r = mk();
+    println(r.tag);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "enum-in-tuple carry must fail check while the bare enum field is rejected; \
+         got success:\n{out}"
+    );
+    assert!(
+        out.contains("carry of owned non-record field") || out.contains("E_NOT_YET_IMPLEMENTED"),
+        "expected the fail-closed carry diagnostic; got:\n{out}"
+    );
 }
 
 /// Discrimination control for the tuple lift's LOWER edge: a tuple with NO heap

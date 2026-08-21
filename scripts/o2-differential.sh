@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# o2-differential.sh — the -O0-vs-O2 differential-exec parity gate (RC9).
+# o2-differential.sh — the -O0-vs-O2 differential-exec parity gate.
 #
 # The no-miscompile oracle for the LLVM middle-end pipeline: every compiled
 # `.hew` program must behave IDENTICALLY at -O0 and -O2. The optimizer may

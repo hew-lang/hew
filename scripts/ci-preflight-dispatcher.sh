@@ -1,4 +1,26 @@
 #!/usr/bin/env bash
+# ci-preflight-dispatcher.sh — classify the current diff and run the narrowest
+# sufficient set of checks for it.
+#
+# Every `make preflight` goes through here, so this file decides what a branch
+# is gated on before it is pushed. It reads the changed paths, picks one LANE
+# (the primary classification: docs, scripts-config, parser, types,
+# compiler-pipeline, runtime-net, cli, wasm, hew-tests, or the fail-closed
+# fallback), and appends side-channel gates for changes whose blast radius the
+# lane does not cover -- a structural ratchet outside the cargo dependency
+# graph, an ll-oracle golden the lane never diffs.
+#
+# The default when a path matches nothing is the fallback lane: the widest set,
+# not the narrowest. A path nobody classified is a path nobody reasoned about.
+#
+# Every selected command runs under a wall-clock budget scaled to the host's
+# parallelism, so a hang fails the preflight instead of holding it open.
+#
+# Usage:
+#   scripts/ci-preflight-dispatcher.sh [--dry-run] [--fail-fast] [--base <ref>]
+#   scripts/ci-preflight-dispatcher.sh --help
+#
+# Its own routing and timeout counterfactuals are `make test-build-harness`.
 
 set -euo pipefail
 

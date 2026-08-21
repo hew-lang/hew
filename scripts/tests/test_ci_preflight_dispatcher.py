@@ -1,7 +1,9 @@
+import ast
 import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -689,6 +691,74 @@ _RUNS_A_SUBPROCESS = re.compile(
 _PYTHON_CARGO = re.compile(r"\bcargo\b[\s\"',\]]*\b(?:build|run|test|nextest|clippy)\b")
 
 
+def _dotted_name(node: ast.AST) -> str | None:
+    """`subprocess.run` for the call `subprocess.run(...)`, else None."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _literal_argv(call: ast.Call) -> list[str] | None:
+    """The argv a subprocess call hands out, as far as it is written literally.
+
+    A non-literal element (an f-string, a variable, a path built at runtime)
+    becomes `...`: the command's shape is what the walk reads, and losing one
+    argument must not lose the `cargo build` in front of it.
+    """
+    if not call.args:
+        return None
+    first = call.args[0]
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        try:
+            return shlex.split(first.value)
+        except ValueError:
+            return first.value.split()
+    if not isinstance(first, (ast.List, ast.Tuple)):
+        return None
+    argv: list[str] = []
+    for element in first.elts:
+        if isinstance(element, ast.Constant) and isinstance(element.value, str):
+            argv.append(element.value)
+        elif isinstance(element, ast.Constant):
+            argv.append(str(element.value))
+        else:
+            argv.append("...")
+    return argv
+
+
+def _python_commands(text: str) -> list[str]:
+    """Every subprocess argv a Python script writes out, as a command line.
+
+    Reading a Python gate line by line only ever sees a compile that fits on
+    one line. An argv past a few arguments is written over several — the
+    `subprocess.run([` opener on one line and `"cargo",` on the next — so
+    neither line carries both halves the line rule asks for and the compile is
+    invisible. Parsing the source recovers the argv whatever its layout, and
+    the recovered argv is a command line like any other: the shell rules for
+    compiles, scripts, and `make` targets then apply to it unchanged.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    commands: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _dotted_name(node.func)
+        if name is None or not _RUNS_A_SUBPROCESS.search(name):
+            continue
+        argv = _literal_argv(node)
+        if argv:
+            commands.append(shlex.join(argv))
+    return commands
+
+
 def _is_message(line: str) -> bool:
     """Text a script prints is not a command a script runs.
 
@@ -715,14 +785,41 @@ def compiling_evidence(
     until it runs out of new nodes.
 
     For a shell script a bare cargo line is an invocation. For a Python script
-    it is usually data — a fixture, an error message, an assertion — so only a
-    line that also hands work to a subprocess counts.
+    it is usually data — a fixture, an error message, an assertion — so the
+    source is parsed and the argv it hands to a subprocess is what counts,
+    however many lines that argv is spread over.
     """
     seen_scripts: set[str] = set()
     seen_targets: set[str] = set()
     queue: list[tuple[str, str, bool]] = [("plan", plan, False)]
+
+    def follow(line: str) -> None:
+        for script in _SCRIPT_REF.findall(line):
+            if script in seen_scripts:
+                continue
+            seen_scripts.add(script)
+            body = read_script(script)
+            if body is not None:
+                queue.append((script, body, script.endswith(".py")))
+        for target in _MAKE_CALL.findall(line):
+            if target in seen_targets:
+                continue
+            seen_targets.add(target)
+            body = read_plan(target)
+            if body is not None:
+                queue.append((f"make {target}", body, False))
+
     while queue:
         origin, text, python = queue.pop(0)
+        if python:
+            # An argv recovered from the source is a command line, whatever its
+            # layout, so it is read with the shell rules. The line rule below
+            # cannot see a multi-line argv at all: `subprocess.run([` and
+            # `"cargo",` are different lines and neither one satisfies it.
+            for command in _python_commands(text):
+                if _COMPILING_COMMAND.search(command):
+                    return f"{origin}: {command}"
+                follow(command)
         for raw in text.splitlines():
             line = raw.strip()
             if _is_message(line):
@@ -738,20 +835,7 @@ def compiling_evidence(
                     return f"{origin}: {line}"
             elif _COMPILING_COMMAND.search(line):
                 return f"{origin}: {line}"
-            for script in _SCRIPT_REF.findall(line):
-                if script in seen_scripts:
-                    continue
-                seen_scripts.add(script)
-                body = read_script(script)
-                if body is not None:
-                    queue.append((script, body, script.endswith(".py")))
-            for target in _MAKE_CALL.findall(line):
-                if target in seen_targets:
-                    continue
-                seen_targets.add(target)
-                body = read_plan(target)
-                if body is not None:
-                    queue.append((f"make {target}", body, False))
+            follow(line)
     return None
 
 
@@ -882,6 +966,82 @@ def test_the_compile_walk_reads_python_data_as_data() -> None:
         compiling_evidence("\tscripts/runner.py\n", lambda target: None, scripts.get)
         is not None
     )
+
+
+def test_the_compile_walk_sees_a_multiline_python_subprocess() -> None:
+    """An argv past a few arguments is written over several lines.
+
+    `subprocess.run([` and `"cargo",` land on different lines, so a rule that
+    asks one line for both the subprocess call and the cargo command finds
+    neither and the gate reads as compiling nothing.
+    """
+    scripts = {
+        "scripts/runner.py": (
+            "subprocess.run(\n"
+            '    [\n        "cargo",\n        "build",\n'
+            '        "-p",\n        "hew-lib",\n    ],\n'
+            "    check=True,\n)\n"
+        )
+    }
+    evidence = compiling_evidence(
+        "\tscripts/runner.py\n", lambda target: None, scripts.get
+    )
+    assert evidence == "scripts/runner.py: cargo build -p hew-lib", evidence
+
+
+def test_the_compile_walk_sees_a_python_compile_behind_a_runtime_argument() -> None:
+    """One argument built at runtime must not hide the compile in front of it."""
+    scripts = {
+        "scripts/runner.py": (
+            "subprocess.check_call(\n"
+            '    ["cargo", "run", "-p", "hew-cli", "--example", name]\n'
+            ")\n"
+        )
+    }
+    evidence = compiling_evidence(
+        "\tscripts/runner.py\n", lambda target: None, scripts.get
+    )
+    assert evidence == "scripts/runner.py: cargo run -p hew-cli --example ...", evidence
+
+
+def test_the_compile_walk_follows_a_multiline_python_make_call() -> None:
+    scripts = {
+        "scripts/runner.py": (
+            'subprocess.run(\n    [\n        "make",\n        "inner-gate",\n    ]\n)\n'
+        )
+    }
+    plans = {"inner-gate": "\tcargo build -p hew-lib\n"}
+    evidence = compiling_evidence("\tscripts/runner.py\n", plans.get, scripts.get)
+    assert evidence == "make inner-gate: cargo build -p hew-lib", evidence
+
+
+def test_the_compile_walk_reads_a_multiline_python_list_as_data() -> None:
+    """Parsing must not turn every cargo string in a Python file into a compile."""
+    scripts = {
+        "scripts/fixture.py": (
+            "RECIPES = [\n"
+            '    "cargo",\n    "clippy",\n    "--workspace",\n'
+            "]\n"
+            'MESSAGE = "run cargo build -p hew-cli first"\n'
+        )
+    }
+    assert (
+        compiling_evidence("\tscripts/fixture.py\n", lambda target: None, scripts.get)
+        is None
+    )
+
+
+def test_the_compile_walk_still_reads_an_unparsable_python_script() -> None:
+    """A file the parser rejects falls back to the line rule, not to silence."""
+    scripts = {
+        "scripts/broken.py": (
+            'def gate(:\n    subprocess.run(["cargo", "build", "-p", "hew-lib"])\n'
+        )
+    }
+    evidence = compiling_evidence(
+        "\tscripts/broken.py\n", lambda target: None, scripts.get
+    )
+    assert evidence is not None, evidence
 
 
 def test_no_warmup_names_a_non_ci_nextest_profile() -> None:
@@ -2382,6 +2542,11 @@ _TESTS = [
     test_the_compile_walk_sees_a_compile_two_levels_deep,
     test_the_compile_walk_does_not_count_printed_text,
     test_the_compile_walk_reads_python_data_as_data,
+    test_the_compile_walk_sees_a_multiline_python_subprocess,
+    test_the_compile_walk_sees_a_python_compile_behind_a_runtime_argument,
+    test_the_compile_walk_follows_a_multiline_python_make_call,
+    test_the_compile_walk_reads_a_multiline_python_list_as_data,
+    test_the_compile_walk_still_reads_an_unparsable_python_script,
     test_a_nextest_older_than_the_pin_stops_the_preflight,
     test_the_preflight_reads_its_pin_from_the_tool_pin_contract,
     test_no_warmup_names_a_non_ci_nextest_profile,

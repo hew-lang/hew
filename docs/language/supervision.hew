@@ -1,0 +1,44 @@
+//! # Supervision
+//!
+//! A supervisor owns named children and applies a restart policy when a child
+//! traps. `one_for_one` restarts only the failed child; `one_for_all` restarts
+//! every child in the supervisor. The intensity window limits repeated
+//! failures before the supervisor itself escalates.
+//!
+//! ```hew
+//! actor Worker {
+//!     var value: i64 = 0;
+//!     receive fn add(n: i64) { value = value + n; }
+//!     receive fn read() -> i64 { value }
+//!     receive fn fail() { panic("worker failed"); }
+//! }
+//!
+//! supervisor App {
+//!     strategy: one_for_one;
+//!     intensity: 3 within 60s;
+//!     child worker: Worker;
+//! }
+//!
+//! fn main() {
+//!     let app = spawn App;
+//!     let worker = app.worker;
+//!     worker.add(1);
+//!     worker.fail();
+//!     sleep(50ms);
+//!     let replacement = app.worker;
+//!     match await replacement.read() {
+//!         .Ok(value) => println(value),
+//!         .Err(_) => println("read failed"),
+//!     }
+//! }
+//! ```
+//!
+//! A child lookup after restart resolves the current child through the
+//! supervisor (`app.worker`). A handle captured before a same-key restart is
+//! stale and must not be reused. Restarted actors are reconstructed from their
+//! declaration and initialization inputs; mutable runtime state is not
+//! preserved unless it is stored elsewhere.
+//!
+//! `await_restart supervisor.child` is the blocking restart barrier for a
+//! contextless caller such as `main`; it returns a fresh typed child handle.
+//! Inside an actor, use the normal suspension-aware `await` forms.

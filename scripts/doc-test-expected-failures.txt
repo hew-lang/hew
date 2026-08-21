@@ -10,6 +10,7 @@
 # Fence IDs encode the source file and 1-based fence number:
 #   guide-NNNN = docs/hew-language-guide.md fence N
 #   spec-NNNN  = docs/specs/HEW-SPEC-2026.md fence N
+#   lang-<module>-NNNN = docs/language/<module>.hew module doc fence N
 #
 # ─── Root-cause categories ──────────────────────────────────────────────────────
 #

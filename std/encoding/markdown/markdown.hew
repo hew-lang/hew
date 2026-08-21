@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::encoding::markdown;
+//! import std.encoding.markdown;
 //!
 //! fn main() {
 //!     let html = markdown.to_html("# Hello\n\nWorld");

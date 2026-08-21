@@ -6,10 +6,10 @@
 //! # Examples
 //!
 //! ```
-//! import std::encoding::hex;
+//! import std.encoding.hex;
 //!
 //! fn main() {
-//!     let data: bytes = bytes::new();
+//!     let data: bytes = bytes.new();
 //!     data.push(0xDE);
 //!     data.push(0xAD);
 //!     let s = hex.encode(data);

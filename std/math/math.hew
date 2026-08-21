@@ -12,7 +12,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::math;
+//! import std.math;
 //!
 //! fn main() {
 //!     println(math.abs(-5));         // 5

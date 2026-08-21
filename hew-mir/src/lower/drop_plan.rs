@@ -12,7 +12,8 @@ use super::{
     derive_owned_tuple_handle_projection_bindings, derive_returned_aggregate_member_bindings,
     derive_returned_member_transfer_blocks, derive_spawn_consumed_handle_bindings,
     derive_tuple_composite_drop_allowed, instr_source_places, outbound_record_layouts,
-    place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
+    place_is_interior_projection, place_refs_local,
+    propagate_seeded_whole_value_alias_roots_excluding_moves, propagate_whole_value_alias_roots,
     retained_string_terminator_drop_safe, short_name, string_call_borrows,
     terminator_source_places, user_record_layout_key, vec_iter_record_init_vec_source, BTreeMap,
     BasicBlock, BindingId, BlockKind, Builder, BuiltinType, CheckedMirFunction,
@@ -2355,7 +2356,7 @@ fn collect_payload_alias_map(blocks: &[BasicBlock]) -> HashMap<u32, u32> {
             }
         }
     }
-    let mut alias_to: HashMap<u32, u32> = HashMap::new();
+    let mut seeds = Vec::new();
     for block in blocks {
         for instr in &block.instructions {
             let (dest, src) = match instr {
@@ -2374,11 +2375,86 @@ fn collect_payload_alias_map(blocks: &[BasicBlock]) -> HashMap<u32, u32> {
             // still traces to the carrier's slot — the binder is then also
             // outside the balance (its ownership story is the carrier's).
             if !neutralized_slots.contains(&src) && binder != carrier {
-                alias_to.insert(binder, carrier);
+                seeds.push((binder, carrier));
             }
         }
     }
-    alias_to
+    // Retains and return publications mint or transfer an independently
+    // discharged owner rather than extending this storage-alias chain. Keep
+    // both boundaries out of the closure: folding a return publication back
+    // into its carrier attributes the caller transfer and the carrier drop to
+    // one obligation, producing a false double-release verdict.
+    let mut ownership_boundary_moves = collect_retained_move_sites(blocks);
+    let returned_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src,
+            }
+            | Instr::WitnessMove {
+                dest: Place::ReturnSlot,
+                src,
+                ..
+            } => whole_owner_local(*src),
+            _ => None,
+        })
+        .collect();
+    for block in blocks {
+        for (index, instr) in block.instructions.iter().enumerate() {
+            if matches!(instr, Instr::Move { dest, .. } | Instr::WitnessMove { dest, .. }
+                if whole_owner_local(*dest).is_some_and(|local| returned_locals.contains(&local)))
+            {
+                ownership_boundary_moves.insert((block.id, index));
+            }
+        }
+    }
+    propagate_seeded_whole_value_alias_roots_excluding_moves(
+        blocks,
+        seeds,
+        &ownership_boundary_moves,
+    )
+}
+
+#[cfg(test)]
+mod payload_alias_closure_tests {
+    use super::*;
+
+    #[test]
+    fn return_publication_stops_projection_alias_closure() {
+        let blocks = vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::Move {
+                    dest: Place::Local(8),
+                    src: Place::MachineVariant {
+                        local: 2,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Instr::Move {
+                    dest: Place::Local(1),
+                    src: Place::Local(8),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+
+        let aliases = collect_payload_alias_map(&blocks);
+        assert_eq!(aliases.get(&8), Some(&2));
+        assert_eq!(
+            aliases.get(&1),
+            None,
+            "the returned publication owns its caller transfer independently"
+        );
+    }
 }
 
 /// Re-derive the explicit whole-local retain/share protocol from primitive

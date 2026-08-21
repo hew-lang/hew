@@ -74,3 +74,16 @@ linker = "lld-link"
 # entry is safe on all platforms.
 [env]
 MACOSX_DEPLOYMENT_TARGET = { value = "13.0", force = false }
+
+# ── Registry network ──────────────────────────────────────────────────────────
+# Hosted runners see transient crates.io and index failures that are not build
+# failures: a resolved-but-unreachable CDN edge, a reset connection mid-fetch.
+# Cargo's default of three attempts turns those into red jobs. HTTP/2
+# multiplexing is off for the same reason -- multiplexed streams over one
+# connection fail as a group when that connection drops, and the failure mode
+# is a whole-job stall rather than one retried request.
+[net]
+retry = 10
+
+[http]
+multiplexing = false

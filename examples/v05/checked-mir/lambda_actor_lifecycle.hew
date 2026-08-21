@@ -6,18 +6,28 @@
 // elaboration at scope exit (`hew_lambda_actor_release` family).
 // `await handle.close()` is omitted: the explicit-close MIR producer
 // arm (`hew_duplex_close`) is not wired yet and refuses fail-closed.
+//
+// One mailbox owns stdout. Both lines are tells to `out`, so mailbox FIFO
+// order IS the printed order. Printing the ask reply from `main` instead
+// pinned one of two legal interleavings: a tell to a second actor carries
+// no happens-before edge to anything `main` does afterwards, so that
+// actor's `println` raced main's and CI observed the reverse order.
 fn main() {
-    let doubler = actor |x: i64| {
-        println(x * 2);
+    let out = actor |line: i64| {
+        println(line);
     };
-    doubler.send(21);
+    let _ = out.send(42);
     let factor = 7;
     let scale = actor |n: i64| -> i64 {
         n * factor
     };
     let a = scale(3);
     match a {
-        .Ok(v) => println(v),
-        .Err(_) => println(-1),
+        .Ok(v) => {
+            let _ = out.send(v);
+        },
+        .Err(_) => {
+            let _ = out.send(-1);
+        },
     }
 }

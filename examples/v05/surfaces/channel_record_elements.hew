@@ -18,6 +18,13 @@ type Tagged {
 }
 
 actor DrainRecords {
+    // Ask-shaped fence. A tell carries no happens-before edge to anything the
+    // caller does afterwards, so `main` printing its own lines after a sleep
+    // pinned one of two legal interleavings. The mailbox is FIFO and dispatch
+    // is serial, so a reply to a fence asked after `run` proves `run` finished.
+    receive fn fence() -> i64 {
+        0
+    }
     receive fn run(unused: i64) {
         let (tx, rx): (channel.Sender<Tagged>, channel.Receiver<Tagged>) = channel.new(4);
         tx.send(Tagged { label: "first", value: 1 });
@@ -36,8 +43,10 @@ actor DrainRecords {
 fn main() {
     let worker = spawn DrainRecords;
     worker.run(0);
-    sleep(500ms);
-
+    match await worker.fence() {
+        .Ok(_v) => {},
+        .Err(_) => println("fence failed"),
+    }
     // Non-blocking sibling: try_recv moves one queued record out; the match
     // owns the payload and drops it at arm scope exit.
     let (tx, rx): (channel.Sender<Tagged>, channel.Receiver<Tagged>) = channel.new(2);

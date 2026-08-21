@@ -55,6 +55,7 @@ fn main() {
         sink.send(f"frame-{i}".to_bytes());
     }
     sink.close();
-    sleep(500ms);
-    println("done");
+    // Every printed line comes from the handler; runtime shutdown drains it to
+    // quiescence after `main` returns. A trailing print here would be ordered
+    // against the handler only by a sleep, which is not an edge.
 }

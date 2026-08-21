@@ -9,6 +9,13 @@
 import std.channel.channel;
 
 actor Worker {
+    // Both printed lines are handled here so mailbox FIFO order is the printed
+    // order. Printing the second line from `main` would order it against the
+    // tell only by a sleep, which is not a happens-before edge.
+    receive fn finish() {
+        println("done");
+    }
+
     receive fn deliver(pair: (channel.Receiver<string>, string)) {
         let (rx, tag) = pair;
         let msg = match rx.recv() {
@@ -27,6 +34,5 @@ fn main() {
     let w = spawn Worker;
     // Transfer rx through a tuple. After this send `rx` must not be used.
     w.deliver((rx, "payload"));
-    sleep(200ms);
-    println("done");
+    w.finish();
 }

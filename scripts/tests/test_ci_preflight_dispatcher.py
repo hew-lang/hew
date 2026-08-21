@@ -2338,6 +2338,67 @@ def test_first_failure_extraction_covers_every_gate_failure_shape() -> None:
         assert expected.replace("|", "\\|") in summary, summary
 
 
+def test_golden_corpus_failures_name_the_fixture_not_the_make_target() -> None:
+    """A corpus driver's diagnostic outranks the bare `make ... Error 1` tail.
+
+    scripts/checked-mir-corpus.sh, scripts/ll-corpus.sh and
+    scripts/hew-corpus-check.sh print the offending FIXTURE and then exit,
+    leaving make to append "*** [Makefile:888: checked-mir-run] Error 1". That
+    make line matched first, so the annotation named the target and not the
+    defect. Each driver's diagnostic must now win, and the drivers' green-path
+    PASS / NO-MAIN / SELFTEST lines must not.
+    """
+    cases = {
+        'printf "SELFTEST actor_ask_race (baseline exit 42)\\nPASS     actor_ask_race\\n'
+        "NO-MAIN  vec_family_matrix (library-only fixture, nothing to execute)\\n"
+        "TRANSCRIPT MISMATCH: lambda_actor_lifecycle\\n"
+        'checked-mir-run: FAILED\\nmake: *** [Makefile:888: checked-mir-run] Error 1\\n"; exit 2': (
+            "TRANSCRIPT MISMATCH: lambda_actor_lifecycle"
+        ),
+        'printf "DUMP DRIFT: rc_weak_graph (elab stage) - first 40 diff lines:\\n"; exit 1': (
+            "DUMP DRIFT: rc_weak_graph (elab stage) - first 40 diff lines:"
+        ),
+        'printf "MANIFEST DRIFT: golden/MANIFEST.sha256 does not match\\n"; exit 1': (
+            "MANIFEST DRIFT: golden/MANIFEST.sha256 does not match"
+        ),
+        'printf "MISSING GOLDEN: node_lookup_send.raw.mir (run: make checked-mir-golden)\\n"; exit 1': (
+            "MISSING GOLDEN: node_lookup_send.raw.mir (run: make checked-mir-golden)"
+        ),
+        'printf "STALE EXPECTATION: vec_family_matrix.expected exists but declares no main\\n"; exit 1': (
+            "STALE EXPECTATION: vec_family_matrix.expected exists but declares no main"
+        ),
+        'printf "ORPHAN EXPECTATION: gone.expected has no fixture gone.hew\\n"; exit 1': (
+            "ORPHAN EXPECTATION: gone.expected has no fixture gone.hew"
+        ),
+        'printf "CANNOT CLASSIFY: target/debug/hew failed to dump raw MIR for x.hew\\n"; exit 1': (
+            "CANNOT CLASSIFY: target/debug/hew failed to dump raw MIR for x.hew"
+        ),
+        'printf "LEAK ORACLE SELFTEST FAILED: actor_ask_race exited 0, expected 93\\n"; exit 1': (
+            "LEAK ORACLE SELFTEST FAILED: actor_ask_race exited 0, expected 93"
+        ),
+        'printf "STALE GOLDEN: native/add42.ll has no fixture add42.hew\\n'
+        'll-corpus verify: FAILED\\n"; exit 1': (
+            "STALE GOLDEN: native/add42.ll has no fixture add42.hew"
+        ),
+        'printf "CORPUS FAIL: 2 UNEXPECTED failure(s) - not in expected list:\\n"; exit 1': (
+            "CORPUS FAIL: 2 UNEXPECTED failure(s) - not in expected list:"
+        ),
+        'printf "cached status: FAILED\\nTRANSCRIPT MISMATCH: actual_fixture\\n"; exit 1': (
+            "TRANSCRIPT MISMATCH: actual_fixture"
+        ),
+        'printf "sweeping\\n==> Corpus sweep: FAILED\\n"; exit 1': (
+            "==> Corpus sweep: FAILED"
+        ),
+    }
+    result, summary = run_failing_commands("\n".join(cases) + "\n")
+    assert result.returncode == 1, result.stdout
+    for command, expected in cases.items():
+        assert f"::{expected}" in result.stdout, (
+            f"no annotation carrying {expected!r} for {command!r}:\n{result.stdout}"
+        )
+        assert expected.replace("|", "\\|") in summary, summary
+
+
 def test_timeout_reports_the_budget_not_a_stray_log_line() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         local_summary = Path(scratch) / "preflight-summary.md"
@@ -2690,6 +2751,7 @@ _TESTS = [
     # Failure diagnostics
     test_failing_command_emits_an_annotation_and_a_result_table,
     test_first_failure_extraction_covers_every_gate_failure_shape,
+    test_golden_corpus_failures_name_the_fixture_not_the_make_target,
     test_timeout_reports_the_budget_not_a_stray_log_line,
     test_counterfactual_output_never_becomes_the_reported_failure,
     test_counterfactual_marker_is_shared_by_every_producer,

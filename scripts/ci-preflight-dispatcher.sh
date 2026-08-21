@@ -243,6 +243,13 @@ warmup_timeout() {
 #   fuzz oracle     "ORACLE gate: FAIL"
 #   O2 differential "==> Differential gate: FAILED — ..."
 #   corpus drift    "NOW-FAILS: tests/hew/x.hew" / "NOW-PASSES: ..."
+#   golden corpora  "TRANSCRIPT MISMATCH: lambda_actor_lifecycle",
+#                   "DUMP DRIFT: x (elab stage)", "MANIFEST DRIFT: ...",
+#                   "MISSING/STALE GOLDEN: ...", "MISSING/STALE/ORPHAN
+#                   EXPECTATION: ...", "CANNOT CLASSIFY: ...",
+#                   "LEAK ORACLE SELFTEST FAILED: ...", "CORPUS FAIL: ...",
+#                   and the "<gate>: FAILED" summary line every corpus driver
+#                   ends on
 #   watchdog        "==> TIMEOUT: 'make test' exceeded 1530s budget"
 #   rust panics     "thread 'main' panicked at ..."
 #   signal deaths   "Illegal instruction (core dumped)" / "Segmentation fault" /
@@ -250,12 +257,21 @@ warmup_timeout() {
 #                   "zsh: trace trap" / "Abort trap: 6", the SIG* spellings
 #                   cargo and nextest use ("signal: 4, SIGILL"), and nextest's
 #                   "killed by signal 11" form
+# The golden-corpus drivers (scripts/checked-mir-corpus.sh, scripts/ll-corpus.sh,
+# scripts/hew-corpus-check.sh) name the offending FIXTURE on their diagnostic
+# line and then let make report a bare "Error 1"; without these patterns the
+# annotation said "make: *** [Makefile:888: checked-mir-run] Error 1", which
+# names the target and not the defect. Their PASSING-path lines ("PASS x",
+# "NO-MAIN x", "SELFTEST x") are deliberately NOT matched: they precede a later
+# fixture's real failure in the same log, so matching them would make the
+# first-match grep name an innocent fixture.
+#
 # A compiled-Hew gate that dies on a trap is the failure mode this repo cares
 # most about, and the shell reports it as a bare "Illegal instruction" line with
 # no "error" or "FAIL" token anywhere — without these patterns that whole class
 # fell through to the generic exit-status fallback.
 # A log with none of these still reports its exit status rather than nothing.
-PREFLIGHT_FAILURE_LINE_RE='(^|[[:space:]])FAIL \[|^[[:space:]]*FAILED?([[:space:]]|:)|^make(\[[0-9]+\])?: \*\*\* |^[[:space:]]*error(\[[A-Za-z0-9_]+\])?:|^[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*Error:|RATCHET FAIL|Ratchet: FAILED|ORACLE gate: FAIL|Differential gate: FAILED|NOW-FAILS|NOW-PASSES|^==> TIMEOUT:|^thread .* panicked|^[[:space:]]*assert(ion)?.*failed|(^|[[:space:]])SIG(ILL|TRAP|SEGV|ABRT|BUS|FPE|KILL)([[:space:]:,)]|$)|Illegal instruction|Segmentation fault|Bus error|Floating point exception|Trace/breakpoint trap|Trace/BPT trap|trace trap|Abort trap|^[[:space:]]*Aborted([[:space:]]|$)|killed by signal[[:space:]]+[0-9]+|core dumped'
+PREFLIGHT_FAILURE_LINE_RE='(^|[[:space:]])FAIL \[|^[[:space:]]*FAILED?([[:space:]]|:)|^make(\[[0-9]+\])?: \*\*\* |^[[:space:]]*error(\[[A-Za-z0-9_]+\])?:|^[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*Error:|RATCHET FAIL|Ratchet: FAILED|ORACLE gate: FAIL|Differential gate: FAILED|NOW-FAILS|NOW-PASSES|^(TRANSCRIPT MISMATCH|DUMP DRIFT|MANIFEST DRIFT|CANNOT CLASSIFY|CORPUS FAIL|LEAK ORACLE SELFTEST FAILED|(MISSING|STALE|ORPHAN) (GOLDEN|MANIFEST|EXPECTATION)):|^(checked-mir-(verify|run)|ll-corpus verify|==> Corpus sweep): FAILED([[:space:]]|$)|^==> TIMEOUT:|^thread .* panicked|^[[:space:]]*assert(ion)?.*failed|(^|[[:space:]])SIG(ILL|TRAP|SEGV|ABRT|BUS|FPE|KILL)([[:space:]:,)]|$)|Illegal instruction|Segmentation fault|Bus error|Floating point exception|Trace/breakpoint trap|Trace/BPT trap|trace trap|Abort trap|^[[:space:]]*Aborted([[:space:]]|$)|killed by signal[[:space:]]+[0-9]+|core dumped'
 
 # Counterfactual marker.  A self-test proves its gate has teeth by RUNNING that
 # gate against deliberately broken input, so a PASSING self-test log is full of

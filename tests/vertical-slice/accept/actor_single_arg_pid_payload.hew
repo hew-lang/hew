@@ -38,7 +38,8 @@ fn main() {
     let e = spawn Echo();
     let p = spawn Pinger(echo: e);
     p.ping();
-    // Let the ping -> hear -> ack chain drain before main prints and exits.
-    sleep(200ms);
-    println("done");
+    // Every printed line is produced by the ping -> hear -> ack chain, which is
+    // ordered by its own sends; runtime shutdown drains it to quiescence. A
+    // trailing print from `main` here would be ordered against that chain only
+    // by a sleep, which is not a happens-before edge.
 }

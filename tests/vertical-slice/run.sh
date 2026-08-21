@@ -1939,8 +1939,11 @@ run_accept_expect_status "on_crash_escalate_root" 0
 # trampoline; the supervisor boots; main exits 42.
 run_accept_expect_status "on_exit_hook" 42
 # A real linked-peer crash traverses the EXIT sys-dispatch path and invokes the
-# hook, not merely its compile-time declaration.
-run_accept_expect_stdout "on_exit_hook_delivery"
+# hook, not merely its compile-time declaration. The hook can observe the
+# unsupervised linked actor crash, but cannot recover it for process status.
+run_accept_expect_status "on_exit_hook_delivery" 1
+diff -u "${ROOT}/tests/vertical-slice/accept/on_exit_hook_delivery.expected" "${stdout_output}"
+grep -qF -- "fire linked exit hook" "${stderr_output}"
 
 # Typed monitor terminal hook: checker/HIR/MIR/codegen reconstruct the canonical
 # DownNotification payload and route HewSysMsg::Down through actor dispatch.

@@ -66,15 +66,15 @@ fn std_iter_output(root_body: &str) -> hew_hir::LowerOutput {
 fn imported_iter_adapter_next_impls_are_registered_by_exact_owner() {
     let output = std_iter_output("fn main() -> i64 { 0 }");
     let index = build_trait_impl_method_index(&output.module.items);
-    let iterator = DefId::new("std.builtins.Iterator");
-    let next = DefId::new("std.builtins.Iterator::next");
+    let iterator = DefId::for_test("std.builtins.Iterator");
+    let next = DefId::for_test("std.builtins.Iterator::next");
 
     for adapter in ADAPTERS {
         let entry = lookup_trait_impl_entry_by_id(
             &index,
             &iterator,
             &NominalInstance {
-                nominal: NominalId::new(format!("std.iter.{adapter}")),
+                nominal: NominalId::for_test(format!("std.iter.{adapter}")),
                 args: Vec::new(),
             },
             &next,
@@ -98,8 +98,8 @@ fn imported_iter_adapter_next_impls_are_registered_by_exact_owner() {
 fn compiler_iterator_impls_retain_their_typed_receiver_identities() {
     let output = std_iter_output("fn main() -> i64 { 0 }");
     let index = build_trait_impl_method_index(&output.module.items);
-    let iterator = DefId::new("std.builtins.Iterator");
-    let next = DefId::new("std.builtins.Iterator::next");
+    let iterator = DefId::for_test("std.builtins.Iterator");
+    let next = DefId::for_test("std.builtins.Iterator::next");
     let receivers: Vec<_> = index
         .keys()
         .filter(|key| key.declaring_trait == iterator && key.method == next)
@@ -132,13 +132,13 @@ fn main() -> i64 { 0 }
 ",
     );
     let index = build_trait_impl_method_index(&output.module.items);
-    let iterator = DefId::new("std.builtins.Iterator");
-    let next = DefId::new("std.builtins.Iterator::next");
+    let iterator = DefId::for_test("std.builtins.Iterator");
+    let next = DefId::for_test("std.builtins.Iterator::next");
     let builtin = lookup_trait_impl_entry_by_id(
         &index,
         &iterator,
         &NominalInstance {
-            nominal: NominalId::new("std.builtins.HashMapIter"),
+            nominal: NominalId::for_test("std.builtins.HashMapIter"),
             args: Vec::new(),
         },
         &next,
@@ -153,7 +153,7 @@ fn main() -> i64 { 0 }
         &index,
         &iterator,
         &NominalInstance {
-            nominal: NominalId::new("HashMapIter"),
+            nominal: NominalId::for_test("HashMapIter"),
             args: Vec::new(),
         },
         &next,
@@ -177,13 +177,13 @@ fn main() -> i64 { 0 }
 ",
     );
     let index = build_trait_impl_method_index(&output.module.items);
-    let iterator = DefId::new("std.builtins.Iterator");
-    let next = DefId::new("std.builtins.Iterator::next");
+    let iterator = DefId::for_test("std.builtins.Iterator");
+    let next = DefId::for_test("std.builtins.Iterator::next");
     let std_entry = lookup_trait_impl_entry_by_id(
         &index,
         &iterator,
         &NominalInstance {
-            nominal: NominalId::new("std.iter.Map"),
+            nominal: NominalId::for_test("std.iter.Map"),
             args: Vec::new(),
         },
         &next,
@@ -193,7 +193,7 @@ fn main() -> i64 { 0 }
         &index,
         &iterator,
         &NominalInstance {
-            nominal: NominalId::new("Map"),
+            nominal: NominalId::for_test("Map"),
             args: Vec::new(),
         },
         &next,

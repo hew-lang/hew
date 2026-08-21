@@ -1228,7 +1228,7 @@ impl Checker {
                 format!("{module}.{name}")
             },
         );
-        Some(CallTarget::User(crate::DefId::new(declaration)))
+        Some(CallTarget::User(crate::identity::mint_def_id(declaration)))
     }
 
     #[expect(
@@ -1268,7 +1268,7 @@ impl Checker {
                 .unwrap_or(signature_key)
                 .to_string();
             return CallTarget::Extern {
-                declaration: crate::DefId::new(declaration),
+                declaration: crate::identity::mint_def_id(declaration),
                 endpoint: extern_decl.symbol.clone(),
                 trusted_compiled_stdlib: extern_decl
                     .declaring_module
@@ -1343,7 +1343,7 @@ impl Checker {
                 // the missing declaration owner even when the signature was
                 // populated by an earlier graph-registration pass that did
                 // not retain a second `fn_def_spans` compatibility entry.
-                return CallTarget::User(crate::DefId::new(declaration));
+                return CallTarget::User(crate::identity::mint_def_id(declaration));
             }
         }
         // rc1-F1 stage A: a bare spelling that reaches this rung re-anchors
@@ -1361,7 +1361,7 @@ impl Checker {
             self.current_module_idx,
             signature_key.to_string(),
         )) {
-            return CallTarget::User(crate::DefId::new(source_key));
+            return CallTarget::User(crate::identity::mint_def_id(source_key));
         }
         // Compiler-registered builtins have no source declaration span. Their
         // executable identity comes from the typed registry populated during
@@ -2855,7 +2855,9 @@ mod channel_layout_target_tests {
 
         assert_eq!(
             checker.call_target_for_signature("wire.duplex_pair"),
-            CallTarget::User(crate::DefId::new("app.transport.duplex_pair".to_string()))
+            CallTarget::User(crate::DefId::for_test(
+                "app.transport.duplex_pair".to_string()
+            ))
         );
     }
 

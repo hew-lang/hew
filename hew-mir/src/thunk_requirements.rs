@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 //! One MIR-owned registry of clone/drop thunk-synthesis requirements.
 //!
 //! Codegen's `emit_state_clone_drop_synthesis` emits the
@@ -579,7 +584,7 @@ fn collect_record_field_store_overwrite_seeds(
                 if let Some(layout) = record_layout_for_ty(field_ty, record_layouts) {
                     let key = layout.name.clone();
                     if lifecycle_registry
-                        .resource_record(&hew_types::DefId::new(&key))
+                        .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(&key))
                         .is_none()
                         && record_seen.insert(key.clone())
                     {
@@ -1543,8 +1548,12 @@ mod record_field_store_overwrite_tests {
         let mut type_classes = hew_hir::TypeClassTable::default();
         type_classes
             .admit_resource_record_lifecycle(hew_hir::ResourceRecordLifecycle {
-                resource_declaration: hew_types::DefId::new("ResourceRecord"),
-                close_declaration: hew_types::DefId::new("ResourceRecord::close"),
+                resource_declaration: hew_types::DefId::legacy_reconstruct_from_full_path(
+                    "ResourceRecord",
+                ),
+                close_declaration: hew_types::DefId::legacy_reconstruct_from_full_path(
+                    "ResourceRecord::close",
+                ),
                 close_symbol: "ResourceRecord::close".to_string(),
             })
             .unwrap();

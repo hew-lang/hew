@@ -21,6 +21,7 @@ siphasher = "1"
 hew-types = { path = "../hew-types" }
 
 [dev-dependencies]
+hew-types = { path = "../hew-types", features = ["test"] }
 
 # Property-based testing for per-Return drop-plan live-set narrowing.
 # Dev-only — never linked into release builds. Scoped to non-wasm

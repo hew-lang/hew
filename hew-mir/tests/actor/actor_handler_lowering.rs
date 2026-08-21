@@ -233,7 +233,7 @@ fn actor_cycle_capable_threads_to_layout_and_spawn_instr() {
     let main = HirFn {
         id: ids.item(),
         node: ids.node(),
-        declaration: hew_types::DefId::new("main"),
+        declaration: hew_types::DefId::for_test("main"),
         name: "main".to_string(),
         type_params: vec![],
         params: vec![],
@@ -296,7 +296,7 @@ fn non_cycle_actor_keeps_false_layout_and_spawn_default() {
     let main = HirFn {
         id: ids.item(),
         node: ids.node(),
-        declaration: hew_types::DefId::new("main"),
+        declaration: hew_types::DefId::for_test("main"),
         name: "main".to_string(),
         type_params: vec![],
         params: vec![],
@@ -859,7 +859,7 @@ fn standalone_ticks_gen_fn(ids: &mut IdGen) -> HirFn {
     HirFn {
         id: ids.item(),
         node: ids.node(),
-        declaration: hew_types::DefId::new("stream_twin"),
+        declaration: hew_types::DefId::for_test("stream_twin"),
         name: "stream_twin".to_string(),
         type_params: vec![],
         params: vec![],
@@ -1548,7 +1548,7 @@ fn main_calling_gen_stream(ids: &mut IdGen, actor_name: &str, method: &str) -> H
     HirFn {
         id: ids.item(),
         node: ids.node(),
-        declaration: hew_types::DefId::new("main"),
+        declaration: hew_types::DefId::for_test("main"),
         name: "main".to_string(),
         type_params: vec![],
         params: vec![],
@@ -1860,7 +1860,7 @@ fn actor_handler_symbol_collision_emits_typed_diagnostic_and_skips_handler() {
     let top_level = HirFn {
         id: ids.item(),
         node: ids.node(),
-        declaration: hew_types::DefId::new("Counter__recv__ping"),
+        declaration: hew_types::DefId::for_test("Counter__recv__ping"),
         name: "Counter__recv__ping".to_string(),
         type_params: vec![],
         params: vec![],

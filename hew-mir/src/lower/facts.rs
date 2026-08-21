@@ -3985,6 +3985,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_string_to_lowercase",
         "hew_string_to_uppercase",
         "hew_string_trim",
+        "hew_structural_format",
         "hew_u64_to_string",
         "hew_uint_to_string",
         "hew_vec_append",
@@ -4096,6 +4097,7 @@ mod runtime_callee_ownership_contract_parity {
     ];
 
     const VEC_RECEIVER_SYMBOLS: &[&str] = &[
+        "hew_structural_format",
         "hew_vec_append",
         "hew_vec_append_layout",
         "hew_vec_clear",
@@ -4212,6 +4214,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_hashset_remove_layout",
         "hew_hashset_to_vec_layout",
         "hew_string_get",
+        "hew_structural_format",
     ];
 
     const COPY_IN_SYMBOLS: &[&str] = &["hew_vec_push_owned", "hew_vec_set_owned"];
@@ -4227,6 +4230,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_bytes_set",
         "hew_bytes_slice",
         "hew_bytes_to_string",
+        "hew_structural_format",
         "hew_vec_len",
     ];
 
@@ -4271,6 +4275,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_string_to_lowercase",
         "hew_string_to_uppercase",
         "hew_string_trim",
+        "hew_structural_format",
         "hew_vec_join_str",
         "hew_vec_push_str",
         "hew_vec_set_str",
@@ -4298,6 +4303,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_string_to_lowercase",
         "hew_string_to_uppercase",
         "hew_string_trim",
+        "hew_structural_format",
         "hew_u64_to_string",
         "hew_uint_to_string",
         "hew_vec_get_str",
@@ -4335,7 +4341,7 @@ mod runtime_callee_ownership_contract_parity {
 
     #[test]
     fn callee_ownership_contract_matches_literal_projection_sets() {
-        assert_eq!(CLASSIFIER_SYMBOLS.len(), 171);
+        assert_eq!(CLASSIFIER_SYMBOLS.len(), 172);
         let vec_receiver = expected_set(VEC_RECEIVER_SYMBOLS);
         let collection_receiver = expected_set(COLLECTION_RECEIVER_SYMBOLS);
         let copy_in = expected_set(COPY_IN_SYMBOLS);
@@ -4347,11 +4353,11 @@ mod runtime_callee_ownership_contract_parity {
         let interior_alias = expected_set(INTERIOR_ALIAS_SYMBOLS);
         let fresh_bytes = expected_set(FRESH_BYTES_SYMBOLS);
 
-        assert_eq!(vec_receiver.len(), 93);
-        assert_eq!(collection_receiver.len(), 20);
-        assert_eq!(bytes_receiver.len(), 11);
-        assert_eq!(string_use.len(), 38);
-        assert_eq!(fresh_string.len(), 34);
+        assert_eq!(vec_receiver.len(), 94);
+        assert_eq!(collection_receiver.len(), 21);
+        assert_eq!(bytes_receiver.len(), 12);
+        assert_eq!(string_use.len(), 39);
+        assert_eq!(fresh_string.len(), 35);
 
         for symbol in parity_symbols() {
             let contract = callee_ownership_contract(symbol);

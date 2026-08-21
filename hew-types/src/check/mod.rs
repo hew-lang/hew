@@ -1353,6 +1353,7 @@ impl Checker {
 
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
+            interpolation_display_types: std::mem::take(&mut self.interpolation_display_types),
             produced_value_ownership,
             produced_value_dependencies,
             caller_visible_param_projections: std::mem::take(
@@ -2573,7 +2574,7 @@ impl Checker {
             }
             Expr::InterpolatedString(parts) => {
                 for part in parts {
-                    if let StringPart::Expr((e, s)) = part {
+                    if let StringPart::Expr((e, s)) | StringPart::StructuralExpr((e, s)) = part {
                         self.classify_escapes_in_expr(e, s, in_fork, AnonContext::Other);
                     }
                 }
@@ -3023,7 +3024,7 @@ fn collect_lambda_spans_in_expr(
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let StringPart::Expr((e, s)) = part {
+                if let StringPart::Expr((e, s)) | StringPart::StructuralExpr((e, s)) = part {
                     collect_lambda_spans_in_expr(e, s, out);
                 }
             }

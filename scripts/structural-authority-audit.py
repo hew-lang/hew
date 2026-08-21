@@ -43,6 +43,11 @@ ALL_GROUPS = {
     "suspend-authority",
     "owner-retirement-path",
     "monomorphic-enum-leaf-synthesis",
+    # Applying a call signature to its arguments. One authority
+    # (`apply_instantiated_call_signature_with_assoc`) freshens a generic
+    # callee's type parameters, infers them from the arguments, and records the
+    # instantiation; a hand-rolled arg-vs-parameter loop does none of it.
+    "signature-application",
 }
 SEMANTIC_KEY_BUILDERS = {
     "scoped_module_item_name",
@@ -1064,6 +1069,150 @@ def reject_raw_codegen_call_dispatch(ast_grep: Path, root: Path) -> None:
         )
 
 
+ARG_CHECK_SCOPE_PREFIX = "hew-types/src/"
+ARG_CHECK_PRIMITIVES = frozenset(("check_against", "check_expr_with_expected"))
+
+
+def ranges_by_path(
+    ast_grep: Path, root: Path, kind: str
+) -> defaultdict[str, list[SyntaxRange]]:
+    """Every node of `kind`, grouped by path."""
+    index: defaultdict[str, list[SyntaxRange]] = defaultdict(list)
+    for match in run_query(ast_grep, root, kind=kind):
+        node_span = node_range(match)
+        index[node_span.path].append(node_span)
+    return index
+
+
+def enclosing_function_index(
+    ast_grep: Path, root: Path
+) -> defaultdict[str, list[tuple[SyntaxRange, str]]]:
+    """Every `function_item` range, with its name, grouped by path."""
+    index: defaultdict[str, list[tuple[SyntaxRange, str]]] = defaultdict(list)
+    for match in run_query(ast_grep, root, kind="function_item"):
+        item_range = node_range(match)
+        name = re.search(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)", str(match["text"]))
+        if name is None:
+            continue
+        index[item_range.path].append((item_range, name.group(1)))
+    return index
+
+
+def arg_check_callee_leaves(ast_grep: Path, root: Path) -> list[dict[str, object]]:
+    """Callee-position occurrences of an argument-check primitive.
+
+    Derived from the AST, never from rendered source. A callee's final path
+    segment is a LEAF node the grammar already isolated — `field_identifier` for
+    `recv.check_against(..)`, `identifier` for `Path::check_against(..)` — so
+    reduction is the parse, not a string split. Splitting the call's text on `(`
+    or `::` instead would have been defeated by `(Checker::check_against)(..)`
+    and by `Checker::check_against /* comment */ (..)`, both of which are
+    ordinary call expressions whose rendered text does not reduce.
+
+    Callee position is decided RELATIVE TO THE LEAF'S OWN nearest enclosing
+    call, never globally. A global "outside any call's arguments" test drops
+    `outer(self.check_against(..))`, because the inner callee does sit inside
+    the OUTER call's argument list. The leaf is a callee when it is outside the
+    argument list of the innermost call containing it — which still excludes the
+    primitive passed as an argument value (`register(check_against)`), where
+    that innermost call IS the one whose arguments hold it.
+    """
+    calls = ranges_by_path(ast_grep, root, "call_expression")
+    arguments = ranges_by_path(ast_grep, root, "arguments")
+    leaves: list[dict[str, object]] = []
+    seen: set[tuple[str, int, int]] = set()
+    candidates: list[dict[str, object]] = [
+        match
+        for match in run_query(ast_grep, root, kind="field_identifier")
+        if str(match["text"]) in ARG_CHECK_PRIMITIVES
+    ]
+    for primitive in sorted(ARG_CHECK_PRIMITIVES):
+        candidates.extend(
+            match
+            for match in run_query(ast_grep, root, pattern=primitive)
+            if str(match["text"]) == primitive
+        )
+    for match in candidates:
+        leaf = node_range(match)
+        key = (leaf.path, leaf.byte_start, leaf.byte_end)
+        if key in seen:
+            continue
+        enclosing_calls = [
+            call for call in calls.get(leaf.path, []) if range_contains(call, leaf)
+        ]
+        if not enclosing_calls:
+            continue
+        nearest_call = min(
+            enclosing_calls, key=lambda call: call.byte_end - call.byte_start
+        )
+        # A call's own argument list is the widest `arguments` node inside it;
+        # any other is an argument list of a call nested within this one.
+        own_arguments = [
+            args
+            for args in arguments.get(leaf.path, [])
+            if range_contains(nearest_call, args)
+        ]
+        if own_arguments:
+            widest = max(
+                own_arguments, key=lambda args: args.byte_end - args.byte_start
+            )
+            if range_contains(widest, leaf):
+                continue
+        seen.add(key)
+        leaves.append(match)
+    return leaves
+
+
+def signature_application_findings(ast_grep: Path, root: Path) -> set[Finding]:
+    """Inventory every argument-check primitive call, by enclosing function.
+
+    Applying a call signature means checking each argument against the
+    signature's parameter types. That must happen in ONE place
+    (`apply_instantiated_call_signature_with_assoc`), because that is where a
+    generic callee's type parameters are freshened, inferred from the arguments,
+    and recorded as an instantiation. A hand-rolled arg-check loop skips all
+    three: it is how generic actor receive calls ended up reporting `expected T`
+    and never discharging their obligations.
+
+    The rule is structural and carries no allowlist. It does not inspect the
+    expected-type operand (a name-based version was defeated by a helper taking
+    it as `expected`), it does not match the authority by substring (which would
+    have allowlisted `..._with_assoc_renamed`), and it reduces callees through
+    the parse rather than through rendered text. EVERY primitive call anywhere
+    under `hew-types/src/` is a finding whose form is its enclosing function's
+    exact name, so the inventory records a reviewed count per (function, file) —
+    including the authority's own.
+
+    Residual, stated rather than implied: the inventory is a per-function COUNT,
+    so it cannot see a net-zero relocation — moving a call from one already
+    reviewed function to another leaves both totals unchanged only if the two
+    counts move in opposite directions by the same amount, which the count
+    comparison does not distinguish from no change at all.
+    """
+    functions = enclosing_function_index(ast_grep, root)
+    findings: set[Finding] = set()
+    for match in arg_check_callee_leaves(ast_grep, root):
+        call_range = node_range(match)
+        if not call_range.path.startswith(ARG_CHECK_SCOPE_PREFIX):
+            continue
+        enclosing = [
+            (item_range, name)
+            for item_range, name in functions.get(call_range.path, [])
+            if range_contains(item_range, call_range)
+        ]
+        if not enclosing:
+            raise SystemExit(
+                f"argument-check primitive at {call_range.path}:{call_range.line} has no "
+                "enclosing function; the inventory form would be unattributable"
+            )
+        # Innermost wins, so a nested `fn` owns its own row. A CLOSURE is not a
+        # `function_item`, so a call inside one attributes to the enclosing
+        # function — which is the reviewable unit either way.
+        _, name = min(enclosing, key=lambda item: item[0].byte_end - item[0].byte_start)
+        findings.add(finding("signature-application", name, match))
+    return findings
+
+
 def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange]]:
     test_ranges = test_only_ranges(ast_grep, root)
     findings: set[Finding] = set()
@@ -1082,6 +1231,8 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
             findings.add(
                 finding("mir-ownership-sink", "ownership-classify-call", match)
             )
+
+    findings.update(signature_application_findings(ast_grep, root))
 
     for match in run_query(ast_grep, root, pattern="$R.insert($$$ARGS)"):
         receiver = single_meta(match, "R").split(".")[-1]
@@ -1308,6 +1459,8 @@ def canonical_stage(group: str, form: str, path: str) -> str:
             if path.startswith("hew-codegen-rs/") or path.endswith("model.rs")
             else "stage-4"
         )
+    if group == "signature-application":
+        return "stage-1"
     if group == "string-method-identity":
         if path.startswith(("hew-types/", "hew-hir/", "hew-analysis/")):
             return "stage-1"

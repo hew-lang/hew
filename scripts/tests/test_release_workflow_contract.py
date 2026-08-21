@@ -1128,8 +1128,20 @@ def test_contract_oracle_runs_in_required_ci() -> None:
     assert "'.github/workflows/release.yml'" in ci
     assert 'scripts/ci-preflight-dispatcher.sh "${args[@]}"' in ci
     assert "args=(--base origin/main)" in ci
-    dispatcher = (ROOT / "scripts/ci-preflight-dispatcher.sh").read_text()
-    assert 'add_command "make test-release-workflow-contract"' in dispatcher
+    dispatched = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts/ci-preflight-dispatcher.sh"),
+            "--dry-run",
+            "--",
+            ".github/workflows/release.yml",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "make test-release-workflow-contract" in dispatched, dispatched
 
 
 def workflow_job(text: str, name: str) -> str:

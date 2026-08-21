@@ -413,6 +413,7 @@ if [[ "${arith_status}" -ne 5 ]]; then
 fi
 
 run_accept_expect_stdout "hello_println"
+run_accept_expect_stdout "structural_rendering"
 
 run_accept_expect_status "assert" 0
 
@@ -1210,6 +1211,24 @@ run_accept_expect_stdout "user_resource_close_multiple_types"
 # prints `7` twice and aborts at the resource sentinel. (Cross-eco security
 # gate bug 1.)
 run_accept_expect_stdout "resource_nonreceiver_method_arg_drops_once"
+
+# A fluent builder transfers a consumed child into its receiver while returning
+# that receiver, matching the standard encoding value-tree contract. The accept
+# fixture also pins both explicit release spellings: compiler-visible `close()`
+# and its consuming `free()` compatibility alias. It goes through `compile`, not
+# `check`: its `extern "C"` sinks are the runtime's real json ownership entry
+# points, so link failure is a regression this fixture must surface here rather
+# than only in the fuzz oracle that compiles and runs the whole accept corpus.
+compile_accept "consume_param_transfer_builder"
+
+# Reusing the transferred child must fail at checked MIR with main's concrete
+# consume-parameter diagnostic.
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/consume_param_transfer_builder_use_after_move.hew" \
+    'binding `child` is used after it was consumed' \
+    "consume param transfer builder use after move"
+grep -qF 'MIR kind: UseAfterConsume' "${reject_output}"
 
 # Drop-obligation lattice, `MachineStatePayload` position: a `#[resource]` /
 # `#[linear]` value in a machine state payload has no wired release on
@@ -2851,6 +2870,22 @@ run_accept_expect_stdout "fork_args_spawn"
 # and a heap-string arg. The block form collapses to a nameless scope spawn;
 # the fork-entry shim transfers args the same way as the named form.
 run_accept_expect_stdout "fork_block_args_spawn"
+run_accept_expect_status "fork_multi_statement_concurrent" 0
+for marker in first-start second-start first-end second-end complete; do
+  grep -qFx -- "${marker}" "${stdout_output}"
+done
+last_start_line="$(grep -nE '^(first|second)-start$' "${stdout_output}" | tail -n 1 | cut -d: -f1)"
+first_end_line="$(grep -nE '^(first|second)-end$' "${stdout_output}" | head -n 1 | cut -d: -f1)"
+if [[ "${last_start_line}" -ge "${first_end_line}" ]]; then
+  echo "expected both fork children to start before either child finished" >&2
+  cat "${stdout_output}" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic delimiters.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/fork_parent_borrow_capture.hew" \
+  'fork body cannot borrow parent binding `label`' \
+  "fork_parent_borrow_capture"
 
 # Reject: parent use of a non-Copy string arg after `fork { f(arg); }` must
 # report UseAfterMove — parity with the named `fork t = f(arg)` form. Without
@@ -2909,17 +2944,6 @@ if grep -q 'E_CODEGEN_FRONT' "${reject_output}"; then
   echo "fork-block arg type mismatch must fail at the checker, not codegen" >&2
   exit 1
 fi
-
-# Reject: `fork { ... }` block with multiple statements.
-# Pins the HIR fail-closed fork-block body boundary.
-if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_multi_stmt.hew" >"${reject_output}" 2>&1; then
-  echo "expected fork-multi-stmt fixture to fail" >&2
-  exit 1
-fi
-grep -q 'E_HIR' "${reject_output}"
-# shellcheck disable=SC2016  # backticks in the pattern are literal — they match
-# the diagnostic text, not a command substitution.
-grep -qF 'multi-statement `fork { }` bodies are not yet supported' "${reject_output}"
 
 # Reject: `after(duration) { ... }` with a non-empty timeout body in a
 # CONTEXTLESS caller. The HIR shape gate now admits non-empty bodies (MIR
@@ -3735,6 +3759,10 @@ run_accept_expect_status "vec_range_slice_inclusive" 3
 run_accept_expect_stdout "hashmap_values_scalar"
 run_accept_expect_stdout "hashmap_values_string"
 run_accept_expect_status "hashmap_generic_ops" 0
+run_accept_expect_status "temporary_receiver_method" 0
+run_accept_expect_status "temporary_receiver_for" 0
+run_accept_expect_status "temporary_receiver_argument" 0
+run_accept_expect_status "temporary_receiver_binding" 0
 run_accept_expect_stdout "vec_scalar_range_slice"
 run_accept_expect_stdout "vec_string_range_slice"
 run_accept_expect_stdout "vec_record_range_slice"

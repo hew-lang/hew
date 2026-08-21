@@ -2,10 +2,11 @@ use super::{
     bracket_actor_handler_blocks, check_function, check_to_diagnostic,
     collect_unknown_type_diagnostics, dataflow, elaborate, finalize_bytes_ownership,
     finalize_string_ownership, BasicBlock, BindingId, Builder, BuiltinType, CheckedMirFunction,
-    FieldOffset, HirBlock, HirExpr, HirExprKind, HirFn, HirJoin, HirSelect, HirSelectArmKind,
-    HirStmtKind, Instr, IntentKind, JoinBranch, LoweredFunction, MirDiagnostic, MirDiagnosticKind,
-    MirStatement, Place, RawMirFunction, ResolvedTy, SelectArm, SelectArmKind, SourceOrigin,
-    SpawnEnvFieldOwnership, SuspendKind, Terminator, ThirFunction, ValueClass,
+    ClosureEnvFieldOwnership, FieldOffset, HirBlock, HirExpr, HirExprKind, HirFn, HirJoin,
+    HirSelect, HirSelectArmKind, HirStmtKind, Instr, IntentKind, JoinBranch, LoweredFunction,
+    MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, ResolvedTy, SelectArm,
+    SelectArmKind, SourceOrigin, SpawnEnvFieldOwnership, SuspendKind, Terminator, ThirFunction,
+    ValueClass,
 };
 use crate::model::StableActorRole;
 
@@ -1079,71 +1080,167 @@ impl Builder {
             fn_symbol,
             env: env_place,
             env_ty,
-            env_ownership: vec![SpawnEnvFieldOwnership::BorrowsOnly; captures.len()],
+            env_ownership: captures
+                .iter()
+                .map(|capture| {
+                    let ty = self.subst_ty(&capture.ty);
+                    match self.closure_env_capture_ownership(
+                        crate::closure_env::AllocationStrategy::ScopeOwned,
+                        &ty,
+                        Some(capture.binding),
+                        capture.mode,
+                    ) {
+                        ClosureEnvFieldOwnership::OwnsMoved => SpawnEnvFieldOwnership::OwnsMoved,
+                        ClosureEnvFieldOwnership::BorrowsOnly
+                        | ClosureEnvFieldOwnership::OwnsClonedOrRetained => {
+                            SpawnEnvFieldOwnership::BorrowsOnly
+                        }
+                    }
+                })
+                .collect(),
         });
         Some(task_place)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the direct-call fast path and scope-owned body path share one task boundary"
+    )]
     pub(crate) fn lower_fork_block_task(
         &mut self,
         body: &HirBlock,
+        captures: &[hew_hir::HirClosureCapture],
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        let expr = if body.statements.len() == 1 && body.tail.is_none() {
-            let HirStmtKind::Expr(expr) = &body.statements[0].kind else {
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "fork block cancellation child".to_string(),
-                        site,
-                    },
-                    note: "fork block task lowering currently supports expression-call statements only"
-                        .to_string(),
-                });
-                return None;
-            };
-            expr
+        // Keep the established direct-call fast path for the original surface.
+        // Richer bodies fall through to the scope-owned closure environment.
+        let single_expr = if body.statements.len() == 1 && body.tail.is_none() {
+            match &body.statements[0].kind {
+                HirStmtKind::Expr(expr) => Some(expr),
+                _ => None,
+            }
         } else if body.statements.is_empty() {
-            let Some(tail) = &body.tail else {
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "fork block cancellation child".to_string(),
-                        site,
-                    },
-                    note: "fork block task lowering requires a no-argument unit function call"
-                        .to_string(),
-                });
-                return None;
-            };
-            tail
+            body.tail.as_deref()
         } else {
+            None
+        };
+        if let Some(HirExpr {
+            kind: HirExprKind::Call { callee, args, .. },
+            site: call_site,
+            ..
+        }) = single_expr
+        {
+            if let HirExprKind::BindingRef { name, .. } = &callee.kind {
+                if self.module_fn_names.contains(name)
+                    || self.module_generic_fn_names.contains(name)
+                {
+                    let task_ty = ResolvedTy::Task(Box::new(ResolvedTy::Unit));
+                    return self.lower_spawned_call_task(callee, args, &task_ty, false, *call_site);
+                }
+            }
+        }
+
+        let Some(scope_place) = self.current_task_scope else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "fork block cancellation child".to_string(),
+                    construct: "fork block without current task scope".to_string(),
                     site,
                 },
-                note: "fork block task lowering currently supports exactly one \
-                       statement: a no-argument unit function call"
-                    .to_string(),
+                note: "fork block reached MIR without a scope-owned cancellation token".to_string(),
             });
             return None;
         };
-        let HirExprKind::Call { callee, args, .. } = &expr.kind else {
+        if !self.current_function_call_conv.carries_execution_context() {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "fork block cancellation child".to_string(),
+                    construct: format!(
+                        "cannot spawn fork block from `{}`",
+                        self.current_function_symbol
+                    ),
                     site,
                 },
-                note: "fork block task lowering currently supports a direct function call body"
-                    .to_string(),
+                note: "fork blocks require an enclosing execution context".to_string(),
             });
             return None;
+        }
+        if let Some(capture) = captures.iter().find(|capture| !capture.is_send) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "fork block non-Send capture".to_string(),
+                    site,
+                },
+                note: format!(
+                    "fork block capture `{}` is not Send and cannot cross the task boundary",
+                    capture.name
+                ),
+            });
+            return None;
+        }
+        if let Some(capture) = captures.iter().find(|capture| {
+            matches!(
+                capture.mode,
+                hew_types::ClosureCaptureMode::Borrow | hew_types::ClosureCaptureMode::BorrowMut
+            )
+        }) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "fork block borrowed capture".to_string(),
+                    site,
+                },
+                note: format!(
+                    "fork block cannot borrow parent binding `{}` across the task boundary",
+                    capture.name
+                ),
+            });
+            return None;
+        }
+
+        let body_expr = HirExpr {
+            node: body.node,
+            site,
+            ty: ResolvedTy::Unit,
+            value_class: ValueClass::BitCopy,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Block(body.clone()),
+            span: body.span.clone(),
         };
+        let (fn_symbol, env_ty, env_place, _suspends) = self.materialize_closure_env(
+            &body_expr,
+            &[],
+            &ResolvedTy::Unit,
+            &body_expr,
+            captures,
+            crate::closure_env::AllocationStrategy::ScopeOwned,
+        )?;
         let task_ty = ResolvedTy::Task(Box::new(ResolvedTy::Unit));
-        // Use the inner call's site (expr.site) so that generic call-site type
-        // arguments recorded by HIR for the inner call are visible to the
-        // spawn lowering path. The outer ForkBlock site differs from the inner
-        // Call site, and call_site_type_args is keyed on the inner site.
-        self.lower_spawned_call_task(callee, args, &task_ty, false, expr.site)
+        let task_place = self.alloc_local(task_ty);
+        self.push_runtime_call("hew_task_new", vec![], Some(task_place));
+        self.push_runtime_call("hew_task_scope_spawn", vec![scope_place, task_place], None);
+        self.push_instr(Instr::SpawnTaskClosure {
+            task: task_place,
+            fn_symbol,
+            env: env_place,
+            env_ty,
+            env_ownership: captures
+                .iter()
+                .map(|capture| {
+                    let ty = self.subst_ty(&capture.ty);
+                    match self.closure_env_capture_ownership(
+                        crate::closure_env::AllocationStrategy::ScopeOwned,
+                        &ty,
+                        Some(capture.binding),
+                        capture.mode,
+                    ) {
+                        ClosureEnvFieldOwnership::OwnsMoved => SpawnEnvFieldOwnership::OwnsMoved,
+                        ClosureEnvFieldOwnership::BorrowsOnly
+                        | ClosureEnvFieldOwnership::OwnsClonedOrRetained => {
+                            SpawnEnvFieldOwnership::BorrowsOnly
+                        }
+                    }
+                })
+                .collect(),
+        });
+        Some(task_place)
     }
 
     pub(crate) fn lower_scope_deadline(

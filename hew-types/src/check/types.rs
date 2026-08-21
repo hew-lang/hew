@@ -207,6 +207,9 @@ pub struct ExternMethodCallIdentity {
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
     pub expr_types: HashMap<SpanKey, Ty>,
+    /// Interpolation operands whose rendering selected an explicit `Display`
+    /// implementation. The value preserves alias identity for HIR dispatch.
+    pub interpolation_display_types: HashMap<SpanKey, Ty>,
     /// Total checker-authored ownership facts for accepted expression results.
     ///
     /// HIR projects this span-keyed table onto stable `SiteId`s. MIR consumes
@@ -1279,6 +1282,7 @@ impl Default for TypeCheckOutput {
     fn default() -> Self {
         Self {
             expr_types: HashMap::new(),
+            interpolation_display_types: HashMap::new(),
             produced_value_ownership: HashMap::new(),
             produced_value_dependencies: HashMap::new(),
             caller_visible_param_projections: HashSet::new(),
@@ -2548,6 +2552,7 @@ pub struct Checker {
     /// Checker-side accumulator for [`TypeCheckOutput::user_clone_record_seeds`].
     pub(super) user_clone_record_seeds: Vec<String>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
+    pub(super) interpolation_display_types: HashMap<SpanKey, Ty>,
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::produced_value_ownership`].
     pub(super) produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
@@ -3670,6 +3675,7 @@ impl Checker {
             warnings: Vec::new(),
             user_clone_record_seeds: Vec::new(),
             expr_types: HashMap::new(),
+            interpolation_display_types: HashMap::new(),
             produced_value_ownership: HashMap::new(),
             resolved_direct_call_ownership: HashMap::new(),
             resolved_method_call_ownership: HashMap::new(),

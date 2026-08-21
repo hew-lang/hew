@@ -10,9 +10,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 AUDIT = ROOT / "scripts/structural-authority-audit.py"
 INVENTORY_HEADER = "group\tform\tpath\tcount\tretirement_stage\treason\n"
-PRESENTATION_HEADER = (
-    "path\tline\tcolumn\tform\tcontext_form\tcategory\tretirement_stage\treason\n"
-)
 
 
 def run(
@@ -28,15 +25,11 @@ def set_inventory(root: Path, body: str = "") -> None:
     (root / "scripts/structural-authority-inventory.tsv").write_text(
         INVENTORY_HEADER + body
     )
-    presentation = root / "scripts/structural-authority-presentation.tsv"
 
 
 with tempfile.TemporaryDirectory() as temp:
     work = Path(temp)
     (work / "scripts").mkdir()
-    (work / "scripts/structural-authority-presentation.tsv").write_text(
-        PRESENTATION_HEADER
-    )
     source = work / "hew-mir/src/lower"
     source.mkdir(parents=True)
     target = source / "new_authority.rs"
@@ -71,10 +64,8 @@ with tempfile.TemporaryDirectory() as temp:
         "comments and strings must not create findings: " + result.stderr
     )
 
-    target.write_text("fn authority() { let _ = short_name(name); }\n")
-    result = run(work)
-    assert result.returncode != 0, "a new semantic short-name use must fail"
-    assert "short-name-identifier" in result.stderr
+    target.write_text('fn display(name: &str) { eprintln!("{}", short_name(name)); }\n')
+    assert run(work).returncode == 0, "presentation leaf extraction must stay ungated"
 
     target.write_text(
         "fn bad() { let _ = ResolvedTy::Named {\n"
@@ -144,48 +135,44 @@ with tempfile.TemporaryDirectory() as temp:
         "];\n"
     )
 
-    # Macro token trees are not call-expression ASTs, but their parsed
-    # identifier/field-identifier nodes remain mandatory inventory findings.
+    # Presentation leaf extraction remains outside the identity guard, including
+    # macro token trees.
     target.write_text('fn authority() { format!("{}", short_name(name)); }\n')
-    result = run(work)
-    assert result.returncode != 0, "short_name inside a production macro must fail"
-    assert "short-name-identifier" in result.stderr
+    assert run(work).returncode == 0
     target.write_text(
         'fn authority() { format!("{}", name.rsplit("::").next().unwrap_or(name)); }\n'
     )
-    result = run(work)
-    assert result.returncode != 0, "rsplit leaf extraction inside a macro must fail"
-    assert "leaf-rsplit-" in result.stderr
+    assert run(work).returncode == 0
 
     # Parsed cfg(test) module and item ranges are excluded, including macro
     # token trees and forbidden-looking type syntax nested inside them.
     target.write_text(
         "#[cfg(test)]\n"
         "mod tests {\n"
-        '    fn macro_authority() { format!("{}", short_name(name)); }\n'
-        '    fn macro_leaf() { format!("{}", name.rsplit("::").next()); }\n'
+        "    fn macro_authority() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
+        '    fn macro_leaf() { let leaf = name.rsplit("::").next().unwrap(); let _ = DefId::new(leaf); }\n'
         "    fn scalar() { let _: HashMap<SpanKey, SiteId> = HashMap::new(); }\n"
         "}\n"
         "#[cfg(test)]\n"
-        'fn item_macro() { format!("{}", short_name(name)); }\n'
+        "fn item_macro() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
         "fn production() {}\n"
     )
     assert run(work).returncode == 0, "parsed test-only module/items must be excluded"
 
     target.write_text(
         "#[cfg(all(test))]\n"
-        "fn all_single() { let _ = short_name(name); }\n"
+        "fn all_single() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
         '#[cfg(all(feature = "x", test))]\n'
-        "fn all_reordered() { let _ = short_name(name); }\n"
+        "fn all_reordered() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
     )
     assert run(work).returncode == 0, "all(...) test guards must be order-independent"
     target.write_text(
         '#[cfg(any(test, feature = "x"))]\n'
-        "fn any_guard() { let _ = short_name(name); }\n"
+        "fn any_guard() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
     )
     assert run(work).returncode != 0, "cfg(any(test, feature)) is production-capable"
     target.write_text(
-        "#[cfg(not(test))]\nfn non_test_guard() { let _ = short_name(name); }\n"
+        "#[cfg(not(test))]\nfn non_test_guard() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
     )
     assert run(work).returncode != 0, "cfg(not(test)) is production authority"
 
@@ -462,12 +449,17 @@ with tempfile.TemporaryDirectory() as temp:
     )
     assert run(work).returncode == 0, "test-only RC1 carriers must be excluded"
 
-    # hew-analysis is an audited production root, not a display-shaped escape.
+    # hew-analysis remains an audited production root for identity construction.
     target.write_text("fn production() {}\n")
     analysis = work / "hew-analysis/src/new_display.rs"
     analysis.parent.mkdir(parents=True)
-    analysis.write_text('fn display() { format!("{}", short_name(name)); }\n')
-    assert run(work).returncode != 0, "hew-analysis leaf-name seams must be audited"
+    analysis.write_text(
+        "fn authority(name: &str) {\n"
+        "    let leaf = short_name(name);\n"
+        "    let _ = DefId::new(leaf);\n"
+        "}\n"
+    )
+    assert run(work).returncode != 0, "hew-analysis identity sinks must be audited"
     analysis.unlink()
 
     # Leaf ownership is forbidden when it flows into an executable identity
@@ -558,15 +550,8 @@ with tempfile.TemporaryDirectory() as temp:
     target.write_text(
         'fn display(current_module: &str) { eprintln!("{}", short_name(current_module)); }\n'
     )
-    display_inventory = (
-        "semantic-leaf-name\tshort-name-identifier\t"
-        "hew-mir/src/lower/new_authority.rs\t1\tstage-4\t"
-        "display-only short name fixture\n"
-    )
-    set_inventory(work, display_inventory)
-    assert run(work).returncode == 0, (
-        "an inventoried display-only short_name must not become an executable sink"
-    )
+    set_inventory(work)
+    assert run(work).returncode == 0, "display-only short_name must stay ungated"
 
     target.write_text(
         "fn canonical(declaring_module: &str, signature_key: &str) {\n"
@@ -575,12 +560,7 @@ with tempfile.TemporaryDirectory() as temp:
         "    let _ = DefId::new(declaration);\n"
         "}\n"
     )
-    canonical_inventory = (
-        "semantic-leaf-name\tleaf-rsplit-field\t"
-        "hew-mir/src/lower/new_authority.rs\t1\tstage-4\t"
-        "canonical owner reattachment fixture\n"
-    )
-    set_inventory(work, canonical_inventory)
+    set_inventory(work)
     assert run(work).returncode == 0, (
         "an item leaf reattached to a resolved full owner must remain canonical"
     )
@@ -626,78 +606,17 @@ with tempfile.TemporaryDirectory() as temp:
             f"source-to-sites collection {collection_value} must remain allowed"
         )
 
-    # Presentation is exempt only under the exact parsed debug-builder call
-    # context. A same-location substitution of an authority call is debt.
+    # A leaf may be displayed freely, but it may not mint compiler identity.
     target.write_text(
-        "fn f() { dctx.di_builder.create_enumerator(short_name(name), 0, false); }\n"
-    )
-    (work / "scripts/structural-authority-presentation.tsv").write_text(
-        PRESENTATION_HEADER
-        + "hew-mir/src/lower/new_authority.rs\t1\t44\tshort-name-identifier\t"
-        "debug-enumerator-argument\tdebug-metadata\tpost-stage-5\t"
-        "test debug display\n"
+        "fn bad(name: &str) {\n"
+        "    let leaf = short_name(name);\n"
+        "    let _ = DefId::new(leaf);\n"
+        "}\n"
     )
     set_inventory(work)
-    assert run(work).returncode == 0, "an exact debug AST context may be exempted"
-    target.write_text(
-        "fn f() { dctx.di_builder.semantic_resolver(short_name(name), 0, false); }\n"
-    )
     result = run(work)
-    assert result.returncode != 0, "same-location semantic substitution must fail"
-    assert "presentation AST context disappeared" in result.stderr
-    assert "short-name-identifier" in result.stderr
-
-    # An exact presentation finding cannot hide a semantic sibling on its line.
-    target.write_text(
-        "fn f() { dctx.di_builder.create_enumerator(short_name(name), 0, false); let _ = short_name(key); }\n"
-    )
-    result = run(work)
-    assert result.returncode != 0, "same-line presentation must not exempt semantic use"
-    assert "expected 0, found 1" in result.stderr
-
-    # The exemption binds the exact designated debug argument expression. A
-    # nested semantic sibling elsewhere in that same debug call remains debt.
-    target.write_text(
-        "fn f() { dctx.di_builder.create_enumerator(short_name(name), semantic(short_name(key)), false); }\n"
-    )
-    result = run(work)
-    assert result.returncode != 0, (
-        "a nested sibling in one debug call must remain semantic"
-    )
-    assert "expected 0, found 1" in result.stderr
-
-    # Restore an empty presentation baseline and prove syntax-form drift,
-    # corpus shrink, count drift, and arbitrary retirement-stage edits fail.
-    (work / "scripts/structural-authority-presentation.tsv").write_text(
-        PRESENTATION_HEADER
-    )
-    target.write_text("fn authority() { let _ = short_name(name); }\n")
-    inventory_row = (
-        "semantic-leaf-name\tshort-name-identifier\t"
-        "hew-mir/src/lower/new_authority.rs\t1\tstage-4\ttest fixture\n"
-    )
-    set_inventory(work, inventory_row)
-    assert run(work).returncode == 0, "a fully explicit current inventory must pass"
-    target.write_text(
-        'fn authority() { let _ = name.rsplit("::").next().unwrap_or(name); }\n'
-    )
-    result = run(work)
-    assert result.returncode != 0, "short_name-to-rsplit form drift must fail"
-    assert (
-        "short-name-identifier" in result.stderr
-        and "leaf-rsplit-field" in result.stderr
-    )
-    target.write_text("fn authority() {}\n")
-    assert run(work).returncode != 0, "inventory shrink must fail"
-    target.write_text("fn authority() { let _ = short_name(name); }\n")
-    drifted_row = inventory_row.replace("\t1\tstage-4", "\t2\tstage-4")
-    set_inventory(work, drifted_row)
-    assert run(work).returncode != 0, "inventory count drift must fail"
-    wrong_stage = inventory_row.replace("\tstage-4\t", "\tstage-5\t")
-    set_inventory(work, wrong_stage)
-    result = run(work)
-    assert result.returncode != 0, "non-canonical retirement stages must fail"
-    assert "requires stage-4" in result.stderr
+    assert result.returncode != 0, "a leaf-derived DefId must fail"
+    assert "semantic-owner-shortening-sink/def-id" in result.stderr
 
     # Preserve qualified-string identity under every binding/assignment form;
     # the authority is the parsed format macro, not a particular let shape.

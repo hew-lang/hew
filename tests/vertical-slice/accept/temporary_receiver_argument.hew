@@ -1,0 +1,20 @@
+fn inspect(values: Vec<string>) -> i64 {
+    var count = 0;
+    for value in values {
+        if value.len() > 0 {
+            count = count + 1;
+        }
+    }
+    count
+}
+
+fn main() -> i64 {
+    let map: HashMap<string, string> = HashMap.new();
+    var i = 0;
+    while i < 3 {
+        map.insert(f"key-{i}", f"value-{i}");
+        i = i + 1;
+    }
+
+    if inspect(map.keys()) == 3 { 0 } else { 93 }
+}

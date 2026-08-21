@@ -16,6 +16,10 @@ source "${REPO_ROOT}/scripts/lib/timeout.sh"
 PREFLIGHT_TIMEOUT_DOCS="${PREFLIGHT_TIMEOUT_DOCS:-30}"
 PREFLIGHT_TIMEOUT_NARROW="${PREFLIGHT_TIMEOUT_NARROW:-180}"
 PREFLIGHT_TIMEOUT_FALLBACK="${PREFLIGHT_TIMEOUT_FALLBACK:-600}"
+# Cold artifact construction is intentionally outside the command-tier budgets.
+# Keep its watchdog independent and generous, while applying the same
+# host-parallelism scaling as every timed preflight step.
+PREFLIGHT_TIMEOUT_WARMUP="${PREFLIGHT_TIMEOUT_WARMUP:-900}"
 
 TIMEOUT_CALIBRATION_PARALLELISM=16
 HOST_PARALLELISM=1
@@ -68,14 +72,21 @@ print_timeout_scaling() {
 # Per-command stuck ceilings from the local preflight timing audit.  These are
 # measurement-only hang budgets, not coverage skips or bypasses.  The effective
 # timeout is max(command floor, lane tier), so narrow lanes get enough time for
-# known-long suites while the fallback's 600s ceiling remains unchanged.
+# known-long suites while retaining finite stuck ceilings for every command.
 command_timeout_floor() {
     local cmd="$1"
     case "$cmd" in
         "make ci-preflight-smoke") echo 420 ;;
-        "make lint") echo 90 ;;
+        # A warm lint run measured 698 s on the 16-core developer machine.
+        # Add roughly 35% cache and host-load headroom, rounded to 945 s, while
+        # retaining a finite stuck ceiling.
+        "make lint") echo 945 ;;
         "make playground-check") echo 150 ;;
-        "make test") echo 360 ;;
+        # A warm workspace make test run measured 1129 s for 14,050 nextest
+        # tests on the 16-core developer machine.  Add roughly 35% cache and
+        # host-load headroom, rounded to 1530 s, while retaining a finite stuck
+        # ceiling.
+        "make test") echo 1530 ;;
         # test-compiler-pipeline carries the hew-cli consumer corpus (compiled
         # leak/drop oracles + e2e suites).  The 600 s figure came from ~234 s
         # on a warm 16-core developer machine; hosted runners have far fewer
@@ -128,6 +139,10 @@ command_timeout() {
     scale_timeout_budget "$baseline"
 }
 
+warmup_timeout() {
+    scale_timeout_budget "$PREFLIGHT_TIMEOUT_WARMUP"
+}
+
 DRY_RUN=0
 FAIL_FAST=0
 BASE_REF=""
@@ -137,6 +152,8 @@ LANE_REASON=""
 CHANGED_FILES=()
 CHANGED_CRATE_DIRS=()
 COMMANDS=()
+WARMUP_COMMANDS=()
+WARMUP_NOTES=()
 PROFILE_JSON_PATH=""
 GITHUB_OUTPUT_PATH=""
 
@@ -151,8 +168,8 @@ Dispatch a conservative local CI preflight based on changed files.
 - By default, all selected commands run and failures are reported together at the end.
 - --fail-fast           Stop after the first failed command.
 - If the first-slice routing is unclear, the script runs the broader local check profile.
-- --profile-json <path> Write per-command timing as a JSON array to <path> (one object per
-                        command, with "cmd", "elapsed_s", "status" fields).
+- --profile-json <path> Write command and warm-up timing as a JSON array to <path> (one
+                        object per step, with "cmd", "elapsed_s", "status", "phase" fields).
 - --github-output <path> Append the selected profile and compile requirement as
                          GitHub Actions outputs.
 EOF
@@ -1152,6 +1169,149 @@ case "$LANE" in
         ;;
 esac
 
+# Warm artifact construction before applying per-command watchdog budgets.  The
+# timed checks retain their finite hang ceilings; this separates one-time
+# compilation from the gate measurements those ceilings are calibrated for.
+#
+# Keep this list derived from the chosen commands rather than from a lane-wide
+# superset: a parser diff needs the native compiler and WASM runtime, while a
+# documentation diff needs neither.  An unrecognised command falls back to the
+# complete artifact set and leaves a visible note so its mapping can be added.
+#
+# A warm-up must build the artifacts its command needs THE SAME WAY the command
+# builds them.  `cargo build --all-targets` is not that way: the root
+# `[profile.dev] panic = "abort"` cannot apply to a libtest harness, so mixing
+# lib and test targets in one invocation fails outright
+# ("requires panic strategy abort which is incompatible with this crate's
+# strategy of unwind" on hew-sandbox-wasm, plus a duplicate-unit serde mismatch
+# in xtask).  Test-target warm-ups therefore mirror the real gate: the same
+# nextest/cargo-test invocation with `--no-run`, exactly as `make test` builds
+# its binaries.  Clippy warms through clippy — its check artifacts are a
+# separate fingerprint from rustc's — with the trailing `-- -D warnings` dropped
+# so a lint failure surfaces as the timed gate's failure, not as an aborted
+# warm-up.  Dropping the deny flag does not cost the warm: it only re-checks the
+# top-level packages, dependencies stay cached.
+WORKSPACE_TEST_WARMUP="cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run"
+
+add_warmup_command() {
+    local candidate="$1"
+    local existing
+    for existing in "${WARMUP_COMMANDS[@]+"${WARMUP_COMMANDS[@]}"}"; do
+        [[ "$existing" == "$candidate" ]] && return 0
+    done
+    WARMUP_COMMANDS+=("$candidate")
+}
+
+add_full_warmup() {
+    local cmd="$1"
+    add_warmup_command "$WORKSPACE_TEST_WARMUP"
+    add_warmup_command "make hew"
+    add_warmup_command "make runtime"
+    add_warmup_command "make stdlib"
+    add_warmup_command "make wasm-runtime"
+    WARMUP_NOTES+=("$cmd has no artifact mapping; using the full warm-up set")
+}
+
+map_warmup_artifacts() {
+    local cmd="$1"
+    case "$cmd" in
+        "cargo fmt "*)
+            ;;
+        "cargo clippy "*)
+            add_warmup_command "${cmd%% -- *}"
+            ;;
+        "cargo nextest run "*)
+            add_warmup_command "$cmd --no-run"
+            ;;
+        "make test-cabi")
+            add_warmup_command "make test-cabi-build"
+            ;;
+        "make test-runtime-unit")
+            add_warmup_command "cargo nextest run --profile ci -p hew-runtime --no-default-features --no-run"
+            ;;
+        "make playground-check")
+            add_warmup_command "cargo test -p hew-wasm --no-run"
+            ;;
+        "make grammar")
+            add_warmup_command "$WORKSPACE_TEST_WARMUP"
+            ;;
+        "make structural-lint")
+            add_warmup_command "scripts/ast-grep-lint.sh --bootstrap --install-only"
+            ;;
+        "make lint")
+            # `make lint` bootstraps ast-grep and then runs
+            # `cargo clippy --workspace --tests -- -D warnings`; warm both.
+            add_warmup_command "scripts/ast-grep-lint.sh --bootstrap --install-only"
+            add_warmup_command "cargo clippy --workspace --tests"
+            ;;
+        "make hew-native wasm-runtime")
+            add_warmup_command "make hew"
+            add_warmup_command "make wasm-runtime"
+            ;;
+        "make hew"|"make test-doc-examples"|"make test-stdlib-ratchet"|"make checked-mir-verify"|"make ll-diff"|"make hew-check-all"|"make hew-fmt-property")
+            add_warmup_command "make hew"
+            ;;
+        "make runtime")
+            add_warmup_command "make runtime"
+            ;;
+        "make stdlib"|"scripts/check-libhew-fresh.sh")
+            add_warmup_command "make stdlib"
+            ;;
+        "make wasm-runtime")
+            add_warmup_command "make wasm-runtime"
+            ;;
+        "make test-compiler-pipeline"|"make test-opaque-resource-lifecycle-matrix"|"make test-opaque-resource-lifecycle-matrix-external")
+            add_warmup_command "make hew"
+            add_warmup_command "make stdlib"
+            add_warmup_command "make wasm-runtime"
+            ;;
+        "make test-vertical-slice"|"make test-pkg-import"|"make test-package-install"|"make fuzz-oracle"|"make fuzz-oracle-selftest"|"make test-hew-ratchet"|"make test-core-matrix"|"make test-o2-differential"|"make test-ux-examples"|"make test-surface-examples"|"make observe-functional-test"|"make mqtt-broker-e2e"|"make libhew-link-race-test"|"make sandbox-parity")
+            add_warmup_command "make hew"
+            add_warmup_command "make runtime"
+            add_warmup_command "make stdlib"
+            ;;
+        "make checked-mir-run")
+            add_warmup_command "make hew"
+            add_warmup_command "make runtime"
+            add_warmup_command "make stdlib"
+            ;;
+        "make leak-scan"|"make freebsd-workflow-contract-check"|"make test-release-workflow-contract"|"make test-stdlib-execution-proofs"|"make o2-differential-selftest"|"make doc-ratchet-selftest"|"make check-sanitizer-gate"|"make check-gate-reachability"|"make test-leak-oracle-selftest"|"make ll-identity-selftest")
+            ;;
+        "make test")
+            # Mirror the target's own order: wasm-runtime/runtime/libhew first,
+            # then the nextest binary build.
+            add_warmup_command "make hew"
+            add_warmup_command "make runtime"
+            add_warmup_command "make stdlib"
+            add_warmup_command "make wasm-runtime"
+            add_warmup_command "$WORKSPACE_TEST_WARMUP"
+            ;;
+        *)
+            add_full_warmup "$cmd"
+            ;;
+    esac
+}
+
+for cmd in "${COMMANDS[@]}"; do
+    map_warmup_artifacts "$cmd"
+done
+
+# Test-only warm-up replacement.  Keep this behind the same explicit sentinel
+# as command replacement so normal preflight invocations always warm real
+# artifacts.
+if [[ -n "${PREFLIGHT_TEST_WARMUP_COMMANDS:-}" ]]; then
+    if [[ "${PREFLIGHT_TEST_ALLOW_OVERRIDE:-}" != "1" ]]; then
+        die "PREFLIGHT_TEST_WARMUP_COMMANDS requires PREFLIGHT_TEST_ALLOW_OVERRIDE=1 for test-only use; unset PREFLIGHT_TEST_WARMUP_COMMANDS to run the normal preflight."
+    fi
+    echo "warning: PREFLIGHT_TEST_WARMUP_COMMANDS override active (test-only); replacing warm-up commands." >&2
+    WARMUP_COMMANDS=()
+    WARMUP_NOTES=()
+    while IFS= read -r test_cmd; do
+        [[ -n "$test_cmd" ]] || continue
+        WARMUP_COMMANDS+=("$test_cmd")
+    done <<< "$PREFLIGHT_TEST_WARMUP_COMMANDS"
+fi
+
 if [[ -n "$GITHUB_OUTPUT_PATH" ]]; then
     {
         printf 'profile=%s\n' "$PROFILE_LABEL"
@@ -1198,6 +1358,16 @@ if ! has_commands; then
     exit 0
 fi
 
+if [[ ${#WARMUP_COMMANDS[@]} -gt 0 ]]; then
+    echo "Warm-up:"
+    for cmd in "${WARMUP_COMMANDS[@]}"; do
+        echo "  - $cmd"
+    done
+    for note in "${WARMUP_NOTES[@]+"${WARMUP_NOTES[@]}"}"; do
+        echo "  ! $note"
+    done
+fi
+
 echo "Commands:"
 for cmd in "${COMMANDS[@]}"; do
     if (( DRY_RUN == 1 )); then
@@ -1231,6 +1401,55 @@ _json_entries=()
 
 _elapsed_s=0
 
+append_profile_entry() {
+    local cmd="$1"
+    local elapsed="$2"
+    local status="$3"
+    local phase="$4"
+    _json_entries+=("{\"cmd\":$(printf '%s' "$cmd" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),\"elapsed_s\":${elapsed},\"status\":${status},\"phase\":$(printf '%s' "$phase" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}")
+}
+
+PREFLIGHT_WARMUP_ELAPSED=0
+PREFLIGHT_WARMUP_STATUS=0
+
+run_warmup() {
+    local cmd
+    local start=$SECONDS
+    local command_start
+    local command_elapsed
+    local cmd_timeout
+    local status=0
+
+    echo ""
+    echo "==> warm-up"
+    for cmd in "${WARMUP_COMMANDS[@]}"; do
+        echo "    $cmd"
+        command_start=$SECONDS
+        cmd_timeout="$(warmup_timeout)"
+        status=0
+        run_in_pgroup_with_timeout "$cmd_timeout" "$cmd" || status=$?
+        command_elapsed=$(( SECONDS - command_start ))
+        append_profile_entry "$cmd" "$command_elapsed" "$status" "warm-up"
+        if [[ "$status" -eq 137 || "$status" -eq 143 ]]; then
+            echo "==> TIMEOUT: '$cmd' exceeded ${cmd_timeout}s warm-up budget and was killed."
+        fi
+        if [[ "$status" -ne 0 ]]; then
+            break
+        fi
+    done
+
+    PREFLIGHT_WARMUP_ELAPSED=$(( SECONDS - start ))
+    PREFLIGHT_WARMUP_STATUS="$status"
+
+    if [[ "$status" -ne 0 ]]; then
+        echo "<-- warm-up  elapsed ${PREFLIGHT_WARMUP_ELAPSED}s  FAILED (exit $status)"
+    else
+        echo "<-- warm-up  elapsed ${PREFLIGHT_WARMUP_ELAPSED}s  ok"
+    fi
+
+    return "$status"
+}
+
 run_timed_command() {
     local cmd="$1"
     local cmd_timeout
@@ -1258,8 +1477,7 @@ run_timed_command() {
         echo "<-- $cmd  elapsed ${_elapsed_s}s  ok"
     fi
 
-    # Accumulate JSON entry.
-    _json_entries+=("{\"cmd\":$(printf '%s' "$cmd" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),\"elapsed_s\":${_elapsed_s},\"status\":${status}}")
+    append_profile_entry "$cmd" "$_elapsed_s" "$status" "command"
 
     return "$status"
 }
@@ -1269,31 +1487,43 @@ PREFLIGHT_EXECUTED_COMMANDS=()
 PREFLIGHT_CMD_ELAPSED=()
 PREFLIGHT_CMD_STATUS=()
 STOPPED_EARLY=0
-for cmd in "${COMMANDS[@]}"; do
-    status=0
-    if run_timed_command "$cmd"; then
+if [[ ${#WARMUP_COMMANDS[@]} -gt 0 ]] && ! run_warmup; then
+    PREFLIGHT_FAILURES+=("warm-up")
+    STOPPED_EARLY=1
+else
+    for cmd in "${COMMANDS[@]}"; do
         status=0
-    else
-        status=$?
-        PREFLIGHT_FAILURES+=("$cmd")
-    fi
+        if run_timed_command "$cmd"; then
+            status=0
+        else
+            status=$?
+            PREFLIGHT_FAILURES+=("$cmd")
+        fi
 
-    PREFLIGHT_EXECUTED_COMMANDS+=("$cmd")
-    PREFLIGHT_CMD_ELAPSED+=("$_elapsed_s")
-    PREFLIGHT_CMD_STATUS+=("$status")
+        PREFLIGHT_EXECUTED_COMMANDS+=("$cmd")
+        PREFLIGHT_CMD_ELAPSED+=("$_elapsed_s")
+        PREFLIGHT_CMD_STATUS+=("$status")
 
-    if (( status != 0 && FAIL_FAST == 1 )); then
-        STOPPED_EARLY=1
-        echo "==> Stopping after first failed command (--fail-fast)."
-        break
-    fi
-done
+        if (( status != 0 && FAIL_FAST == 1 )); then
+            STOPPED_EARLY=1
+            echo "==> Stopping after first failed command (--fail-fast)."
+            break
+        fi
+    done
+fi
 
 PREFLIGHT_OVERALL_ELAPSED=$(( SECONDS - PREFLIGHT_OVERALL_START ))
 
 # Summary table.
 echo ""
 echo "==> Preflight summary (${PREFLIGHT_OVERALL_ELAPSED}s total)"
+if [[ ${#WARMUP_COMMANDS[@]} -gt 0 ]]; then
+    warmup_status_label="ok"
+    if [[ "$PREFLIGHT_WARMUP_STATUS" -ne 0 ]]; then
+        warmup_status_label="FAILED"
+    fi
+    printf "    warm-up  %ss  [%s]\n" "$PREFLIGHT_WARMUP_ELAPSED" "$warmup_status_label"
+fi
 i=0
 for cmd in "${PREFLIGHT_EXECUTED_COMMANDS[@]+"${PREFLIGHT_EXECUTED_COMMANDS[@]}"}"; do
     elapsed="${PREFLIGHT_CMD_ELAPSED[$i]:-?}"

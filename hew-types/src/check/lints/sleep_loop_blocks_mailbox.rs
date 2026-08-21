@@ -271,7 +271,7 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let StringPart::Expr(expr) = part {
+                if let StringPart::Expr(expr) | StringPart::StructuralExpr(expr) = part {
                     find_in_expr(ctx, levels, &expr.0, out);
                 }
             }
@@ -680,7 +680,9 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         }
         Expr::InterpolatedString(parts) => parts.iter().any(|part| match part {
             StringPart::Literal(_) => false,
-            StringPart::Expr(expr) => bounded_expr_has_sleep(&expr.0),
+            StringPart::Expr(expr) | StringPart::StructuralExpr(expr) => {
+                bounded_expr_has_sleep(&expr.0)
+            }
         }),
         Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
             items.iter().any(|item| bounded_expr_has_sleep(&item.0))
@@ -931,7 +933,9 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
         }
         Expr::InterpolatedString(parts) => parts.iter().any(|part| match part {
             StringPart::Literal(_) => false,
-            StringPart::Expr(expr) => expr_assigns_identifier(&expr.0, name),
+            StringPart::Expr(expr) | StringPart::StructuralExpr(expr) => {
+                expr_assigns_identifier(&expr.0, name)
+            }
         }),
         Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => items
             .iter()

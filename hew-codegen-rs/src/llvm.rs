@@ -1406,6 +1406,7 @@ fn wasm_excluded_call_family(
         | F::StringCharAtUtf8
         | F::StringCharCount
         | F::StringConcat
+        | F::StructuralFormat
         | F::StringFind
         | F::StringGet
         | F::StringIndex
@@ -2020,6 +2021,7 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// were a plain integer — defensive fall-back used by hand-built test
     /// fixtures that do not register a record layout for every named local.
     pub(crate) record_field_resolved_tys: &'a HashMap<String, Vec<ResolvedTy>>,
+    pub(crate) record_field_names: &'a HashMap<String, Vec<String>>,
     /// Module-wide dyn-trait vtable registry, shared by reference from
     /// `pipeline.dyn_vtable_registry`. Consumed by
     /// `Instr::CoerceToDynTrait` to resolve the
@@ -2780,7 +2782,7 @@ pub(crate) fn is_unsigned_integer_ty(ty: &ResolvedTy) -> bool {
     )
 }
 
-fn build_const_string_ptr<'ctx>(
+pub(crate) fn build_const_string_ptr<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     value: &str,
@@ -22348,6 +22350,9 @@ fn call_destination_has_specialized_crash_cleanup_lifecycle(
             matches!(
                 family,
                 Family::VecGet(hew_types::runtime_call::VecGetElem::Clone)
+                    | Family::VecClone
+                    | Family::VecCloneLayout
+                    | Family::VecCloneOwned
             ) || matches!(
                 family.abi_shape(),
                 Shape::HashCollectionLayoutOp | Shape::HashMapLayoutGet
@@ -34654,6 +34659,7 @@ fn lower_function<'ctx>(
         enum_layouts,
         indirect_enum_owned_locals,
         record_field_resolved_tys,
+        record_field_names,
         dyn_vtable_registry,
         const_globals,
         borrow_mode,

@@ -43,6 +43,7 @@ permissions:
 env:
   LLVM_VERSION: "22"
   LLVM_FULL_VERSION: "22.1.5"
+  WASMTIME_VERSION: "v47.0.2"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -146,7 +147,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
-          tools: nextest
+          tools: nextest@0.9.120
           cache-shared-key: build-test-linux
 
       - name: Build all release crates
@@ -283,7 +284,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
-          tools: nextest
+          tools: nextest@0.9.120
           cache-shared-key: build-test-linux
 
       - name: Build all release crates
@@ -369,7 +370,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
-          tools: nextest
+          tools: nextest@0.9.120
           cache-shared-key: build-test-macos
 
       - name: Install LLVM
@@ -462,7 +463,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
-          tools: nextest
+          tools: nextest@0.9.120
           cache-shared-key: build-test-windows
 
       - name: Install LLVM 22
@@ -499,7 +500,7 @@ jobs:
           # installer: the installer insists on editing a shell profile and
           # fails the step even after extracting successfully. PATH for the
           # later steps comes from GITHUB_PATH.
-          $version = "v47.0.3"
+          $version = "${{ env.WASMTIME_VERSION }}"
           $dest = Join-Path $env:RUNNER_TEMP "wasmtime"
           $zip = Join-Path $env:RUNNER_TEMP "wasmtime.zip"
           $url = "https://github.com/bytecodealliance/wasmtime/releases/download/$version/wasmtime-$version-x86_64-windows.zip"
@@ -623,7 +624,7 @@ jobs:
             rm -f _smoke.hew _smoke_bin
 
             # cargo-nextest is not in FreeBSD pkg yet; install once via cargo
-            cargo install cargo-nextest --locked
+            cargo install cargo-nextest --locked --version 0.9.120
 
             cargo nextest run --workspace \
               --exclude hew-wasm --exclude hew-cabi \

@@ -463,9 +463,9 @@ def semantic_owner_shortening_findings(
         for match in run_query(ast_grep, root, pattern=pattern):
             callee = "".join(single_meta(match, "F").split())
             leaf = callee.split("::")[-1]
-            if callee.endswith("DefId::new"):
+            if callee.endswith("DefId::legacy_reconstruct_from_full_path"):
                 form = "def-id"
-            elif callee.endswith("NominalId::new"):
+            elif callee.endswith("NominalId::legacy_reconstruct_from_full_path"):
                 form = "nominal-id"
             elif "CallTarget::" in callee:
                 form = "call-target"

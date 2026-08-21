@@ -219,7 +219,7 @@ fn user_call_target_without_hir_symbol_map_fails_closed() {
     let hew_hir::HirExprKind::Call { target, .. } = &mut tail.kind else {
         panic!("main tail must be an ordinary direct call: {tail:#?}");
     };
-    *target = CallTarget::User(DefId::new("missing.owner.helper"));
+    *target = CallTarget::User(DefId::for_test("missing.owner.helper"));
 
     let pipeline = lower_hir_module(&output.module);
     assert!(

@@ -72,10 +72,13 @@ jobs:
           head_sha=$(jq -r '.workflow_runs[0].head_sha // "unknown"' main-run.json)
           run_url=$(jq -r '.workflow_runs[0].html_url // ""' main-run.json)
           echo "Last completed CI run on main: ${conclusion} at ${head_sha}"
+          # Only a run that FAILED is evidence that main is broken. A cancelled
+          # run is what the concurrency group does when a newer commit lands,
+          # and a repository that blocked every branch on one of those would
+          # deadlock on routine traffic rather than on a defect.
           case "${conclusion}" in
-            success|unknown|skipped)
-              exit 0
-              ;;
+            failure|timed_out) ;;
+            *) exit 0 ;;
           esac
           if printf '%s' "${PR_LABELS}" | jq -e 'index("fix-main")' > /dev/null; then
             echo "::notice::main is ${conclusion} at ${head_sha}; running anyway because this pull request is labelled fix-main."

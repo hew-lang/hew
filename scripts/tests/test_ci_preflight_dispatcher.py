@@ -1406,6 +1406,9 @@ def test_every_job_waits_for_a_green_main() -> None:
     """
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
     assert "main is red at ${head_sha}; fix main first" in workflow, workflow
+    # Blocking on anything but a failed run deadlocks the repository on the
+    # cancellations the concurrency group produces as a matter of course.
+    assert "failure|timed_out" in workflow, workflow
 
     # The reachability gate's stdlib-only workflow parser: no Python gate in
     # scripts/ may need a pip step to run on a fresh checkout.

@@ -1844,7 +1844,57 @@ impl Builder {
     /// spelled without naming who took ownership and why, so the fact is never
     /// erased at the retraction seam. Every production consume routes through
     /// here (via [`Builder::mark_binding_moved`]).
+    /// Record that `binding`'s ownership obligation has been discharged by a
+    /// TRANSFER, at lowering time.
+    ///
+    /// This is the lowest seam the transfer passes through, so it is where the
+    /// affine refcounted-handle (`Rc` / `Weak`) and user `#[resource]` release
+    /// flag is written: the `ConsumedAt` disposition and the runtime transfer
+    /// record are set together, by one statement, and a caller cannot record
+    /// one without the other. `mark_binding_moved` funnels here, and so do the
+    /// synthetic produced-value owner handoffs that bypass it.
+    ///
+    /// WHY a runtime flag and not the disposition alone. A flagged binding is
+    /// deliberately KEPT in `owned_locals` across its consume so the guard can
+    /// decide per control-flow path, so the disposition below does not retire
+    /// its drop — only the flag can. The dataflow `Consumed` state suffices for
+    /// a consume that DOMINATES the exit (`filter_drops_by_state` excludes a
+    /// `Consumed` binding), but a conditional one meets `Live` at the join and
+    /// yields `MaybeConsumed`, which the same filter admits as live. The drop
+    /// then fires on the path that already transferred the handle, guard still
+    /// reading 0 — `match flag { true => { let v: Vec<Rc<T>> = [shared]; .. }
+    /// false => .. }` aborted with `Rc double-free`.
+    ///
+    /// A no-op for every unflagged binding.
     pub(crate) fn set_owned_local_consumed(
+        &mut self,
+        binding: BindingId,
+        transferee: Option<Place>,
+        site: DischargeSite,
+    ) {
+        if let Some(flag) = self.affine_release_flags.get(&binding).copied() {
+            self.instructions.push(Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            });
+        }
+        self.set_owned_local_consumed_post_lowering(binding, transferee, site);
+    }
+
+    /// Disposition-only form of [`Self::set_owned_local_consumed`], for a
+    /// handoff discovered AFTER block building has finished.
+    ///
+    /// The finalized-MIR `string` / `bytes` retain-site derivations run over
+    /// `raw.blocks` once the builder's instruction buffer is closed, so a
+    /// `push_instr` from there would append to a stream nothing emits. Those
+    /// passes are also the wrong authority for the flag: they resolve
+    /// CoW-carrier handoffs, whose release accounting is the retain-site
+    /// derivation's, never an affine handle's. Recording the disposition alone
+    /// is therefore both necessary and sufficient there.
+    ///
+    /// Every LOWERING-time consume must use [`Self::set_owned_local_consumed`]
+    /// instead, so the transfer record cannot go missing.
+    pub(crate) fn set_owned_local_consumed_post_lowering(
         &mut self,
         binding: BindingId,
         transferee: Option<Place>,
@@ -3165,34 +3215,6 @@ impl Builder {
         // and releases. The flag is reset to 0 after that overwrite's store. A
         // no-op for every unflagged binding (the common case).
         if let Some(flag) = self.overwrite_guard_flags.get(&id).copied() {
-            self.instructions.push(Instr::ConstI64 {
-                dest: flag,
-                value: 1,
-            });
-        }
-        // The affine refcounted-handle (`Rc` / `Weak`) and user `#[resource]`
-        // release flag belongs on this same seam, for the same reason its two
-        // siblings above do. A flagged binding is deliberately KEPT in
-        // `owned_locals` across its consume so the guard can decide per path,
-        // so `set_owned_local_consumed` below does NOT retire its drop — the
-        // runtime flag is the only thing that can. Recording the transfer only
-        // at the primary `Use{Consume}` lowering left every SYNTHETIC consume
-        // site silent: the array-literal desugar's element move
-        // (`consume_owned_vec_move_array_element`), the actor-message payload,
-        // the by-move closure capture and the returned-binding move all record
-        // the transfer as a dataflow `Consume` alone. That is enough for a
-        // straight-line consume — `filter_drops_by_state` excludes a
-        // `Consumed` binding — but a CONDITIONAL one meets `Live` at the join
-        // and yields `MaybeConsumed`, which the same filter admits as live. The
-        // drop then fires on the path that already transferred the handle, with
-        // the guard still reading 0: `match flag { true => { let v: Vec<Rc<T>>
-        // = [shared]; .. } false => .. }` aborted with `Rc double-free`.
-        //
-        // Setting it here rather than at each site is what closes the class:
-        // every consume that retires ownership already funnels through this
-        // seam, so a new transfer surface cannot be added without the transfer
-        // being recorded. A no-op for every unflagged binding.
-        if let Some(flag) = self.affine_release_flags.get(&id).copied() {
             self.instructions.push(Instr::ConstI64 {
                 dest: flag,
                 value: 1,

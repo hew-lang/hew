@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -665,27 +666,101 @@ def _dispatchable_make_targets() -> set[str]:
 
 
 _COMPILING_COMMAND = re.compile(r"\bcargo\s+(?:build|run|test|nextest|clippy)\b")
-_SHELL_SCRIPT = re.compile(r"(?:^|[\s\"'=])((?:scripts|tests)/[\w./-]+\.sh)")
+_SCRIPT_REF = re.compile(r"(?:^|[\s\"'=])((?:scripts|tests)/[\w./-]+\.(?:sh|py))")
+_MAKE_CALL = re.compile(r"(?:^|[\s;&|(\"'])(?:\$\(MAKE\)|make)\s+([A-Za-z][\w.-]*)")
+_RUNS_A_SUBPROCESS = re.compile(
+    r"subprocess\.|check_call|check_output|os\.system|Popen"
+)
+_PYTHON_CARGO = re.compile(r"\bcargo\b[\s\"',\]]*\b(?:build|run|test|nextest|clippy)\b")
 
 
-def _script_compiles(path: Path) -> str | None:
-    """The first line of a shell script that actually invokes a cargo build.
+def _is_message(line: str) -> bool:
+    """Text a script prints is not a command a script runs.
 
-    Message text is not an invocation: every one of these scripts ends its
-    "binary missing" branch with `echo "Run: cargo build -p hew-cli"`, and a
-    scan that counted those would flag every gate in the tree.
+    Every one of these scripts ends its "binary missing" branch with
+    `echo "Run: cargo build -p hew-cli"`; counting those would flag every gate
+    in the tree and the check would mean nothing.
     """
-    for line in path.read_text().splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#") or "echo" in stripped or "printf" in stripped:
-            continue
-        if _COMPILING_COMMAND.search(stripped):
-            return stripped
+    return line.startswith("#") or "echo" in line or "printf" in line
+
+
+def compiling_evidence(
+    plan: str,
+    read_plan: "Callable[[str], str | None]",
+    read_script: "Callable[[str], str | None]",
+) -> str | None:
+    """The first compile reachable from a gate's plan, at any depth.
+
+    A gate's own `make --dry-run` plan shows its recipe and its prerequisites'
+    recipes; it does not show what the scripts in that recipe do, and it does
+    not show what a `make` those scripts run would do. Both hide compiles:
+    `test-stdlib-execution-proofs` reaches a `cargo run` one script deep, and
+    nothing stops the next one from reaching it through a script that calls
+    another target. The walk follows plan -> script -> `make <target>` -> that target's plan
+    until it runs out of new nodes.
+
+    For a shell script a bare cargo line is an invocation. For a Python script
+    it is usually data — a fixture, an error message, an assertion — so only a
+    line that also hands work to a subprocess counts.
+    """
+    seen_scripts: set[str] = set()
+    seen_targets: set[str] = set()
+    queue: list[tuple[str, str, bool]] = [("plan", plan, False)]
+    while queue:
+        origin, text, python = queue.pop(0)
+        for raw in text.splitlines():
+            line = raw.strip()
+            if _is_message(line):
+                continue
+            if python:
+                # In a Python gate a cargo string is usually data — a fixture,
+                # an assertion, an error message. Only a line that hands work
+                # to a subprocess is running anything, and the same rule
+                # applies to a `make` it names.
+                if not _RUNS_A_SUBPROCESS.search(line):
+                    continue
+                if _PYTHON_CARGO.search(line):
+                    return f"{origin}: {line}"
+            elif _COMPILING_COMMAND.search(line):
+                return f"{origin}: {line}"
+            for script in _SCRIPT_REF.findall(line):
+                if script in seen_scripts:
+                    continue
+                seen_scripts.add(script)
+                body = read_script(script)
+                if body is not None:
+                    queue.append((script, body, script.endswith(".py")))
+            for target in _MAKE_CALL.findall(line):
+                if target in seen_targets:
+                    continue
+                seen_targets.add(target)
+                body = read_plan(target)
+                if body is not None:
+                    queue.append((f"make {target}", body, False))
     return None
 
 
+def _repo_plan_reader(target: str) -> str | None:
+    result = _make_plan(target)
+    return result.stdout if result.returncode == 0 else None
+
+
+def _repo_script_reader(script: str) -> str | None:
+    path = ROOT / script
+    return path.read_text() if path.exists() else None
+
+
+def _plans_work(target: str) -> bool:
+    result = _make_plan(target)
+    assert result.returncode == 0, (target, result.stderr)
+    return any(
+        line.strip() not in ("", ":") and not line.startswith("make")
+        for line in result.stdout.splitlines()
+    )
+
+
 def test_no_gate_compiles_behind_an_empty_build_form() -> None:
-    """A gate that compiles must warm that compile, wherever the compile hides.
+    """A gate that compiles must warm that compile, however deep it hides.
 
     `make test-stdlib-execution-proofs` builds nothing in its own recipe and
     then shells out to a script that runs `cargo run -p hew-parser --example
@@ -694,32 +769,67 @@ def test_no_gate_compiles_behind_an_empty_build_form() -> None:
     reading error as the warm-up that diverged from its gate.
     """
     for target in sorted(_dispatchable_make_targets()):
-        gate = _make_plan(target)
-        assert gate.returncode == 0, (target, gate.stderr)
-        compiles = _COMPILING_COMMAND.search(gate.stdout)
-        evidence = f"{target}'s own recipe"
-        if not compiles:
-            for script in sorted(set(_SHELL_SCRIPT.findall(gate.stdout))):
-                path = ROOT / script
-                if not path.exists():
-                    continue
-                line = _script_compiles(path)
-                if line is not None:
-                    compiles, evidence = line, f"{script}: {line}"
-                    break
-        if not compiles:
+        plan = _make_plan(target)
+        assert plan.returncode == 0, (target, plan.stderr)
+        evidence = compiling_evidence(
+            plan.stdout, _repo_plan_reader, _repo_script_reader
+        )
+        if evidence is None:
             continue
-        build = _make_plan(f"{target}-build")
-        assert build.returncode == 0, (target, build.stderr)
-        work = [
-            line
-            for line in build.stdout.splitlines()
-            if line.strip() not in ("", ":") and not line.startswith("make")
-        ]
-        assert work, (
+        assert _plans_work(f"{target}-build"), (
             f"make {target} compiles ({evidence}) but {target}-build declares "
             f"that it builds nothing"
         )
+
+
+def test_the_compile_walk_sees_a_compile_one_script_deep() -> None:
+    scripts = {"scripts/proof.sh": "cargo run -p hew-parser --example authority\n"}
+    evidence = compiling_evidence(
+        "\tscripts/proof.sh --check\n",
+        lambda target: None,
+        scripts.get,
+    )
+    assert (
+        evidence == "scripts/proof.sh: cargo run -p hew-parser --example authority"
+    ), evidence
+
+
+def test_the_compile_walk_sees_a_compile_two_levels_deep() -> None:
+    """A script that calls make whose target runs another script that compiles."""
+    scripts = {
+        "scripts/outer.sh": "make inner-gate\n",
+        "scripts/inner.sh": "cargo build -p hew-lib\n",
+    }
+    plans = {"inner-gate": "\tscripts/inner.sh\n"}
+    evidence = compiling_evidence(
+        "\tscripts/outer.sh\n",
+        plans.get,
+        scripts.get,
+    )
+    assert evidence == "scripts/inner.sh: cargo build -p hew-lib", evidence
+
+
+def test_the_compile_walk_does_not_count_printed_text() -> None:
+    scripts = {"scripts/hint.sh": '  echo "Run: cargo build -p hew-cli" >&2\n'}
+    assert (
+        compiling_evidence("\tscripts/hint.sh\n", lambda target: None, scripts.get)
+        is None
+    )
+
+
+def test_the_compile_walk_reads_python_data_as_data() -> None:
+    scripts = {
+        "scripts/fixture.py": '    RECIPES = {"lint": "cargo clippy --workspace"}\n',
+        "scripts/runner.py": '    subprocess.run(["cargo", "build", "-p", "hew-lib"])\n',
+    }
+    assert (
+        compiling_evidence("\tscripts/fixture.py\n", lambda target: None, scripts.get)
+        is None
+    )
+    assert (
+        compiling_evidence("\tscripts/runner.py\n", lambda target: None, scripts.get)
+        is not None
+    )
 
 
 def test_no_warmup_names_a_non_ci_nextest_profile() -> None:
@@ -1624,6 +1734,10 @@ _TESTS = [
     test_every_dispatched_make_target_exists_in_the_makefile,
     test_no_warmup_carries_a_flag_its_gate_does_not,
     test_no_gate_compiles_behind_an_empty_build_form,
+    test_the_compile_walk_sees_a_compile_one_script_deep,
+    test_the_compile_walk_sees_a_compile_two_levels_deep,
+    test_the_compile_walk_does_not_count_printed_text,
+    test_the_compile_walk_reads_python_data_as_data,
     test_a_nextest_older_than_the_pin_stops_the_preflight,
     test_the_preflight_reads_its_pin_from_the_tool_pin_contract,
     test_no_warmup_names_a_non_ci_nextest_profile,

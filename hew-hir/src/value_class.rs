@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 use std::collections::{BTreeMap, HashMap};
 use std::ops::{Deref, DerefMut};
 
@@ -120,7 +125,7 @@ impl LifecycleRegistry {
         else {
             return None;
         };
-        self.opaque_resource(&hew_types::DefId::new(name))
+        self.opaque_resource(&hew_types::DefId::legacy_reconstruct_from_full_path(name))
     }
 
     #[must_use]
@@ -235,7 +240,9 @@ impl TypeClassTable {
         &self,
         canonical_type_name: &str,
     ) -> Option<&OpaqueResourceLifecycle> {
-        self.opaque_resource_lifecycle(&hew_types::DefId::new(canonical_type_name))
+        self.opaque_resource_lifecycle(&hew_types::DefId::legacy_reconstruct_from_full_path(
+            canonical_type_name,
+        ))
     }
 
     #[must_use]
@@ -760,8 +767,8 @@ mod tests {
         use hew_types::DefId;
 
         let lifecycle = |owner: &str, close: &str, symbol: &str| ResourceRecordLifecycle {
-            resource_declaration: DefId::new(owner),
-            close_declaration: DefId::new(close),
+            resource_declaration: DefId::for_test(owner),
+            close_declaration: DefId::for_test(close),
             close_symbol: symbol.to_string(),
         };
         let mut table = TypeClassTable::default();
@@ -783,14 +790,14 @@ mod tests {
         let registry = table.lifecycle_registry();
         assert_eq!(registry.resource_records().len(), 2);
         assert!(registry
-            .resource_record(&DefId::new("Connection"))
+            .resource_record(&DefId::for_test("Connection"))
             .is_none());
         assert_eq!(
             registry
-                .resource_record(&DefId::new("right.Connection"))
+                .resource_record(&DefId::for_test("right.Connection"))
                 .unwrap()
                 .close_declaration,
-            DefId::new("right.Connection::close")
+            DefId::for_test("right.Connection::close")
         );
 
         assert!(table
@@ -803,10 +810,10 @@ mod tests {
         assert_eq!(
             table
                 .lifecycle_registry()
-                .resource_record(&DefId::new("left.Connection"))
+                .resource_record(&DefId::for_test("left.Connection"))
                 .unwrap()
                 .close_declaration,
-            DefId::new("left.Connection::close"),
+            DefId::for_test("left.Connection::close"),
             "duplicate admission must not overwrite the sole close authority"
         );
     }

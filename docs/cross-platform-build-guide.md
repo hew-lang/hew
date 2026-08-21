@@ -90,8 +90,8 @@ pub extern "C" fn my_func(s: *const c_char) -> *mut c_char { ... }
 This applies to all crates that define `extern "C"` functions: `hew-runtime`,
 `hew-cabi`, and any stdlib FFI crates.
 
-Similarly, when casting `libc::malloc` results or building C strings, use
-`.cast::<c_char>()` instead of `.cast::<i8>()`.
+Similarly, when casting `libc::malloc` results or building C strings, cast
+to `c_char`, not `i8`.
 
 ## macOS (x86_64 and aarch64)
 

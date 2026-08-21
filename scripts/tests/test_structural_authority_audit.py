@@ -149,30 +149,30 @@ with tempfile.TemporaryDirectory() as temp:
     target.write_text(
         "#[cfg(test)]\n"
         "mod tests {\n"
-        "    fn macro_authority() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
-        '    fn macro_leaf() { let leaf = name.rsplit("::").next().unwrap(); let _ = DefId::new(leaf); }\n'
+        "    fn macro_authority() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
+        '    fn macro_leaf() { let leaf = name.rsplit("::").next().unwrap(); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n'
         "    fn scalar() { let _: HashMap<SpanKey, SiteId> = HashMap::new(); }\n"
         "}\n"
         "#[cfg(test)]\n"
-        "fn item_macro() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
+        "fn item_macro() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
         "fn production() {}\n"
     )
     assert run(work).returncode == 0, "parsed test-only module/items must be excluded"
 
     target.write_text(
         "#[cfg(all(test))]\n"
-        "fn all_single() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
+        "fn all_single() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
         '#[cfg(all(feature = "x", test))]\n'
-        "fn all_reordered() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
+        "fn all_reordered() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
     )
     assert run(work).returncode == 0, "all(...) test guards must be order-independent"
     target.write_text(
         '#[cfg(any(test, feature = "x"))]\n'
-        "fn any_guard() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
+        "fn any_guard() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
     )
     assert run(work).returncode != 0, "cfg(any(test, feature)) is production-capable"
     target.write_text(
-        "#[cfg(not(test))]\nfn non_test_guard() { let leaf = short_name(name); let _ = DefId::new(leaf); }\n"
+        "#[cfg(not(test))]\nfn non_test_guard() { let leaf = short_name(name); let _ = DefId::legacy_reconstruct_from_full_path(leaf); }\n"
     )
     assert run(work).returncode != 0, "cfg(not(test)) is production authority"
 
@@ -456,7 +456,7 @@ with tempfile.TemporaryDirectory() as temp:
     analysis.write_text(
         "fn authority(name: &str) {\n"
         "    let leaf = short_name(name);\n"
-        "    let _ = DefId::new(leaf);\n"
+        "    let _ = DefId::legacy_reconstruct_from_full_path(leaf);\n"
         "}\n"
     )
     assert run(work).returncode != 0, "hew-analysis identity sinks must be audited"
@@ -505,19 +505,19 @@ with tempfile.TemporaryDirectory() as temp:
     target.write_text(
         "fn authority(module_path: &str, name: &str) {\n"
         '    let owner = module_path.rsplit("::").next().unwrap();\n'
-        '    let _ = DefId::new(format!("{}.{}", owner, name));\n'
+        '    let _ = DefId::legacy_reconstruct_from_full_path(format!("{}.{}", owner, name));\n'
         "}\n"
     )
     set_inventory(work)
     result = run(work)
-    assert result.returncode != 0, "a leaf owner must not mint a DefId"
+    assert result.returncode != 0, "a leaf owner must not reconstruct a DefId"
     assert "semantic-owner-shortening-sink/def-id" in result.stderr
 
     target.write_text(
         "fn authority(current_module: &str, name: &str) {\n"
         "    let owner = short_name(current_module);\n"
-        '    let _ = CallTarget::User(DefId::new(format!("{}.{}", owner, name)));\n'
-        '    let _ = NominalId::new(format!("{}.{}", owner, name));\n'
+        '    let _ = CallTarget::User(DefId::legacy_reconstruct_from_full_path(format!("{}.{}", owner, name)));\n'
+        '    let _ = NominalId::legacy_reconstruct_from_full_path(format!("{}.{}", owner, name));\n'
         "}\n"
     )
     set_inventory(work)
@@ -557,7 +557,7 @@ with tempfile.TemporaryDirectory() as temp:
         "fn canonical(declaring_module: &str, signature_key: &str) {\n"
         "    let name = signature_key.rsplit('.').next().unwrap();\n"
         '    let declaration = format!("{declaring_module}.{name}");\n'
-        "    let _ = DefId::new(declaration);\n"
+        "    let _ = DefId::legacy_reconstruct_from_full_path(declaration);\n"
         "}\n"
     )
     set_inventory(work)
@@ -610,7 +610,7 @@ with tempfile.TemporaryDirectory() as temp:
     target.write_text(
         "fn bad(name: &str) {\n"
         "    let leaf = short_name(name);\n"
-        "    let _ = DefId::new(leaf);\n"
+        "    let _ = DefId::legacy_reconstruct_from_full_path(leaf);\n"
         "}\n"
     )
     set_inventory(work)
@@ -680,5 +680,176 @@ with tempfile.TemporaryDirectory() as temp:
     assert run(work).returncode == 0, (
         "whitespace-qualified non-format macro paths must remain controls"
     )
+
+# ── Darwin poisoned-allocator gate ───────────────────────────────────────────
+#
+# Each case is a minimal test file the audit must accept or reject. The
+# rejecting cases are the shapes that have actually reached Linux CI red — a
+# direct call, the helper indirection every oracle uses, and a `macro_rules!`
+# arm — and the accepting cases are the two sanctioned ways to declare the host
+# requirement, plus a decoy proving string literals are masked before scanning.
+POISONED_IGNORE = (
+    '#[cfg_attr(not(target_os = "macos"), ignore = "poisoned allocator is macOS-only")]'
+)
+
+POISONED_CASES = (
+    (
+        "direct call, no gate",
+        """
+#[test]
+fn probe_is_clean() {
+    let out = run_under_malloc_scribble(&bin);
+    assert!(out.status.success());
+}
+""",
+        False,
+    ),
+    (
+        "direct call, cfg_attr ignore",
+        f"""
+{POISONED_IGNORE}
+#[test]
+fn probe_is_clean() {{
+    let out = run_under_malloc_scribble(&bin);
+    assert!(out.status.success());
+}}
+""",
+        True,
+    ),
+    (
+        "helper indirection, no gate",
+        """
+fn assert_scribble_clean(name: &str) {
+    let out = run_under_malloc_scribble(&bin);
+    assert!(out.status.success());
+}
+
+#[test]
+fn probe_is_clean() {
+    assert_scribble_clean("probe");
+}
+""",
+        False,
+    ),
+    (
+        "helper indirection, cfg_attr ignore",
+        f"""
+fn assert_scribble_clean(name: &str) {{
+    let out = run_under_malloc_scribble(&bin);
+    assert!(out.status.success());
+}}
+
+{POISONED_IGNORE}
+#[test]
+fn probe_is_clean() {{
+    assert_scribble_clean("probe");
+}}
+""",
+        True,
+    ),
+    (
+        'reaching code behind cfg(target_os = "macos")',
+        """
+fn assert_shape(name: &str) {
+    let run = plain_run(&bin);
+    assert!(run.status.success());
+    #[cfg(target_os = "macos")]
+    {
+        let scribbled = run_under_malloc_scribble(&bin);
+        assert!(scribbled.status.success());
+    }
+}
+
+#[test]
+fn probe_is_clean() {
+    assert_shape("probe");
+}
+""",
+        True,
+    ),
+    (
+        "macro-generated test, no gate",
+        f"""
+fn assert_shape(name: &str) {{
+    let out = run_under_malloc_scribble(&bin);
+    assert!(out.status.success());
+}}
+
+macro_rules! shape {{
+    ($over:ident, $under:ident, $name:literal) => {{
+        #[test]
+        fn $over() {{
+            assert_shape($name);
+        }}
+
+        {POISONED_IGNORE}
+        #[test]
+        fn $under() {{
+            assert_shape($name);
+        }}
+    }};
+}}
+
+shape!(a_over, a_under, "a");
+""",
+        False,
+    ),
+    (
+        "require_macos_poisoned_allocator, no gate",
+        """
+#[test]
+fn probe_is_clean() {
+    require_macos_poisoned_allocator();
+    assert!(true);
+}
+""",
+        False,
+    ),
+    (
+        "sentinel only inside a raw string",
+        """
+#[test]
+fn unrelated_test() {
+    let program = r#"
+        fn main() -> i64 {
+            // run_under_malloc_scribble( {{ }} not real code
+            0
+        }
+    "#;
+    assert!(!program.is_empty());
+}
+""",
+        True,
+    ),
+)
+
+for label, body, should_pass in POISONED_CASES:
+    with tempfile.TemporaryDirectory() as temp:
+        work = Path(temp)
+        (work / "scripts").mkdir()
+        enum_authority = work / "hew-types/src/stdlib_authority/codegen.rs"
+        enum_authority.parent.mkdir(parents=True)
+        enum_authority.write_text(
+            "struct BuiltinEnumAbi { name: &'static str }\n"
+            "const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[\n"
+            '    BuiltinEnumAbi { name: "AskError" },\n'
+            "];\n"
+        )
+        tests_dir = work / "hew-cli/tests"
+        tests_dir.mkdir(parents=True)
+        (tests_dir / "case_oracle.rs").write_text(body)
+        set_inventory(work)
+        result = run(work)
+        if should_pass:
+            assert result.returncode == 0, (
+                f"poisoned-allocator gate must accept: {label}\n{result.stderr}"
+            )
+        else:
+            assert result.returncode != 0, (
+                f"poisoned-allocator gate must reject: {label}\n{result.stdout}"
+            )
+            assert "ungated Darwin poisoned-allocator test" in result.stderr, (
+                f"rejection for {label} must name the rule:\n{result.stderr}"
+            )
 
 print("structural authority audit counterfactuals: PASS")

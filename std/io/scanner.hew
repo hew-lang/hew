@@ -9,7 +9,7 @@
 //! # Basic iteration
 //!
 //! ```
-//! import std::io::scanner;
+//! import std.io.scanner;
 //!
 //! fn main() {
 //!     var sc = scanner.from_string("one\ntwo\nthree");
@@ -26,7 +26,7 @@
 //! `lines()` and `words()` return a `Vec<string>` directly:
 //!
 //! ```
-//! import std::io::scanner;
+//! import std.io.scanner;
 //!
 //! fn main() {
 //!     let ls = scanner.lines("foo\nbar\nbaz");
@@ -43,8 +43,8 @@
 //! scanning:
 //!
 //! ```
-//! import std::fs;
-//! import std::io::scanner;
+//! import std.fs;
+//! import std.io.scanner;
 //!
 //! fn main() {
 //!     match scanner.from_file("input.txt") {
@@ -110,7 +110,7 @@ pub type Scanner {
 /// # Examples
 ///
 /// ```
-/// import std::io::scanner;
+/// import std.io.scanner;
 ///
 /// fn main() {
 ///     var sc = scanner.from_string("alpha\nbeta\ngamma");
@@ -152,7 +152,7 @@ pub fn from_file(path: string) -> Result<Scanner, fs.IoError> {
 /// # Examples
 ///
 /// ```
-/// import std::io::scanner;
+/// import std.io.scanner;
 ///
 /// fn main() {
 ///     var sc = scanner.from_string("one two  three");
@@ -177,7 +177,7 @@ pub fn with_split(sc: Scanner, mode: SplitMode) -> Scanner {
 /// # Examples
 ///
 /// ```
-/// import std::io::scanner;
+/// import std.io.scanner;
 ///
 /// fn main() {
 ///     var sc = scanner.from_string("a\nb\nc");
@@ -235,12 +235,12 @@ pub fn text(sc: Scanner) -> string {
 /// a trailing empty element — only content lines are emitted (Go
 /// `bufio.Scanner` semantics).  An empty input returns an empty vector.
 ///
-/// For trailing-empty-element behaviour, use `std::string.lines()`.
+/// For trailing-empty-element behaviour, use `std.string.lines()`.
 ///
 /// # Examples
 ///
 /// ```
-/// import std::io::scanner;
+/// import std.io.scanner;
 ///
 /// fn main() {
 ///     let ls = scanner.lines("foo\nbar\n");
@@ -270,7 +270,7 @@ pub fn lines(s: string) -> Vec<string> {
 /// # Examples
 ///
 /// ```
-/// import std::io::scanner;
+/// import std.io.scanner;
 ///
 /// fn main() {
 ///     let ws = scanner.words("  hello   world  ");
@@ -302,7 +302,7 @@ pub fn words(s: string) -> Vec<string> {
 /// # Examples
 ///
 /// ```
-/// import std::io::scanner;
+/// import std.io.scanner;
 ///
 /// fn main() {
 ///     var sc = scanner.from_string("a\nb\nc\nd");

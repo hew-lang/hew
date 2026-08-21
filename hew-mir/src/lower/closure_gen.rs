@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 use super::{
     apply_nested_fresh_bytes_temp_drops, apply_nested_fresh_string_temp_drops, base_local,
     check_function, check_to_diagnostic, collect_unknown_type_diagnostics, dataflow, elaborate,
@@ -946,7 +951,7 @@ impl Builder {
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
-            declaration: hew_types::DefId::new(shim_name),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(shim_name),
             name: shim_name.to_string(),
             type_params: Vec::new(),
             is_generator: false,
@@ -1130,7 +1135,7 @@ impl Builder {
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
-            declaration: hew_types::DefId::new(shim_name),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(shim_name),
             name: shim_name.to_string(),
             type_params: Vec::new(),
             is_generator: false,
@@ -1665,7 +1670,7 @@ impl Builder {
         let synthetic_fn = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
-            declaration: hew_types::DefId::new(body_name.clone()),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(body_name.clone()),
             name: body_name.clone(),
             type_params: Vec::new(),
             is_generator: false,
@@ -2570,7 +2575,7 @@ impl Builder {
         let synthetic_fn = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
-            declaration: hew_types::DefId::new(body_name.clone()),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(body_name.clone()),
             name: body_name.clone(),
             type_params: Vec::new(),
             is_generator: false,

@@ -6582,20 +6582,28 @@ mod measured_extern_result_transfer {
         let module = tests::lower_source_with_opaque_candidate(
             source,
             Some(hew_types::OpaqueResourceLifecycleCandidate {
-                resource_declaration: hew_types::DefId::new("Connection"),
+                resource_declaration: hew_types::DefId::legacy_reconstruct_from_full_path(
+                    "Connection",
+                ),
                 resource_type: "Connection".to_string(),
                 owner_module: String::new(),
-                close_declaration: hew_types::DefId::new("Connection::close"),
-                release_declaration: hew_types::DefId::new(release_symbol),
+                close_declaration: hew_types::DefId::legacy_reconstruct_from_full_path(
+                    "Connection::close",
+                ),
+                release_declaration: hew_types::DefId::legacy_reconstruct_from_full_path(
+                    release_symbol,
+                ),
                 release_symbol: release_symbol.to_string(),
                 release_param_index: 0,
                 discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth::Shallow,
                 result_ownership: crate::ffi_contracts::ExternResultOwnership::Fresh,
                 result_retention: crate::ffi_contracts::ExternResultRetention::ResourceTransfer,
                 producer_symbols: ["hew_tcp_connect".to_string()].into_iter().collect(),
-                producer_declarations: [hew_types::DefId::new("hew_tcp_connect")]
-                    .into_iter()
-                    .collect(),
+                producer_declarations: [hew_types::DefId::legacy_reconstruct_from_full_path(
+                    "hew_tcp_connect",
+                )]
+                .into_iter()
+                .collect(),
                 producer_modules: ["std.net".to_string()].into_iter().collect(),
             }),
         );
@@ -6695,20 +6703,26 @@ fn main() {}
         let module = tests::lower_source_with_opaque_candidate(
             SOURCE,
             Some(hew_types::OpaqueResourceLifecycleCandidate {
-                resource_declaration: hew_types::DefId::new("Value"),
+                resource_declaration: hew_types::DefId::legacy_reconstruct_from_full_path("Value"),
                 resource_type: "Value".to_string(),
                 owner_module: String::new(),
-                close_declaration: hew_types::DefId::new("Value::close"),
-                release_declaration: hew_types::DefId::new("hew_json_free"),
+                close_declaration: hew_types::DefId::legacy_reconstruct_from_full_path(
+                    "Value::close",
+                ),
+                release_declaration: hew_types::DefId::legacy_reconstruct_from_full_path(
+                    "hew_json_free",
+                ),
                 release_symbol: "hew_json_free".to_string(),
                 release_param_index: 0,
                 discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth::Deep,
                 result_ownership: crate::ffi_contracts::ExternResultOwnership::Fresh,
                 result_retention: crate::ffi_contracts::ExternResultRetention::ResourceTransfer,
                 producer_symbols: ["hew_json_array_new".to_string()].into_iter().collect(),
-                producer_declarations: [hew_types::DefId::new("hew_json_array_new")]
-                    .into_iter()
-                    .collect(),
+                producer_declarations: [hew_types::DefId::legacy_reconstruct_from_full_path(
+                    "hew_json_array_new",
+                )]
+                .into_iter()
+                .collect(),
                 producer_modules: ["std.encoding.json".to_string()].into_iter().collect(),
             }),
         );

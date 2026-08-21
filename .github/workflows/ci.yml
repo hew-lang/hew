@@ -249,6 +249,9 @@ jobs:
       - name: Verify FreeBSD workflow contract
         run: make freebsd-workflow-contract-check
 
+      - name: Verify tool pin contract
+        run: make tool-pin-contract-check
+
       - name: Verify sanitizer gate wiring
         run: make check-sanitizer-gate
 
@@ -285,6 +288,9 @@ jobs:
 
       - name: Verify JIT host ABI classification
         run: make verify-ffi test-verify-ffi test-python310-toml-compat
+
+      - name: Legacy path syntax lint
+        run: make legacy-path-syntax-lint
 
       - name: Upload Clippy SARIF
         if: always() && hashFiles('clippy-results.sarif') != ''
@@ -704,7 +710,7 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         with:
           targets: wasm32-unknown-unknown
-          tools: nextest
+          tools: nextest@0.9.120
           cache-shared-key: build-test-linux
 
       - name: Install WASI target
@@ -844,7 +850,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
-          tools: nextest
+          tools: nextest@0.9.120
           cache-shared-key: build-test-windows
 
       - name: Build Rust crates
@@ -1026,7 +1032,7 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         with:
           targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
-          tools: nextest
+          tools: nextest@0.9.120
           cache-shared-key: build-test-macos
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}

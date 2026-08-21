@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 use super::{
     bracket_actor_handler_blocks, check_function, check_to_diagnostic,
     collect_unknown_type_diagnostics, dataflow, elaborate, finalize_bytes_ownership,
@@ -968,7 +973,7 @@ impl Builder {
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
-            declaration: hew_types::DefId::new(shim_name),
+            declaration: hew_types::DefId::legacy_reconstruct_from_full_path(shim_name),
             name: shim_name.to_string(),
             type_params: Vec::new(),
             is_generator: false,

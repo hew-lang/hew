@@ -1,6 +1,6 @@
 //! Async HTTP/1.1 client codec — idiomatic Hew over a suspending `net.Connection`.
 //!
-//! This is the `await`-suspended sibling of `std::net::http::http_client`
+//! This is the `await`-suspended sibling of `std.net.http.http_client`
 //! (which uses a blocking native engine and cannot suspend an actor). The codec
 //! here is pure Hew: an actor handler (or any execution-context caller) connects
 //! with `net.connect`, writes an HTTP/1.1 request built by [`build_request`],
@@ -17,9 +17,9 @@
 //! # Example (the await-suspended round trip, inline in a handler)
 //!
 //! ```
-//! import std::net;
-//! import std::net::http::http_async_client;
-//! import std::string;
+//! import std.net;
+//! import std.net.http.http_async_client;
+//! import std.string;
 //!
 //! actor Fetcher {
 //!     let addr: string;   // "127.0.0.1:8080"
@@ -81,7 +81,7 @@ pub const CLIENT_MAX_READS: i64 = 8192;
 /// transport-failure convention the blocking client also uses). `body_text` is
 /// the response body. `header_section` is the raw header block (the lines
 /// between the status line and the blank line, CRLF-separated), parsed on demand
-/// by [`AsyncResponse::header`].
+/// by [`AsyncResponse.header`].
 pub type AsyncResponse {
     code: i64;
     body_text: string;

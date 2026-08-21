@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -1780,7 +1785,7 @@ pub trait CloseObligationRegistry {
 
 impl CloseObligationRegistry for hew_hir::LifecycleRegistry {
     fn named_is_closeable_resource(&self, name: &str) -> bool {
-        let decl = hew_types::DefId::new(name);
+        let decl = hew_types::DefId::legacy_reconstruct_from_full_path(name);
         self.resource_record(&decl).is_some() || self.opaque_resource(&decl).is_some()
     }
 }
@@ -8054,8 +8059,10 @@ mod heap_owning_tests {
         let mut table = hew_hir::TypeClassTable::new();
         table
             .admit_resource_record_lifecycle(hew_hir::ResourceRecordLifecycle {
-                resource_declaration: hew_types::DefId::new("Tok"),
-                close_declaration: hew_types::DefId::new("Tok::close"),
+                resource_declaration: hew_types::DefId::legacy_reconstruct_from_full_path("Tok"),
+                close_declaration: hew_types::DefId::legacy_reconstruct_from_full_path(
+                    "Tok::close",
+                ),
                 close_symbol: "Tok__close".to_string(),
             })
             .expect("fresh registry admits Tok");

@@ -48,6 +48,7 @@ fn build() -> Weak<Node> [conv=default]
     mvar11.0.0 = move _12
     _14 = record_init Node { .0=_10, .1=_11 }
     _15 = rc_intrinsic.Set payload_ty=Node receiver=_5 value=_14 result_ty=()
+    _9 = const.i64 1
     ret = move _8
     return
 

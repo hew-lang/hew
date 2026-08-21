@@ -2002,7 +2002,10 @@ impl Verifier {
                 self.aggregate_transfer_payloads
                     .extend(payloads.iter().map(|payload| payload.site));
                 if let ResolvedTy::Named { name, .. } = &expr.ty {
-                    if self.resource_record_types.contains(&DefId::new(name)) {
+                    if self
+                        .resource_record_types
+                        .contains(&DefId::legacy_reconstruct_from_full_path(name))
+                    {
                         self.resource_record_constructors.insert(expr.site);
                         if self.declared_release_types.contains(name.as_str()) {
                             self.declared_release_constructors.insert(expr.site);
@@ -2679,7 +2682,7 @@ mod tests {
         HirItem::Function(HirFn {
             id: ids.item(),
             node: ids.node(),
-            declaration: hew_types::DefId::new(name),
+            declaration: hew_types::DefId::for_test(name),
             name: name.to_string(),
             type_params: Vec::new(),
             params: Vec::new(),
@@ -2726,12 +2729,12 @@ mod tests {
         ));
         for target in [
             CallTarget::static_trait(
-                hew_types::DefId::new("std.builtins.Iterator"),
-                hew_types::DefId::new("std.builtins.Iterator::next"),
+                hew_types::DefId::for_test("std.builtins.Iterator"),
+                hew_types::DefId::for_test("std.builtins.Iterator::next"),
             ),
             CallTarget::DynamicVtable {
-                declaring_trait: hew_types::DefId::new("std.builtins.Iterator"),
-                method: hew_types::DefId::new("std.builtins.Iterator::next"),
+                declaring_trait: hew_types::DefId::for_test("std.builtins.Iterator"),
+                method: hew_types::DefId::for_test("std.builtins.Iterator::next"),
                 slot: 0,
             },
         ] {
@@ -2740,12 +2743,12 @@ mod tests {
 
         for target in [
             CallTarget::static_trait(
-                hew_types::DefId::new("user.Iterator"),
-                hew_types::DefId::new("std.builtins.Iterator::next"),
+                hew_types::DefId::for_test("user.Iterator"),
+                hew_types::DefId::for_test("std.builtins.Iterator::next"),
             ),
             CallTarget::static_trait(
-                hew_types::DefId::new("std.builtins.Iterator"),
-                hew_types::DefId::new("std.builtins.Iterator::peek"),
+                hew_types::DefId::for_test("std.builtins.Iterator"),
+                hew_types::DefId::for_test("std.builtins.Iterator::peek"),
             ),
         ] {
             assert_eq!(typed_trait_call_result_ownership(&target), None);
@@ -2758,7 +2761,7 @@ mod tests {
         let return_site = ids.site();
         let argument_site = ids.site();
         let call_site = ids.site();
-        let target = hew_types::DefId::new("forward");
+        let target = hew_types::DefId::for_test("forward");
         let mut verifier = Verifier::default();
         verifier
             .function_return_sites
@@ -2824,7 +2827,7 @@ mod tests {
         let mut ids = IdGen::default();
         let return_site = ids.site();
         let call_site = ids.site();
-        let target = hew_types::DefId::new("produce");
+        let target = hew_types::DefId::for_test("produce");
         let mut verifier = Verifier::default();
         verifier
             .function_return_sites

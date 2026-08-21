@@ -161,6 +161,23 @@ pub fn wrap_page(title: &str, body: &str, breadcrumb: Option<&str>) -> String {
     )
 }
 
+/// Render the root-level Cloudflare Pages not-found document.
+#[must_use]
+pub fn not_found_page() -> String {
+    r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Not found — Hew Documentation</title>
+<style>body{font-family:system-ui,sans-serif;max-width:42rem;margin:5rem auto;padding:0 1rem;background:#0d1117;color:#e2e8f0}a{color:#60a5fa}</style>
+</head>
+<body><h1>Page not found</h1><p>The requested documentation page does not exist.</p><p><a href="index.html">Return to the API reference</a></p></body>
+</html>
+"#
+    .to_string()
+}
+
 /// Apply syntax highlighting to a code string using the hew-lexer.
 ///
 /// Wraps known Hew tokens in coloured `<span>` elements matching the website's

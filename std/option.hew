@@ -10,7 +10,7 @@
 //! # Examples
 //!
 //! ```
-//! import std::option;
+//! import std.option;
 //!
 //! fn main() {
 //!     let x = Some(42);

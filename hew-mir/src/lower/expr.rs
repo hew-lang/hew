@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 #[cfg(test)]
 use super::drop_plan::ty_is_closure_pair_vec;
 use super::{
@@ -159,8 +164,8 @@ mod builtin_vec_iter_static_next_tests {
 
     fn iterator_next_target() -> hew_types::CallTarget {
         hew_types::CallTarget::static_trait(
-            hew_types::DefId::new("std.builtins.Iterator"),
-            hew_types::DefId::new("std.builtins.Iterator::next"),
+            hew_types::DefId::legacy_reconstruct_from_full_path("std.builtins.Iterator"),
+            hew_types::DefId::legacy_reconstruct_from_full_path("std.builtins.Iterator::next"),
         )
     }
 
@@ -181,8 +186,8 @@ mod builtin_vec_iter_static_next_tests {
         );
 
         let other_iterator_method = hew_types::CallTarget::static_trait(
-            hew_types::DefId::new("std.builtins.Iterator"),
-            hew_types::DefId::new("std.builtins.Iterator::peek"),
+            hew_types::DefId::legacy_reconstruct_from_full_path("std.builtins.Iterator"),
+            hew_types::DefId::legacy_reconstruct_from_full_path("std.builtins.Iterator::peek"),
         );
         assert!(
             builtin_vec_iter_static_next_element(&other_iterator_method, &builtin_cursor, 0)

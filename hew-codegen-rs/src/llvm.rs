@@ -1,3 +1,8 @@
+#![allow(
+    deprecated,
+    reason = "temporary named identity reconstruction migration seam"
+)]
+
 //! Inkwell direct LLVM IR emitter for the out-of-process LLVM backend.
 //!
 //! Adopted from the §10 backend probe (Track C) at HEAD `e6c83faa` on
@@ -5904,7 +5909,9 @@ fn emit_state_clone_drop_synthesis<'ctx>(
                 record_struct,
                 kinds,
                 lifecycle_registry
-                    .resource_record(&hew_types::DefId::new(record_name))
+                    .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(
+                        record_name,
+                    ))
                     .map(|lifecycle| lifecycle.close_symbol.as_str()),
                 &drop_witnesses,
             )?;
@@ -8545,7 +8552,9 @@ fn ensure_record_drop_body<'ctx>(
     )?;
     let resource_close = w
         .lifecycle_registry
-        .resource_record(&hew_types::DefId::new(record_key))
+        .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(
+            record_key,
+        ))
         .map(|lifecycle| lifecycle.close_symbol.as_str());
     emit_record_drop_inplace_body(
         ctx,
@@ -17584,7 +17593,7 @@ fn emit_field_overwrite_release(
             if !release_resource_records
                 && fn_ctx
                     .lifecycle_registry
-                    .resource_record(&hew_types::DefId::new(name))
+                    .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(name))
                     .is_some()
             {
                 return Ok(());
@@ -25409,7 +25418,9 @@ fn emit_heap_slot_drop<'ctx>(
                     // user `close(self)` fires (spec §3.7.3).
                     let resource_close = fn_ctx
                         .lifecycle_registry
-                        .resource_record(&hew_types::DefId::new(&name))
+                        .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(
+                            &name,
+                        ))
                         .map(|lifecycle| lifecycle.close_symbol.as_str());
                     emit_record_drop_inplace_body(
                         fn_ctx.ctx,

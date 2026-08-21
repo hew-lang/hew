@@ -81,7 +81,7 @@ fn vec_resolved_impl_call_wrong_arity_panics_fail_closed() {
     let module = empty_module(vec![HirItem::Function(HirFn {
         id: ids.item(),
         node: ids.node(),
-        declaration: hew_types::DefId::new("main"),
+        declaration: hew_types::DefId::for_test("main"),
         name: "main".to_string(),
         type_params: vec![],
         params: vec![],

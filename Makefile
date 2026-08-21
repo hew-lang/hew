@@ -1981,6 +1981,7 @@ test-release-workflow-contract-build:
 # refuses for every scripts/tests/ file. All five use stubs or temporary trees;
 # none needs a built compiler.
 .PHONY: test-build-harness
+LINT_GATES += test-build-harness
 test-build-harness:
 	python3 scripts/tests/test_ci_preflight_dispatcher.py
 	bash scripts/tests/test_ci_preflight_timeout.sh

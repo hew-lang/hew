@@ -2066,6 +2066,148 @@ def poisoned_allocator_gate_findings(root: Path) -> tuple[list[str], int]:
     return findings, reached
 
 
+# ── test-time build authority ────────────────────────────────────────────────
+#
+# `hew-testutil` is the single writer of every artifact the workspace target
+# directory shares between test processes. Under nextest each test is its own
+# process, so a process-local `OnceLock` around `cargo build` serializes
+# nothing: the module becomes an unlocked WRITER of an archive its siblings are
+# concurrently READING, and a link landing inside Cargo's non-atomic uplift
+# window fails with the artifact-absence signature. Test code therefore does not
+# spawn `cargo` or `make` at all -- it asks `hew-testutil` for the artifact.
+TEST_BUILD_TOOLS = {"cargo", "make", "gmake"}
+TEST_BUILD_AUTHORITY_CRATE = "hew-testutil"
+TEST_BUILD_COMMAND_PATTERNS = (
+    "Command::new($ARG)",
+    "process::Command::new($ARG)",
+    "std::process::Command::new($ARG)",
+)
+
+
+def run_query_at(
+    ast_grep: Path,
+    root: Path,
+    paths: list[str],
+    *,
+    pattern: str | None = None,
+    kind: str | None = None,
+) -> list[dict[str, object]]:
+    """Run a Rust query over explicit paths rather than the compiler roots."""
+    live = [path for path in paths if (root / path).exists()]
+    if not live:
+        return []
+    command = query_command(ast_grep, pattern=pattern, kind=kind)
+    command.extend(live)
+    result = subprocess.run(command, cwd=root, text=True, capture_output=True)
+    if result.returncode not in (0, 1) or (result.returncode == 1 and result.stderr):
+        print(result.stderr, file=sys.stderr, end="")
+        raise SystemExit("pinned ast-grep Rust query failed")
+    try:
+        return [json.loads(line) for line in result.stdout.splitlines() if line]
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"pinned ast-grep returned invalid JSON: {error}") from error
+
+
+def build_tool_spelling(arg: str) -> str | None:
+    """Name the build tool a parsed `Command::new` argument resolves to."""
+    text = arg.strip()
+    if text.startswith('"') and text.endswith('"') and len(text) >= 2:
+        name = text[1:-1].replace("\\", "/").rsplit("/", 1)[-1]
+        return name if name in TEST_BUILD_TOOLS else None
+    # `std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into())` -- the
+    # nextest-supplied cargo, spelled through the environment.
+    if 'var_os("CARGO")' in text or 'var("CARGO")' in text:
+        return "cargo"
+    return None
+
+
+def test_build_scan_roots(root: Path) -> list[str]:
+    """Crate `src`/`tests`/`benches` trees, minus the authority crate itself."""
+    scanned: list[str] = []
+    for manifest in sorted(root.rglob("Cargo.toml")):
+        if any(part in POISONED_SKIP_DIRS for part in manifest.parts):
+            continue
+        crate = manifest.parent
+        if crate.name == TEST_BUILD_AUTHORITY_CRATE:
+            continue
+        for tree in ("src", "tests", "benches"):
+            if (crate / tree).is_dir():
+                scanned.append(str((crate / tree).relative_to(root)))
+    return scanned
+
+
+def test_governed_ranges(
+    ast_grep: Path, root: Path, paths: list[str]
+) -> list[SyntaxRange]:
+    """Parsed items governed by `#[test]` / `#[cfg(test)]` in the given paths."""
+    attributes = [
+        node_range(match)
+        for match in run_query_at(ast_grep, root, paths, kind="attribute_item")
+        if is_test_attribute(str(match["text"]))
+    ]
+    if not attributes:
+        return []
+    items_by_path: defaultdict[str, list[SyntaxRange]] = defaultdict(list)
+    for kind in ITEM_KINDS:
+        for match in run_query_at(ast_grep, root, paths, kind=kind):
+            item = node_range(match)
+            items_by_path[item.path].append(item)
+    governed: set[SyntaxRange] = set()
+    for attribute in attributes:
+        candidates = [
+            item
+            for item in items_by_path[attribute.path]
+            if item.byte_start >= attribute.byte_end
+        ]
+        if candidates:
+            governed.add(min(candidates, key=lambda i: (i.byte_start, i.byte_end)))
+    return sorted(governed)
+
+
+def test_build_authority_findings(ast_grep: Path, root: Path) -> tuple[list[str], int]:
+    """No test code spawns a build tool; it asks `hew-testutil` for the artifact."""
+    scanned = test_build_scan_roots(root)
+    if not scanned:
+        return [], 0
+
+    candidates: dict[tuple[str, int], tuple[dict[str, object], str]] = {}
+    for pattern in TEST_BUILD_COMMAND_PATTERNS:
+        for match in run_query_at(ast_grep, root, scanned, pattern=pattern):
+            tool = build_tool_spelling(single_meta(match, "ARG"))
+            if tool is None:
+                continue
+            span = node_range(match)
+            candidates[(span.path, span.byte_start)] = (match, tool)
+    if not candidates:
+        return [], len(scanned)
+
+    # A path under a crate's `tests/` or `benches/` tree is test code outright.
+    # Elsewhere the call must sit inside an item a `#[test]` / `#[cfg(test)]`
+    # attribute governs -- which is where the original unlocked writer lived.
+    unit_test_paths = sorted({path for path, _ in candidates if is_source_path(path)})
+    governed = test_governed_ranges(ast_grep, root, unit_test_paths)
+
+    findings: list[str] = []
+    for match, tool in candidates.values():
+        span = node_range(match)
+        if is_source_path(span.path):
+            item = finding("test-build-authority", tool, match)
+            if not any(scope.contains(item) for scope in governed):
+                continue  # production code may build; only test code may not
+        line = match["range"]["start"]["line"] + 1  # type: ignore[index]
+        findings.append(
+            f"test-time build tool spawned outside {TEST_BUILD_AUTHORITY_CRATE} at "
+            f"{span.path}:{line}: `{tool}`. Under nextest each test is its own "
+            f"process, so this is an unlocked writer of the shared target "
+            f"directory racing every sibling's read of the same artifact. Use "
+            f"hew_testutil::ensure_hew_lib_built / ensure_hew_bin_built / "
+            f"ensure_host_staticlib_built / ensure_wasm_staticlib_built / "
+            f"ensure_hew_lib_built_for_target, or cargo_build_isolated for a "
+            f"fixture crate with a target directory it owns"
+        )
+    return findings, len(scanned)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -2156,6 +2298,8 @@ def main() -> int:
         )
     poisoned_findings, poisoned_reached = poisoned_allocator_gate_findings(root)
     failures.extend(poisoned_findings)
+    build_findings, build_trees = test_build_authority_findings(ast_grep, root)
+    failures.extend(build_findings)
     if failures:
         print(
             "structural authority inventory changed; review every explicit form/path target:",
@@ -2170,6 +2314,7 @@ def main() -> int:
         f"{len(test_ranges)} parsed test-only item ranges; "
         f"{len(opaque_facts)} AST-derived opaque resource lifecycle candidates; "
         f"{poisoned_reached} file(s) reaching the Darwin poisoned allocator, all gated; "
+        f"{build_trees} crate source tree(s) free of test-time build-tool spawns; "
         "0 scalar SpanKey -> SiteId authorities"
     )
     return 0

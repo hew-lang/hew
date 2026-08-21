@@ -1309,7 +1309,19 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     // routes through lld when available, so compile binaries use the same
     // linker behaviour as release builds.
     if let Some(obj) = &artefacts.native_obj_path {
-        let bin_path = emit_dir.join(module_name);
+        // Name the executable through the same authority `hew build` uses
+        // (`resolve_build_output_path` → `TargetSpec::executable_suffix`).
+        // `hew compile` links for the host, and on Windows the linker writes
+        // `<stem>.exe` whatever stem it is given — so a suffixless name made
+        // the reported `native:` path name a file that does not exist.
+        let host_target = match target::TargetSpec::from_requested(None) {
+            Ok(target) => target,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                return 1;
+            }
+        };
+        let bin_path = emit_dir.join(format!("{module_name}{}", host_target.executable_suffix()));
         if link_native_object(obj, &bin_path).is_err() {
             return 1;
         }

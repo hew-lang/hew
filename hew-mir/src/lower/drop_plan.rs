@@ -8458,7 +8458,6 @@ mod twin_gate_classifier {
     //! verdict is pinned here directly on synthetic HIR. Exact-value assertions
     //! (the precise origin variant), fail-closed by default.
     use super::*;
-    use crate::return_provenance::{AliasBits, CallScrutineeProvenance, ExternContractTable};
     use hew_hir::HirProducedValueProducer;
 
     fn expr(kind: HirExprKind, ty: ResolvedTy) -> HirExpr {
@@ -8483,18 +8482,17 @@ mod twin_gate_classifier {
         )
     }
 
-    /// A `ParamOwnershipFacts` carrying a single `Borrowed` produced-value fact
-    /// at the shared synthetic call site (`SiteId(u32::MAX)`, see `expr`
-    /// above). Stands in for the checker's HIR-level publication that a
-    /// module-fn call forwards a by-value heap parameter — the same fact
-    /// `classify_call_arm_scrutinee_origin` reads to reject the move.
-    fn borrowed_call_result_facts() -> ParamOwnershipFacts {
+    /// A `ParamOwnershipFacts` publishing one call produced-value fact at the
+    /// shared synthetic call site (`SiteId(u32::MAX)`, see `expr` above).
+    /// Stands in for the checker's HIR-level publication — the same fact
+    /// `classify_call_arm_scrutinee_origin` reads to decide the move-out.
+    fn call_result_facts(ownership: ProducedValueOwnership) -> ParamOwnershipFacts {
         let mut facts = ParamOwnershipFacts::default();
         facts.produced_value_facts.insert(
             SiteId(u32::MAX),
             HirProducedValueFact {
                 producer: HirProducedValueProducer::Call,
-                ownership: ProducedValueOwnership::Borrowed,
+                ownership,
                 relation: HirProducedValueRelation::Leaf,
                 receiver: None,
                 receiver_boundary: None,
@@ -8502,6 +8500,10 @@ mod twin_gate_classifier {
             },
         );
         facts
+    }
+
+    fn borrowed_call_result_facts() -> ParamOwnershipFacts {
+        call_result_facts(ProducedValueOwnership::Borrowed)
     }
 
     fn is_alias_reject(o: &ProjectedPayloadOrigin) -> bool {
@@ -8632,116 +8634,69 @@ mod twin_gate_classifier {
         );
     }
 
+    /// Pin every `ProducedValueOwnership` state the call arm can be handed
+    /// against the verdict it must produce. A single-state test cannot fail on
+    /// an arm merged into the wrong bucket, because `Owned`, `NoOwner` and
+    /// `Unknown` all admit today: only the whole table distinguishes "the
+    /// classifier read the checker's verdict" from "the classifier fell
+    /// through to the legacy admit".
     #[test]
-    fn call_forwarding_a_param_summary_over_fresh_arg_admits() {
-        // S2b — the arg-scan rescue: the SAME `{PARAM}`-only callee over an
-        // inline string literal is a fresh sole owner (the template/semver
-        // stdlib shape) → the twin gate agrees with the preflight's Admit.
-        let mut b = Builder::default();
-        let mut provenance = HashMap::new();
-        provenance.insert(hew_hir::ItemId(7), AliasBits::PARAM);
-        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
-            provenance,
-            extern_names: HashSet::new(),
-            extern_table: ExternContractTable::default(),
-            may_mutate: HashMap::new(),
-            ..CallScrutineeProvenance::default()
-        });
-        let callee = expr(
-            HirExprKind::BindingRef {
-                name: "try_parse".to_string(),
-                resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
-            },
-            ResolvedTy::Unit,
-        );
-        let literal_arg = expr(
-            HirExprKind::Literal(hew_hir::HirLiteral::String("hello {{.name".to_string())),
-            ResolvedTy::String,
-        );
-        let call = expr(
-            HirExprKind::Call {
-                target: hew_types::CallTarget::IndirectFunctionValue,
-                callee: Box::new(callee),
-                args: vec![literal_arg],
-            },
-            ResolvedTy::String,
-        );
-        assert!(
-            is_ephemeral(&b.classify_scrutinee_origin(&call)),
-            "a ParamsOnly callee over an inline-fresh literal arg is a fresh sole owner"
-        );
-    }
-
-    #[test]
-    fn call_with_mixed_param_opaque_summary_rejects_despite_fresh_args() {
-        // A mixed `PARAM|OPAQUE` summary is never arg-rescuable — the OPAQUE
-        // component can alias a capture/global regardless of the arguments.
-        // At the HIR fact level this still publishes as `Borrowed` (an aliasing
-        // return, full stop; the checker does not distinguish PARAM-only from
-        // PARAM|OPAQUE once either forces non-fresh), so the fixture is the
-        // same shape as the PARAM-only reject above.
-        let b = Builder {
-            param_ownership: Rc::new(borrowed_call_result_facts()),
-            ..Builder::default()
-        };
-        let callee = expr(
-            HirExprKind::BindingRef {
-                name: "mixed".to_string(),
-                resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
-            },
-            ResolvedTy::Unit,
-        );
-        let literal_arg = expr(
-            HirExprKind::Literal(hew_hir::HirLiteral::String("x".to_string())),
-            ResolvedTy::String,
-        );
-        let call = expr(
-            HirExprKind::Call {
-                target: hew_types::CallTarget::IndirectFunctionValue,
-                callee: Box::new(callee),
-                args: vec![literal_arg],
-            },
-            ResolvedTy::String,
-        );
-        assert!(
-            is_alias_reject(&b.classify_scrutinee_origin(&call)),
-            "a PARAM|OPAQUE summary must reject even over fresh args"
-        );
-    }
-
-    #[test]
-    fn call_to_a_fresh_summary_admits() {
-        // A resolved module-fn callee with no PARAM bit keeps today's admission
-        // (the interim legacy window).
-        let mut b = Builder::default();
-        let mut provenance = HashMap::new();
-        provenance.insert(hew_hir::ItemId(7), AliasBits::EMPTY);
-        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
-            provenance,
-            extern_names: HashSet::new(),
-            extern_table: ExternContractTable::default(),
-            may_mutate: HashMap::new(),
-            ..CallScrutineeProvenance::default()
-        });
-        let callee = expr(
-            HirExprKind::BindingRef {
-                name: "make_fresh".to_string(),
-                resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
-            },
-            ResolvedTy::Unit,
-        );
-        let call = expr(
-            HirExprKind::Call {
-                target: hew_types::CallTarget::IndirectFunctionValue,
-                callee: Box::new(callee),
-                args: vec![],
-            },
-            ResolvedTy::String,
-        );
-        assert!(
-            is_ephemeral(&b.classify_scrutinee_origin(&call)),
-            "a fresh-summary call scrutinee is an ephemeral fresh owner"
-        );
+    fn call_result_ownership_selects_the_payload_transfer_verdict() {
+        let cases: [(ProducedValueOwnership, bool); 5] = [
+            // A fresh owned result is the sole owner of its temporary, so the
+            // payload transfer can neutralize that temporary.
+            (
+                ProducedValueOwnership::owned(hew_types::ProducedValueAcquisition::Fresh),
+                true,
+            ),
+            // A borrowed result may forward caller-visible storage.
+            (ProducedValueOwnership::Borrowed, false),
+            // A receiver-identity result IS the receiver's storage.
+            (ProducedValueOwnership::ReceiverIdentity, false),
+            // A foreign result mints no caller-side release; it is outside the
+            // payload-transfer rule and keeps the legacy admission.
+            (ProducedValueOwnership::NoOwner, true),
+            // The interim legacy fail-open window: an unresolved call still
+            // admits. This row fails when that window closes, which is the
+            // signal to retire the row rather than loosen the classifier.
+            (ProducedValueOwnership::Unknown, true),
+        ];
+        for (ownership, admits) in cases {
+            let b = Builder {
+                param_ownership: Rc::new(call_result_facts(ownership)),
+                ..Builder::default()
+            };
+            let callee = expr(
+                HirExprKind::BindingRef {
+                    name: "produce".to_string(),
+                    resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
+                },
+                ResolvedTy::Unit,
+            );
+            let literal_arg = expr(
+                HirExprKind::Literal(hew_hir::HirLiteral::String("hello".to_string())),
+                ResolvedTy::String,
+            );
+            let call = expr(
+                HirExprKind::Call {
+                    target: hew_types::CallTarget::IndirectFunctionValue,
+                    callee: Box::new(callee),
+                    args: vec![literal_arg],
+                },
+                ResolvedTy::String,
+            );
+            let origin = b.classify_scrutinee_origin(&call);
+            assert_eq!(
+                is_ephemeral(&origin),
+                admits,
+                "{ownership:?} call result took the wrong payload-transfer verdict: {origin:?}"
+            );
+            assert_eq!(
+                is_alias_reject(&origin),
+                !admits,
+                "{ownership:?} call result took the wrong payload-transfer verdict: {origin:?}"
+            );
+        }
     }
 }
 #[cfg(test)]

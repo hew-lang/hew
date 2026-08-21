@@ -1,4 +1,4 @@
-//! Direct `json.try_parse` matches own their fresh Result payloads.
+//! Local `json.try_parse` matches own their fresh Result payloads.
 //!
 //! Both arms bind heap-owning payloads: `Ok(doc)` is an opaque JSON resource and
 //! `Err(ParseError.Invalid(message))` carries the parser's native string detail.
@@ -7,22 +7,20 @@
 
 import std.encoding.json;
 
-fn report_line(line: string) -> i64 {
-    match json.try_parse(line) {
+fn report_line(line: string) -> string {
+    let parsed = json.try_parse(line);
+    match parsed {
         .Ok(doc) => {
             let owned_doc = doc;
-            if owned_doc.type_of() >= 0 {
-                1
-            } else {
-                0
+            if owned_doc.type_of() < 0 {
+                return "";
             }
+            return "ok";
         },
-        .Err(ParseError.Invalid(message)) => {
-            let detail = message;
-            if !detail.is_empty() {
-                2
-            } else {
-                0
+        .Err(error) => {
+            let owned_error = error;
+            match owned_error {
+                ParseError.Invalid(message) => return message,
             }
         },
     }
@@ -33,8 +31,14 @@ fn main() {
     var ok: i64 = 0;
     var err: i64 = 0;
     while i < 100 {
-        ok = ok + report_line("{\"n\": 1}".to_upper());
-        err = err + report_line("{ not valid".to_upper());
+        let ok_result = report_line("{\"n\": 1}".to_upper());
+        if !ok_result.is_empty() {
+            ok = ok + 1;
+        }
+        let err_detail = report_line("{ not valid".to_upper());
+        if !err_detail.is_empty() {
+            err = err + 2;
+        }
         i = i + 1;
     }
     println(f"ok={ok} err={err}");

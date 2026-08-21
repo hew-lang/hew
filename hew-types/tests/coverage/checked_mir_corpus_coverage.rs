@@ -289,7 +289,7 @@ fn corpus_covers_every_family_or_pins_the_gap() {
     let dir = golden_dir();
     assert!(
         dir.is_dir(),
-        "golden corpus missing at {} — run `make checked-mir-golden`",
+        "golden corpus missing at {} — run `make baselines`",
         dir.display()
     );
 
@@ -304,7 +304,7 @@ fn corpus_covers_every_family_or_pins_the_gap() {
     }
     assert!(
         dump_count > 0,
-        "no .mir dumps under {} — run `make checked-mir-golden`",
+        "no .mir dumps under {} — run `make baselines`",
         dir.display()
     );
 

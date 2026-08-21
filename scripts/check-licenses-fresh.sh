@@ -27,7 +27,7 @@ COMMITTED="${REPO_ROOT}/THIRD-PARTY-LICENSES"
 
 if [[ ! -f "$COMMITTED" ]]; then
     echo "error: THIRD-PARTY-LICENSES not found at ${COMMITTED}" >&2
-    echo "  Run 'make licenses' to generate it." >&2
+    echo "  Run 'make baselines' to generate it." >&2
     exit 1
 fi
 
@@ -53,6 +53,6 @@ if diff -u "$COMMITTED" "$TMPFILE"; then
 else
     echo "" >&2
     echo "error: THIRD-PARTY-LICENSES is stale (Cargo.lock or about.hbs changed)." >&2
-    echo "  Run 'make licenses' and commit the updated file." >&2
+    echo "  Run 'make baselines' and commit the updated file." >&2
     exit 1
 fi

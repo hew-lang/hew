@@ -198,8 +198,13 @@ fn send_terminator_checks_return_status_and_traps_on_failure() {
 /// already terminated is a no-op rather than a sender fault.
 ///
 /// Every other nonzero status remains a genuine failure. This test verifies
-/// that the codegen boundary compares against both zero and exactly `-2`, then
-/// combines those classifications before choosing the trap path.
+/// that the codegen boundary compares against both zero and exactly `-2`, and
+/// that the two comparisons form a TWO-LEVEL branch rather than a single
+/// boolean: `status != 0` selects the shared `actor_send_undelivered` block —
+/// where the undelivered payload is released — and only there does `status ==
+/// -2` choose between continuing (the no-op) and trapping. Collapsing them into
+/// one `and i1` is what routed the stopped-recipient edge past the release and
+/// leaked the payload.
 #[test]
 fn send_terminator_ignores_only_stopped_actor_status() {
     let pipeline = send_status_pipeline();
@@ -230,9 +235,26 @@ fn send_terminator_ignores_only_stopped_actor_status() {
          ErrActorStopped only; got {icmp_count} `icmp` occurrences in:\n{ll}"
     );
     assert!(
-        ll.contains("and i1"),
-        "Terminator::Send must require both a failed status and a running \
-         recipient before trapping; got:\n{ll}"
+        !ll.contains("and i1"),
+        "Terminator::Send must NOT collapse the two status comparisons into one \
+         boolean: that skips the shared undelivered-payload release on the \
+         stopped-recipient edge; got:\n{ll}"
+    );
+    assert!(
+        ll.contains("br i1 %send_not_ok, label %actor_send_undelivered"),
+        "a nonzero send status must enter the shared undelivered block, where \
+         the payload release lives; got:\n{ll}"
+    );
+    assert!(
+        ll.contains("actor_send_undelivered:") && ll.contains("actor_send_fail:"),
+        "Terminator::Send must emit both the undelivered block and the \
+         fail-closed trap block; got:\n{ll}"
+    );
+    assert!(
+        ll.contains("br i1 %send_recipient_stopped, label %bb")
+            && ll.contains(", label %actor_send_fail"),
+        "the undelivered block must branch on the stopped-recipient status: \
+         continue on ErrActorStopped, trap otherwise; got:\n{ll}"
     );
     assert!(
         ll.contains("icmp ne i32") && ll.contains(", 0") && ll.contains("icmp eq i32"),

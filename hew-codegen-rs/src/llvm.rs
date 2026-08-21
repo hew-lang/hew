@@ -1900,6 +1900,20 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// them. Always emitted on native `main` (cost is one runtime call
     /// that returns immediately when no lambda actors were spawned).
     pub(crate) emit_lambda_drain_epilogue: bool,
+    /// Emit `hew_runtime_exit_status()` before the `Terminator::Return` of
+    /// `main` on the native target, and fail the process when it reports a
+    /// fault.
+    ///
+    /// The runtime owns ONE exit-status authority (`hew-runtime/src/
+    /// exit_status.rs`): an actor fault that no supervisor recovered. Which
+    /// drain/shutdown epilogue a program selects is a scheduling decision and
+    /// must not decide whether that authority is consulted — reading it only
+    /// inside `hew_shutdown_wait` (the implicit-drain path) is what let a
+    /// program containing a supervisor exit `0` while an unrelated
+    /// unsupervised actor crashed. Always emitted on native `main`, after
+    /// every drain/shutdown/cleanup epilogue above, so faults raised during
+    /// the drain are included.
+    pub(crate) emit_process_exit_status_epilogue: bool,
     /// ABI layout authority for the module target. Native textual emission
     /// carries host data; cross-target emission carries the target machine data.
     pub(crate) target_data: &'a TargetData,
@@ -29335,6 +29349,47 @@ fn lower_terminator<'ctx>(
                     None => lambda_abandoned,
                 });
             }
+            // Process exit-status authority. Runs AFTER every drain/shutdown/
+            // cleanup epilogue above so a fault raised while draining is
+            // included, and on EVERY native `main` so the answer does not
+            // depend on which epilogue this program selected. `1` means an
+            // actor fault reached a point with no recovery authority left
+            // (unsupervised crash, or a root supervisor that gave up); a
+            // supervisor that handled the fault leaves it `0`.
+            if fn_ctx.emit_process_exit_status_epilogue {
+                let exit_status = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_runtime_exit_status",
+                )?;
+                let status = fn_ctx
+                    .builder
+                    .build_call(exit_status, &[], "hew_runtime_exit_status_call")
+                    .llvm_ctx("hew_runtime_exit_status call")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_runtime_exit_status returned void".into())
+                    })?
+                    .into_int_value();
+                let faulted = fn_ctx
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        status,
+                        fn_ctx.ctx.i32_type().const_zero(),
+                        "hew_runtime_faulted",
+                    )
+                    .llvm_ctx("hew_runtime_exit_status compare")?;
+                shutdown_abandoned = Some(match shutdown_abandoned {
+                    Some(prior) => fn_ctx
+                        .builder
+                        .build_or(prior, faulted, "hew_exit_any_failed")
+                        .llvm_ctx("combine exit failure statuses")?,
+                    None => faulted,
+                });
+            }
             if let Some(abandoned) = shutdown_abandoned {
                 let current_fn = fn_ctx
                     .builder
@@ -31276,23 +31331,68 @@ fn lower_terminator<'ctx>(
                 })?
                 .into_int_value();
 
-            // A stopped LocalPid is normal actor topology churn for a
-            // fire-and-forget send: the receiver is already terminal and the
-            // runtime has discarded the payload. Treat that one status as a
-            // no-op so a broadcast can outlive a dead peer. Other failures
-            // remain fail-closed; they are not a liveness observation.
-            let send_fail_bb = fn_ctx
+            // Delivery is the payload's ONE consumer: on `Ok` the mailbox owns
+            // the copied bytes (heap pointers included) and the checker has
+            // already marked every send argument moved, so no scope-exit drop
+            // covers the value. Every UNDELIVERED status therefore leaves the
+            // prepared carrier still owned here, and this is its only release
+            // point — the same contract `hew-mir`'s not-live recover edge
+            // documents (`hew-mir/src/lower/actor.rs`,
+            // `release_undelivered_send_payload`).
+            //
+            // So the status branch is two-level, not one:
+            //
+            //   status == Ok        -> `next` (mailbox owns the payload)
+            //   status != Ok        -> `actor_send_undelivered`: release the
+            //                          carrier exactly once, then
+            //     ErrActorStopped   -> `next`  (documented no-op: a stopped
+            //                          LocalPid is normal actor topology churn
+            //                          for a fire-and-forget send, so a
+            //                          broadcast outlives a dead peer)
+            //     any other status  -> `actor_send_fail` (fail-closed trap)
+            //
+            // Routing the stopped-recipient edge straight to `next` — as this
+            // did before — skipped the release and leaked an owned payload on
+            // every send to a dead actor. The two edges out of
+            // `actor_send_undelivered` are exclusive, so the release still runs
+            // exactly once per undelivered send and never double-releases the
+            // trap path.
+            let send_parent_fn = fn_ctx
                 .builder
                 .get_insert_block()
                 .and_then(|bb| bb.get_parent())
-                .map(|f| fn_ctx.ctx.append_basic_block(f, "actor_send_fail"))
                 .ok_or_else(|| CodegenError::Llvm("send block has no parent function".into()))?;
+            let send_undelivered_bb = fn_ctx
+                .ctx
+                .append_basic_block(send_parent_fn, "actor_send_undelivered");
+            let send_fail_bb = fn_ctx
+                .ctx
+                .append_basic_block(send_parent_fn, "actor_send_fail");
             let i32_ty = fn_ctx.ctx.i32_type();
             let zero = i32_ty.const_zero();
             let send_failed = fn_ctx
                 .builder
                 .build_int_compare(inkwell::IntPredicate::NE, send_status, zero, "send_not_ok")
                 .llvm_ctx("send status cmp")?;
+
+            let next_bb = *fn_ctx
+                .blocks
+                .get(next)
+                .ok_or_else(|| CodegenError::FailClosed(format!("Send next bb{next} missing")))?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(send_failed, send_undelivered_bb, next_bb)
+                .llvm_ctx("send status branch")?;
+
+            fn_ctx.builder.position_at_end(send_undelivered_bb);
+            if let Some(plan) = cleanup_plan {
+                emit_prepared_carrier_drop(
+                    fn_ctx,
+                    *value,
+                    plan,
+                    hew_mir::PreparedCarrierBoundary::Actor,
+                )?;
+            }
             let recipient_stopped = fn_ctx
                 .builder
                 .build_int_compare(
@@ -31302,33 +31402,12 @@ fn lower_terminator<'ctx>(
                     "send_recipient_stopped",
                 )
                 .llvm_ctx("send stopped-recipient status cmp")?;
-            let recipient_running = fn_ctx
-                .builder
-                .build_not(recipient_stopped, "send_recipient_running")
-                .llvm_ctx("send stopped-recipient inversion")?;
-            let send_must_trap = fn_ctx
-                .builder
-                .build_and(send_failed, recipient_running, "send_must_trap")
-                .llvm_ctx("send failure classification")?;
-
-            let next_bb = *fn_ctx
-                .blocks
-                .get(next)
-                .ok_or_else(|| CodegenError::FailClosed(format!("Send next bb{next} missing")))?;
             fn_ctx
                 .builder
-                .build_conditional_branch(send_must_trap, send_fail_bb, next_bb)
-                .llvm_ctx("send status branch")?;
+                .build_conditional_branch(recipient_stopped, next_bb, send_fail_bb)
+                .llvm_ctx("send undelivered classification branch")?;
 
             fn_ctx.builder.position_at_end(send_fail_bb);
-            if let Some(plan) = cleanup_plan {
-                emit_prepared_carrier_drop(
-                    fn_ctx,
-                    *value,
-                    plan,
-                    hew_mir::PreparedCarrierBoundary::Actor,
-                )?;
-            }
             emit_trap_with_code(fn_ctx, HEW_TRAP_ACTOR_SEND_FAILED as u64, "actor_send_fail")?;
         }
         Terminator::Ask {
@@ -34539,6 +34618,19 @@ fn lower_function<'ctx>(
     // would emit `Terminator::MakeLambdaActor` for a wasm target.
     let emit_lambda_drain_epilogue = func.name == "main" && !emit_wasm_entry_alias;
 
+    // Process exit-status epilogue: consult the runtime's ONE exit-status
+    // authority on EVERY native `main` return, whichever drain/shutdown
+    // epilogue this program selected above. An unrecovered actor fault is a
+    // property of the run, not of the shutdown path taken to end it; gating
+    // the read on the implicit-drain path (`hew_shutdown_wait`'s `-3`) meant a
+    // program containing a supervisor — which takes the immediate
+    // `hew_sched_shutdown` path instead — exited `0` while an unrelated
+    // unsupervised actor had crashed. Native `main` already emits the
+    // unconditional lambda drain, so the runtime is linked here regardless of
+    // actor usage, and `hew_runtime_exit_status` answers `0` on a runtime that
+    // was never initialized.
+    let emit_process_exit_status_epilogue = func.name == "main" && !emit_wasm_entry_alias;
+
     // The wasm32 analogue: a standalone `hew run --target wasm32-wasi` actor
     // program has no scheduler driver or runtime-owned atexit hook, so `main`
     // must drain and clean up the cooperative runtime itself via
@@ -34639,6 +34731,7 @@ fn lower_function<'ctx>(
         emit_drain_epilogue,
         emit_immediate_shutdown_epilogue,
         emit_runtime_cleanup_epilogue,
+        emit_process_exit_status_epilogue,
         emit_wasm_runtime_exit,
         emit_lambda_drain_epilogue,
         target_data,

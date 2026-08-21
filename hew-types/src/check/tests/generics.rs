@@ -4836,3 +4836,91 @@ fn main() -> i64 { 0 }
         output.errors
     );
 }
+
+#[test]
+fn inline_type_body_method_type_parameter_shadowing_the_type_is_refused() {
+    // A method declared inside the type body shadows the type's own parameter
+    // just as an `impl` block method shadows the impl's.
+    let source = r"
+type Holder<T> {
+    value: T;
+
+    fn same<T>(holder: Holder<T>, marker: T) -> bool {
+        let _ = holder;
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.message.contains("method type parameter `T` shadows")
+                && e.message.contains("the type `Holder`")
+        }),
+        "an inline type-body method's shadow must be refused; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn inline_type_body_method_with_a_distinct_type_parameter_is_admitted() {
+    let source = r"
+type Holder<T> {
+    value: T;
+
+    fn same<U>(holder: Holder<T>, marker: U) -> bool {
+        let _ = holder;
+        let _ = marker;
+        true
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    let output = check_source(source);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("shadows the type parameter")),
+        "a distinct inline type-body method parameter must be admitted; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn shadow_report_is_keyed_by_declaration_not_registering_module() {
+    // An inherited trait default is re-registered under every implementing
+    // module. Keying the dedup by the REGISTERING module emitted one diagnostic
+    // per module, the extra copies landing at unrelated lines in implementors'
+    // files. The key is the declaration's own identity, so re-registration
+    // anywhere reports once.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let method_params = vec![hew_parser::ast::TypeParam {
+        name: "T".to_string(),
+        bounds: vec![],
+    }];
+    let enclosing = vec!["T".to_string()];
+    let decl_span = Span::from(40..60);
+
+    for module_idx in [0_u32, 7, 12] {
+        checker.current_module_idx = module_idx;
+        checker.reject_shadowing_method_type_params(
+            Some(&method_params),
+            &enclosing,
+            "trait `Choice`",
+            "carrier.Choice",
+            &decl_span,
+        );
+    }
+
+    assert_eq!(
+        checker.errors.len(),
+        1,
+        "one declaration must report once however many modules re-register it; got: {:?}",
+        checker.errors
+    );
+}

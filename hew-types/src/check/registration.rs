@@ -6411,6 +6411,21 @@ impl Checker {
                             (method.type_params.as_ref(), method.where_clause.as_ref()),
                         ]);
                         let method_key = format!("{}::{}", td.name, method.name);
+                        // Inline type-body methods can declare their own
+                        // generics alongside the type's; the same shadow
+                        // refusal applies here as on `impl` blocks.
+                        if let Some(type_tps) = td.type_params.as_ref() {
+                            let enclosing: Vec<String> =
+                                type_tps.iter().map(|tp| tp.name.clone()).collect();
+                            let owner = self.declaration_owner_key(&td.name);
+                            self.reject_shadowing_method_type_params(
+                                method.type_params.as_ref(),
+                                &enclosing,
+                                &format!("the type `{}`", td.name),
+                                &owner,
+                                &method.decl_span,
+                            );
+                        }
                         self.register_fn_sig_with_name(&method_key, method);
                         let skip = usize::from(
                             method
@@ -6632,11 +6647,19 @@ impl Checker {
     /// One authority for all three shapes: inherent `impl` methods, trait
     /// declaration methods (including default bodies), and trait `impl`
     /// methods shadowing a parameter the trait declared.
+    /// Module-qualified identity of a declaration owner, for the shadow-report
+    /// dedup key.
+    pub(super) fn declaration_owner_key(&self, name: &str) -> String {
+        scoped_module_item_name(self.current_module.as_deref(), name)
+            .unwrap_or_else(|| name.to_string())
+    }
+
     pub(super) fn reject_shadowing_method_type_params(
         &mut self,
         method_type_params: Option<&Vec<TypeParam>>,
         enclosing_params: &[String],
         enclosing_description: &str,
+        declaration_owner: &str,
         decl_span: &Span,
     ) {
         let Some(method_tps) = method_type_params else {
@@ -6653,10 +6676,14 @@ impl Checker {
         shadowed.sort_unstable();
         shadowed.dedup();
         for name in shadowed {
-            // Trait method signatures pass through registration more than once;
-            // one declaration must not report its shadow twice.
+            // Registration visits a declaration more than once — trait method
+            // signatures repeatedly, and an inherited default once per
+            // implementing module. The key is therefore the DECLARATION's
+            // identity, never the registering module's.
             if !self.shadowed_method_type_param_reports.insert((
-                SpanKey::in_module(decl_span, self.current_module_idx),
+                declaration_owner.to_string(),
+                decl_span.start,
+                decl_span.end,
                 name.to_string(),
             )) {
                 continue;
@@ -6683,13 +6710,6 @@ impl Checker {
         span: &Span,
     ) {
         let method_key = format!("{trait_name}::{}", method.name);
-        let trait_params = self.trait_type_param_names(trait_name);
-        self.reject_shadowing_method_type_params(
-            method.type_params.as_ref(),
-            &trait_params,
-            &format!("trait `{trait_name}`"),
-            &method.span,
-        );
         // Declaration IDs are minted at the checker registration boundary and
         // handed to HIR verbatim. The key is source-owned, not a linker name.
         // A trait declaration owns its method IDs directly. During the
@@ -6709,6 +6729,16 @@ impl Checker {
                 || self.trait_ref_lookup_key(trait_name),
                 |module| format!("{module}.{trait_name}"),
             );
+        // Keyed by the trait's own declaration key, which is stable across the
+        // implementing modules an inherited default is re-registered under.
+        let trait_params = self.trait_type_param_names(trait_name);
+        self.reject_shadowing_method_type_params(
+            method.type_params.as_ref(),
+            &trait_params,
+            &format!("trait `{trait_name}`"),
+            &declaration_key,
+            &method.span,
+        );
         let trait_id = crate::DefId::new(declaration_key.clone());
         let method_id = crate::DefId::new(format!("{}::{}", trait_id.full_path(), method.name));
         let ids = (trait_id, method_id);
@@ -7589,10 +7619,12 @@ impl Checker {
         // scoping the two apart is not the fix.
         if let Some(impl_tps) = impl_type_params {
             let enclosing: Vec<String> = impl_tps.iter().map(|tp| tp.name.clone()).collect();
+            let owner = self.declaration_owner_key(type_name);
             self.reject_shadowing_method_type_params(
                 method.type_params.as_ref(),
                 &enclosing,
                 &format!("the `impl` block on `{type_name}`"),
+                &owner,
                 &method.decl_span,
             );
         }
@@ -7600,10 +7632,12 @@ impl Checker {
         // TRAIT itself, which the impl block never mentions.
         if let Some(bound) = trait_bound {
             let trait_params = self.trait_type_param_names(&bound.name);
+            let owner = self.trait_ref_lookup_key(&bound.name);
             self.reject_shadowing_method_type_params(
                 method.type_params.as_ref(),
                 &trait_params,
                 &format!("trait `{}`", bound.name),
+                &owner,
                 &method.decl_span,
             );
         }

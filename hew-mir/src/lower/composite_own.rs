@@ -6515,10 +6515,10 @@ pub(super) fn detect_unproven_aggregate_handle_double_free(
     findings
 }
 #[cfg(test)]
+mod escaped_sibling_field_discharge;
+#[cfg(test)]
 #[path = "composite_own/owned_record_drop_derivation.rs"]
 mod owned_record_drop_derivation;
-#[cfg(test)]
-mod escaped_sibling_field_discharge;
 #[cfg(test)]
 mod tuple_composite_field_drop_exclusion {
     //! Direct structural pins for `derive_tuple_composite_drop_allowed`'s

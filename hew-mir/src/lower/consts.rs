@@ -1491,7 +1491,11 @@ pub(super) fn runtime_symbol_for_call_expr(
         // F-string interpolation is the typed StringConcat family. Its MIR
         // producer lives in the ordinary Runtime-family branch so this helper
         // does not turn that semantic identity into a C-symbol dispatch key.
-        if family == &hew_types::runtime_call::RuntimeCallFamily::StringConcat {
+        if matches!(
+            family,
+            hew_types::runtime_call::RuntimeCallFamily::StringConcat
+                | hew_types::runtime_call::RuntimeCallFamily::StructuralFormat
+        ) {
             return None;
         }
         let symbol = family.c_symbol();

@@ -36,10 +36,10 @@ machine TcpHandshake {
 fn main() {
     var tcp = Closed;
     println(tcp.state_name());
-    tcp.step(Syn);
+    tcp.step(.Syn);
     println(tcp.state_name());
-    tcp.step(Ack);
+    tcp.step(.Ack);
     println(tcp.state_name());
-    tcp.step(Reset);
+    tcp.step(.Reset);
     println(tcp.state_name());
 }

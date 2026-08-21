@@ -1901,7 +1901,9 @@ fn walk_expr(
             for part in parts {
                 match part {
                     StringPart::Literal(_) => {}
-                    StringPart::Expr(expr) => walk_expr(expr, owners),
+                    StringPart::Expr(expr) | StringPart::StructuralExpr(expr) => {
+                        walk_expr(expr, owners);
+                    }
                 }
             }
         }

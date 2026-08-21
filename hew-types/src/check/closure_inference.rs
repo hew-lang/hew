@@ -305,7 +305,7 @@ fn body_visit_expr(expr: &Expr, out: &mut LambdaBodyFacts) {
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let StringPart::Expr((e, _)) = part {
+                if let StringPart::Expr((e, _)) | StringPart::StructuralExpr((e, _)) = part {
                     body_visit_expr(e, out);
                 }
             }
@@ -763,7 +763,7 @@ fn esc_visit_expr(
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let StringPart::Expr((e, _)) = part {
+                if let StringPart::Expr((e, _)) | StringPart::StructuralExpr((e, _)) = part {
                     esc_visit_expr(e, name, in_fork, acc, false);
                 }
             }

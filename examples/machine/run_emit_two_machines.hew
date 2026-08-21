@@ -7,7 +7,7 @@
 // `Alarm` emits `Ring` (triggered by its own `Trigger` step, a distinct
 // event from the one it emits — machines cannot emit the event that
 // re-triggers their own transition). Without the machine-id filter,
-// `b.take_emits(Ring)` would misattribute `Alarm`'s queued event to
+// `b.take_emits(.Ring)` would misattribute `Alarm`'s queued event to
 // `Beacon` and wrongly report `1`; with the filter it must report `0`.
 //
 // `tests/exec/machine_exec.rs::run_emit_two_machines_fixture_executes` is
@@ -60,7 +60,7 @@ machine Beacon {
 fn main() {
     var a = Armed;
     let b = Idle;
-    a.step(Trigger);
-    println(a.take_emits(Ring));
-    println(b.take_emits(Ring));
+    a.step(.Trigger);
+    println(a.take_emits(.Ring));
+    println(b.take_emits(.Ring));
 }

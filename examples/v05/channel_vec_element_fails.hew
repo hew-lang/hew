@@ -15,8 +15,8 @@ fn relay(items: Vec<i64>) {
     tx.send(items);
     tx.close();
     match rx.try_recv() {
-        Some(v) => println(v.len()),
-        None => println("drained"),
+        .Some(v) => println(v.len()),
+        .None => println("drained"),
     }
 }
 

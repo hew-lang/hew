@@ -7427,6 +7427,7 @@ struct LowerCtx {
     /// (e.g. `duplex_pair`) that have no AST `fn` entry and therefore no
     /// `fn_registry` hit.
     expr_types: HashMap<SpanKey, Ty>,
+    interpolation_display_types: HashMap<SpanKey, Ty>,
     /// Checker result-ownership rows waiting to be projected from their
     /// source spans onto stable HIR expression sites.
     produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
@@ -8469,6 +8470,7 @@ impl LowerCtx {
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             resolved_calls: tc_output.resolved_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
+            interpolation_display_types: tc_output.interpolation_display_types.clone(),
             produced_value_ownership: tc_output.produced_value_ownership.clone(),
             produced_value_dependencies: tc_output.produced_value_dependencies.clone(),
             produced_value_source_sites: HashMap::new(),
@@ -10165,7 +10167,9 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e) = part {
+                if let hew_parser::ast::StringPart::Expr(e)
+                | hew_parser::ast::StringPart::StructuralExpr(e) = part
+                {
                     scan_expr_for_private_refs(&e.0, pf, out);
                 }
             }
@@ -11666,11 +11670,21 @@ impl LowerCtx {
     ///   sentinel — the checker's `require_display_impl` gate is the
     ///   authoritative reject point. Reaching the sentinel means
     ///   compilation halts: never a silent empty-string substitute.
+    fn lower_display_dispatch(&mut self, value: HirExpr, span: Span) -> HirExpr {
+        let dispatch_ty = value.ty.clone();
+        self.lower_display_dispatch_for_type(value, dispatch_ty, span)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "display lowering keeps all fail-closed dispatch cases in one authority"
     )]
-    fn lower_display_dispatch(&mut self, value: HirExpr, span: Span) -> HirExpr {
+    fn lower_display_dispatch_for_type(
+        &mut self,
+        value: HirExpr,
+        dispatch_ty: ResolvedTy,
+        span: Span,
+    ) -> HirExpr {
         // Resolve the Display method name through the lang-item registry.
         // Missing entry is fail-closed: f-string lowering cannot synthesise
         // dispatch without a method-name binding.
@@ -11718,7 +11732,7 @@ impl LowerCtx {
                 .unsupported_expr(span, "f-string display dispatch: untyped display lang-item");
         };
         let display_target = hew_types::CallTarget::static_trait(display_trait, display_method);
-        let ty = value.ty.clone();
+        let ty = dispatch_ty;
         match &ty {
             // String: route through a user `impl Display for string` if one
             // is registered; otherwise pass through identity. The stdlib
@@ -11839,6 +11853,37 @@ impl LowerCtx {
                 ));
                 self.unsupported_expr(span, "f-string display dispatch: unsupported type shape")
             }
+        }
+    }
+
+    fn build_structural_format_call(&mut self, value: HirExpr, span: Span) -> HirExpr {
+        let fn_ty = ResolvedTy::Function {
+            params: vec![value.ty.clone()],
+            ret: Box::new(ResolvedTy::String),
+        };
+        let callee = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&fn_ty, &self.type_classes),
+            ty: fn_ty,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(HirLiteral::Unit),
+            span: span.clone(),
+        };
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&ResolvedTy::String, &self.type_classes),
+            ty: ResolvedTy::String,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Call {
+                target: hew_types::CallTarget::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::StructuralFormat,
+                ),
+                callee: Box::new(callee),
+                args: vec![value],
+            },
+            span,
         }
     }
 
@@ -11983,6 +12028,20 @@ impl LowerCtx {
                     let value =
                         self.lower_expr(&(expr.clone(), expr_span.clone()), IntentKind::Read);
                     let rendered = self.lower_display_dispatch(value, expr_span.clone());
+                    segments.push(rendered);
+                }
+                StringPart::StructuralExpr((expr, expr_span)) => {
+                    let value =
+                        self.lower_expr(&(expr.clone(), expr_span.clone()), IntentKind::Read);
+                    let dispatch_ty = self
+                        .interpolation_display_types
+                        .get(&self.mk_key(expr_span))
+                        .and_then(|ty| ResolvedTy::from_ty(ty).ok());
+                    let rendered = if let Some(dispatch_ty) = dispatch_ty {
+                        self.lower_display_dispatch_for_type(value, dispatch_ty, expr_span.clone())
+                    } else {
+                        self.build_structural_format_call(value, expr_span.clone())
+                    };
                     segments.push(rendered);
                 }
             }
@@ -33214,7 +33273,9 @@ fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e) = part {
+                if let hew_parser::ast::StringPart::Expr(e)
+                | hew_parser::ast::StringPart::StructuralExpr(e) = part
+                {
                     scan_expr_for_blocking_recv(&e.0, diagnostics);
                 }
             }
@@ -33744,7 +33805,9 @@ fn scan_expr_for_task_gates(expr: &Expr, span: &Span, ctx: &mut LowerCtx, progra
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e) = part {
+                if let hew_parser::ast::StringPart::Expr(e)
+                | hew_parser::ast::StringPart::StructuralExpr(e) = part
+                {
                     scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
                 }
             }
@@ -34298,7 +34361,9 @@ fn scan_expr_for_binop_gates(
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e) = part {
+                if let hew_parser::ast::StringPart::Expr(e)
+                | hew_parser::ast::StringPart::StructuralExpr(e) = part
+                {
                     scan_expr_for_binop_gates(&e.0, &e.1, false, ctx);
                 }
             }
@@ -35464,7 +35529,9 @@ fn scan_expr_for_supervisor_spawn(
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e) = part {
+                if let hew_parser::ast::StringPart::Expr(e)
+                | hew_parser::ast::StringPart::StructuralExpr(e) = part
+                {
                     scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
                 }
             }
@@ -35840,7 +35907,9 @@ fn scan_expr_for_vec_index_gate(
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e) = part {
+                if let hew_parser::ast::StringPart::Expr(e)
+                | hew_parser::ast::StringPart::StructuralExpr(e) = part
+                {
                     scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
                 }
             }

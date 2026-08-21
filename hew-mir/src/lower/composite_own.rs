@@ -1863,6 +1863,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         if !copy_in_elem_store
                             && alias_of.contains_key(&l)
                             && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                            && !binder_read_is_borrow_safe_instr(instr, l)
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
@@ -2602,6 +2603,7 @@ pub(super) fn derive_owned_record_drop_allowed(
                             && alias_of.contains_key(&l)
                             && matches!(p, Place::Local(_) | Place::ReturnSlot)
                             && preserved_record_store_local != Some(l)
+                            && !binder_read_is_borrow_safe_instr(instr, l)
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
@@ -5042,6 +5044,7 @@ pub(super) fn derive_tuple_composite_drop_allowed(
                         if !cloned_borrowed_ingress
                             && alias_of.contains_key(&l)
                             && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                            && !binder_read_is_borrow_safe_instr(instr, l)
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }

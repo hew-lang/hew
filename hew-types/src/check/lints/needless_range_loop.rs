@@ -672,7 +672,7 @@ impl BodyScan<'_> {
             }
             Expr::InterpolatedString(parts) => {
                 for part in parts {
-                    if let StringPart::Expr(inner) = part {
+                    if let StringPart::Expr(inner) | StringPart::StructuralExpr(inner) = part {
                         self.expr(&inner.0);
                     }
                 }

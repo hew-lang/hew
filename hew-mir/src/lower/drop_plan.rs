@@ -2656,6 +2656,9 @@ fn apply_balance_instr(
                 if let Some(root) = cx.tracked_root(*arg) {
                     if consumed == Some(i) {
                         obligation_entry(state, root).definite_discharge();
+                    } else if i == 0 && call.symbol() == "hew_structural_format" {
+                        // Structural formatting observes the value by address.
+                        // It neither transfers nor clones any ownership authority.
                     } else {
                         // Runtime calls outside the consuming table borrow
                         // their heap args; widen only (a symbol this table

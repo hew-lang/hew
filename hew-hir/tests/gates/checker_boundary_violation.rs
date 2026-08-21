@@ -77,7 +77,7 @@ fn poisoned_expr_types_emits_checker_boundary_violation() {
     // exercise.  The DefId is the diagnostic identity; it is not reconstructed
     // from the source spelling by the lowerer.
     tc.direct_call_targets
-        .insert(span_key, CallTarget::User(DefId::new("foo")));
+        .insert(span_key, CallTarget::User(DefId::for_test("foo")));
 
     let lower_output = lower_program(
         &parsed.program,

@@ -56,6 +56,7 @@ use crate::ownership::VecElementRelease;
 use crate::state_clone::StateFieldCloneKind as SnapshotFieldKind;
 
 mod actor;
+mod actor_state_handle;
 mod assign;
 mod borrowed_argument_owner;
 mod cfg_util;
@@ -96,6 +97,10 @@ pub(crate) use self::owner_mint::OwnerMintWarrant;
 pub(crate) use self::facts::mangle_layout_key;
 
 #[cfg(not(test))]
+use self::actor_state_handle::{
+    detect_actor_state_handle_consume, detect_actor_state_resource_overwrite,
+};
+#[cfg(not(test))]
 use self::cfg_util::{
     block_by_id, blocks_reachable_from, call_terminator_next,
     local_is_rewritten_after_current_iteration, local_is_used_after, shift_instr_spans_on_insert,
@@ -109,7 +114,6 @@ use self::composite_own::{
     derive_owned_record_drop_allowed, derive_owned_tuple_handle_projection_bindings,
     derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
     derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
-    detect_actor_state_handle_consume, detect_actor_state_resource_overwrite,
     detect_builtin_handle_record_field_overwrite, detect_opaque_resource_field_misuse,
     detect_unproven_aggregate_handle_double_free,
 };
@@ -7606,6 +7610,6 @@ const ENTRY_BLOCK_ID: u32 = 0;
 
 #[cfg(test)]
 use self::{
-    cfg_util::*, composite_own::*, consts::*, drop_plan::*, machine_synth::*, split_consume::*,
-    suspend_places::*, temp_drop::*,
+    actor_state_handle::*, cfg_util::*, composite_own::*, consts::*, drop_plan::*,
+    machine_synth::*, split_consume::*, suspend_places::*, temp_drop::*,
 };

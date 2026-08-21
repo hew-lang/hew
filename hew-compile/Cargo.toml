@@ -21,6 +21,7 @@ toml.workspace = true
 [dev-dependencies]
 hew-codegen-rs = { path = "../hew-codegen-rs" }
 hew-mir = { path = "../hew-mir" }
+hew-types = { path = "../hew-types", features = ["test"] }
 tempfile.workspace = true
 
 [lints]

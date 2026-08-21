@@ -3147,7 +3147,7 @@ fn tracked_obligation_locals_with_sites(
         if builder.parameter_locals.contains(&local) {
             continue;
         }
-        let site = builder
+        let binding_site = builder
             .statements
             .iter()
             .find_map(|statement| match statement {
@@ -3156,10 +3156,9 @@ fn tracked_obligation_locals_with_sites(
                 }
                 _ => None,
             });
-        let name = site
-            .and_then(|site| builder.call_scrutinee_diagnostic_names.get(&site))
-            .cloned()
-            .unwrap_or_else(|| entry.name.clone());
+        let diagnostic = builder.call_scrutinee_diagnostics.get(&local);
+        let name = diagnostic.map_or_else(|| entry.name.clone(), |(_, label)| label.clone());
+        let site = diagnostic.map(|(site, _)| *site).or(binding_site);
         tracked.entry(local).or_insert(name);
         if let Some(site) = site {
             mint_sites.entry(local).or_insert(site);
@@ -3205,14 +3204,30 @@ pub(super) fn validate_obligation_balance(
                 .map(|ty| (root, format!("{ty}")))
         })
         .collect();
-    validate_obligation_balance_with(
+    let call_mint_sites: HashSet<SiteId> = builder
+        .call_scrutinee_diagnostics
+        .values()
+        .map(|(site, _)| *site)
+        .collect();
+    let mut findings = validate_obligation_balance_with(
         elab,
         &raw.blocks,
         &raw.suspend_kinds,
         &tracked,
         (&local_types, &mint_sites),
         &builder.parameter_locals,
-    )
+    );
+    for finding in &mut findings {
+        if let MirCheck::ObligationUnderReleased { site, hard, .. } = finding {
+            // A typed direct-call carrier that survives the complete alias
+            // and cleanup construction has no safe release proof. Reject that
+            // call rather than compiling a known carrier leak.
+            if call_mint_sites.contains(site) {
+                *hard = true;
+            }
+        }
+    }
+    findings
 }
 
 /// Decomposed core of [`validate_obligation_balance`] — the unit-test entry
@@ -8862,13 +8877,10 @@ mod twin_gate_classifier {
             (ProducedValueOwnership::Borrowed, false),
             // A receiver-identity result IS the receiver's storage.
             (ProducedValueOwnership::ReceiverIdentity, false),
-            // A foreign result mints no caller-side release; it is outside the
-            // payload-transfer rule and keeps the legacy admission.
-            (ProducedValueOwnership::NoOwner, true),
-            // The interim legacy fail-open window: an unresolved call still
-            // admits. This row fails when that window closes, which is the
-            // signal to retire the row rather than loosen the classifier.
-            (ProducedValueOwnership::Unknown, true),
+            // A foreign result has no proved caller-side owner to transfer.
+            (ProducedValueOwnership::NoOwner, false),
+            // An unresolved call has no ownership proof and fails closed.
+            (ProducedValueOwnership::Unknown, false),
         ];
         for (ownership, admits) in cases {
             let b = Builder {

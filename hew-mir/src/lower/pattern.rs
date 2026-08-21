@@ -3924,8 +3924,8 @@ impl Builder {
     /// temp that can be neutralized after moving out a payload. A borrowed result
     /// may forward caller-visible storage, so its payload move stays rejected.
     ///
-    /// `NoOwner` retains the existing foreign-result behavior: it does not mint
-    /// a caller-side release and is outside the payload-transfer rule here.
+    /// `NoOwner` and `Unknown` carry no proof that a caller-owned payload may be
+    /// moved out, so both stay outside the payload-transfer rule and fail closed.
     fn classify_call_arm_scrutinee_origin(&self, scrutinee: &HirExpr) -> ProjectedPayloadOrigin {
         let ownership = self
             .param_ownership
@@ -3934,11 +3934,11 @@ impl Builder {
             .map_or(ProducedValueOwnership::Unknown, |fact| fact.ownership);
         match ownership {
             ProducedValueOwnership::Owned { .. } => ProjectedPayloadOrigin::EphemeralTemp,
-            ProducedValueOwnership::Borrowed | ProducedValueOwnership::ReceiverIdentity => {
+            ProducedValueOwnership::Borrowed
+            | ProducedValueOwnership::ReceiverIdentity
+            | ProducedValueOwnership::NoOwner
+            | ProducedValueOwnership::Unknown => {
                 ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::AliasesCallerStorage)
-            }
-            ProducedValueOwnership::NoOwner | ProducedValueOwnership::Unknown => {
-                ProjectedPayloadOrigin::EphemeralTemp
             }
         }
     }
@@ -4585,29 +4585,45 @@ impl Builder {
             let arm_is_recv_some = recv_next_scrutinee && arm_is_some;
             let call_carrier_needs_skipped_payload_owner = call_scrutinee_owner.is_some()
                 && match &self.subst_ty(&scrutinee.ty) {
-                    ResolvedTy::Named { name, args, .. } => {
-                        crate::model::find_enum_layout(name, args, &self.enum_layouts).is_some_and(
-                            |layout| {
-                                layout.variants.iter().any(|variant| {
-                                    variant.field_tys.iter().any(|field_ty| {
-                                        matches!(
-                                            field_ty,
-                                            ResolvedTy::Named {
-                                                name,
-                                                args,
-                                                is_opaque: false,
-                                                ..
-                                            } if args.is_empty()
-                                                && self
-                                                    .lifecycle_registry
-                                                    .resource_record(&hew_types::DefId::legacy_reconstruct_from_full_path(name))
-                                                    .is_some()
-                                        )
-                                    })
-                                })
-                            },
-                        )
-                    }
+                    ResolvedTy::Named { name, args, .. } => crate::model::find_enum_layout(
+                        name,
+                        args,
+                        &self.enum_layouts,
+                    )
+                    .is_some_and(|layout| {
+                        layout.variants.iter().any(|variant| {
+                            variant.field_tys.iter().any(|field_ty| {
+                                self.binding_seeds_drop_elaboration(&self.subst_ty(field_ty))
+                            })
+                        })
+                    }),
+                    _ => false,
+                };
+            let call_carrier_has_resource_payload = call_scrutinee_owner.is_some()
+                && match &self.subst_ty(&scrutinee.ty) {
+                    ResolvedTy::Named { name, args, .. } => crate::model::find_enum_layout(
+                        name,
+                        args,
+                        &self.enum_layouts,
+                    )
+                    .is_some_and(|layout| {
+                        layout.variants.iter().any(|variant| {
+                            variant.field_tys.iter().any(|field_ty| {
+                                matches!(
+                                    field_ty,
+                                    ResolvedTy::Named {
+                                        name,
+                                        args,
+                                        is_opaque: false,
+                                        ..
+                                    } if args.is_empty()
+                                        && self.lifecycle_registry.resource_record(
+                                            &hew_types::DefId::legacy_reconstruct_from_full_path(name),
+                                        ).is_some()
+                                )
+                            })
+                        })
+                    }),
                     _ => false,
                 };
             let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
@@ -4692,7 +4708,7 @@ impl Builder {
                 if call_scrutinee_owner.is_some()
                     && keep_for_drop_elab
                     && (self.is_owned_aggregate_record_ty(&binding_ty)
-                        || call_carrier_needs_skipped_payload_owner)
+                        || call_carrier_has_resource_payload)
                 {
                     if let Some(local) = base_local(dest) {
                         call_carrier_match_result_candidates.push((binding.binding, local));
@@ -4928,11 +4944,17 @@ impl Builder {
                     if !self.binding_seeds_drop_elaboration(&field_ty) {
                         continue;
                     }
-                    let Some(warrant) = self.owner_warrant_for_fresh_variant_payload(
-                        scrutinee,
-                        variant_idx,
-                        field_idx,
-                    ) else {
+                    let warrant = if call_carrier_needs_skipped_payload_owner {
+                        let warrant = self.owner_warrant_for_admitted_temp(scrutinee);
+                        (!warrant.withholds_mint()).then_some(warrant)
+                    } else {
+                        self.owner_warrant_for_fresh_variant_payload(
+                            scrutinee,
+                            variant_idx,
+                            field_idx,
+                        )
+                    };
+                    let Some(warrant) = warrant else {
                         continue;
                     };
                     let dest = self.alloc_local(field_ty.clone());

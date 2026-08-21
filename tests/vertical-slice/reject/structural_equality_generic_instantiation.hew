@@ -7,7 +7,6 @@ fn main() -> i64 {
     let right: HashMap<string, i64> = HashMap.new();
     let boxed_left: Option<HashMap<string, i64>> = Some(left);
     let boxed_right: Option<HashMap<string, i64>> = Some(right);
-
     match same(boxed_left, boxed_right) {
         true => 0,
         false => 1,

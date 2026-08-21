@@ -1,9 +1,17 @@
-type Holder { callback: fn(i64) -> i64; }
+type Holder {
+    callback: fn(i64) -> i64;
+}
 
-fn id(value: i64) -> i64 { value }
+fn id(value: i64) -> i64 {
+    value
+}
 
 fn main() -> i64 {
     let left = Holder { callback: id };
     let right = Holder { callback: id };
-    if left == right { 0 } else { 1 }
+    if left == right {
+        0
+    } else {
+        1
+    }
 }

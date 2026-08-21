@@ -63,7 +63,6 @@ fn tuple_equality_is_member_wise_and_recursive() {
     let flat_c = (1, "other");
     let nested_a: Option<(i64, string)> = Some((2, "two"));
     let nested_b: Option<(i64, string)> = Some((2, "two"));
-
     testing.assert_true(flat_a == flat_b);
     testing.assert_false(flat_a == flat_c);
     testing.assert_true(nested_a == nested_b);
@@ -89,7 +88,6 @@ fn generic_equality_compares_eligible_instantiations_member_wise() {
     let a: Option<i64> = Some(1);
     let b: Option<i64> = Some(1);
     let c: Option<i64> = Some(2);
-
     testing.assert_true(same(a, b));
     testing.assert_false(same(a, c));
 }

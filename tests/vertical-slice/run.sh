@@ -5404,6 +5404,7 @@ run_accept_expect_status "let_record_destructure_multi_fields" 155
 # Accept: record with an owned string field destructures without double-free.
 # tag=7 is returned; run under MallocScribble=1 to catch use-after-free.
 run_accept_expect_status "let_record_destructure_owned_field" 7
+run_accept_expect_status "record_tuple_scalar_projection_drop" 0
 
 # Accept: destructure inside a called function and again at the call site.
 # dot(Vec2{3,4}) = 25; norm_sq desugar + outer desugar both fire.

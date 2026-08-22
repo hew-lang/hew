@@ -649,6 +649,12 @@ blocker = "WASM scheduler integration for observing and quiescing a requested ac
 tracking_label = "WASM-TODO(actor-drain):"
 
 [[backlog]]
+id = "actor-exit-status"
+gap = "Process exit-status reporting for unrecovered actor faults"
+blocker = "A wasm32 program-exit path that reads the exit-status authority; the native reader sits on hew_shutdown_wait / the main-return epilogue, and wasm32 exits through hew_wasm_runtime_exit with no scheduler shutdown phases or supervision tree"
+tracking_label = "WASM-TODO(actor-exit-status):"
+
+[[backlog]]
 id = "actor-heap-limits"
 gap = "Per-actor heap-limit crash parity"
 blocker = "A wasm32 heap-exceeded trap path that reports the actor crash without native signal recovery"

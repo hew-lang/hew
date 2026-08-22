@@ -490,9 +490,9 @@ bb0:                                              ; preds = %entry
   %actor_id = load i64, ptr %actor_id_slot, align 8
   %hew_actor_send_by_id_call = call i32 @hew_actor_send_by_id(i64 %actor_id, ptr null, i32 1995638644, ptr %local_3, i64 ptrtoint (ptr getelementptr (i64, ptr null, i32 1) to i64))
   %send_not_ok = icmp ne i32 %hew_actor_send_by_id_call, 0
-  br i1 %send_not_ok, label %actor_send_fail, label %bb1
+  br i1 %send_not_ok, label %actor_send_undelivered, label %bb1
 
-bb1:                                              ; preds = %bb0
+bb1:                                              ; preds = %actor_send_undelivered, %bb0
   store i64 42, ptr %local_4, align 8
   %"actor_ask receiver" = load ptr, ptr %local_2, align 8
   %hew_actor_ask_call = call ptr @hew_actor_ask(ptr %"actor_ask receiver", i32 311929158, ptr %local_4, i64 ptrtoint (ptr getelementptr (i64, ptr null, i32 1) to i64))
@@ -516,7 +516,7 @@ bb2:                                              ; preds = %actor_ask_reply_err
   %cond_nz = icmp ne i8 %cond_load, 0
   br i1 %cond_nz, label %bb4, label %bb7
 
-bb3:                                              ; preds = %after_cooperate20, %after_cooperate
+bb3:                                              ; preds = %after_cooperate22, %after_cooperate
   %move_load6 = load i8, ptr %local_9, align 1
   store i8 %move_load6, ptr %return_slot, align 1
   call void @hew_shutdown_initiate_implicit(i64 0)
@@ -526,7 +526,10 @@ bb3:                                              ; preds = %after_cooperate20, 
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
   %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
   %hew_shutdown_any_failed = or i1 %hew_shutdown_failed, %hew_lambda_drain_failed
-  br i1 %hew_shutdown_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
+  %hew_runtime_exit_status_call = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted = icmp ne i32 %hew_runtime_exit_status_call, 0
+  %hew_exit_any_failed = or i1 %hew_shutdown_any_failed, %hew_runtime_faulted
+  br i1 %hew_exit_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 bb4:                                              ; preds = %bb2
   %machine_payload_ptr7 = getelementptr inbounds nuw %"Result$$i64$std$mbuiltins$mAskError", ptr %local_8, i32 0, i32 1
@@ -565,11 +568,15 @@ bb8:                                              ; preds = %bb4
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
 
 bb9:                                              ; preds = %bb5
-  %hew_actor_cooperate17 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel18 = icmp eq i32 %hew_actor_cooperate17, 2
-  br i1 %hew_cooperate_is_cancel18, label %cancel_exit19, label %after_cooperate20
+  %hew_actor_cooperate19 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel20 = icmp eq i32 %hew_actor_cooperate19, 2
+  br i1 %hew_cooperate_is_cancel20, label %cancel_exit21, label %after_cooperate22
 
-actor_send_fail:                                  ; preds = %bb0
+actor_send_undelivered:                           ; preds = %bb0
+  %send_recipient_stopped = icmp eq i32 %hew_actor_send_by_id_call, -2
+  br i1 %send_recipient_stopped, label %bb1, label %actor_send_fail
+
+actor_send_fail:                                  ; preds = %actor_send_undelivered
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
@@ -607,16 +614,34 @@ hew_shutdown_exit_continue:                       ; preds = %hew_shutdown_exit_f
   ret i8 0
 
 cancel_exit:                                      ; preds = %bb8
-  ret i8 0
+  %hew_runtime_exit_status_call17 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted18 = icmp ne i32 %hew_runtime_exit_status_call17, 0
+  br i1 %hew_runtime_faulted18, label %hew_exit_status_failed, label %hew_exit_status_continue
 
 after_cooperate:                                  ; preds = %bb8
   br label %bb3
 
-cancel_exit19:                                    ; preds = %bb9
+hew_exit_status_failed:                           ; preds = %cancel_exit
+  call void @hew_exit(i64 1)
+  br label %hew_exit_status_continue
+
+hew_exit_status_continue:                         ; preds = %hew_exit_status_failed, %cancel_exit
   ret i8 0
 
-after_cooperate20:                                ; preds = %bb9
+cancel_exit21:                                    ; preds = %bb9
+  %hew_runtime_exit_status_call23 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted24 = icmp ne i32 %hew_runtime_exit_status_call23, 0
+  br i1 %hew_runtime_faulted24, label %hew_exit_status_failed25, label %hew_exit_status_continue26
+
+after_cooperate22:                                ; preds = %bb9
   br label %bb3
+
+hew_exit_status_failed25:                         ; preds = %cancel_exit21
+  call void @hew_exit(i64 1)
+  br label %hew_exit_status_continue26
+
+hew_exit_status_continue26:                       ; preds = %hew_exit_status_failed25, %cancel_exit21
+  ret i8 0
 }
 
 define internal ptr @"i8::fmt"(i8 %0) {
@@ -1474,6 +1499,8 @@ declare i32 @hew_shutdown_wait()
 declare void @hew_runtime_cleanup_after_main()
 
 declare i32 @hew_lambda_drain_all(i64)
+
+declare i32 @hew_runtime_exit_status()
 
 declare i32 @hew_actor_cooperate()
 

@@ -909,7 +909,7 @@ fn resolve_build_output_path(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("a.out");
-    std::path::PathBuf::from(format!("{stem}{}", target.executable_suffix()))
+    target.executable_path(Path::new(""), stem)
 }
 
 /// Link a native object into a binary for an explicit target.
@@ -1312,7 +1312,19 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     // routes through lld when available, so compile binaries use the same
     // linker behaviour as release builds.
     if let Some(obj) = &artefacts.native_obj_path {
-        let bin_path = emit_dir.join(module_name);
+        // Name the executable through the same authority `hew build` uses
+        // (`resolve_build_output_path` → `TargetSpec::executable_suffix`).
+        // `hew compile` links for the host, and on Windows the linker writes
+        // `<stem>.exe` whatever stem it is given — so a suffixless name made
+        // the reported `native:` path name a file that does not exist.
+        let host_target = match target::TargetSpec::from_requested(None) {
+            Ok(target) => target,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                return 1;
+            }
+        };
+        let bin_path = host_target.executable_path(emit_dir, module_name);
         if link_native_object(obj, &bin_path).is_err() {
             return 1;
         }
@@ -1405,9 +1417,7 @@ fn compile_temp_wasi_module(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("hew_wasi_run");
-    let wasm_path = tmp_dir
-        .path()
-        .join(format!("{stem}{}", target.executable_suffix()));
+    let wasm_path = target.executable_path(tmp_dir.path(), stem);
 
     let artifact = CompiledTempExecutable {
         path: wasm_path.clone(),
@@ -1511,9 +1521,7 @@ fn create_debug_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempE
         eprintln!("Error: cannot create temp dir: {e}");
         std::process::exit(1);
     });
-    let path = tmp_dir
-        .path()
-        .join(format!("hew_debug_bin{}", target.executable_suffix()));
+    let path = target.executable_path(tmp_dir.path(), "hew_debug_bin");
 
     CompiledTempExecutable {
         path,
@@ -1526,9 +1534,7 @@ fn create_run_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempExe
         eprintln!("Error: cannot create temp dir: {e}");
         std::process::exit(1);
     });
-    let path = tmp_dir
-        .path()
-        .join(format!("hew_run_bin{}", target.executable_suffix()));
+    let path = target.executable_path(tmp_dir.path(), "hew_run_bin");
 
     CompiledTempExecutable {
         path,

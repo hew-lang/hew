@@ -229,9 +229,7 @@ fn build_debug_fixture(slug: &str, source: &str) -> DebugFixture {
     let dir = workspace();
     let src = dir.path().join(format!("{slug}.hew"));
     std::fs::write(&src, source).expect("write source");
-    let binary = dir
-        .path()
-        .join(format!("{slug}{}", std::env::consts::EXE_SUFFIX));
+    let binary = hew_testutil::compiled_binary_path(dir.path(), slug);
     let build = Command::new(hew_binary())
         .args([
             "build",
@@ -361,9 +359,7 @@ fn debugger_reads_shadowed_local_by_innermost_binding() {
     let dir = workspace();
     let src = dir.path().join("shadow.hew");
     std::fs::write(&src, SHADOW_SRC).expect("write source");
-    let binary = dir
-        .path()
-        .join(format!("shadow{}", std::env::consts::EXE_SUFFIX));
+    let binary = hew_testutil::compiled_binary_path(dir.path(), "shadow");
 
     let build = Command::new(hew_binary())
         .args([

@@ -472,10 +472,19 @@ bb8:                                              ; preds = %bb7
   br i1 %helper_crash_cleanup_drop_active87, label %helper_crash_cleanup_retire88, label %helper_crash_cleanup_retire_merge89
 
 cancel_exit:                                      ; preds = %entry
-  ret i64 0
+  %hew_runtime_exit_status_call = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted = icmp ne i32 %hew_runtime_exit_status_call, 0
+  br i1 %hew_runtime_faulted, label %hew_exit_status_failed, label %hew_exit_status_continue
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+hew_exit_status_failed:                           ; preds = %cancel_exit
+  call void @hew_exit(i64 1)
+  br label %hew_exit_status_continue
+
+hew_exit_status_continue:                         ; preds = %hew_exit_status_failed, %cancel_exit
+  ret i64 0
 
 helper_crash_cleanup_deactivate:                  ; preds = %bb0
   %helper_crash_cleanup_token = load i64, ptr %helper_crash_cleanup_token_3, align 8
@@ -832,7 +841,10 @@ helper_crash_cleanup_return_retire_7_rejected:    ; preds = %helper_crash_cleanu
 helper_crash_cleanup_return_merge_11:             ; preds = %helper_crash_cleanup_return_retire_11_accepted, %helper_crash_cleanup_return_merge_7
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
   %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
-  br i1 %hew_lambda_drain_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
+  %hew_runtime_exit_status_call111 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted112 = icmp ne i32 %hew_runtime_exit_status_call111, 0
+  %hew_exit_any_failed = or i1 %hew_lambda_drain_failed, %hew_runtime_faulted112
+  br i1 %hew_exit_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 helper_crash_cleanup_return_retire_11:            ; preds = %helper_crash_cleanup_return_merge_7
   %helper_crash_cleanup_return_retire_11_call = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_return_token_11)
@@ -849,7 +861,10 @@ helper_crash_cleanup_return_retire_11_rejected:   ; preds = %helper_crash_cleanu
   unreachable
 
 hew_shutdown_exit_failed:                         ; preds = %helper_crash_cleanup_return_merge_11
-  call void @hew_exit(i64 1)
+  %hew_exit_user_code = load i64, ptr %return_slot, align 8
+  %hew_exit_user_code_set = icmp ne i64 %hew_exit_user_code, 0
+  %hew_exit_status_code = select i1 %hew_exit_user_code_set, i64 %hew_exit_user_code, i64 1
+  call void @hew_exit(i64 %hew_exit_status_code)
   br label %hew_shutdown_exit_continue
 
 hew_shutdown_exit_continue:                       ; preds = %hew_shutdown_exit_failed, %helper_crash_cleanup_return_merge_11
@@ -1489,6 +1504,8 @@ after_cooperate:                                  ; preds = %entry
 }
 
 declare i32 @hew_actor_cooperate()
+
+declare i32 @hew_runtime_exit_status()
 
 declare i1 @hew_cont_crash_cleanup_deactivate(i64)
 

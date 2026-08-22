@@ -301,14 +301,24 @@ fn shutdown_initiate(drain_timeout_ms: i64, cancel_parked_waits: bool) {
 
 /// Block the calling thread until shutdown completes or fails.
 ///
-/// Returns 0 on success, -1 if shutdown was never initiated, and -2 if shutdown
-/// failed before completion (including a drain timeout or orchestrator panic).
+/// Returns 0 on success, -1 if shutdown was never initiated, -2 if shutdown
+/// failed before completion (including a drain timeout or orchestrator panic),
+/// and -3 when an unsupervised actor crashed during the run.
 #[no_mangle]
 pub extern "C" fn hew_shutdown_wait() -> c_int {
     loop {
         match shutdown_phase_load(Ordering::Acquire) {
             PHASE_RUNNING => return -1,
-            PHASE_DONE => return 0,
+            PHASE_DONE => {
+                // Same authority codegen reads via `hew_runtime_exit_status`
+                // on every shutdown path; surfaced here as `-3` for embedders
+                // that block on the wait instead.
+                return if crate::exit_status::unrecovered_actor_fault() {
+                    -3
+                } else {
+                    0
+                };
+            }
             PHASE_FAILED => return -2,
             _ => std::thread::sleep(DRAIN_POLL_INTERVAL),
         }

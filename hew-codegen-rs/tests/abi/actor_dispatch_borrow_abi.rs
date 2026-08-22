@@ -609,16 +609,27 @@ fn main() -> i64 {
         "the forwarding handler must not keep a scope-exit Vec release after \
          transferring the payload to the next mailbox; Body:\n{body}"
     );
+    // The release sits on the shared UNDELIVERED edge — the block both
+    // undelivered outcomes flow through: `ErrActorStopped` (the documented
+    // no-op, which then continues to the successor) and every other non-zero
+    // status (which traps in `actor_send_fail`). Placing it on the trap block
+    // alone leaked the payload on every send to an already-terminal actor.
+    let undelivered_label = body
+        .find("actor_send_undelivered:")
+        .expect("undelivered-send recovery block must be present");
     let fail_label = body
         .find("actor_send_fail:")
-        .expect("send failure recovery block must be present");
+        .expect("send failure trap block must be present");
     let release = body
         .find("call void @hew_vec_free_owned")
-        .expect("failed send must reclaim its undelivered Vec carrier");
+        .expect("an undelivered send must reclaim its Vec carrier");
     assert!(
-        release > fail_label && body.matches("call void @hew_vec_free_owned").count() == 1,
-        "the sole Vec release must be confined to the mutually-exclusive \
-         undelivered-send recovery edge; Body:\n{body}"
+        release > undelivered_label
+            && release < fail_label
+            && body.matches("call void @hew_vec_free_owned").count() == 1,
+        "the sole Vec release must sit on the shared undelivered-send edge, \
+         before the fail-closed trap block, so BOTH the stopped-recipient no-op \
+         and the trap release it exactly once; Body:\n{body}"
     );
 }
 

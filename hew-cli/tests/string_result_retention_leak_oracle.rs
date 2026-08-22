@@ -979,12 +979,14 @@ fn suspending_closure_crash_peer_observes_connection_close_exactly_once() {
         .env("MallocScribble", "1")
         .env("MallocPreScribble", "1");
     let output = run_bounded_command(command, "run suspending-closure peer-EOF crash fixture");
-    assert!(
-        output.status.success(),
+    assert_eq!(
+        output.status.code(),
+        Some(1),
         "peer-EOF crash fixture failed (a hang here means the crash path never \
          closed the reader connection; an abort means it was closed twice):\n{}",
         describe_output(&output)
     );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("crash before child suspend"));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "crash-fallback\npeer-eof\nmain-done\n",
@@ -1013,11 +1015,13 @@ fn suspending_closure_sync_crash_explicitly_closes_tcp_controls() {
 
     for (label, bin) in [("fresh", &fresh_bin), ("static", &static_bin)] {
         let output = run_fixture(bin, &format!("run {label} crash TCP-control fixture"));
-        assert!(
-            output.status.success(),
+        assert_eq!(
+            output.status.code(),
+            Some(1),
             "{label} crash TCP-control fixture failed:\n{}",
             describe_output(&output)
         );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("crash before child suspend"));
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
             "crash-fallback\nmain-done\n0\n",
@@ -1041,12 +1045,14 @@ fn suspending_closure_later_resume_crash_drains_typed_root_owners_once() {
         "suspending_closure_resume_root_owners",
     );
     let output = run_fixture(&bin, "run later-resume typed-root cleanup fixture");
-    assert!(
-        output.status.success(),
+    assert_eq!(
+        output.status.code(),
+        Some(1),
         "later-resume typed-root cleanup fixture failed (a poisoned-header abort \
          here is a double drop):\n{}",
         describe_output(&output)
     );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("crash after child resume"));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "crash-fallback\nmain-done\n0\n",
@@ -1131,11 +1137,13 @@ fn suspending_closure_sync_crash_releases_only_the_fresh_argument_delta() {
 
     for (label, bin) in [("fresh", &fresh_bin), ("static", &static_bin)] {
         let output = run_fixture(bin, &format!("run {label} synchronous-crash fixture"));
-        assert!(
-            output.status.success(),
+        assert_eq!(
+            output.status.code(),
+            Some(1),
             "{label} synchronous-crash fixture failed:\n{}",
             describe_output(&output)
         );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("crash before child suspend"));
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
             "crash-fallback\nmain-done\n0\n",
@@ -1228,11 +1236,13 @@ fn suspending_closure_later_resume_crash_reclaims_nested_frame_only() {
 
     for (label, bin) in [("fresh", &fresh_bin), ("static", &static_bin)] {
         let output = run_fixture(bin, &format!("run {label} later-resume crash fixture"));
-        assert!(
-            output.status.success(),
+        assert_eq!(
+            output.status.code(),
+            Some(1),
             "{label} later-resume crash fixture failed:\n{}",
             describe_output(&output)
         );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("crash after child resume"));
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
             "crash-fallback\nmain-done\n0\n",

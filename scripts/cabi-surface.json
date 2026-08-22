@@ -12180,6 +12180,19 @@
       "availability": [
         "native"
       ],
+      "classification": "codegen-stable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_runtime_exit_status() -> c_int"
+      },
+      "symbol": "hew_runtime_exit_status"
+    },
+    {
+      "availability": [
+        "native"
+      ],
       "classification": "internal",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -14766,7 +14779,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_supervisor_notify_child_actor_event( *mut HewSupervisor, u32, u64, c_int, c_int, )"
+        "native": "fn hew_supervisor_notify_child_actor_event( *mut HewSupervisor, u32, u64, c_int, c_int, u64, ) -> bool"
       },
       "symbol": "hew_supervisor_notify_child_actor_event"
     },
@@ -14779,7 +14792,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_supervisor_notify_child_supervisor_escalation( *mut HewSupervisor, u32, c_int, c_int, )"
+        "native": "fn hew_supervisor_notify_child_supervisor_escalation( *mut HewSupervisor, u32, c_int, c_int, u64, )"
       },
       "symbol": "hew_supervisor_notify_child_supervisor_escalation"
     },

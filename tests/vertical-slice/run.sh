@@ -142,7 +142,8 @@ run_actor_bounds_trap_fixture() {
   local fixture="$1"
   local expected_diagnostic="$2"
   local expected_actor="${3:-}"
-  run_accept_expect_status "${fixture}" 0
+  local expected_status="${4:-1}"
+  run_accept_expect_status "${fixture}" "${expected_status}"
   grep -qF -- "${expected_diagnostic}" "${stderr_output}"
   if [[ -n "${expected_actor}" ]]; then
     grep -qF -- "${expected_actor}" "${stderr_output}"
@@ -1621,16 +1622,20 @@ run_accept_expect_status "ask_reply_owned_select_loser" 18
 
 # A fresh owned string produced by an await is moved into its lexical binding
 # before the later handled actor panic. The crash cleanup must drop it exactly
-# once, and the actor balance oracle must remain exact.
-run_accept_expect_status "await_owned_string_crash_cleanup" 0 HEW_ACTOR_LEAK_CHECK=1
+# once, the actor balance oracle must remain exact, and the unrecovered actor
+# panic must fail the process after the recovery output settles.
+run_accept_expect_status "await_owned_string_crash_cleanup" 1 HEW_ACTOR_LEAK_CHECK=1
 grep -qF -- "used=fresh-value" "${stdout_output}"
 grep -qF -- "handled-crash" "${stdout_output}"
+grep -qF -- "handled crash after fresh string use" "${stderr_output}"
 
 # The select winner writes an owned string directly into its binding. Prove the
-# shared winner tail arms that slot before a later handled actor panic.
-run_accept_expect_status "select_owned_string_crash_cleanup" 0 HEW_ACTOR_LEAK_CHECK=1
+# shared winner tail arms that slot before a later handled actor panic, while
+# the unrecovered crash still fails the process.
+run_accept_expect_status "select_owned_string_crash_cleanup" 1 HEW_ACTOR_LEAK_CHECK=1
 grep -qF -- "selected=selected-value" "${stdout_output}"
 grep -qF -- "select-handled-crash" "${stdout_output}"
+grep -qF -- "handled crash after select string use" "${stderr_output}"
 
 # Owned-string ask reply + `after` timeout (#1739/#1735): SlowWorker's owned
 # reply always arrives after the 10 ms deadline, so the after-arm wins and the
@@ -1822,18 +1827,20 @@ run_accept_expect_status "supervisor_fungible_reresolve" 7
 
 # F-04 fail-closed: a send/ask through a fungible reference to a permanently-dead
 # child fail-closes recoverably (dropped tell, Err ask), NEVER a trap. Exhausts
-# the restart budget, then tells + asks the down child. Exit 9 = the recoverable
-# Err arm reached without a SIGTRAP. Pre-F-04 the stale-handle send trapped
-# (exit 133).
-run_accept_expect_status "supervisor_fungible_dead_child" 9
+# the restart budget, then tells + asks the down child. Stdout `DEAD_CHILD:9` =
+# the recoverable Err arm reached without a SIGTRAP. Exit 1 (not 0) because
+# exhausting a ROOT supervisor's budget leaves the fault unrecovered and it owns
+# the exit status; pre-F-04 the stale-handle send trapped (exit 133).
+run_accept_expect_status_and_stdout "supervisor_fungible_dead_child" 1
 
 # F-04 fail-closed for the SELECT-ask path: a `select` arm asking a fungible
 # reference to a permanently-dead child skips the dead arm (never ready) and
-# falls through to its `after` arm, NEVER a trap. Exit 46 = the single-shot ask
-# Err arm (20) plus the select's after-arm sentinel (25) plus 1. Pre-F-04 the
-# select-ask setup status was treated as process-fatal and trapped (exit 133),
-# even though the tell + single-shot ask siblings already fail-closed.
-run_accept_expect_status "supervisor_fungible_dead_child_select" 46
+# falls through to its `after` arm, NEVER a trap. Stdout `DEAD_CHILD_SELECT:46` =
+# the single-shot ask Err arm (20) plus the select's after-arm sentinel (25) plus
+# 1. Exit 1 for the same reason as its sibling above. Pre-F-04 the select-ask
+# setup status was treated as process-fatal and trapped (exit 133), even though
+# the tell + single-shot ask siblings already fail-closed.
+run_accept_expect_status_and_stdout "supervisor_fungible_dead_child_select" 1
 
 # Lifecycle-under-supervision: a supervised actor's init() / #[on(start)] must
 # fire on BOTH the initial supervised spawn AND a supervisor-triggered restart.
@@ -1936,7 +1943,7 @@ run_accept_expect_status "on_crash_action_restart_real_crash" 43
 # the call like the sibling stop_and_maybe_escalate, so the escalation is a
 # safe no-op: the process survives and an independent probe actor still
 # answers, proving the scheduler stayed healthy through the crash.
-run_accept_expect_status "on_crash_escalate_root" 0
+run_accept_expect_status_and_stdout "on_crash_escalate_root" 1
 
 # Accept: #[on(exit)] linked-actor exit hook compiles end-to-end (M-7-R). The
 # checker accepts `fn on_peer_exit(note: CrashNotification)`; MIR emits
@@ -1944,8 +1951,11 @@ run_accept_expect_status "on_crash_escalate_root" 0
 # trampoline; the supervisor boots; main exits 42.
 run_accept_expect_status "on_exit_hook" 42
 # A real linked-peer crash traverses the EXIT sys-dispatch path and invokes the
-# hook, not merely its compile-time declaration.
-run_accept_expect_stdout "on_exit_hook_delivery"
+# hook, not merely its compile-time declaration. The hook can observe the
+# unsupervised linked actor crash, but cannot recover it for process status.
+run_accept_expect_status "on_exit_hook_delivery" 1
+diff -u "${ROOT}/tests/vertical-slice/accept/on_exit_hook_delivery.expected" "${stdout_output}"
+grep -qF -- "fire linked exit hook" "${stderr_output}"
 
 # Typed monitor terminal hook: checker/HIR/MIR/codegen reconstruct the canonical
 # DownNotification payload and route HewSysMsg::Down through actor dispatch.
@@ -2238,8 +2248,9 @@ grep -q 'hew: trap in main context' "${stderr_output}"
 # emit an opaque msg_type integer. The fixture spawns an actor that triggers
 # an OOB trap in its handler; handle_crash_recovery_impl must resolve the
 # handler name from the registry ("Crasher::on_trigger") rather than printing
-# "msg_type=-N". Exit 0 (main returns after sleep; crash is unsupervised).
-run_accept_expect_status "crash_actor_context_diagnostic" 0
+# "msg_type=-N". The unsupervised crash must also report exit 1 after main's
+# sleep gives the diagnostic time to settle.
+run_accept_expect_status "crash_actor_context_diagnostic" 1
 grep -q 'Crasher' "${stderr_output}"
 if grep -q 'msg_type=-' "${stderr_output}"; then
   echo "crash_actor_context_diagnostic: stderr still contains opaque msg_type=-N format" >&2
@@ -2248,13 +2259,15 @@ if grep -q 'msg_type=-' "${stderr_output}"; then
 fi
 
 # Runtime FFI bounds checks inside actor dispatch must crash only the actor, not
-# the whole process. Each fixture sends a crashing message and then proves actor
-# scheduling still works afterward; the Vec.set fixture also gates on
+# the scheduler. Each fixture sends a crashing message and then proves actor
+# scheduling still works afterward. Unsupervised crashes report exit 1; the
+# Vec.set fixture is supervised, restarts, and also gates on
 # CrashInfo.code == IndexOutOfBounds through its on(crash) handler.
 run_actor_bounds_trap_fixture \
   "vec_set_oob_actor_isolated" \
   "PANIC: Vec.set() index 99 out of bounds (len 1)" \
-  "VecSetCrasher"
+  "VecSetCrasher" \
+  0
 run_actor_bounds_trap_fixture \
   "vec_pop_empty_actor_isolated" \
   "PANIC: Vec.pop() on an empty vector" \

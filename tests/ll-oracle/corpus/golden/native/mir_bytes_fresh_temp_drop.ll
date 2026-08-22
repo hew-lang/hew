@@ -393,16 +393,31 @@ bb3:                                              ; preds = %bb2
   store i64 %move_load3, ptr %return_slot, align 8
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
   %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
-  br i1 %hew_lambda_drain_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
+  %hew_runtime_exit_status_call4 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted5 = icmp ne i32 %hew_runtime_exit_status_call4, 0
+  %hew_exit_any_failed = or i1 %hew_lambda_drain_failed, %hew_runtime_faulted5
+  br i1 %hew_exit_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
 cancel_exit:                                      ; preds = %entry
-  ret i64 0
+  %hew_runtime_exit_status_call = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted = icmp ne i32 %hew_runtime_exit_status_call, 0
+  br i1 %hew_runtime_faulted, label %hew_exit_status_failed, label %hew_exit_status_continue
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
 
-hew_shutdown_exit_failed:                         ; preds = %bb3
+hew_exit_status_failed:                           ; preds = %cancel_exit
   call void @hew_exit(i64 1)
+  br label %hew_exit_status_continue
+
+hew_exit_status_continue:                         ; preds = %hew_exit_status_failed, %cancel_exit
+  ret i64 0
+
+hew_shutdown_exit_failed:                         ; preds = %bb3
+  %hew_exit_user_code = load i64, ptr %return_slot, align 8
+  %hew_exit_user_code_set = icmp ne i64 %hew_exit_user_code, 0
+  %hew_exit_status_code = select i1 %hew_exit_user_code_set, i64 %hew_exit_user_code, i64 1
+  call void @hew_exit(i64 %hew_exit_status_code)
   br label %hew_shutdown_exit_continue
 
 hew_shutdown_exit_continue:                       ; preds = %hew_shutdown_exit_failed, %bb3
@@ -1044,6 +1059,8 @@ after_cooperate:                                  ; preds = %entry
 declare i32 @hew_actor_cooperate()
 
 declare i64 @hew_bytes_len(ptr)
+
+declare i32 @hew_runtime_exit_status()
 
 declare void @hew_bytes_drop(ptr)
 

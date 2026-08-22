@@ -329,6 +329,7 @@ These gaps are explicitly deferred and tracked here:
 | Actor link/monitor fault propagation | OS-thread-free exit propagation | `WASM-TODO(link-monitor):` |
 | Structured concurrency scopes | Cooperative task work queue integrated with `hew_sched_run`, `TaskEntry` continuation/resume, completion wakeups, and non-blocking scope joins | `WASM-TODO(scope):` |
 | Actor-set drain parity | WASM scheduler integration for observing and quiescing a requested actor set | `WASM-TODO(actor-drain):` |
+| Process exit-status reporting for unrecovered actor faults | A wasm32 program-exit path that reads the exit-status authority; native reads it from shutdown/main-return paths that wasm32 does not use | `WASM-TODO(actor-exit-status):` |
 | Per-actor heap-limit crash parity | A wasm32 heap-exceeded trap path that reports the actor crash without native signal recovery | `WASM-TODO(actor-heap-limits):` |
 | Aliased actor-message delivery parity | Envelope-mode send and receive routing in the cooperative WASM scheduler | `WASM-TODO(alias-messaging):` |
 | Deadline-bounded blocking-call parity | A wasm32-compatible async deadline primitive in place of native worker threads | `WASM-TODO(blocking-pool):` |

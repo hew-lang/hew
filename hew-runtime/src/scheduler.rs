@@ -506,17 +506,55 @@ fn get_scheduler() -> Option<&'static Scheduler> {
     runtime::rt_default().map(|rt| &rt.scheduler)
 }
 
+/// Work that has LEFT a queue but has not yet reached an activation.
+///
+/// `ACTIVE_WORKERS` alone cannot answer "is the scheduler idle?": a worker pops
+/// an actor and only increments that counter later, inside
+/// `activate_queued_actor`. In the gap the actor is on no queue and in no
+/// activation, so an observer sees empty queues and zero active workers while a
+/// dispatch — possibly a CRASHING one — is about to run. Shutdown read that as
+/// idle and joined the workers.
+///
+/// A worker CLAIMS before it looks for work and releases after the activation
+/// returns, so anything that leaves a queue does so while this count is
+/// non-zero. The claim is held across the probe as well, which costs a
+/// spuriously non-idle sample for a worker that finds nothing — it drops the
+/// claim and parks immediately after, so the condition settles.
+static PENDING_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
+
+/// RAII claim over the pop-to-activation handoff. See [`PENDING_ACTIVATIONS`].
+struct ActivationClaim;
+
+impl ActivationClaim {
+    fn new() -> Self {
+        PENDING_ACTIVATIONS.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for ActivationClaim {
+    fn drop(&mut self) {
+        PENDING_ACTIVATIONS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Whether any worker holds the pop-to-activation handoff.
+fn activation_handoff_in_flight() -> bool {
+    PENDING_ACTIVATIONS.load(Ordering::Acquire) != 0
+}
+
 /// Return `true` when the native scheduler has no observable work left to drain.
 ///
 /// This is used by graceful shutdown to stop waiting once the runtime is
 /// already idle, rather than always sleeping until the full wall-clock drain
-/// timeout expires.
+/// timeout expires. Idle means no queued work AND no dispatch in flight,
+/// including the pop-to-activation handoff — see [`PENDING_ACTIVATIONS`].
 pub(crate) fn drain_is_idle() -> bool {
     let Some(sched) = get_scheduler() else {
         return true;
     };
 
-    if ACTIVE_WORKERS.load(Ordering::Acquire) != 0 {
+    if ACTIVE_WORKERS.load(Ordering::Acquire) != 0 || activation_handoff_in_flight() {
         return false;
     }
     if !sched.global_queue.is_empty() {
@@ -534,7 +572,9 @@ pub(crate) fn drain_is_idle() -> bool {
         return false;
     }
 
-    ACTIVE_WORKERS.load(Ordering::Acquire) == 0
+    // Trailing sample, paired with the leading one above: an activation that
+    // started inside this window is visible to one of the two reads.
+    ACTIVE_WORKERS.load(Ordering::Acquire) == 0 && !activation_handoff_in_flight()
 }
 
 /// The scheduler owns the shared global queue, per-worker stealers,
@@ -663,6 +703,23 @@ fn reopen_admission_gates() {
     crate::reactor::reset_listener_admission();
 }
 
+/// Resolve the number of scheduler workers from the environment or host.
+fn configured_scheduler_worker_count() -> usize {
+    let default_count = thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+
+    match std::env::var("HEW_WORKERS") {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                eprintln!("warning: HEW_WORKERS={val} is invalid, using default");
+                default_count
+            }
+        },
+        Err(_) => default_count,
+    }
+    .clamp(1, crate::actor::HEW_MAX_WORKERS)
+}
+
 /// Initialize and start the M:N scheduler.
 ///
 /// Spawns one worker thread per available CPU core (falls back to 4).
@@ -672,19 +729,7 @@ fn reopen_admission_gates() {
 /// printing a diagnostic — scheduler init failure is unrecoverable.
 #[no_mangle]
 pub extern "C" fn hew_sched_init() -> c_int {
-    let default_count = thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
-
-    let worker_count = match std::env::var("HEW_WORKERS") {
-        Ok(val) => match val.parse::<usize>() {
-            Ok(n) if n > 0 => n.clamp(1, crate::actor::HEW_MAX_WORKERS),
-            _ => {
-                eprintln!("warning: HEW_WORKERS={val} is invalid, using default");
-                default_count
-            }
-        },
-        Err(_) => default_count,
-    }
-    .clamp(1, crate::actor::HEW_MAX_WORKERS);
+    let worker_count = configured_scheduler_worker_count();
 
     match std::env::var("HEW_SEED") {
         Ok(seed_str) => {
@@ -747,6 +792,7 @@ pub extern "C" fn hew_sched_init() -> c_int {
         // Another thread beat us — `install_default` already dropped ours.
         return 0;
     }
+    crate::exit_status::reset_process_exit_status();
     reopen_admission_gates();
 
     // Ignore SIGPIPE process-wide, before ANY background thread is spawned or
@@ -971,6 +1017,21 @@ pub extern "C" fn hew_sched_shutdown() {
         return;
     };
 
+    // Quiesce before joining workers. Two things must finish first, and both
+    // need a live worker to do it:
+    //
+    //   1. Work already queued at the moment shutdown was requested — including
+    //      the fire-and-forget handler that CRASHES an actor. Joining over it
+    //      makes "did the crash happen at all?" depend on scheduling.
+    //   2. The supervisor decision that crash queues. A supervised crash opens a
+    //      process exit-status record only its supervisor's dispatch can settle,
+    //      so joining with that dispatch queued makes the exit status a race.
+    //
+    // Together these make the immediate (supervisor-program) shutdown path
+    // report the same exit status as the graceful one for the same program.
+    // Both waits are bounded: an actor that never yields cannot hold exit open.
+    quiesce_before_worker_teardown(SHUTDOWN_QUIESCE_TIMEOUT);
+
     teardown_workers(Some(sched as *const Scheduler), None, false);
 
     // Write profile files on exit if HEW_PROF_OUTPUT is set.  Must run BEFORE
@@ -985,6 +1046,55 @@ pub extern "C" fn hew_sched_shutdown() {
     // Workers are joined at this point so no concurrent actor activations can
     // race the hook callbacks.
     crate::session::session_reset();
+}
+
+/// Ceiling on the pre-teardown quiesce. Reached only by a program whose
+/// scheduler never goes idle (an actor spinning without yielding) or whose
+/// supervisor never rules — both already-degenerate cases whose exit is allowed
+/// to cost a bounded wait. A healthy program observes idle on the first poll.
+const SHUTDOWN_QUIESCE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Poll interval for [`quiesce_before_worker_teardown`].
+const SHUTDOWN_QUIESCE_POLL: Duration = Duration::from_millis(1);
+
+/// Wait, bounded, until `settled` holds. The one wait loop every termination
+/// path runs; what each waits FOR is the only thing that differs.
+fn quiesce_until(timeout: Duration, settled: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if settled() {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(SHUTDOWN_QUIESCE_POLL);
+    }
+}
+
+/// Wait, bounded, for queued work to run and for every crash it raised to be
+/// published and ruled on.
+fn quiesce_before_worker_teardown(timeout: Duration) {
+    quiesce_until(timeout, || {
+        drain_is_idle() && !crate::exit_status::has_unsettled_faults()
+    });
+}
+
+/// Wait, bounded, for the exit-status authority to stop moving.
+///
+/// The precondition for RESOLVING an exit code, and the one every termination
+/// path shares: a crash still publishing its fault, or a record still awaiting
+/// its supervisor's ruling, has no answer yet, so a sample taken there reports
+/// whichever answer the threads happened to reach first.
+///
+/// Deliberately NOT the teardown wait above. `exit()` can be called from inside
+/// an actor's own dispatch, where the scheduler is by definition not idle and
+/// waiting for idleness would spend the whole ceiling on every call. What has to
+/// settle before an exit code is read is the STATUS, not the queue.
+pub(crate) fn quiesce_before_exit_status_read() {
+    quiesce_until(SHUTDOWN_QUIESCE_TIMEOUT, || {
+        !crate::exit_status::has_unsettled_faults()
+    });
 }
 
 pub(crate) fn shutdown_requested() -> bool {
@@ -1656,22 +1766,30 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
         if sched.shutdown.load(Ordering::Acquire) {
             break;
         }
-        // 1. Pop from local deque (LIFO — cache-friendly).
-        if let Some(ptr) = local.pop() {
-            activate_queued_actor(ptr.cast::<HewActor>());
-            continue;
-        }
+        // Claim the pop-to-activation handoff BEFORE looking for work, so no
+        // observer can see an actor that has left a queue but has not yet
+        // entered an activation. Dropped on every exit from this block,
+        // including the `continue`s.
+        {
+            let _handoff = ActivationClaim::new();
 
-        // 2. Steal from a random peer.
-        if let Some(actor) = try_steal_from_peers(sched, id, &mut rng) {
-            activate_queued_actor(actor);
-            continue;
-        }
+            // 1. Pop from local deque (LIFO — cache-friendly).
+            if let Some(ptr) = local.pop() {
+                activate_queued_actor(ptr.cast::<HewActor>());
+                continue;
+            }
 
-        // 3. Try global queue (batch steal into local deque).
-        if let Some(ptr) = sched.global_queue.steal_batch_and_pop(local) {
-            activate_queued_actor(ptr.cast::<HewActor>());
-            continue;
+            // 2. Steal from a random peer.
+            if let Some(actor) = try_steal_from_peers(sched, id, &mut rng) {
+                activate_queued_actor(actor);
+                continue;
+            }
+
+            // 3. Try global queue (batch steal into local deque).
+            if let Some(ptr) = sched.global_queue.steal_batch_and_pop(local) {
+                activate_queued_actor(ptr.cast::<HewActor>());
+                continue;
+            }
         }
 
         // 4. Check if a signal-initiated shutdown needs to be started.
@@ -2355,6 +2473,15 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
 /// the prior context is restored via `restore_current_context_after_dispatch`,
 /// which walks `resume_context`'s `prev_context`.
 unsafe fn resume_crash_recovery(actor: *mut HewActor, resume_context: *mut HewExecutionContext) {
+    // This frame is a crash teardown, and a crash teardown RELEASES OTHER
+    // THREADS long before it reaches the trap that puts the crash on the
+    // exit-status authority: the parked-ask gate release below, the crash
+    // fallback that resolves the waiter's `await`, the mailbox close, the
+    // queued-ask retirement. Count the crash as in flight from the first
+    // instruction, so a thread woken by any of them cannot read a clean status
+    // over a crash that is already under way.
+    let _crash_publication = crate::exit_status::CrashPublication::begin();
+
     // SAFETY: caller owns `actor` via the Running CAS.
     let a = unsafe { &*actor };
     let actor_arena = a.arena;
@@ -3250,6 +3377,10 @@ fn activate_queued_actor(actor: *mut HewActor) {
                         unsafe { crate::actor::hew_actor_state_lock_acquire_for_context(ec_ptr) }
                             == crate::actor::HEW_ACTOR_STATE_LOCK_OK;
                     if !lock_acquired {
+                        // A refused state lock traps the actor: the same crash
+                        // teardown, counted in flight from its first cleanup
+                        // step for the same reason.
+                        let _crash_publication = crate::exit_status::CrashPublication::begin();
                         // SAFETY: the handler was not entered; this activation
                         // exclusively owns the open dispatch cleanup scope.
                         let outcome = unsafe {
@@ -3363,6 +3494,10 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     let release_result =
                         unsafe { crate::actor::hew_actor_state_lock_release_for_context(ec_ptr) };
                     if release_result != crate::actor::HEW_ACTOR_STATE_LOCK_OK {
+                        // A refused lock release traps the actor: the same
+                        // crash teardown, counted in flight from its first
+                        // cleanup step for the same reason.
+                        let _crash_publication = crate::exit_status::CrashPublication::begin();
                         // SAFETY: dispatch returned and this activation owns
                         // the still-open cleanup scope.
                         let outcome = unsafe {
@@ -3611,6 +3746,17 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     // Recovered from a crash signal (SEGV/BUS/FPE/ILL).
                     // handle_crash_recovery marks the actor as Crashed and
                     // logs the crash to stderr.
+                    //
+                    // Count the crash as in flight from the FIRST instruction
+                    // of the teardown. Everything below releases threads that
+                    // were waiting on this actor — the crash fallback that
+                    // resolves a waiter's `await`, the mailbox close, the
+                    // queued-ask retirement — and all of it runs before
+                    // `handle_crash_recovery` puts the crash on the
+                    // exit-status authority. Without this the woken waiter can
+                    // reach `exit(0)` and read a CLEAN status over the crash
+                    // that released it; on Windows it regularly did.
+                    let _crash_publication = crate::exit_status::CrashPublication::begin();
                     //
                     // Generated actor dispatch wrappers acquire the actor-state
                     // lock before entering the handler body. Signal recovery
@@ -8331,6 +8477,81 @@ mod tests {
 
         // SAFETY: both threads joined and the actor will no longer use its
         // test-owned mailbox.
+        unsafe { mailbox::hew_mailbox_free(mailbox) };
+    }
+
+    /// An actor that a worker has POPPED but not yet activated is not idle.
+    ///
+    /// The window is real and was reachable: `local.pop()` takes the actor off
+    /// the queue, and `ACTIVE_WORKERS` is only incremented later, inside the
+    /// dispatch. An observer in between saw empty queues and zero active
+    /// workers — "idle" — while a dispatch that may CRASH an actor was about to
+    /// run, and shutdown joined the workers on that answer.
+    ///
+    /// The pre-claim handoff hook parks a REAL worker in exactly that window,
+    /// so this is a deterministic rendezvous rather than a repeated-attempt
+    /// probe. Without the pop-to-activation claim the assertion below fails on
+    /// the first run.
+    #[test]
+    fn a_popped_actor_awaiting_activation_is_not_idle() {
+        let _rt = crate::runtime_test_guard();
+        init_real_scheduler_for_test();
+
+        // SAFETY: fresh mailbox, owned through the end of the test.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        // SAFETY: `mailbox` is live and the empty payload has no ownership.
+        let sent = unsafe { mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0) };
+        assert_eq!(sent, 0);
+
+        let mut actor = stub_actor();
+        actor.id = 0x5EED_0001;
+        actor.dispatch = Some(noop_dispatch);
+        actor.mailbox = mailbox.cast();
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        actor.budget.store(1, Ordering::Release);
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+
+        let (hook, entered, release) =
+            SchedulerQueueHandoffHookGuard::install_activate_pre_claim(actor.id);
+
+        // Publish through the production enqueue so a real worker pops it.
+        sched_enqueue(actor_ptr);
+
+        // The worker is now inside `activate_queued_actor`, past the pop and
+        // before the claim: the actor is on no queue and in no activation.
+        entered.wait();
+        assert!(
+            activation_handoff_in_flight(),
+            "a worker holding a popped actor must be counted in flight"
+        );
+        assert!(
+            !drain_is_idle(),
+            "the scheduler is not idle while a popped actor has not reached its \
+             activation; reading idle here is what let shutdown join the workers \
+             over a queued crash"
+        );
+
+        release.wait();
+        drop(hook);
+
+        // The counterfactual: once the activation completes, the same probe
+        // reports idle. Without it, a permanently-false `drain_is_idle` would
+        // pass the assertion above while breaking every drain.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut idle = drain_is_idle();
+        while !idle && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            idle = drain_is_idle();
+        }
+        assert!(
+            idle,
+            "the scheduler must return to idle once the activation completes"
+        );
+
+        // SAFETY: the worker has finished with the test-owned mailbox.
         unsafe { mailbox::hew_mailbox_free(mailbox) };
     }
 

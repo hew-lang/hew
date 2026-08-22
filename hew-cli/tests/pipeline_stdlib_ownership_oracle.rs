@@ -243,10 +243,19 @@ fn pipeline_owned_payload_lifecycle_edges_do_not_double_free() {
     ] {
         let bin = compile_to_native(&source, dir.path(), name);
         let output = run_under_malloc_scribble(&bin);
-        assert!(
-            output.status.success(),
-            "pipeline {name} ownership edge aborted under the poisoned allocator:\n{}",
+        let expected_exit_code = i32::from(name == "crash");
+        assert_eq!(
+            output.status.code(),
+            Some(expected_exit_code),
+            "pipeline {name} ownership edge should exit {expected_exit_code} under the poisoned allocator:\n{}",
             describe_output(&output)
         );
+        if name == "crash" {
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("pipeline S1 stage crash"),
+                "pipeline crash edge did not report the expected actor panic:\n{}",
+                describe_output(&output)
+            );
+        }
     }
 }

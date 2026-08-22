@@ -40,10 +40,7 @@ fn build_default_output_produces_runnable_binary() {
         describe_output(&output),
     );
 
-    // Default output is `./<stem><EXE_SUFFIX>` in the cwd (`.exe` on Windows, no extension elsewhere).
-    let binary = dir
-        .path()
-        .join(format!("hello{}", std::env::consts::EXE_SUFFIX));
+    let binary = hew_testutil::compiled_binary_path(dir.path(), "hello");
     assert!(binary.exists(), "default hello binary not created");
 
     let run = run_bounded_command(Command::new(&binary), format!("run {}", binary.display()));
@@ -127,9 +124,7 @@ fn build_emit_obj_writes_object_without_linking() {
     assert!(object_path.exists(), "emit-obj object not created");
     // No linked binary should be produced in --emit-obj mode.
     assert!(
-        !dir.path()
-            .join(format!("hello{}", std::env::consts::EXE_SUFFIX))
-            .exists(),
+        !hew_testutil::compiled_binary_path(dir.path(), "hello").exists(),
         "--emit-obj must not produce a linked binary",
     );
 

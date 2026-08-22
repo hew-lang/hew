@@ -3,6 +3,7 @@ type Point {
     y: i64,
 }
 
+// EXIT: 1
 actor VecRemoveLayoutCrasher {
     receive fn boom() {
         let points: Vec<Point> = Vec.new();
@@ -27,4 +28,3 @@ fn main() -> i64 {
         Err(_) => 1,
     }
 }
-

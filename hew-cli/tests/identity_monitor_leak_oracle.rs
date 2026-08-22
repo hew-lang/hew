@@ -51,7 +51,7 @@ fn compile_fixture(dir: &Path) -> PathBuf {
         "compiling identity monitor leak fixture failed\n{}",
         describe_output(&output)
     );
-    let binary = dir.join("dist_node");
+    let binary = hew_testutil::compiled_binary_path(dir, "dist_node");
     assert!(
         binary.is_file(),
         "compiled fixture missing at {}",

@@ -12,7 +12,7 @@
 // run the crash recovery path before the process exits.
 //
 // run.sh asserts:
-//   1. Exit is 0 (main returns normally after sleep; the crash is supervised).
+//   1. Exit is 1 after the unsupervised actor crash settles.
 //   2. stderr contains "Crasher" (the actor type name, at minimum).
 //   3. stderr does NOT contain "msg_type=-" (the old opaque format is gone).
 actor Crasher {

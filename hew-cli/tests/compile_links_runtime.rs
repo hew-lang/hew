@@ -126,6 +126,35 @@ fn compile_native_link_produces_runnable_binary() {
     );
 }
 
+/// The linked binary carries the host's executable extension.
+///
+/// `hew build` names its output through `TargetSpec::executable_suffix`;
+/// `hew compile` used the bare module stem, so on Windows it produced (and
+/// reported) an extensionless file that the shell does not treat as a program.
+#[test]
+fn compiled_binary_carries_the_host_executable_extension() {
+    require_codegen();
+    let (_emit_dir, binary_path) = compile_to_native("fn main() -> i64 { return 0; }\n");
+
+    let file_name = binary_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("compiled binary has a file name");
+    assert_eq!(
+        file_name,
+        hew_testutil::compiled_binary_path(std::path::Path::new(""), "prog")
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("expected binary path has a UTF-8 file name"),
+        "the compiled binary must be named like an executable on this host"
+    );
+    assert!(
+        binary_path.exists(),
+        "the reported native path must name the file that was written: {}",
+        binary_path.display()
+    );
+}
+
 /// A wire-type `Type.decode(bytes)` on a valid encoding round-trips: the
 /// fields reconstruct correctly and the program runs to a clean exit. Guards
 /// the non-null (success) arm of the decode call-site lowering against the

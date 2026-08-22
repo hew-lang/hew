@@ -212,6 +212,7 @@ pub mod wasm_capability_ids {
     use super::WasmCapabilityId;
     pub const ACTOR_CRASH_CONTAINMENT: WasmCapabilityId = WasmCapabilityId("actor-crash-containment");
     pub const ACTOR_DRAIN: WasmCapabilityId = WasmCapabilityId("actor-drain");
+    pub const ACTOR_EXIT_STATUS: WasmCapabilityId = WasmCapabilityId("actor-exit-status");
     pub const ACTOR_HEAP_LIMITS: WasmCapabilityId = WasmCapabilityId("actor-heap-limits");
     pub const ALIAS_MESSAGING: WasmCapabilityId = WasmCapabilityId("alias-messaging");
     pub const BLOCKING_POOL: WasmCapabilityId = WasmCapabilityId("blocking-pool");

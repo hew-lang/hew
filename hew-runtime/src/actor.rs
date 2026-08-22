@@ -49,6 +49,18 @@ pub const HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION: c_int = 1;
 #[doc(hidden)]
 pub const HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION: c_int = 2;
 
+/// The FIRST point in the crash teardown at which another thread can be
+/// released — the mailbox close that wakes blocked senders, immediately ahead
+/// of the queued-ask retirement that completes a waiter's `await`.
+///
+/// A thread woken here runs on to whatever it does next, including `exit(0)`,
+/// so the exit-status authority must already carry this crash by the time this
+/// event fires. That is what makes the ordering testable rather than a race
+/// whose outcome depends on which platform's scheduler is faster.
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub const HEW_ACTOR_CRASH_TEARDOWN_BEFORE_FIRST_WAKE: c_int = 3;
+
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub fn hew_actor_set_crash_teardown_order_hook(hook: Option<fn(c_int)>) {
@@ -6645,6 +6657,39 @@ pub(crate) unsafe fn hew_actor_trap_from_activation(actor: *mut HewActor, error_
     unsafe { hew_actor_trap_inner(actor, error_code, TrapMailboxReclaim::OwnedActivation) };
 }
 
+/// Put a crash on the exit-status authority BEFORE anything can observe it.
+///
+/// Called from `hew_actor_trap_inner` the moment that thread wins the terminal
+/// CAS, and before any step that can release another thread — the mailbox close
+/// wakes blocked senders, and the queued-terminal reclaim retires pending asks,
+/// which is what completes a waiter's `await`. A thread woken there runs on
+/// immediately, and if the next thing it does is `exit(0)` it reads the exit
+/// status.
+///
+/// Recording after those wake-ups made a program's exit status a RACE between
+/// the crashing thread and the thread it had just woken. Linux and macOS
+/// happened to win it; Windows lost it, and `exit(0)` reported success over the
+/// very crash that had already woken `main`.
+///
+/// An UNSUPERVISED crash is unrecovered by construction — no authority exists to
+/// rule on it. A SUPERVISED one gets its record opened here, and the caller
+/// carries the id to the supervisor notification. Both are therefore accounted
+/// for before the crash is observable at all.
+#[cfg(not(target_arch = "wasm32"))]
+fn publish_crash_fault_record(
+    terminal: i32,
+    supervisor: *mut c_void,
+) -> crate::exit_status::FaultRecord {
+    if terminal != HewActorState::Crashed as i32 {
+        return crate::exit_status::FaultRecord::NONE;
+    }
+    if supervisor.is_null() {
+        crate::exit_status::record_unrecovered_actor_fault();
+        return crate::exit_status::FaultRecord::NONE;
+    }
+    crate::exit_status::open_supervised_fault()
+}
+
 /// Implementation seam for [`hew_actor_trap`].
 ///
 /// Tests use `OmitForTest` to execute the precise pre-fix counterfactual: all
@@ -6709,6 +6754,9 @@ unsafe fn hew_actor_trap_inner(
             break;
         }
     }
+
+    let fault_record = publish_crash_fault_record(terminal, supervisor);
+    run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_BEFORE_FIRST_WAKE);
 
     // This actor just became terminal — the crash/trap path. Any
     // `receive gen fn` pump this actor was running (or had parked) will
@@ -6799,16 +6847,47 @@ unsafe fn hew_actor_trap_inner(
     // to reinterpret.
     if !supervisor.is_null() {
         if let Ok(child_index) = u32::try_from(supervisor_child_index) {
+            // Hand the record opened at the terminal CAS to the supervisor on
+            // the event. It was opened before the first wake rather than here
+            // so no thread can observe this crash while it is unaccounted for;
+            // by the time the notification is queued the fault already counts
+            // as failing. Until the ruling arrives it stays that way: a
+            // supervisor that is already stopping, a closed mailbox, or an
+            // immediate `hew_sched_shutdown` joining the workers before the
+            // queued decision runs all leave it open rather than silently
+            // successful.
+            let record = fault_record;
             // SAFETY: supervisor back-pointer was set by hew_supervisor_add_child.
-            unsafe {
+            let notified = unsafe {
                 crate::supervisor::hew_supervisor_notify_child_actor_event(
                     supervisor.cast(),
                     child_index,
                     actor_id,
                     terminal,
                     error_code,
+                    record.as_raw(),
+                )
+            };
+            if !notified {
+                // The supervisor never received the event — a null supervisor
+                // actor, or a mailbox that refused it. The record reached no
+                // authority, so it is settled here rather than left to time out
+                // in the shutdown quiesce.
+                crate::exit_status::settle_supervised_fault(
+                    record,
+                    crate::exit_status::FaultRuling::Unrecovered,
                 );
             }
+        } else if terminal == HewActorState::Crashed as i32 {
+            // A supervisor back-pointer with no usable child index names no
+            // roster entry, so no supervisor can ever rule on this crash. That
+            // is the same "no recovery authority" case as an unsupervised
+            // crash: settle the record opened above rather than leave it open
+            // forever for a supervisor that can never be reached.
+            crate::exit_status::settle_supervised_fault(
+                fault_record,
+                crate::exit_status::FaultRuling::Unrecovered,
+            );
         }
     }
 }
@@ -11486,6 +11565,63 @@ mod tests {
             drop(Box::from_raw(foreign_actor));
             mailbox::hew_mailbox_free(foreign_mailbox);
         }
+    }
+
+    static WAKE_SAW_RECORDED_FAULT: AtomicBool = AtomicBool::new(false);
+    static WAKE_HOOK_FIRED: AtomicBool = AtomicBool::new(false);
+
+    fn record_fault_visibility_at_first_wake(event: c_int) {
+        if event == HEW_ACTOR_CRASH_TEARDOWN_BEFORE_FIRST_WAKE {
+            WAKE_HOOK_FIRED.store(true, Ordering::SeqCst);
+            WAKE_SAW_RECORDED_FAULT.store(
+                crate::exit_status::unrecovered_actor_fault(),
+                Ordering::SeqCst,
+            );
+        }
+    }
+
+    /// THE CRASH IS ACCOUNTED FOR BEFORE ANYONE CAN SEE IT.
+    ///
+    /// The teardown below this point wakes other threads: the mailbox close
+    /// releases blocked senders and the queued-terminal reclaim retires pending
+    /// asks, completing a waiter's `await`. Whatever that waiter does next — an
+    /// `exit(0)` included — must not be able to read an exit status that has
+    /// not yet been told about this crash.
+    ///
+    /// Recording the fault after those wake-ups made the exit status a race
+    /// between the crashing thread and the thread it woke. Linux and macOS won
+    /// it; Windows lost it, and `exit(0)` reported success over this very
+    /// crash. Asserting at the wake point makes the ordering a property instead
+    /// of a scheduler coincidence, so no platform can decide it.
+    #[test]
+    fn an_unsupervised_crash_is_recorded_before_the_teardown_wakes_anyone() {
+        let _guard = crate::runtime_test_guard();
+        crate::exit_status::reset_process_exit_status();
+        WAKE_HOOK_FIRED.store(false, Ordering::SeqCst);
+        WAKE_SAW_RECORDED_FAULT.store(false, Ordering::SeqCst);
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+
+        hew_actor_set_crash_teardown_order_hook(Some(record_fault_visibility_at_first_wake));
+        // SAFETY: the actor is live and owned by this test.
+        unsafe { hew_actor_trap(actor, 99) };
+        hew_actor_set_crash_teardown_order_hook(None);
+
+        assert!(
+            WAKE_HOOK_FIRED.load(Ordering::SeqCst),
+            "the crash teardown must reach its first wake point"
+        );
+        assert!(
+            WAKE_SAW_RECORDED_FAULT.load(Ordering::SeqCst),
+            "an unsupervised crash must already be on the exit-status authority \
+             when the teardown starts releasing other threads"
+        );
+
+        // SAFETY: the actor is terminal and owned by this test.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+        crate::exit_status::reset_process_exit_status();
     }
 
     #[test]

@@ -803,7 +803,15 @@ Omit the arrow for unit-returning fns (not `-> ()`). Use bare `return;` for earl
 
 ### Exit codes — main() -> i32 and exit()
 
-The return value of `main() -> i32` (or `main() -> i64`) becomes the process exit code. A unit `main()` always exits 0 — even if it prints an error message. Use `exit(code)` to exit with a specific code from inside a unit `main()`.
+The return value of `main() -> i32` (or `main() -> i64`) becomes the process exit code. A unit `main()` has no code of its own, so it exits 0 — even if it prints an error message. Use `exit(code)` to exit with a specific code from inside a unit `main()`.
+
+One thing overrides a zero: an actor fault that no supervisor recovered. The full rule, applied on every way a program can end (returning from `main`, or calling `exit`), is:
+
+- a non-zero code you chose — returned from `main` or passed to `exit` — is the exit code, unchanged;
+- otherwise, if any actor crashed and no supervisor recovered it, the exit code is 1;
+- otherwise 0.
+
+So `exit(0)` does not paper over a crashed actor, and `return 7` is still 7 when one crashed. See HEW-SPEC-2026 §5.8.
 
 ```hew
 // Pattern 1: return the code directly

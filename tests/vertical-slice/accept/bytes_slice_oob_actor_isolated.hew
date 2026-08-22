@@ -1,3 +1,4 @@
+// EXIT: 1
 actor BytesSliceCrasher {
     receive fn boom() {
         let b: bytes = bytes.new();
@@ -23,4 +24,3 @@ fn main() -> i64 {
         Err(_) => 1,
     }
 }
-

@@ -403,7 +403,7 @@ fn main() {
 }
 "#,
     );
-    let out_bin = dir.path().join("argv_out");
+    let out_bin = hew_testutil::compiled_binary_path(dir.path(), "argv_out");
 
     let orig_path = std::env::var("PATH").unwrap_or_default();
     let mut cmd = Command::new(hew_binary());
@@ -494,7 +494,7 @@ fn main() {
 }
 "#,
     );
-    let out_bin = dir.path().join("actorcabi_out");
+    let out_bin = hew_testutil::compiled_binary_path(dir.path(), "actorcabi_out");
 
     let link = hew_build(Some(&lib), &prog, &out_bin, dir.path());
     assert!(
@@ -683,7 +683,7 @@ fn main() {
 
 "#,
     );
-    let out_bin = dir.path().join("mvp_out");
+    let out_bin = hew_testutil::compiled_binary_path(dir.path(), "mvp_out");
 
     let link = hew_build(Some(&lib), &prog, &out_bin, dir.path());
     assert!(
@@ -717,7 +717,7 @@ fn ffi_borrow_boundary_links_and_prints_exact_values() {
         return;
     };
     let program = write_program(dir.path(), "borrow_boundary_values", BORROW_BOUNDARY_HEW);
-    let binary = dir.path().join("borrow_boundary_values");
+    let binary = hew_testutil::compiled_binary_path(dir.path(), "borrow_boundary_values");
 
     let link = hew_build(Some(&lib), &program, &binary, dir.path());
     assert!(
@@ -759,7 +759,7 @@ fn ffi_borrow_boundary_has_no_drop_or_leak_slope() {
         "borrow_boundary_slope",
         &borrow_boundary_loop_source(),
     );
-    let binary = dir.path().join("borrow_boundary_slope");
+    let binary = hew_testutil::compiled_binary_path(dir.path(), "borrow_boundary_slope");
     let link = hew_build(Some(&lib), &program, &binary, dir.path());
     assert!(
         link.status.success(),
@@ -808,7 +808,7 @@ fn main() {
 }
 "#,
     );
-    let out_bin = dir.path().join("noload_out");
+    let out_bin = hew_testutil::compiled_binary_path(dir.path(), "noload_out");
 
     // No --link-lib: `mvp_add` is unresolved.
     let out = hew_build(None, &prog, &out_bin, dir.path());
@@ -864,7 +864,7 @@ fn main() {
 }
 "#,
     );
-    let out_bin = dir.path().join("imp_out");
+    let out_bin = hew_testutil::compiled_binary_path(dir.path(), "imp_out");
 
     let link = hew_build(Some(&lib), &prog, &out_bin, dir.path());
     assert!(
@@ -940,7 +940,7 @@ fn main() {
 }
 "#,
     );
-    let out_bin = dir.path().join("cabiwrap_out");
+    let out_bin = hew_testutil::compiled_binary_path(dir.path(), "cabiwrap_out");
 
     let link = hew_build(Some(&lib), &prog, &out_bin, dir.path());
     assert!(
@@ -1006,7 +1006,7 @@ fn main() {
 }
 "#,
     );
-    let out_bin = dir.path().join("dup_out");
+    let out_bin = hew_testutil::compiled_binary_path(dir.path(), "dup_out");
 
     let out = hew_build(Some(&lib), &prog, &out_bin, dir.path());
     assert!(

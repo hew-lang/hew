@@ -17,6 +17,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::actor::{self, HewActor, HewActorOpts};
+use crate::exit_status::{FaultRecord, FaultRuling};
 use crate::internal::types::{
     HewActorState, HewDispatchFn, HewLifecycleFn, HewOnCrashFn, HewSysDispatchFn,
 };
@@ -471,6 +472,9 @@ fn trap_kind_name(code: i32) -> &'static str {
 #[derive(Debug, Clone, Copy)]
 struct DelayedRestartEvent {
     child_identity: u64,
+    /// The crash record this armed timer owns. The restart's EFFECT when the
+    /// timer fires is the ruling that settles it.
+    fault_record: u64,
 }
 
 /// Overflow policy: drop new messages.
@@ -612,6 +616,10 @@ struct ChildEvent {
     child_id: u64,
     exit_state: c_int,
     crash_code: c_int,
+    /// The crash record opened at the crash site. This supervisor's ruling
+    /// settles it, or hands it to the next authority. `0` for a graceful stop,
+    /// which is not a fault.
+    fault_record: u64,
 }
 
 /// Payload of [`HewSysMsg::ChildSupervisorEscalated`]: a child SUPERVISOR
@@ -626,6 +634,9 @@ struct ChildSupervisorEscalation {
     supervisor_index: u32,
     exit_state: c_int,
     crash_code: c_int,
+    /// The escalated crash record. The escalation TRANSFERS ownership; this
+    /// parent's ruling — not the send — settles it.
+    fault_record: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -835,16 +846,22 @@ struct RestartTimerLease {
 impl RestartTimerLease {
     /// Wait interruptibly, then perform the raw supervisor access while the
     /// cancellation mutex excludes shutdown from publishing cancellation.
-    fn wait_and_run(self, delay: Duration, on_elapsed: impl FnOnce()) {
+    ///
+    /// Returns what `on_elapsed` reported, and `false` when cancellation
+    /// preempted the wait so `on_elapsed` never ran at all. The two are
+    /// deliberately the same answer to the caller: a timer that was cancelled
+    /// performed no work, exactly like a timer whose work failed.
+    fn wait_and_run(self, delay: Duration, on_elapsed: impl FnOnce() -> bool) -> bool {
         let deadline = Instant::now() + delay;
         let mut state = self.control.state.lock_or_recover();
+        let mut elapsed_result = false;
         loop {
             if state.cancelled {
                 break;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                on_elapsed();
+                elapsed_result = on_elapsed();
                 break;
             }
             let (next, _) = self
@@ -854,6 +871,7 @@ impl RestartTimerLease {
             state = next;
         }
         drop(state);
+        elapsed_result
     }
 }
 
@@ -1398,32 +1416,38 @@ fn supervisor_actor_id(sup: *mut HewSupervisor) -> u64 {
     }
 }
 
-/// Escalate a failure to the parent supervisor.
+/// Escalate a failure to the parent supervisor, transferring `record` to it.
 ///
 /// Sends a [`HewSysMsg::ChildSupervisorEscalated`] signal carrying this
 /// supervisor's index in the parent's `child_supervisors` vec. Its own typed
 /// variant, not a `ChildCrashed` retagged by a negative index.
 ///
+/// Returns whether the parent ACCEPTED the escalation. A null parent actor, an
+/// un-representable index, or a refused send all mean the record reached no new
+/// authority — the caller must settle it `Unrecovered` rather than treat the
+/// attempt as a recovery.
+///
 /// # Safety
 ///
 /// `sup.parent` must be non-null and point to a valid `HewSupervisor`.
-fn escalate_to_parent(sup: *mut HewSupervisor) {
+fn escalate_to_parent(sup: *mut HewSupervisor, record: FaultRecord) -> bool {
     // SAFETY: caller guarantees the child and its non-null parent edge remain
     // live through this synchronous notification; copy only scalar fields.
     let (parent, index_in_parent) = unsafe { ((*sup).parent, (*sup).index_in_parent) };
     // SAFETY: caller guarantees parent is valid.
     let parent_actor = unsafe { (*parent).self_actor };
     if parent_actor.is_null() {
-        return;
+        return false;
     }
     let Ok(supervisor_index) = u32::try_from(index_in_parent) else {
         eprintln!(
             "[supervisor] refusing to escalate: child-supervisor index {index_in_parent} exceeds u32"
         );
-        return;
+        return false;
     };
     let event = ChildSupervisorEscalation {
         supervisor_index,
+        fault_record: record.as_raw(),
         exit_state: HewActorState::Crashed as c_int,
         // Child-supervisor escalation: no single trap code applies to the
         // subtree-restart-budget exhaustion that triggered this escalation.
@@ -1433,14 +1457,14 @@ fn escalate_to_parent(sup: *mut HewSupervisor) {
     // SAFETY: caller keeps `sup` live while this scalar tracing id is copied.
     let sup_actor_id = supervisor_actor_id(sup);
     // SAFETY: parent.self_actor is valid.
-    unsafe {
-        let _ = actor::send_system_message(
+    let accepted = unsafe {
+        actor::send_system_message(
             parent_actor,
             HewSysMsg::ChildSupervisorEscalated,
             (&raw const event).cast::<c_void>().cast_mut(),
             std::mem::size_of::<ChildSupervisorEscalation>(),
-        );
-    }
+        )
+    };
 
     // Observability (read-only side effect, AFTER the escalation decision and
     // dispatch): record that this supervisor escalated to its parent. Never
@@ -1450,6 +1474,7 @@ fn escalate_to_parent(sup: *mut HewSupervisor) {
         crate::tracing::SPAN_SUPERVISOR_ESCALATE,
         i32::try_from(index_in_parent).unwrap_or(i32::MAX),
     );
+    accepted
 }
 
 /// Check if circuit breaker allows restart for a child.
@@ -1607,17 +1632,33 @@ fn apply_restart_backoff(spec: &mut InternalChildSpec) {
     spec.next_restart_time_ns = monotonic_time_ns().wrapping_add(delay_ns);
 }
 
-fn schedule_delayed_restart(sup: *mut HewSupervisor, child_identity: u64, delay: Duration) {
+/// Arm a delayed restart, transferring `record` to the timer.
+///
+/// Returns whether the timer was ARMED — admitted AND its thread spawned. A
+/// refused admission or a failed spawn means no restart will ever be attempted,
+/// so the caller settles the record `Unrecovered`: requesting a timer is not a
+/// recovery, an armed one that fires is.
+///
+/// Once armed, the timer thread owns the record and settles it on every ending
+/// it can have: a restart that runs rules through the `DelayedRestart` dispatch,
+/// while a wake-up that reaches nobody and a cancellation that preempts the
+/// wait both settle `Unrecovered` here.
+fn schedule_delayed_restart(
+    sup: *mut HewSupervisor,
+    child_identity: u64,
+    delay: Duration,
+    record: FaultRecord,
+) -> bool {
     // SAFETY: caller keeps `sup` live through timer admission; the returned
     // lease extends raw-pointer lifetime through the spawned closure.
     let Some(timer) = (unsafe { &(*sup).restart_timers }).begin() else {
-        return;
+        return false;
     };
     let sup_addr = sup as usize;
     let spawn_result = std::thread::Builder::new()
         .name("hew-supervisor-restart-timer".to_owned())
         .spawn(move || {
-            timer.wait_and_run(delay, || {
+            let delivered = timer.wait_and_run(delay, || {
                 let sup_ptr = sup_addr as *mut HewSupervisor;
                 // SAFETY: the timer lease's pending count keeps `sup_ptr`
                 // allocated, and its state mutex excludes cancellation for the
@@ -1625,20 +1666,42 @@ fn schedule_delayed_restart(sup: *mut HewSupervisor, child_identity: u64, delay:
                 // closure can never run.
                 unsafe {
                     let self_actor = (*sup_ptr).self_actor;
-                    if !(*sup_ptr).cancelled.load(Ordering::Acquire)
-                        && (*sup_ptr).running.load(Ordering::Acquire) != 0
-                        && !self_actor.is_null()
+                    if (*sup_ptr).cancelled.load(Ordering::Acquire)
+                        || (*sup_ptr).running.load(Ordering::Acquire) == 0
+                        || self_actor.is_null()
                     {
-                        let event = DelayedRestartEvent { child_identity };
-                        let _ = actor::send_system_message(
-                            self_actor,
-                            HewSysMsg::DelayedRestart,
-                            (&raw const event).cast::<c_void>().cast_mut(),
-                            std::mem::size_of::<DelayedRestartEvent>(),
-                        );
+                        return false;
                     }
+                    let event = DelayedRestartEvent {
+                        child_identity,
+                        fault_record: record.as_raw(),
+                    };
+                    actor::send_system_message(
+                        self_actor,
+                        HewSysMsg::DelayedRestart,
+                        (&raw const event).cast::<c_void>().cast_mut(),
+                        std::mem::size_of::<DelayedRestartEvent>(),
+                    )
                 }
             });
+            if !delivered {
+                // THE TIMER'S ONE SETTLEMENT SITE, covering both ways an armed
+                // timer can end without a restart: it fired and its wake-up
+                // reached nobody (supervisor cancelled or stopped, mailbox
+                // refused), or shutdown CANCELLED it before it ever fired, so
+                // the closure above never ran. Either way no restart will be
+                // attempted and the record this timer owned has no authority
+                // left. Leaving the cancelled case Open would still fail
+                // closed on the exit code, but it strands the record: shutdown
+                // waits out its whole quiescence period
+                // (`scheduler::drain_is_idle` + `has_open_supervised_faults`)
+                // for a ruling that can no longer arrive.
+                //
+                // Settled outside `wait_and_run` so the cancellation mutex is
+                // released first: the authority is a lock-free atomic table and
+                // must not extend a lock shutdown is waiting on.
+                crate::exit_status::settle_supervised_fault(record, FaultRuling::Unrecovered);
+            }
         });
     if let Err(error) = spawn_result {
         // The failed builder drops the closure and therefore its timer lease,
@@ -1646,7 +1709,9 @@ fn schedule_delayed_restart(sup: *mut HewSupervisor, child_identity: u64, delay:
         set_last_error(format!(
             "failed to spawn delayed supervisor restart timer: {error}"
         ));
+        return false;
     }
+    true
 }
 
 /// Increment the restart counter and wake every restart waiter.
@@ -1784,16 +1849,33 @@ fn take_child_slot_for_event(
     Some((child, identity))
 }
 
-/// Stop this supervisor, notify waiters, and escalate to the parent if present.
-fn stop_and_maybe_escalate(sup: *mut HewSupervisor) {
+/// Stop this supervisor, notify waiters, and escalate `record` to the parent if
+/// there is one.
+///
+/// Every caller reaches here because this supervisor could NOT recover a child
+/// fault: restart budget exhausted, the child was not restartable, or the
+/// restart itself returned no child.
+///
+/// The returned ruling distinguishes the two outcomes that look alike from
+/// here. With a parent that ACCEPTS the escalation, recovery authority moves up
+/// the tree and the record is provisional — the parent's ruling settles it. A
+/// parent that is stopped, closed, or absent accepted nothing, so the record
+/// reached no new authority and is `Unrecovered`. A non-null parent POINTER is
+/// not a recovery; a delivered escalation is a transfer.
+fn stop_and_maybe_escalate(sup: *mut HewSupervisor, record: FaultRecord) -> FaultRuling {
     // SAFETY: callers keep the allocation live through cancellation.
     publish_supervisor_cancellation(sup);
     // SAFETY: callers keep the allocation live through these field operations.
     unsafe { (*sup).running.store(0, Ordering::Release) };
     notify_restart(sup);
     // SAFETY: callers keep the supervisor allocation live through escalation.
-    if unsafe { !(*sup).parent.is_null() } {
-        escalate_to_parent(sup);
+    if unsafe { (*sup).parent.is_null() } {
+        return FaultRuling::Unrecovered;
+    }
+    if escalate_to_parent(sup, record) {
+        FaultRuling::Escalated
+    } else {
+        FaultRuling::Unrecovered
     }
 }
 
@@ -2875,12 +2957,137 @@ unsafe fn restart_child_supervisor_from_spec(
     new_child
 }
 
-/// Restart children after checking the supervisor restart budget.
+/// Run the restart action for `strategy` and report whether the CRASHED child
+/// itself came back.
+///
+/// Siblings a group strategy restarts have their own lifecycles; this fault's
+/// disposition is decided by its own child's replacement, so only the entry at
+/// `failed_index` answers the question.
+///
+/// # Safety
+///
+/// `sup` must be valid and `failed_index` must index `identities`.
+unsafe fn restart_children_for_strategy(
+    sup: *mut HewSupervisor,
+    strategy: c_int,
+    identities: &[u64],
+    failed_index: usize,
+) -> bool {
+    let failed_child_restarted;
+    match strategy {
+        STRATEGY_ONE_FOR_ONE => {
+            // SAFETY: the stable identity prevents a concurrent swap-remove
+            // from retargeting this restart to a sibling.
+            let restarted = unsafe {
+                restart_child_from_spec_expected(sup, failed_index, Some(identities[failed_index]))
+            };
+            failed_child_restarted = !restarted.is_null();
+        }
+        STRATEGY_ONE_FOR_ALL => {
+            // Stop all other children, then restart all.
+            // Children are freed on a background thread to avoid deadlocking
+            // when the scheduler has a single worker (hew_actor_free spin-waits
+            // and would block the only worker running this dispatch).
+            let mut deferred: Vec<DeferredFree> = Vec::new();
+            for (i, identity) in identities.iter().copied().enumerate() {
+                if i != failed_index {
+                    let child = take_child_slot_by_identity(sup, identity);
+                    if child.is_null() {
+                        continue;
+                    }
+                    // SAFETY: child pointer is valid.
+                    unsafe { actor::hew_actor_stop(child) };
+                    deferred.push(DeferredFree(child));
+                }
+            }
+            spawn_deferred_restart_free(deferred);
+            let mut restarted_failed_child = false;
+            for (i, identity) in identities.iter().copied().enumerate() {
+                // SAFETY: identity lookup and exact-generation publication
+                // refuse if concurrent removal retired this spec.
+                let restarted = unsafe { restart_child_from_spec_expected(sup, i, Some(identity)) };
+                if i == failed_index {
+                    restarted_failed_child = !restarted.is_null();
+                }
+            }
+            failed_child_restarted = restarted_failed_child;
+        }
+        STRATEGY_REST_FOR_ONE => {
+            // Stop children after the failed one, then restart them.
+            // Deferred free as in ONE_FOR_ALL to avoid single-worker deadlock.
+            let mut deferred: Vec<DeferredFree> = Vec::new();
+            for identity in identities.iter().copied().skip(failed_index + 1) {
+                let child = take_child_slot_by_identity(sup, identity);
+                if !child.is_null() {
+                    // SAFETY: child pointer is valid.
+                    unsafe { actor::hew_actor_stop(child) };
+                    deferred.push(DeferredFree(child));
+                }
+            }
+            spawn_deferred_restart_free(deferred);
+            let mut restarted_failed_child = false;
+            for (i, identity) in identities.iter().copied().enumerate().skip(failed_index) {
+                // SAFETY: identity lookup and exact-generation publication
+                // refuse if concurrent removal retired this spec.
+                let restarted = unsafe { restart_child_from_spec_expected(sup, i, Some(identity)) };
+                if i == failed_index {
+                    restarted_failed_child = !restarted.is_null();
+                }
+            }
+            failed_child_restarted = restarted_failed_child;
+        }
+        STRATEGY_SIMPLE_ONE_FOR_ONE => {
+            // Static-backed pool: each pool member is an independent static child
+            // in `children[]` (registered via `pool_member_add_static`), so the
+            // crashed member restarts per-member exactly like ONE_FOR_ONE — the
+            // members are fungible and independent, never a one-for-all group.
+            // `restart_child_from_spec` re-runs the member's init thunk (fresh
+            // config-derived state per incarnation) and `store_child_slot` re-fills
+            // `children[failed_index]`; the pool accessor
+            // (`hew_supervisor_pool_child_get`) resolves member i through that LIVE
+            // static slot, so the restarted member is re-resolved automatically
+            // with no stale PID cached (LESSONS
+            // `replaceable-resource-handle-is-fungible-reference`).
+            // SAFETY: index is valid (bounds-checked at the top of this fn).
+            let restarted = unsafe {
+                restart_child_from_spec_expected(sup, failed_index, Some(identities[failed_index]))
+            };
+            failed_child_restarted = !restarted.is_null();
+        }
+        unknown => {
+            // Fail-closed: any non-listed strategy is a codegen/runtime ABI
+            // drift. Pre-S-D this fell through a `_ => {}` wildcard, which
+            // silently dropped restart requests for unrecognized strategies.
+            unreachable!(
+                "hew_supervisor: unknown restart strategy {unknown}; \
+                 valid: ONE_FOR_ONE=0, ONE_FOR_ALL=1, REST_FOR_ONE=2, \
+                 SIMPLE_ONE_FOR_ONE=3"
+            );
+        }
+    }
+    failed_child_restarted
+}
+
+/// Restart children after checking the supervisor restart budget, and report
+/// whether the failed child was actually recovered.
+///
+/// `restart_child_from_spec_expected` is nullable: it refuses when the spec was
+/// retired, when the exact template generation it leased no longer publishes,
+/// or when the spawn itself fails. A null there means the crashed child is
+/// gone and nothing replaced it — the recovery this supervisor attempted did
+/// not happen — so it takes the same `stop_and_maybe_escalate` route as the
+/// nested-supervisor path's null restart, and reports `Unrecovered`. Ignoring
+/// the result (and notifying restart waiters unconditionally) reported a
+/// recovery that never occurred.
 ///
 /// # Safety
 ///
 /// `sup` must be valid.
-unsafe fn restart_with_budget_and_strategy(sup: *mut HewSupervisor, failed_identity: u64) {
+unsafe fn restart_with_budget_and_strategy(
+    sup: *mut HewSupervisor,
+    failed_identity: u64,
+    record: FaultRecord,
+) -> FaultRuling {
     // SAFETY: caller keeps the allocation live; these scalar policy fields are
     // immutable after construction.
     let (strategy, max_restarts, window_secs) =
@@ -2897,7 +3104,8 @@ unsafe fn restart_with_budget_and_strategy(sup: *mut HewSupervisor, failed_ident
             .iter()
             .position(|spec| spec.identity == failed_identity)
         else {
-            return;
+            // Dynamic removal retired the spec: no entry left to restart.
+            return FaultRuling::Unrecovered;
         };
         let recent = restart_within_window(window_secs, s);
         if recent < max_restarts {
@@ -2927,8 +3135,7 @@ unsafe fn restart_with_budget_and_strategy(sup: *mut HewSupervisor, failed_ident
         );
         // SAFETY: caller keeps `sup` live; no roster reference crosses this
         // cancellation/escalation operation.
-        stop_and_maybe_escalate(sup);
-        return;
+        return stop_and_maybe_escalate(sup, record);
     }
 
     crate::observe::record_actor_restart();
@@ -2941,99 +3148,44 @@ unsafe fn restart_with_budget_and_strategy(sup: *mut HewSupervisor, failed_ident
         strategy,
     );
 
-    match strategy {
-        STRATEGY_ONE_FOR_ONE => {
-            // SAFETY: the stable identity prevents a concurrent swap-remove
-            // from retargeting this restart to a sibling.
-            unsafe {
-                restart_child_from_spec_expected(sup, failed_index, Some(identities[failed_index]));
-            };
-        }
-        STRATEGY_ONE_FOR_ALL => {
-            // Stop all other children, then restart all.
-            // Children are freed on a background thread to avoid deadlocking
-            // when the scheduler has a single worker (hew_actor_free spin-waits
-            // and would block the only worker running this dispatch).
-            let mut deferred: Vec<DeferredFree> = Vec::new();
-            for (i, identity) in identities.iter().copied().enumerate() {
-                if i != failed_index {
-                    let child = take_child_slot_by_identity(sup, identity);
-                    if child.is_null() {
-                        continue;
-                    }
-                    // SAFETY: child pointer is valid.
-                    unsafe { actor::hew_actor_stop(child) };
-                    deferred.push(DeferredFree(child));
-                }
-            }
-            spawn_deferred_restart_free(deferred);
-            for (i, identity) in identities.iter().copied().enumerate() {
-                // SAFETY: identity lookup and exact-generation publication
-                // refuse if concurrent removal retired this spec.
-                unsafe { restart_child_from_spec_expected(sup, i, Some(identity)) };
-            }
-        }
-        STRATEGY_REST_FOR_ONE => {
-            // Stop children after the failed one, then restart them.
-            // Deferred free as in ONE_FOR_ALL to avoid single-worker deadlock.
-            let mut deferred: Vec<DeferredFree> = Vec::new();
-            for identity in identities.iter().copied().skip(failed_index + 1) {
-                let child = take_child_slot_by_identity(sup, identity);
-                if !child.is_null() {
-                    // SAFETY: child pointer is valid.
-                    unsafe { actor::hew_actor_stop(child) };
-                    deferred.push(DeferredFree(child));
-                }
-            }
-            spawn_deferred_restart_free(deferred);
-            for (i, identity) in identities.iter().copied().enumerate().skip(failed_index) {
-                // SAFETY: identity lookup and exact-generation publication
-                // refuse if concurrent removal retired this spec.
-                unsafe { restart_child_from_spec_expected(sup, i, Some(identity)) };
-            }
-        }
-        STRATEGY_SIMPLE_ONE_FOR_ONE => {
-            // Static-backed pool: each pool member is an independent static child
-            // in `children[]` (registered via `pool_member_add_static`), so the
-            // crashed member restarts per-member exactly like ONE_FOR_ONE — the
-            // members are fungible and independent, never a one-for-all group.
-            // `restart_child_from_spec` re-runs the member's init thunk (fresh
-            // config-derived state per incarnation) and `store_child_slot` re-fills
-            // `children[failed_index]`; the pool accessor
-            // (`hew_supervisor_pool_child_get`) resolves member i through that LIVE
-            // static slot, so the restarted member is re-resolved automatically
-            // with no stale PID cached (LESSONS
-            // `replaceable-resource-handle-is-fungible-reference`).
-            // SAFETY: index is valid (bounds-checked at the top of this fn).
-            unsafe {
-                restart_child_from_spec_expected(sup, failed_index, Some(identities[failed_index]));
-            };
-        }
-        unknown => {
-            // Fail-closed: any non-listed strategy is a codegen/runtime ABI
-            // drift. Pre-S-D this fell through a `_ => {}` wildcard, which
-            // silently dropped restart requests for unrecognized strategies.
-            unreachable!(
-                "hew_supervisor: unknown restart strategy {unknown}; \
-                 valid: ONE_FOR_ONE=0, ONE_FOR_ALL=1, REST_FOR_ONE=2, \
-                 SIMPLE_ONE_FOR_ONE=3"
-            );
-        }
+    // SAFETY: `failed_index` was resolved under the roster lock above and
+    // `identities` is that same snapshot.
+    let failed_child_restarted =
+        unsafe { restart_children_for_strategy(sup, strategy, &identities, failed_index) };
+
+    if !failed_child_restarted {
+        // The restart produced no child. Take the same route the nested
+        // supervisor path takes on its own null restart: stop this supervisor
+        // and escalate if there is a parent, so the failure is not reported to
+        // restart waiters as a successful recovery.
+        // SAFETY: caller keeps `sup` live; no roster reference is held here.
+        return stop_and_maybe_escalate(sup, record);
     }
 
     // SAFETY: caller keeps `sup` live and notification state is independent of
     // the roster references, all of which were dropped above.
     notify_restart(sup);
+    FaultRuling::Handled
 }
 
 /// Restart an exhausted child supervisor subtree after checking the parent's
 /// restart budget. Child-supervisor recovery is only available when the child
 /// was registered with an init fn.
 ///
+/// This is the PARENT'S RULING on a record its child escalated. A subtree this
+/// parent successfully restarts CLEARS that record: nested budget exhaustion
+/// followed by a recovery here is not a terminal fault, because the tree did
+/// what a tree is for. Failing here escalates the same record further up, or
+/// settles it when this is the root.
+///
 /// # Safety
 ///
 /// `sup` must be valid and `failed_index` must be within `child_supervisors`.
-unsafe fn restart_child_supervisor_with_budget(sup: *mut HewSupervisor, failed_index: usize) {
+unsafe fn restart_child_supervisor_with_budget(
+    sup: *mut HewSupervisor,
+    failed_index: usize,
+    record: FaultRecord,
+) -> FaultRuling {
     // SAFETY: these policy scalars are immutable after construction.
     let (max_restarts, window_secs, strategy) =
         unsafe { ((*sup).max_restarts, (*sup).window_secs, (*sup).strategy) };
@@ -3064,8 +3216,7 @@ unsafe fn restart_child_supervisor_with_budget(sup: *mut HewSupervisor, failed_i
 
     if !restartable {
         // SAFETY: no roster reference crosses cancellation/escalation.
-        stop_and_maybe_escalate(sup);
-        return;
+        return stop_and_maybe_escalate(sup, record);
     }
 
     if recent >= max_restarts {
@@ -3077,8 +3228,7 @@ unsafe fn restart_child_supervisor_with_budget(sup: *mut HewSupervisor, failed_i
             recent,
         );
         // SAFETY: no roster reference crosses cancellation/escalation.
-        stop_and_maybe_escalate(sup);
-        return;
+        return stop_and_maybe_escalate(sup, record);
     }
 
     crate::observe::record_actor_restart();
@@ -3094,12 +3244,13 @@ unsafe fn restart_child_supervisor_with_budget(sup: *mut HewSupervisor, failed_i
     // supervisor whose child-supervisor slot we are replacing.
     if unsafe { restart_child_supervisor_from_spec(sup, failed_index) }.is_null() {
         // SAFETY: restart returned without leaving a nested-roster borrow.
-        stop_and_maybe_escalate(sup);
-        return;
+        return stop_and_maybe_escalate(sup, record);
     }
 
     // SAFETY: caller keeps `sup` live for notification.
     notify_restart(sup);
+    // The subtree is alive again: the escalated record is recovered here.
+    FaultRuling::Handled
 }
 
 /// Invoke a child's `#[on(crash)]` handler (if installed) and return its
@@ -3167,7 +3318,19 @@ unsafe fn invoke_on_crash_handler(
     Some(tag)
 }
 
-/// Apply the restart strategy after a child failure.
+/// Apply the restart strategy after a child failure, then settle that
+/// failure's process exit-status record.
+///
+/// This is the ONE place a supervised crash's disposition becomes final.
+/// [`decide_child_failure`] holds the whole decision — every give-up path
+/// returns [`FaultRuling::Unrecovered`] through it rather than
+/// returning early past the accounting — so "did a supervisor handle this
+/// fault?" is answered structurally, at a single point, instead of at each of
+/// the eight places the old body could `return`.
+///
+/// The settle is paired with the `open_supervised_fault` the crash site
+/// performed before notifying this supervisor, so it runs exactly when
+/// `crashed` is true.
 ///
 /// # Safety
 ///
@@ -3178,7 +3341,40 @@ unsafe fn apply_restart(
     exit_state: c_int,
     crash_code: c_int,
     ctx: *mut crate::execution_context::HewExecutionContext,
+    record: FaultRecord,
 ) {
+    // SAFETY: forwarded unchanged to the decision funnel.
+    let ruling =
+        unsafe { decide_child_failure(sup, failed_identity, exit_state, crash_code, ctx, record) };
+    if exit_state == HewActorState::Crashed as c_int {
+        crate::exit_status::settle_supervised_fault(record, ruling);
+    }
+}
+
+/// Decide whether this supervisor recovers a child failure.
+///
+/// Returns [`FaultRuling::Handled`] only when this supervisor owns
+/// the outcome — it restarted the child, scheduled a restart, or escalated to a
+/// parent that now owns the decision. Every other exit is `Unrecovered`,
+/// including the ones that look like ordinary policy: a `temporary` child, a
+/// tripped circuit breaker, a hook answering `Kill`, and `Escalate` at a root
+/// with no parent are all "the supervisor declined to recover this crash", and
+/// declining is not recovering.
+///
+/// A non-crash exit (a graceful stop) is not a fault at all; the caller does not
+/// settle anything for it, so this function's return value is ignored there.
+///
+/// # Safety
+///
+/// `sup` must be valid.
+unsafe fn decide_child_failure(
+    sup: *mut HewSupervisor,
+    failed_identity: u64,
+    exit_state: c_int,
+    crash_code: c_int,
+    ctx: *mut crate::execution_context::HewExecutionContext,
+    record: FaultRecord,
+) -> FaultRuling {
     let crashed = exit_state == HewActorState::Crashed as c_int;
     let (spec_identity, template, on_crash, sup_actor_id) = {
         // SAFETY: caller keeps `sup` live; crash accounting and callback
@@ -3192,7 +3388,10 @@ unsafe fn apply_restart(
             .iter_mut()
             .find(|candidate| candidate.identity == failed_identity)
         else {
-            return;
+            // The spec was retired (dynamic removal) before this event was
+            // dispatched: no roster entry remains to restart, so nothing will
+            // recover the crash.
+            return FaultRuling::Unrecovered;
         };
         if crashed {
             circuit_breaker_record_crash(spec, crash_code, sup_actor_id);
@@ -3217,15 +3416,25 @@ unsafe fn apply_restart(
     };
 
     match crash_action_tag {
-        Some(CRASH_ACTION_KILL) => return,
+        // The hook chose termination over recovery. Deliberate, but not a
+        // recovery: nothing restarts this child.
+        Some(CRASH_ACTION_KILL) => return FaultRuling::Unrecovered,
         Some(CRASH_ACTION_ESCALATE) => {
             // SAFETY: the caller keeps `sup` live; only non-roster parent state
             // is inspected after the callback lease has been released.
-            if unsafe { !(*sup).parent.is_null() } {
-                // SAFETY: no roster reference crosses escalation.
-                escalate_to_parent(sup);
+            if unsafe { (*sup).parent.is_null() } {
+                // Escalating past the root has nowhere to go: the fault reached
+                // the top of the supervision tree with no authority left.
+                return FaultRuling::Unrecovered;
             }
-            return;
+            // SAFETY: no roster reference crosses escalation. The record is
+            // TRANSFERRED only if a live parent accepts it; a refused send left
+            // it with no new authority.
+            return if escalate_to_parent(sup, record) {
+                FaultRuling::Escalated
+            } else {
+                FaultRuling::Unrecovered
+            };
         }
         _ => {}
     }
@@ -3241,7 +3450,9 @@ unsafe fn apply_restart(
             .iter_mut()
             .find(|candidate| candidate.identity == spec_identity)
         else {
-            return;
+            // Retired between the callback and the policy read; same reasoning
+            // as the first lookup above.
+            return FaultRuling::Unrecovered;
         };
 
         if crashed && spec.restart_delay_ms > 0 {
@@ -3252,7 +3463,11 @@ unsafe fn apply_restart(
                 && exit_state == HewActorState::Stopped as c_int)
             || !circuit_breaker_should_restart(spec, sup_actor_id)
         {
-            return;
+            // Policy declines the restart: a `temporary` child, or a circuit
+            // breaker that has tripped. When the child STOPPED gracefully this
+            // is not a fault and the caller settles nothing; when it CRASHED,
+            // the policy chose to leave the crash unrecovered.
+            return FaultRuling::Unrecovered;
         }
         if restart_delay_allows_restart(spec) {
             if crashed && spec.restart_delay_ms == 0 {
@@ -3275,17 +3490,24 @@ unsafe fn apply_restart(
         );
         // The caller keeps the supervisor live; scheduling retains its own
         // timer lease and carries the stable child identity, never an index.
-        schedule_delayed_restart(
+        // Arming TRANSFERS the record to the timer; the restart's effect when
+        // it fires is the ruling. A timer that could not be armed attempts no
+        // restart at all.
+        return if schedule_delayed_restart(
             sup,
             spec_identity,
             std::time::Duration::from_millis(delay_ms),
-        );
-        return;
+            record,
+        ) {
+            FaultRuling::ArmedForRestart
+        } else {
+            FaultRuling::Unrecovered
+        };
     }
 
     // SAFETY: budget/strategy resolves the stable identity under the roster
     // lock and refuses if dynamic removal retired it.
-    unsafe { restart_with_budget_and_strategy(sup, spec_identity) };
+    unsafe { restart_with_budget_and_strategy(sup, spec_identity, record) }
 }
 
 /// The supervisor's [`HewSysDispatchFn`] — its SYSTEM entry point.
@@ -3308,6 +3530,80 @@ unsafe extern "C-unwind" fn supervisor_sys_dispatch(
 ) {
     // SAFETY: forwards the caller's invariants unchanged to the impl.
     unsafe { supervisor_sys_dispatch_impl(ctx, state, sys_msg, data, data_size) };
+}
+
+/// Handle one `ChildStopped` / `ChildCrashed` system event.
+///
+/// Split out of `supervisor_sys_dispatch_impl` so the dispatch reads as a
+/// routing table and this arm — which owns the crash record's routing to a
+/// ruling — reads as one decision.
+///
+/// # Safety
+///
+/// `sup` must be the live supervisor backing this dispatch, and `data` must
+/// point to at least `data_size` readable bytes.
+unsafe fn dispatch_child_lifecycle_event(
+    sup: *mut HewSupervisor,
+    ctx: *mut crate::execution_context::HewExecutionContext,
+    data: *mut c_void,
+    data_size: usize,
+) {
+    if data.is_null() || data_size < std::mem::size_of::<ChildEvent>() {
+        return;
+    }
+    // SAFETY: data is valid for at least sizeof(ChildEvent).
+    let event = unsafe { &*data.cast::<ChildEvent>() };
+
+    // TRACE-CONTEXT COMPLETENESS (S3, crash-recovery seam): a crash is
+    // reported from `hew_actor_trap` (signal-handler context), so the
+    // sys-message that woke this dispatch may carry an all-zero trace
+    // context. Establish a sampled root HERE — in normal
+    // supervisor-dispatch context, never in the trap — so the restart /
+    // escalate / circuit spans emitted below (S2) parent under a real,
+    // sampled trace id instead of an unsampled zero-parent fallback.
+    crate::tracing::ensure_supervisor_trace_root();
+
+    let idx = event.child_index as usize;
+    let Some((child, spec_identity)) = take_child_slot_for_event(sup, idx, event.child_id) else {
+        // The slot no longer names this child (retired, or already
+        // replaced): no ruling can be made, so the record it carried
+        // reaches no authority.
+        if event.exit_state == HewActorState::Crashed as c_int {
+            crate::exit_status::settle_supervised_fault(
+                FaultRecord::from_raw(event.fault_record),
+                FaultRuling::Unrecovered,
+            );
+        }
+        return;
+    };
+
+    // Free the old child.
+    if !child.is_null() {
+        // Explicit provenance plus the retiring incarnation's atomic
+        // `state_drop_consumed` bit are the typed-drop authority.
+        // Crash escrow sets consumed only after actually consuming
+        // state; pre-dispatch crashes, normal stops, init-thunk state
+        // and clone-produced state retain their final-drop authority,
+        // while shallow-template borrowers never acquire it.
+        // SAFETY: child is quiescent and no longer referenced by its
+        // supervisor slot.
+        unsafe { actor::hew_actor_free(child) };
+    }
+
+    // SAFETY: sup is valid; ctx is the supervisor's own dispatch
+    // context, threaded through so a registered on_crash handler
+    // receives the supervisor's ctx (preserves task-scope
+    // cancellation propagation per f4df6354).
+    unsafe {
+        apply_restart(
+            sup,
+            spec_identity,
+            event.exit_state,
+            event.crash_code,
+            ctx,
+            FaultRecord::from_raw(event.fault_record),
+        );
+    };
 }
 
 unsafe fn supervisor_sys_dispatch_impl(
@@ -3337,45 +3633,8 @@ unsafe fn supervisor_sys_dispatch_impl(
 
     match kind {
         HewSysMsg::ChildStopped | HewSysMsg::ChildCrashed => {
-            if data.is_null() || data_size < std::mem::size_of::<ChildEvent>() {
-                return;
-            }
-            // SAFETY: data is valid for at least sizeof(ChildEvent).
-            let event = unsafe { &*data.cast::<ChildEvent>() };
-
-            // TRACE-CONTEXT COMPLETENESS (S3, crash-recovery seam): a crash is
-            // reported from `hew_actor_trap` (signal-handler context), so the
-            // sys-message that woke this dispatch may carry an all-zero trace
-            // context. Establish a sampled root HERE — in normal
-            // supervisor-dispatch context, never in the trap — so the restart /
-            // escalate / circuit spans emitted below (S2) parent under a real,
-            // sampled trace id instead of an unsampled zero-parent fallback.
-            crate::tracing::ensure_supervisor_trace_root();
-
-            let idx = event.child_index as usize;
-            let Some((child, spec_identity)) = take_child_slot_for_event(sup, idx, event.child_id)
-            else {
-                return;
-            };
-
-            // Free the old child.
-            if !child.is_null() {
-                // Explicit provenance plus the retiring incarnation's atomic
-                // `state_drop_consumed` bit are the typed-drop authority.
-                // Crash escrow sets consumed only after actually consuming
-                // state; pre-dispatch crashes, normal stops, init-thunk state
-                // and clone-produced state retain their final-drop authority,
-                // while shallow-template borrowers never acquire it.
-                // SAFETY: child is quiescent and no longer referenced by its
-                // supervisor slot.
-                unsafe { actor::hew_actor_free(child) };
-            }
-
-            // SAFETY: sup is valid; ctx is the supervisor's own dispatch
-            // context, threaded through so a registered on_crash handler
-            // receives the supervisor's ctx (preserves task-scope
-            // cancellation propagation per f4df6354).
-            unsafe { apply_restart(sup, spec_identity, event.exit_state, event.crash_code, ctx) };
+            // SAFETY: forwarded unchanged; `sup`/`ctx` are this dispatch's own.
+            unsafe { dispatch_child_lifecycle_event(sup, ctx, data, data_size) };
         }
         HewSysMsg::ChildSupervisorEscalated => {
             if data.is_null() || data_size < std::mem::size_of::<ChildSupervisorEscalation>() {
@@ -3385,8 +3644,13 @@ unsafe fn supervisor_sys_dispatch_impl(
             let event = unsafe { &*data.cast::<ChildSupervisorEscalation>() };
             crate::tracing::ensure_supervisor_trace_root();
             let idx = event.supervisor_index as usize;
+            let record = FaultRecord::from_raw(event.fault_record);
             // SAFETY: parent supervisor is valid for the lifetime of this dispatch.
-            unsafe { restart_child_supervisor_with_budget(sup, idx) };
+            // This is the parent's RULING on the escalated record: it settles
+            // the very record the child transferred, clearing it when the
+            // subtree comes back.
+            let ruling = unsafe { restart_child_supervisor_with_budget(sup, idx, record) };
+            crate::exit_status::settle_supervised_fault(record, ruling);
         }
         HewSysMsg::SupervisorStop => {
             // SAFETY: dispatch keeps the supervisor live.
@@ -3452,9 +3716,13 @@ unsafe fn supervisor_sys_dispatch_impl(
             // (this dispatch was woken by a timer-thread sys-send, which may
             // carry a zero trace context).
             crate::tracing::ensure_supervisor_trace_root();
+            let record = FaultRecord::from_raw(event.fault_record);
             // SAFETY: the stable identity is resolved under the roster lock;
-            // retired dynamic children are ignored.
-            unsafe { restart_with_budget_and_strategy(sup, event.child_identity) };
+            // retired dynamic children are ignored. The armed timer transferred
+            // the record here; the restart's EFFECT is the ruling.
+            let ruling =
+                unsafe { restart_with_budget_and_strategy(sup, event.child_identity, record) };
+            crate::exit_status::settle_supervised_fault(record, ruling);
         }
         // A supervisor's own actor is never linked or monitored by the runtime.
         HewSysMsg::Exit | HewSysMsg::Down => {}
@@ -3766,12 +4034,13 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_actor_event(
     child_id: u64,
     exit_state: c_int,
     crash_code: c_int,
-) {
-    cabi_guard!(sup.is_null());
+    fault_record: u64,
+) -> bool {
+    cabi_guard!(sup.is_null(), false);
     // SAFETY: caller keeps `sup` live through this notification.
     let self_actor = unsafe { (*sup).self_actor };
     if self_actor.is_null() {
-        return;
+        return false;
     }
 
     let event = ChildEvent {
@@ -3779,6 +4048,7 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_actor_event(
         child_id,
         exit_state,
         crash_code,
+        fault_record,
     };
 
     let kind = if exit_state == HewActorState::Crashed as c_int {
@@ -3789,12 +4059,12 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_actor_event(
 
     // SAFETY: self_actor is valid, mailbox is valid.
     unsafe {
-        let _ = actor::send_system_message(
+        actor::send_system_message(
             self_actor,
             kind,
             (&raw const event).cast::<c_void>().cast_mut(),
             std::mem::size_of::<ChildEvent>(),
-        );
+        )
     }
 }
 
@@ -3817,6 +4087,7 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_supervisor_escalation(
     supervisor_index: u32,
     exit_state: c_int,
     crash_code: c_int,
+    fault_record: u64,
 ) {
     cabi_guard!(sup.is_null());
     // SAFETY: caller keeps `sup` live through this notification.
@@ -3829,6 +4100,7 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_supervisor_escalation(
         supervisor_index,
         exit_state,
         crash_code,
+        fault_record,
     };
 
     // SAFETY: self_actor is valid, mailbox is valid.
@@ -4212,7 +4484,7 @@ mod tests {
         unsafe {
             let (sup, _child, _self_actor) = make_supervisor_with_child();
             let timers = Arc::clone(&(*sup).restart_timers);
-            schedule_delayed_restart(sup, 0, Duration::from_secs(30));
+            schedule_delayed_restart(sup, 0, Duration::from_secs(30), FaultRecord::NONE);
             assert_eq!(
                 timers.pending_for_test(),
                 1,
@@ -4234,6 +4506,53 @@ mod tests {
         }
     }
 
+    /// SHUTDOWN CANCELS AN ARMED TIMER. The timer thread breaks out of its wait
+    /// without ever running the restart, so the record the arming TRANSFERRED to
+    /// it must be settled at the cancel site.
+    ///
+    /// Leaving it Open still fails closed on the exit code, but the transition
+    /// is incomplete and it is not free: `hew_shutdown_wait` holds the runtime
+    /// open for its whole quiescence period (`drain_is_idle` is gated on
+    /// `has_open_supervised_faults`) waiting for a ruling that can no longer
+    /// arrive, because the only authority that could have made it was cancelled.
+    #[test]
+    fn cancelling_an_armed_restart_timer_settles_its_record() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the supervisor outlives the timer lease, which drains before
+        // this body returns.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            let timers = Arc::clone(&(*sup).restart_timers);
+            let record = crate::exit_status::open_supervised_fault();
+            assert!(
+                crate::exit_status::supervised_fault_is_open(record),
+                "a freshly opened record awaits a ruling"
+            );
+
+            assert!(
+                schedule_delayed_restart(sup, 0, Duration::from_secs(30), record),
+                "the timer is admitted and spawned, so the record is armed"
+            );
+            assert_eq!(timers.pending_for_test(), 1);
+            assert!(
+                crate::exit_status::supervised_fault_is_open(record),
+                "arming TRANSFERS the record to the timer; it does not settle it"
+            );
+
+            timers.cancel();
+            assert!(
+                timers.wait_for_drain(Instant::now() + Duration::from_secs(5)),
+                "cancellation must wake the 30-second backoff"
+            );
+
+            assert!(
+                !crate::exit_status::supervised_fault_is_open(record),
+                "a cancelled timer attempts no restart, so it settles the record \
+                 it owned instead of stranding it Open for the shutdown quiesce"
+            );
+        }
+    }
+
     #[test]
     fn public_stop_cancels_long_restart_timer_promptly() {
         let _rt = crate::runtime_test_guard();
@@ -4242,7 +4561,7 @@ mod tests {
         unsafe {
             let (sup, _child, _self_actor) = make_supervisor_with_child();
             let timers = Arc::clone(&(*sup).restart_timers);
-            schedule_delayed_restart(sup, 0, Duration::from_secs(30));
+            schedule_delayed_restart(sup, 0, Duration::from_secs(30), FaultRecord::NONE);
             assert_eq!(timers.pending_for_test(), 1);
 
             let started = Instant::now();
@@ -4266,7 +4585,7 @@ mod tests {
             let (nested, _nested_child, _nested_self) = make_supervisor_with_child();
             assert_eq!(hew_supervisor_add_child_supervisor(parent, nested), 0);
             let timers = Arc::clone(&(*nested).restart_timers);
-            schedule_delayed_restart(nested, 0, Duration::from_secs(30));
+            schedule_delayed_restart(nested, 0, Duration::from_secs(30), FaultRecord::NONE);
             assert_eq!(timers.pending_for_test(), 1);
 
             let started = Instant::now();
@@ -4660,6 +4979,7 @@ mod tests {
                 child_id,
                 HewActorState::Crashed as c_int,
                 0,
+                FaultRecord::NONE.as_raw(),
             );
             assert!(
                 wait_for_condition(std::time::Duration::from_secs(2), || {
@@ -7076,6 +7396,7 @@ mod tests {
                 child_id: (*child).id,
                 exit_state: terminal_state as c_int,
                 crash_code: 0,
+                fault_record: 0,
             };
             supervisor_sys_dispatch_impl(
                 ptr::null_mut(),
@@ -7832,10 +8153,21 @@ pub unsafe extern "C" fn hew_supervisor_handle_crash(
         let guard = unsafe { &(*sup).roster }.lock_or_recover();
         // SAFETY: roster access is serialized by the guard.
         let s = &*guard;
+        // SAFETY: the caller contract guarantees a live child for this call.
+        let crashed =
+            unsafe { &*child }.actor_state.load(Ordering::Acquire) == HewActorState::Crashed as i32;
         let Some(index) = s.children.iter().position(|candidate| *candidate == child) else {
+            // This supervisor does not own the child, so it cannot rule on the
+            // crash and no other authority will be told about it.
+            if crashed {
+                crate::exit_status::record_unrecovered_actor_fault();
+            }
             return;
         };
         let Ok(child_index) = u32::try_from(index) else {
+            if crashed {
+                crate::exit_status::record_unrecovered_actor_fault();
+            }
             return;
         };
         // SAFETY: the matching roster slot owns this live child for the
@@ -7849,10 +8181,32 @@ pub unsafe extern "C" fn hew_supervisor_handle_crash(
         )
     };
 
+    // Open the crash's record before the notification is queued, exactly as the
+    // trap path does. This entry is an alternate route to the SAME event, so it
+    // must be an equal citizen of the exit-status authority: a crash reported
+    // here without a record would be a fault the process exits `0` over.
+    let record = if exit_state == HewActorState::Crashed as c_int {
+        crate::exit_status::open_supervised_fault()
+    } else {
+        FaultRecord::NONE
+    };
+
     // Notify the supervisor actor via the event system.
     // SAFETY: sup is valid and child_id / exit_state are read from valid memory.
-    unsafe {
-        hew_supervisor_notify_child_actor_event(sup, child_index, child_id, exit_state, crash_code);
+    let notified = unsafe {
+        hew_supervisor_notify_child_actor_event(
+            sup,
+            child_index,
+            child_id,
+            exit_state,
+            crash_code,
+            record.as_raw(),
+        )
+    };
+    if !notified {
+        // The event reached no supervisor actor, so the record reached no
+        // authority. Settle it here rather than leave it to time out.
+        crate::exit_status::settle_supervised_fault(record, FaultRuling::Unrecovered);
     }
 }
 
@@ -10102,6 +10456,8 @@ mod pool_slot_tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier};
 
+    use crate::exit_status::{FaultRecord, FaultRuling};
+
     macro_rules! locked_roster {
         ($sup:expr) => {{
             unsafe { &(*$sup).roster }
@@ -10678,6 +11034,7 @@ mod pool_slot_tests {
                 child_id: (*child).id,
                 exit_state: HewActorState::Crashed as i32,
                 crash_code: 0,
+                fault_record: 0,
             };
             supervisor_sys_dispatch_impl(
                 ptr::null_mut(),
@@ -10820,6 +11177,107 @@ mod pool_slot_tests {
         // No owned alloc leaked on the OOM path (the thunk freed nothing because
         // it returned before allocating, or freed what it took).
         assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);
+
+        unsafe { hew_supervisor_stop(sup_ptr) };
+        assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);
+    }
+
+    /// A restart that produces no child is NOT a recovery.
+    ///
+    /// `restart_with_budget_and_strategy` used to discard the nullable restart
+    /// result and notify restart waiters unconditionally, reporting a recovery
+    /// that never happened. It must instead take the same
+    /// `stop_and_maybe_escalate` route the nested-supervisor path takes on its
+    /// own null restart, and report the fault as unrecovered.
+    #[test]
+    fn failed_restart_is_reported_as_an_unrecovered_fault() {
+        let _rt = crate::runtime_test_guard();
+        INIT_CLOSURE_LIVE_OWNED.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_THUNK_CALLS.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_FAIL_NEXT.store(false, Ordering::SeqCst);
+
+        let sup_ptr = unsafe { hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60) };
+        let (cfg, cfg_size) = make_config_buf(21);
+        let spec = init_closure_spec(cfg, cfg_size);
+        assert_eq!(
+            unsafe { hew_supervisor_add_child_spec(sup_ptr, &raw const spec) },
+            0
+        );
+        unsafe { hew_supervisor_set_child_state_drop(sup_ptr, 0, init_closure_drop) };
+        assert_eq!(unsafe { hew_supervisor_start(sup_ptr) }, 0);
+        assert_eq!(unsafe { (*sup_ptr).running.load(Ordering::Acquire) }, 1);
+        let identity = unsafe { locked_roster!(sup_ptr).child_specs[0].identity };
+
+        // Retire the live child and make the next init thunk fail, so the
+        // restart below fails closed with a null child.
+        unsafe {
+            let old = take_child_slot(sup_ptr, 0);
+            actor::hew_actor_free(old);
+        }
+        INIT_CLOSURE_FAIL_NEXT.store(true, Ordering::SeqCst);
+
+        let outcome =
+            unsafe { restart_with_budget_and_strategy(sup_ptr, identity, FaultRecord::NONE) };
+        assert_eq!(
+            outcome,
+            FaultRuling::Unrecovered,
+            "a restart that produced no child recovered nothing"
+        );
+        assert!(
+            unsafe { locked_roster!(sup_ptr).children[0] }.is_null(),
+            "the slot stays null on a failed restart"
+        );
+        assert_eq!(
+            unsafe { (*sup_ptr).running.load(Ordering::Acquire) },
+            0,
+            "a supervisor that could not restart its child stops rather than \
+             reporting a successful recovery to restart waiters"
+        );
+
+        unsafe { hew_supervisor_stop(sup_ptr) };
+        assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);
+    }
+
+    /// The counterfactual for the test above: a restart that DOES produce a
+    /// child is a recovery, reported as handled, and leaves the supervisor
+    /// running. Without this pair, returning `Unrecovered` unconditionally
+    /// would pass.
+    #[test]
+    fn successful_restart_is_reported_as_handled() {
+        let _rt = crate::runtime_test_guard();
+        INIT_CLOSURE_LIVE_OWNED.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_THUNK_CALLS.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_FAIL_NEXT.store(false, Ordering::SeqCst);
+
+        let sup_ptr = unsafe { hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60) };
+        let (cfg, cfg_size) = make_config_buf(22);
+        let spec = init_closure_spec(cfg, cfg_size);
+        assert_eq!(
+            unsafe { hew_supervisor_add_child_spec(sup_ptr, &raw const spec) },
+            0
+        );
+        unsafe { hew_supervisor_set_child_state_drop(sup_ptr, 0, init_closure_drop) };
+        assert_eq!(unsafe { hew_supervisor_start(sup_ptr) }, 0);
+        assert_eq!(unsafe { (*sup_ptr).running.load(Ordering::Acquire) }, 1);
+        let identity = unsafe { locked_roster!(sup_ptr).child_specs[0].identity };
+
+        unsafe {
+            let old = take_child_slot(sup_ptr, 0);
+            actor::hew_actor_free(old);
+        }
+
+        let outcome =
+            unsafe { restart_with_budget_and_strategy(sup_ptr, identity, FaultRecord::NONE) };
+        assert_eq!(outcome, FaultRuling::Handled);
+        assert!(
+            !unsafe { locked_roster!(sup_ptr).children[0] }.is_null(),
+            "the restart published a fresh child"
+        );
+        assert_eq!(
+            unsafe { (*sup_ptr).running.load(Ordering::Acquire) },
+            1,
+            "a supervisor that recovered its child keeps running"
+        );
 
         unsafe { hew_supervisor_stop(sup_ptr) };
         assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);
@@ -11051,7 +11509,7 @@ mod pool_slot_tests {
             let old = take_child_slot(sup, 0);
             actor::hew_actor_free(old);
         }
-        unsafe { restart_with_budget_and_strategy(sup, failed_identity) };
+        unsafe { restart_with_budget_and_strategy(sup, failed_identity, FaultRecord::NONE) };
 
         assert_eq!(
             INIT_CLOSURE_THUNK_CALLS.load(Ordering::SeqCst),

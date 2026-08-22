@@ -257,11 +257,14 @@ fn generic_record_with_inline_owned_enum_drops_on_all_exits() {
         );
     }
 
-    let output = std::process::Command::new(emit_dir.path().join("generic_enum_record_scope_drop"))
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .output()
-        .expect("run generic enum-record fixture");
+    let output = std::process::Command::new(hew_testutil::compiled_binary_path(
+        emit_dir.path(),
+        "generic_enum_record_scope_drop",
+    ))
+    .env("MallocScribble", "1")
+    .env("MallocPreScribble", "1")
+    .output()
+    .expect("run generic enum-record fixture");
     assert!(
         output.status.success(),
         "generic enum-record fixture should survive poisoned allocation; stderr: {}",

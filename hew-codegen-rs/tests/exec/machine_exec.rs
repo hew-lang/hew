@@ -233,9 +233,7 @@ fn compile_fixture(repo: &Path, fixture: &MachineFixture) -> String {
 fn build_fixture_binary(repo: &Path, source: &Path, stem: &str) -> (tempfile::TempDir, PathBuf) {
     ensure_hew_runtime_lib(repo);
     let dir = tempfile::tempdir().expect("create machine-exec build dir");
-    let bin = dir
-        .path()
-        .join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
+    let bin = hew_testutil::compiled_binary_path(dir.path(), stem);
 
     let mut command = hew_command(repo);
     command.arg("build").arg("-o").arg(&bin).arg(source);

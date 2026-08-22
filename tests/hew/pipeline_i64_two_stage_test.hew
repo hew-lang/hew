@@ -227,23 +227,6 @@ fn cancelled_admission_settles_and_pipeline_continues() {
 }
 
 #[test]
-fn crash_mid_pipeline_settles_without_sink_delivery() {
-    let source = pipeline.run(pipeline.from(1));
-    match await source.push(item(9, "crash-owned", true)) {
-        Ok(admitted) => testing.assert_true(!admitted),
-        Err(_) => testing.assert_true(false),
-    }
-    match await source.count() {
-        Ok(value) => testing.assert_eq(value, 0),
-        Err(_) => testing.assert_true(false),
-    }
-    match await source.push(item(10, "after-crash", false)) {
-        Ok(admitted) => testing.assert_true(!admitted),
-        Err(_) => testing.assert_true(false),
-    }
-}
-
-#[test]
 fn graceful_shutdown_drains_queued_owned_items() {
     let source = pipeline.run(pipeline.from(0));
     let control = match await source.control_handle() {

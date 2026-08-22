@@ -991,21 +991,21 @@ bb3:                                              ; preds = %bb2
   %helper_crash_cleanup_was_active = load i1, ptr %helper_crash_cleanup_active_12, align 1
   br i1 %helper_crash_cleanup_was_active, label %helper_crash_cleanup_deactivate, label %helper_crash_cleanup_deactivate_merge
 
-bb4:                                              ; preds = %clone_ok
+bb4:                                              ; preds = %actor_send_undelivered, %clone_ok
   store i64 8, ptr %local_15, align 8
   call void @llvm.memcpy.p0.p0.i64(ptr align 4 %local_20, ptr align 4 %local_12, i64 4, i1 false)
   %record_clone_Boxed27 = call i32 @__hew_record_clone_inplace_Boxed(ptr %local_12, ptr %local_20)
   %record_clone_Boxed_failed28 = icmp ne i32 %record_clone_Boxed27, 0
   br i1 %record_clone_Boxed_failed28, label %clone_trap30, label %clone_ok29
 
-bb5:                                              ; preds = %clone_ok29
+bb5:                                              ; preds = %actor_send_undelivered39, %clone_ok29
   %field_0_load_ptr = getelementptr inbounds nuw %Boxed, ptr %local_12, i32 0, i32 0
   %field_0_load = load ptr, ptr %field_0_load_ptr, align 4
   store ptr %field_0_load, ptr %local_17, align 4
   store i64 9, ptr %local_18, align 8
-  %call_arg41 = load ptr, ptr %local_17, align 4
-  %call_arg42 = load i64, ptr %local_18, align 8
-  call void @hew_vec_push_i64(ptr %call_arg41, i64 %call_arg42)
+  %call_arg43 = load ptr, ptr %local_17, align 4
+  %call_arg44 = load i64, ptr %local_18, align 8
+  call void @hew_vec_push_i64(ptr %call_arg43, i64 %call_arg44)
   br label %bb6
 
 bb6:                                              ; preds = %bb5
@@ -1066,15 +1066,19 @@ clone_ok:                                         ; preds = %frame_cleanup_regis
   %actor_id = load i64, ptr %actor_id_slot, align 8
   %hew_actor_send_by_id_call = call i32 @hew_actor_send_by_id(i64 %actor_id, ptr null, i32 -1599914196, ptr %local_14, i32 ptrtoint (ptr getelementptr (%__hew_packed_args_main_0, ptr null, i32 1) to i32))
   %send_not_ok = icmp ne i32 %hew_actor_send_by_id_call, 0
-  br i1 %send_not_ok, label %actor_send_fail, label %bb4
+  br i1 %send_not_ok, label %actor_send_undelivered, label %bb4
 
 clone_trap:                                       ; preds = %frame_cleanup_registered
   call void @hew_trap_with_code(i32 200)
   call void @llvm.trap()
   unreachable
 
-actor_send_fail:                                  ; preds = %clone_ok
+actor_send_undelivered:                           ; preds = %clone_ok
   call void @__hew_record_drop_inplace___hew_packed_args_main_0(ptr %local_14)
+  %send_recipient_stopped = icmp eq i32 %hew_actor_send_by_id_call, -2
+  br i1 %send_recipient_stopped, label %bb4, label %actor_send_fail
+
+actor_send_fail:                                  ; preds = %actor_send_undelivered
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
@@ -1090,16 +1094,20 @@ clone_ok29:                                       ; preds = %bb4
   %actor_id_slot36 = getelementptr i8, ptr %"actor_send receiver35", i64 8
   %actor_id37 = load i64, ptr %actor_id_slot36, align 8
   %hew_actor_send_by_id_call38 = call i32 @hew_actor_send_by_id(i64 %actor_id37, ptr null, i32 -1599914196, ptr %local_16, i32 ptrtoint (ptr getelementptr (%__hew_packed_args_main_1, ptr null, i32 1) to i32))
-  %send_not_ok40 = icmp ne i32 %hew_actor_send_by_id_call38, 0
-  br i1 %send_not_ok40, label %actor_send_fail39, label %bb5
+  %send_not_ok41 = icmp ne i32 %hew_actor_send_by_id_call38, 0
+  br i1 %send_not_ok41, label %actor_send_undelivered39, label %bb5
 
 clone_trap30:                                     ; preds = %bb4
   call void @hew_trap_with_code(i32 200)
   call void @llvm.trap()
   unreachable
 
-actor_send_fail39:                                ; preds = %clone_ok29
+actor_send_undelivered39:                         ; preds = %clone_ok29
   call void @__hew_record_drop_inplace___hew_packed_args_main_1(ptr %local_16)
+  %send_recipient_stopped42 = icmp eq i32 %hew_actor_send_by_id_call38, -2
+  br i1 %send_recipient_stopped42, label %bb5, label %actor_send_fail40
+
+actor_send_fail40:                                ; preds = %actor_send_undelivered39
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable

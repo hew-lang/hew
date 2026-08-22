@@ -118,7 +118,7 @@ actor Counter {
 
 - `receive fn` declares a message handler (entry point for actor messages)
 - `fn` declares a private internal method
-- **`receive fn` without return type** → fire-and-forget. The method call returns `()` and the caller does not need `await`. The message is enqueued and the caller continues immediately.
+- **`receive fn` without return type** → fire-and-forget. The method call returns `()` and the caller does not need `await`. The message is enqueued and the caller continues immediately; if the recipient is already terminal the send is a no-op (see *Fire-and-forget delivery*, below).
 - **`receive fn` with return type** → request-response. The call produces `R` and waits for the reply. Inside `select`/`join`, the actor call is treated as an implicit concurrent reply source; writing `await` there is accepted but redundant.
 
 **Calling named actors:**
@@ -146,8 +146,26 @@ worker.send(42);                // fire-and-forget
 counter.increment(10);
 ```
 
-Fire-and-forget sends enqueue the message and return `()`. Named-actor request-response
-uses `await` on the receive method (see §2.1.4).
+**Fire-and-forget delivery (normative):**
+
+A fire-and-forget send enqueues the message and returns `()`. Delivery is the
+message's single consumer: on enqueue the recipient's mailbox takes ownership of
+the payload, and the caller's binding is moved.
+
+A send to an actor that is already terminal — stopped or crashed — is a
+**no-op**: nothing is enqueued, the payload is released at the send site, and the
+caller continues. Sending is not a liveness test; a broadcast outlives a dead
+peer, and reaching a dead recipient is normal actor topology churn, not an error
+the sender observes. Any OTHER delivery failure (a `fail`-policy mailbox
+overflow — §6.2 — or a runtime fault) traps the sender.
+
+A declared bounded mailbox's `drop_new` / `drop_old` / `coalesce` policies are
+successful sends by definition (§6.2): the message was accepted and the policy
+chose what to keep.
+
+Named-actor request-response uses `await` on the receive method (see §2.1.4); an
+`ask` of a terminal actor is NOT a no-op — it yields `Err`, because the caller
+asked for a reply that can never arrive.
 
 **Actor instantiation:**
 
@@ -3847,6 +3865,66 @@ The runtime installs signal handlers for SEGV, SIGBUS, SIGFPE, and SIGILL. When 
 5. The worker thread continues processing other actors
 
 The `panic()` builtin triggers a controlled crash for testing.
+
+### 5.8 Process Exit Status (normative)
+
+A Hew program's exit code is:
+
+```text
+final = user_code                    if user_code != 0
+      = 1                            if an actor fault went unrecovered
+      = 0                            otherwise
+```
+
+`user_code` is the value `main` returns (0 for a unit `main`) or the argument to
+`exit`. A non-zero code the program chose is never overwritten: it is already a
+failure and carries more information than `1`. A zero never masks a fault. This
+rule applies on EVERY termination path — returning from `main`, and an explicit
+`exit(code)` anywhere — so `exit(0)` cannot report success over a crashed actor.
+
+**Each supervised crash carries a record**, opened at the crash site and settled
+by exactly ONE ruling. A crash is HANDLED only when a recovery took EFFECT — the
+failed child is alive again. Not when one was intended: a non-null parent
+pointer, a message that was sent, a timer that was requested are all plans that
+can fail after they are made.
+
+Two rulings do not settle a record; they TRANSFER it:
+
+- **escalation** to a parent that ACCEPTS it (§5.5). The record stays open and
+  the parent's own ruling settles it. A subtree the parent then restarts CLEARS
+  the record — nested budget exhaustion followed by a recovery upward is not a
+  fault of the run.
+- **arming a delayed restart** (the backoff in §5.4). The record stays open and
+  the restart's effect when the timer fires settles it.
+
+**An actor fault is unrecovered** when it reaches a point with no recovery
+authority left:
+
+- an actor crashes with no supervisor attached — nothing owns the recovery
+  decision; a top-level supervisor actor crashing is this case, since it has no
+  supervisor of its own;
+- a supervisor rules that it cannot recover the fault: the restart budget is
+  exhausted (§5.4), the child is not restartable (`temporary`, or a tripped
+  circuit breaker), the restart itself produces no child, an `#[on(crash)]` hook
+  answers `Kill`, or it answers `Escalate` at a supervisor with no parent;
+- a TRANSFER fails: the parent is stopped or closed and never receives the
+  escalation, the restart timer cannot be armed, or shutdown CANCELS an armed
+  timer before it fires. Handing a record to an authority that never receives
+  it — or cancelling that authority before it acts — is not a recovery;
+- a supervised crash whose supervisor never rules at all — its supervisor was
+  already stopping, its mailbox was closed, or shutdown joined the workers
+  before the queued decision ran. An undelivered decision is not a recovery.
+
+A crash a supervisor HANDLES leaves the exit status successful. That, and only
+that, keeps a crashed actor out of the exit status. A ruling settles only its own
+record: one supervisor recovering its child does not clear a sibling
+supervisor's unrecovered crash, and a later successful restart does not retract
+an earlier unrecovered fault. A crash raised after shutdown has begun counts
+exactly like one raised mid-run.
+
+The rule does not depend on program shape. A program that contains a supervisor
+and ALSO spawns an unsupervised actor that crashes exits non-zero — the
+supervisor recovers what it supervises, and nothing else.
 
 ---
 

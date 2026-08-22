@@ -32,10 +32,10 @@ machine Latch {
     state Bailed;
 
     on Try: Closed => Open when self.code == 42 {
-        Open
+        Latch.Open
     }
     on Try: _ => Bailed {
-        Bailed
+        Latch.Bailed
     }
 }
 

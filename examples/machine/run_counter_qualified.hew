@@ -10,10 +10,10 @@ machine Counter {
     state Running;
 
     on Tick: Idle => Running {
-        Running
+        Counter.Running
     }
     on Tick: Running => Running reenter {
-        Running
+        Counter.Running
     }
 }
 

@@ -189,15 +189,14 @@ fn main() {
     );
 }
 
-/// Moving a payload binder into an early return transfers only the selected
-/// payload slot. The direct-call carrier still owns its shell and every
-/// remaining slot, so that same return edge must release the neutralized
-/// carrier rather than treating the partial transfer as a whole-owner escape.
-#[test]
-fn returned_payload_binder_releases_remaining_call_carrier_on_early_return() {
-    let p = pipeline_with_tc(
-        r#"
+const RETURNED_PAYLOAD_CARRIERS: &str = r#"
 record Snap { label: string, terminal: bool }
+enum SnapError { Missing(i64); }
+
+fn direct_snapshot(seed: i64) -> Result<Snap, SnapError> {
+    if seed < 0 { return Err(SnapError.Missing(seed)); }
+    Ok(Snap { label: "ready".to_upper(), terminal: seed > 0 })
+}
 
 actor Svc {
     receive fn snapshot() -> Snap {
@@ -207,6 +206,18 @@ actor Svc {
 
 fn empty_snap() -> Snap {
     Snap { label: "", terminal: false }
+}
+
+fn poll_direct(seed: i64) -> Snap {
+    match direct_snapshot(seed) {
+        .Ok(s) => {
+            if s.terminal {
+                return s;
+            }
+        },
+        .Err(_) => {},
+    }
+    empty_snap()
 }
 
 fn poll(svc: LocalPid<Svc>) -> Snap {
@@ -241,14 +252,21 @@ fn poll_let(svc: LocalPid<Svc>) -> Snap {
     }
     empty_snap()
 }
-"#,
-    );
+"#;
+
+/// Moving a payload binder into an early return transfers only the selected
+/// payload slot. The direct-call carrier still owns its shell and every
+/// remaining slot, so that same return edge must release the neutralized
+/// carrier rather than treating the partial transfer as a whole-owner escape.
+#[test]
+fn returned_payload_binder_releases_remaining_call_carrier_on_early_return() {
+    let p = pipeline_with_tc(RETURNED_PAYLOAD_CARRIERS);
     assert!(
         p.diagnostics.is_empty(),
         "the payload transfer and remaining carrier release must balance: {:?}",
         p.diagnostics
     );
-    for name in ["poll", "poll_let"] {
+    for name in ["poll_direct", "poll", "poll_let"] {
         let poll = p
             .raw_mir
             .iter()

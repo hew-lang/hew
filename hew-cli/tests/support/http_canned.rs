@@ -6,21 +6,25 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
-/// Read an HTTP request's headers and drain its `Content-Length` body so the
-/// client's write completes before the server responds — otherwise the
-/// client can fail on the write side instead of on the response status.
-pub fn drain_http_request(stream: &mut TcpStream) {
+#[derive(Debug)]
+pub struct CannedRequest {
+    pub method: String,
+    pub path: String,
+    pub body: Vec<u8>,
+}
+
+fn read_http_request(stream: &mut TcpStream) -> CannedRequest {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .expect("set read timeout");
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
-    while let Ok(n) = stream.read(&mut chunk) {
-        if n == 0 {
-            break;
-        }
+    let (header_end, content_length) = loop {
+        let n = stream.read(&mut chunk).expect("read HTTP request");
+        assert!(n != 0, "connection closed before complete HTTP request");
         buf.extend_from_slice(&chunk[..n]);
         let Some(header_end) = find_double_crlf(&buf) else {
             continue;
@@ -36,19 +40,30 @@ pub fn drain_http_request(stream: &mut TcpStream) {
                     .flatten()
             })
             .unwrap_or(0);
-        let body_so_far = buf.len() - (header_end + 4);
-        let mut remaining = content_length.saturating_sub(body_so_far);
-        while remaining > 0 {
-            let Ok(n) = stream.read(&mut chunk) else {
-                break;
-            };
-            if n == 0 {
-                break;
-            }
-            remaining = remaining.saturating_sub(n);
+        if buf.len() >= header_end + 4 + content_length {
+            break (header_end, content_length);
         }
-        break;
+    };
+
+    let header_text = String::from_utf8_lossy(&buf[..header_end]);
+    let request_line = header_text.lines().next().expect("HTTP request line");
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts
+        .next()
+        .expect("HTTP request method")
+        .to_owned();
+    let path = request_parts.next().expect("HTTP request path").to_owned();
+    let body_start = header_end + 4;
+    CannedRequest {
+        method,
+        path,
+        body: buf[body_start..body_start + content_length].to_vec(),
     }
+}
+
+/// Read and discard one complete HTTP request.
+pub fn drain_http_request(stream: &mut TcpStream) {
+    let _ = read_http_request(stream);
 }
 
 fn find_double_crlf(buf: &[u8]) -> Option<usize> {
@@ -60,11 +75,21 @@ fn find_double_crlf(buf: &[u8]) -> Option<usize> {
 ///
 /// Returns the bound port; the caller points a named registry's `api` at it.
 pub fn spawn_canned_response_server(status_line: &'static str, body: &'static str) -> u16 {
+    spawn_recording_canned_response_server(status_line, body).0
+}
+
+/// Spawn a canned server and return the request received by it.
+pub fn spawn_recording_canned_response_server(
+    status_line: &'static str,
+    body: &'static str,
+) -> (u16, Receiver<CannedRequest>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
     let port = listener.local_addr().expect("local_addr").port();
+    let (request_tx, request_rx) = mpsc::channel();
     std::thread::spawn(move || {
         if let Ok((mut stream, _addr)) = listener.accept() {
-            drain_http_request(&mut stream);
+            let request = read_http_request(&mut stream);
+            let _ = request_tx.send(request);
             let response = format!(
                 "HTTP/1.1 {status_line}\r\n\
                  Content-Type: application/json\r\n\
@@ -77,5 +102,5 @@ pub fn spawn_canned_response_server(status_line: &'static str, body: &'static st
             let _ = stream.write_all(response.as_bytes());
         }
     });
-    port
+    (port, request_rx)
 }

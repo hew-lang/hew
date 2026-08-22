@@ -37,6 +37,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=scripts/lib/timeout.sh
+# shellcheck disable=SC1091
+source "${ROOT}/scripts/lib/timeout.sh"
+
+PROBE_TIMEOUT_SECONDS=60
 
 if ! command -v clang >/dev/null 2>&1; then
   echo "forced-cancel-composite-check: clang not found — install llvm/clang" >&2
@@ -106,14 +111,19 @@ if ! awk '
 fi
 
 echo "  LINK forced_cancel_composite_probe"
-darwin_frameworks=()
-if [[ "$(uname -s)" == "Darwin" ]]; then
-  darwin_frameworks=(-framework CoreFoundation -framework Security -framework SystemConfiguration)
-fi
+platform_link_args=()
+case "$(uname -s)" in
+  Darwin)
+    platform_link_args=(-framework CoreFoundation -framework Security -framework SystemConfiguration)
+    ;;
+  Linux)
+    platform_link_args=(-lm)
+    ;;
+esac
 clang \
   "${PROBE_OBJ}" \
   "${GATE_LIBHEW}" \
-  "${darwin_frameworks[@]}" \
+  "${platform_link_args[@]}" \
   -o "${PROBE_BIN}"
 
 if [[ ! -f "${PROBE_BIN}" ]]; then
@@ -124,7 +134,13 @@ fi
 echo ""
 echo "=== forced-cancel-composite-check: running gate ==="
 actual_exit=0
-actual_stdout="$("${PROBE_BIN}")" || actual_exit=$?
+printf -v probe_command '%q' "${PROBE_BIN}"
+actual_stdout="$(run_in_pgroup_with_timeout "${PROBE_TIMEOUT_SECONDS}" "${probe_command}")" || actual_exit=$?
+
+if [[ "${actual_exit}" -eq 143 || "${actual_exit}" -eq 137 ]]; then
+  echo "FAIL forced-cancel-composite-check: probe exceeded ${PROBE_TIMEOUT_SECONDS}s" >&2
+  exit 1
+fi
 
 # Cancellation must surface without a payload; an independently completed zero
 # result must still be delivered. The owned result releases silently.
@@ -142,7 +158,8 @@ if [[ "${actual_stdout}" != "${expected_stdout}" ]]; then
 fi
 
 if [[ "$(uname -s)" == "Darwin" ]] && command -v leaks >/dev/null 2>&1; then
-  leaks_output="$(leaks --atExit -- "${PROBE_BIN}" 2>&1)" || {
+  printf -v leaks_command 'leaks --atExit -- %q' "${PROBE_BIN}"
+  leaks_output="$(run_in_pgroup_with_timeout "${PROBE_TIMEOUT_SECONDS}" "${leaks_command}" 2>&1)" || {
     echo "FAIL forced-cancel-composite-check: leaks --atExit failed" >&2
     echo "${leaks_output}" >&2
     exit 1

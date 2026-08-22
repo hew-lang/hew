@@ -1833,3 +1833,248 @@ fn main() {
         "compiler must not panic on this input; got:\n{out}"
     );
 }
+
+/// A record nested in a carried tuple must not hide an unsupported enum path.
+/// Before the recursive record judgment this exact loop was admitted and
+/// leaked the `Leaf.label` and `Wrapper.tag` strings on every call.
+#[test]
+fn reject_carry_record_with_nested_option_payload() {
+    let source = r#"
+import std.string;
+record Leaf { label: string, n: i64 }
+record Wrapper { inner: (Option<Leaf>, i64), tag: string }
+record T { pair: (Wrapper, i64), churn: string }
+fn mk() -> T {
+    let b = T {
+        pair: (Wrapper { inner: (Some(Leaf { label: string.repeat("k", 32), n: 1 }), 9), tag: string.repeat("w", 32) }, 5),
+        churn: string.repeat("a", 32),
+    };
+    T { churn: string.repeat("b", 32), ..b }
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let r = mk();
+        total = total + r.churn.len();
+        i = i + 1;
+    }
+    total
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "record-with-nested-Option carry must fail check before execution; got success:\n{out}"
+    );
+    assert!(
+        out.contains("carry of owned non-record field") || out.contains("E_NOT_YET_IMPLEMENTED"),
+        "expected the fail-closed carry diagnostic; got:\n{out}"
+    );
+}
+
+struct CarryRuleMatrixCase {
+    class: &'static str,
+    depth: usize,
+    ty: &'static str,
+    declarations: &'static str,
+    setup: &'static str,
+    value: &'static str,
+    accepted: bool,
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the explicit five-class by three-depth table keeps every executed fixture cell auditable"
+)]
+fn carry_rule_matrix_cases() -> Vec<CarryRuleMatrixCase> {
+    vec![
+        CarryRuleMatrixCase {
+            class: "record-in-tuple",
+            depth: 2,
+            ty: "(Leaf, i64)",
+            declarations: "",
+            setup: "",
+            value: "(Leaf { label: string.repeat(\"k\", 32), n: 1 }, 2)",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "record-in-tuple",
+            depth: 3,
+            ty: "((Leaf, i64), i64)",
+            declarations: "",
+            setup: "",
+            value: "((Leaf { label: string.repeat(\"k\", 32), n: 1 }, 2), 3)",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "record-in-tuple",
+            depth: 4,
+            ty: "(((Leaf, i64), i64), i64)",
+            declarations: "",
+            setup: "",
+            value: "(((Leaf { label: string.repeat(\"k\", 32), n: 1 }, 2), 3), 4)",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "tuple-in-record",
+            depth: 2,
+            ty: "Wrapper",
+            declarations: "record Wrapper { inner: (string, i64), tag: i64 }",
+            setup: "",
+            value: "Wrapper { inner: (string.repeat(\"k\", 32), 2), tag: 3 }",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "tuple-in-record",
+            depth: 3,
+            ty: "Wrapper",
+            declarations: "record Wrapper { inner: ((string, i64), i64), tag: i64 }",
+            setup: "",
+            value: "Wrapper { inner: ((string.repeat(\"k\", 32), 2), 3), tag: 4 }",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "tuple-in-record",
+            depth: 4,
+            ty: "Wrapper",
+            declarations: "record Wrapper { inner: (((string, i64), i64), i64), tag: i64 }",
+            setup: "",
+            value: "Wrapper { inner: (((string.repeat(\"k\", 32), 2), 3), 4), tag: 5 }",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "enum-payload",
+            depth: 2,
+            ty: "Payload",
+            declarations: "enum Payload { Value(Leaf); Empty; }",
+            setup: "",
+            value: ".Value(Leaf { label: string.repeat(\"k\", 32), n: 1 })",
+            accepted: false,
+        },
+        CarryRuleMatrixCase {
+            class: "enum-payload",
+            depth: 3,
+            ty: "(Payload, i64)",
+            declarations: "enum Payload { Value(Leaf); Empty; }",
+            setup: "",
+            value: "(.Value(Leaf { label: string.repeat(\"k\", 32), n: 1 }), 3)",
+            accepted: false,
+        },
+        CarryRuleMatrixCase {
+            class: "enum-payload",
+            depth: 4,
+            ty: "((Payload, i64), i64)",
+            declarations: "enum Payload { Value(Leaf); Empty; }",
+            setup: "",
+            value: "((.Value(Leaf { label: string.repeat(\"k\", 32), n: 1 }), 3), 4)",
+            accepted: false,
+        },
+        CarryRuleMatrixCase {
+            class: "Option<record>",
+            depth: 2,
+            ty: "Option<Leaf>",
+            declarations: "",
+            setup: "",
+            value: "Some(Leaf { label: string.repeat(\"k\", 32), n: 1 })",
+            accepted: false,
+        },
+        CarryRuleMatrixCase {
+            class: "Option<record>",
+            depth: 3,
+            ty: "(Option<Leaf>, i64)",
+            declarations: "",
+            setup: "",
+            value: "(Some(Leaf { label: string.repeat(\"k\", 32), n: 1 }), 3)",
+            accepted: false,
+        },
+        CarryRuleMatrixCase {
+            class: "Option<record>",
+            depth: 4,
+            ty: "((Option<Leaf>, i64), i64)",
+            declarations: "",
+            setup: "",
+            value: "((Some(Leaf { label: string.repeat(\"k\", 32), n: 1 }), 3), 4)",
+            accepted: false,
+        },
+        CarryRuleMatrixCase {
+            class: "Vec<record>-element",
+            depth: 2,
+            ty: "Vec<Leaf>",
+            declarations: "",
+            setup: "let leaves: Vec<Leaf> = Vec.new(); leaves.push(Leaf { label: string.repeat(\"k\", 32), n: 1 });",
+            value: "leaves",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "Vec<record>-element",
+            depth: 3,
+            ty: "(Vec<Leaf>, i64)",
+            declarations: "",
+            setup: "let leaves: Vec<Leaf> = Vec.new(); leaves.push(Leaf { label: string.repeat(\"k\", 32), n: 1 });",
+            value: "(leaves, 3)",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "Vec<record>-element",
+            depth: 4,
+            ty: "((Vec<Leaf>, i64), i64)",
+            declarations: "",
+            setup: "let leaves: Vec<Leaf> = Vec.new(); leaves.push(Leaf { label: string.repeat(\"k\", 32), n: 1 });",
+            value: "((leaves, 3), 4)",
+            accepted: true,
+        },
+    ]
+}
+
+fn carry_rule_matrix_source(case: &CarryRuleMatrixCase) -> String {
+    format!(
+        r#"
+import std.string;
+record Leaf {{ label: string, n: i64 }}
+{declarations}
+record T {{ keep: {ty}, churn: string }}
+fn mk() -> T {{
+    {setup}
+    let b = T {{ keep: {value}, churn: string.repeat("a", 32) }};
+    T {{ churn: string.repeat("b", 32), ..b }}
+}}
+fn main() {{ let r = mk(); println(r.churn); }}
+"#,
+        declarations = case.declarations,
+        ty = case.ty,
+        setup = case.setup,
+        value = case.value,
+    )
+}
+
+/// Execute every depth/class cell against the same recursive carry judgment.
+/// Accepted cells must run to normal teardown; cells containing a bare enum or
+/// `Option` transfer path must stop at the fail-closed diagnostic.
+#[test]
+fn functional_update_carry_rule_depth_matrix() {
+    require_codegen();
+    for case in carry_rule_matrix_cases() {
+        let source = carry_rule_matrix_source(&case);
+        let (ok, out) = if case.accepted {
+            hew_run(&source)
+        } else {
+            hew_check(&source)
+        };
+        assert_eq!(
+            ok, case.accepted,
+            "{} depth {} (`{}`) expected accepted={}; got:\n{}",
+            case.class, case.depth, case.ty, case.accepted, out
+        );
+        if !case.accepted {
+            assert!(
+                out.contains("carry of owned non-record field")
+                    || out.contains("E_NOT_YET_IMPLEMENTED"),
+                "{} depth {} must fail closed at the carry rule; got:\n{}",
+                case.class,
+                case.depth,
+                out
+            );
+        }
+    }
+}

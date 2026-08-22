@@ -215,8 +215,9 @@ impl Builder {
     ///   * a single-pointer COW / handle leaf (string, bytes, `Vec`,
     ///     `HashMap`, `HashSet`, `Generator`) — `project_field_inline_drop_-
     ///     symbol` is `Wired`, so the one allocation is released exactly once.
-    ///   * an owned user record — `is_owned_aggregate_record_ty`; the nested
-    ///     record's heap leaves ride its `RecordInPlace` spine.
+    ///   * an owned user record **each of whose fields is itself carry-sound by
+    ///     this same rule**. A record is not an opaque transfer boundary: its
+    ///     nested fields must all have a release path after the shallow read.
     ///   * a heap-owning tuple **each of whose elements is itself carry-sound
     ///     by this same rule**. The tuple is not a transfer boundary in its
     ///     own right: a tuple element whose bare form has no sound carry has
@@ -245,7 +246,15 @@ impl Builder {
             return true;
         }
         if self.is_owned_aggregate_record_ty(ty) {
-            return true;
+            let Some(key) = user_record_layout_key(ty) else {
+                return false;
+            };
+            let Some(fields) = self.lookup_record_field_order(&key) else {
+                return false;
+            };
+            return fields.iter().all(|(_, field_ty)| {
+                self.carry_transfers_field_ownership(&self.subst_ty(field_ty))
+            });
         }
         let ResolvedTy::Tuple(elems) = ty else {
             return false;
@@ -4485,11 +4494,11 @@ impl Builder {
                 // of the consumed base into the new record by a shallow
                 // `RecordFieldLoad`. `carry_transfers_field_ownership` is the
                 // single authority for which field types that shallow read can
-                // carry; it applies ONE rule at every nesting depth, so a tuple
-                // admits exactly the element types the same field would admit
-                // bare. Fail closed with an NYI diagnostic mirroring the
-                // override pre-flight rather than emit a double-free or a silent
-                // leak. Lifting a specific type's carry is tracked in
+                // carry; it applies ONE rule at every nesting depth, so tuples
+                // and records admit exactly the nested field types the same
+                // field would admit bare. Fail closed with an NYI diagnostic
+                // mirroring the override pre-flight rather than emit a double-free
+                // or a silent leak. Lifting a specific type's carry is tracked in
                 // hew-lang/hew#2207 (closure/`fn` env carry needs the env
                 // retain/release spine that clone also lacks).
                 if base_place.is_some() {
@@ -4512,10 +4521,10 @@ impl Builder {
                                  ownership cannot be transferred by the functional-update's \
                                  shallow field carry: a closure / `fn` / trait-object capture \
                                  env, an `@resource` / cancellation-token / task handle, an \
-                                 `Option` or enum value, or a tuple containing one of those. \
-                                 A tuple is carried only when EVERY element could be carried \
-                                 as a field in its own right, so wrapping an unsupported type \
-                                 in a tuple does not admit it. A non-heap tuple such as \
+                                 `Option` or enum value, or a tuple or record containing one. \
+                                 A tuple or record is carried only when EVERY nested field could \
+                                 be carried in its own right, so wrapping an unsupported type \
+                                 in another aggregate does not admit it. A non-heap tuple such as \
                                  `(i64, i64)` is also still rejected — conservatively, not \
                                  because carrying it is unsound. \
                                  The `..base` consumes the base, so carrying this field would \

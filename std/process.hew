@@ -185,8 +185,8 @@ pub fn try_run(command: string) -> Result<CommandOutput, ProcessError> {
 /// the system shell.
 pub fn run(command: string) -> string {
     match try_run(command) {
-        Ok(output) => output.stdout,
-        Err(err) => {
+        .Ok(output) => output.stdout,
+        .Err(err) => {
             panic(f"process.run failed: {process_error_message(err)}");
             ""
         },
@@ -214,8 +214,8 @@ pub fn try_run_argv(command: string, args: Vec<string>) -> Result<CommandOutput,
 /// error handling.
 pub fn run_argv(command: string, args: Vec<string>) -> CommandOutput {
     match try_run_argv(command, args) {
-        Ok(output) => output,
-        Err(err) => {
+        .Ok(output) => output,
+        .Err(err) => {
             panic(f"process.run_argv failed: {process_error_message(err)}");
             empty_output()
         },
@@ -243,8 +243,8 @@ pub fn try_run_args(command: string, args: string, arg_count: i64) -> Result<Com
 /// Prefer `run_argv(command, Vec<string>)` for safe argument passing.
 pub fn run_args(command: string, args: string, arg_count: i64) -> string {
     match try_run_args(command, args, arg_count) {
-        Ok(output) => output.stdout,
-        Err(err) => {
+        .Ok(output) => output.stdout,
+        .Err(err) => {
             panic(f"process.run_args failed: {process_error_message(err)}");
             ""
         },

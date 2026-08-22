@@ -22,13 +22,13 @@ machine Latch {
     state Open;
 
     on Try: Closed => Open when self.code == 42 {
-        Open
+        Latch.Open
     }
     on Try: Closed => Closed reenter when self.code != 42 {
         Closed { code: self.code }
     }
     on Try: Open => Open reenter {
-        Open
+        Latch.Open
     }
 }
 

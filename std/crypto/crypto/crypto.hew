@@ -58,8 +58,8 @@ pub fn hmac_sha256(key: bytes, data: bytes) -> bytes {
 /// Use `try_random_bytes` to handle the failure instead.
 pub fn random_bytes(len: i64) -> bytes {
     match try_random_bytes(len) {
-        Ok(drawn) => drawn,
-        Err(message) => {
+        .Ok(drawn) => drawn,
+        .Err(message) => {
             panic(message);
             "".to_bytes()
         },

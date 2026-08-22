@@ -1655,25 +1655,25 @@ machine Counter {
     events { Inc; Reset; }
     state Zero;
     state NonZero { value: i64; }
-    on Inc: Zero => NonZero { NonZero { value: 1 } }
-    on Inc: NonZero => NonZero reenter { NonZero { value: self.value + 1 } }
-    on Reset: NonZero => Zero { Zero }
+    on Inc: Zero => NonZero { Counter.NonZero { value: 1 } }
+    on Inc: NonZero => NonZero reenter { Counter.NonZero { value: self.value + 1 } }
+    on Reset: NonZero => Zero { Counter.Zero }
     default { state }
 }
 fn main() {
-    var c = Zero;
+    var c = Counter.Zero;
     c.step(.Inc); c.step(.Inc); c.step(.Inc);
     println(c.state_name());            // NonZero
     match c {
         .Zero => println("is zero"),
-        NonZero { value } => println(f"value={value}"),  // value=3
+        .NonZero { value } => println(f"value={value}"),  // value=3
     }
     c.step(.Reset);
     println(c.state_name());            // Zero
 }
 ```
 
-A machine is a value type. Inside the body, state constructors are bare (`NonZero { value: 1 }`); contextual event arguments use `.Variant` (`step(.Inc)`). Outside use the qualifier (`Counter.Zero`, `CounterEvent.Inc`). `step()` mutates in place — the receiver must be a `var`. End with `default { state }` to make uncovered cells a no-op stay. Every (state, event) cell must be covered or it is a compile error.
+A machine is a value type. State constructors use a machine-qualified dotted form both inside and outside transition bodies (`Counter.NonZero { value: 1 }`, `Counter.Zero`); contextual event arguments use `.Variant` (`step(.Inc)`). Event constructors use the event-type qualifier outside contextual positions (`CounterEvent.Inc`). This behaviour keeps state-constructor resolution explicit. `step()` mutates in place — the receiver must be a `var`. End with `default { state }` to make uncovered cells a no-op stay. Every (state, event) cell must be covered or it is a compile error.
 
 > **Why `default` is a blanket catch-all, and what that costs you.** Without
 > `default`, every `(state, event)` pair not covered by an explicit `on`
@@ -1745,7 +1745,7 @@ machine Log {
     on Append(item): Filled => Filled reenter {
         let v = self.items; v.push(item); Filled { items: v }
     }
-    on Clear: Filled => Empty { Empty }
+    on Clear: Filled => Empty { Log.Empty }
     default { state }
 }
 fn main() {
@@ -1754,7 +1754,7 @@ fn main() {
     log.step(Append { item: 20 });
     match log {
         .Empty => println("empty"),
-        Filled { items } => {
+        .Filled { items } => {
             println(f"count={items.len()}");   // count=2
             println(f"first={items[0]}");  // first=10
         },
@@ -1781,7 +1781,7 @@ fn main() {
     a.step(make_add(7));
     match a {
         .Seed => println("seed"),
-        Total { sum } => println(f"sum={sum}"),   // sum=12
+        .Total { sum } => println(f"sum={sum}"),   // sum=12
     }
 }
 ```
@@ -1798,9 +1798,9 @@ machine Conn {
     state Dead;
     on Start: Idle => Live { Live { hits: 0 } }
     on Bump: Live => Live reenter {
-        if self.hits + 1 >= 3 { Dead } else { Live { hits: self.hits + 1 } }
+        if self.hits + 1 >= 3 { Conn.Dead } else { Live { hits: self.hits + 1 } }
     }
-    on Kill: _ => Dead { Dead }
+    on Kill: _ => Dead { Conn.Dead }
     on Start: _ => _ { state }
     on Bump: _ => _ { state }
 }
@@ -1821,7 +1821,7 @@ machine Door {
     state Shut;
     state Ajar { angle: i64; }
     on Open: Shut => Ajar { Ajar { angle: 90 } }
-    on Close: Ajar => Shut { Shut }
+    on Close: Ajar => Shut { Door.Shut }
     default { state }
 }
 fn drive(d: Door) -> string {

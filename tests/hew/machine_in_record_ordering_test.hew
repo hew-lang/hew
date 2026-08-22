@@ -24,16 +24,16 @@
 import std.testing;
 
 // ── Order A: container declared FIRST (this failed silently before the fix) ──
-
 machine OuterG {
     events {
         step;
     }
-    state HoldingG { w: WrapG }
+
+    state HoldingG { w: WrapG; }
     state EmptyG;
 
     on step: HoldingG => EmptyG {
-        EmptyG
+        OuterG.EmptyG
     }
     on step: _ => _ {
         state
@@ -48,11 +48,12 @@ machine InnerG {
     events {
         go;
     }
-    state ReadyG { payload: string }
+
+    state ReadyG { payload: string; }
     state DoneG;
 
     on go: ReadyG => DoneG {
-        DoneG
+        InnerG.DoneG
     }
     on go: _ => _ {
         state
@@ -61,37 +62,31 @@ machine InnerG {
 
 fn payload_of_g(o: OuterG) -> string {
     match o {
-        HoldingG { w } => match w.inner {
-            ReadyG { payload } => payload,
-            DoneG => "done",
+        .HoldingG { w } => match w.inner {
+            .ReadyG { payload } => payload,
+            .DoneG => "done",
         },
-        EmptyG => "empty",
+        .EmptyG => "empty",
     }
 }
 
 #[test]
 fn machine_through_record_container_declared_first() {
-    let o = OuterG.HoldingG {
-        w: WrapG {
-            inner: InnerG.ReadyG {
-                payload: "container-first-through-record",
-            },
-        },
-    };
+    let o = OuterG.HoldingG { w: WrapG { inner: InnerG.ReadyG { payload: "container-first-through-record" } } };
     testing.assert_eq_str(payload_of_g(o), "container-first-through-record");
 }
 
 // ── Order B: embedded machine declared FIRST (this always worked) ────────────
-
 machine InnerH {
     events {
         go;
     }
-    state ReadyH { payload: string }
+
+    state ReadyH { payload: string; }
     state DoneH;
 
     on go: ReadyH => DoneH {
-        DoneH
+        InnerH.DoneH
     }
     on go: _ => _ {
         state
@@ -106,11 +101,12 @@ machine OuterH {
     events {
         step;
     }
-    state HoldingH { w: WrapH }
+
+    state HoldingH { w: WrapH; }
     state EmptyH;
 
     on step: HoldingH => EmptyH {
-        EmptyH
+        OuterH.EmptyH
     }
     on step: _ => _ {
         state
@@ -119,22 +115,16 @@ machine OuterH {
 
 fn payload_of_h(o: OuterH) -> string {
     match o {
-        HoldingH { w } => match w.inner {
-            ReadyH { payload } => payload,
-            DoneH => "done",
+        .HoldingH { w } => match w.inner {
+            .ReadyH { payload } => payload,
+            .DoneH => "done",
         },
-        EmptyH => "empty",
+        .EmptyH => "empty",
     }
 }
 
 #[test]
 fn machine_through_record_embedded_declared_first() {
-    let o = OuterH.HoldingH {
-        w: WrapH {
-            inner: InnerH.ReadyH {
-                payload: "embedded-first-through-record",
-            },
-        },
-    };
+    let o = OuterH.HoldingH { w: WrapH { inner: InnerH.ReadyH { payload: "embedded-first-through-record" } } };
     testing.assert_eq_str(payload_of_h(o), "embedded-first-through-record");
 }

@@ -23,13 +23,13 @@ machine TrafficLight {
     state Yellow;
 
     on Tick: Red => Green {
-        Green
+        TrafficLight.Green
     }
     on Tick: Green => Yellow {
-        Yellow
+        TrafficLight.Yellow
     }
     on Tick: Yellow => Red {
-        Red
+        TrafficLight.Red
     }
 }
 

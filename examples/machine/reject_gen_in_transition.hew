@@ -10,7 +10,7 @@ machine Door {
         gen { yield Open; }
     }
     on Toggle: Open => Closed {
-        Closed
+        Door.Closed
     }
 }
 

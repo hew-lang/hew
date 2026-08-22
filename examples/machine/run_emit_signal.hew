@@ -37,22 +37,22 @@ machine Signal {
 
     on Start: Idle => Active {
         emit Ready {};
-        Active
+        Signal.Active
     }
     on Stop: Active => Idle {
-        Idle
+        Signal.Idle
     }
     on Ready: Idle => Idle reenter {
-        Idle
+        Signal.Idle
     }
     on Ready: Active => Active reenter {
-        Active
+        Signal.Active
     }
     on Start: Active => Active reenter {
-        Active
+        Signal.Active
     }
     on Stop: Idle => Idle reenter {
-        Idle
+        Signal.Idle
     }
 }
 

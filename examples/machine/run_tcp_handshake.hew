@@ -11,25 +11,25 @@ machine TcpHandshake {
     state Established;
 
     on Syn: Closed => SynReceived {
-        SynReceived
+        TcpHandshake.SynReceived
     }
     on Ack: Closed => Closed reenter {
-        Closed
+        TcpHandshake.Closed
     }
     on Syn: SynReceived => SynReceived reenter {
-        SynReceived
+        TcpHandshake.SynReceived
     }
     on Ack: SynReceived => Established {
-        Established
+        TcpHandshake.Established
     }
     on Syn: Established => Established reenter {
-        Established
+        TcpHandshake.Established
     }
     on Ack: Established => Established reenter {
-        Established
+        TcpHandshake.Established
     }
     on Reset: _ => Closed {
-        Closed
+        TcpHandshake.Closed
     }
 }
 

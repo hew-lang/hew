@@ -125,15 +125,15 @@ impl<T> Arena<T> {
             return None;
         }
         match self.slots.get(key.index) {
-            Some(slot) => match slot.value {
-                Some(value) => if slot.generation == key.generation {
+            .Some(slot) => match slot.value {
+                .Some(value) => if slot.generation == key.generation {
                     Some(value)
                 } else {
                     None
                 },
-                None => None,
+                .None => None,
             },
-            None => None,
+            .None => None,
         }
     }
     /// Remove and return the value named by `key`.
@@ -147,17 +147,17 @@ impl<T> Arena<T> {
             return None;
         }
         match self.slots.get(key.index) {
-            Some(slot) => match slot.value {
-                Some(value) => if slot.generation == key.generation {
+            .Some(slot) => match slot.value {
+                .Some(value) => if slot.generation == key.generation {
                     self.slots.set(key.index, Slot { generation: slot.generation, value: None });
                     self.free.push(key.index);
                     Some(value)
                 } else {
                     None
                 },
-                None => None,
+                .None => None,
             },
-            None => None,
+            .None => None,
         }
     }
     /// The number of live values in the arena.

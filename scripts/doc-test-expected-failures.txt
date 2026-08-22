@@ -80,13 +80,13 @@ spec-0022   2513387504   # FRAGMENT: actor calls undefined `process()` — allow
 spec-0023   3898239403   # ERROR-DEMO: intentionally shows non-Send send and non-Send capture errors
 spec-0024   2265846331   # SPEC-BUG: type mismatch in aspirational TCP module example
 spec-0025   3406269624   # FRAGMENT: imports `network.tcp` — hypothetical module, not in stdlib
-spec-0026   593744325   # SNIPPET: bare code after import statement — illustration of import effect
+spec-0026   838045753   # SNIPPET: bare code after import statement — illustration of import effect
 spec-0027   2603276079   # FRAGMENT: imports `greeting` — multi-file example, module not found
 spec-0030   53697221   # SNIPPET: bare code outside declarations — trait method dispatch illustration
 spec-0031   158863422   # SNIPPET: bare `let` + trait call — trait dispatch illustration
 spec-0035   1203364263   # SNIPPET: bare `let` — type inference illustration
 spec-0044   60603610   # SNIPPET: bare `let f = |...| ...` — lambda illustration
-spec-0045   166608112   # SPEC-BUG: references variant `Lit` not defined in the fence
+spec-0045   1914272309   # SPEC-BUG: references variant `Lit` not defined in the fence
 spec-0046   1607851950   # SNIPPET: bare `let` — fn-type variable illustration
 spec-0051   4288056281   # SPEC-BUG: struct `impl` using wrong syntax form (stray `;` before `fn`)
 spec-0054   4266594633   # SNIPPET: bare identifier `max` after trait definition — illustration
@@ -105,21 +105,21 @@ spec-0077   3711765580   # SNIPPET: bare `let`/`var` — machine state illustrat
 spec-0078   1861586926   # SNIPPET: bare `let` after machine transitions — illustration
 spec-0079   3943447574   # SNIPPET: bare `let m = ...` — machine instantiation illustration
 spec-0080   249349858   # SNIPPET: bare `Option` identifier — option-type illustration
-spec-0081   2813060693   # IMPL-GAP: undefined `StateB` — machine-state enum reference illustration
+spec-0081   1181031507   # IMPL-GAP: undefined `StateB` — machine-state enum reference illustration
 spec-0082   3707425012   # SPEC-BUG: interleaved `event` declarations — old machine syntax pre-`events {}`
 spec-0083   813722226   # SNIPPET: bare `on event { ... }` — machine transition illustration
 spec-0084   2915754722   # SNIPPET: bare `on event ...` — machine state illustration
 spec-0085   696588660   # SNIPPET: bare `on event ...` — machine event illustration
 spec-0086   3858180891   # SNIPPET: bare `var` — machine initial-state illustration
-spec-0087   1402575065   # SNIPPET: bare `match state { ... }` — machine pattern illustration
-spec-0088   2705896423   # SPEC-BUG: references `TcpState::Closed` — undefined in this fence
+spec-0087   3427923877   # SNIPPET: bare `match state { ... }` — machine pattern illustration
+spec-0088   3260318579   # SPEC-BUG: references `TcpState::Closed` — undefined in this fence
 spec-0089   1156883475   # NYI: bare `scope { ... }` — structured concurrency not yet lowered
 spec-0090   1867383437   # SNIPPET: bare `var count = 0` — scope racing illustration
 spec-0091   3881963563   # SNIPPET: bare `let handle = fork { ... }` — scope handle illustration
-spec-0092   3357528238   # SNIPPET: bare `let` — scope result illustration
+spec-0092   3210405407   # SNIPPET: bare `let` — scope result illustration
 spec-0093   2158893112   # SNIPPET: bare `var count = 0` — scoped counter illustration
 spec-0094   10384720   # SNIPPET: bare `receive fn` — actor + scope illustration
-spec-0095   3942350177   # NYI: bare `scope { ... }` — structured concurrency not yet lowered
+spec-0095   2265400838   # NYI: bare `scope { ... }` — structured concurrency not yet lowered
 spec-0096   152741125   # NYI: bare `scope { ... }` — structured concurrency not yet lowered
 spec-0097   1539476359   # NYI: bare `scope { ... }` — structured concurrency not yet lowered
 spec-0099   873326002   # SNIPPET: bare `let` — async I/O illustration
@@ -133,7 +133,7 @@ spec-0107   982438679   # IMPL-GAP: `pool` is a reserved word — pool-superviso
 spec-0108   3896519088   # IMPL-GAP: `pool` as pattern — reserved word clash in supervisor syntax
 spec-0110   3534476634   # FRAGMENT: references `prices` from prior fence context — context-dependent
 spec-0111   759184928   # SNIPPET: bare `let` — wire schema illustration
-spec-0112   3964649123   # SNIPPET: bare `match` — wire format pattern illustration
+spec-0112   2109671045   # SNIPPET: bare `match` — wire format pattern illustration
 spec-0123   3678662757   # SNIPPET: bare `let` — wire encode illustration
 spec-0124   866984589   # SNIPPET: bare `let` — wire decode illustration
 spec-0125   543939813   # SNIPPET: bare `mailbox` declaration — overflow-policy illustration

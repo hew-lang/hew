@@ -11,7 +11,7 @@ machine Door {
         Open
     }
     on Toggle: Open => Closed {
-        Closed
+        Door.Closed
     }
 }
 

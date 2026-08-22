@@ -27,16 +27,16 @@
 /// Returns `true` if the result contains an `Ok` value.
 pub fn is_ok_int(r: Result<i64, i64>) -> bool {
     match r {
-        Ok(_) => true,
-        Err(_) => false,
+        .Ok(_) => true,
+        .Err(_) => false,
     }
 }
 
 /// Returns `true` if the result contains an `Err` value.
 pub fn is_err_int(r: Result<i64, i64>) -> bool {
     match r {
-        Ok(_) => false,
-        Err(_) => true,
+        .Ok(_) => false,
+        .Err(_) => true,
     }
 }
 
@@ -44,8 +44,8 @@ pub fn is_err_int(r: Result<i64, i64>) -> bool {
 /// Unwrap the `Ok` value.  Panics if the result is `Err`.
 pub fn unwrap_int(r: Result<i64, i64>) -> i64 {
     match r {
-        Ok(v) => v,
-        Err(e) => {
+        .Ok(v) => v,
+        .Err(e) => {
             panic(f"result: unwrap called on Err({e})");
             0
         },
@@ -55,19 +55,19 @@ pub fn unwrap_int(r: Result<i64, i64>) -> i64 {
 /// Unwrap the `Err` value.  Panics if the result is `Ok`.
 pub fn unwrap_err_int(r: Result<i64, i64>) -> i64 {
     match r {
-        Ok(v) => {
+        .Ok(v) => {
             panic(f"result: unwrap_err called on Ok({v})");
             0
         },
-        Err(e) => e,
+        .Err(e) => e,
     }
 }
 
 /// Unwrap the `Ok` value, or return `fallback` if `Err`.
 pub fn unwrap_or_int(r: Result<i64, i64>, fallback: i64) -> i64 {
     match r {
-        Ok(v) => v,
-        Err(_) => fallback,
+        .Ok(v) => v,
+        .Err(_) => fallback,
     }
 }
 
@@ -75,16 +75,16 @@ pub fn unwrap_or_int(r: Result<i64, i64>, fallback: i64) -> i64 {
 /// Apply `f` to the contained `Ok` value, or return `Err` unchanged.
 pub fn map_int(r: Result<i64, i64>, f: fn(i64) -> i64) -> Result<i64, i64> {
     match r {
-        Ok(v) => Ok(f(v)),
-        Err(e) => Err(e),
+        .Ok(v) => Ok(f(v)),
+        .Err(e) => Err(e),
     }
 }
 
 /// Apply `f` to the contained `Err` value, or return `Ok` unchanged.
 pub fn map_err_int(r: Result<i64, i64>, f: fn(i64) -> i64) -> Result<i64, i64> {
     match r {
-        Ok(v) => Ok(v),
-        Err(e) => Err(f(e)),
+        .Ok(v) => Ok(v),
+        .Err(e) => Err(f(e)),
     }
 }
 
@@ -92,8 +92,8 @@ pub fn map_err_int(r: Result<i64, i64>, f: fn(i64) -> i64) -> Result<i64, i64> {
 /// Returns `true` if the result is `Ok` and contains `needle`.
 pub fn contains_int(r: Result<i64, i64>, needle: i64) -> bool {
     match r {
-        Ok(v) => v == needle,
-        Err(_) => false,
+        .Ok(v) => v == needle,
+        .Err(_) => false,
     }
 }
 
@@ -101,24 +101,24 @@ pub fn contains_int(r: Result<i64, i64>, needle: i64) -> bool {
 /// Returns `true` if the result contains an `Ok` value.
 pub fn is_ok_str(r: Result<string, string>) -> bool {
     match r {
-        Ok(_) => true,
-        Err(_) => false,
+        .Ok(_) => true,
+        .Err(_) => false,
     }
 }
 
 /// Returns `true` if the result contains an `Err` value.
 pub fn is_err_str(r: Result<string, string>) -> bool {
     match r {
-        Ok(_) => false,
-        Err(_) => true,
+        .Ok(_) => false,
+        .Err(_) => true,
     }
 }
 
 /// Unwrap the `Ok` value.  Panics if the result is `Err`.
 pub fn unwrap_str(r: Result<string, string>) -> string {
     match r {
-        Ok(v) => v,
-        Err(e) => {
+        .Ok(v) => v,
+        .Err(e) => {
             panic(f"result: unwrap called on Err({e})");
             ""
         },
@@ -128,27 +128,27 @@ pub fn unwrap_str(r: Result<string, string>) -> string {
 /// Unwrap the `Err` value.  Panics if the result is `Ok`.
 pub fn unwrap_err_str(r: Result<string, string>) -> string {
     match r {
-        Ok(v) => {
+        .Ok(v) => {
             panic(f"result: unwrap_err called on Ok({v})");
             ""
         },
-        Err(e) => e,
+        .Err(e) => e,
     }
 }
 
 /// Unwrap the `Ok` value, or return `fallback` if `Err`.
 pub fn unwrap_or_str(r: Result<string, string>, fallback: string) -> string {
     match r {
-        Ok(v) => v,
-        Err(_) => fallback,
+        .Ok(v) => v,
+        .Err(_) => fallback,
     }
 }
 
 /// Returns `true` if the result is `Ok` and contains `needle`.
 pub fn contains_str(r: Result<string, string>, needle: string) -> bool {
     match r {
-        Ok(v) => v == needle,
-        Err(_) => false,
+        .Ok(v) => v == needle,
+        .Err(_) => false,
     }
 }
 
@@ -156,24 +156,24 @@ pub fn contains_str(r: Result<string, string>, needle: string) -> bool {
 /// Returns `true` if the result contains an `Ok` value.
 pub fn is_ok_f64(r: Result<f64, string>) -> bool {
     match r {
-        Ok(_) => true,
-        Err(_) => false,
+        .Ok(_) => true,
+        .Err(_) => false,
     }
 }
 
 /// Returns `true` if the result contains an `Err` value.
 pub fn is_err_f64(r: Result<f64, string>) -> bool {
     match r {
-        Ok(_) => false,
-        Err(_) => true,
+        .Ok(_) => false,
+        .Err(_) => true,
     }
 }
 
 /// Unwrap the `Ok` value.  Panics if the result is `Err`.
 pub fn unwrap_f64(r: Result<f64, string>) -> f64 {
     match r {
-        Ok(v) => v,
-        Err(e) => {
+        .Ok(v) => v,
+        .Err(e) => {
             panic(f"result: unwrap called on Err({e})");
             0.0
         },
@@ -183,34 +183,34 @@ pub fn unwrap_f64(r: Result<f64, string>) -> f64 {
 /// Unwrap the `Ok` value, or return `fallback` if `Err`.
 pub fn unwrap_or_f64(r: Result<f64, string>, fallback: f64) -> f64 {
     match r {
-        Ok(v) => v,
-        Err(_) => fallback,
+        .Ok(v) => v,
+        .Err(_) => fallback,
     }
 }
 
 impl<T, E> Result<T, E> {
     fn is_ok(r: Result<T, E>) -> bool {
         match r {
-            Ok(_) => true,
-            Err(_) => false,
+            .Ok(_) => true,
+            .Err(_) => false,
         }
     }
     fn is_err(r: Result<T, E>) -> bool {
         match r {
-            Ok(_) => false,
-            Err(_) => true,
+            .Ok(_) => false,
+            .Err(_) => true,
         }
     }
     fn unwrap(r: Result<T, E>) -> T {
         match r {
-            Ok(v) => v,
-            Err(_) => panic("result: unwrap called on Err"),
+            .Ok(v) => v,
+            .Err(_) => panic("result: unwrap called on Err"),
         }
     }
     fn unwrap_or(r: Result<T, E>, fallback: T) -> T {
         match r {
-            Ok(v) => v,
-            Err(_) => fallback,
+            .Ok(v) => v,
+            .Err(_) => fallback,
         }
     }
 }

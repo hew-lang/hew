@@ -65,17 +65,17 @@ machine TcpHandshake {
 
         // Peer initiates close while established.
         emit AckReceive {};
-        CloseWait
+        TcpHandshake.CloseWait
     }
     on AckReceive: CloseWait => Closed {
 
         // Close-wait → closed (we have sent our FIN and got ACK).
-        Closed
+        TcpHandshake.Closed
     }
     on Reset: _ => Closed {
 
         // Reset collapses to Closed from any state.
-        Closed
+        TcpHandshake.Closed
     }
     on SynReceive: SynReceived => SynReceived reenter {
 
@@ -88,12 +88,12 @@ machine TcpHandshake {
         Established { remote_port: self.remote_port }
     }
     on SynReceive: CloseWait => CloseWait reenter {
-        CloseWait
+        TcpHandshake.CloseWait
     }
     on AckReceive: Closed => Closed reenter {
 
         // Unexpected ACK while Closed or Established: ignore.
-        Closed
+        TcpHandshake.Closed
     }
     on AckReceive: Established => Established reenter {
         Established { remote_port: self.remote_port }
@@ -101,12 +101,12 @@ machine TcpHandshake {
     on FinReceive: Closed => Closed reenter {
 
         // FIN while not Established: ignore (nothing to close).
-        Closed
+        TcpHandshake.Closed
     }
     on FinReceive: SynReceived => SynReceived reenter {
         SynReceived { remote_port: self.remote_port }
     }
     on FinReceive: CloseWait => CloseWait reenter {
-        CloseWait
+        TcpHandshake.CloseWait
     }
 }

@@ -34,12 +34,48 @@ actor PushRunner {
 
     receive fn start(value: i64, label: string) {
         match await source.push(item(value, label, false)) {
-            Ok(result) => {
+            .Ok(result) => {
                 probe.finish(result);
             },
-            Err(_) => {
+            .Err(_) => {
                 probe.finish(false);
             },
+        }
+    }
+}
+
+actor CrashStage {
+    let next: LocalPid<pipeline.SinkI64>;
+    var crashed: bool;
+
+    receive fn push(item: pipeline.PipelineItemI64) -> bool {
+        if crashed {
+            return false;
+        }
+        if item.crash_stage {
+            crashed = true;
+            return false;
+        }
+        next.push(item);
+        true
+    }
+}
+
+actor CrashSource {
+    let next: LocalPid<CrashStage>;
+    let sink: LocalPid<pipeline.SinkI64>;
+
+    receive fn push(item: pipeline.PipelineItemI64) -> bool {
+        match await next.push(item) {
+            .Ok(accepted) => accepted,
+            .Err(_) => false,
+        }
+    }
+
+    receive fn count() -> i64 {
+        match await sink.count() {
+            .Ok(value) => value,
+            .Err(_) => -1,
         }
     }
 }
@@ -49,10 +85,10 @@ fn wait_for_count(source: LocalPid<pipeline.SourceI64>, expected: i64) {
     var polls = 0;
     while count != expected && polls < 5000 {
         match await source.count() {
-            Ok(value) => {
+            .Ok(value) => {
                 count = value;
             },
-            Err(_) => {
+            .Err(_) => {
                 count = -1;
             },
         }
@@ -71,10 +107,10 @@ fn wait_for_attempts(control: LocalPid<pipeline.AdmissionControlI64>, expected: 
     var polls = 0;
     while attempts != expected && polls < 5000 {
         match await control.attempts() {
-            Ok(value) => {
+            .Ok(value) => {
                 attempts = value;
             },
-            Err(_) => {
+            .Err(_) => {
                 attempts = -1;
             },
         }
@@ -93,10 +129,10 @@ fn wait_for_probe(probe: LocalPid<PushProbe>) {
     var polls = 0;
     while !completed && polls < 5000 {
         match await probe.is_completed() {
-            Ok(value) => {
+            .Ok(value) => {
                 completed = value;
             },
-            Err(_) => {
+            .Err(_) => {
                 completed = false;
             },
         }
@@ -114,37 +150,37 @@ fn wait_for_probe(probe: LocalPid<PushProbe>) {
 fn shipped_surface_constructs_wires_and_delivers_owned_items_once() {
     let source = pipeline.run(pipeline.from(3));
     match await source.push(item(3, "alpha", false)) {
-        Ok(admitted) => testing.assert_true(admitted),
-        Err(_) => testing.assert_true(false),
+        .Ok(admitted) => testing.assert_true(admitted),
+        .Err(_) => testing.assert_true(false),
     }
     match await source.push(item(7, "beta", false)) {
-        Ok(admitted) => testing.assert_true(admitted),
-        Err(_) => testing.assert_true(false),
+        .Ok(admitted) => testing.assert_true(admitted),
+        .Err(_) => testing.assert_true(false),
     }
     match await source.push(item(11, "gamma", false)) {
-        Ok(admitted) => testing.assert_true(admitted),
-        Err(_) => testing.assert_true(false),
+        .Ok(admitted) => testing.assert_true(admitted),
+        .Err(_) => testing.assert_true(false),
     }
     wait_for_count(source, 3);
     match await source.item(0) {
-        Ok(value) => testing.assert_eq(value, 6),
-        Err(_) => testing.assert_true(false),
+        .Ok(value) => testing.assert_eq(value, 6),
+        .Err(_) => testing.assert_true(false),
     }
     match await source.item(1) {
-        Ok(value) => testing.assert_eq(value, 14),
-        Err(_) => testing.assert_true(false),
+        .Ok(value) => testing.assert_eq(value, 14),
+        .Err(_) => testing.assert_true(false),
     }
     match await source.item(2) {
-        Ok(value) => testing.assert_eq(value, 22),
-        Err(_) => testing.assert_true(false),
+        .Ok(value) => testing.assert_eq(value, 22),
+        .Err(_) => testing.assert_true(false),
     }
     match await source.sum() {
-        Ok(value) => testing.assert_eq(value, 42),
-        Err(_) => testing.assert_true(false),
+        .Ok(value) => testing.assert_eq(value, 42),
+        .Err(_) => testing.assert_true(false),
     }
     match await source.last_label() {
-        Ok(value) => testing.assert_true(value == "gamma:stage"),
-        Err(_) => testing.assert_true(false),
+        .Ok(value) => testing.assert_true(value == "gamma:stage"),
+        .Err(_) => testing.assert_true(false),
     }
 }
 
@@ -152,38 +188,38 @@ fn shipped_surface_constructs_wires_and_delivers_owned_items_once() {
 fn admission_reply_waits_for_downstream_post_send_barrier() {
     let source = pipeline.run(pipeline.from(0));
     let control = match await source.control_handle() {
-        Ok(value) => value,
-        Err(_) => panic("pipeline control handle unavailable"),
+        .Ok(value) => value,
+        .Err(_) => panic("pipeline control handle unavailable"),
     };
     let probe = spawn PushProbe(completed: false, accepted: false);
     let runner = spawn PushRunner(source: source, probe: probe);
     match await source.push(item(1, "held-one", false)) {
-        Ok(admitted) => testing.assert_true(admitted),
-        Err(_) => testing.assert_true(false),
+        .Ok(admitted) => testing.assert_true(admitted),
+        .Err(_) => testing.assert_true(false),
     }
     match await source.push(item(2, "held-two", false)) {
-        Ok(admitted) => testing.assert_true(admitted),
-        Err(_) => testing.assert_true(false),
+        .Ok(admitted) => testing.assert_true(admitted),
+        .Err(_) => testing.assert_true(false),
     }
     runner.start(3, "blocked-three");
     wait_for_attempts(control, 3);
     match await control.post_sends() {
-        Ok(value) => testing.assert_eq(value, 2),
-        Err(_) => testing.assert_true(false),
+        .Ok(value) => testing.assert_eq(value, 2),
+        .Err(_) => testing.assert_true(false),
     }
     match await probe.is_completed() {
-        Ok(value) => testing.assert_true(!value),
-        Err(_) => testing.assert_true(false),
+        .Ok(value) => testing.assert_true(!value),
+        .Err(_) => testing.assert_true(false),
     }
     control.release();
     wait_for_probe(probe);
     match await probe.was_accepted() {
-        Ok(value) => testing.assert_true(value),
-        Err(_) => testing.assert_true(false),
+        .Ok(value) => testing.assert_true(value),
+        .Err(_) => testing.assert_true(false),
     }
     match await control.post_sends() {
-        Ok(value) => testing.assert_eq(value, 3),
-        Err(_) => testing.assert_true(false),
+        .Ok(value) => testing.assert_eq(value, 3),
+        .Err(_) => testing.assert_true(false),
     }
     control.release();
     control.release();
@@ -194,16 +230,16 @@ fn admission_reply_waits_for_downstream_post_send_barrier() {
 fn cancelled_admission_settles_and_pipeline_continues() {
     let source = pipeline.run(pipeline.from(0));
     let control = match await source.control_handle() {
-        Ok(value) => value,
-        Err(_) => panic("pipeline control handle unavailable"),
+        .Ok(value) => value,
+        .Err(_) => panic("pipeline control handle unavailable"),
     };
     match await source.push(item(1, "cancel-one", false)) {
-        Ok(admitted) => testing.assert_true(admitted),
-        Err(_) => testing.assert_true(false),
+        .Ok(admitted) => testing.assert_true(admitted),
+        .Err(_) => testing.assert_true(false),
     }
     match await source.push(item(2, "cancel-two", false)) {
-        Ok(admitted) => testing.assert_true(admitted),
-        Err(_) => testing.assert_true(false),
+        .Ok(admitted) => testing.assert_true(admitted),
+        .Err(_) => testing.assert_true(false),
     }
     let outcome = select {
         reply from source.push(item(3, "cancel-three", false)) => if reply {
@@ -220,18 +256,47 @@ fn cancelled_admission_settles_and_pipeline_continues() {
     wait_for_count(source, 3);
     control.release();
     match await source.push(item(4, "after-cancel", false)) {
-        Ok(admitted) => testing.assert_true(admitted),
-        Err(_) => testing.assert_true(false),
+        .Ok(admitted) => testing.assert_true(admitted),
+        .Err(_) => testing.assert_true(false),
     }
     wait_for_count(source, 4);
+}
+
+#[test]
+fn crash_mid_pipeline_settles_without_sink_delivery() {
+    let control = spawn pipeline.AdmissionControlI64(permits: 1, stage_attempts: 0, stage_post_sends: 0);
+    let sink = spawn pipeline.SinkI64(
+        count: 0,
+        sum: 0,
+        first: 0,
+        second: 0,
+        third: 0,
+        last_value: 0,
+        last_label: "",
+        control: control,
+    );
+    let stage = spawn CrashStage(next: sink, crashed: false);
+    let source = spawn CrashSource(next: stage, sink: sink);
+    match await source.push(item(9, "crash-owned", true)) {
+        .Ok(admitted) => testing.assert_true(!admitted),
+        .Err(_) => testing.assert_true(false),
+    }
+    match await source.count() {
+        .Ok(value) => testing.assert_eq(value, 0),
+        .Err(_) => testing.assert_true(false),
+    }
+    match await source.push(item(10, "after-crash", false)) {
+        .Ok(admitted) => testing.assert_true(!admitted),
+        .Err(_) => testing.assert_true(false),
+    }
 }
 
 #[test]
 fn graceful_shutdown_drains_queued_owned_items() {
     let source = pipeline.run(pipeline.from(0));
     let control = match await source.control_handle() {
-        Ok(value) => value,
-        Err(_) => panic("pipeline control handle unavailable"),
+        .Ok(value) => value,
+        .Err(_) => panic("pipeline control handle unavailable"),
     };
     let first_probe = spawn PushProbe(completed: false, accepted: false);
     let second_probe = spawn PushProbe(completed: false, accepted: false);
@@ -249,7 +314,7 @@ fn graceful_shutdown_drains_queued_owned_items() {
     wait_for_probe(second_probe);
     wait_for_probe(third_probe);
     match await source.shutdown(3) {
-        Ok(drained) => testing.assert_true(drained),
-        Err(_) => testing.assert_true(false),
+        .Ok(drained) => testing.assert_true(drained),
+        .Err(_) => testing.assert_true(false),
     }
 }

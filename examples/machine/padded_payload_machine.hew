@@ -21,10 +21,10 @@ machine PaddedPayload {
         Active { tag_byte: 0, value: 42 }
     }
     on Deactivate: Active => Idle {
-        Idle
+        PaddedPayload.Idle
     }
     on Deactivate: Idle => Idle reenter {
-        Idle
+        PaddedPayload.Idle
     }
     on Activate: Active => Active reenter {
         Active { tag_byte: self.tag_byte, value: self.value }

@@ -21,9 +21,9 @@ machine Counter {
         NonZero { value: self.value + 1 }
     }
     on Reset: NonZero => Zero {
-        Zero
+        Counter.Zero
     }
     on Reset: Zero => Zero reenter {
-        Zero
+        Counter.Zero
     }
 }

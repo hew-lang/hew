@@ -23,21 +23,21 @@ machine ConnectionLifecycle {
         state Active;
         state Draining;
         on Disconnect: _ => Disconnected {
-            Disconnected
+            ConnectionLifecycle.Disconnected
         }
     }
 
     on Connect: Disconnected => Authenticating {
-        Authenticating
+        ConnectionLifecycle.Authenticating
     }
     on AuthOk: Authenticating => Active {
-        Active
+        ConnectionLifecycle.Active
     }
     on DrainStart: Active => Draining {
-        Draining
+        ConnectionLifecycle.Draining
     }
     on DrainDone: Draining => Disconnected {
-        Disconnected
+        ConnectionLifecycle.Disconnected
     }
     on Connect: _ => _ {
         state

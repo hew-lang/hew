@@ -16,7 +16,7 @@ machine Latch {
     state Open;
 
     on Try: Closed => Open when self.code == 42 {
-        Open
+        Latch.Open
     }
 
     default { state }

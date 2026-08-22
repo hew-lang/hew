@@ -33,10 +33,10 @@ machine Latch {
     state Open;
 
     on Try: Closed => Open when self.code == 42 {
-        Open
+        Latch.Open
     }
     on Try: Open => Open reenter {
-        Open
+        Latch.Open
     }
 }
 

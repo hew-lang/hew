@@ -24,8 +24,8 @@
 /// when failure should be returned as an error.
 pub fn from_json(json: string) -> bytes {
     match try_from_json(json) {
-        Ok(data) => data,
-        Err(reason) => {
+        .Ok(data) => data,
+        .Err(reason) => {
             panic(f"msgpack.from_json: {reason}");
             "".to_bytes()
         },
@@ -57,8 +57,8 @@ pub fn try_from_json(json: string) -> Result<bytes, string> {
 /// when failure should be returned as an error.
 pub fn to_json(data: bytes) -> string {
     match try_to_json(data) {
-        Ok(json) => json,
-        Err(reason) => {
+        .Ok(json) => json,
+        .Err(reason) => {
             panic(f"msgpack.to_json: {reason}");
             ""
         },
@@ -87,8 +87,8 @@ pub fn try_to_json(data: bytes) -> Result<string, string> {
 /// Panics with the codec's reason if the encoding cannot be produced.
 pub fn encode_int(val: i64) -> bytes {
     match try_encode_int(val) {
-        Ok(data) => data,
-        Err(reason) => {
+        .Ok(data) => data,
+        .Err(reason) => {
             panic(f"msgpack.encode_int: {reason}");
             "".to_bytes()
         },
@@ -115,8 +115,8 @@ pub fn try_encode_int(val: i64) -> Result<bytes, string> {
 /// Panics with the codec's reason if the encoding cannot be produced.
 pub fn encode_string(s: string) -> bytes {
     match try_encode_string(s) {
-        Ok(data) => data,
-        Err(reason) => {
+        .Ok(data) => data,
+        .Err(reason) => {
             panic(f"msgpack.encode_string: {reason}");
             "".to_bytes()
         },
@@ -143,8 +143,8 @@ pub fn try_encode_string(s: string) -> Result<bytes, string> {
 /// Panics with the codec's reason if the encoding cannot be produced.
 pub fn encode_bytes(data: bytes) -> bytes {
     match try_encode_bytes(data) {
-        Ok(encoded) => encoded,
-        Err(reason) => {
+        .Ok(encoded) => encoded,
+        .Err(reason) => {
             panic(f"msgpack.encode_bytes: {reason}");
             "".to_bytes()
         },

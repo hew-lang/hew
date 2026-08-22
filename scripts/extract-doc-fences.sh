@@ -14,10 +14,12 @@
 #      the skip total and are never treated as failures.
 #
 # Ratchet rules (mirrors hew-suite-ratchet.sh):
-#   - Exits 0 if the failing fence set exactly matches the expected-failures list.
+#   - Exits 0 if the failing fence set exactly matches the expected-failures list
+#     and no fence emits a bare variant diagnostic.
 #   - Exits 1 on any NEW failure (unexpected regression).
 #   - Exits 1 if a LISTED failure now passes (ratchet forward — remove from list).
 #   - Exits 1 if a LISTED failure's content checksum changed (re-verify label).
+#   - Exits 1 if any fence emits E_BARE_VARIANT_PATTERN or E_BARE_VARIANT_EXPR.
 #
 # WHY: Docs can rot silently with no gate. 133 fences currently pass; 111 fail
 # (the docs-rot backlog, tracked per entry with root-cause notes). This ratchet
@@ -55,6 +57,9 @@ source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
 # shellcheck source=scripts/lib/cargo-output-dir.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
+# shellcheck source=scripts/lib/bare-variant-ratchet.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/bare-variant-ratchet.sh"
 
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/doc-test-expected-failures.txt"
 OUTDIR="$REPO_ROOT/.tmp/doc-fences"
@@ -289,6 +294,7 @@ pass=0
 fail=0
 skip=0
 ACTUAL_STR=""  # newline-separated fence IDs of failing fences
+BARE_VARIANTS_STR=""
 
 for (( idx=0; idx < ${#FENCE_IDS[@]}; idx++ )); do
     fence_id="${FENCE_IDS[$idx]}"
@@ -301,7 +307,11 @@ for (( idx=0; idx < ${#FENCE_IDS[@]}; idx++ )); do
     fi
 
     check_rc=0
-    "$HEW_BIN" check "$outfile" >/dev/null 2>&1 || check_rc=$?
+    check_output="$("$HEW_BIN" check "$outfile" 2>&1)" || check_rc=$?
+    bare_variants=""
+    if bare_variants="$(printf '%s\n' "$check_output" | grep -E ': warning: E_BARE_VARIANT_(PATTERN|EXPR):')"; then
+        BARE_VARIANTS_STR="${BARE_VARIANTS_STR}${bare_variants}"$'\n'
+    fi
 
     if [[ "$check_rc" == "0" ]]; then
         pass=$(( pass + 1 ))
@@ -314,6 +324,9 @@ done
 echo ""
 echo "==> Results: $pass passed, $fail failed, $skip skipped (NYI/aspirational)"
 echo "    Total fences: $total_fences"
+
+count_bare_variants="$(line_set_count "$BARE_VARIANTS_STR")"
+echo "    Bare variants: $count_bare_variants"
 
 # ── Ratchet ────────────────────────────────────────────────────────────────────
 
@@ -361,7 +374,7 @@ count_unexpected_fail="$(line_set_count "$unexpected_failures")"
 count_unexpected_pass="$(line_set_count "$unexpected_passes")"
 count_stale_metadata="$(line_set_count "$stale_metadata")"
 
-if [[ $count_unexpected_fail -eq 0 && $count_unexpected_pass -eq 0 && $count_stale_metadata -eq 0 ]]; then
+if [[ $count_unexpected_fail -eq 0 && $count_unexpected_pass -eq 0 && $count_stale_metadata -eq 0 && $count_bare_variants -eq 0 ]]; then
     if [[ $count_actual -eq 0 ]]; then
         echo ""
         echo "    All doc fences pass. Consider removing the expected-failures file."
@@ -374,6 +387,17 @@ if [[ $count_unexpected_fail -eq 0 && $count_unexpected_pass -eq 0 && $count_sta
 fi
 
 echo ""
+if [[ $count_bare_variants -gt 0 ]]; then
+    echo "$(bare_variant_ratchet_failure_message "$count_bare_variants") in doc fences:"
+    while IFS= read -r diagnostic; do
+        [[ -z "$diagnostic" ]] && continue
+        echo "  BARE VARIANT: $diagnostic"
+    done <<< "$BARE_VARIANTS_STR"
+    echo ""
+    echo "  Qualify every bare variant; bare variant diagnostics are not ratcheted."
+    echo ""
+fi
+
 if [[ $count_unexpected_fail -gt 0 ]]; then
     echo "RATCHET FAIL: $count_unexpected_fail UNEXPECTED failure(s) — not in expected list:"
     while IFS= read -r name; do

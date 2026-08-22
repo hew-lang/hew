@@ -27,16 +27,16 @@
 /// Returns `true` if the option contains a value.
 pub fn is_some_int(opt: Option<i64>) -> bool {
     match opt {
-        Some(_) => true,
-        None => false,
+        .Some(_) => true,
+        .None => false,
     }
 }
 
 /// Returns `true` if the option is `None`.
 pub fn is_none_int(opt: Option<i64>) -> bool {
     match opt {
-        Some(_) => false,
-        None => true,
+        .Some(_) => false,
+        .None => true,
     }
 }
 
@@ -44,8 +44,8 @@ pub fn is_none_int(opt: Option<i64>) -> bool {
 /// Unwrap the `i64` value.  Panics if the option is `None`.
 pub fn unwrap_int(opt: Option<i64>) -> i64 {
     match opt {
-        Some(v) => v,
-        None => {
+        .Some(v) => v,
+        .None => {
             panic("option: unwrap called on None");
             0
         },
@@ -55,8 +55,8 @@ pub fn unwrap_int(opt: Option<i64>) -> i64 {
 /// Unwrap the `i64` value, or return `fallback` if `None`.
 pub fn unwrap_or_int(opt: Option<i64>, fallback: i64) -> i64 {
     match opt {
-        Some(v) => v,
-        None => fallback,
+        .Some(v) => v,
+        .None => fallback,
     }
 }
 
@@ -64,8 +64,8 @@ pub fn unwrap_or_int(opt: Option<i64>, fallback: i64) -> i64 {
 /// Apply `f` to the contained `i64` value, or return `None` if empty.
 pub fn map_int(opt: Option<i64>, f: fn(i64) -> i64) -> Option<i64> {
     match opt {
-        Some(v) => Some(f(v)),
-        None => None,
+        .Some(v) => Some(f(v)),
+        .None => None,
     }
 }
 
@@ -73,8 +73,8 @@ pub fn map_int(opt: Option<i64>, f: fn(i64) -> i64) -> Option<i64> {
 /// Returns `true` if the option contains `needle`.
 pub fn contains_int(opt: Option<i64>, needle: i64) -> bool {
     match opt {
-        Some(v) => v == needle,
-        None => false,
+        .Some(v) => v == needle,
+        .None => false,
     }
 }
 
@@ -82,24 +82,24 @@ pub fn contains_int(opt: Option<i64>, needle: i64) -> bool {
 /// Returns `true` if the option contains a value.
 pub fn is_some_str(opt: Option<string>) -> bool {
     match opt {
-        Some(_) => true,
-        None => false,
+        .Some(_) => true,
+        .None => false,
     }
 }
 
 /// Returns `true` if the option is `None`.
 pub fn is_none_str(opt: Option<string>) -> bool {
     match opt {
-        Some(_) => false,
-        None => true,
+        .Some(_) => false,
+        .None => true,
     }
 }
 
 /// Unwrap the `string` value.  Panics if the option is `None`.
 pub fn unwrap_str(opt: Option<string>) -> string {
     match opt {
-        Some(v) => v,
-        None => {
+        .Some(v) => v,
+        .None => {
             panic("option: unwrap called on None");
             ""
         },
@@ -109,24 +109,24 @@ pub fn unwrap_str(opt: Option<string>) -> string {
 /// Unwrap the `string` value, or return `fallback` if `None`.
 pub fn unwrap_or_str(opt: Option<string>, fallback: string) -> string {
     match opt {
-        Some(v) => v,
-        None => fallback,
+        .Some(v) => v,
+        .None => fallback,
     }
 }
 
 /// Apply `f` to the contained `string` value, or return `None` if empty.
 pub fn map_str(opt: Option<string>, f: fn(string) -> string) -> Option<string> {
     match opt {
-        Some(v) => Some(f(v)),
-        None => None,
+        .Some(v) => Some(f(v)),
+        .None => None,
     }
 }
 
 /// Returns `true` if the option contains `needle`.
 pub fn contains_str(opt: Option<string>, needle: string) -> bool {
     match opt {
-        Some(v) => v == needle,
-        None => false,
+        .Some(v) => v == needle,
+        .None => false,
     }
 }
 
@@ -134,24 +134,24 @@ pub fn contains_str(opt: Option<string>, needle: string) -> bool {
 /// Returns `true` if the option contains a value.
 pub fn is_some_f64(opt: Option<f64>) -> bool {
     match opt {
-        Some(_) => true,
-        None => false,
+        .Some(_) => true,
+        .None => false,
     }
 }
 
 /// Returns `true` if the option is `None`.
 pub fn is_none_f64(opt: Option<f64>) -> bool {
     match opt {
-        Some(_) => false,
-        None => true,
+        .Some(_) => false,
+        .None => true,
     }
 }
 
 /// Unwrap the `f64` value.  Panics if the option is `None`.
 pub fn unwrap_f64(opt: Option<f64>) -> f64 {
     match opt {
-        Some(v) => v,
-        None => {
+        .Some(v) => v,
+        .None => {
             panic("option: unwrap called on None");
             0.0
         },
@@ -161,50 +161,50 @@ pub fn unwrap_f64(opt: Option<f64>) -> f64 {
 /// Unwrap the `f64` value, or return `fallback` if `None`.
 pub fn unwrap_or_f64(opt: Option<f64>, fallback: f64) -> f64 {
     match opt {
-        Some(v) => v,
-        None => fallback,
+        .Some(v) => v,
+        .None => fallback,
     }
 }
 
 /// Apply `f` to the contained `f64` value, or return `None` if empty.
 pub fn map_f64(opt: Option<f64>, f: fn(f64) -> f64) -> Option<f64> {
     match opt {
-        Some(v) => Some(f(v)),
-        None => None,
+        .Some(v) => Some(f(v)),
+        .None => None,
     }
 }
 
 /// Returns `true` if the option contains `needle`.
 pub fn contains_f64(opt: Option<f64>, needle: f64) -> bool {
     match opt {
-        Some(v) => v == needle,
-        None => false,
+        .Some(v) => v == needle,
+        .None => false,
     }
 }
 
 impl<T> Option<T> {
     fn is_some(opt: Option<T>) -> bool {
         match opt {
-            Some(_) => true,
-            None => false,
+            .Some(_) => true,
+            .None => false,
         }
     }
     fn is_none(opt: Option<T>) -> bool {
         match opt {
-            Some(_) => false,
-            None => true,
+            .Some(_) => false,
+            .None => true,
         }
     }
     fn unwrap(opt: Option<T>) -> T {
         match opt {
-            Some(v) => v,
-            None => panic("option: unwrap called on None"),
+            .Some(v) => v,
+            .None => panic("option: unwrap called on None"),
         }
     }
     fn unwrap_or(opt: Option<T>, fallback: T) -> T {
         match opt {
-            Some(v) => v,
-            None => fallback,
+            .Some(v) => v,
+            .None => fallback,
         }
     }
 }

@@ -1290,14 +1290,17 @@ impl<'a> ProfileChecker<'a> {
 }
 
 /// Returns true if a machine transition body is trivial and carries no
-/// side-effects: a bare identifier (state-name reference), a block whose
-/// only statement is a bare identifier or a single literal, or a literal.
+/// side-effects: a state-name identifier, contextual state variant, a block
+/// whose only statement is a state-name expression or a single literal, or a
+/// literal.
 /// Non-trivial bodies are fail-closed-rejected; the runtime ignores them and
 /// only uses the declared `to` state from the transition table.
 fn is_trivial_machine_transition_body(expr: &Expr) -> bool {
     match expr {
-        // A bare `StateName`, `Machine::StateName` path, or a literal.
-        Expr::Identifier(_) | Expr::Literal(_) => true,
+        // A state-name identifier, contextual `.StateName`, or a literal.
+        Expr::Identifier(_)
+        | Expr::ContextVariant(hew_parser::ast::ContextVariantExpr { record: None, .. })
+        | Expr::Literal(_) => true,
         // A block `{ state_expr }` where the trailing expression is trivial and
         // there are no statements (no side-effects in the block body).
         Expr::Block(block) => {

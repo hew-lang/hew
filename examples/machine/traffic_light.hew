@@ -35,12 +35,12 @@ machine TrafficLight {
     on Tick: Red => Green {
 
         // Red → Green → Yellow → Red cycle
-        Green
+        TrafficLight.Green
     }
     on Tick: Green => Yellow {
-        Yellow
+        TrafficLight.Yellow
     }
     on Tick: Yellow => Red {
-        Red
+        TrafficLight.Red
     }
 }

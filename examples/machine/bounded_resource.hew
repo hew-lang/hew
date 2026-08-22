@@ -43,13 +43,13 @@ machine Bounded<T: Resource> {
         Holding { handle: event.handle }
     }
     on Finish: Holding => Idle {
-        Idle
+        Bounded.Idle
     }
     on Start: Holding => Holding reenter {
         Holding { handle: self.handle }
     }
     on Finish: Idle => Idle reenter {
-        Idle
+        Bounded.Idle
     }
 }
 

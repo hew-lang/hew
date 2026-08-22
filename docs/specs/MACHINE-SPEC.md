@@ -497,13 +497,13 @@ Machine values participate in pattern matching identically to enum values:
 
 ```hew
 match tcp_state {
-    Closed => println("closed"),
-    Listen { backlog } => println(f"listening, backlog={backlog}"),
-    Established { local_seq, remote_seq } => {
+    .Closed => println("closed"),
+    .Listen { backlog } => println(f"listening, backlog={backlog}"),
+    .Established { local_seq, remote_seq } => {
         println(f"established seq={local_seq}/{remote_seq}")
     },
-    FinWait => println("fin-wait"),
-    TimeWait => println("time-wait"),
+    .FinWait => println("fin-wait"),
+    .TimeWait => println("time-wait"),
 }
 ```
 
@@ -513,7 +513,7 @@ Partial matching with `_` is supported:
 
 ```hew
 match tcp_state {
-    Established { local_seq, .. } => println(f"seq={local_seq}"),
+    .Established { local_seq, .. } => println(f"seq={local_seq}"),
     _ => println("not established"),
 }
 ```
@@ -767,11 +767,11 @@ actor ApiGateway {
 
         // Update machine based on outcome
         match result {
-            Ok(resp) => {
+            .Ok(resp) => {
                 breaker.step(CircuitBreakerEvent.Success);
                 Ok(resp)
             },
-            Err(e) => {
+            .Err(e) => {
                 let now = time.now_ms();
                 breaker.step(CircuitBreakerEvent.Failure { timestamp: now });
                 Err(e)

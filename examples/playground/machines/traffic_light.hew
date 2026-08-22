@@ -11,13 +11,13 @@ machine TrafficLight {
     state Yellow;
 
     on Tick: Red => Green {
-        Green
+        .Green
     }
     on Tick: Green => Yellow {
-        Yellow
+        .Yellow
     }
     on Tick: Yellow => Red {
-        Red
+        .Red
     }
 }
 

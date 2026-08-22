@@ -1152,6 +1152,76 @@ def workflow_job(text: str, name: str) -> str:
     return text[start:end]
 
 
+def workflow_jobs(text: str) -> dict[str, str]:
+    """Return every top-level job keyed by its workflow identifier."""
+    matches = list(re.finditer(r"^  ([a-z][a-z0-9-]*):\n", text, re.MULTILINE))
+    return {
+        match.group(1): text[
+            match.start() : matches[index + 1].start()
+            if index + 1 < len(matches)
+            else len(text)
+        ]
+        for index, match in enumerate(matches)
+    }
+
+
+RUST_TEST_COMMAND = re.compile(
+    r"^[ \t]*(?:run:[ \t]*)?(?:HEW_TEST_NO_BUILD=1[ \t]+)?"
+    r"cargo[ \t]+(?:nextest[ \t]+run|test)\b",
+    re.MULTILINE,
+)
+
+
+def assert_ci_rust_tests_use_prebuilt_shared_artifact(ci: str) -> None:
+    """Require one certified libhew build before each CI Rust test runner."""
+    workflow_env = ci[: ci.index("jobs:\n")]
+    assert workflow_env.count('HEW_TEST_NO_BUILD: "1"') == 1
+
+    direct_test_jobs = set()
+    for name, job in workflow_jobs(ci).items():
+        test_commands = list(RUST_TEST_COMMAND.finditer(job))
+        if not test_commands:
+            continue
+        direct_test_jobs.add(name)
+        build = "run: make stdlib"
+        assert job.count(build) == 1, f"{name} must build libhew exactly once"
+        assert job.index(build) < test_commands[0].start(), (
+            f"{name} starts Rust tests before building libhew"
+        )
+
+    assert {
+        "build-and-test-windows",
+        "build-and-test-macos",
+    } <= direct_test_jobs
+
+    indirect_test_entries = {
+        "lint": "make test-ast-grep-contract test-structural-lint-bootstrap",
+        "build-and-test": 'scripts/ci-preflight-dispatcher.sh "${args[@]}"',
+    }
+    jobs = workflow_jobs(ci)
+    for name, entry in indirect_test_entries.items():
+        job = jobs[name]
+        build = "run: make stdlib"
+        assert job.count(build) == 1, f"{name} must build libhew exactly once"
+        assert job.index(build) < job.index(entry), (
+            f"{name} starts its test entry point before building libhew"
+        )
+
+
+def test_ci_rust_tests_use_prebuilt_shared_artifact() -> None:
+    assert_ci_rust_tests_use_prebuilt_shared_artifact(CI_WORKFLOW.read_text())
+
+
+def test_ci_shared_artifact_build_mutations_are_rejected() -> None:
+    ci = CI_WORKFLOW.read_text()
+    mutated = ci.replace("run: make stdlib", "run: make check-libhew-fresh")
+    try:
+        assert_ci_rust_tests_use_prebuilt_shared_artifact(mutated)
+    except AssertionError:
+        return
+    raise AssertionError("missing CI shared-artifact builds escaped the contract")
+
+
 def assert_binaryen_downloader_contract(downloader: str) -> None:
     assert (
         "github.com/WebAssembly/binaryen/releases/download/${version}/${asset}"

@@ -57,14 +57,7 @@ fn wasmtime() -> Option<PathBuf> {
 fn ensure_wasm_runtime(_repo: &Path) -> Option<PathBuf> {
     static BUILT: OnceLock<Option<PathBuf>> = OnceLock::new();
     BUILT
-        .get_or_init(|| {
-            hew_testutil::ensure_wasm_staticlib_built(
-                "hew-runtime",
-                "libhew_runtime.a",
-                &["--no-default-features"],
-            )
-            .ok()
-        })
+        .get_or_init(|| hew_testutil::ensure_wasm_runtime_built().ok())
         .clone()
 }
 

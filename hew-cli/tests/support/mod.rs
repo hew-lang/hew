@@ -14,8 +14,6 @@ use std::sync::OnceLock;
 static CODEGEN_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
 static WASI_RUNNER_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
 
-const WASI_STDLIB_ARCHIVES: &[(&str, &str)] = &[("hew-std", "libhew_std.a")];
-
 pub fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -66,18 +64,12 @@ fn bootstrap_wasi_runner() -> Result<(), String> {
     // Every wasm32-wasip1 staticlib is a shared-target artifact that `wasm-ld`
     // reads while a sibling nextest process could be rewriting it. The build
     // authority is the single writer; this suite only names what it needs.
-    hew_testutil::ensure_wasm_staticlib_built(
-        "hew-runtime",
-        "libhew_runtime.a",
-        &["--no-default-features"],
-    )
-    .map_err(|error| format!("failed to bootstrap WASI runner runtime: {error}"))?;
+    hew_testutil::ensure_wasm_runtime_built()
+        .map_err(|error| format!("failed to bootstrap WASI runner runtime: {error}"))?;
 
-    for (package, archive) in WASI_STDLIB_ARCHIVES {
-        hew_testutil::ensure_wasm_staticlib_built(package, archive, &[]).map_err(|error| {
-            format!("failed to bootstrap WASI stdlib archive {archive}: {error}")
-        })?;
-    }
+    hew_testutil::ensure_wasm_std_built().map_err(|error| {
+        format!("failed to bootstrap WASI stdlib archive libhew_std.a: {error}")
+    })?;
 
     Ok(())
 }

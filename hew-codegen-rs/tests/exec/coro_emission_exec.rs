@@ -164,8 +164,7 @@ fn wasmtime() -> Option<PathBuf> {
 /// both writes and links `libhew_runtime.a`, so an unserialized rebuild races
 /// a sibling's link against Cargo's non-atomic uplift of that same file.
 fn ensure_native_runtime() -> PathBuf {
-    hew_testutil::ensure_host_staticlib_built("hew-runtime", "libhew_runtime.a", &[])
-        .expect("build libhew_runtime.a")
+    hew_testutil::ensure_host_runtime_built().expect("build libhew_runtime.a")
 }
 
 /// Build the wasm32-wasip1 runtime archive. `None` if the wasm toolchain
@@ -177,12 +176,7 @@ fn ensure_native_runtime() -> PathBuf {
 /// same archive, so the serialization has to span crates. A missing target or
 /// any build failure leaves the caller to skip.
 fn ensure_wasm_runtime() -> Option<PathBuf> {
-    hew_testutil::ensure_wasm_staticlib_built(
-        "hew-runtime",
-        "libhew_runtime.a",
-        &["--no-default-features"],
-    )
-    .ok()
+    hew_testutil::ensure_wasm_runtime_built().ok()
 }
 
 // ── the coroutine + driver emission (via the real codegen `coro` API) ──────

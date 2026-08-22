@@ -145,6 +145,7 @@
 .PHONY: all build bootstrap install-hooks hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check baselines baselines-check
 .PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-cabi-build test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-ci-coverage-check structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan legacy-path-syntax-lint hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability check-counterfactual-output check-counterfactual-output-build sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property tool-pin-contract-check
 .PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check test-python310-toml-compat
+.PHONY: shared-test-artifact-contract
 .PHONY: assemble assemble-release pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
@@ -253,10 +254,21 @@ $(error $(LIBHEW_INPUTS_SCRIPT) produced no inputs for $(LIBHEW_NAME); refusing 
 treat the archive as having no sources. Run '$(LIBHEW_INPUTS_SCRIPT) files' to see why)
 endif
 
-# Prerequisite bundle for every target that LINKS a native Hew program.
-# Cargo performs the incremental rebuild through `libhew-debug`; the order-only
-# freshness oracle then re-asserts the archive at the point of use.
-LIBHEW_READY := libhew-test-targets | check-libhew-fresh
+# One inventory names every shared Cargo artifact a test helper can demand.
+# Rust verification reads this same table through hew-testutil; Make derives
+# the complete pre-test builder set from its final column.  Adding an artifact
+# to the verifier therefore adds its builder prerequisite at the same time.
+SHARED_TEST_ARTIFACTS_FILE := hew-testutil/shared-test-artifacts.tsv
+SHARED_TEST_ARTIFACT_TARGETS := $(sort $(shell awk -F '\t' 'NF == 7 && $$1 ~ /^[a-z]/ { print $$7 }' $(SHARED_TEST_ARTIFACTS_FILE)))
+ifeq ($(strip $(SHARED_TEST_ARTIFACT_TARGETS)),)
+$(error $(SHARED_TEST_ARTIFACTS_FILE) produced no shared test artifact targets)
+endif
+
+# Prerequisite bundle for every test target that may demand a shared Cargo
+# artifact. Cargo performs the incremental builds through the table-derived
+# targets; the order-only freshness oracle then re-asserts the host archive at
+# the point of use.
+LIBHEW_READY := $(SHARED_TEST_ARTIFACT_TARGETS) | check-libhew-fresh
 
 # Host triple used to populate lib/<triple>/ for target-aware lib lookup.
 HOST_TRIPLE := $(shell rustc -vV 2>/dev/null | awk '/^host:/ { print $$2 }')
@@ -372,8 +384,8 @@ runtime-build: runtime
 # The hew-lib umbrella crate depends on hew-runtime + all stdlib crates;
 # Cargo produces a single deduplicated staticlib.
 #
-# `stdlib` is the human-facing alias.
-stdlib: libhew-test-targets
+# `stdlib` is the human-facing alias for the complete shared test artifact set.
+stdlib: $(SHARED_TEST_ARTIFACT_TARGETS)
 
 # The gate is itself an artifact build; warming it is building it.
 stdlib-build: stdlib
@@ -989,6 +1001,11 @@ test: wasm-runtime runtime $(LIBHEW_READY)
 # Build this target's binaries the way it builds them, without running them.
 test-build: wasm-runtime runtime $(LIBHEW_READY)
 	$(TEST_RUN_ENV) cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run
+
+# Prove the table-derived builder produced every concrete path the verify-only
+# helpers can demand on this host.
+shared-test-artifact-contract: $(LIBHEW_READY)
+	$(TEST_RUN_ENV) cargo test -p hew-testutil --test shared_artifact_contract -- --ignored --nocapture
 
 # Canonical local macOS memory authority. This is deliberately named as a local
 # authority, not a CI `test-*` gate: hosted macOS processes cannot grant

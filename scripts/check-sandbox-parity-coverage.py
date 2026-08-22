@@ -41,16 +41,11 @@ The contract this script enforces:
      `sandbox-vm-deps` provisions the toolchain).
 
 Marker detection: a file is considered VM-dependent if it contains the
-literal substring `hew-sandbox-vm` anywhere -- the Node/npm toolchain
-directory every real spawn path names (`ensure_parity_runner_built`,
-`run_sandbox`, `run_sandbox_inline`, ...). This is a whole-file substring
-search, not scoped to any parsed function body or #[test]: broad and
-over-inclusive by design, since the only question this script answers
-is "does this binary touch the VM anywhere", not "which test does".
-Over-detecting a file as VM-dependent is safe (worst case its non-VM
-tests move to `make sandbox-parity`, which still runs them);
-under-detecting is the actual bug class this script exists to catch, and
-per-test attribution has already been shown above to be unsafe.
+literal npm script name `parity:run` anywhere. That marker distinguishes a
+real VM execution from the build-only authority that prepares the runner and
+also happens to name the `hew-sandbox-vm` directory. Classification remains a
+whole-file substring search, not a per-test call graph: once a real execution
+marker exists anywhere in a binary, the entire binary is VM-dependent.
 
 Usage: python3 scripts/check-sandbox-parity-coverage.py [--verbose]
 """
@@ -58,6 +53,8 @@ Usage: python3 scripts/check-sandbox-parity-coverage.py [--verbose]
 from __future__ import annotations
 
 import re
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -67,9 +64,8 @@ from corpus_nonempty import assert_nonempty  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TESTS_DIR = REPO_ROOT / "hew-sandbox-wasm" / "tests"
 NEXTEST_TOML = REPO_ROOT / ".config" / "nextest.toml"
-MAKEFILE = REPO_ROOT / "Makefile"
 
-VM_MARKER_STRING = "hew-sandbox-vm"
+VM_MARKER_STRING = "parity:run"
 
 REQUIRED_PROFILES = ("default", "ci")
 
@@ -186,18 +182,36 @@ def excludes_binary(filter_value: str, binary: str) -> bool:
 
 
 def sandbox_parity_test_flags() -> str:
-    makefile_text = MAKEFILE.read_text()
-    m = re.search(
-        r"^sandbox-parity:.*\n(?:.*\n)*?^\tcargo test -p hew-sandbox-wasm(.*)$",
-        makefile_text,
-        re.MULTILINE,
+    result = subprocess.run(
+        ["make", "--no-print-directory", "-n", "sandbox-parity"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
     )
-    if not m:
+    if result.returncode != 0:
         raise SystemExit(
-            "error: could not find `sandbox-parity`'s `cargo test -p "
-            "hew-sandbox-wasm` recipe line in Makefile."
+            "error: Make could not resolve the `sandbox-parity` authority:\n"
+            f"{result.stderr}"
         )
-    return m.group(1)
+    for line in result.stdout.splitlines():
+        try:
+            words = shlex.split(line)
+        except ValueError:
+            continue
+        for index in range(len(words) - 4):
+            if words[index : index + 5] == [
+                "cargo",
+                "test",
+                "-p",
+                "hew-sandbox-wasm",
+                "--test",
+            ]:
+                return " " + " ".join(words[index + 4 :])
+    raise SystemExit(
+        "error: the resolved `sandbox-parity` Make authority does not run "
+        "`cargo test -p hew-sandbox-wasm`."
+    )
 
 
 def main() -> int:

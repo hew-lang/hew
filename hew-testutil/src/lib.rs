@@ -32,6 +32,104 @@ const KILL_GRACE: Duration = Duration::from_secs(5);
 const SPAWN_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
 const SPAWN_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 const TEST_NO_BUILD_ENV: &str = "HEW_TEST_NO_BUILD";
+const SHARED_TEST_ARTIFACTS: &str = include_str!("../shared-test-artifacts.tsv");
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SharedArtifactKind {
+    HostBin,
+    HostStaticlib,
+    CrossStaticlib,
+    WasmStaticlib,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SharedArtifactSpec<'a> {
+    key: &'a str,
+    kind: SharedArtifactKind,
+    package: &'a str,
+    unix_archive: &'a str,
+    windows_archive: &'a str,
+    cargo_args: &'a str,
+    make_target: &'a str,
+}
+
+impl<'a> SharedArtifactSpec<'a> {
+    fn archive(self) -> &'a str {
+        let archive = if cfg!(windows) {
+            self.windows_archive
+        } else {
+            self.unix_archive
+        };
+        // Every field is borrowed from the compile-time table.
+        archive
+    }
+
+    fn cargo_args(self) -> impl Iterator<Item = &'a str> {
+        self.cargo_args
+            .split_ascii_whitespace()
+            .filter(|arg| *arg != "-")
+    }
+}
+
+fn shared_artifact_specs() -> impl Iterator<Item = Result<SharedArtifactSpec<'static>, String>> {
+    SHARED_TEST_ARTIFACTS
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            let fields = line.split('\t').collect::<Vec<_>>();
+            if fields.len() != 7 {
+                return Err(format!(
+                    "shared test artifact row has {} fields instead of 7: {line}",
+                    fields.len()
+                ));
+            }
+            let kind = match fields[1] {
+                "host-bin" => SharedArtifactKind::HostBin,
+                "host-staticlib" => SharedArtifactKind::HostStaticlib,
+                "cross-staticlib" => SharedArtifactKind::CrossStaticlib,
+                "wasm-staticlib" => SharedArtifactKind::WasmStaticlib,
+                other => return Err(format!("unknown shared test artifact kind `{other}`")),
+            };
+            Ok(SharedArtifactSpec {
+                key: fields[0],
+                kind,
+                package: fields[2],
+                unix_archive: fields[3],
+                windows_archive: fields[4],
+                cargo_args: fields[5],
+                make_target: fields[6],
+            })
+        })
+}
+
+fn shared_artifact_spec(
+    key: &str,
+    expected_kind: SharedArtifactKind,
+) -> Result<SharedArtifactSpec<'static>, String> {
+    let mut found = None;
+    for spec in shared_artifact_specs() {
+        let spec = spec?;
+        if spec.key == key {
+            if found.is_some() {
+                return Err(format!("duplicate shared test artifact key `{key}`"));
+            }
+            found = Some(spec);
+        }
+    }
+    let spec = found.ok_or_else(|| format!("shared test artifact `{key}` is not inventoried"))?;
+    if spec.kind != expected_kind {
+        return Err(format!(
+            "shared test artifact `{key}` has kind {:?}, expected {expected_kind:?}",
+            spec.kind
+        ));
+    }
+    if spec.package.is_empty() || spec.archive().is_empty() || spec.make_target.is_empty() {
+        return Err(format!(
+            "shared test artifact `{key}` has an empty required field"
+        ));
+    }
+    Ok(spec)
+}
 
 /// Retry only a temporarily resource-blocked spawn. Once a child exists its
 /// exit status is returned unchanged and never triggers another execution.
@@ -636,9 +734,10 @@ fn abandoned_capture_marker(name: &str) -> Vec<u8> {
 /// Returns `Err` if the archive is missing or uncertified during a test run, or
 /// if an allowed standalone build fails.
 pub fn ensure_hew_lib_built() -> Result<PathBuf, String> {
+    let spec = shared_artifact_spec("hew-lib", SharedArtifactKind::HostStaticlib)?;
     let repo_root = workspace_root()?;
     let (target_dir, profile) = target_dir_and_profile(&repo_root);
-    let lib_path = target_dir.join(&profile).join(hew_lib_name());
+    let lib_path = target_dir.join(&profile).join(spec.archive());
     let debug_dir = target_dir.join(&profile);
     let certificate = debug_dir.join(".hew-libhew-freshness-v1");
     let verify_only = test_run_no_build();
@@ -655,17 +754,16 @@ pub fn ensure_hew_lib_built() -> Result<PathBuf, String> {
                     certificate.is_file()
                 }
         },
-        |td, prof| run_cargo_build_hew_lib(&repo_root, td, prof),
+        |td, prof| run_cargo_build_hew_lib(&repo_root, td, prof, spec.package),
     )?;
     Ok(lib_path)
 }
 
+#[cfg(test)]
 fn hew_lib_name() -> &'static str {
-    if cfg!(windows) {
-        "hew.lib"
-    } else {
-        "libhew.a"
-    }
+    shared_artifact_spec("hew-lib", SharedArtifactKind::HostStaticlib)
+        .expect("hew-lib must be present in the shared test artifact table")
+        .archive()
 }
 
 fn test_run_no_build() -> bool {
@@ -690,6 +788,98 @@ fn verify_hew_lib_certificate(repo_root: &Path, debug_dir: &Path) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
+/// Verify every concrete shared artifact named by the test artifact table.
+///
+/// This is the contract counterpart to Make's table-derived builder. Cross
+/// archives are concrete only on hosts where the test suite can demand them:
+/// both native macOS slices, or the opposite Linux architecture when its
+/// multiarch sysroot is installed.
+///
+/// # Errors
+///
+/// Returns `Err` if the inventory is malformed, an expected artifact is
+/// absent, or the debug host library lacks a valid freshness certificate.
+pub fn verify_shared_test_artifacts() -> Result<Vec<PathBuf>, String> {
+    let repo_root = workspace_root()?;
+    let (target_dir, profile) = target_dir_and_profile(&repo_root);
+    let mut verified = Vec::new();
+
+    for spec in shared_artifact_specs() {
+        let spec = spec?;
+        let paths = match spec.kind {
+            SharedArtifactKind::HostBin | SharedArtifactKind::HostStaticlib => {
+                vec![target_dir.join(&profile).join(spec.archive())]
+            }
+            SharedArtifactKind::WasmStaticlib => vec![target_dir
+                .join(WASM_TARGET)
+                .join(&profile)
+                .join(spec.archive())],
+            SharedArtifactKind::CrossStaticlib => supported_cross_targets()
+                .into_iter()
+                .map(|target| target_dir.join(target).join(&profile).join(spec.archive()))
+                .collect(),
+        };
+        for path in paths {
+            if !path.is_file() {
+                return Err(format!(
+                    "shared test artifact `{}` is absent at {} (builder target `{}`)",
+                    spec.key,
+                    path.display(),
+                    spec.make_target
+                ));
+            }
+            if spec.key == "hew-lib"
+                && profile == "debug"
+                && !verify_hew_lib_certificate(&repo_root, &target_dir.join(&profile))
+            {
+                return Err(format!(
+                    "shared test artifact `{}` is not certified at {}",
+                    spec.key,
+                    path.display()
+                ));
+            }
+            verified.push(path);
+        }
+    }
+
+    Ok(verified)
+}
+
+fn supported_cross_targets() -> Vec<&'static str> {
+    if cfg!(target_os = "macos") {
+        let host = if cfg!(target_arch = "aarch64") {
+            "aarch64-apple-darwin"
+        } else {
+            "x86_64-apple-darwin"
+        };
+        return ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+            .into_iter()
+            .filter(|target| *target != host)
+            .collect();
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let environment = if cfg!(target_env = "musl") {
+            "musl"
+        } else {
+            "gnu"
+        };
+        let (target, sysroot) = match (std::env::consts::ARCH, environment) {
+            ("aarch64", "musl") => ("x86_64-unknown-linux-musl", "/usr/x86_64-linux-musl"),
+            ("aarch64", _) => ("x86_64-unknown-linux-gnu", "/usr/x86_64-linux-gnu"),
+            ("x86_64", "musl") => ("aarch64-unknown-linux-musl", "/usr/aarch64-linux-musl"),
+            ("x86_64", _) => ("aarch64-unknown-linux-gnu", "/usr/aarch64-linux-gnu"),
+            _ => return Vec::new(),
+        };
+        if Path::new(sysroot).is_dir() {
+            return vec![target];
+        }
+    }
+
+    Vec::new()
+}
+
 /// Return the resolved `hew` binary path, building it only outside a test run.
 ///
 /// This mirrors [`ensure_hew_lib_built`] for the compiler-driver binary that the
@@ -706,16 +896,17 @@ fn verify_hew_lib_certificate(repo_root: &Path, debug_dir: &Path) -> bool {
 /// Returns `Err` if a test run finds the binary absent, or if an allowed
 /// standalone build fails.
 pub fn ensure_hew_bin_built() -> Result<PathBuf, String> {
+    let spec = shared_artifact_spec("hew-bin", SharedArtifactKind::HostBin)?;
     let repo_root = workspace_root()?;
     let (target_dir, profile) = target_dir_and_profile(&repo_root);
-    let bin_path = target_dir.join(&profile).join(hew_bin_name());
+    let bin_path = target_dir.join(&profile).join(spec.archive());
     ensure_built_serialized(
         &target_dir,
         &profile,
         "hew-bin",
         &bin_path,
         || true,
-        |td, prof| run_cargo_build_hew_bin(&repo_root, td, prof),
+        |td, prof| run_cargo_build_hew_bin(&repo_root, td, prof, spec),
     )?;
     Ok(bin_path)
 }
@@ -739,9 +930,10 @@ pub fn ensure_hew_lib_built_for_target(
     target: &str,
     still_current: impl Fn(&Path) -> bool,
 ) -> Result<PathBuf, String> {
+    let spec = shared_artifact_spec("hew-lib-cross", SharedArtifactKind::CrossStaticlib)?;
     let repo_root = workspace_root()?;
     let (target_dir, profile) = target_dir_and_profile(&repo_root);
-    let lib_path = target_dir.join(target).join(&profile).join(hew_lib_name());
+    let lib_path = target_dir.join(target).join(&profile).join(spec.archive());
     let artifact = lib_path.clone();
     ensure_built_serialized(
         &target_dir,
@@ -749,18 +941,18 @@ pub fn ensure_hew_lib_built_for_target(
         &format!("hew-lib-{target}"),
         &lib_path,
         || still_current(&artifact),
-        |td, prof| run_cargo_build_cross_target_hew_lib(&repo_root, td, prof, target),
+        |td, prof| run_cargo_build_cross_target_hew_lib(&repo_root, td, prof, target, spec.package),
     )?;
     Ok(lib_path)
 }
 
-/// Serialize a host `cargo build -p <package>` staticlib bootstrap and return
-/// the resolved archive path.
+/// Return the resolved native `hew-runtime` static library, building it only
+/// outside a test run.
 ///
 /// `hew-lib` has its own authority ([`ensure_hew_lib_built`]) because it also
 /// publishes a freshness certificate. This covers the other shared-target
-/// staticlibs -- notably `hew-runtime`, which link tests read while a sibling
-/// process could be inside Cargo's non-atomic uplift of the same file.
+/// staticlib, which link tests read while a sibling process could be inside
+/// Cargo's non-atomic uplift of the same file.
 ///
 /// Test runs are verify-only: their gate must build this archive before
 /// starting the test runner. Outside a test run, callers retain the serialized
@@ -771,32 +963,29 @@ pub fn ensure_hew_lib_built_for_target(
 /// Returns `Err` if a test run finds the archive absent, if the lock cannot be
 /// taken outside a test run, if the build fails or cannot be spawned, or if the
 /// archive is absent after a successful build.
-pub fn ensure_host_staticlib_built(
-    package: &str,
-    archive: &str,
-    extra_cargo_args: &[&str],
-) -> Result<PathBuf, String> {
+pub fn ensure_host_runtime_built() -> Result<PathBuf, String> {
+    let spec = shared_artifact_spec("hew-runtime", SharedArtifactKind::HostStaticlib)?;
     let repo_root = workspace_root()?;
     let (target_dir, profile) = target_dir_and_profile(&repo_root);
-    let archive_path = target_dir.join(&profile).join(archive);
+    let archive_path = target_dir.join(&profile).join(spec.archive());
     ensure_built_serialized(
         &target_dir,
         &profile,
-        &format!("host-{package}"),
+        "host-hew-runtime",
         &archive_path,
         || true,
         |td, prof| {
             let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-            cmd.args(["build", "-q", "-p", package])
-                .args(extra_cargo_args)
+            cmd.args(["build", "-q", "-p", spec.package])
+                .args(spec.cargo_args())
                 .args(profile_args(prof))
                 .env("CARGO_TARGET_DIR", td)
                 .current_dir(&repo_root);
             let out = cmd
                 .output()
-                .map_err(|e| format!("spawn cargo build -p {package}: {e}"))?;
+                .map_err(|e| format!("spawn cargo build -p {}: {e}", spec.package))?;
             if !out.status.success() {
-                return Err(describe(&format!("cargo build -p {package}"), &out));
+                return Err(describe(&format!("cargo build -p {}", spec.package), &out));
             }
             Ok(())
         },
@@ -804,8 +993,8 @@ pub fn ensure_host_staticlib_built(
     Ok(archive_path)
 }
 
-/// Serialize a `cargo build -p <package> --target wasm32-wasip1` staticlib
-/// bootstrap and return the resolved archive path.
+/// Resolve an inventoried wasm32-wasip1 staticlib, building it only outside a
+/// test run.
 ///
 /// Same hazard, same spine as [`ensure_hew_lib_built`]: `wasm-ld` reads these
 /// archives while a sibling process could be rewriting them. Test runs are
@@ -819,19 +1008,19 @@ pub fn ensure_host_staticlib_built(
 /// Returns `Err` if the lock cannot be taken, if the build (or its clean and
 /// retry) fails or cannot be spawned, or if the archive is still absent
 /// afterwards.
-pub fn ensure_wasm_staticlib_built(
-    package: &str,
-    archive: &str,
-    extra_cargo_args: &[&str],
-) -> Result<PathBuf, String> {
+fn ensure_wasm_staticlib_built(key: &str) -> Result<PathBuf, String> {
+    let spec = shared_artifact_spec(key, SharedArtifactKind::WasmStaticlib)?;
     let repo_root = workspace_root()?;
     let (target_dir, profile) = target_dir_and_profile(&repo_root);
-    let archive_path = target_dir.join(WASM_TARGET).join(&profile).join(archive);
+    let archive_path = target_dir
+        .join(WASM_TARGET)
+        .join(&profile)
+        .join(spec.archive());
     let archive_path_for_build = archive_path.clone();
     ensure_built_serialized(
         &target_dir,
         &profile,
-        &format!("wasm-{package}"),
+        &format!("wasm-{}", spec.package),
         &archive_path,
         || true,
         |td, prof| {
@@ -839,13 +1028,33 @@ pub fn ensure_wasm_staticlib_built(
                 &repo_root,
                 td,
                 prof,
-                package,
-                extra_cargo_args,
+                spec.package,
+                &spec.cargo_args().collect::<Vec<_>>(),
                 &archive_path_for_build,
             )
         },
     )?;
     Ok(archive_path)
+}
+
+/// Return the prebuilt wasm32-wasip1 runtime archive.
+///
+/// # Errors
+///
+/// Returns `Err` when the shared artifact is absent during a test run, or when
+/// an allowed standalone build fails.
+pub fn ensure_wasm_runtime_built() -> Result<PathBuf, String> {
+    ensure_wasm_staticlib_built("hew-runtime-wasi")
+}
+
+/// Return the prebuilt wasm32-wasip1 standard-library archive.
+///
+/// # Errors
+///
+/// Returns `Err` when the shared artifact is absent during a test run, or when
+/// an allowed standalone build fails.
+pub fn ensure_wasm_std_built() -> Result<PathBuf, String> {
+    ensure_wasm_staticlib_built("hew-std-wasi")
 }
 
 /// Build a throwaway fixture crate into a target directory it owns outright.
@@ -878,7 +1087,7 @@ pub fn cargo_build_isolated(
         return Err(format!(
             "cargo_build_isolated requires a private target directory; {} is inside the \
              shared workspace target {} -- use ensure_hew_lib_built / \
-             ensure_hew_lib_built_for_target / ensure_wasm_staticlib_built instead",
+             ensure_hew_lib_built_for_target / an inventoried WASI helper instead",
             target_dir.display(),
             shared_target.display()
         ));
@@ -958,9 +1167,10 @@ fn run_cargo_build_cross_target_hew_lib(
     target_dir: &Path,
     profile: &str,
     target: &str,
+    package: &str,
 ) -> Result<(), String> {
     let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    cmd.args(["build", "-q", "-p", "hew-lib", "--target", target])
+    cmd.args(["build", "-q", "-p", package, "--target", target])
         .args(profile_args(profile))
         .env("CARGO_TARGET_DIR", target_dir)
         .current_dir(repo_root);
@@ -1035,6 +1245,7 @@ fn workspace_root() -> Result<PathBuf, String> {
     )
 }
 
+#[cfg(test)]
 fn hew_bin_name() -> &'static str {
     if cfg!(windows) {
         "hew.exe"
@@ -1047,9 +1258,11 @@ fn run_cargo_build_hew_bin(
     repo_root: &Path,
     target_dir: &Path,
     profile: &str,
+    spec: SharedArtifactSpec<'_>,
 ) -> Result<(), String> {
     let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    cmd.args(["build", "-q", "-p", "hew-cli", "--bin", "hew"])
+    cmd.args(["build", "-q", "-p", spec.package])
+        .args(spec.cargo_args())
         .env("CARGO_TARGET_DIR", target_dir)
         .current_dir(repo_root);
     match profile {
@@ -1230,13 +1443,14 @@ fn run_cargo_build_hew_lib(
     repo_root: &Path,
     target_dir: &Path,
     profile: &str,
+    package: &str,
 ) -> Result<(), String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut cargo_args = vec![
         OsString::from("build"),
         OsString::from("-q"),
         OsString::from("-p"),
-        OsString::from("hew-lib"),
+        OsString::from(package),
     ];
     match profile {
         // dev/test both land in target/debug

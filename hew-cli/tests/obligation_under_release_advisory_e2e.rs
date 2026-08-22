@@ -165,7 +165,7 @@ fn user_under_release_leak_warns_but_builds_green() {
         .filter(|l| l.contains("obligation balance in"))
     {
         assert!(
-            line.trim_start().starts_with("warning:"),
+            line.contains(": warning: E_MIR_CHECK:"),
             "the under-release advisory must render as `warning:`, never `error:` \
              — offending line: {line:?}\n{}",
             describe_output(&output)
@@ -213,7 +213,7 @@ fn mangled_generic_iter_leak_is_not_suppressed() {
     );
     for line in &mangled_lines {
         assert!(
-            line.trim_start().starts_with("warning:"),
+            line.contains(": warning: E_MIR_CHECK:"),
             "the `count_iter$$Item` advisory must render as `warning:`, never \
              `error:` — offending line: {line:?}\n{}",
             describe_output(&output)
@@ -325,8 +325,8 @@ fn text_dump_mir_still_warns_on_stderr() {
             && stderr
                 .lines()
                 .filter(|l| l.contains("obligation balance in"))
-                .all(|l| l.trim_start().starts_with("warning:")),
-        "the advisory must render as a `warning:` on stderr in text dump mode;\n{}",
+                .all(|l| l.contains(": warning: E_MIR_CHECK:")),
+        "the advisory must render with a source location and `warning:` severity on stderr in text dump mode;\n{}",
         describe_output(&output)
     );
     assert!(

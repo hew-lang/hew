@@ -672,7 +672,8 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
             offending_sites.first().copied()
         }
         hew_mir::MirDiagnosticKind::MustConsume { bind_site, .. } => Some(*bind_site),
-        hew_mir::MirDiagnosticKind::SelectArmNotImplemented { site, .. }
+        hew_mir::MirDiagnosticKind::ObligationUnderReleased { site, .. }
+        | hew_mir::MirDiagnosticKind::SelectArmNotImplemented { site, .. }
         | hew_mir::MirDiagnosticKind::NotYetImplemented { site, .. }
         | hew_mir::MirDiagnosticKind::InvalidActorSpawnArgument { site, .. }
         | hew_mir::MirDiagnosticKind::MissingActorSpawnArgument { site, .. }
@@ -693,7 +694,6 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
         | hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { .. }
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
-        | hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. }
         | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. }
         | hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
@@ -795,12 +795,20 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
         hew_mir::MirDiagnosticKind::ObligationUnderReleased {
             function,
             name,
+            local_ty,
+            blocks,
             reason,
             ..
         } => {
+            let typed_name = if local_ty.is_empty() {
+                format!("owned value `{name}`")
+            } else {
+                format!("owned value `{name}` of type `{local_ty}`")
+            };
             format!(
-                "obligation balance in `{function}`: owned value `{name}` is \
-                 never released on an exit path (leak): {reason}"
+                "obligation balance in `{function}`: {typed_name} is never \
+                 released on {} exit path(s) (leak): {reason}",
+                blocks.len(),
             )
         }
         hew_mir::MirDiagnosticKind::ObligationOverReleased {
@@ -980,6 +988,14 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
     format!("{}: {message}", mir_diagnostic_prefix(&diagnostic.kind))
 }
 
+fn mir_block_list(blocks: &[u32]) -> String {
+    blocks
+        .iter()
+        .map(|block| format!("bb{block}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
     let mut notes = Vec::new();
     notes.push(format!("MIR kind: {}", mir_kind_name(&diagnostic.kind)));
@@ -1042,13 +1058,15 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
             notes.push(format!("site: {site}"));
         }
         hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, .. }
-        | hew_mir::MirDiagnosticKind::ObligationUnderReleased { block, .. }
         | hew_mir::MirDiagnosticKind::ObligationOverReleased { block, .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { block, .. }
         | hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { block, .. }
         | hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { block, .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { block, .. } => {
             notes.push(format!("block: {block}"));
+        }
+        hew_mir::MirDiagnosticKind::ObligationUnderReleased { blocks, .. } => {
+            notes.push(format!("unreleased exits: {}", mir_block_list(blocks)));
         }
         hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { field_index, .. } => {
             notes.push(format!("field index: {field_index}"));
@@ -1099,6 +1117,14 @@ fn site_is_imported_stdlib(site: &hew_hir::HirSiteSource) -> bool {
     site.source_module.as_deref().is_some_and(|module| {
         module == "std" || module.starts_with("std.") || module.starts_with("std::")
     })
+}
+
+fn mir_site_is_user_facing(
+    advisory: bool,
+    site: &hew_hir::HirSiteSource,
+    show_imported_stdlib: bool,
+) -> bool {
+    !advisory || show_imported_stdlib || !site_is_imported_stdlib(site)
 }
 
 fn mir_source_context_unavailable_note(site: &hew_hir::HirSiteSource) -> String {
@@ -1178,6 +1204,7 @@ pub(crate) fn render_mir_diagnostics(
     diagnostics: &[hew_mir::MirDiagnostic],
 ) {
     let json = crate::diagnostic_json::json_output_active();
+    let show_imported_stdlib = std::env::var_os("HEW_STDLIB_SOURCE_GATE").is_some();
     for diagnostic in diagnostics {
         // Advisory diagnostics (obligation under-release leaks) render as
         // WARNINGS and never fail the build; everything else is a hard error.
@@ -1194,9 +1221,12 @@ pub(crate) fn render_mir_diagnostics(
             }
             continue;
         };
-        // Compiler-shipped implementation advisories are enforced by the
-        // stdlib source gate; they are not actionable in a user build.
-        if advisory && site_is_imported_stdlib(site) {
+        // Decide the user-facing boundary before selecting a text or JSON
+        // renderer. Compiler-shipped implementation advisories remain visible
+        // when their stdlib file is checked directly, where the site has root
+        // origin, or when the stdlib source gate requests them explicitly;
+        // imported stdlib sites are not actionable in ordinary user builds.
+        if !mir_site_is_user_facing(advisory, site, show_imported_stdlib) {
             continue;
         }
         let Some((source, filename)) =
@@ -1577,9 +1607,11 @@ mod tests {
             source_module: Some("my_package.std_helpers".to_string()),
         };
 
-        assert!(site_is_imported_stdlib(&stdlib));
-        assert!(!site_is_imported_stdlib(&user));
-        assert!(!site_is_imported_stdlib(&dependency));
+        assert!(!mir_site_is_user_facing(true, &stdlib, false));
+        assert!(mir_site_is_user_facing(true, &stdlib, true));
+        assert!(mir_site_is_user_facing(false, &stdlib, false));
+        assert!(mir_site_is_user_facing(true, &user, false));
+        assert!(mir_site_is_user_facing(true, &dependency, false));
     }
 
     #[test]

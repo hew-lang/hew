@@ -2336,24 +2336,30 @@ def main() -> int:
     step_commands = ci_step_commands(workflows)
     ci_text = "\n".join(command for _, command in step_commands)
     if "ci-preflight-dispatcher.sh" in ci_text:
-        fallback = subprocess.run(
-            [
-                "bash",
-                str(DISPATCHER),
-                "--dry-run",
-                "--",
-                "some-unclassified-root-file.txt",
-            ],
-            cwd=REPO_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if fallback.returncode != 0:
-            print(fallback.stderr, file=sys.stderr)
-            return 2
-        step_commands.append(("ci dispatcher fail-closed selection", fallback.stdout))
-        ci_text += "\n" + fallback.stdout
+        for selection_name, probe_path in (
+            ("fallback", "some-unclassified-root-file.txt"),
+            ("scripts-config", "scripts/example.sh"),
+        ):
+            selection = subprocess.run(
+                [
+                    "bash",
+                    str(DISPATCHER),
+                    "--dry-run",
+                    "--",
+                    probe_path,
+                ],
+                cwd=REPO_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if selection.returncode != 0:
+                print(selection.stderr, file=sys.stderr)
+                return 2
+            step_commands.append(
+                (f"ci dispatcher {selection_name} selection", selection.stdout)
+            )
+            ci_text += "\n" + selection.stdout
 
     print(
         f"==> parsed {len(workflows)} workflow(s); {len(live)} can trigger; "

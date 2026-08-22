@@ -74,7 +74,7 @@ impl<'a> SharedArtifactSpec<'a> {
 fn shared_artifact_specs() -> impl Iterator<Item = Result<SharedArtifactSpec<'static>, String>> {
     SHARED_TEST_ARTIFACTS
         .lines()
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with("gate\t"))
         .map(|line| {
             let fields = line.split('\t').collect::<Vec<_>>();
             if fields.len() != 7 {

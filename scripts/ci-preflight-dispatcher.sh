@@ -369,10 +369,10 @@ emit_failure_annotation() {
 # replay IS the evidence that the bait path ran, so a gate that produces none is
 # either gutted or was never counterfactual-carrying and does not belong here.
 #
-# The roster covers the gates that need no compiler build, keeping this a fast
-# check rather than a second preflight.  A gate that needs `make hew` is proved
-# by the preflight run itself: its first-failure line is only ever consulted
-# once it has already failed.
+# The shared-artifact inventory declares which roster members need compiled
+# inputs. The default selection runs only artifact-free checks, while the
+# companion Make target runs the declared shared-artifact checks after building
+# their prerequisites.
 # test-stdlib-execution-proofs and freebsd-workflow-contract-check are
 # deliberately absent: both are plain assertion gates that never drive a tool
 # against rigged input, so they carry no counterfactual to mark and nothing here
@@ -387,11 +387,35 @@ COUNTERFACTUAL_ROSTER=(
     "make test-leak-oracle-selftest"
 )
 
+COUNTERFACTUAL_GATE_REQUIREMENTS_FILE="${REPO_ROOT}/hew-testutil/shared-test-artifacts.tsv"
+
+counterfactual_gate_requirement() {
+    local target="$1"
+    local requirement
+
+    requirement="$(
+        awk -F '\t' -v target="$target" \
+            '$1 == "gate" && $2 == target { print $3 }' \
+            "$COUNTERFACTUAL_GATE_REQUIREMENTS_FILE"
+    )"
+    case "$requirement" in
+        "")
+            printf '%s\n' "artifact-free"
+            ;;
+        shared-artifacts)
+            printf '%s\n' "$requirement"
+            ;;
+        *)
+            die "invalid shared-artifact requirement for $target: $requirement"
+            ;;
+    esac
+}
+
 run_counterfactual_output_check() {
-    local cmd output offenders marked
+    local cmd target requirement output offenders marked
     local status=0
     local failures=0
-    local roster=("${COUNTERFACTUAL_ROSTER[@]}")
+    local roster=()
 
     # Test-only roster replacement, behind the same explicit sentinel every
     # other command override uses.  The three verdicts below (OFFENDS, SILENT,
@@ -407,6 +431,18 @@ run_counterfactual_output_check() {
             [[ -n "$cmd" ]] || continue
             roster+=("$cmd")
         done <<< "$PREFLIGHT_TEST_COUNTERFACTUAL_ROSTER"
+    else
+        for cmd in "${COUNTERFACTUAL_ROSTER[@]}"; do
+            target="${cmd#make }"
+            requirement="$(counterfactual_gate_requirement "$target")"
+            if [[ "$requirement" == "shared-artifacts" ]] && (( SHARED_ARTIFACT_GATES == 0 )); then
+                continue
+            fi
+            if [[ "$requirement" == "artifact-free" ]] && (( SHARED_ARTIFACT_GATES == 1 )); then
+                continue
+            fi
+            roster+=("$cmd")
+        done
     fi
 
     echo "==> counterfactual-output check (${#roster[@]} gate(s))"
@@ -452,6 +488,7 @@ DRY_RUN=0
 FAIL_FAST=0
 CLASSIFY_ONLY=0
 CHECK_COUNTERFACTUAL_OUTPUT=0
+SHARED_ARTIFACT_GATES=0
 BASE_REF=""
 EXPLICIT_PATHS=0
 LANE_REASON=""
@@ -498,6 +535,9 @@ Dispatch a conservative local CI preflight based on changed files.
                         Run the rostered self-tests and fail if a PASSING one prints a
                         line the first-failure extractor would report; exit without
                         dispatching a preflight.
+- --shared-artifact-gates
+                        With --check-counterfactual-output, select only rostered checks
+                        declared to require shared artifacts.
 - --profile-json <path> Write command and warm-up timing as a JSON array to <path> (one
                         object per step, with "cmd", "elapsed_s", "status", "phase" fields).
 - --github-output <path> Append the selected profile and compile requirement as
@@ -952,6 +992,10 @@ while [[ $# -gt 0 ]]; do
             CHECK_COUNTERFACTUAL_OUTPUT=1
             shift
             ;;
+        --shared-artifact-gates)
+            SHARED_ARTIFACT_GATES=1
+            shift
+            ;;
         --shard)
             shift
             [[ $# -gt 0 ]] || die "--shard requires a K/N spec"
@@ -1006,6 +1050,10 @@ fi
 
 if (( SHARD_PLAN_ONLY == 1 && SHARD_INDEX != 0 )); then
     die "--shard and --shard-plan are mutually exclusive"
+fi
+
+if (( SHARED_ARTIFACT_GATES == 1 && CHECK_COUNTERFACTUAL_OUTPUT == 0 )); then
+    die "--shared-artifact-gates requires --check-counterfactual-output"
 fi
 
 if (( CHECK_COUNTERFACTUAL_OUTPUT == 1 )); then
@@ -1145,8 +1193,15 @@ elif (( NEEDS_RUST_CLOSURE == 1 )); then
 fi
 
 for selected_gate in "${SELECTED_GATES[@]+"${SELECTED_GATES[@]}"}"; do
+    if [[ "$selected_gate" == "check-counterfactual-output" ]] && (( COMPREHENSIVE == 1 )); then
+        continue
+    fi
     add_command "make $selected_gate"
 done
+
+if (( COMPREHENSIVE == 1 )); then
+    add_command "make check-counterfactual-output-artifacts"
+fi
 
 # Test-only override for dispatcher command execution. This keeps failure-policy
 # tests deterministic without widening the public command-substitution surface.

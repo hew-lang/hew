@@ -154,7 +154,7 @@ MAKEFILE_PARSE_INPUTS := \
 	scripts/libhew-inputs.py \
 	hew-testutil/shared-test-artifacts.tsv
 
-.PHONY: shared-test-artifact-contract
+.PHONY: shared-test-artifact-contract check-counterfactual-output-artifacts
 .PHONY: assemble assemble-release pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
@@ -1432,6 +1432,9 @@ check-counterfactual-output:
 
 # Validate the dispatcher ahead of the counterfactual gate's timeout budget.
 check-counterfactual-output-build:
+	bash -n scripts/ci-preflight-dispatcher.sh
+
+check-counterfactual-output-artifacts-build: $(LIBHEW_READY)
 	bash -n scripts/ci-preflight-dispatcher.sh
 
 # inputs: std/* scripts/stdlib-ratchet.sh scripts/stdlib-expected-failures.txt

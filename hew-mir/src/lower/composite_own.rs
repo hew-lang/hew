@@ -6714,6 +6714,7 @@ mod owned_record_drop_derivation {
             &hew_hir::LifecycleRegistry::default(),
             &[],
             &HashMap::new(),
+            &HashSet::new(),
         )
     }
 

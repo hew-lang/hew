@@ -631,11 +631,13 @@ pub(super) fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         // EnumCloneInplace has the same non-consuming-read semantics.
         | Instr::EnumCloneInplace { .. }
         | Instr::ValueSnapshotClone { .. }
-        | Instr::ValueSnapshotDrop { .. }
-        // A payload-slot neutralize nulls the scrutinee's transferred slot; it
-        // does not hand any local out of the body.
-        | Instr::NeutralizePayloadSlot { .. }
-        | Instr::AggregateProjectionNeutralize { .. } => false,
+        | Instr::ValueSnapshotDrop { .. } => false,
+        // Neutralizing a projection of the tracked owner witnesses that its
+        // release authority moved to the transferee. A later body-end drop of
+        // that same owner would be a second static discharge. Neutralizations
+        // rooted in any other local remain ordinary non-escaping instructions.
+        Instr::NeutralizePayloadSlot { place, .. } => refs(*place),
+        Instr::AggregateProjectionNeutralize { root, .. } => refs(*root),
     }
 }
 /// True when a terminator transfers ownership of `local` out of the body: a

@@ -184,6 +184,8 @@ def archive_or_stamp_maybe_transient(debug_dir: Path) -> bool:
 
 
 def build(debug_dir: Path, command: list[str]) -> None:
+    if os.environ.get("HEW_TEST_NO_BUILD") == "1" or os.environ.get("NEXTEST_RUN_ID"):
+        die("build is disabled during a test run; run make stdlib before the test gate")
     if not command:
         die("build requires a Cargo command after --")
     before = input_digest()

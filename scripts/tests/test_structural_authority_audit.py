@@ -1064,6 +1064,33 @@ fn bootstrap() {
         False,
     ),
     (
+        "integration test shells an aliased environment cargo",
+        "hew-codegen-rs/tests/exec.rs",
+        """
+fn bootstrap() {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let out = Command::new(cargo)
+        .args(["build", "-p", "hew-lib"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+}
+""",
+        False,
+    ),
+    (
+        "integration test shells a borrowed make alias",
+        "hew-cli/tests/support.rs",
+        """
+fn bootstrap() {
+    let builder = "make";
+    let out = Command::new(&builder).arg("stdlib").output().unwrap();
+    assert!(out.status.success());
+}
+""",
+        False,
+    ),
+    (
         "production code may build",
         "hew-pkg/src/native.rs",
         """
@@ -1078,7 +1105,7 @@ pub fn build_native_dependency() -> bool {
         True,
     ),
     (
-        "the authority crate is the single writer",
+        "the authority crate cannot build from its tests",
         "hew-testutil/src/lib.rs",
         """
 pub fn ensure_hew_lib_built() -> bool {
@@ -1095,6 +1122,20 @@ mod tests {
     fn rebuilds() {
         let _ = std::process::Command::new("cargo").arg("build").status();
     }
+}
+""",
+        False,
+    ),
+    (
+        "the authority crate may build outside a test run",
+        "hew-testutil/src/lib.rs",
+        """
+pub fn ensure_hew_lib_built() -> bool {
+    let out = std::process::Command::new("cargo")
+        .args(["build", "-p", "hew-lib"])
+        .output()
+        .unwrap();
+    out.status.success()
 }
 """,
         True,
@@ -1154,8 +1195,8 @@ for label, rel, body, should_pass in TEST_BUILD_CASES:
             assert result.returncode != 0, (
                 f"test-build authority must reject: {label}\n{result.stdout}"
             )
-            assert (
-                "test-time build tool spawned outside hew-testutil" in result.stderr
-            ), f"rejection for {label} must name the rule:\n{result.stderr}"
+            assert "test-time build tool spawned at" in result.stderr, (
+                f"rejection for {label} must name the rule:\n{result.stderr}"
+            )
 
 print("structural authority audit counterfactuals: PASS")

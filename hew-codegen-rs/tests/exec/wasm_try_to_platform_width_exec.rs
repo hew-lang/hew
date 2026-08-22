@@ -119,29 +119,16 @@ fn wasmtime() -> Option<PathBuf> {
     })
 }
 
-fn ensure_wasm_runtime(repo: &Path) -> Option<PathBuf> {
+fn ensure_wasm_runtime(_repo: &Path) -> Option<PathBuf> {
     static BUILT: OnceLock<Option<PathBuf>> = OnceLock::new();
     BUILT
         .get_or_init(|| {
-            let lib = target_dir(repo)
-                .join("wasm32-wasip1")
-                .join("debug")
-                .join("libhew_runtime.a");
-            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-            let status = Command::new(cargo)
-                .current_dir(repo)
-                .args([
-                    "build",
-                    "--quiet",
-                    "-p",
-                    "hew-runtime",
-                    "--target",
-                    "wasm32-wasip1",
-                    "--no-default-features",
-                ])
-                .status()
-                .ok()?;
-            (status.success() && lib.exists()).then_some(lib)
+            hew_testutil::ensure_wasm_staticlib_built(
+                "hew-runtime",
+                "libhew_runtime.a",
+                &["--no-default-features"],
+            )
+            .ok()
         })
         .clone()
 }
@@ -169,17 +156,9 @@ fn hew_command(repo: &Path) -> Command {
     Command::new(hew_testutil::ensure_hew_bin_built().expect("build hew binary"))
 }
 
-fn ensure_hew_runtime_lib(repo: &Path) -> bool {
+fn ensure_hew_runtime_lib(_repo: &Path) -> bool {
     static BUILT: OnceLock<bool> = OnceLock::new();
-    *BUILT.get_or_init(|| {
-        let lib = target_dir(repo).join("debug").join("libhew.a");
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let status = Command::new(cargo)
-            .current_dir(repo)
-            .args(["build", "--quiet", "-p", "hew-lib"])
-            .status();
-        matches!(status, Ok(s) if s.success()) && lib.exists()
-    })
+    *BUILT.get_or_init(|| hew_testutil::ensure_hew_lib_built().is_ok())
 }
 
 #[test]

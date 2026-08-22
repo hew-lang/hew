@@ -899,6 +899,11 @@ derive_warmup() {
             derive_clippy_warmup "$cmd"
             ;;
         "cargo nextest run "*|"cargo test "*)
+            # Test processes may only read the shared libhew archive. Build and
+            # certify it once before any nextest process exists; the executed
+            # command receives HEW_TEST_NO_BUILD below and fails closed if a
+            # nested path attempts to rebuild it.
+            add_warmup_command "make stdlib"
             if [[ "$cmd" == *" --no-run"* ]]; then
                 add_warmup_command "$cmd"
             else
@@ -1523,6 +1528,7 @@ run_warmup() {
 run_timed_command() {
     local cmd="$1"
     local phase="${2:-command}"
+    local executed_cmd="$cmd"
     local cmd_timeout
     local start=$SECONDS
     local status=0
@@ -1533,13 +1539,19 @@ run_timed_command() {
     echo ""
     echo "==> $cmd"
 
+    case "$cmd" in
+        "cargo nextest run "*|"cargo test "*)
+            executed_cmd="HEW_TEST_NO_BUILD=1 $cmd"
+            ;;
+    esac
+
     log="$(mktemp "${TMPDIR:-/tmp}/hew-preflight-cmd.XXXXXX")"
     # tee, not a redirect: the log is only a diagnostic side-channel; the
     # command's output must still stream to the job log in real time so a
     # hung gate is visible before its watchdog fires.  PIPESTATUS[0] carries
     # the command's real exit code — tee's status must never stand in for it.
     set +e
-    run_in_pgroup_with_timeout "$cmd_timeout" "$cmd" 2>&1 | tee "$log"
+    run_in_pgroup_with_timeout "$cmd_timeout" "$executed_cmd" 2>&1 | tee "$log"
     pipe_status="${PIPESTATUS[0]}"
     set -e
     status="$pipe_status"

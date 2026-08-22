@@ -46,26 +46,16 @@ fn wasmtime() -> Option<PathBuf> {
     })
 }
 
-fn ensure_wasm_runtime(repo: &Path) -> Option<PathBuf> {
+fn ensure_wasm_runtime(_repo: &Path) -> Option<PathBuf> {
     static BUILT: OnceLock<Option<PathBuf>> = OnceLock::new();
     BUILT
         .get_or_init(|| {
-            let lib = target_dir(repo).join("wasm32-wasip1/debug/libhew_runtime.a");
-            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-            let status = Command::new(cargo)
-                .current_dir(repo)
-                .args([
-                    "build",
-                    "--quiet",
-                    "-p",
-                    "hew-runtime",
-                    "--target",
-                    "wasm32-wasip1",
-                    "--no-default-features",
-                ])
-                .status()
-                .ok()?;
-            (status.success() && lib.exists()).then_some(lib)
+            hew_testutil::ensure_wasm_staticlib_built(
+                "hew-runtime",
+                "libhew_runtime.a",
+                &["--no-default-features"],
+            )
+            .ok()
         })
         .clone()
 }

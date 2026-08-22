@@ -552,6 +552,26 @@ def test_compile_warmup_runs_first_and_has_a_summary_row() -> None:
     assert summary.index("warm-up  ") < summary.index("GATE_RAN"), result.stdout
 
 
+def test_rust_diff_derives_its_warmup_artifacts_before_commands() -> None:
+    """A parser diff warms only the artifacts its selected commands need."""
+    result = run_dispatcher("hew-parser/src/lib.rs")
+
+    assert result.returncode == 0, result.stderr
+    packages = (
+        "-p hew-analysis -p hew-cli -p hew-codegen-rs -p hew-compile -p hew-hir "
+        "-p hew-lsp -p hew-mir -p hew-parser -p hew-sandbox-wasm -p hew-types "
+        "-p hew-wasm -p xtask"
+    )
+    warmup = result.stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
+    assert warmup == (
+        f"  - cargo clippy {packages} --tests\n"
+        "  - make hew-native-build wasm-runtime-build\n"
+        "  - make stdlib\n"
+        f"  - cargo nextest run --profile ci {packages} --no-run\n"
+    ), result.stdout
+    assert result.stdout.index("Warm-up:\n") < result.stdout.index("Commands:\n")
+
+
 def test_docs_diff_has_no_warmup_block() -> None:
     # A prose document with no Hew fences selects only static checks.
     result = run_dispatcher("docs/observe.md")
@@ -605,7 +625,7 @@ def test_comprehensive_warms_every_gate_through_its_own_build_form() -> None:
 
     makefile = (ROOT / "Makefile").read_text()
     assert (
-        "\ntest-build: wasm-runtime runtime $(LIBHEW_READY)\n\tcargo nextest run --workspace --exclude hew-cabi --profile ci --no-run\n"
+        "\ntest-build: wasm-runtime runtime $(LIBHEW_READY)\n\t$(TEST_RUN_ENV) cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run\n"
         in makefile
     ), "make test's build form must build its binaries the way make test does"
     assert (
@@ -703,9 +723,9 @@ def test_a_nextest_gate_derives_its_own_invocation_with_no_run() -> None:
     result = explain_warmup("cargo nextest run --profile ci -p hew-mir")
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "cargo nextest run --profile ci -p hew-mir --no-run\n", (
-        result.stdout
-    )
+    assert result.stdout == (
+        "make stdlib\ncargo nextest run --profile ci -p hew-mir --no-run\n"
+    ), result.stdout
 
 
 def test_a_clippy_gate_derives_its_own_invocation_without_the_deny_flag() -> None:

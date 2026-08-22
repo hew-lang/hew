@@ -2068,15 +2068,15 @@ def poisoned_allocator_gate_findings(root: Path) -> tuple[list[str], int]:
 
 # ── test-time build authority ────────────────────────────────────────────────
 #
-# `hew-testutil` is the single writer of every artifact the workspace target
-# directory shares between test processes. Under nextest each test is its own
-# process, so a process-local `OnceLock` around `cargo build` serializes
-# nothing: the module becomes an unlocked WRITER of an archive its siblings are
-# concurrently READING, and a link landing inside Cargo's non-atomic uplift
-# window fails with the artifact-absence signature. Test code therefore does not
-# spawn `cargo` or `make` at all -- it asks `hew-testutil` for the artifact.
+# The Make gate builds every artifact shared between test processes before the
+# runner starts, and `hew-testutil` is verify-only during the run. Under nextest
+# each test is its own process, so a process-local `OnceLock` around `cargo
+# build` serializes nothing: the module becomes an unlocked writer of an archive
+# its siblings are concurrently reading, and a link landing inside Cargo's
+# non-atomic uplift window fails with the artifact-absence signature. Test code
+# therefore does not spawn `cargo` or `make` at all -- it asks `hew-testutil`
+# for the prebuilt artifact.
 TEST_BUILD_TOOLS = {"cargo", "make", "gmake"}
-TEST_BUILD_AUTHORITY_CRATE = "hew-testutil"
 TEST_BUILD_COMMAND_PATTERNS = (
     "Command::new($ARG)",
     "process::Command::new($ARG)",
@@ -2121,15 +2121,30 @@ def build_tool_spelling(arg: str) -> str | None:
     return None
 
 
+def test_build_tool_aliases(
+    ast_grep: Path, root: Path, paths: list[str]
+) -> dict[tuple[str, str], list[tuple[SyntaxRange, str]]]:
+    """Resolve local aliases such as `let cargo = env::var_os("CARGO")`."""
+    aliases: defaultdict[tuple[str, str], list[tuple[SyntaxRange, str]]] = defaultdict(
+        list
+    )
+    for match in run_query_at(ast_grep, root, paths, pattern="let $NAME = $VALUE;"):
+        tool = build_tool_spelling(single_meta(match, "VALUE"))
+        name = single_meta(match, "NAME").strip()
+        if tool is None or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            continue
+        span = node_range(match)
+        aliases[(span.path, name)].append((span, tool))
+    return aliases
+
+
 def test_build_scan_roots(root: Path) -> list[str]:
-    """Crate `src`/`tests`/`benches` trees, minus the authority crate itself."""
+    """Every crate `src`/`tests`/`benches` tree, including authority tests."""
     scanned: list[str] = []
     for manifest in sorted(root.rglob("Cargo.toml")):
         if any(part in POISONED_SKIP_DIRS for part in manifest.parts):
             continue
         crate = manifest.parent
-        if crate.name == TEST_BUILD_AUTHORITY_CRATE:
-            continue
         for tree in ("src", "tests", "benches"):
             if (crate / tree).is_dir():
                 scanned.append(str((crate / tree).relative_to(root)))
@@ -2170,13 +2185,24 @@ def test_build_authority_findings(ast_grep: Path, root: Path) -> tuple[list[str]
     if not scanned:
         return [], 0
 
+    aliases = test_build_tool_aliases(ast_grep, root, scanned)
     candidates: dict[tuple[str, int], tuple[dict[str, object], str]] = {}
     for pattern in TEST_BUILD_COMMAND_PATTERNS:
         for match in run_query_at(ast_grep, root, scanned, pattern=pattern):
-            tool = build_tool_spelling(single_meta(match, "ARG"))
+            arg = single_meta(match, "ARG").strip()
+            tool = build_tool_spelling(arg)
+            span = node_range(match)
+            if tool is None:
+                name = arg.removeprefix("&").strip()
+                declarations = [
+                    (declaration, alias_tool)
+                    for declaration, alias_tool in aliases.get((span.path, name), [])
+                    if declaration.byte_end <= span.byte_start
+                ]
+                if declarations:
+                    _, tool = max(declarations, key=lambda entry: entry[0].byte_end)
             if tool is None:
                 continue
-            span = node_range(match)
             candidates[(span.path, span.byte_start)] = (match, tool)
     if not candidates:
         return [], len(scanned)
@@ -2196,7 +2222,7 @@ def test_build_authority_findings(ast_grep: Path, root: Path) -> tuple[list[str]
                 continue  # production code may build; only test code may not
         line = match["range"]["start"]["line"] + 1  # type: ignore[index]
         findings.append(
-            f"test-time build tool spawned outside {TEST_BUILD_AUTHORITY_CRATE} at "
+            f"test-time build tool spawned at "
             f"{span.path}:{line}: `{tool}`. Under nextest each test is its own "
             f"process, so this is an unlocked writer of the shared target "
             f"directory racing every sibling's read of the same artifact. Use "

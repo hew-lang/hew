@@ -55,7 +55,16 @@ if [[ ! -f "$ir" ]]; then
     exit 1
 fi
 
-ll_bytes="$(wc -c <"$ir" | tr -d ' ')"
+# LLVM prints the target datalayout and triple in the module header. Those
+# lines describe the host target, not the dogfood program, so count only the
+# complete `define … }` blocks just as the LLVM identity oracle does.
+ll_bytes="$(
+    awk '
+        /^define / { in_function = 1 }
+        in_function { printf "%s\n", $0 }
+        in_function && /^}/ { in_function = 0 }
+    ' "$ir" | wc -c | tr -d ' '
+)"
 defines="$(grep -c '^define ' "$ir" || true)"
 basic_blocks="$(
     awk '
@@ -72,7 +81,7 @@ if (( UPDATE == 1 )); then
         echo "# Generated only by:"
         echo "#   make dogfood-compile-measure DOGFOOD_MEASURE_UPDATE=1"
         echo "#"
-        echo "# The gate compares the raw LLVM IR's exact byte count and structural counts."
+        echo "# The gate compares exact LLVM define-block bytes and structural counts."
         echo "ll_bytes=$ll_bytes"
         echo "defines=$defines"
         echo "basic_blocks=$basic_blocks"
@@ -127,7 +136,7 @@ fi
 echo "CF-dogfood-compile-measure: mutated baseline rejected"
 
 echo "dogfood-compile-measure: exact IR gate passed"
-echo "  LLVM IR bytes: $ll_bytes"
+echo "  LLVM define-block bytes: $ll_bytes"
 echo "  defines: $defines"
 echo "  basic blocks: $basic_blocks"
 grep '^hew measure: MIR lowering ' "$log" || echo "hew measure: MIR lowering unavailable"

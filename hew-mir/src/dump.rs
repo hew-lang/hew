@@ -1583,12 +1583,13 @@ fn render_mir_check(check: &MirCheck) -> String {
             blocks,
             site,
             name,
+            mint_provenance,
             hard,
             reason,
             ..
         } => format!(
             "ObligationUnderReleased {function} blocks={blocks:?} site={site:?} \
-             {name} hard={hard} {reason:?}"
+             {name} mint={mint_provenance:?} hard={hard} {reason:?}"
         ),
         MirCheck::ObligationOverReleased {
             function,

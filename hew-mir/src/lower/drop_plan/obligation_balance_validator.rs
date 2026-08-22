@@ -318,6 +318,7 @@ fn bytes_retain_move_requires_independent_destination_release() {
             findings.as_slice(),
             [MirCheck::ObligationUnderReleased {
                 name,
+                mint_provenance: crate::model::ObligationMintProvenance::ExplicitRetain,
                 hard: true,
                 ..
             }] if name == "retained"
@@ -356,6 +357,7 @@ fn string_retain_move_preserves_source_obligation() {
             findings.as_slice(),
             [MirCheck::ObligationUnderReleased {
                 name,
+                mint_provenance: crate::model::ObligationMintProvenance::Ordinary,
                 hard: false,
                 ..
             }] if name == "source"
@@ -387,10 +389,16 @@ fn standalone_retain_adds_an_owner_obligation() {
     assert!(
         matches!(
             findings.as_slice(),
-            [MirCheck::ObligationUnderReleased { hard: true, .. }]
+            [MirCheck::ObligationUnderReleased {
+                mint_provenance: crate::model::ObligationMintProvenance::ExplicitRetain,
+                hard: true,
+                ..
+            }]
         ),
         "one terminal drop cannot pay two owner mints after an explicit retain: {findings:?}"
     );
+    let diagnostic = check_to_diagnostic(&findings[0]).expect("retain finding must be visible");
+    assert!(diagnostic.note.starts_with("an explicit MIR retain minted"));
 }
 
 #[test]
@@ -506,11 +514,19 @@ fn branch_local_retain_debt_is_not_diluted_at_join() {
     assert!(
         matches!(
             findings.as_slice(),
-            [MirCheck::ObligationUnderReleased { hard: true, .. }]
+            [MirCheck::ObligationUnderReleased {
+                mint_provenance: crate::model::ObligationMintProvenance::Mixed,
+                hard: true,
+                ..
+            }]
         ),
         "the retained branch has two mints but only one release; the balanced sibling must \
          not dilute that explicit owner debt at the join: {findings:?}"
     );
+    let diagnostic = check_to_diagnostic(&findings[0]).expect("mixed finding must be visible");
+    assert!(diagnostic
+        .note
+        .starts_with("at least one failing exit path carries an explicit MIR retain"));
 }
 
 #[test]
@@ -670,6 +686,7 @@ fn under_release_aggregates_all_exits_and_projects_the_mint_site() {
     assert_eq!(name, "resolve(...)");
 
     let diagnostic = check_to_diagnostic(&findings[0]).expect("finding must be visible");
+    assert!(diagnostic.note.contains("advisory warning"));
     let MirDiagnosticKind::ObligationUnderReleased {
         blocks, site, name, ..
     } = diagnostic.kind

@@ -6444,6 +6444,10 @@ pub enum MirCheck {
         /// the diagnostic. Empty when the type could not be recovered
         /// (hand-built test MIR).
         local_ty: String,
+        /// Measured origin of the owner mint on the failing path(s). Diagnostic
+        /// prose is rendered from this closed provenance instead of inferring
+        /// a cause from severity.
+        mint_provenance: ObligationMintProvenance,
         /// Explicit retain-backed owner leaks are compiler invariant failures
         /// and therefore blocking; legacy unretained holes remain advisory.
         hard: bool,
@@ -6532,6 +6536,41 @@ pub enum MirCheck {
         name: String,
         reason: String,
     },
+}
+
+/// Closed provenance for owner mints participating in an under-release
+/// finding. The balance validator derives this from its retain bits while
+/// folding CFG exits; diagnostic projection only renders the carried fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ObligationMintProvenance {
+    /// No failing path carries an explicit retain-backed owner mint.
+    #[default]
+    Ordinary,
+    /// Every failing path represented by the finding carries an explicit
+    /// retain-backed owner mint.
+    ExplicitRetain,
+    /// The finding combines ordinary and explicit-retain mint paths.
+    Mixed,
+}
+
+impl ObligationMintProvenance {
+    /// Join two exit-local provenance facts while aggregating one finding.
+    #[must_use]
+    pub const fn join(self, other: Self) -> Self {
+        if matches!((self, other), (Self::Ordinary, Self::Ordinary)) {
+            Self::Ordinary
+        } else if matches!((self, other), (Self::ExplicitRetain, Self::ExplicitRetain)) {
+            Self::ExplicitRetain
+        } else {
+            Self::Mixed
+        }
+    }
+
+    /// Whether this finding contains an explicit retain-backed owner debt.
+    #[must_use]
+    pub const fn is_blocking(self) -> bool {
+        !matches!(self, Self::Ordinary)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

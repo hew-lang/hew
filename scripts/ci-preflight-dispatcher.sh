@@ -1625,7 +1625,11 @@ assert_nextest_pin() {
     echo "cargo-nextest $installed satisfies the pinned $pin"
 }
 
-if [[ "$REQUIRES_COMPILE" == "true" ]]; then
+# A test-only command replacement executes no selected gate, so it must not
+# acquire a tool that only those replaced commands consume.  The routing result
+# still reports requires_compile above; only execution-time provisioning is
+# synthetic here.
+if [[ "$REQUIRES_COMPILE" == "true" && -z "${PREFLIGHT_TEST_COMMANDS:-}" ]]; then
     assert_nextest_pin
 fi
 

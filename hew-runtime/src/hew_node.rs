@@ -5986,8 +5986,12 @@ fn setup_remote_ask(
         };
 
         if !send_ok {
-            reply_table().remove(request_id);
-            return RemoteAskSetupResult::Error(AskError::SendFailed);
+            // The ask is already bound to an authenticated, active connection.
+            // A transport failure from this point is a connection drop, and it
+            // must resolve through the same table authority as reader cleanup.
+            // Returning the registered slot also preserves the suspendable
+            // path's wake protocol when the drop wins before the caller parks.
+            reply_table().fail_connection(connection);
         }
 
         RemoteAskSetupResult::Ok((request_id, pending))
@@ -9741,37 +9745,41 @@ mod tests {
     }
 
     #[test]
-    fn send_failure_removes_pending_reply_slot_no_leak() {
+    fn send_failure_resolves_registered_reply_as_connection_dropped() {
         // `setup_remote_ask` registers a pending reply BEFORE the outbound send;
-        // on a fail-closed send (the SIGPIPE→EPIPE path that returns
-        // `AskError::SendFailed`) it must `remove` the slot so a failed ask
-        // cannot leak a pending entry. This pins that cleanup contract on a
-        // fresh table, isolated from the process-global one.
+        // on a fail-closed send (for example SIGPIPE→EPIPE), the connection
+        // fan-out must own the outcome so this path and reader cleanup cannot
+        // publish different failure codes. This pins that contract on a fresh
+        // table, isolated from the process-global one.
         let table = ReplyRoutingTable::new();
         assert_eq!(table.pending_len(), 0);
 
-        let (request_id, _pending) = table.register(ConnectionKey {
+        let connection = ConnectionKey {
             conn_mgr: 42,
             conn_id: 7,
-        });
+        };
+        let (_request_id, pending) = table.register(connection);
         assert_eq!(
             table.pending_len(),
             1,
             "register must install exactly one pending reply slot"
         );
 
-        // Mirror `setup_remote_ask`'s `!send_ok` branch: remove the slot the ask
-        // registered before the send that just failed.
-        let removed = table.remove(request_id);
-        assert!(
-            removed.is_some(),
-            "the fail-closed send path must find and remove the registered slot"
-        );
+        // Mirror `setup_remote_ask`'s `!send_ok` branch.
+        table.fail_connection(connection);
         assert_eq!(
             table.pending_len(),
             0,
-            "AskError::SendFailed cleanup must not leak the reply slot"
+            "connection-drop cleanup must not leak the reply slot"
         );
+        let guard = pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let outcome = guard.as_ref().expect("send failure must resolve the ask");
+        assert_eq!(outcome.status, ReplyStatus::Failed);
+        assert_eq!(outcome.ask_error, AskError::ConnectionDropped);
+        assert!(outcome.data.is_empty());
     }
 
     #[test]

@@ -62,7 +62,10 @@
 # identity_format_result_retention,os_io_string_result_retention}.rs,
 # hew-std/src/{last_error_retention,string_result_retention,
 # os_io_string_retention,websocket_string_result_retention}.rs, and
-# hew-std/src/http/string_result_retention.rs (hew-lang/hew#2828).
+# hew-std/src/http/string_result_retention.rs (hew-lang/hew#2828), and
+# hew-runtime/tests/stream_sink_result_retention.rs for the file-backed sink
+# handle, where the sole-owner reading is that releasing one result leaves a
+# concurrently live one fully usable rather than a refcount header read.
 #
 # Those criteria do not catch one shape: a callee that allocates fresh, hands
 # the caller a genuinely sole-owned buffer, and separately stashes a raw
@@ -2897,6 +2900,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_sink_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_stream_is_valid"

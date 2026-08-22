@@ -15,3 +15,6 @@ if ! cargo fmt --all -- --check; then
     echo "pre-push: cargo fmt failed — run \`cargo fmt --all\` and re-push." >&2
     exit 1
 fi
+
+echo "pre-push: shell script syntax and style" >&2
+make shell-script-lint

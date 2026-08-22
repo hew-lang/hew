@@ -328,6 +328,9 @@ jobs:
 
       - name: Run structural authority lint
         run: make structural-lint
+
+      - name: Check shell scripts
+        run: make shell-script-lint
       # <<< CI-PARITY-STEPS
 
       - name: Check .hew formatting

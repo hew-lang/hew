@@ -5,6 +5,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HARNESS="$REPO_ROOT/scripts/stdlib-ratchet.sh"
+# shellcheck source=scripts/lib/bare-variant-ratchet.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/bare-variant-ratchet.sh"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/hew-stdlib-deprecation-test.XXXXXX")"
 
 cleanup() {
@@ -56,7 +59,7 @@ if (( bare_variant_status == 0 )); then
     echo "FAIL: a successful check with bare variant diagnostics passed" >&2
     exit 1
 fi
-if [[ "$bare_variant_output" != *"RATCHET FAIL: 2 bare variant diagnostic(s)"* ]]; then
+if [[ "$bare_variant_output" != *"$(bare_variant_ratchet_failure_message 2)"* ]]; then
     echo "FAIL: rejection did not report both bare variant diagnostics" >&2
     exit 1
 fi

@@ -57,6 +57,9 @@ source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
 # shellcheck source=scripts/lib/cargo-output-dir.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
+# shellcheck source=scripts/lib/bare-variant-ratchet.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/bare-variant-ratchet.sh"
 
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/doc-test-expected-failures.txt"
 OUTDIR="$REPO_ROOT/.tmp/doc-fences"
@@ -385,7 +388,7 @@ fi
 
 echo ""
 if [[ $count_bare_variants -gt 0 ]]; then
-    echo "RATCHET FAIL: $count_bare_variants bare variant diagnostic(s) in doc fences:"
+    echo "$(bare_variant_ratchet_failure_message "$count_bare_variants") in doc fences:"
     while IFS= read -r diagnostic; do
         [[ -z "$diagnostic" ]] && continue
         echo "  BARE VARIANT: $diagnostic"

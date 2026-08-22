@@ -44,6 +44,10 @@ HARNESS="$REPO_ROOT/scripts/extract-doc-fences.sh"
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/line-set.sh"
 
+# shellcheck source=scripts/lib/bare-variant-ratchet.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/bare-variant-ratchet.sh"
+
 # shellcheck source=scripts/lib/timeout.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/timeout.sh"
@@ -285,7 +289,7 @@ if [[ "$HARNESS_STATUS" -ne 0 ]]; then
 else
     fail "bare variant diagnostics were accepted"
 fi
-assert_contains "$HARNESS_OUTPUT" "RATCHET FAIL: 2 bare variant diagnostic(s)" \
+assert_contains "$HARNESS_OUTPUT" "$(bare_variant_ratchet_failure_message 2)" \
     "bare variant rejection reports both diagnostics"
 assert_contains "$HARNESS_OUTPUT" "E_BARE_VARIANT_PATTERN" \
     "bare variant rejection preserves the pattern diagnostic"

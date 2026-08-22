@@ -39,6 +39,9 @@ source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
 # shellcheck source=scripts/lib/cargo-output-dir.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
+# shellcheck source=scripts/lib/bare-variant-ratchet.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/bare-variant-ratchet.sh"
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/stdlib-expected-failures.txt"
 HEW_BIN="${HEW_BIN:-$(cargo_debug_dir "$REPO_ROOT")/hew}"
 STDLIB_DIR="$REPO_ROOT/std"
@@ -201,7 +204,7 @@ fi
 
 # Report problems.
 if [[ $count_bare_variants -gt 0 ]]; then
-    echo "RATCHET FAIL: $count_bare_variants bare variant diagnostic(s) in stdlib checks:"
+    echo "$(bare_variant_ratchet_failure_message "$count_bare_variants") in stdlib checks:"
     while IFS= read -r diagnostic; do
         [[ -z "$diagnostic" ]] && continue
         echo "  BARE VARIANT: $diagnostic"

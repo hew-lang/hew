@@ -1939,6 +1939,13 @@ def prove_contained(
 # same reason there is none in A1: the first file on it would be the one that
 # needed fixing.
 #
+# EXTERNAL TARGETS. A command for another repository may name a target this
+# Makefile cannot define. Mark that single command's line explicitly with
+# `# external: owner/repo` or `<!-- external-target: owner/repo -->`; A4 then
+# leaves its target to the named repository. The annotation is deliberately
+# same-line and applies only to that line, so an unannotated unknown target
+# remains a finding.
+#
 # THE RESIDUAL. A hyphenated English compound directly after the verb — "make
 # distinct-but-equal keys collide" — is read as a target by the mid-prose rule.
 # That is the price of catching an invocation nobody wrapped in backticks, and it
@@ -1963,6 +1970,11 @@ _COMMAND_END_RE = re.compile(r"[|&;\n)`]")
 _METAVARIABLE_RE = re.compile(r"[<>${}%*\[\]]|\.\.\.")
 _TARGET_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _TARGET_SHAPED_RE = re.compile(r"^[A-Za-z0-9_.]+-[A-Za-z0-9_.-]*$")
+_EXTERNAL_TARGET_ANNOTATION_RE = re.compile(
+    r"(?:#\s*external|<!--\s*external-target)\s*:\s*"
+    r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*"
+    r"(?:\s*-->)?\s*$"
+)
 
 
 @dataclass(frozen=True)
@@ -2104,7 +2116,14 @@ def documented_make_references(root: Path = REPO_ROOT) -> list[MakeReference]:
             text = (root / path).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
+        external_target_lines = {
+            number
+            for number, line in enumerate(text.splitlines(), start=1)
+            if _EXTERNAL_TARGET_ANNOTATION_RE.search(line)
+        }
         for number, chunk, prose in reader(text):
+            if number in external_target_lines:
+                continue
             for target in make_references_in(chunk, prose):
                 key = (target, f"{path}:{number}")
                 if key not in seen:

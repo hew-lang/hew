@@ -3,6 +3,7 @@
     reason = "shared integration-test helpers are not used by every test target"
 )]
 
+pub mod http_canned;
 pub mod leak_slope;
 
 use fd_lock::RwLock;

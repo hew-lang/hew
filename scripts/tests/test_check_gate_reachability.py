@@ -909,6 +909,51 @@ def test_a_dead_reference_in_a_tracked_doc_is_found_end_to_end() -> None:
     )
 
 
+def test_an_external_target_annotation_does_not_hide_an_unannotated_target() -> None:
+    # A4 cannot resolve a target owned by another repository, but its exemption
+    # must be explicit and cannot make an otherwise identical local typo pass.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env = {
+            "GIT_CONFIG_GLOBAL": str(root / "gitconfig"),
+            "GIT_CONFIG_SYSTEM": str(root / "gitconfig"),
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": tmp,
+        }
+        subprocess.run(["git", "init", "-q", tmp], check=True, env=env)
+        (root / "CONTRIBUTING.md").write_text(
+            f"`make {MISSING}` <!-- external-target: hew-lang/playground -->\n"
+            f"`make {MISSING}`\n"
+        )
+        subprocess.run(["git", "add", "CONTRIBUTING.md"], cwd=tmp, check=True, env=env)
+        found = gate.documented_make_references(root)
+    assert [(r.target, r.where) for r in found] == [(MISSING, "CONTRIBUTING.md:2")], (
+        "the external annotation must exempt only its line; an unannotated "
+        f"unknown target must remain a finding, got {found}"
+    )
+
+
+def test_an_external_target_annotation_requires_owner_and_repository() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env = {
+            "GIT_CONFIG_GLOBAL": str(root / "gitconfig"),
+            "GIT_CONFIG_SYSTEM": str(root / "gitconfig"),
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": tmp,
+        }
+        subprocess.run(["git", "init", "-q", tmp], check=True, env=env)
+        (root / "CONTRIBUTING.md").write_text(
+            f"`make {MISSING}` <!-- external-target: playground -->\n"
+        )
+        subprocess.run(["git", "add", "CONTRIBUTING.md"], cwd=tmp, check=True, env=env)
+        found = gate.documented_make_references(root)
+    assert [(r.target, r.where) for r in found] == [(MISSING, "CONTRIBUTING.md:1")], (
+        "a bare external annotation does not identify an owner/repository and "
+        f"must not hide an unknown target, got {found}"
+    )
+
+
 # ── A5: a declared target does work ──────────────────────────────────────────
 #
 # A0..A4 resolve a name. A5 asks whether the name does anything, because a

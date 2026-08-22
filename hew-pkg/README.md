@@ -59,6 +59,8 @@ first and link its library as a prerequisite of the package program.
 - `hew login` — Log in to the registry via GitHub
 - `hew logout` — Log out from the registry
 - `hew key generate` — Generate a new Ed25519 signing keypair
+- `hew key register [--registry <NAME>]` — Register the existing local signing key with the registry (requires `hew login`)
+  - `--registry`, `-r` — Use a named registry from config
 - `hew key list` — List registered signing keys
 - `hew key info <FINGERPRINT>` — Look up a signing key by fingerprint
 

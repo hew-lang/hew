@@ -1,5 +1,6 @@
 """Static contract tests for the release workflow's prerelease handoff."""
 
+import ast
 import json
 import os
 import re
@@ -10,7 +11,12 @@ import tarfile
 import tempfile
 import textwrap
 import tomllib
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+from time import time
+from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +45,7 @@ RELEASE_LINK_MANIFEST = (
 WINDOWS_RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.ps1"
 WINDOWS_RELEASE_BUILD = ROOT / "scripts" / "windows-release-build.ps1"
 SANITIZER_GATE = ROOT / "scripts" / "check-sanitizer-gate.sh"
+RELEASE_IMAGE_ASSERTION = ROOT / "scripts" / "assert-playground-release-image.sh"
 MAKEFILE = ROOT / "Makefile"
 RELEASE_BINARY_SMOKE = ROOT / "scripts" / "test-release-binary.sh"
 PACKAGE_BUILDER = ROOT / "installers" / "build-packages.sh"
@@ -74,11 +81,164 @@ def playground_job(text: str | None = None) -> str:
 
 
 def playground_script(text: str | None = None) -> str:
-    """Extract the exact Bash program executed by the playground job."""
+    """Extract the exact Bash program executed by the dispatch step.
+
+    Bounded at the next step so the acquisition-mode steps that follow the
+    dispatch cannot leak their YAML into the program under test.
+    """
     job = playground_job() if text is None else text
     step = job.index("      - name: Trigger playground image rebuild\n")
     run = job.index("        run: |\n", step) + len("        run: |\n")
-    return textwrap.dedent(job[run:]).rstrip() + "\n"
+    next_step = job.find("\n      - name: ", run)
+    body = job[run:] if next_step == -1 else job[run : next_step + 1]
+    return textwrap.dedent(body).rstrip() + "\n"
+
+
+def step_of(job: str, name: str) -> str:
+    """Extract one named step's YAML from a job, bounded at the next step."""
+    start = job.index(f"      - name: {name}\n")
+    end = job.find("\n      - name: ", start + 1)
+    return job[start:] if end == -1 else job[start : end + 1]
+
+
+def acquisition_script() -> str:
+    """Extract the exact Bash program that selects the acquisition mode."""
+    job = playground_job()
+    step = step_of(job, "Select release image acquisition mode")
+    run = step.index("        run: |\n") + len("        run: |\n")
+    return textwrap.dedent(step[run:]).rstrip() + "\n"
+
+
+def run_acquisition(mode: str | None) -> tuple:
+    """Execute the acquisition-mode selection with a given repository variable."""
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "github_output"
+        output.touch()
+        env = os.environ.copy()
+        env["GITHUB_OUTPUT"] = str(output)
+        env.pop("PLAYGROUND_PUBLISH_MODE", None)
+        if mode is not None:
+            env["PLAYGROUND_PUBLISH_MODE"] = mode
+        result = subprocess.run(
+            ["bash", "-c", acquisition_script()],
+            cwd=ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        outputs = dict(
+            line.split("=", 1)
+            for line in output.read_text().splitlines()
+            if "=" in line
+        )
+        return result, outputs
+
+
+def run_release_image_assertion(env_overrides: dict) -> subprocess.CompletedProcess:
+    """Execute the release-image assertion with a fixed environment."""
+    env = os.environ.copy()
+    for key in (
+        "IMAGE_REPOSITORY",
+        "IMAGE_TAG",
+        "EXPECTED_REVISION",
+        "GHCR_TOKEN",
+        "GHCR_USERNAME",
+        "DEADLINE_MINUTES",
+        "DEADLINE_EPOCH",
+        "IMAGE_REGISTRY",
+        "IMAGE_REGISTRY_SCHEME",
+        "POLL_INTERVAL_SECONDS",
+    ):
+        env.pop(key, None)
+    env.update(env_overrides)
+    return subprocess.run(
+        [str(RELEASE_IMAGE_ASSERTION)],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+@contextmanager
+def canned_registry(responses: dict[str, list[tuple[int, dict]]]):
+    requests: list[str] = []
+    counts: dict[str, int] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            path = urlparse(self.path).path
+            requests.append(path)
+            sequence = responses.get(path, [(404, {"error": "not found"})])
+            index = counts.get(path, 0)
+            counts[path] = index + 1
+            status, body = sequence[min(index, len(sequence) - 1)]
+            encoded = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        yield server.server_address[1], requests
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def image_manifest(config_digest: str) -> dict:
+    return {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "digest": config_digest,
+            "size": 1,
+        },
+        "layers": [],
+    }
+
+
+def image_config(revision: str) -> dict:
+    return {
+        "architecture": "amd64",
+        "os": "linux",
+        "config": {"Labels": {"org.opencontainers.image.revision": revision}},
+    }
+
+
+def run_canned_release_image_assertion(
+    responses: dict[str, list[tuple[int, dict]]],
+) -> tuple[subprocess.CompletedProcess, list[str]]:
+    responses = {
+        "/token": [(200, {"token": "pull-token"})],
+        **responses,
+    }
+    with canned_registry(responses) as (port, requests):
+        result = run_release_image_assertion(
+            {
+                "IMAGE_REPOSITORY": "hew-lang/playground",
+                "IMAGE_TAG": "v0.6.0-rc2",
+                "EXPECTED_REVISION": HEW_SHA,
+                "GHCR_TOKEN": "test-token",
+                "GHCR_USERNAME": "test-user",
+                "DEADLINE_MINUTES": "1",
+                "IMAGE_REGISTRY": f"127.0.0.1:{port}",
+                "IMAGE_REGISTRY_SCHEME": "http",
+                "POLL_INTERVAL_SECONDS": "1",
+            }
+        )
+    return result, requests
 
 
 def assert_exact_dispatch_correlation(job: str) -> None:
@@ -262,10 +422,16 @@ def run_playground(
 
 
 def assert_wait_budget(job: str) -> None:
-    """Keep caller time above the downstream 5+5+45+30+5 minute maximum."""
+    """Keep the shell's budget authority equal to the enforced job timeout."""
     match = re.search(r"^    timeout-minutes: (\d+)$", job, re.MULTILINE)
     assert match is not None
-    assert int(match.group(1)) >= 100
+    shell_budget = re.search(r"^\s+JOB_TIMEOUT_MINUTES=(\d+)$", job, re.MULTILINE)
+    assert shell_budget is not None
+    assert int(match.group(1)) == int(shell_budget.group(1))
+    assert (
+        "ASSERTION_BUDGET_MINUTES=$((JOB_TIMEOUT_MINUTES - FINALIZATION_RESERVE_MINUTES))"
+        in job
+    )
 
 
 def test_rc_tag_normalization_and_exact_release_body() -> None:
@@ -381,7 +547,7 @@ def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
         in validation_step
     )
     assert "exit 1" in validation_step
-    assert "if:" not in validation_step
+    assert "if: steps.acquisition.outputs.mode == 'actions'" in validation_step
     assert "continue-on-error:" not in validation_step
 
     assert "id: playground-app-token" in token_step
@@ -394,7 +560,7 @@ def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
     assert "private-key: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}" in token_step
     assert "owner: hew-lang" in token_step
     assert "repositories: playground" in token_step
-    assert "if:" not in token_step
+    assert "if: steps.acquisition.outputs.mode == 'actions'" in token_step
     assert "continue-on-error:" not in token_step
     assert "GH_TOKEN: ${{ steps.playground-app-token.outputs.token }}" in trigger_step
     assert "gh repo view hew-lang/playground" in job
@@ -435,6 +601,208 @@ def test_dispatch_correlation_is_unique_and_bounded() -> None:
     assert "mapfile -t RUN_IDS < <(" not in job
     assert "LAST_CANDIDATE_ID" in job
     assert "ambiguous playground workflow dispatch correlation" in job
+
+
+def test_release_image_acquisition_mode_is_exhaustive_and_fails_closed() -> None:
+    for mode in ("actions", "local"):
+        before = int(time())
+        result, outputs = run_acquisition(mode)
+        after = int(time())
+        assert result.returncode == 0, result.stderr
+        assert outputs["mode"] == mode
+        assert outputs["assert_budget_minutes"] == "115"
+        deadline = int(outputs["assert_deadline_epoch"])
+        assert before + 115 * 60 <= deadline <= after + 115 * 60
+
+    for rejected in (None, "", "Actions", "LOCAL", "skip", "true", "actions local"):
+        result, outputs = run_acquisition(rejected)
+        assert result.returncode != 0, repr(rejected)
+        assert "must be exactly 'actions' or 'local'" in result.stdout, repr(rejected)
+        assert outputs == {}, repr(rejected)
+
+
+def test_release_image_assertion_covers_every_acquisition_mode() -> None:
+    job = playground_job()
+    mode_step = step_of(job, "Select release image acquisition mode")
+    assert "id: acquisition" in mode_step
+    assert "PLAYGROUND_PUBLISH_MODE: ${{ vars.PLAYGROUND_PUBLISH_MODE }}" in mode_step
+    assert "if:" not in mode_step
+    assert "continue-on-error:" not in mode_step
+
+    trigger_step = step_of(job, "Trigger playground image rebuild")
+    assert "if: steps.acquisition.outputs.mode == 'actions'" in trigger_step
+
+    local_step = step_of(job, "Report expected local release image publish")
+    assert "if: steps.acquisition.outputs.mode == 'local'" in local_step
+    assert "gh workflow run" not in local_step
+
+    assert_step = step_of(
+        job, "Assert release image exists and binds the release commit"
+    )
+    assert (
+        "if: ${{ !cancelled() && steps.acquisition.outputs.mode != '' }}" in assert_step
+    )
+    assert "continue-on-error:" not in assert_step
+    assert "IMAGE_REPOSITORY: hew-lang/playground" in assert_step
+    assert "IMAGE_TAG: ${{ env.RELEASE_TAG }}" in assert_step
+    assert (
+        "EXPECTED_REVISION: ${{ steps.release-commit.outputs.hew_sha }}" in assert_step
+    )
+    assert "GHCR_TOKEN: ${{ github.token }}" in assert_step
+    assert "GHCR_USERNAME: ${{ github.actor }}" in assert_step
+    assert (
+        "DEADLINE_EPOCH: ${{ steps.acquisition.outputs.assert_deadline_epoch }}"
+        in assert_step
+    )
+    assert "packages: read" in job
+    assert "run: release-machinery/scripts/assert-playground-release-image.sh" in (
+        assert_step
+    )
+
+    machinery_step = step_of(job, "Checkout release machinery")
+    assert "ref: ${{ github.sha }}" in machinery_step
+    assert "path: release-machinery" in machinery_step
+
+    assert RELEASE_IMAGE_ASSERTION.exists()
+    assert RELEASE_IMAGE_ASSERTION.stat().st_mode & stat.S_IXUSR
+
+
+def test_release_image_assertion_rejects_unusable_inputs() -> None:
+    valid = {
+        "IMAGE_REPOSITORY": "hew-lang/playground",
+        "IMAGE_TAG": "v0.6.0-rc2",
+        "EXPECTED_REVISION": HEW_SHA,
+        "GHCR_TOKEN": "test-token",
+        "GHCR_USERNAME": "test-user",
+        "DEADLINE_MINUTES": "1",
+    }
+    # Each case is rejected before any network call, so the assertion can never
+    # reach a registry with an identity it has not fully resolved.
+    cases = {
+        "IMAGE_REPOSITORY": "",
+        "IMAGE_TAG": "",
+        "GHCR_TOKEN": "",
+    }
+    for key, value in cases.items():
+        env = dict(valid, **{key: value})
+        result = run_release_image_assertion(env)
+        assert result.returncode != 0, key
+        assert f"{key} must be set" in result.stderr, key
+
+    without_deadline = {
+        key: value for key, value in valid.items() if key != "DEADLINE_MINUTES"
+    }
+    result = run_release_image_assertion(without_deadline)
+    assert result.returncode != 0
+    assert "DEADLINE_EPOCH or DEADLINE_MINUTES must be set" in result.stderr
+
+    for bad_sha in ("not-a-sha", HEW_SHA[:39], HEW_SHA.upper()):
+        result = run_release_image_assertion(dict(valid, EXPECTED_REVISION=bad_sha))
+        assert result.returncode != 0, bad_sha
+        assert "exact lowercase 40-character commit SHA" in result.stderr, bad_sha
+
+    result = run_release_image_assertion(dict(valid, DEADLINE_MINUTES="soon"))
+    assert result.returncode != 0
+    assert "whole number of minutes" in result.stderr
+
+    result = run_release_image_assertion(dict(valid, POLL_INTERVAL_SECONDS="0"))
+    assert result.returncode != 0
+    assert "POLL_INTERVAL_SECONDS must be a positive whole number" in result.stderr
+
+
+def test_release_image_assertion_accepts_matching_single_manifest() -> None:
+    config_digest = "sha256:config-good"
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [
+                (200, image_manifest(config_digest))
+            ],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [
+                (200, image_config(HEW_SHA))
+            ],
+        }
+    )
+    assert result.returncode == 0, result.stderr
+    assert requests.count("/token") == 1
+
+
+def test_release_image_assertion_polls_past_a_stale_tag() -> None:
+    stale_digest = "sha256:config-stale"
+    good_digest = "sha256:config-good"
+    tag_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
+    result, requests = run_canned_release_image_assertion(
+        {
+            tag_path: [
+                (200, image_manifest(stale_digest)),
+                (200, image_manifest(good_digest)),
+            ],
+            f"/v2/hew-lang/playground/blobs/{stale_digest}": [
+                (200, image_config("f" * 40))
+            ],
+            f"/v2/hew-lang/playground/blobs/{good_digest}": [
+                (200, image_config(HEW_SHA))
+            ],
+        }
+    )
+    assert result.returncode == 0, result.stderr
+    assert requests.count(tag_path) == 2
+    assert "still binds" in result.stderr
+
+
+def test_release_image_assertion_checks_every_platform_in_an_index() -> None:
+    child_digests = ("sha256:manifest-amd64", "sha256:manifest-arm64")
+    config_digests = ("sha256:config-amd64", "sha256:config-arm64")
+    attestation_digest = "sha256:attestation"
+    index = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [
+            {
+                "digest": child_digests[0],
+                "platform": {"os": "linux", "architecture": "amd64"},
+            },
+            {
+                "digest": child_digests[1],
+                "platform": {"os": "linux", "architecture": "arm64"},
+            },
+            {
+                "digest": attestation_digest,
+                "annotations": {"vnd.docker.reference.type": "attestation-manifest"},
+            },
+        ],
+    }
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, index)],
+            f"/v2/hew-lang/playground/manifests/{child_digests[0]}": [
+                (200, image_manifest(config_digests[0]))
+            ],
+            f"/v2/hew-lang/playground/manifests/{child_digests[1]}": [
+                (200, image_manifest(config_digests[1]))
+            ],
+            f"/v2/hew-lang/playground/blobs/{config_digests[0]}": [
+                (200, image_config(HEW_SHA))
+            ],
+            f"/v2/hew-lang/playground/blobs/{config_digests[1]}": [
+                (200, image_config(HEW_SHA))
+            ],
+        }
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"/v2/hew-lang/playground/manifests/{attestation_digest}" not in requests
+
+
+def test_release_image_assertion_rejects_unclassified_platformless_child() -> None:
+    index = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [{"digest": "sha256:unclassified"}],
+    }
+    result, _requests = run_canned_release_image_assertion(
+        {"/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, index)]}
+    )
+    assert result.returncode != 0
+    assert "has no platform.os and is not marked as an attestation" in result.stderr
 
 
 def test_exact_workflow_shell_accepts_one_stable_matching_run() -> None:
@@ -1865,58 +2233,28 @@ def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:
         raise AssertionError("foundational release-gate mutation escaped")
 
 
-_TESTS = [
-    test_rc_tag_normalization_and_exact_release_body,
-    test_release_tag_must_match_cargo_version_before_build,
-    test_npm_publication_is_pinned_to_a_version_matching_release_tag,
-    test_current_sandbox_vm_version_matches_workspace_version,
-    test_playground_dispatch_is_purpose_scoped_and_fail_closed,
-    test_dispatch_uses_exact_playground_workflow_input_and_ref,
-    test_dispatch_correlation_is_unique_and_bounded,
-    test_exact_workflow_shell_accepts_one_stable_matching_run,
-    test_malformed_release_commit_identity_is_terminal,
-    test_run_listing_api_failure_is_terminal,
-    test_run_listing_jq_failure_is_terminal,
-    test_successful_empty_polls_exhaust_the_bound,
-    test_ambiguous_correlation_fails_on_the_first_poll,
-    test_each_exact_run_identity_dimension_is_mandatory,
-    test_timeout_undercut_mutation_is_rejected,
-    test_publish_mode_downgrade_mutation_is_rejected,
-    test_correlation_swap_with_padding_is_rejected,
-    test_correlation_argument_swap_with_padding_is_rejected,
-    test_pipeline_status_masking_mutation_is_rejected,
-    test_required_downstream_failure_is_not_masked,
-    test_prerelease_policy_uses_selected_release_tag,
-    test_public_ecosystem_artifacts_follow_canonical_release,
-    test_unix_installer_accepts_every_published_freebsd_architecture,
-    test_release_checksums_require_every_platform_asset,
-    test_prerelease_validator_proves_external_staticlib_linking,
-    test_every_release_lane_executes_the_library_consumer_proof,
-    test_cross_release_machinery_resolves_from_workflow_ref,
-    test_npm_publish_machinery_resolves_from_workflow_ref,
-    test_cross_release_libraries_are_target_keyed_and_natively_proved,
-    test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh,
-    test_freebsd_x86_64_release_uses_repository_pinned_rust,
-    test_freebsd_aarch64_release_uses_cross_built_consumer,
-    test_sanitizer_gate_is_behavioral_and_release_scoped,
-    test_release_record_is_durable_and_tag_ready,
-    test_contract_oracle_runs_in_required_ci,
-    test_wasm_pack_consumers_prefetch_checksum_pinned_binaryen,
-    test_binaryen_prefetch_pin_mutations_are_rejected,
-    test_windows_test_workflows_initialise_msvc_before_lld_link,
-    test_windows_test_workflow_msvc_ordering_mutations_are_rejected,
-    test_windows_llvm_prebuild_workflow_is_not_owned_by_this_repository,
-    test_windows_llvm_toolchain_pin_is_coherent_across_consumers,
-    test_windows_llvm_toolchain_pin_mutations_are_rejected,
-    test_release_binary_smoke_honors_absolute_and_relative_target_dirs,
-    test_local_release_builds_and_assembles_every_shipped_binary,
-    test_windows_completion_packaging_fails_closed,
-    test_make_release_surfaces_quote_spacious_cargo_target_dir,
-    test_staged_install_and_uninstall_preserve_spacious_path_boundaries,
-    test_distro_tarball_uses_cargo_output_layout_and_release_lib_archive,
-    test_musl_packaging_uses_explicit_target_release_lib_output,
-    test_foundational_release_gates_are_platform_scoped_and_mandatory,
-]
+def _discover_tests() -> tuple[object, ...]:
+    return tuple(
+        test
+        for name, test in globals().items()
+        if name.startswith("test_") and callable(test)
+    )
+
+
+def _test_function_count_in_file() -> int:
+    tree = ast.parse(Path(__file__).read_text())
+    return sum(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test_")
+        for node in tree.body
+    )
+
+
+_TESTS = _discover_tests()
+_EXPECTED_TEST_COUNT = _test_function_count_in_file()
+assert len(_TESTS) == _EXPECTED_TEST_COUNT, (
+    f"discovered {len(_TESTS)} tests, expected {_EXPECTED_TEST_COUNT}"
+)
 
 
 if __name__ == "__main__":

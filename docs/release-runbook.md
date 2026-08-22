@@ -223,15 +223,26 @@ but every arm must succeed before the graph rejoins:
      `@hew-lang/{wasm,sandbox-wasm,sandbox-vm}@0.6.0-rc1`, and wait for each
      result. The workflow checks out that immutable tag and rejects a workspace
      or sandbox package version mismatch. A tag does not publish these packages.
-   - Wait for the release workflow's automated playground dispatch, then
-     verify the published image, API, and `hew run` smoke path against the
-     candidate version.
+   - Satisfy the release workflow's `playground` job, whose contract is the
+     release image itself: `ghcr.io/hew-lang/playground:<tag>` exists and its
+     `org.opencontainers.image.revision` label binds the release commit. The
+     repository variable `PLAYGROUND_PUBLISH_MODE` selects how it is acquired
+     — `actions` dispatches the playground build workflow and watches it;
+     `local` dispatches nothing and waits for a maintainer to run
+     `make release-publish HEW_SHA=<sha> HEW_VERSION=<version>` from a playground checkout. <!-- external-target: hew-lang/playground -->
+     The job logs the exact invocation and fails if the
+     image does not arrive. Then verify the published image, API, and
+     `hew run` smoke path against the candidate version.
+     Running `scripts/assert-playground-release-image.sh` outside Actions
+     requires `GHCR_USERNAME` and `GHCR_TOKEN`; the token must be a classic
+     GitHub PAT with the `read:packages` scope (and organization SSO
+     authorization when the organization requires it).
 5. Only after both arms are green, pin the candidate and cut over the banner in
    `hew.sh` and `hew.run`.
 6. Rebuild Android from the tagged candidate and verify its artifact.
 
 Homebrew intentionally skips prerelease tags; its optional tap update is
-separate from the required playground dispatch. Do not run obsolete downstream
+separate from the required playground release image. Do not run obsolete downstream
 vendoring commands for npm consumers until their vendoring assumptions are
 repaired or the commands are removed.
 

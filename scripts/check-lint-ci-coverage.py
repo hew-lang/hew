@@ -15,14 +15,36 @@ WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 STRUCTURAL_LINT_WRAPPER = ROOT / "scripts" / "ast-grep-lint.sh"
 
 
+def make_variable_words(makefile: str, name: str) -> tuple[str, ...]:
+    words: list[str] = []
+    assignment = re.compile(
+        rf"^{re.escape(name)}\s*(\+=|:=|=)\s*([^\n]*)$", re.MULTILINE
+    )
+    for match in assignment.finditer(makefile):
+        value = match.group(2).split()
+        if match.group(1) == "+=":
+            words.extend(value)
+        else:
+            words = value
+    if not words:
+        raise ValueError(f"Makefile variable {name} has no members")
+    return tuple(words)
+
+
 def lint_prerequisites(makefile: str) -> tuple[str, ...]:
     match = re.search(r"^lint:\s*([^\n]*)$", makefile, re.MULTILINE)
     if match is None:
         raise ValueError("Makefile has no plain lint target")
-    prerequisites = tuple(match.group(1).split())
+    prerequisites: list[str] = []
+    for word in match.group(1).split():
+        variable = re.fullmatch(r"\$\$\(([A-Za-z_][A-Za-z0-9_]*)\)", word)
+        if variable is None:
+            prerequisites.append(word)
+        else:
+            prerequisites.extend(make_variable_words(makefile, variable.group(1)))
     if not prerequisites or len(prerequisites) != len(set(prerequisites)):
         raise ValueError("lint prerequisites must be a nonempty unique list")
-    return prerequisites
+    return tuple(prerequisites)
 
 
 def lint_recipe_tokens(makefile: str) -> tuple[str, ...]:

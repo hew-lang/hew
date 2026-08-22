@@ -27,7 +27,9 @@ def main() -> None:
     assert MODULE.check(makefile, workflow, wrapper) == []
 
     extra = makefile.replace(
-        "lint: structural-lint", "lint: future-lint structural-lint", 1
+        "LINT_GATES += legacy-path-syntax-lint",
+        "LINT_GATES += future-lint\nLINT_GATES += legacy-path-syntax-lint",
+        1,
     )
     require_failure(extra, workflow, "no CI step: future-lint")
 

@@ -97,7 +97,48 @@ fn run_with_suspend_kinds(
         &tracked,
         (&local_types, &mint_sites),
         &params,
+        &HashSet::new(),
     )
+}
+
+#[test]
+fn minted_call_carrier_partial_transfer_without_drop_stays_advisory() {
+    let blocks = vec![block(
+        0,
+        vec![
+            mint(1),
+            Instr::NeutralizePayloadSlot {
+                place: variant_place(1),
+                transferee: None,
+                authority: NeutralizeAuthority::EphemeralTempConsume,
+            },
+        ],
+        Terminator::Return,
+    )];
+    let plans = vec![(ExitPath::Return { block: 0 }, DropPlan::default())];
+    let elab = elab_with_plans(plans);
+    let tracked = [(1_u32, "call carrier".to_string())].into_iter().collect();
+    let local_types = [(1_u32, "Result<Snap, Fail>".to_string())]
+        .into_iter()
+        .collect();
+    let mint_sites = [(1_u32, SiteId(7))].into_iter().collect();
+    let partial_transfer_carrier_mints = [1_u32].into_iter().collect();
+    let findings = validate_obligation_balance_with(
+        &elab,
+        &blocks,
+        &HashMap::new(),
+        &tracked,
+        (&local_types, &mint_sites),
+        &HashSet::new(),
+        &partial_transfer_carrier_mints,
+    );
+    assert!(
+        matches!(
+            findings.as_slice(),
+            [MirCheck::ObligationUnderReleased { hard: false, .. }]
+        ),
+        "a partial call-carrier transfer without a shell drop must remain advisory: {findings:?}"
+    );
 }
 
 use crate::model::NeutralizeAuthority;
@@ -283,6 +324,7 @@ fn param_rebind_and_tuple_load_remint_accept() {
         &tracked,
         (&local_types, &mint_sites),
         &params,
+        &HashSet::new(),
     );
     assert!(
         findings.is_empty(),
@@ -580,6 +622,7 @@ fn fixpoint_cap_exhaustion_fails_closed_unverified() {
         &tracked,
         (&local_types, &mint_sites),
         &params,
+        &HashSet::new(),
         0,
     );
     assert!(

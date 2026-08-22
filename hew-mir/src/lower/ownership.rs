@@ -1,3 +1,5 @@
+use hew_hir::HirProducedValueProducer;
+
 use super::{
     actor_name_from_handle_ty, affine_release_needs_drop_flag, base_local, binding_ref_target,
     callee_returns_fresh_owner, callee_returns_retained_string_owner,
@@ -474,6 +476,21 @@ impl Builder {
             return;
         };
         let provisional = self.owned_locals[index].binding;
+        if let (Some(source_local), Some(destination_local)) = (
+            base_local(source),
+            self.binding_locals
+                .get(&binding)
+                .copied()
+                .and_then(base_local),
+        ) {
+            if self
+                .call_scrutinee_carrier_mint_locals
+                .remove(&source_local)
+            {
+                self.call_scrutinee_carrier_mint_locals
+                    .insert(destination_local);
+            }
+        }
         if let Some(destination) = self.binding_locals.get(&binding).copied() {
             self.typed_produced_value_handoffs
                 .insert((source, destination));
@@ -543,6 +560,17 @@ impl Builder {
             return;
         };
         let provisional = self.owned_locals.remove(index).binding;
+        if let (Some(source_local), Some(destination_local)) =
+            (base_local(source), base_local(dest))
+        {
+            if self
+                .call_scrutinee_carrier_mint_locals
+                .remove(&source_local)
+            {
+                self.call_scrutinee_carrier_mint_locals
+                    .insert(destination_local);
+            }
+        }
         self.synthetic_owner_publication_sites.remove(&provisional);
         // Record the assignment move as a typed handoff, exactly as the `let`
         // adoption seam does. `finalize_string_ownership` consults this set to
@@ -653,6 +681,23 @@ impl Builder {
         else {
             return;
         };
+        let call_carrier_mint = matches!(
+            fact.producer,
+            HirProducedValueProducer::Call
+                | HirProducedValueProducer::ActorAsk
+                | HirProducedValueProducer::RemoteActorAsk
+                | HirProducedValueProducer::Await
+                | HirProducedValueProducer::AwaitTask
+                | HirProducedValueProducer::AwaitRestart
+                | HirProducedValueProducer::ConnAwaitRead
+                | HirProducedValueProducer::ListenerAwaitAccept
+                | HirProducedValueProducer::ChannelRecvAwait
+                | HirProducedValueProducer::StreamRecvAwait
+                | HirProducedValueProducer::CallDynMethod
+                | HirProducedValueProducer::CallTraitMethodStatic
+                | HirProducedValueProducer::VarSelfMethodCall
+                | HirProducedValueProducer::ResolvedImplCall
+        );
         if matches!(fact.ownership, ProducedValueOwnership::ReceiverIdentity) {
             self.transfer_identity_owner(expr.site, fact.receiver, place);
             return;
@@ -807,6 +852,9 @@ impl Builder {
             warrant,
         );
         self.typed_produced_value_owner_bindings.insert(binding);
+        if call_carrier_mint {
+            self.call_scrutinee_carrier_mint_locals.insert(local);
+        }
         if matches!(ty, ResolvedTy::TraitObject { .. }) {
             self.dyn_trait_storage
                 .insert(binding, crate::TraitObjectStorage::HeapBoxed);

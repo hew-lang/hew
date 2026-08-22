@@ -813,6 +813,15 @@ impl Builder {
         visiting: &mut HashSet<u32>,
         memo: &mut HashMap<u32, bool>,
     ) -> bool {
+        let allow_partial_carrier_neutralize =
+            self.call_scrutinee_carrier_mint_locals.contains(&local)
+                && self.locals.get(local as usize).is_some_and(|ty| {
+                    !super::composite_own::direct_payload_has_registered_resource_record(
+                        ty,
+                        &self.enum_layouts,
+                        &self.lifecycle_registry,
+                    )
+                });
         if let Some(ok) = memo.get(&block_id) {
             return *ok;
         }
@@ -828,6 +837,15 @@ impl Builder {
                 .all(|(offset, instr)| {
                     self.yield_share_instr_exempt
                         .contains(&(block_id, start + offset))
+                        || (allow_partial_carrier_neutralize
+                            && matches!(
+                                instr,
+                                Instr::NeutralizePayloadSlot {
+                                    place: Place::MachineVariant { local: root, .. }
+                                        | Place::EnumVariant { local: root, .. },
+                                    ..
+                                } if *root == local
+                            ))
                         || !generator_yield_instr_escapes(instr, local)
                 });
         }
@@ -897,9 +915,18 @@ impl Builder {
                     .iter()
                     .enumerate()
                     .any(|(offset, instr)| {
-                        !self
+                        !(self
                             .yield_share_instr_exempt
                             .contains(&(block_id, start + offset))
+                            || (allow_partial_carrier_neutralize
+                                && matches!(
+                                    instr,
+                                    Instr::NeutralizePayloadSlot {
+                                        place: Place::MachineVariant { local: root, .. }
+                                            | Place::EnumVariant { local: root, .. },
+                                        ..
+                                    } if *root == local
+                                )))
                             && generator_yield_instr_escapes(instr, local)
                     })
                     || (!self.yield_share_term_exempt.contains(&(block_id, local))
@@ -4365,27 +4392,19 @@ impl Builder {
         // payload release discipline below.
         let call_scrutinee_owner =
             self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
-        let method_carrier_has_direct_payload_handoff = arms.iter().any(|arm| {
-            let HirExprKind::BindingRef {
-                resolved: ResolvedRef::Binding(result_binding),
-                ..
-            } = &arm.body.kind
-            else {
-                return false;
-            };
-            arm.bindings
-                .iter()
-                .any(|binding| binding.binding == *result_binding)
-        });
         let call_scrutinee_owner_needs_arm_release = call_scrutinee_owner.is_some()
-            && (matches!(scrutinee.kind, HirExprKind::Call { .. })
-                || self.actor_ask_result_locals.contains(&scrutinee_local)
-                || (method_carrier_has_direct_payload_handoff
-                    && self
-                        .method_scrutinee_emitted_symbol(scrutinee)
-                        .is_some_and(|symbol| {
-                            crate::return_provenance::method_return_provenance(&symbol).is_fresh()
-                        })));
+            && self
+                .call_scrutinee_carrier_mint_locals
+                .contains(&scrutinee_local)
+            && super::composite_own::enum_payloads_are_shell_drop_safe(
+                &self.subst_ty(&scrutinee.ty),
+                &self.enum_layouts,
+                &self.record_field_orders,
+                &self.type_classes,
+                &super::outbound_record_layouts(self),
+                &self.opaque_handle_names,
+                &self.lifecycle_registry,
+            );
         if call_scrutinee_owner_needs_arm_release {
             let carrier = Place::Local(scrutinee_local);
             self.owned_carrier_neutralize
@@ -4715,7 +4734,6 @@ impl Builder {
             // Removed from `owned_locals` below so the function-scope drop
             // pass does not also fire (which would double-free).
             let mut generator_yield_drop_bindings = Vec::new();
-            let mut call_carrier_transferred_before_body = false;
             for binding in &arm.bindings {
                 let binding_ty = self.subst_ty(&binding.ty);
                 self.push_bind_statement(
@@ -5078,7 +5096,6 @@ impl Builder {
                     // carrier's recursive drop unsafe: the sibling wildcard
                     // still owns and releases its payload exactly once.
                     if call_carrier_needs_skipped_payload_owner {
-                        call_carrier_transferred_before_body = true;
                         self.push_move_out_neutralize(
                             source,
                             crate::model::NeutralizeAuthority::EphemeralTempConsume,
@@ -5167,22 +5184,18 @@ impl Builder {
 
             // The arm is now selected on every reaching path: clear the
             // carrier slots whose payloads this arm's binders own.
-            if !pending_sink_handoffs.is_empty() {
-                call_carrier_transferred_before_body = true;
-            }
             for instr in pending_sink_handoffs.drain(..) {
                 self.push_instr(instr);
             }
 
             let body_start_block_id = self.current_block_id;
             let body_start_instr_len = self.instructions.len();
-            // Register the whole carrier only when no pre-body handoff already
-            // discharged it. A transfer emitted while lowering the body is
-            // detected by the shared escape scan before any edge drop fires.
-            if call_scrutinee_owner_needs_arm_release
-                && !call_carrier_transferred_before_body
-                && generator_yield_drop_bindings.is_empty()
-            {
+            // A projected handoff discharges only the selected slot. Register
+            // the whole carrier as well so its tag-aware drop releases the
+            // neutralized shell and every unselected slot on the arm edge. A
+            // whole-carrier transfer emitted while lowering the body remains
+            // an escape and suppresses that edge drop in the shared scan.
+            if call_scrutinee_owner_needs_arm_release {
                 if let Some((binding, ty)) = &call_scrutinee_owner {
                     generator_yield_drop_bindings.push((
                         *binding,
@@ -5202,16 +5215,14 @@ impl Builder {
             // lowers (the fall-through path uses the body-end drop instead).
             let active_yield_mark = self.active_generator_yield_values.len();
             for (_binding, place, ty, _site) in &generator_yield_drop_bindings {
-                let is_actor_ask_carrier = base_local(*place)
-                    .is_some_and(|local| self.actor_ask_result_locals.contains(&local));
-                let drop_fn = if is_actor_ask_carrier {
-                    // The typed actor-ask publication minted the whole
+                let is_minted_call_carrier = base_local(*place)
+                    .is_some_and(|local| self.call_scrutinee_carrier_mint_locals.contains(&local));
+                let drop_fn = if is_minted_call_carrier {
+                    // The typed call-result publication minted the whole
                     // carrier owner. Its selected payload may transfer out,
                     // but the neutralized shell still needs its terminal
                     // recursive release on this edge. This is the same
                     // path-complete authority used by the wildcard arm above;
-                    // it deliberately does not depend on whether the enum is
-                    // eligible as a generic yielded payload.
                     Some(crate::model::DropFnSpec::InPlace(
                         crate::ownership::InPlaceReleaseKind::Enum,
                     ))
@@ -5252,6 +5263,36 @@ impl Builder {
                     if *local == value_local {
                         self.fresh_variant_payload_bindings.insert(*binding);
                         self.fresh_variant_payload_binder_locals.insert(*local);
+                        if let Some(source_place) = self
+                            .projected_payload_provenance
+                            .get(binding)
+                            .map(|provenance| provenance.source_place)
+                        {
+                            self.push_instr(Instr::NeutralizePayloadSlot {
+                                place: source_place,
+                                transferee: None,
+                                authority: crate::model::NeutralizeAuthority::MoveOutArmConsume,
+                            });
+                        }
+                    }
+                }
+                if self.is_owned_aggregate_record_ty(result_ty) {
+                    let source_place = self.projected_payload_provenance.iter().find_map(
+                        |(binding, provenance)| {
+                            (self.binding_locals.get(binding).copied()
+                                == Some(Place::Local(value_local))
+                                && base_local(provenance.source_place).is_some_and(|root| {
+                                    self.call_scrutinee_carrier_mint_locals.contains(&root)
+                                }))
+                            .then_some(provenance.source_place)
+                        },
+                    );
+                    if let Some(place) = source_place {
+                        self.push_instr(Instr::NeutralizePayloadSlot {
+                            place,
+                            transferee: None,
+                            authority: crate::model::NeutralizeAuthority::MoveOutArmConsume,
+                        });
                     }
                 }
             }
@@ -5303,9 +5344,9 @@ impl Builder {
                             });
                     }
                 }
-                let is_actor_ask_carrier = base_local(place)
-                    .is_some_and(|local| self.actor_ask_result_locals.contains(&local));
-                if is_actor_ask_carrier {
+                let is_minted_call_carrier = base_local(place)
+                    .is_some_and(|local| self.call_scrutinee_carrier_mint_locals.contains(&local));
+                if is_minted_call_carrier {
                     if let Some(local) = base_local(place) {
                         if self.generator_yield_binding_drop_safe(
                             body_start_block_id,

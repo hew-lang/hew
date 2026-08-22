@@ -60,7 +60,9 @@ use resource_payload_handoff::direct_independent_resource_payloads;
 use retained_string_aliases::{
     retained_string_field_load_aliases, uniquely_defined_retained_string_field_load_aliases,
 };
-pub(super) use shell_drop_safety::enum_payloads_are_shell_drop_safe;
+pub(super) use shell_drop_safety::{
+    direct_payload_has_registered_resource_record, enum_payloads_are_shell_drop_safe,
+};
 pub(super) use tuple_handle_projection::derive_owned_tuple_handle_projection_bindings;
 
 /// #2212 — discharge the non-escaped owned sibling fields of a record whose

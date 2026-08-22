@@ -431,10 +431,6 @@ NO_BASELINE_FILES: tuple[tuple[str, str], ...] = (
         "index of intent, not derived output",
     ),
     (
-        "scripts/fuzz/package*.json",
-        "npm dependency manifest and lockfile for the fuzz tooling",
-    ),
-    (
         "tests/vertical-slice/*",
         "accept/reject fixture expectations state INTENDED behaviour. Re-recording "
         "them from observed output would make the compiler's own oracle agree with "

@@ -2120,6 +2120,56 @@ def documented_make_references(root: Path = REPO_ROOT) -> list[MakeReference]:
     return references
 
 
+_SCRIPT_PATH_RE = re.compile(r"scripts/[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:sh|py)")
+
+
+def harness_tests(root: Path = REPO_ROOT) -> list[str]:
+    """Every self-test file under `scripts/tests/`, as repo-relative paths."""
+    return sorted(
+        f"scripts/tests/{path.name}"
+        for path in (root / "scripts" / "tests").glob("test_*")
+        if path.suffix in {".py", ".sh"}
+    )
+
+
+def harness_invocation_text(
+    ci_text: str,
+    recipes: dict[str, str],
+    reached: set[str],
+    root: Path = REPO_ROOT,
+) -> str:
+    """Everything CI actually executes, with one hop into shell scripts."""
+    parts = [ci_text]
+    invokers = reached | {authority.target for authority in HOST_RELEASE_AUTHORITIES}
+    for target in sorted(invokers):
+        parts.append(executing_text(strip_shell_comments(recipes.get(target, ""))))
+
+    seen: set[str] = set()
+    frontier = [
+        match.group(0)
+        for part in parts
+        for match in _SCRIPT_PATH_RE.finditer(part)
+        if match.group(0).endswith(".sh")
+    ]
+    while frontier:
+        rel = frontier.pop()
+        if rel in seen or rel.startswith("scripts/tests/"):
+            seen.add(rel)
+            continue
+        seen.add(rel)
+        path = root / rel
+        if not path.is_file():
+            continue
+        body = executing_text(strip_shell_comments(path.read_text(encoding="utf-8")))
+        parts.append(body)
+        frontier.extend(
+            match.group(0)
+            for match in _SCRIPT_PATH_RE.finditer(body)
+            if match.group(0).endswith(".sh")
+        )
+    return "\n".join(parts)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -2835,110 +2885,15 @@ def main() -> int:
         )
     print(f"    {len(no_gate_rows)} contradictory consumer relation(s).")
 
-    # ── A8: CI runs every lint-graph member exactly once ─────────────────────
-    lint_errors = lint_ci_coverage_errors(
-        makefile_text, (WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
-    )
-    try:
-        prerequisites = lint_prerequisites(makefile_text)
-    except ValueError:
-        prerequisites = ()
-    print(
-        f"\n==> A8: lint graph CI coverage ({len(prerequisites)} prerequisite(s) "
-        "+ Clippy)"
-    )
-    for error in lint_errors:
+    tests = harness_tests()
+    invocations = harness_invocation_text(ci_text, recipes, reached)
+    orphans = [test for test in tests if test not in invocations]
+    for test in orphans:
         findings.fail(
-            "A8",
-            error,
-            "the local `make lint` aggregate and the CI lint job describe the "
-            "same set of gates in two places. A prerequisite with no step runs "
-            "on no pull request; a prerequisite with two steps pays for itself "
-            "twice; replaying `make lint` over per-gate steps re-runs "
-            "everything and makes the per-step naming a lie.",
+            "A11",
+            test,
+            "no CI-reached command invokes this self-test.",
         )
-    print(
-        f"    {len(prerequisites) - findings.count('A8')}/{len(prerequisites)} "
-        "lint prerequisites covered exactly once."
-    )
-
-    # ── A9: VM-dependent sandbox binaries are covered coherently ──────────────
-    vm_binaries: list[str] = []
-    for path in sorted(SANDBOX_TESTS_DIR.glob("*.rs")):
-        text = path.read_text()
-        if is_vm_dependent(text):
-            vm_binaries.append(path.stem)
-            if verbose:
-                markers = marker_functions_for_diagnostics(text)
-                where = f" (spawn marker in: {', '.join(markers)})" if markers else ""
-                print(f"==> {path.name} is VM-dependent{where}")
-
-    print(
-        f"\n==> A9: sandbox parity coverage ({len(vm_binaries)} VM-dependent binary(ies))"
-    )
-    if not vm_binaries:
-        # Detection returning nothing is a broken detector, not a clean tree:
-        # every binary would then pass vacuously.
-        findings.fail(
-            "A9",
-            "hew-sandbox-wasm/tests/",
-            "no VM-dependent binaries found -- detection has broken. Check "
-            "is_vm_dependent() against the current test file contents.",
-        )
-    else:
-        # The per-binary loop asserts nothing when the list is short: three
-        # binaries silently becoming one still reports "3 passed, 0 failed".
-        # The empty case above is caught by name; the shrink only by the floor.
-        assert_sandbox_selection_nonempty("sandbox-vm-binaries", len(vm_binaries))
-
-    sandbox_filters = {
-        profile: default_filter_line(profile) for profile in REQUIRED_PROFILES
-    }
-    sandbox_parity_cmd = sandbox_parity_test_flags() if vm_binaries else ""
-    sandbox_pass = 0
-    sandbox_fail = 0
-    for binary in vm_binaries:
-        for profile in REQUIRED_PROFILES:
-            if excludes_binary(sandbox_filters[profile], binary):
-                sandbox_pass += 1
-                if verbose:
-                    print(f"  ok  [profile.{profile}] excludes whole binary {binary}")
-            else:
-                sandbox_fail += 1
-                print(
-                    f"  FAIL [profile.{profile}] does not exclude VM-dependent "
-                    f"binary `{binary}` as a WHOLE binary (need `binary({binary})` "
-                    f"in .config/nextest.toml's [profile.{profile}] default-filter "
-                    f"-- a narrower `test(<name>)` exclusion is not sufficient)",
-                    file=sys.stderr,
-                )
-                findings.fail(
-                    "A9",
-                    f"[profile.{profile}] binary({binary})",
-                    "a VM-dependent binary is not wholly excluded from the "
-                    "generic nextest tier, so an unprovisioned `cargo nextest "
-                    "run --workspace` executes it and fails on every platform "
-                    "without hew-sandbox-vm set up. Per-test exclusions inside "
-                    "a VM-touching binary cannot be trusted: a test can reach "
-                    "the spawn through an indirection no static graph models.",
-                )
-        if f"--test {binary}" in sandbox_parity_cmd:
-            sandbox_pass += 1
-            if verbose:
-                print(f"  ok  Makefile sandbox-parity runs --test {binary}")
-        else:
-            sandbox_fail += 1
-            findings.fail(
-                "A9",
-                f"make sandbox-parity --test {binary}",
-                "this binary is excluded from the generic tier and not run by "
-                "the provisioned gate either, so its tests run nowhere at all. "
-                "Add it to the `cargo test -p hew-sandbox-wasm` line.",
-            )
-    print(
-        f"    {sandbox_pass} check(s) passed, {sandbox_fail} failed, across "
-        f"{len(vm_binaries)} VM-dependent binary(ies): {', '.join(vm_binaries)}."
-    )
 
     # ── Verdict ───────────────────────────────────────────────────────────────
     print("")

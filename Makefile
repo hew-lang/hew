@@ -142,7 +142,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check baselines baselines-check
+.PHONY: all build bootstrap install-hooks help shell-script-lint hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check baselines baselines-check
 .PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-cabi-build test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-ci-coverage-check structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan legacy-path-syntax-lint hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability check-counterfactual-output check-counterfactual-output-build sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property tool-pin-contract-check test-build-harness forced-cancel-composite-check
 .PHONY: stdlib-user-build-clean stdlib-user-build-clean-build
 .PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check test-python310-toml-compat
@@ -162,6 +162,17 @@ MAKEFILE_PARSE_INPUTS := \
 .PHONY: ll-diff ll-golden ll-identity-selftest
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
+
+help:
+	@printf '%s\n' \
+		'Build: make [build|release]' \
+		'Check: make lint | check-gate-reachability | baselines-check' \
+		'Test: make test | test-hew-ratchet | test-stdlib-ratchet' \
+		'Release: make pre-release'
+
+shell-script-lint:
+	bash -n scripts/*.sh
+	shellcheck scripts/*.sh
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
@@ -1720,8 +1731,12 @@ endif
 # libhew built with hew-runtime/forced-cancel-test can do that, which is why
 # this lives in a script with its own isolated target directory rather than in
 # the workspace test run.
+# inputs: scripts/forced-cancel-composite-check.sh
 forced-cancel-composite-check:
 	bash scripts/forced-cancel-composite-check.sh
+
+forced-cancel-composite-check-build:
+	cargo build -p hew-cli -p hew-lib --features hew-runtime/forced-cancel-test --quiet
 
 # Platform-independent counterfactuals for the ASan/LSan sentinel: a genuine
 # sanitizer diagnostic must be accepted, while a bare non-zero probe exit must
@@ -1973,6 +1988,10 @@ test-release-workflow-contract:
 test-release-workflow-contract-build:
 	@:
 
+# inputs: scripts/tests/test_ci_preflight_dispatcher.py
+# inputs: scripts/tests/test_ci_preflight_timeout.sh
+# inputs: scripts/tests/test_playground_path_filter_oracle.py
+# inputs: scripts/tests/test_libhew_freshness.py scripts/tests/test_hew_suite_cache.py
 # Counterfactuals for the build harness itself: the preflight dispatcher's
 # routing and timeout behaviour, the CI playground path filter, the libhew
 # freshness stamp, and the Hew-suite result cache. Each of these was written

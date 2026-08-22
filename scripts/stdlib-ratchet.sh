@@ -121,7 +121,7 @@ while IFS= read -r -d $'\0' f; do
         ACTUAL_STR="${ACTUAL_STR}${relpath}"$'\n'
     fi
     bare_variants=""
-    if bare_variants="$(printf '%s\n' "$check_output" | rg ': warning: E_BARE_VARIANT_(PATTERN|EXPR):')"; then
+    if bare_variants="$(printf '%s\n' "$check_output" | grep -E ': warning: E_BARE_VARIANT_(PATTERN|EXPR):')"; then
         BARE_VARIANTS_STR="${BARE_VARIANTS_STR}${bare_variants}"$'\n'
     fi
 done < <(find "$STDLIB_DIR" -name '*.hew' -not -path '*/target/*' -print0 | sort -z)

@@ -306,7 +306,7 @@ for (( idx=0; idx < ${#FENCE_IDS[@]}; idx++ )); do
     check_rc=0
     check_output="$("$HEW_BIN" check "$outfile" 2>&1)" || check_rc=$?
     bare_variants=""
-    if bare_variants="$(printf '%s\n' "$check_output" | rg ': warning: E_BARE_VARIANT_(PATTERN|EXPR):')"; then
+    if bare_variants="$(printf '%s\n' "$check_output" | grep -E ': warning: E_BARE_VARIANT_(PATTERN|EXPR):')"; then
         BARE_VARIANTS_STR="${BARE_VARIANTS_STR}${bare_variants}"$'\n'
     fi
 

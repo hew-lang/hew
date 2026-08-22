@@ -69,24 +69,25 @@ fn compile_and_read_ll(source: &str, dir: &Path, name: &str) -> String {
     let hew_src = dir.join(format!("{name}.hew"));
     std::fs::write(&hew_src, source).expect("write hew source");
 
-    let output = Command::new(hew_binary())
+    let mut command = Command::new(hew_binary());
+    command
         .args([
             "compile",
             "--emit-dir",
             dir.to_str().expect("emit-dir utf-8"),
             hew_src.to_str().expect("hew src utf-8"),
         ])
-        .current_dir(repo_root())
-        .output()
+        .current_dir(repo_root());
+    let compiled = hew_testutil::compile_with_ir(&mut command, dir.join(format!("{name}.ll")))
         .expect("invoke hew compile");
     assert!(
-        output.status.success(),
+        compiled.output.status.success(),
         "hew compile failed for {name}:\n{}",
-        describe_output(&output)
+        describe_output(&compiled.output)
     );
 
-    let ll = dir.join(format!("{name}.ll"));
-    std::fs::read_to_string(&ll).unwrap_or_else(|e| panic!("read emitted IR {}: {e}", ll.display()))
+    std::fs::read_to_string(&compiled.ll_path)
+        .unwrap_or_else(|e| panic!("read emitted IR {}: {e}", compiled.ll_path.display()))
 }
 
 /// Extract a function's whole body: the lines from the `define` containing

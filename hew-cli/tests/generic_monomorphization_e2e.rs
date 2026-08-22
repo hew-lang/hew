@@ -230,20 +230,23 @@ fn generic_record_with_inline_owned_enum_drops_on_all_exits() {
     );
 
     let emit_dir = support::tempdir();
-    let compile = std::process::Command::new(hew_binary())
+    let mut command = std::process::Command::new(hew_binary());
+    command
         .args(["compile", "--emit-dir"])
         .arg(emit_dir.path())
         .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("compile generic enum-record fixture");
+        .current_dir(repo_root());
+    let compile = hew_testutil::compile_with_ir(
+        &mut command,
+        emit_dir.path().join("generic_enum_record_scope_drop.ll"),
+    )
+    .expect("compile generic enum-record fixture");
     assert!(
-        compile.status.success(),
+        compile.output.status.success(),
         "generic enum-record LLVM should compile; stderr: {}",
-        String::from_utf8_lossy(&compile.stderr)
+        String::from_utf8_lossy(&compile.output.stderr)
     );
-    let llvm = std::fs::read_to_string(emit_dir.path().join("generic_enum_record_scope_drop.ll"))
-        .expect("read generic enum-record LLVM");
+    let llvm = std::fs::read_to_string(compile.ll_path).expect("read generic enum-record LLVM");
     for helper in [
         "define internal i32 @\"__hew_record_clone_inplace_EnumHolder$$string\"",
         "define internal i32 @\"__hew_enum_clone_inplace_Choice$$string\"",

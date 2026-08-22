@@ -72,6 +72,7 @@ fn path_glob_failure_handles_are_released_once_after_detail_is_copied() {
     let output = Command::new(hew_binary())
         .args([
             "compile",
+            "--emit-llvm",
             "--emit-dir",
             dir.path().to_str().expect("emit directory is UTF-8"),
             source.to_str().expect("source path is UTF-8"),

@@ -109,6 +109,9 @@ command_timeout_floor() {
         "make doc-ratchet-selftest") echo 45 ;;
         "make test-release-workflow-contract") echo 30 ;;
         "make test-stdlib-ratchet") echo 45 ;;
+        # The full 75-module user-build gate measured about 85 s. Add roughly
+        # 35% cache and host-load headroom while retaining a finite ceiling.
+        "make stdlib-user-build-clean") echo 115 ;;
         "make test-stdlib-execution-proofs") echo 45 ;;
         "make test-doc-examples") echo 45 ;;
         "make sandbox-parity") echo 150 ;;

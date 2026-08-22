@@ -1301,6 +1301,7 @@ ll-golden: hew
 #
 # inputs: hew-codegen-rs/** hew-mir/** hew-cli/**
 #         tests/compile-measure/** scripts/dogfood-compile-measure.sh
+# The gate measures define blocks, excluding host-specific module headers.
 #         build/bin/hew (release-lib profile)
 LINT_GATES += dogfood-compile-measure
 dogfood-compile-measure: hew

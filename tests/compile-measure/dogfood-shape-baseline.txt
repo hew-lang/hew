@@ -1,7 +1,7 @@
 # Generated only by:
 #   make dogfood-compile-measure DOGFOOD_MEASURE_UPDATE=1
 #
-# The gate compares the raw LLVM IR's exact byte count and structural counts.
-ll_bytes=610556
+# The gate compares exact LLVM define-block bytes and structural counts.
+ll_bytes=594515
 defines=101
 basic_blocks=202

@@ -154,25 +154,26 @@ fn lambda_pid_capture_env_drop_frees_bytes_only() {
         .prefix("hew-lambda-pid-env-drop-")
         .tempdir()
         .expect("create emit dir");
-    let compile = Command::new(hew_bin(&repo))
-        .current_dir(&repo)
-        .args([
-            "compile",
-            "--emit-dir",
-            emit_dir.path().to_str().expect("emit dir UTF-8"),
-            "tests/vertical-slice/accept/lambda_capture_pid_forward.hew",
-        ])
-        .output()
-        .expect("run built hew compile");
+    let mut command = Command::new(hew_bin(&repo));
+    command.current_dir(&repo).args([
+        "compile",
+        "--emit-dir",
+        emit_dir.path().to_str().expect("emit dir UTF-8"),
+        "tests/vertical-slice/accept/lambda_capture_pid_forward.hew",
+    ]);
+    let compile = hew_testutil::compile_with_ir(
+        &mut command,
+        emit_dir.path().join("lambda_capture_pid_forward.ll"),
+    )
+    .expect("run built hew compile");
     assert!(
-        compile.status.success(),
+        compile.output.status.success(),
         "hew compile failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&compile.stdout),
-        String::from_utf8_lossy(&compile.stderr)
+        String::from_utf8_lossy(&compile.output.stdout),
+        String::from_utf8_lossy(&compile.output.stderr)
     );
 
-    let ll = std::fs::read_to_string(emit_dir.path().join("lambda_capture_pid_forward.ll"))
-        .expect("read emitted LLVM IR");
+    let ll = std::fs::read_to_string(compile.ll_path).expect("read emitted LLVM IR");
     let body_start = ll
         .find("define internal void @__hew_lambda_env_drop_main_0")
         .expect("synthesized lambda env drop fn present in IR");
@@ -200,25 +201,26 @@ fn nested_lambda_pid_capture_clones_and_releases_the_env_owner() {
         .prefix("hew-nested-lambda-pid-env-")
         .tempdir()
         .expect("create emit dir");
-    let compile = Command::new(hew_bin(&repo))
-        .current_dir(&repo)
-        .args([
-            "compile",
-            "--emit-dir",
-            emit_dir.path().to_str().expect("emit dir UTF-8"),
-            "examples/lambda_actor_pipeline.hew",
-        ])
-        .output()
-        .expect("run built hew compile");
+    let mut command = Command::new(hew_bin(&repo));
+    command.current_dir(&repo).args([
+        "compile",
+        "--emit-dir",
+        emit_dir.path().to_str().expect("emit dir UTF-8"),
+        "examples/lambda_actor_pipeline.hew",
+    ]);
+    let compile = hew_testutil::compile_with_ir(
+        &mut command,
+        emit_dir.path().join("lambda_actor_pipeline.ll"),
+    )
+    .expect("run built hew compile");
     assert!(
-        compile.status.success(),
+        compile.output.status.success(),
         "hew compile failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&compile.stdout),
-        String::from_utf8_lossy(&compile.stderr)
+        String::from_utf8_lossy(&compile.output.stdout),
+        String::from_utf8_lossy(&compile.output.stderr)
     );
 
-    let ll = std::fs::read_to_string(emit_dir.path().join("lambda_actor_pipeline.ll"))
-        .expect("read emitted LLVM IR");
+    let ll = std::fs::read_to_string(compile.ll_path).expect("read emitted LLVM IR");
     assert!(
         ll.contains("call ptr @hew_lambda_actor_clone("),
         "nested LambdaPid env capture must clone its strong wrapper"
@@ -375,27 +377,28 @@ fn compile_vertical_slice_ll(fixture_name: &str) -> String {
         .tempdir()
         .expect("create cancelled-arbiter emit dir");
     let source = format!("tests/vertical-slice/accept/{fixture_name}.hew");
-    let compile = Command::new(hew_bin(&repo))
-        .current_dir(&repo)
-        .args([
-            "compile",
-            "--emit-dir",
-            emit_dir
-                .path()
-                .to_str()
-                .expect("emit dir path is valid UTF-8"),
-            &source,
-        ])
-        .output()
-        .expect("run built hew compile");
+    let mut command = Command::new(hew_bin(&repo));
+    command.current_dir(&repo).args([
+        "compile",
+        "--emit-dir",
+        emit_dir
+            .path()
+            .to_str()
+            .expect("emit dir path is valid UTF-8"),
+        &source,
+    ]);
+    let compile = hew_testutil::compile_with_ir(
+        &mut command,
+        emit_dir.path().join(format!("{fixture_name}.ll")),
+    )
+    .expect("run built hew compile");
     assert!(
-        compile.status.success(),
+        compile.output.status.success(),
         "hew compile {source} failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&compile.stdout),
-        String::from_utf8_lossy(&compile.stderr)
+        String::from_utf8_lossy(&compile.output.stdout),
+        String::from_utf8_lossy(&compile.output.stderr)
     );
-    std::fs::read_to_string(emit_dir.path().join(format!("{fixture_name}.ll")))
-        .expect("read emitted cancelled-arbiter LLVM IR")
+    std::fs::read_to_string(compile.ll_path).expect("read emitted cancelled-arbiter LLVM IR")
 }
 
 /// Run a compiled fixture, killing it if it does not exit within `secs`.

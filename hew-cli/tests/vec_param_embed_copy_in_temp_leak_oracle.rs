@@ -694,6 +694,7 @@ fn compile_source_to_llvm(source: &str, name: &str, target: Option<&str>) -> Str
         command.args(["--target", target]);
     }
     let output = command
+        .arg("--emit-llvm")
         .arg("--emit-dir")
         .arg(&emit_dir)
         .current_dir(repo_root())

@@ -658,7 +658,15 @@ pub fn emit_module(
     pipeline: &IrPipeline,
     options: &EmitOptions<'_>,
 ) -> CodegenResult<EmitArtefacts> {
-    emit_module_with_options(pipeline, options, true)
+    emit_module_with_options(pipeline, options, true, true)
+}
+
+/// Emit requested object artefacts without retaining textual LLVM IR.
+pub fn emit_module_without_llvm(
+    pipeline: &IrPipeline,
+    options: &EmitOptions<'_>,
+) -> CodegenResult<EmitArtefacts> {
+    emit_module_with_options(pipeline, options, true, false)
 }
 
 /// Emit requested IR/object artefacts without running the freestanding WASM
@@ -668,13 +676,22 @@ pub fn emit_module_objects(
     pipeline: &IrPipeline,
     options: &EmitOptions<'_>,
 ) -> CodegenResult<EmitArtefacts> {
-    emit_module_with_options(pipeline, options, false)
+    emit_module_with_options(pipeline, options, false, true)
+}
+
+/// Emit requested unlinked objects without retaining textual LLVM IR.
+pub fn emit_module_objects_without_llvm(
+    pipeline: &IrPipeline,
+    options: &EmitOptions<'_>,
+) -> CodegenResult<EmitArtefacts> {
+    emit_module_with_options(pipeline, options, false, false)
 }
 
 fn emit_module_with_options(
     pipeline: &IrPipeline,
     options: &EmitOptions<'_>,
     link_freestanding_wasm: bool,
+    emit_llvm: bool,
 ) -> CodegenResult<EmitArtefacts> {
     // Verify the checker-authored layout-fact lifecycle is in a
     // consistent state before any IR emission.  A `LayoutKey` fact that
@@ -734,24 +751,7 @@ fn emit_module_with_options(
     // it directly. REAL SOLUTION: per-subcommand flag plumbing (a follow-up).
     let effective_opt_level = resolve_opt_level_with_env_floor(options.opt_level);
 
-    // Build the textual IR once as the forensic `.ll` artefact — `opt
-    // -passes=verify` runs against it directly. It is classified against the
-    // requested target (the explicit `--target` triple, the wasm32 triple, or
-    // the host) so the diagnostic IR matches the object emission's ABI.
-    let textual_triple = match options.target_triple {
-        Some(triple) => triple.to_string(),
-        None if options.wasm && !options.native => "wasm32-unknown-unknown".to_string(),
-        None => native_emission_triple(),
-    };
-    let ll_path = options.out_dir.join(format!("{}.ll", options.module_name));
-    emit_textual(
-        pipeline,
-        options.module_name,
-        &ll_path,
-        &textual_triple,
-        debug_input,
-    )?;
-    artefacts.ll_path = Some(ll_path.clone());
+    let ll_path = emit_llvm.then(|| options.out_dir.join(format!("{}.ll", options.module_name)));
 
     if options.native {
         let obj_path = options.out_dir.join(format!("{}.o", options.module_name));
@@ -769,9 +769,11 @@ fn emit_module_with_options(
             &triple_str,
             &obj_path,
             debug_input,
+            ll_path.as_deref(),
             effective_opt_level,
         )?;
         artefacts.native_obj_path = Some(obj_path);
+        artefacts.ll_path.clone_from(&ll_path);
     }
 
     if options.wasm {
@@ -785,6 +787,11 @@ fn emit_module_with_options(
             "wasm32-unknown-unknown",
             &wasm_obj_path,
             debug_input,
+            if options.native {
+                None
+            } else {
+                ll_path.as_deref()
+            },
             effective_opt_level,
         )?;
         if link_freestanding_wasm {
@@ -795,6 +802,25 @@ fn emit_module_with_options(
             artefacts.wasm_path = Some(wasm_path);
         }
         artefacts.wasm_obj_path = Some(wasm_obj_path);
+        if !options.native {
+            artefacts.ll_path.clone_from(&ll_path);
+        }
+    }
+
+    if !options.native && !options.wasm {
+        if let Some(ll_path) = ll_path {
+            let triple = options
+                .target_triple
+                .map_or_else(native_emission_triple, ToString::to_string);
+            emit_textual(
+                pipeline,
+                options.module_name,
+                &ll_path,
+                &triple,
+                debug_input,
+            )?;
+            artefacts.ll_path = Some(ll_path);
+        }
     }
 
     Ok(artefacts)
@@ -1469,14 +1495,20 @@ fn emit_object_in_process(
     triple: &str,
     out_path: &Path,
     debug: Option<DebugInput<'_>>,
+    llvm_out: Option<&Path>,
     opt_level: OptLevel,
 ) -> CodegenResult<()> {
     let _guard = llvm_codegen_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let machine = target_machine_for_triple(triple)?;
+    let machine = target_machine_for_triple_with_opt_level(triple, opt_level)?;
     let ctx = Context::create();
     let llvm_mod = build_module_for_target(&ctx, pipeline, module_name, Some(&machine), debug)?;
+    if let Some(llvm_out) = llvm_out {
+        llvm_mod
+            .print_to_file(llvm_out)
+            .llvm_ctx_with(|| format!("print_to_file {}", llvm_out.display()))?;
+    }
     // Run the requested optimization pipeline + coroutine lowering before
     // instruction selection.
     //
@@ -1607,6 +1639,13 @@ fn native_emission_triple() -> String {
 }
 
 fn target_machine_for_triple(triple: &str) -> CodegenResult<TargetMachine> {
+    target_machine_for_triple_with_opt_level(triple, OptLevel::O0)
+}
+
+fn target_machine_for_triple_with_opt_level(
+    triple: &str,
+    opt_level: OptLevel,
+) -> CodegenResult<TargetMachine> {
     initialise_llvm_targets();
     let target_triple = TargetTriple::create(triple);
     let target = Target::from_triple(&target_triple).map_err(|e| CodegenError::TargetSetup {
@@ -1618,7 +1657,7 @@ fn target_machine_for_triple(triple: &str) -> CodegenResult<TargetMachine> {
             &target_triple,
             "generic",
             "",
-            inkwell::OptimizationLevel::Default,
+            target_machine_optimization_level(opt_level),
             RelocMode::PIC,
             CodeModel::Default,
         )
@@ -1626,6 +1665,13 @@ fn target_machine_for_triple(triple: &str) -> CodegenResult<TargetMachine> {
             triple: triple.to_string(),
             reason: "create_target_machine returned None".to_string(),
         })
+}
+
+fn target_machine_optimization_level(opt_level: OptLevel) -> inkwell::OptimizationLevel {
+    match opt_level {
+        OptLevel::O0 => inkwell::OptimizationLevel::None,
+        OptLevel::O2 => inkwell::OptimizationLevel::Default,
+    }
 }
 
 fn initialise_llvm_targets() {
@@ -35384,6 +35430,15 @@ fn lower_function<'ctx>(
     // CoroSplit reads these to build the `.resume`/`.destroy`/`.cleanup`
     // outlines; the runtime's `hew_cont_*` verbs drive the resulting frame.
     if let Some(coro) = fn_ctx.coro {
+        // Synthesized suspend/cleanup control flow must not inherit the final
+        // user statement's line. At O0 that creates an earlier breakpoint
+        // location in the ramp's frame-handoff path, before post-suspend locals
+        // have been stored. Attribute the compiler-owned epilogue to the
+        // function entry instead; calls still retain the verifier-required
+        // location without masquerading as a user statement.
+        if let Some(loc) = entry_debug_loc {
+            fn_ctx.builder.set_current_debug_location(loc);
+        }
         // Reconstruct the CoroContext (a bundle of borrows + the handle/token)
         // to reuse the canonical `coro.rs` epilogue helpers.
         let cc = crate::coro::CoroContext {

@@ -253,10 +253,51 @@ mod tests {
     }
 
     #[test]
+    fn build_release_selects_o2_by_default() {
+        let cli = try_parse_cli_with_compile_fallback(
+            ["hew", "build", "sample.hew", "--release"]
+                .into_iter()
+                .map(OsString::from),
+        )
+        .expect("release build should parse");
+
+        match cli.command {
+            Some(crate::args::Command::Build(args)) => {
+                assert!(args.release);
+                assert_eq!(args.opt_level, "2");
+            }
+            other => panic!("expected build command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explicit_build_opt_level_overrides_release_default() {
+        let cli = try_parse_cli_with_compile_fallback(
+            [
+                "hew",
+                "build",
+                "sample.hew",
+                "--release",
+                "--opt-level",
+                "0",
+            ]
+            .into_iter()
+            .map(OsString::from),
+        )
+        .expect("explicit optimization level should parse");
+
+        match cli.command {
+            Some(crate::args::Command::Build(args)) => assert_eq!(args.opt_level, "0"),
+            other => panic!("expected build command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn dispatch_command_routes_compile_to_dispatcher() {
         let command = crate::args::Command::Compile(CompileArgs {
             input: PathBuf::from("sample.hew"),
             emit_dir: None,
+            emit_llvm: false,
             dump_mir: None,
             target: None,
             opt_level: "0".to_string(),
@@ -276,6 +317,8 @@ mod tests {
             output: None,
             target: None,
             emit_obj: false,
+            emit_llvm: false,
+            release: false,
             debug: false,
             opt_level: "0".to_string(),
             link_libs: Vec::new(),

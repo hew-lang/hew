@@ -80,6 +80,20 @@ fn decode_i64(bits: u64) -> i64 {
     i64::from_ne_bytes(bits.to_ne_bytes())
 }
 
+/// Canonicalize NaN for user-visible formatting.
+///
+/// IEEE-754 leaves the sign and payload of a NaN unspecified for arithmetic
+/// such as `0.0 / 0.0`; LLVM optimization and target hardware may therefore
+/// produce different bits for the same Hew expression. Hew renders every NaN
+/// as the unsigned spelling `nan`, independent of those non-semantic bits.
+pub(crate) fn canonical_f64_for_render(value: f64) -> f64 {
+    if value.is_nan() {
+        f64::NAN
+    } else {
+        value
+    }
+}
+
 unsafe fn print_i32(x: i32, newline: bool) {
     let fmt = if newline { c"%d\n" } else { c"%d" };
     // SAFETY: Format string is a valid NUL-terminated C literal; x is a plain i32.
@@ -98,6 +112,7 @@ unsafe fn print_i64(x: i64, newline: bool) {
 
 unsafe fn print_f64(x: f64, newline: bool) {
     let fmt = if newline { c"%g\n" } else { c"%g" };
+    let x = canonical_f64_for_render(x);
     // SAFETY: Format string is a valid NUL-terminated C literal; x is a plain f64.
     unsafe { libc::printf(fmt.as_ptr(), x) };
 }
@@ -242,4 +257,25 @@ pub unsafe extern "C" fn hew_println_bool(value: u8) {
 pub unsafe extern "C" fn hew_println_f64(value: f64) {
     // SAFETY: value is a plain f64 payload.
     unsafe { print_f64(value, true) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_f64_for_render;
+
+    #[test]
+    fn f64_rendering_canonicalizes_nan_sign_and_payload() {
+        let negative_payload_nan = f64::from_bits(0xfff8_0000_0000_0042);
+        assert_eq!(
+            canonical_f64_for_render(negative_payload_nan).to_bits(),
+            f64::NAN.to_bits()
+        );
+    }
+
+    #[test]
+    fn f64_rendering_preserves_non_nan_bits() {
+        for value in [-0.0, 0.0, f64::INFINITY, f64::NEG_INFINITY, 42.5] {
+            assert_eq!(canonical_f64_for_render(value).to_bits(), value.to_bits());
+        }
+    }
 }

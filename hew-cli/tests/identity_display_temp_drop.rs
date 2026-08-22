@@ -18,7 +18,7 @@ mod support;
 use std::path::Path;
 use std::process::Command;
 
-use support::leak_slope::compile_to_native;
+use support::leak_slope::compile_to_native_with_ir;
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const STRUCTURAL_SOURCE: &str = r"
@@ -163,9 +163,9 @@ fn direct_named_and_mixed_displays_have_one_mir_and_llvm_drop_per_result() {
         );
     }
 
-    let _binary = compile_to_native(STRUCTURAL_SOURCE, dir.path(), "identity_display_drop_shape");
-    let llvm = std::fs::read_to_string(dir.path().join("identity_display_drop_shape.ll"))
-        .expect("read emitted LLVM IR");
+    let (_binary, ll_path) =
+        compile_to_native_with_ir(STRUCTURAL_SOURCE, dir.path(), "identity_display_drop_shape");
+    let llvm = std::fs::read_to_string(ll_path).expect("read emitted LLVM IR");
     for name in ["direct_displays", "named_displays", "mixed_displays"] {
         let marker = format!("@{name}(");
         let section = function_section(&llvm, &marker);

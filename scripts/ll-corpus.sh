@@ -2,7 +2,7 @@
 # ll-oracle corpus driver — `ll-golden` and `ll-diff` make targets.
 #
 # Compiles every fixture under tests/ll-oracle/corpus/ with `hew build
-# --emit-obj` for both the native and wasm32 targets, then either:
+# --emit-obj --emit-llvm` for both the native and wasm32 targets, then either:
 #
 #   golden  — writes the normalised per-fn corpus into tests/ll-oracle/corpus/golden/
 #   verify  — recompiles and diffs against the committed golden; exits non-zero
@@ -68,12 +68,12 @@ compile_fixture() {
   if [[ "$target" == "wasm32" ]]; then
     (
       cd "$out"
-      "$HEW_BIN" build --emit-obj "$fixture" --target wasm32-unknown-unknown
+      "$HEW_BIN" build --emit-obj --emit-llvm "$fixture" --target wasm32-unknown-unknown
     )
   else
     (
       cd "$out"
-      "$HEW_BIN" build --emit-obj "$fixture"
+      "$HEW_BIN" build --emit-obj --emit-llvm "$fixture"
     )
   fi
 }

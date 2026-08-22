@@ -664,6 +664,7 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     let output = Command::new(hew_binary())
         .args([
             "compile",
+            "--emit-llvm",
             "--emit-dir",
             dir.to_str().expect("emit-dir utf-8"),
             hew_src.to_str().expect("hew src utf-8"),

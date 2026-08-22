@@ -49,6 +49,8 @@ pub enum Command {
     /// Parse and typecheck only.
     Check(CheckArgs),
     /// Compile a .hew file to a native binary on disk (like `go build`).
+    ///
+    /// Uses O0 by default; pass `--release` to use the O2 release pipeline.
     Build(BuildArgs),
     /// Generate documentation.
     Doc(DocArgs),
@@ -422,6 +424,10 @@ impl CheckArgs {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "clap maps these independent command-line switches directly"
+)]
 pub struct BuildArgs {
     /// Input .hew file, or a package directory. Omit it to build the package
     /// enclosing the current directory.
@@ -444,6 +450,9 @@ pub struct BuildArgs {
     /// Retain the pre-optimization textual LLVM IR beside the output.
     #[arg(long = "emit-llvm")]
     pub emit_llvm: bool,
+    /// Use the O2 release pipeline. Explicit `--opt-level` takes precedence.
+    #[arg(long, short = 'r')]
+    pub release: bool,
     /// Build with debug info (no optimization, no stripping).
     ///
     /// Emits DWARF debug info into the native object. gdb and lldb read this
@@ -458,7 +467,13 @@ pub struct BuildArgs {
     /// `2` (the `default<O2>` release pipeline). Independent of `-g`: `-g`
     /// remains O0 unless `--opt-level 2` is also passed (which produces
     /// lower-fidelity DWARF — inlined frames, optimized-out locals).
-    #[arg(long = "opt-level", value_parser = ["0", "2"], default_value = "0", value_name = "LEVEL")]
+    #[arg(
+        long = "opt-level",
+        value_parser = ["0", "2"],
+        default_value = "0",
+        default_value_if("release", "true", "2"),
+        value_name = "LEVEL"
+    )]
     pub opt_level: String,
     /// Pass an extra library or linker argument to the native link step.
     /// Values may begin with a dash (e.g. `-lMagickWand-7.Q16`).

@@ -30,6 +30,33 @@ SANITIZER_FINDING = re.compile(
     r"|detected memory leaks"
     r"|SUMMARY: (?:AddressSanitizer|LeakSanitizer)"
 )
+RUNTIME_REPORT_PREVIEW_LINES = 40
+
+
+def bounded_runtime_report(name: str, headline: str, report: str) -> str:
+    """Persist a runtime-oracle report and return a bounded diagnostic preview."""
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-") or "fixture"
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        prefix=f"hew-obligation-{safe_name}-",
+        suffix=".log",
+        delete=False,
+    ) as stream:
+        stream.write(report)
+        report_path = Path(stream.name)
+
+    lines = report.splitlines()
+    preview = lines[:RUNTIME_REPORT_PREVIEW_LINES]
+    omitted = max(0, len(lines) - len(preview))
+    preview_text = "\n".join(preview)
+    if preview_text:
+        preview_text += "\n"
+    return (
+        f"{name}: {headline}\n"
+        f"{preview_text}"
+        f"[{omitted} additional line(s) omitted; full report: {report_path}]"
+    )
 
 
 def read_baseline() -> dict[str, tuple[int, int, int, str]]:
@@ -166,11 +193,17 @@ def run_runtime_fixture(
     )
     report = result.stdout + result.stderr
     if result.returncode != 0:
-        return f"{name}: runtime oracle exited {result.returncode}\n{report}"
+        return bounded_runtime_report(
+            name, f"runtime oracle exited {result.returncode}", report
+        )
     if host == "Darwin" and ZERO_LEAKS.search(report) is None:
-        return f"{name}: leaks(1) did not report zero leaks\n{report}"
+        return bounded_runtime_report(
+            name, "leaks(1) did not report zero leaks", report
+        )
     if host == "Linux" and SANITIZER_FINDING.search(report) is not None:
-        return f"{name}: ASan/LSan reported a memory finding\n{report}"
+        return bounded_runtime_report(
+            name, "ASan/LSan reported a memory finding", report
+        )
     return None
 
 

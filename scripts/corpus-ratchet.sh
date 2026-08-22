@@ -473,7 +473,7 @@ run_hew_suite() {
 }
 
 # Reached through RATCHET_TAIL_FN; shellcheck cannot see an indirect call.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 hew_suite_tail() {
     # Print the run's stderr (build/FFI errors, warnings) and point at the full
     # JUnit report — the same report a CI job's upload step reads into the
@@ -520,7 +520,7 @@ run_stdlib() {
 }
 
 # Reached through RATCHET_DIAGNOSTIC_FN; shellcheck cannot see an indirect call.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 stdlib_diagnostic() {
     echo "  UNEXPECTED: $1"
     # The excerpt is informational. Under `set -e -o pipefail` a non-zero status
@@ -613,7 +613,7 @@ run_hew_corpus() {
 }
 
 # Reached through RATCHET_DIAGNOSTIC_FN; shellcheck cannot see an indirect call.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 hew_corpus_diagnostic() {
     echo "  UNEXPECTED: $1"
     # This command is known to fail — it is the failure being reported. `head`
@@ -852,7 +852,7 @@ run_doc_fences() {
 }
 
 # Reached through RATCHET_DIAGNOSTIC_FN; shellcheck cannot see an indirect call.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 doc_fence_diagnostic() {
     local outfile first_err
     outfile="$DOC_FENCE_OUTDIR/${1}.hew"
@@ -866,7 +866,7 @@ doc_fence_diagnostic() {
 # Third mutation class: content changed under a listed id, so the root-cause
 # label must be re-verified instead of trusted by position alone.
 # Reached through RATCHET_EXTRA_FAIL_FN; shellcheck cannot see an indirect call.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 doc_fence_extra_failures() {
     local entry name recorded_cksum actual_cksum outfile plural
 

@@ -770,7 +770,7 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             payload_ty,
             ..
         } => format!(
-            "cannot establish ownership of imported `{symbol}` payload `{payload_ty}` without a measured per-variant return summary"
+            "cannot establish ownership of `{symbol}` payload `{payload_ty}` without a measured per-variant return summary"
         ),
         hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { name, .. } => format!(
             "record type `{name}` has a value class that MIR cannot lower yet"

@@ -237,14 +237,14 @@ impl Builder {
         }
 
         let payload_ty = self.subst_ty(payload_ty);
-        let imported_resource_payload = matches!(
+        let resource_payload_without_summary = matches!(
             payload_ty,
             ResolvedTy::Named {
                 builtin: Some(hew_types::BuiltinType::Sink | hew_types::BuiltinType::Stream),
                 ..
             }
-        ) && name.contains('$');
-        if imported_resource_payload
+        );
+        if resource_payload_without_summary
             && !self.diagnostics.iter().any(|diagnostic| {
                 matches!(
                     &diagnostic.kind,
@@ -262,7 +262,7 @@ impl Builder {
                     payload_ty: payload_ty.user_facing().to_string(),
                     site: scrutinee.site,
                 },
-                note: "the imported callee has no measured active resource payload summary; publish a per-variant return summary before matching this payload"
+                note: "the callee has no measured active resource payload summary; publish a per-variant return summary before matching this payload"
                     .to_string(),
             });
         }

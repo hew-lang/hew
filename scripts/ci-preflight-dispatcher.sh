@@ -316,18 +316,21 @@ PREFLIGHT_FAILURE_LINE_RE='(^|[[:space:]])FAIL \[|^[[:space:]]*FAILED?([[:space:
 # match while exiting 0, and that each one still emits marked lines at all.
 PREFLIGHT_COUNTERFACTUAL_MARKER='CF-'
 
+extract_failure_lines() {
+    local log="$1"
+
+    [[ -s "$log" ]] || return 0
+    sed $'s/\033\\[[0-9;?]*[a-zA-Z]//g' "$log" \
+        | grep -v -E "^${PREFLIGHT_COUNTERFACTUAL_MARKER}" \
+        | grep -E "$PREFLIGHT_FAILURE_LINE_RE" || true
+}
+
 extract_first_failure() {
     local log="$1"
     local status="$2"
     local line=""
 
-    if [[ -s "$log" ]]; then
-        line="$(
-            sed $'s/\033\\[[0-9;?]*[a-zA-Z]//g' "$log" \
-                | grep -v -E "^${PREFLIGHT_COUNTERFACTUAL_MARKER}" \
-                | grep -m1 -E "$PREFLIGHT_FAILURE_LINE_RE" || true
-        )"
-    fi
+    line="$(extract_failure_lines "$log" | sed -n '1p')"
     line="${line//$'\r'/}"
     line="${line//$'\t'/ }"
     # Trim surrounding whitespace without spawning another process.
@@ -410,7 +413,7 @@ COUNTERFACTUAL_ROSTER=(
 )
 
 run_counterfactual_output_check() {
-    local cmd output offenders marked
+    local cmd output offenders marked log
     local status=0
     local failures=0
     local roster=("${COUNTERFACTUAL_ROSTER[@]}")
@@ -440,12 +443,10 @@ run_counterfactual_output_check() {
             failures=$(( failures + 1 ))
             continue
         fi
-        offenders="$(
-            printf '%s\n' "$output" \
-                | sed $'s/\033\\[[0-9;?]*[a-zA-Z]//g' \
-                | grep -v -E "^${PREFLIGHT_COUNTERFACTUAL_MARKER}" \
-                | grep -E "$PREFLIGHT_FAILURE_LINE_RE" || true
-        )"
+        log="$(mktemp "${TMPDIR:-/tmp}/hew-counterfactual-output.XXXXXX")"
+        printf '%s\n' "$output" > "$log"
+        offenders="$(extract_failure_lines "$log")"
+        rm -f "$log"
         marked="$(printf '%s\n' "$output" | grep -c -E "^${PREFLIGHT_COUNTERFACTUAL_MARKER}" || true)"
         if [[ -n "$offenders" ]]; then
             echo "    OFFENDS $cmd — passed while printing failure-shaped line(s):" >&2

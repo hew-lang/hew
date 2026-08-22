@@ -414,6 +414,9 @@ jobs:
         # (test-sandbox-parity-coverage-check).
         run: make sandbox-parity-coverage-check
 
+      - name: Measure dogfood compiler IR
+        run: make dogfood-compile-measure
+
       - name: Assert complete lint authority coverage
         run: make lint-ci-coverage-check
 

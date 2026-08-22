@@ -1,0 +1,20 @@
+import std.string;
+record Secret { value: string, length: i64 }
+enum CredErr { Missing(string); }
+fn resolve(n: i64) -> Result<Secret, CredErr> {
+    if n > 0 { return Ok(Secret { value: "s" + string.from_int(n), length: n }); }
+    Err(CredErr.Missing("nope"))
+}
+fn preflight(n: i64, a: bool) -> string {
+    let secret = match resolve(n) {
+        .Err(_) => Secret { value: "d", length: 0 },
+        .Ok(value) => value,
+    };
+    if a { return "a"; }
+    "ok:" + secret.value
+}
+fn main() {
+    var i: i64 = 0;
+    while i < 1000000 { let _ = preflight(0 - i, true); i = i + 1; }
+    println("done-literal-err");
+}

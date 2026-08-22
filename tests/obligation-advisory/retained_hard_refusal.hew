@@ -1,0 +1,22 @@
+type Pair {
+    a: string,
+    b: string,
+}
+
+fn make_pair() -> Pair {
+    Pair {
+        a: string_concat("a-", "payload"),
+        b: string_concat("b-", "payload"),
+    }
+}
+
+fn main() -> i64 {
+    let pair = make_pair();
+    let first = match pair {
+        Pair { a: value, b: _ } => value,
+    };
+    println(first);
+    let stale = pair.b;
+    println(stale);
+    0
+}

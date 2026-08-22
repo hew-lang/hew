@@ -1,0 +1,16 @@
+pub type Envelope { message: string; }
+
+pub fn unit_result(ok: bool) -> Result<(), string> {
+    if ok { return Ok(()); }
+    Err("unit failed")
+}
+
+pub fn text_result(ok: bool) -> Result<string, string> {
+    if ok { return Ok("ready"); }
+    Err("text failed")
+}
+
+pub fn optional_envelope(some: bool) -> Option<Envelope> {
+    if some { return Some(Envelope { message: "stop" }); }
+    None
+}

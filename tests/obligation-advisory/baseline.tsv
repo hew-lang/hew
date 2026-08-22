@@ -1,0 +1,43 @@
+# Exact per-file ownership-diagnostic expectations for the direct-call carrier
+# corpus. Columns: fixture, ObligationUnderReleased advisories, other blocking
+# MIR findings, `hew check` exit code, runtime mode.
+#
+# Runtime modes and what each one proves:
+#   check   the fixture is checked only (no `main` to execute, or a module root).
+#   clean   the fixture is BUILT at -O2 and executed under the platform leak
+#           oracle, and must report ZERO leaks.
+#   leaks   the fixture is BUILT and executed the same way, and the oracle MUST
+#           report a leak. These pin the demote-never-suppress rule: the leak is
+#           real and the advisory is the only thing a user has. Silence the
+#           advisory and the count column fails; close the leak and the oracle
+#           fails at the lift event, at which point the row moves to `clean`.
+#           A `leaks` row with zero advisories is refused structurally.
+#   refuse  the fixture must produce a blocking MIR finding and a non-zero exit.
+#
+# Three rows are leak-free yet still carry an advisory —
+# direct_call_terminal_carriers.hew (2), rG_inline.hew (1), rG_let.hew (1).
+# Those are FALSE POSITIVES of the obligation validator, recorded here so the
+# corpus states the imprecision instead of hiding it. Closing them lowers the
+# count and fails this file, which is the intended signal.
+#
+# fixture	advisories	blocking_mir	exit_code	runtime
+cross_module_result/main.hew	1	0	0	check
+direct_call_terminal_carriers.hew	2	0	0	clean
+escaping_direct_call_binding.hew	1	0	0	check
+many_return_blocks.hew	1	0	0	check
+pF.hew	1	0	0	check
+pG.hew	1	0	0	check
+pH.hew	1	0	0	check
+pJ.hew	0	0	0	check
+pK.hew	0	0	0	check
+pL.hew	1	0	0	leaks
+pM.hew	1	0	0	leaks
+pN.hew	0	0	0	clean
+rA.hew	0	0	0	clean
+rC.hew	1	0	0	leaks
+rG_inline.hew	1	0	0	clean
+rG_let.hew	1	0	0	clean
+rJ_noerr.hew	2	0	0	leaks
+rK_noloop.hew	2	0	0	leaks
+retained_call_carriers/main.hew	2	0	0	check
+retained_hard_refusal.hew	0	1	1	refuse

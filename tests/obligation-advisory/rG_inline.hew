@@ -1,0 +1,37 @@
+import std.string;
+
+record Snap { label: string, n: i64, terminal: bool }
+
+actor Svc {
+    let seed: i64;
+
+    receive fn snapshot() -> Snap {
+        Snap { label: "snap-" + string.from_int(seed), n: seed, terminal: seed > 2 }
+    }
+}
+
+fn empty_snap() -> Snap {
+    Snap { label: "", n: -1, terminal: false }
+}
+
+fn poll(svc: LocalPid<Svc>) -> Snap {
+    var i = 0;
+    while i < 3 {
+        match await svc.snapshot() {
+            .Ok(s) => {
+                if s.terminal {
+                    return s;
+                }
+            },
+            .Err(_) => {},
+        }
+        i = i + 1;
+    }
+    empty_snap()
+}
+
+fn main() {
+    let svc = spawn Svc(seed: 7);
+    let s = poll(svc);
+    println(s.label);
+}

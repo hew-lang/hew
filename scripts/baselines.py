@@ -443,6 +443,16 @@ NO_BASELINE_FILES: tuple[tuple[str, str], ...] = (
         "index of intent, not derived output",
     ),
     (
+        "tests/obligation-advisory/baseline.tsv",
+        "exact per-fixture ownership-diagnostic expectations plus the runtime mode "
+        "each fixture is executed under (`clean` must report zero leaks, `leaks` "
+        "must report one). Re-recording it from observed output would make the "
+        "compiler agree with whatever it currently does and would let a silenced "
+        "advisory or a new leak regenerate itself green (LESSONS "
+        "oracle-encodes-intent-not-observed-output). Every row is a decision, "
+        "changed by hand with the measurement that justifies it",
+    ),
+    (
         "tests/vertical-slice/*",
         "accept/reject fixture expectations state INTENDED behaviour. Re-recording "
         "them from observed output would make the compiler's own oracle agree with "

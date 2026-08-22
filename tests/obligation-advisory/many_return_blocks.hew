@@ -1,0 +1,36 @@
+import std.string;
+
+record Admission { label: string, ordinal: i64 }
+enum AdmissionError { Rejected(string); }
+
+fn admit(n: i64) -> Result<Admission, AdmissionError> {
+    if n >= 0 {
+        return Ok(Admission { label: "admit" + string.from_int(n), ordinal: n });
+    }
+    Err(AdmissionError.Rejected("negative" + string.from_int(n)))
+}
+
+fn route(n: i64) -> string {
+    let admission = match admit(n) {
+        .Err(_) => return "rejected",
+        .Ok(value) => value,
+    };
+    if n == 1 { return "one"; }
+    if n == 2 { return "two"; }
+    if n == 3 { return "three"; }
+    if n == 4 { return "four"; }
+    if n == 5 { return "five"; }
+    if n == 6 { return "six"; }
+    if n == 7 { return "seven"; }
+    if n == 8 { return "eight"; }
+    if n == 9 { return "nine"; }
+    if n == 10 { return "ten"; }
+    if n == 11 { return "eleven"; }
+    if n == 12 { return "twelve"; }
+    if n == 13 { return "thirteen"; }
+    if n == 14 { return "fourteen"; }
+    if n == 15 { return "fifteen"; }
+    "selected:" + admission.label
+}
+
+fn main() { println(route(0)); }

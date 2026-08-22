@@ -1,0 +1,28 @@
+import std.string;
+
+record Item { number: i64, label: string }
+
+fn make_item(number: i64) -> Item {
+    Item { number: number, label: "item-" + string.from_int(number) }
+}
+
+fn inspect(number: i64) -> i64 {
+    let items: Vec<Item> = Vec.new();
+    items.push(make_item(number));
+    items.push(make_item(number + 1));
+
+    let selected = items[0];
+    let next_number = items[1].number;
+    make_item(next_number);
+    selected.number + next_number
+}
+
+fn main() {
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < 1000000 {
+        total = total + inspect(i);
+        i = i + 1;
+    }
+    println(total);
+}

@@ -1,0 +1,28 @@
+import std.string;
+
+record Rec { label: string, n: i64 }
+
+fn make(seed: i64) -> Rec {
+    Rec { label: "payload-" + string.from_int(seed), n: seed }
+}
+
+fn spin(seed: i64) -> i64 {
+    let r = make(seed);
+    var i: i64 = 0;
+    var total: i64 = 0;
+    loop {
+        total = total + r.n;
+        i = i + 1;
+        if i >= 3 { break; }
+    }
+    total
+}
+
+fn main() {
+    var k: i64 = 0;
+    while k < 1000000 {
+        let _ = spin(k);
+        k = k + 1;
+    }
+    println(string.from_int(spin(7)));
+}

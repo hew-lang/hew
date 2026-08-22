@@ -1,0 +1,22 @@
+import std.string;
+
+record Session { token: string, generation: i64 }
+enum LoadError { Missing(string); }
+
+fn load_session(ok: bool) -> Result<Session, LoadError> {
+    if ok {
+        return Ok(Session { token: "token", generation: 7 });
+    }
+    Err(LoadError.Missing("missing" + string.from_int(7)))
+}
+
+fn select_token(ok: bool, stop: bool) -> string {
+    let session = match load_session(ok) {
+        .Err(_) => return "unavailable",
+        .Ok(value) => value,
+    };
+    if stop { return "stopped"; }
+    "selected:" + session.token
+}
+
+fn main() { println(select_token(true, false)); }

@@ -212,8 +212,20 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
     };
     let retained_string_field_aliases =
         uniquely_defined_retained_string_field_load_aliases(blocks, local_tys);
-    let field_binders = collect_record_field_binders(blocks, &alias_of, &local_is_heap_owning);
-    let provenance = attribute_field_binder_provenance(blocks, &alias_of, &field_binders);
+    let all_field_binders = collect_record_field_binders(blocks, &alias_of, &local_is_heap_owning);
+    let provenance = attribute_field_binder_provenance(blocks, &alias_of, &all_field_binders);
+    // A join local with another, unrelated definition is not an ownership
+    // hand-off. Stop the binder chain at its last uniquely-attributed source
+    // so sibling cleanup can run on that predecessor before the values merge.
+    let field_binders: HashSet<u32> = all_field_binders
+        .into_iter()
+        .filter(|local| {
+            !matches!(
+                provenance.get(local),
+                Some(FieldBinderProvenance::Ambiguous) | None
+            )
+        })
+        .collect();
     let binder_root = |binder: u32| -> Option<u32> {
         match provenance.get(&binder) {
             Some(

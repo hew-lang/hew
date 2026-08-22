@@ -4,7 +4,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HARNESS="$REPO_ROOT/scripts/stdlib-ratchet.sh"
+HARNESS="$REPO_ROOT/scripts/corpus-ratchet.sh"
 # shellcheck source=scripts/lib/bare-variant-ratchet.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/bare-variant-ratchet.sh"
@@ -35,8 +35,8 @@ chmod +x "$FAKE_HEW"
 clean_output=""
 clean_status=0
 clean_output="$(
-    FAKE_HEW_MODE=clean HEW_BIN="$FAKE_HEW" \
-        "$HARNESS" --expected-failures "$EXPECTED_FAILURES" 2>&1
+    FAKE_HEW_MODE=clean HEW_BIN="$FAKE_HEW" "$HARNESS" stdlib \
+        --expected-failures "$EXPECTED_FAILURES" 2>&1
 )" || clean_status=$?
 
 if (( clean_status != 0 )); then
@@ -49,8 +49,8 @@ echo "PASS: clean successful checks satisfy the stdlib ratchet"
 bare_variant_output=""
 bare_variant_status=0
 bare_variant_output="$(
-    FAKE_HEW_MODE=bare-variants HEW_BIN="$FAKE_HEW" \
-        "$HARNESS" --expected-failures "$EXPECTED_FAILURES" 2>&1
+    FAKE_HEW_MODE=bare-variants HEW_BIN="$FAKE_HEW" "$HARNESS" stdlib \
+        --expected-failures "$EXPECTED_FAILURES" 2>&1
 )" || bare_variant_status=$?
 
 printf '%s\n' "$bare_variant_output" | sed 's/^/CF-[bare-variant-check] /'

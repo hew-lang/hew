@@ -2074,6 +2074,14 @@ fn declared_return_release(
         ResolvedTy::String => ReturnRelease::One(STRING_RELEASE_SYMBOL),
         ResolvedTy::Bytes => ReturnRelease::One(BYTES_RELEASE_SYMBOL),
         ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Sink),
+            ..
+        } => ReturnRelease::One("hew_sink_close"),
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Stream),
+            ..
+        } => ReturnRelease::One("hew_stream_close"),
+        ResolvedTy::Named {
             name,
             args,
             is_opaque,
@@ -2713,6 +2721,10 @@ pub(crate) struct CallScrutineeProvenance {
     /// This deliberately does NOT make the enclosing enum fresh: a match may
     /// mint only the selected payload binder, never a shell owner.
     pub(crate) fresh_variant_payloads: HashMap<hew_hir::ItemId, HashSet<(u32, u32)>>,
+    /// Emitted-symbol projection of [`Self::fresh_variant_payloads`]. Imported
+    /// calls carry a declaration identity distinct from the analysed origin,
+    /// so the symbol preserves the measured callee verdict across that seam.
+    pub(crate) fresh_variant_payload_symbols: HashMap<String, HashSet<(u32, u32)>>,
 }
 
 impl Default for CallScrutineeProvenance {
@@ -2726,6 +2738,7 @@ impl Default for CallScrutineeProvenance {
             owned_string_return_carriers: HashSet::new(),
             owned_string_return_carrier_symbols: HashSet::new(),
             fresh_variant_payloads: HashMap::new(),
+            fresh_variant_payload_symbols: HashMap::new(),
         }
     }
 }
@@ -2770,10 +2783,14 @@ impl CallScrutineeProvenance {
             return false;
         };
         !self.extern_table.is_extern_name(name)
-            && self
+            && (self
                 .fresh_variant_payloads
                 .get(item_id)
                 .is_some_and(|fields| fields.contains(&(variant_idx, field_idx)))
+                || self
+                    .fresh_variant_payload_symbols
+                    .get(name)
+                    .is_some_and(|fields| fields.contains(&(variant_idx, field_idx))))
     }
 }
 
@@ -2835,6 +2852,17 @@ pub(crate) fn build_call_scrutinee_provenance(
         &extern_table,
         &declared_release,
     );
+    let mut fresh_variant_payload_symbols = HashMap::new();
+    for (&id, function) in origin_fns {
+        if let Some(fields) = fresh_variant_payloads.get(&id) {
+            fresh_variant_payload_symbols.insert(function.name.clone(), fields.clone());
+        }
+    }
+    for mono in &module.monomorphisations {
+        if let Some(fields) = fresh_variant_payloads.get(&mono.key.origin) {
+            fresh_variant_payload_symbols.insert(mono.mangled_name.clone(), fields.clone());
+        }
+    }
     // A string return needs one independently releasable share, not necessarily
     // a pointer-distinct allocation. The string-specific fixpoint preserves the
     // established direct-call rules (`Fresh(∅)` and `ParamsOnly({PARAM})`) and
@@ -2883,6 +2911,7 @@ pub(crate) fn build_call_scrutinee_provenance(
         owned_string_return_carriers,
         owned_string_return_carrier_symbols,
         fresh_variant_payloads,
+        fresh_variant_payload_symbols,
     }
 }
 

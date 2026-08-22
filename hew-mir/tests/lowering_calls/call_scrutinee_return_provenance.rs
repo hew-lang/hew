@@ -614,6 +614,57 @@ fn imported_result_direct_call_scrutinee_publishes_fresh_fact() {
 }
 
 #[test]
+fn imported_sink_payload_without_a_measured_variant_summary_is_refused() {
+    let root = r"
+        import result_source;
+
+        fn use_it() {
+            match result_source.make() {
+                Ok(_sink) => {},
+                Err(_) => {},
+            }
+        }
+    ";
+    let module = r"
+        import payload_source;
+
+        pub fn make() -> Result<Sink<string>, string> {
+            Ok(payload_source.make())
+        }
+    ";
+    let payload = r#"
+        extern "C" {
+            fn host_sink() -> Sink<string>;
+        }
+
+        pub fn make() -> Sink<string> {
+            unsafe { host_sink() }
+        }
+    "#;
+    let p = imported_result_pipeline(root, module, payload);
+    assert_authority(&p, "result_source.make()", Ownership::NoOwner);
+    let refusals = p
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                MirDiagnosticKind::ImportedResourcePayloadSummaryMissing {
+                    symbol,
+                    payload_ty,
+                    ..
+                } if symbol == "result_source$make" && payload_ty == "Sink<string>"
+            )
+        })
+        .count();
+    assert_eq!(
+        refusals, 1,
+        "an imported resource payload without a measured summary must have one stable refusal: {:#?}",
+        p.diagnostics
+    );
+}
+
+#[test]
 fn imported_result_forwarder_scrutinee_preserves_borrowed_fact() {
     let root = r"
         import result_source;

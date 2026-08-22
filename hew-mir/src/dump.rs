@@ -1767,6 +1767,13 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         MirDiagnosticKind::ExternStringOwnershipUnresolved { symbol } => {
             format!("ExternStringOwnershipUnresolved {symbol}")
         }
+        MirDiagnosticKind::ImportedResourcePayloadSummaryMissing {
+            symbol,
+            payload_ty,
+            site,
+        } => format!(
+            "ImportedResourcePayloadSummaryMissing {symbol} payload={payload_ty} site={site:?}"
+        ),
         MirDiagnosticKind::UnsupportedUserRecordValueClass { name, reason } => {
             format!("UnsupportedUserRecordValueClass {name} {reason:?}")
         }

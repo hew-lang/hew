@@ -7429,6 +7429,16 @@ pub enum MirDiagnosticKind {
         exit_site: SiteId,
         ty: ResolvedTy,
     },
+    /// An imported call returned a `Sink` or `Stream` inside an enum payload,
+    /// but neither its declaration identity nor its emitted symbol has a
+    /// measured per-variant return summary. Minting a close obligation from
+    /// the call arguments would guess ownership, so the construct is refused
+    /// until an imported summary is available.
+    ImportedResourcePayloadSummaryMissing {
+        symbol: String,
+        payload_ty: String,
+        site: SiteId,
+    },
     /// D10: a named user type had no known `ValueClass` at the MIR boundary.
     /// Only builtin types are supported in slice 1.
     UnknownType { name: String },

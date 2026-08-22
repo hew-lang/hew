@@ -196,19 +196,20 @@ impl Builder {
     /// refusing a `Result` that contains an opaque sibling. The variant summary
     /// has already proved this exact `(tag, field)` path fresh using the same
     /// precise and audited-transfer authorities, so this grants only that
-    /// binder; it never makes the enclosing shell droppable. An imported Hew
-    /// function has no body in this module's summary. Its builtin `Sink` or
-    /// `Stream` payload is still a transferred owner when no argument can carry
-    /// such an endpoint: the payload cannot be a forwarded caller alias, while
-    /// a direct extern and every unknown aggregate argument remain denied.
+    /// binder; it never makes the enclosing shell droppable. An imported call
+    /// can carry a declaration identity distinct from its analyzed origin, so
+    /// the emitted-symbol projection must preserve the measured fact. If
+    /// neither identity has a row, a `Sink` or `Stream` payload is refused with
+    /// a named diagnostic. Argument shapes cannot prove that a returned
+    /// endpoint is newly owned.
     pub(crate) fn owner_warrant_for_fresh_variant_payload(
-        &self,
+        &mut self,
         scrutinee: &HirExpr,
         variant_idx: u32,
         field_idx: u32,
         payload_ty: &ResolvedTy,
     ) -> Option<OwnerMintWarrant> {
-        let HirExprKind::Call { callee, args, .. } = &scrutinee.kind else {
+        let HirExprKind::Call { callee, .. } = &scrutinee.kind else {
             return None;
         };
         let HirExprKind::BindingRef {
@@ -228,17 +229,44 @@ impl Builder {
         let measured_fresh = self
             .call_scrutinee_provenance
             .callee_returns_fresh_variant_payload(callee, variant_idx, field_idx);
-        let transferred_builtin = match self.subst_ty(payload_ty) {
+        if measured_fresh {
+            return Some(OwnerMintWarrant::new(
+                OwnerMintOrigin::PayloadOfScrutinee,
+                false,
+            ));
+        }
+
+        let payload_ty = self.subst_ty(payload_ty);
+        let imported_resource_payload = matches!(
+            payload_ty,
             ResolvedTy::Named {
                 builtin: Some(hew_types::BuiltinType::Sink | hew_types::BuiltinType::Stream),
                 ..
-            } => args
-                .iter()
-                .all(|arg| !type_may_carry_builtin_stream_endpoint(&self.subst_ty(&arg.ty))),
-            _ => false,
-        };
-        (measured_fresh || transferred_builtin)
-            .then(|| OwnerMintWarrant::new(OwnerMintOrigin::PayloadOfScrutinee, false))
+            }
+        ) && name.contains('$');
+        if imported_resource_payload
+            && !self.diagnostics.iter().any(|diagnostic| {
+                matches!(
+                    &diagnostic.kind,
+                    super::MirDiagnosticKind::ImportedResourcePayloadSummaryMissing {
+                        symbol,
+                        site,
+                        ..
+                    } if symbol == name && *site == scrutinee.site
+                )
+            })
+        {
+            self.diagnostics.push(super::MirDiagnostic {
+                kind: super::MirDiagnosticKind::ImportedResourcePayloadSummaryMissing {
+                    symbol: name.clone(),
+                    payload_ty: payload_ty.user_facing().to_string(),
+                    site: scrutinee.site,
+                },
+                note: "the imported callee has no measured active resource payload summary; publish a per-variant return summary before matching this payload"
+                    .to_string(),
+            });
+        }
+        None
     }
 
     /// Ask about a binder that rebinds or restores another binding in this same
@@ -326,51 +354,6 @@ impl Builder {
             OwnerMintOrigin::ForwardedFromAdmissionGate,
             !matches!(ownership, ProducedValueOwnership::Owned { .. }),
         )
-    }
-}
-
-fn type_may_carry_builtin_stream_endpoint(ty: &ResolvedTy) -> bool {
-    match ty {
-        ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::Sink | hew_types::BuiltinType::Stream),
-            ..
-        }
-        | ResolvedTy::Named { builtin: None, .. }
-        | ResolvedTy::Function { .. }
-        | ResolvedTy::Closure { .. }
-        | ResolvedTy::Pointer { .. }
-        | ResolvedTy::Borrow { .. }
-        | ResolvedTy::TraitObject { .. }
-        | ResolvedTy::TypeParam { .. } => true,
-        ResolvedTy::Named {
-            args,
-            builtin: Some(_),
-            ..
-        }
-        | ResolvedTy::Tuple(args) => args.iter().any(type_may_carry_builtin_stream_endpoint),
-        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) | ResolvedTy::Task(inner) => {
-            type_may_carry_builtin_stream_endpoint(inner)
-        }
-        ResolvedTy::I8
-        | ResolvedTy::I16
-        | ResolvedTy::I32
-        | ResolvedTy::I64
-        | ResolvedTy::U8
-        | ResolvedTy::U16
-        | ResolvedTy::U32
-        | ResolvedTy::U64
-        | ResolvedTy::Isize
-        | ResolvedTy::Usize
-        | ResolvedTy::F32
-        | ResolvedTy::F64
-        | ResolvedTy::Bool
-        | ResolvedTy::Char
-        | ResolvedTy::String
-        | ResolvedTy::Bytes
-        | ResolvedTy::CancellationToken
-        | ResolvedTy::Duration
-        | ResolvedTy::Unit
-        | ResolvedTy::Never => false,
     }
 }
 

@@ -520,6 +520,10 @@ jobs:
         with:
           cache-shared-key: compiled-hew-linux
 
+      - name: Assert the developer compiler profile
+        if: env.RUN_CODE_PATH == 'true'
+        run: make hew-profile-check
+
       - name: Build and certify the compiled Hew bundle
         if: env.RUN_CODE_PATH == 'true'
         run: |

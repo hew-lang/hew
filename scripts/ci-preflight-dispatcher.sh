@@ -1656,6 +1656,12 @@ if (( needs_ll_diff == 1 )) && [[ "$LANE" != "fallback" ]]; then
     add_command "make ll-diff"
 fi
 
+# Print and assert the supported developer compiler profile on every route
+# that can exercise code or build configuration.
+if [[ "$LANE" != "docs" && "$LANE" != "grammar" ]]; then
+    add_command "make hew-profile-check"
+fi
+
 # Orchestration-token leak scan — run on every push for every lane.
 # Catches lane IDs, Q-tags, and .tmp/ path references in committed source before review.
 # Fast (<2 s, git grep only).  Fallback lane gets this via `make lint`; scripts-config

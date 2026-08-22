@@ -1578,12 +1578,22 @@ impl Builder {
     }
     pub(crate) fn register_discarded_call_result_owner(&mut self, expr: &HirExpr, place: Place) {
         let typed_ty = self.subst_ty(&expr.ty);
-        if !ty_is_heap_owning_enum_composite(
+        let enum_in_place = ty_is_heap_owning_enum_composite(
             &typed_ty,
             &self.record_field_orders,
             &self.enum_layouts,
             self.type_classes.lifecycle_registry(),
-        ) {
+        );
+        let owns_heap = crate::model::ty_owns_heap_mir(
+            &typed_ty,
+            &self.record_field_orders,
+            &self.enum_layouts,
+        );
+        let is_resource = matches!(
+            ValueClass::of_ty(&typed_ty, &self.type_classes),
+            ValueClass::AffineResource | ValueClass::Linear
+        );
+        if !enum_in_place && !owns_heap && !is_resource {
             return;
         }
         let Some((binding, ty)) = self.finalize_typed_produced_value_owner(
@@ -1615,13 +1625,31 @@ impl Builder {
             ty: ty.clone(),
             intent: IntentKind::Consume,
         });
-        self.push_instr(Instr::Drop {
-            place,
-            ty,
-            drop_fn: Some(crate::model::DropFnSpec::InPlace(
-                crate::ownership::InPlaceReleaseKind::Enum,
-            )),
-        });
+        let before = self.instructions.len();
+        if enum_in_place {
+            self.push_instr(Instr::Drop {
+                place,
+                ty: ty.clone(),
+                drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                    crate::ownership::InPlaceReleaseKind::Enum,
+                )),
+            });
+        } else {
+            self.emit_local_overwrite_release(place, &ty);
+        }
+        if self.instructions.len() == before {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "owned discarded result release".to_string(),
+                    site: expr.site,
+                },
+                note: format!(
+                    "discarded owned value of type {} has no complete inline release plan",
+                    ty.user_facing()
+                ),
+            });
+            return;
+        }
         self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
     }
     pub(crate) fn record_iteration_owner_drop(

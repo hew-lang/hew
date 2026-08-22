@@ -1,0 +1,31 @@
+import std.string;
+
+record Admission { message: string, token: string }
+record Config { token: string, name: string }
+
+fn assemble(number: i64, early: bool) -> string {
+    let admission = Admission {
+        message: "early-" + string.from_int(number),
+        token: "token-" + string.from_int(number),
+    };
+    if early {
+        return "stopped";
+    }
+    if number < 0 {
+        return "negative";
+    }
+    let config = Config {
+        token: admission.token,
+        name: "active",
+    };
+    config.name + ":" + config.token
+}
+
+fn main() {
+    var i: i64 = 0;
+    while i < 1000000 {
+        let _ = assemble(i, true);
+        i = i + 1;
+    }
+    println(assemble(1, false));
+}

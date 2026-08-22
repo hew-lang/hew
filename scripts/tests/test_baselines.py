@@ -256,6 +256,42 @@ def test_lane_relevance_follows_prerequisites() -> None:
     check("an unrelated lane selects nothing", unrelated == [], str(unrelated))
 
 
+def test_deferred_makefile_prerequisites_follow_variable_reference() -> None:
+    print("deferred Makefile prerequisites follow their variable reference")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        makefile = root / "Makefile"
+        original_root = baselines.ROOT
+        baselines.ROOT = root
+        try:
+            # The append follows the rule, as it does for most LINT_GATES
+            # members in the root Makefile.
+            makefile.write_text(
+                "lint: $$(LINT_GATES)\nLINT_GATES += lint-member\nlint-member:\n"
+            )
+            reached = baselines.lane_targets(["make lint"])
+
+            # Counterfactual: only the variable actually named by the
+            # prerequisite can contribute its accumulated members.
+            makefile.write_text(
+                "lint: $$(OTHER_GATES)\nLINT_GATES += lint-member\nlint-member:\n"
+            )
+            counterfactual = baselines.lane_targets(["make lint"])
+        finally:
+            baselines.ROOT = original_root
+
+    check(
+        "a deferred variable reaches members appended after its rule",
+        "lint-member" in reached,
+        str(sorted(reached)),
+    )
+    check(
+        "an unreferenced accumulated variable does not add prerequisites",
+        "lint-member" not in counterfactual,
+        str(sorted(counterfactual)),
+    )
+
+
 def test_snapshot_restores_kind_and_mode() -> None:
     """A check must leave the tree byte-, mode-, and type-identical."""
     print("snapshot/restore preserves mode, symlinks and empty directories")
@@ -466,6 +502,7 @@ def main() -> int:
     test_prune_removes_only_now_passing_entries()
     test_regen_refuses_to_record_a_new_failure()
     test_lane_relevance_follows_prerequisites()
+    test_deferred_makefile_prerequisites_follow_variable_reference()
     test_file_closure_is_the_authority()
     test_file_closure_survives_indirection()
     test_snapshot_restores_kind_and_mode()

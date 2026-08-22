@@ -1278,7 +1278,7 @@ impl Builder {
             // pointer/fat leaves (`string` / `bytes`, null-store
             // postcondition) and the handle leaves with a wired release
             // symbol (`HashMap` / `HashSet` / `Generator` /
-            // `AsyncGenerator`).
+            // `AsyncGenerator` / `Sink` / `Stream`).
             ResolvedTy::String
             | ResolvedTy::Bytes
             | ResolvedTy::Named {
@@ -1287,7 +1287,9 @@ impl Builder {
                         hew_types::BuiltinType::HashMap
                         | hew_types::BuiltinType::HashSet
                         | hew_types::BuiltinType::Generator
-                        | hew_types::BuiltinType::AsyncGenerator,
+                        | hew_types::BuiltinType::AsyncGenerator
+                        | hew_types::BuiltinType::Sink
+                        | hew_types::BuiltinType::Stream,
                     ),
                 ..
             } => true,
@@ -1614,6 +1616,10 @@ impl Builder {
     /// removed it and this never runs (no double-free). Fail-open: a shape with
     /// no congruent leaf symbol (enum, nested aggregate field) emits nothing and
     /// leaks as before -- never a partial or wrong-ABI free.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "typed overwrite release keeps every supported owner shape in one dispatch"
+    )]
     pub(crate) fn emit_local_overwrite_release(&mut self, dest: Place, target_ty: &ResolvedTy) {
         let ty = self.subst_ty(target_ty);
         // A `var` reassignment is a GENERATION BOUNDARY: the slot's previous
@@ -1680,7 +1686,11 @@ impl Builder {
             },
             self.type_classes.lifecycle_registry(),
         )
-        .needs_close;
+        .needs_close
+            || matches!(
+                ValueClass::of_ty(&ty, &self.type_classes),
+                ValueClass::AffineResource | ValueClass::Linear
+            );
         if carries_close && user_record_layout_key(&ty).is_some() {
             if self.field_drop_in_place_admissible(&ty) {
                 self.push_instr(Instr::Drop {
@@ -1695,7 +1705,9 @@ impl Builder {
             // partial or wrong-ABI free).
             return;
         }
-        if carries_close && matches!(ty, ResolvedTy::Tuple(_)) {
+        let tuple_owns_heap = matches!(ty, ResolvedTy::Tuple(_))
+            && crate::model::ty_owns_heap_mir(&ty, &self.record_field_orders, &self.enum_layouts);
+        if matches!(ty, ResolvedTy::Tuple(_)) && (carries_close || tuple_owns_heap) {
             if self.field_drop_in_place_admissible(&ty) {
                 self.push_instr(Instr::Drop {
                     place: dest,
@@ -4348,13 +4360,31 @@ impl Builder {
         // synthetic owned binding over its temp so the arm-destructured
         // payload is released on every exit edge — most importantly the loop
         // back-edge, where each iteration previously leaked one payload
-        // (#2429). No-op for binding-ref scrutinees, runtime-symbol
-        // producers, and the recv/iter-next shapes that carry their own
-        // release discipline.
+        // (#2429). No-op when lowering did not publish an owned result for
+        // this exact place and site; recv/iter-next shapes keep their own
+        // payload release discipline below.
         let call_scrutinee_owner =
             self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
-        let call_scrutinee_owner_needs_arm_release =
-            call_scrutinee_owner.is_some() && matches!(scrutinee.kind, HirExprKind::Call { .. });
+        let method_carrier_has_direct_payload_handoff = arms.iter().any(|arm| {
+            let HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(result_binding),
+                ..
+            } = &arm.body.kind
+            else {
+                return false;
+            };
+            arm.bindings
+                .iter()
+                .any(|binding| binding.binding == *result_binding)
+        });
+        let call_scrutinee_owner_needs_arm_release = call_scrutinee_owner.is_some()
+            && (matches!(scrutinee.kind, HirExprKind::Call { .. })
+                || (method_carrier_has_direct_payload_handoff
+                    && self
+                        .method_scrutinee_emitted_symbol(scrutinee)
+                        .is_some_and(|symbol| {
+                            crate::return_provenance::method_return_provenance(&symbol).is_fresh()
+                        })));
         if call_scrutinee_owner_needs_arm_release {
             let carrier = Place::Local(scrutinee_local);
             self.owned_carrier_neutralize
@@ -4733,12 +4763,14 @@ impl Builder {
                     // Weak.upgrade shell likewise remains the sole owner. In
                     // both cases the binder is an alias unless a consuming
                     // use transfers the slot and changes its disposition.
-                    let binder_is_affine = matches!(
-                        ValueClass::of_ty(&binding_ty, &self.type_classes),
-                        ValueClass::AffineResource | ValueClass::Linear
+                    let binder_is_contextual_sink = matches!(
+                        super::drop_plan::resource_drop_fn(&binding_ty, &self.type_classes),
+                        Some(crate::model::DropFnSpec::Runtime(
+                            hew_types::runtime_call::RuntimeDropDescriptor::SinkClose
+                        ))
                     );
                     if weak_upgrade_owner_ty.is_some()
-                        || (call_scrutinee_owner_needs_arm_release && !binder_is_affine)
+                        || (call_scrutinee_owner_needs_arm_release && !binder_is_contextual_sink)
                     {
                         self.set_owned_local_disposition(binding.binding, Disposition::AliasOf);
                     }
@@ -4793,6 +4825,9 @@ impl Builder {
                 );
                 let transferred_sink = sink_handoff.is_some();
                 pending_sink_handoffs.extend(sink_handoff);
+                if transferred_sink && keep_for_drop_elab {
+                    self.set_owned_local_disposition(binding.binding, Disposition::ScopeExit);
+                }
                 if projected_tuple_owner_active && keep_for_drop_elab {
                     self.push_move_out_neutralize(
                         payload_source,
@@ -4804,12 +4839,14 @@ impl Builder {
                 // payload out must neutralize the variant slot on that arm —
                 // the funnel authority registered here fires only when the
                 // binder crosses an ownership boundary.
-                self.note_carrier_payload_binder(
-                    scrutinee_local,
-                    payload_source,
-                    dest,
-                    &binding_ty,
-                );
+                if !transferred_sink {
+                    self.note_carrier_payload_binder(
+                        scrutinee_local,
+                        payload_source,
+                        dest,
+                        &binding_ty,
+                    );
+                }
                 overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
                 // #2523 — record provenance for a heap-owning TOP-LEVEL projected
                 // payload binder so its `Consume`-intent move-out routes through
@@ -4838,7 +4875,7 @@ impl Builder {
                     // carrier, which is exactly `EphemeralTemp` — nulling the
                     // variant slot transfers ownership with no re-readable origin
                     // left behind.
-                    let origin = if transferred_sink {
+                    let origin = if transferred_sink || fresh_active_payload {
                         ProjectedPayloadOrigin::EphemeralTemp
                     } else {
                         scrutinee_origin.clone()
@@ -5185,7 +5222,7 @@ impl Builder {
                     ));
                 }
             }
-            let value = self.lower_composite_result_value(&arm.body);
+            let mut value = self.lower_composite_result_value(&arm.body);
             let body_end_block_id = self.current_block_id;
             // A direct whole-record match result (`Some(g) => g`) transfers the
             // selected field out of a proved-fresh call carrier. The carrier's
@@ -5199,6 +5236,13 @@ impl Builder {
                     if *local == value_local {
                         self.fresh_variant_payload_bindings.insert(*binding);
                         self.fresh_variant_payload_binder_locals.insert(*local);
+                    }
+                }
+            }
+            if call_scrutinee_owner_needs_arm_release {
+                if let Some(payload) = value {
+                    if self.owned_carrier_authority(payload).is_some() {
+                        value = Some(self.transfer_owned_carrier_place(payload, result_ty));
                     }
                 }
             }

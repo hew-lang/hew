@@ -44,6 +44,42 @@ actor PushRunner {
     }
 }
 
+actor CrashStage {
+    let next: LocalPid<pipeline.SinkI64>;
+    var crashed: bool;
+
+    receive fn push(item: pipeline.PipelineItemI64) -> bool {
+        if crashed {
+            return false;
+        }
+        if item.crash_stage {
+            crashed = true;
+            return false;
+        }
+        next.push(item);
+        true
+    }
+}
+
+actor CrashSource {
+    let next: LocalPid<CrashStage>;
+    let sink: LocalPid<pipeline.SinkI64>;
+
+    receive fn push(item: pipeline.PipelineItemI64) -> bool {
+        match await next.push(item) {
+            .Ok(accepted) => accepted,
+            .Err(_) => false,
+        }
+    }
+
+    receive fn count() -> i64 {
+        match await sink.count() {
+            .Ok(value) => value,
+            .Err(_) => -1,
+        }
+    }
+}
+
 fn wait_for_count(source: LocalPid<pipeline.SourceI64>, expected: i64) {
     var count = -1;
     var polls = 0;
@@ -228,7 +264,19 @@ fn cancelled_admission_settles_and_pipeline_continues() {
 
 #[test]
 fn crash_mid_pipeline_settles_without_sink_delivery() {
-    let source = pipeline.run(pipeline.from(1));
+    let control = spawn pipeline.AdmissionControlI64(permits: 1, stage_attempts: 0, stage_post_sends: 0);
+    let sink = spawn pipeline.SinkI64(
+        count: 0,
+        sum: 0,
+        first: 0,
+        second: 0,
+        third: 0,
+        last_value: 0,
+        last_label: "",
+        control: control,
+    );
+    let stage = spawn CrashStage(next: sink, crashed: false);
+    let source = spawn CrashSource(next: stage, sink: sink);
     match await source.push(item(9, "crash-owned", true)) {
         .Ok(admitted) => testing.assert_true(!admitted),
         .Err(_) => testing.assert_true(false),

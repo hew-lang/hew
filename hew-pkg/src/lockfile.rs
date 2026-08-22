@@ -29,6 +29,9 @@ pub struct LockedPackage {
     /// Package source: `"registry"`, `"path"`, or `"local"`.
     #[serde(default = "default_source", skip_serializing_if = "is_default_source")]
     pub source: String,
+    /// Local dependency path when `source = "path"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 fn default_source() -> String {
@@ -143,20 +146,28 @@ pub fn write_lockfile(path: &Path, lockfile: &LockFile) -> Result<(), LockError>
 /// from the current manifest requirements.
 #[must_use]
 pub fn is_lock_stale(lockfile: &LockFile, manifest: &HewManifest) -> bool {
-    let locked_requirements: std::collections::BTreeMap<&str, &str> = lockfile
+    let locked_requirements: std::collections::BTreeMap<&str, (&str, Option<&str>)> = lockfile
         .packages
         .iter()
         .filter_map(|package| {
-            package
-                .requirement
-                .as_deref()
-                .map(|requirement| (package.name.as_str(), requirement))
+            package.requirement.as_deref().map(|requirement| {
+                (
+                    package.name.as_str(),
+                    (requirement, package.path.as_deref()),
+                )
+            })
         })
         .collect();
-    let manifest_requirements: std::collections::BTreeMap<&str, &str> = manifest
+    let manifest_requirements: std::collections::BTreeMap<&str, (&str, Option<&str>)> = manifest
         .dependencies
         .iter()
-        .map(|(name, dep_spec)| (name.as_str(), dep_spec.version_req()))
+        .map(|(name, dep_spec)| {
+            let path = match dep_spec {
+                crate::manifest::DepSpec::Version(_) => None,
+                crate::manifest::DepSpec::Table(table) => table.path.as_deref(),
+            };
+            (name.as_str(), (dep_spec.version_req(), path))
+        })
         .collect();
 
     locked_requirements != manifest_requirements
@@ -218,6 +229,7 @@ mod tests {
                     checksum: Some("sha256:def456".to_string()),
                     signature: None,
                     source: "registry".to_string(),
+                    path: None,
                 },
                 LockedPackage {
                     name: "ecosystem::db::postgres".to_string(),
@@ -226,6 +238,7 @@ mod tests {
                     checksum: Some("sha256:abc123".to_string()),
                     signature: None,
                     source: "registry".to_string(),
+                    path: None,
                 },
             ],
         };
@@ -256,6 +269,7 @@ mod tests {
                 checksum: None,
                 signature: None,
                 source: "registry".to_string(),
+                path: None,
             }],
         };
 
@@ -301,6 +315,7 @@ mod tests {
                 checksum: None,
                 signature: None,
                 source: "registry".to_string(),
+                path: None,
             }],
         };
         let manifest = make_manifest(&[
@@ -322,6 +337,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    path: None,
                 },
                 LockedPackage {
                     name: "ecosystem::db::postgres".to_string(),
@@ -330,6 +346,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    path: None,
                 },
             ],
         };
@@ -349,6 +366,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    path: None,
                 },
                 LockedPackage {
                     name: "ecosystem::db::tls".to_string(),
@@ -357,6 +375,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    path: None,
                 },
             ],
         };
@@ -375,6 +394,7 @@ mod tests {
                 checksum: None,
                 signature: None,
                 source: "registry".to_string(),
+                path: None,
             }],
         };
         let manifest = make_manifest(&[("std::net::http", "^1.2")]);
@@ -393,6 +413,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    path: None,
                 },
                 LockedPackage {
                     name: "std::net::http".to_string(),
@@ -401,6 +422,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    path: None,
                 },
             ],
         };
@@ -436,6 +458,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    path: None,
                 },
                 LockedPackage {
                     name: "aaa::first".to_string(),
@@ -444,6 +467,7 @@ mod tests {
                     checksum: None,
                     signature: None,
                     source: "registry".to_string(),
+                    path: None,
                 },
             ],
         };
@@ -468,6 +492,49 @@ mod tests {
 
         let content = std::fs::read_to_string(&lock_path).unwrap();
         assert!(content.starts_with("# This file is auto-generated by hew."));
+    }
+
+    #[test]
+    fn path_source_roundtrips_and_participates_in_freshness() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("hew.lock");
+        let lockfile = LockFile {
+            packages: vec![LockedPackage {
+                name: "local".to_string(),
+                requirement: Some("*".to_string()),
+                version: "1.2.3".to_string(),
+                checksum: None,
+                signature: None,
+                source: "path".to_string(),
+                path: Some("../local".to_string()),
+            }],
+        };
+        write_lockfile(&lock_path, &lockfile).unwrap();
+
+        let read = read_lockfile(&lock_path).unwrap();
+        assert_eq!(read.packages[0].source, "path");
+        assert_eq!(read.packages[0].path.as_deref(), Some("../local"));
+
+        let mut manifest = make_manifest(&[]);
+        manifest.dependencies.insert(
+            "local".to_string(),
+            manifest::DepSpec::Table(manifest::DepTable {
+                version: "*".to_string(),
+                optional: None,
+                features: None,
+                default_features: None,
+                registry: None,
+                path: Some("../local".to_string()),
+            }),
+        );
+        assert!(!is_lock_stale(&read, &manifest));
+
+        let manifest::DepSpec::Table(dependency) = manifest.dependencies.get_mut("local").unwrap()
+        else {
+            unreachable!();
+        };
+        dependency.path = Some("../other".to_string());
+        assert!(is_lock_stale(&read, &manifest));
     }
 
     #[test]

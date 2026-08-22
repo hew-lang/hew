@@ -226,6 +226,12 @@ impl RegistryClient {
         self
     }
 
+    /// Return the registry API URL used to query a package.
+    #[must_use]
+    pub fn package_url(&self, name: &str) -> String {
+        format!("{}/packages/{name}", self.api_url)
+    }
+
     /// Start the GitHub OAuth device flow.
     ///
     /// # Errors

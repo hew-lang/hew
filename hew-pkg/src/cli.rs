@@ -1,6 +1,7 @@
 //! Package-manager command surface, flattened into the `hew` CLI as native
 //! top-level subcommands (`hew add`, `hew install`, `hew publish`, …).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
@@ -39,6 +40,9 @@ pub enum PkgCommand {
         /// Use a named registry from config
         #[arg(long, short = 'r')]
         registry: Option<String>,
+        /// Resolve exclusively from the local package cache
+        #[arg(long, conflicts_with = "registry")]
+        offline: bool,
     },
     /// Publish this package to the registry
     Publish {
@@ -221,7 +225,8 @@ pub fn dispatch(cmd: &PkgCommand) {
         PkgCommand::Install {
             locked,
             registry: reg,
-        } => cmd_install(*locked, &registry, reg.as_deref()),
+            offline,
+        } => cmd_install(*locked, *offline, &registry, reg.as_deref()),
         PkgCommand::Publish {
             registry: reg,
             local,
@@ -538,7 +543,12 @@ fn cmd_add(pkg: &str, version: &str, registry_name: Option<&str>) {
     clippy::too_many_lines,
     reason = "install has many sequential steps that are clearest in one function"
 )]
-fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Option<&str>) {
+fn cmd_install(
+    locked: bool,
+    offline: bool,
+    registry: &registry::Registry,
+    registry_name: Option<&str>,
+) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
     if !manifest_path.exists() {
@@ -626,14 +636,44 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
         return;
     }
 
-    // Resolve dependencies to exact versions, fetching any missing transitive
-    // packages until the graph resolves cleanly.
+    if offline {
+        eprintln!(
+            "Offline mode: using cached packages from {}; the registry will not be contacted.",
+            registry.root().display()
+        );
+    }
+
+    // Online resolution admits only versions confirmed by this registry
+    // session. Offline resolution explicitly admits the local cache.
+    let mut confirmed_versions = BTreeMap::<String, BTreeSet<String>>::new();
     let resolved = loop {
-        match resolver::resolve_all(&m, registry) {
+        let result = if offline {
+            resolver::resolve_all_from_root(&m, &cwd, registry)
+        } else {
+            resolver::resolve_all_confirmed(&m, &cwd, registry, &confirmed_versions)
+        };
+        match result {
             Ok(resolved) => break resolved,
+            Err(resolver::ResolveError::UnresolvableDeps { failures }) if offline => {
+                eprintln!("hew install: offline cache could not resolve:");
+                for failure in failures {
+                    eprintln!(
+                        "  {} [{}] in {}",
+                        failure.package,
+                        failure.requirements.join(", "),
+                        registry.root().display()
+                    );
+                }
+                std::process::exit(1);
+            }
             Err(resolver::ResolveError::UnresolvableDeps { failures }) => {
-                if !fetch_missing_packages(&failures, registry, registry_name) {
-                    eprintln!("hew install: could not resolve the dependency graph");
+                if let Err(error) = fetch_missing_packages(
+                    &failures,
+                    registry,
+                    registry_name,
+                    &mut confirmed_versions,
+                ) {
+                    eprintln!("hew install: {error}");
                     std::process::exit(1);
                 }
             }
@@ -654,21 +694,19 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
         }
         let version = &package.version;
         let target = registry.package_dir(name, version);
-        if !registry.is_installed(name, version) {
-            eprintln!("warning: {name}@{version} not found in global registry (~/.hew/packages/)");
+        if !target.is_dir() {
+            eprintln!(
+                "hew install: confirmed package {name}@{version} is missing from cache at {}",
+                target.display()
+            );
+            std::process::exit(1);
         }
-
-        // Compute checksum if the package directory exists.
-        let pkg_checksum = if target.is_dir() {
-            match checksum::compute_dir_checksum(&target) {
-                Ok(cs) => Some(cs),
-                Err(e) => {
-                    eprintln!("warning: cannot compute checksum for {name}@{version}: {e}");
-                    None
-                }
+        let pkg_checksum = match checksum::compute_dir_checksum(&target) {
+            Ok(checksum) => Some(checksum),
+            Err(error) => {
+                eprintln!("warning: cannot compute checksum for {name}@{version}: {error}");
+                None
             }
-        } else {
-            None
         };
 
         lock_packages.push(lockfile::LockedPackage {
@@ -678,6 +716,7 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
             checksum: pkg_checksum,
             signature: None,
             source: "registry".to_string(),
+            path: None,
         });
 
         // Build the local symlink path: replace :: with / separators.
@@ -727,9 +766,8 @@ fn fetch_missing_packages(
     failures: &[resolver::UnresolvedDep],
     registry: &registry::Registry,
     default_registry_name: Option<&str>,
-) -> bool {
-    let mut fetched_any = false;
-
+    confirmed_versions: &mut BTreeMap<String, BTreeSet<String>>,
+) -> Result<(), String> {
     for failure in failures {
         let api_client = make_client(failure.registry.as_deref().or(default_registry_name));
         let name = &failure.package;
@@ -738,23 +776,24 @@ fn fetch_missing_packages(
 
         eprint!("Fetching {name} from registry... ");
 
-        // Query the remote for available versions (fall back to local index).
+        // The registry is authoritative in online mode. A failed request must
+        // never admit an unconfirmed cache entry.
         let entries = match api_client.get_package(name) {
             Ok(entries) => entries,
             Err(api_err) => {
-                // Fallback: try local index if synced.
-                let index_root = config::local_index_path();
-                match index::read_index_entries(&index_root, name) {
-                    Ok(entries) if !entries.is_empty() => {
-                        eprintln!("(using local index fallback)");
-                        entries
-                    }
-                    _ => {
-                        eprintln!("failed");
-                        eprintln!("  warning: could not query registry for {name}: {api_err}");
-                        continue;
-                    }
-                }
+                eprintln!("failed");
+                let cache_path = resolver::resolve_cached_version(name, requirements, registry)
+                    .ok()
+                    .flatten()
+                    .map_or_else(
+                        || registry.root().join(name),
+                        |version| registry.package_dir(name, &version),
+                    );
+                return Err(format!(
+                    "registry request failed for package `{name}` version `{requirement_summary}` at `{}`: {api_err}; cached package path `{}` was not used (rerun with `hew install --offline` to use cached packages)",
+                    api_client.package_url(name),
+                    cache_path.display()
+                ));
             }
         };
 
@@ -766,22 +805,34 @@ fn fetch_missing_packages(
             Ok(result) => result,
             Err(e) => {
                 eprintln!("failed");
-                eprintln!("  warning: {e}");
-                continue;
+                return Err(e.to_string());
             }
         };
         let Some(resolved) = matched else {
             eprintln!("no matching version");
-            eprintln!("  warning: no version of {name} matches [{requirement_summary}]");
-            continue;
+            return Err(format!(
+                "registry `{}` has no version of package `{name}` matching [{requirement_summary}]; cached package path `{}` was not used",
+                api_client.package_url(name),
+                registry.root().join(name).display()
+            ));
         };
         let version = &resolved.version;
+
+        if registry.is_installed(name, version) {
+            confirmed_versions
+                .entry(name.clone())
+                .or_default()
+                .insert(version.clone());
+            eprintln!("confirmed cached {name}@{version}");
+            continue;
+        }
 
         // Get the download URL from the registry response.
         let Some(ref dl_url) = resolved.dl else {
             eprintln!("failed");
-            eprintln!("  warning: registry did not provide download URL for {name}@{version}");
-            continue;
+            return Err(format!(
+                "registry did not provide a download URL for package `{name}` version `{version}`"
+            ));
         };
 
         // Download the tarball.
@@ -789,8 +840,9 @@ fn fetch_missing_packages(
             Ok(data) => data,
             Err(e) => {
                 eprintln!("download failed");
-                eprintln!("  warning: could not download {name}@{version}: {e}");
-                continue;
+                return Err(format!(
+                    "could not download package `{name}` version `{version}`: {e}"
+                ));
             }
         };
 
@@ -801,7 +853,9 @@ fn fetch_missing_packages(
             eprintln!("  error: tarball integrity check failed for {name}@{version}");
             eprintln!("  expected: {}", resolved.checksum);
             eprintln!("  actual:   {actual_checksum}");
-            continue;
+            return Err(format!(
+                "tarball integrity check failed for {name}@{version}"
+            ));
         }
 
         // Verify Ed25519 signature over the checksum.
@@ -815,8 +869,7 @@ fn fetch_missing_packages(
                 Ok(()) => {}
                 Err(msg) => {
                     eprintln!("SIGNATURE VERIFICATION FAILED");
-                    eprintln!("  error: {msg}");
-                    continue;
+                    return Err(msg);
                 }
             }
         } else {
@@ -847,15 +900,17 @@ fn fetch_missing_packages(
         let target = registry.package_dir(name, version);
         if let Err(e) = tarball::unpack(&tarball_data, &target) {
             eprintln!("unpack failed");
-            eprintln!("  warning: could not unpack {name}@{version}: {e}");
-            continue;
+            return Err(format!("could not unpack {name}@{version}: {e}"));
         }
 
-        fetched_any = true;
+        confirmed_versions
+            .entry(name.clone())
+            .or_default()
+            .insert(version.clone());
         eprintln!("{name}@{version}");
     }
 
-    fetched_any
+    Ok(())
 }
 
 /// Verify an Ed25519 signature over a checksum by fetching the public key

@@ -13,6 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use crate::index::IndexEntry;
 use crate::manifest::{self, DepSpec, HewManifest};
@@ -39,6 +40,19 @@ pub struct ResolvedPackage {
     pub requirements: Vec<String>,
     /// The root manifest's direct requirement, if this is a direct dependency.
     pub direct_requirement: Option<String>,
+    /// Location from which this package is materialized.
+    pub source: PackageSource,
+    /// Manifest spelling of a direct path dependency, for lockfile freshness.
+    pub direct_path: Option<String>,
+}
+
+/// Source selected for a resolved package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PackageSource {
+    /// A package version in the global registry cache.
+    Registry,
+    /// A package rooted at the given local directory.
+    Path(PathBuf),
 }
 
 /// Errors that can occur during version resolution.
@@ -71,6 +85,47 @@ pub enum ResolveError {
         version: String,
         /// The underlying manifest error.
         source: manifest::ManifestError,
+    },
+    /// A local dependency path does not exist or is not a directory.
+    PathDependencyNotFound {
+        /// Dependency name from the parent manifest.
+        package: String,
+        /// Fully resolved local path.
+        path: PathBuf,
+    },
+    /// A local dependency manifest could not be read.
+    PathManifestRead {
+        /// Dependency name from the parent manifest.
+        package: String,
+        /// Fully resolved local path.
+        path: PathBuf,
+        /// Underlying manifest error.
+        source: manifest::ManifestError,
+    },
+    /// A local package's declared name differs from its dependency key.
+    PathPackageNameMismatch {
+        /// Dependency name from the parent manifest.
+        package: String,
+        /// Name declared by the local package.
+        declared: String,
+        /// Fully resolved local path.
+        path: PathBuf,
+    },
+    /// A local package version does not satisfy all active requirements.
+    PathVersionMismatch {
+        /// Dependency name from the parent manifest.
+        package: String,
+        /// Version declared by the local package.
+        version: String,
+        /// Active version requirements.
+        requirements: Vec<String>,
+        /// Fully resolved local path.
+        path: PathBuf,
+    },
+    /// The graph refers to one package name through incompatible sources.
+    ConflictingSources {
+        /// Conflicting package name.
+        package: String,
     },
     /// The selected dependency graph contains a cycle.
     CircularDependency {
@@ -112,6 +167,43 @@ impl fmt::Display for ResolveError {
                     "cannot read installed manifest for `{package}@{version}`: {source}"
                 )
             }
+            Self::PathDependencyNotFound { package, path } => write!(
+                f,
+                "path dependency `{package}` was not found at `{}`",
+                path.display()
+            ),
+            Self::PathManifestRead {
+                package,
+                path,
+                source,
+            } => write!(
+                f,
+                "cannot read path dependency `{package}` at `{}`: {source}",
+                path.display()
+            ),
+            Self::PathPackageNameMismatch {
+                package,
+                declared,
+                path,
+            } => write!(
+                f,
+                "path dependency `{package}` at `{}` declares package name `{declared}`",
+                path.display()
+            ),
+            Self::PathVersionMismatch {
+                package,
+                version,
+                requirements,
+                path,
+            } => write!(
+                f,
+                "path dependency `{package}` at `{}` has version `{version}`, which does not match [{}]",
+                path.display(),
+                requirements.join(", ")
+            ),
+            Self::ConflictingSources { package } => {
+                write!(f, "dependency `{package}` is requested from conflicting sources")
+            }
             Self::CircularDependency { cycle } => {
                 write!(f, "circular dependency detected: {}", cycle.join(" -> "))
             }
@@ -135,9 +227,15 @@ impl std::error::Error for ResolveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidVersionReq { source, .. } => Some(source),
-            Self::ManifestRead { source, .. } => Some(source),
+            Self::ManifestRead { source, .. } | Self::PathManifestRead { source, .. } => {
+                Some(source)
+            }
             Self::NoMatchingVersion { .. }
             | Self::InvalidPackageName { .. }
+            | Self::PathDependencyNotFound { .. }
+            | Self::PathPackageNameMismatch { .. }
+            | Self::PathVersionMismatch { .. }
+            | Self::ConflictingSources { .. }
             | Self::CircularDependency { .. }
             | Self::UnresolvableDeps { .. } => None,
         }
@@ -210,6 +308,8 @@ struct PackageState {
     requested_features: BTreeSet<String>,
     use_default_features: bool,
     registry: Option<String>,
+    source: Option<PackageSource>,
+    direct_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,6 +327,8 @@ struct DepRequest {
     features: BTreeSet<String>,
     use_default_features: bool,
     registry: Option<String>,
+    source: PackageSource,
+    direct_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -238,6 +340,11 @@ struct FailureState {
 #[derive(Debug, Clone, Default)]
 struct ActiveFeatures {
     enabled_optional_dependencies: BTreeSet<String>,
+}
+
+struct CachedManifest {
+    manifest: HewManifest,
+    root: PathBuf,
 }
 
 enum VisitControl {
@@ -253,19 +360,26 @@ enum PassOutcome {
 
 struct ResolverPass<'a> {
     registry: &'a Registry,
+    root: &'a Path,
     available_versions: BTreeMap<String, Vec<semver::Version>>,
     package_states: BTreeMap<String, PackageState>,
     selected_versions: BTreeMap<String, String>,
     expanded_states: BTreeMap<String, ExpandedState>,
     failures: BTreeMap<String, FailureState>,
-    manifest_cache: BTreeMap<(String, String), HewManifest>,
+    manifest_cache: BTreeMap<(String, String), CachedManifest>,
 }
 
 impl<'a> ResolverPass<'a> {
-    fn with_seed(registry: &'a Registry, package_states: BTreeMap<String, PackageState>) -> Self {
+    fn with_seed(
+        registry: &'a Registry,
+        root: &'a Path,
+        confirmed_versions: Option<&'a BTreeMap<String, BTreeSet<String>>>,
+        package_states: BTreeMap<String, PackageState>,
+    ) -> Self {
         Self {
             registry,
-            available_versions: available_versions(registry),
+            root,
+            available_versions: available_versions(registry, confirmed_versions),
             package_states,
             selected_versions: BTreeMap::new(),
             expanded_states: BTreeMap::new(),
@@ -275,7 +389,7 @@ impl<'a> ResolverPass<'a> {
     }
 
     fn resolve_manifest(mut self, manifest: &HewManifest) -> Result<PassOutcome, ResolveError> {
-        for request in root_requests(manifest) {
+        for request in root_requests(manifest, self.root)? {
             match self.visit_request(request, &[])? {
                 VisitControl::Continue => {}
                 VisitControl::Restart => return Ok(PassOutcome::Restart(self.package_states)),
@@ -297,6 +411,11 @@ impl<'a> ResolverPass<'a> {
                             version: version.clone(),
                             requirements: state.requirements.iter().cloned().collect(),
                             direct_requirement: state.direct_requirement.clone(),
+                            source: state
+                                .source
+                                .clone()
+                                .expect("selected package must have a source"),
+                            direct_path: state.direct_path.clone(),
                         },
                     )
                 })
@@ -329,8 +448,19 @@ impl<'a> ResolverPass<'a> {
             return Err(ResolveError::CircularDependency { cycle });
         }
 
+        let request_source = request.source.clone();
         let (requirements, requested_features, use_default_features) = {
             let state = self.package_states.entry(request.name.clone()).or_default();
+            if state
+                .source
+                .as_ref()
+                .is_some_and(|source| source != &request_source)
+            {
+                return Err(ResolveError::ConflictingSources {
+                    package: request.name,
+                });
+            }
+            state.source.get_or_insert_with(|| request_source.clone());
             state.requirements.insert(request.requirement.clone());
             if state.direct_requirement.is_none() {
                 state
@@ -340,7 +470,12 @@ impl<'a> ResolverPass<'a> {
             if state.registry.is_none() {
                 state.registry.clone_from(&request.registry);
             }
-            state.requested_features.extend(request.features);
+            if state.direct_path.is_none() {
+                state.direct_path.clone_from(&request.direct_path);
+            }
+            state
+                .requested_features
+                .extend(request.features.iter().cloned());
             state.use_default_features |= request.use_default_features;
             (
                 state.requirements.iter().cloned().collect::<Vec<_>>(),
@@ -349,24 +484,7 @@ impl<'a> ResolverPass<'a> {
             )
         };
 
-        let Some(version) = select_highest_matching_version(
-            &request.name,
-            &requirements,
-            &self.available_versions,
-        )?
-        else {
-            self.failures
-                .entry(request.name)
-                .and_modify(|failure| {
-                    failure.requirements.extend(requirements.iter().cloned());
-                    if failure.registry.is_none() {
-                        failure.registry.clone_from(&request.registry);
-                    }
-                })
-                .or_insert_with(|| FailureState {
-                    requirements: requirements.iter().cloned().collect(),
-                    registry: request.registry.clone(),
-                });
+        let Some(version) = self.select_version(&request, &request_source, &requirements)? else {
             return Ok(VisitControl::Continue);
         };
 
@@ -395,8 +513,8 @@ impl<'a> ResolverPass<'a> {
             .expect("package state must exist after merging request")
             .clone();
         let dependency_requests = {
-            let manifest = self.load_manifest(&request.name, &version)?;
-            dependency_requests_from_manifest(manifest, &state_snapshot)
+            let cached = self.load_manifest(&request.name, &version, &request_source)?;
+            dependency_requests_from_manifest(&cached.manifest, &state_snapshot, &cached.root)?
         };
 
         self.expanded_states.insert(request.name.clone(), expanded);
@@ -414,27 +532,127 @@ impl<'a> ResolverPass<'a> {
         Ok(VisitControl::Continue)
     }
 
+    fn select_version(
+        &mut self,
+        request: &DepRequest,
+        source: &PackageSource,
+        requirements: &[String],
+    ) -> Result<Option<String>, ResolveError> {
+        match source {
+            PackageSource::Registry => {
+                let version = select_highest_matching_version(
+                    &request.name,
+                    requirements,
+                    &self.available_versions,
+                )?;
+                if version.is_none() {
+                    self.failures
+                        .entry(request.name.clone())
+                        .and_modify(|failure| {
+                            failure.requirements.extend(requirements.iter().cloned());
+                            if failure.registry.is_none() {
+                                failure.registry.clone_from(&request.registry);
+                            }
+                        })
+                        .or_insert_with(|| FailureState {
+                            requirements: requirements.iter().cloned().collect(),
+                            registry: request.registry.clone(),
+                        });
+                }
+                Ok(version)
+            }
+            PackageSource::Path(path) => self
+                .load_path_manifest(&request.name, path, requirements)
+                .map(Some),
+        }
+    }
+
     fn load_manifest(
         &mut self,
         package: &str,
         version: &str,
-    ) -> Result<&HewManifest, ResolveError> {
+        source: &PackageSource,
+    ) -> Result<&CachedManifest, ResolveError> {
         let key = (package.to_string(), version.to_string());
         if !self.manifest_cache.contains_key(&key) {
-            let manifest_path = self.registry.package_dir(package, version).join("hew.toml");
-            let manifest = manifest::parse_manifest(&manifest_path).map_err(|source| {
-                ResolveError::ManifestRead {
-                    package: package.to_string(),
-                    version: version.to_string(),
-                    source,
+            match source {
+                PackageSource::Registry => {
+                    let root = self.registry.package_dir(package, version);
+                    let manifest =
+                        manifest::parse_manifest(&root.join("hew.toml")).map_err(|source| {
+                            ResolveError::ManifestRead {
+                                package: package.to_string(),
+                                version: version.to_string(),
+                                source,
+                            }
+                        })?;
+                    self.manifest_cache
+                        .insert(key.clone(), CachedManifest { manifest, root });
                 }
-            })?;
-            self.manifest_cache.insert(key.clone(), manifest);
+                PackageSource::Path(path) => {
+                    self.load_path_manifest(package, path, &[version.to_string()])?;
+                }
+            }
         }
         Ok(self
             .manifest_cache
             .get(&key)
             .expect("manifest cache entry must exist after insertion"))
+    }
+
+    fn load_path_manifest(
+        &mut self,
+        package: &str,
+        path: &Path,
+        requirements: &[String],
+    ) -> Result<String, ResolveError> {
+        if !path.is_dir() {
+            return Err(ResolveError::PathDependencyNotFound {
+                package: package.to_string(),
+                path: path.to_path_buf(),
+            });
+        }
+        let manifest = manifest::parse_manifest(&path.join("hew.toml")).map_err(|source| {
+            ResolveError::PathManifestRead {
+                package: package.to_string(),
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
+        if manifest.package.name != package {
+            return Err(ResolveError::PathPackageNameMismatch {
+                package: package.to_string(),
+                declared: manifest.package.name,
+                path: path.to_path_buf(),
+            });
+        }
+        let version = semver::Version::parse(&manifest.package.version).map_err(|source| {
+            ResolveError::InvalidVersionReq {
+                input: manifest.package.version.clone(),
+                source,
+            }
+        })?;
+        let parsed_requirements = parse_requirements(requirements)?;
+        if !parsed_requirements
+            .iter()
+            .all(|requirement| requirement.matches(&version))
+        {
+            return Err(ResolveError::PathVersionMismatch {
+                package: package.to_string(),
+                version: version.to_string(),
+                requirements: requirements.to_vec(),
+                path: path.to_path_buf(),
+            });
+        }
+        let version = version.to_string();
+        self.manifest_cache.insert(
+            (package.to_string(), version.clone()),
+            CachedManifest {
+                manifest,
+                root: path.to_path_buf(),
+            },
+        );
+        Ok(version)
     }
 }
 
@@ -460,9 +678,19 @@ fn normalize_version(v: &str) -> String {
     }
 }
 
-fn available_versions(registry: &Registry) -> BTreeMap<String, Vec<semver::Version>> {
+fn available_versions(
+    registry: &Registry,
+    confirmed_versions: Option<&BTreeMap<String, BTreeSet<String>>>,
+) -> BTreeMap<String, Vec<semver::Version>> {
     let mut versions = BTreeMap::<String, Vec<semver::Version>>::new();
     for package in registry.list_packages() {
+        if confirmed_versions.is_some_and(|confirmed| {
+            !confirmed
+                .get(&package.name)
+                .is_some_and(|versions| versions.contains(&package.version))
+        }) {
+            continue;
+        }
         if let Ok(version) = semver::Version::parse(&package.version) {
             versions.entry(package.name).or_default().push(version);
         }
@@ -498,19 +726,54 @@ fn select_highest_matching_version(
         .map(ToString::to_string))
 }
 
-fn root_requests(manifest: &HewManifest) -> Vec<DepRequest> {
+fn root_requests(manifest: &HewManifest, root: &Path) -> Result<Vec<DepRequest>, ResolveError> {
     manifest
         .dependencies
         .iter()
-        .map(|(name, dep_spec)| DepRequest {
-            name: name.clone(),
-            requirement: dep_spec.version_req().to_string(),
-            direct_requirement: Some(dep_spec.version_req().to_string()),
-            features: requested_features(dep_spec),
-            use_default_features: uses_default_features(dep_spec),
-            registry: dependency_registry(dep_spec),
+        .map(|(name, dep_spec)| {
+            Ok(DepRequest {
+                name: name.clone(),
+                requirement: dep_spec.version_req().to_string(),
+                direct_requirement: Some(dep_spec.version_req().to_string()),
+                features: requested_features(dep_spec),
+                use_default_features: uses_default_features(dep_spec),
+                registry: dependency_registry(dep_spec),
+                source: dependency_source(name, dep_spec, root)?,
+                direct_path: dependency_path(dep_spec).map(ToString::to_string),
+            })
         })
         .collect()
+}
+
+fn dependency_path(dep_spec: &DepSpec) -> Option<&str> {
+    match dep_spec {
+        DepSpec::Version(_) => None,
+        DepSpec::Table(table) => table.path.as_deref(),
+    }
+}
+
+fn dependency_source(
+    package: &str,
+    dep_spec: &DepSpec,
+    root: &Path,
+) -> Result<PackageSource, ResolveError> {
+    let Some(path) = dependency_path(dep_spec) else {
+        return Ok(PackageSource::Registry);
+    };
+    let resolved = root.join(path);
+    let canonical = resolved
+        .canonicalize()
+        .map_err(|_| ResolveError::PathDependencyNotFound {
+            package: package.to_string(),
+            path: resolved.clone(),
+        })?;
+    if !canonical.is_dir() {
+        return Err(ResolveError::PathDependencyNotFound {
+            package: package.to_string(),
+            path: canonical,
+        });
+    }
+    Ok(PackageSource::Path(canonical))
 }
 
 fn requested_features(dep_spec: &DepSpec) -> BTreeSet<String> {
@@ -542,29 +805,29 @@ fn dependency_registry(dep_spec: &DepSpec) -> Option<String> {
 fn dependency_requests_from_manifest(
     manifest: &HewManifest,
     state: &PackageState,
-) -> Vec<DepRequest> {
+    root: &Path,
+) -> Result<Vec<DepRequest>, ResolveError> {
     let active_features = resolve_active_features(manifest, state);
+    let mut requests = Vec::new();
+    for (name, dep_spec) in &manifest.dependencies {
+        if dependency_is_optional(dep_spec)
+            && !active_features.enabled_optional_dependencies.contains(name)
+        {
+            continue;
+        }
 
-    manifest
-        .dependencies
-        .iter()
-        .filter_map(|(name, dep_spec)| {
-            if dependency_is_optional(dep_spec)
-                && !active_features.enabled_optional_dependencies.contains(name)
-            {
-                return None;
-            }
-
-            Some(DepRequest {
-                name: name.clone(),
-                requirement: dep_spec.version_req().to_string(),
-                direct_requirement: None,
-                features: requested_features(dep_spec),
-                use_default_features: uses_default_features(dep_spec),
-                registry: dependency_registry(dep_spec),
-            })
-        })
-        .collect()
+        requests.push(DepRequest {
+            name: name.clone(),
+            requirement: dep_spec.version_req().to_string(),
+            direct_requirement: None,
+            features: requested_features(dep_spec),
+            use_default_features: uses_default_features(dep_spec),
+            registry: dependency_registry(dep_spec),
+            source: dependency_source(name, dep_spec, root)?,
+            direct_path: None,
+        });
+    }
+    Ok(requests)
 }
 
 fn dependency_is_optional(dep_spec: &DepSpec) -> bool {
@@ -627,11 +890,33 @@ pub fn resolve_version(
     validate_package_name(package_name)?;
 
     let requirements = vec![requirement.to_string()];
-    select_highest_matching_version(package_name, &requirements, &available_versions(registry))?
-        .ok_or_else(|| ResolveError::NoMatchingVersion {
-            package: package_name.to_string(),
-            requirement: requirement.to_string(),
-        })
+    select_highest_matching_version(
+        package_name,
+        &requirements,
+        &available_versions(registry, None),
+    )?
+    .ok_or_else(|| ResolveError::NoMatchingVersion {
+        package: package_name.to_string(),
+        requirement: requirement.to_string(),
+    })
+}
+
+/// Find the highest cached version satisfying all active requirements.
+///
+/// # Errors
+///
+/// Returns [`ResolveError::InvalidVersionReq`] if any requirement is invalid.
+pub fn resolve_cached_version(
+    package_name: &str,
+    requirements: &[String],
+    registry: &Registry,
+) -> Result<Option<String>, ResolveError> {
+    validate_package_name(package_name)?;
+    select_highest_matching_version(
+        package_name,
+        requirements,
+        &available_versions(registry, None),
+    )
 }
 
 fn validate_package_name(package: &str) -> Result<(), ResolveError> {
@@ -739,9 +1024,47 @@ pub fn resolve_all(
     manifest: &HewManifest,
     registry: &Registry,
 ) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
+    resolve_all_from_root(manifest, Path::new("."), registry)
+}
+
+/// Resolve dependencies from the cache, interpreting path dependencies
+/// relative to `root`.
+///
+/// # Errors
+///
+/// Returns [`ResolveError`] when the graph cannot be resolved.
+pub fn resolve_all_from_root(
+    manifest: &HewManifest,
+    root: &Path,
+    registry: &Registry,
+) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
+    resolve_all_inner(manifest, root, registry, None)
+}
+
+/// Resolve dependencies using only registry versions confirmed by the current
+/// online install operation. Path dependencies remain available from disk.
+///
+/// # Errors
+///
+/// Returns [`ResolveError`] when the graph cannot be resolved.
+pub fn resolve_all_confirmed(
+    manifest: &HewManifest,
+    root: &Path,
+    registry: &Registry,
+    confirmed_versions: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
+    resolve_all_inner(manifest, root, registry, Some(confirmed_versions))
+}
+
+fn resolve_all_inner(
+    manifest: &HewManifest,
+    root: &Path,
+    registry: &Registry,
+    confirmed_versions: Option<&BTreeMap<String, BTreeSet<String>>>,
+) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
     let mut seed_states = BTreeMap::new();
     loop {
-        let pass = ResolverPass::with_seed(registry, seed_states);
+        let pass = ResolverPass::with_seed(registry, root, confirmed_versions, seed_states);
         match pass.resolve_manifest(manifest)? {
             PassOutcome::Resolved(resolved) => return Ok(resolved),
             PassOutcome::Restart(next_seed_states) => {
@@ -1499,6 +1822,91 @@ mod tests {
         let resolved = resolve_all(&manifest, &reg).unwrap();
         assert_eq!(resolved["feature.core"].version, "1.0.0");
         assert_eq!(resolved["feature.tls"].version, "1.1.0");
+    }
+
+    #[test]
+    fn confirmed_resolution_refuses_unconfirmed_cached_version() {
+        let (_dir, registry) = test_registry();
+        install_fake(&registry, "cached.pkg", "1.0.0");
+        let manifest = test_manifest(BTreeMap::from([(
+            "cached.pkg".to_string(),
+            DepSpec::Version("1.0.0".to_string()),
+        )]));
+        let confirmed = BTreeMap::new();
+
+        let error = resolve_all_confirmed(&manifest, Path::new("."), &registry, &confirmed)
+            .expect_err("unconfirmed cache entry must be unavailable");
+        assert!(matches!(error, ResolveError::UnresolvableDeps { .. }));
+
+        let confirmed = BTreeMap::from([(
+            "cached.pkg".to_string(),
+            BTreeSet::from(["1.0.0".to_string()]),
+        )]);
+        let resolved = resolve_all_confirmed(&manifest, Path::new("."), &registry, &confirmed)
+            .expect("confirmed cache entry should resolve");
+        assert_eq!(resolved["cached.pkg"].version, "1.0.0");
+    }
+
+    #[test]
+    fn path_dependency_resolves_with_transitive_registry_dependency() {
+        let (registry_dir, registry) = test_registry();
+        install_fake(&registry, "registry.leaf", "2.0.0");
+        let project = tempfile::tempdir().unwrap();
+        let local = project.path().join("local");
+        std::fs::create_dir(&local).unwrap();
+        std::fs::write(
+            local.join("hew.toml"),
+            concat!(
+                "[package]\n",
+                "name = \"local\"\n",
+                "version = \"1.2.3\"\n",
+                "\n[dependencies]\n",
+                "\"registry.leaf\" = \"2.0.0\"\n",
+            ),
+        )
+        .unwrap();
+        let manifest = test_manifest(BTreeMap::from([(
+            "local".to_string(),
+            DepSpec::Table(DepTable {
+                version: "*".to_string(),
+                optional: None,
+                features: None,
+                default_features: None,
+                registry: None,
+                path: Some("local".to_string()),
+            }),
+        )]));
+
+        let resolved = resolve_all_from_root(&manifest, project.path(), &registry).unwrap();
+        assert_eq!(resolved["local"].version, "1.2.3");
+        assert_eq!(resolved["registry.leaf"].version, "2.0.0");
+        assert_eq!(
+            resolved["local"].source,
+            PackageSource::Path(local.canonicalize().unwrap())
+        );
+        drop(registry_dir);
+    }
+
+    #[test]
+    fn missing_path_dependency_is_named() {
+        let (_registry_dir, registry) = test_registry();
+        let project = tempfile::tempdir().unwrap();
+        let manifest = test_manifest(BTreeMap::from([(
+            "missing".to_string(),
+            DepSpec::Table(DepTable {
+                version: "*".to_string(),
+                optional: None,
+                features: None,
+                default_features: None,
+                registry: None,
+                path: Some("does-not-exist".to_string()),
+            }),
+        )]));
+
+        let error = resolve_all_from_root(&manifest, project.path(), &registry).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("missing"));
+        assert!(message.contains("does-not-exist"));
     }
 
     // ── Display / Error impls ───────────────────────────────────────────

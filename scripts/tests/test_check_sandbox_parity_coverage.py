@@ -126,7 +126,7 @@ def _run_main_capturing_output(argv_tail: list[str]) -> tuple[int, str]:
     return exit_code, buffer.getvalue()
 
 
-def test_direct_marker_call_is_detected() -> None:
+def test_build_only_authority_is_not_a_vm_spawn() -> None:
     source = """
 #[test]
 fn spawns_directly() {
@@ -138,7 +138,7 @@ fn ensure_parity_runner_built() {
     assert!(vm_dir.join("node_modules").is_dir());
 }
 """
-    assert check_sandbox_parity_coverage.is_vm_dependent(source) is True
+    assert check_sandbox_parity_coverage.is_vm_dependent(source) is False
 
 
 def test_file_with_no_marker_is_not_flagged() -> None:
@@ -179,6 +179,7 @@ fn run_sandbox_inline(bytecode_json: &str) -> Output {
     assert_cmd::Command::new("npm")
         .arg("--prefix")
         .arg(repo_root().join("hew-sandbox-vm"))
+        .arg("parity:run")
         .output()
         .expect("spawn sandbox parity runner")
 }
@@ -219,6 +220,7 @@ fn spawn_via_table() {
     assert_cmd::Command::new("npm")
         .arg("--prefix")
         .arg(repo_root().join("hew-sandbox-vm"))
+        .arg("parity:run")
         .output()
         .expect("spawn");
 }
@@ -263,15 +265,15 @@ def test_excludes_binary_accepts_whole_binary_exclusion() -> None:
 def test_real_parity_ratchet_file_is_whole_binary_vm_dependent() -> None:
     # End-to-end check against the actual repo file: confirms detection
     # doesn't depend on which test the marker is reachable from -- the file
-    # is VM-dependent because `run_sandbox_inline` and
-    # `ensure_parity_runner_built` exist in it at all, full stop.
+    # is VM-dependent because `run_sandbox_inline` contains the runtime marker,
+    # regardless of the build-only helper beside it.
     path = ROOT / "hew-sandbox-wasm" / "tests" / "parity_ratchet.rs"
     text = path.read_text()
     assert check_sandbox_parity_coverage.is_vm_dependent(text) is True
 
     # Even with every direct call to ensure_parity_runner_built() stripped
     # from the file, run_sandbox_inline's own body still names
-    # hew-sandbox-vm, so the file remains classified VM-dependent -- proving
+    # parity:run, so the file remains classified VM-dependent -- proving
     # the classification does not depend on any single call site or test.
     stripped = text.replace(
         "fn live_gate_matches_declared_coverage() {\n    ensure_parity_runner_built();\n",
@@ -286,6 +288,10 @@ def test_real_repo_state_passes_the_full_check() -> None:
     result = run_script("--verbose")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "0 failed" in result.stdout
+    assert (
+        "ios_subset.rs is VM-dependent (spawn marker in: run_sandbox)" in result.stdout
+    )
+    assert "spawn marker in: ensure_parity_runner_built" not in result.stdout
     for binary in ("parity", "parity_ratchet", "playground", "ios_subset"):
         assert f"excludes whole binary {binary}" in result.stdout
 
@@ -479,7 +485,7 @@ def test_build_only_sandbox_mutation_is_rejected() -> None:
 
 
 _TESTS = [
-    test_direct_marker_call_is_detected,
+    test_build_only_authority_is_not_a_vm_spawn,
     test_file_with_no_marker_is_not_flagged,
     test_indirect_call_chain_is_detected,
     test_dynamically_dispatched_second_test_cannot_evade_classification,

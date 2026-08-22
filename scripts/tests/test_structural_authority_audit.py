@@ -990,4 +990,213 @@ for label, body, should_pass in POISONED_CASES:
                 f"rejection for {label} must name the rule:\n{result.stderr}"
             )
 
+
+# ── test-time build authority ────────────────────────────────────────────────
+#
+# Each case is a minimal crate the audit must accept or reject. The rejecting
+# cases are the shapes that have actually reached CI red -- a `#[cfg(test)]`
+# module in `src/` shelling `cargo build` (the unlocked writer that raced
+# `libhew.a`'s uplift), an integration test doing the same, `make`, and the
+# environment spelling of cargo. The accepting cases are production code, which
+# may build freely; the authority crate itself; a test that asks the authority
+# for the artifact; and a decoy proving that a call inside a string literal is
+# not a call.
+TEST_BUILD_CASES = (
+    (
+        "cfg(test) module in src shells cargo",
+        "hew-cli/src/test_runner.rs",
+        """
+pub fn run() {}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    #[test]
+    fn passing_test() {
+        let out = Command::new("cargo")
+            .args(["build", "-p", "hew-lib"])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+}
+""",
+        False,
+    ),
+    (
+        "integration test shells cargo",
+        "hew-cli/tests/support.rs",
+        """
+fn bootstrap() {
+    let out = Command::new("cargo")
+        .args(["build", "-p", "hew-lib"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+}
+""",
+        False,
+    ),
+    (
+        "integration test shells make",
+        "hew-cli/tests/support.rs",
+        """
+fn bootstrap() {
+    let out = std::process::Command::new("make").arg("stdlib").output().unwrap();
+    assert!(out.status.success());
+}
+""",
+        False,
+    ),
+    (
+        "integration test shells the environment cargo",
+        "hew-cli/tests/support.rs",
+        """
+fn bootstrap() {
+    let out = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+        .args(["build", "-p", "hew-runtime"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+}
+""",
+        False,
+    ),
+    (
+        "integration test shells an aliased environment cargo",
+        "hew-codegen-rs/tests/exec.rs",
+        """
+fn bootstrap() {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let out = Command::new(cargo)
+        .args(["build", "-p", "hew-lib"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+}
+""",
+        False,
+    ),
+    (
+        "integration test shells a borrowed make alias",
+        "hew-cli/tests/support.rs",
+        """
+fn bootstrap() {
+    let builder = "make";
+    let out = Command::new(&builder).arg("stdlib").output().unwrap();
+    assert!(out.status.success());
+}
+""",
+        False,
+    ),
+    (
+        "production code may build",
+        "hew-pkg/src/native.rs",
+        """
+pub fn build_native_dependency() -> bool {
+    let status = std::process::Command::new("cargo")
+        .args(["build", "--release"])
+        .status()
+        .expect("spawn cargo");
+    status.success()
+}
+""",
+        True,
+    ),
+    (
+        "the authority crate cannot build from its tests",
+        "hew-testutil/src/lib.rs",
+        """
+pub fn ensure_hew_lib_built() -> bool {
+    let out = std::process::Command::new("cargo")
+        .args(["build", "-p", "hew-lib"])
+        .output()
+        .unwrap();
+    out.status.success()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rebuilds() {
+        let _ = std::process::Command::new("cargo").arg("build").status();
+    }
+}
+""",
+        False,
+    ),
+    (
+        "the authority crate may build outside a test run",
+        "hew-testutil/src/lib.rs",
+        """
+pub fn ensure_hew_lib_built() -> bool {
+    let out = std::process::Command::new("cargo")
+        .args(["build", "-p", "hew-lib"])
+        .output()
+        .unwrap();
+    out.status.success()
+}
+""",
+        True,
+    ),
+    (
+        "test asks the authority for the artifact",
+        "hew-cli/tests/support.rs",
+        """
+fn bootstrap() {
+    hew_testutil::ensure_hew_lib_built().expect("build libhew.a");
+}
+""",
+        True,
+    ),
+    (
+        "cargo spawn only inside a string literal",
+        "hew-cli/tests/support.rs",
+        """
+#[test]
+fn diagnostic_names_the_fix() {
+    let advice = r#"
+        Command::new("cargo").args(["build", "-p", "hew-lib"])
+    "#;
+    assert!(!advice.is_empty());
+}
+""",
+        True,
+    ),
+)
+
+for label, rel, body, should_pass in TEST_BUILD_CASES:
+    with tempfile.TemporaryDirectory() as temp:
+        work = Path(temp)
+        (work / "scripts").mkdir()
+        enum_authority = work / "hew-types/src/stdlib_authority/codegen.rs"
+        enum_authority.parent.mkdir(parents=True)
+        enum_authority.write_text(
+            "struct BuiltinEnumAbi { name: &'static str }\n"
+            "const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[\n"
+            '    BuiltinEnumAbi { name: "AskError" },\n'
+            "];\n"
+        )
+        source = work / rel
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(body)
+        crate = work / rel.split("/", 1)[0]
+        (crate / "Cargo.toml").write_text(
+            f'[package]\nname = "{crate.name}"\nversion = "0.0.0"\n'
+        )
+        set_inventory(work)
+        result = run(work)
+        if should_pass:
+            assert result.returncode == 0, (
+                f"test-build authority must accept: {label}\n{result.stderr}"
+            )
+        else:
+            assert result.returncode != 0, (
+                f"test-build authority must reject: {label}\n{result.stdout}"
+            )
+            assert "test-time build tool spawned at" in result.stderr, (
+                f"rejection for {label} must name the rule:\n{result.stderr}"
+            )
+
 print("structural authority audit counterfactuals: PASS")

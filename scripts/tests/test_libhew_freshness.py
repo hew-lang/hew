@@ -216,10 +216,49 @@ def test_windows_name_and_concurrent_readers_writers() -> None:
         temp.cleanup()
 
 
+def test_build_is_rejected_inside_a_test_run() -> None:
+    temp, root, debug = fixture()
+    try:
+        marker = root / "unexpected-build"
+        command = root / "record-build.sh"
+        command.write_text(
+            f"#!/bin/sh\ntouch '{marker}'\n",
+            encoding="utf-8",
+        )
+        command.chmod(0o755)
+        helper = str(root / "scripts" / "libhew-freshness.py")
+        for sentinel, value in (
+            ("HEW_TEST_NO_BUILD", "1"),
+            ("NEXTEST_RUN_ID", "freshness-test-run"),
+        ):
+            environment = os.environ.copy()
+            environment[sentinel] = value
+            result = subprocess.run(
+                [
+                    helper,
+                    "build",
+                    "--debug-dir",
+                    str(debug),
+                    "--",
+                    str(command),
+                ],
+                cwd=root,
+                env=environment,
+                text=True,
+                capture_output=True,
+            )
+            assert result.returncode == 1, result
+            assert "run make stdlib" in result.stderr, result.stderr
+            assert not marker.exists(), f"build command ran under {sentinel}"
+    finally:
+        temp.cleanup()
+
+
 def main() -> None:
     test_green_and_lockfile_noise()
     test_counterfactuals_red()
     test_windows_name_and_concurrent_readers_writers()
+    test_build_is_rejected_inside_a_test_run()
     print("PASS: libhew content freshness counterfactuals")
 
 

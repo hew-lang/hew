@@ -339,12 +339,9 @@ fn run_sandbox(bytecode: &SandboxBytecodePackage, id: &str) -> Output {
 fn ensure_native_toolchain() {
     static NATIVE_TOOLCHAIN: OnceLock<()> = OnceLock::new();
     NATIVE_TOOLCHAIN.get_or_init(|| {
-        run_bootstrap_command(
-            "cargo build -q -p hew-cli",
-            std::process::Command::new("cargo")
-                .args(["build", "-q", "-p", "hew-cli"])
-                .current_dir(repo_root()),
-        );
+        // A `OnceLock` serializes nothing across nextest's per-test processes;
+        // both artifacts must go through the cross-process build authority.
+        hew_testutil::ensure_hew_bin_built().expect("build the hew binary");
         hew_testutil::ensure_hew_lib_built().expect("build libhew.a");
     });
 }

@@ -552,6 +552,28 @@ def test_compile_warmup_runs_first_and_has_a_summary_row() -> None:
     assert summary.index("warm-up  ") < summary.index("GATE_RAN"), result.stdout
 
 
+def test_rust_diff_derives_its_warmup_artifacts_before_commands() -> None:
+    """A parser diff warms only the artifacts its selected commands need."""
+    result = run_dispatcher("hew-parser/src/lib.rs")
+
+    assert result.returncode == 0, result.stderr
+    packages = (
+        "-p hew-analysis -p hew-cli -p hew-codegen-rs -p hew-compile -p hew-hir "
+        "-p hew-lsp -p hew-mir -p hew-parser -p hew-sandbox-wasm -p hew-types "
+        "-p hew-wasm -p xtask"
+    )
+    warmup = result.stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
+    clippy = f"  - cargo clippy {packages} --tests\n"
+    nextest = f"  - cargo nextest run --profile ci {packages} --no-run\n"
+    assert clippy in warmup, result.stdout
+    assert "  - make stdlib\n" in warmup, result.stdout
+    assert nextest in warmup, result.stdout
+    assert (
+        warmup.index(clippy) < warmup.index("  - make stdlib\n") < warmup.index(nextest)
+    ), result.stdout
+    assert result.stdout.index("Warm-up:\n") < result.stdout.index("Commands:\n")
+
+
 def test_docs_diff_has_no_warmup_block() -> None:
     # A prose document with no Hew fences selects only static checks.
     result = run_dispatcher("docs/observe.md")
@@ -605,7 +627,7 @@ def test_comprehensive_warms_every_gate_through_its_own_build_form() -> None:
 
     makefile = (ROOT / "Makefile").read_text()
     assert (
-        "\ntest-build: wasm-runtime runtime $(LIBHEW_READY)\n\tcargo nextest run --workspace --exclude hew-cabi --profile ci --no-run\n"
+        "\ntest-build: wasm-runtime runtime $(LIBHEW_READY)\n\t$(TEST_RUN_ENV) cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run\n"
         in makefile
     ), "make test's build form must build its binaries the way make test does"
     assert (
@@ -703,9 +725,9 @@ def test_a_nextest_gate_derives_its_own_invocation_with_no_run() -> None:
     result = explain_warmup("cargo nextest run --profile ci -p hew-mir")
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "cargo nextest run --profile ci -p hew-mir --no-run\n", (
-        result.stdout
-    )
+    assert result.stdout == (
+        "make stdlib\ncargo nextest run --profile ci -p hew-mir --no-run\n"
+    ), result.stdout
 
 
 def test_a_clippy_gate_derives_its_own_invocation_without_the_deny_flag() -> None:
@@ -2469,8 +2491,8 @@ def test_counterfactual_marker_is_shared_by_every_producer() -> None:
     ), "the counterfactual-output gate must have a Makefile port"
 
     selection = run_dispatcher("some-unclassified-root-file.txt")
-    assert "  - make check-counterfactual-output " in selection.stdout, (
-        "the comprehensive profile must run the counterfactual-output gate"
+    assert "  - make check-counterfactual-output-artifacts " in selection.stdout, (
+        "the comprehensive profile must run the shared-artifact counterfactual gate"
     )
 
 
@@ -2494,6 +2516,50 @@ def test_counterfactual_output_check_reuses_the_extractor_authority() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "counterfactual-output check: PASS" in result.stdout, result.stdout
+
+
+def test_counterfactual_rosters_follow_shared_artifact_requirements() -> None:
+    """Artifact requirements decide which counterfactual target dispatches a gate."""
+    dispatcher = (ROOT / "scripts/ci-preflight-dispatcher.sh").read_text()
+    roster_block = dispatcher.split("COUNTERFACTUAL_ROSTER=(", 1)[1].split(")", 1)[0]
+    roster = {
+        command.removeprefix("make ")
+        for command in re.findall(r'"([^"]+)"', roster_block)
+    }
+    requirements = {
+        fields[1]: fields[2]
+        for line in (ROOT / "hew-testutil/shared-test-artifacts.tsv")
+        .read_text()
+        .splitlines()
+        if (fields := line.split("\t")) and fields[0] == "gate"
+    }
+
+    assert requirements == {"test-leak-oracle-selftest": "shared-artifacts"}
+    assert set(requirements) <= roster
+    assert "COUNTERFACTUAL_GATE_REQUIREMENTS_FILE" in dispatcher
+    assert 'requirement="$(counterfactual_gate_requirement "$target")"' in dispatcher
+
+    makefile = (ROOT / "Makefile").read_text()
+    assert re.search(
+        r"^check-counterfactual-output:\n"
+        r"\tscripts/ci-preflight-dispatcher\.sh --check-counterfactual-output$",
+        makefile,
+        re.MULTILINE,
+    )
+    assert re.search(
+        r"^check-counterfactual-output-artifacts: \$\(LIBHEW_READY\)\n"
+        r"\tscripts/ci-preflight-dispatcher\.sh --check-counterfactual-output --shared-artifact-gates$",
+        makefile,
+        re.MULTILINE,
+    )
+
+    lightweight = run_dispatcher("scripts/lib/counterfactual.sh")
+    assert "  - make check-counterfactual-output " in lightweight.stdout
+    assert "check-counterfactual-output-artifacts" not in lightweight.stdout
+
+    compiled = run_dispatcher("some-unclassified-root-file.txt")
+    assert "  - make check-counterfactual-output-artifacts " in compiled.stdout
+    assert "  - make check-counterfactual-output " not in compiled.stdout
 
 
 def test_signal_deaths_are_named_not_swallowed_by_the_fallback() -> None:

@@ -1536,7 +1536,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // alias until a corroborating neutralize transfers ownership onward.
     let source_slot_is_consumed =
         |block: &BasicBlock, instr_index: usize, source: Place, dest: Place| -> bool {
-            block
+            let directly_consumed = block
                 .instructions
                 .get(instr_index + 1)
                 .is_some_and(|later| match later {
@@ -1556,7 +1556,26 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             | crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume,
                     } => *place == source && *transferee == Some(dest),
                     _ => false,
-                })
+                });
+            let forwarded_consumed = matches!(
+                (
+                    block.instructions.get(instr_index + 1),
+                    block.instructions.get(instr_index + 2),
+                ),
+                (
+                    Some(Instr::Move {
+                        dest: forwarded,
+                        src,
+                    }),
+                    Some(Instr::NeutralizePayloadSlot {
+                        place,
+                        transferee: Some(transferee),
+                        authority:
+                            crate::model::NeutralizeAuthority::WholeCarrierConsume,
+                    }),
+                ) if *src == dest && *place == source && *transferee == *forwarded
+            );
+            directly_consumed || forwarded_consumed
         };
     let aggregate_field_is_consumed =
         |block: &BasicBlock, instr_index: usize, root: Place, dest: Place, field: u32| -> bool {
@@ -1672,7 +1691,18 @@ pub(super) fn derive_enum_composite_drop_allowed(
     let retained_string_payload_aliases =
         uniquely_defined_retained_string_field_load_aliases(blocks, local_tys);
     payload_binders.retain(|local, _| !retained_string_payload_aliases.contains(local));
-
+    let neutralized_payload_owner_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::NeutralizePayloadSlot {
+                place,
+                transferee: Some(transferee),
+                ..
+            } if place_is_interior_projection(*place) => base_local(*transferee),
+            _ => None,
+        })
+        .collect();
     // Escape scan. A composite root is excluded if:
     //   (a) any alias-set member is read into an OWNING sink (a source operand
     //       that is NOT the whole-value `Move` hand-off already folded into the
@@ -1801,10 +1831,21 @@ pub(super) fn derive_enum_composite_drop_allowed(
                     // unexempted it wrongly excludes the parent composite from
                     // its `EnumInPlace` drop and leaks the inner payload (W5.020
                     // nested-payload leak).
+                    let transfers_neutralized_payload_within_carrier_scope =
+                        neutralized_payload_owner_locals.contains(&sl)
+                            && dest_local.is_some_and(|dl| {
+                                matches!(
+                                    payload_binder_candidate_root.get(&sl),
+                                    Some(PayloadBinderRoot::Root(root))
+                                        if local_scope.contains_key(root)
+                                            && local_scope.get(root) == local_scope.get(&dl)
+                                )
+                            });
                     if payload_binders.contains_key(&sl)
                         && !place_is_tag_read(*src)
                         && !retained_string_move
                         && !retained_bytes_move
+                        && !transfers_neutralized_payload_within_carrier_scope
                     {
                         let benign_handoff = dest_local
                             .is_some_and(|dl| payload_binders.contains_key(&dl))
@@ -1883,6 +1924,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                     | Instr::TupleFieldLoad { .. }
                     | Instr::RecordFieldDrop { .. }
                     | Instr::FieldDropInPlace { .. }
+                    | Instr::NeutralizePayloadSlot { .. }
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
@@ -2047,7 +2089,6 @@ pub(super) fn derive_enum_composite_drop_allowed(
         &declared_release_payload_candidate_locals,
         &mut excluded_roots,
     );
-
     let mut allowed = HashSet::new();
     for (&local, &binding) in &candidate_local_to_binding {
         let root = alias_of.get(&local).copied().unwrap_or(local);

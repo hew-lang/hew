@@ -5596,6 +5596,34 @@ fn local_read_after_site(
     false
 }
 
+/// Recover every local forwarded into persistent actor state.
+fn actor_state_ingress_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let mut ingress: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::ActorStateFieldStore { src, .. } => base_local(*src),
+            _ => None,
+        })
+        .collect();
+    loop {
+        let mut changed = false;
+        for instruction in blocks.iter().flat_map(|block| &block.instructions) {
+            let Instr::Move { dest, src } = instruction else {
+                continue;
+            };
+            if base_local(*dest).is_some_and(|local| ingress.contains(&local)) {
+                if let Some(source) = base_local(*src) {
+                    changed |= ingress.insert(source);
+                }
+            }
+        }
+        if !changed {
+            return ingress;
+        }
+    }
+}
+
 /// Null moved-from owners only after their aggregate sink has completed.
 fn neutralize_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let candidates = builder.owned_locals_exit_candidates();
@@ -5632,6 +5660,7 @@ fn neutralize_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut 
     }
     let alias_to_root =
         propagate_whole_value_alias_roots(blocks, candidate_by_root.keys().copied());
+    let actor_state_ingress_locals = actor_state_ingress_locals(blocks);
 
     for block in blocks {
         let mut index = 0;
@@ -5654,6 +5683,11 @@ fn neutralize_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut 
             index += 1;
             let mut roots = HashSet::new();
             for (source, destination) in sinks {
+                if base_local(destination)
+                    .is_some_and(|local| actor_state_ingress_locals.contains(&local))
+                {
+                    continue;
+                }
                 let Some(source_local) = base_local(source) else {
                     continue;
                 };
@@ -5854,6 +5888,12 @@ fn release_last_borrowed_typed_owners(blocks: &mut [BasicBlock], builder: &mut B
             continue;
         }
         if matches!(ty, ResolvedTy::Bytes) {
+            continue;
+        }
+        if matches!(
+            ValueClass::of_ty(&ty, &builder.type_classes),
+            ValueClass::AffineResource | ValueClass::Linear
+        ) {
             continue;
         }
         let Some(place) = builder.binding_locals.get(&binding).copied() else {

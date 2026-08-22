@@ -2911,10 +2911,16 @@ impl Builder {
                                     });
                                 }
                                 ProjectedPayloadOrigin::EphemeralTemp => {
-                                    self.push_move_out_neutralize(
-                                        provenance.source_place,
-                                        crate::model::NeutralizeAuthority::EphemeralTempConsume,
-                                    );
+                                    let carrier_transfer =
+                                        self.binding_locals.get(id).is_some_and(|place| {
+                                            self.owned_carrier_authority(*place).is_some()
+                                        });
+                                    if !carrier_transfer {
+                                        self.push_move_out_neutralize(
+                                            provenance.source_place,
+                                            crate::model::NeutralizeAuthority::EphemeralTempConsume,
+                                        );
+                                    }
                                 }
                                 ProjectedPayloadOrigin::Reject(reason) => {
                                     // Do NOT emit the unsound temp-neutralize —

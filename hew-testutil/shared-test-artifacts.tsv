@@ -1,0 +1,10 @@
+# key	kind	package	unix_archive	windows_archive	cargo_args	make_target
+hew-bin	host-bin	hew-cli	hew	hew.exe	--bin hew	hew-native
+hew-lib	host-staticlib	hew-lib	libhew.a	hew.lib	-	libhew-test-targets
+hew-lib-cross	cross-staticlib	hew-lib	libhew.a	hew.lib	-	libhew-test-targets
+hew-runtime	host-staticlib	hew-runtime	libhew_runtime.a	hew_runtime.lib	-	runtime
+hew-runtime-wasi	wasm-staticlib	hew-runtime	libhew_runtime.a	libhew_runtime.a	--no-default-features	wasm-runtime
+hew-std-wasi	wasm-staticlib	hew-std	libhew_std.a	libhew_std.a	-	wasm-runtime
+
+# record	target	requirement
+gate	test-leak-oracle-selftest	shared-artifacts

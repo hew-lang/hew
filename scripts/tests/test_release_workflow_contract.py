@@ -24,6 +24,7 @@ NPM_PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-npm-packages.ym
 RELEASE_GATE = ROOT / ".github" / "workflows" / "release-gate.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 COVERAGE_NIGHTLY_WORKFLOW = ROOT / ".github" / "workflows" / "coverage-nightly.yml"
+WORKFLOW_DIRECTORY = ROOT / ".github" / "workflows"
 RELEASE_NOTES = ROOT / "docs" / "releases" / "v0.6.0-rc1.md"
 RUNBOOK = ROOT / "docs" / "release-runbook.md"
 CHANGELOG = ROOT / "CHANGELOG.md"
@@ -1127,7 +1128,7 @@ def test_contract_oracle_runs_in_required_ci() -> None:
     ci = CI_WORKFLOW.read_text()
     assert "'.github/workflows/release.yml'" in ci
     assert 'scripts/ci-preflight-dispatcher.sh "${args[@]}"' in ci
-    assert "args=(--base origin/main)" in ci
+    assert 'args=(--base "${base_ref}")' in ci
     dispatched = subprocess.run(
         [
             "bash",
@@ -1147,9 +1148,196 @@ def test_contract_oracle_runs_in_required_ci() -> None:
 def workflow_job(text: str, name: str) -> str:
     """Return one top-level GitHub Actions job without parsing unrelated YAML."""
     start = text.index(f"  {name}:\n")
-    next_job = re.search(r"^  [a-z][a-z0-9-]*:\n", text[start + 1 :], re.MULTILINE)
+    next_job = re.search(r"^  [a-z][a-z0-9_-]*:\n", text[start + 1 :], re.MULTILINE)
     end = start + 1 + next_job.start() if next_job else len(text)
     return text[start:end]
+
+
+def workflow_jobs(text: str) -> dict[str, str]:
+    """Return every top-level job keyed by its workflow identifier."""
+    matches = list(re.finditer(r"^  ([a-z][a-z0-9_-]*):\n", text, re.MULTILINE))
+    return {
+        match.group(1): text[
+            match.start() : matches[index + 1].start()
+            if index + 1 < len(matches)
+            else len(text)
+        ]
+        for index, match in enumerate(matches)
+    }
+
+
+RUST_TEST_COMMAND = re.compile(
+    r"^[ \t]*(?:run:[ \t]*)?(?:HEW_TEST_NO_BUILD=1[ \t]+)?"
+    r"cargo[ \t]+(?:nextest[ \t]+run|test)\b",
+    re.MULTILINE,
+)
+SHARED_ARTIFACT_BUILD_COMMAND = re.compile(
+    r"^[ \t]*(?:run:[ \t]*)?(?:g?make)[ \t]+stdlib\b",
+    re.MULTILINE,
+)
+
+
+def workflow_steps(job: str) -> list[str]:
+    """Return the step blocks from one top-level GitHub Actions job."""
+    starts = list(re.finditer(r"^      - ", job, re.MULTILINE))
+    return [
+        job[
+            start.start() : starts[index + 1].start()
+            if index + 1 < len(starts)
+            else len(job)
+        ]
+        for index, start in enumerate(starts)
+    ]
+
+
+def workflow_jobs_section(text: str) -> dict[str, str]:
+    """Return jobs without treating trigger keys as GitHub Actions jobs."""
+    return workflow_jobs(text[text.index("jobs:\n") + len("jobs:\n") :])
+
+
+def assert_workflow_rust_tests_use_prebuilt_shared_artifact(
+    workflows: dict[Path, str],
+) -> None:
+    """Require one shared-artifact build before each direct Rust test runner."""
+    for workflow_path, text in workflows.items():
+        for name, job in workflow_jobs_section(text).items():
+            test_commands = list(RUST_TEST_COMMAND.finditer(job))
+            if not test_commands:
+                continue
+            builds = list(SHARED_ARTIFACT_BUILD_COMMAND.finditer(job))
+            assert len(builds) == 1, (
+                f"{workflow_path.name}:{name} must build the shared artifact exactly once"
+            )
+            for test_command in test_commands:
+                assert builds[0].start() < test_command.start(), (
+                    f"{workflow_path.name}:{name} starts Rust tests before "
+                    "building the shared artifact"
+                )
+
+
+def assert_ci_rust_tests_use_prebuilt_shared_artifact(ci: str) -> None:
+    """Require one certified libhew build before each CI Rust test runner."""
+    workflow_env = ci[: ci.index("jobs:\n")]
+    assert "HEW_TEST_NO_BUILD" not in workflow_env
+
+    direct_test_jobs = set()
+    for name, job in workflow_jobs(ci).items():
+        job_header = job[: job.index("    steps:\n")] if "    steps:\n" in job else job
+        assert "HEW_TEST_NO_BUILD" not in job_header, (
+            f"{name} sets the verify-only environment at job scope"
+        )
+
+        for step in workflow_steps(job):
+            if "run: make stdlib" in step:
+                assert "HEW_TEST_NO_BUILD" not in step, (
+                    f"{name}'s shared-artifact build inherits the verify-only environment"
+                )
+
+        test_commands = list(RUST_TEST_COMMAND.finditer(job))
+        if not test_commands:
+            continue
+        direct_test_jobs.add(name)
+        for step in workflow_steps(job):
+            if RUST_TEST_COMMAND.search(step):
+                assert 'HEW_TEST_NO_BUILD: "1"' in step, (
+                    f"{name}'s direct Rust test step is not verify-only"
+                )
+        build = "run: make stdlib"
+        assert job.count(build) == 1, f"{name} must build libhew exactly once"
+        assert job.index(build) < test_commands[0].start(), (
+            f"{name} starts Rust tests before building libhew"
+        )
+
+    assert {
+        "build-and-test-windows",
+        "build-and-test-macos",
+    } <= direct_test_jobs
+
+    indirect_test_entries = {
+        "lint": "make test-ast-grep-contract test-structural-lint-bootstrap",
+        "build-and-test": 'scripts/ci-preflight-dispatcher.sh "${args[@]}"',
+    }
+    jobs = workflow_jobs(ci)
+    for name, entry in indirect_test_entries.items():
+        job = jobs[name]
+        build = "run: make stdlib"
+        assert job.count(build) == 1, f"{name} must build libhew exactly once"
+        assert job.index(build) < job.index(entry), (
+            f"{name} starts its test entry point before building libhew"
+        )
+
+
+def test_ci_rust_tests_use_prebuilt_shared_artifact() -> None:
+    assert_ci_rust_tests_use_prebuilt_shared_artifact(CI_WORKFLOW.read_text())
+
+
+def test_workflow_rust_tests_use_prebuilt_shared_artifact() -> None:
+    assert_workflow_rust_tests_use_prebuilt_shared_artifact(
+        {path: path.read_text() for path in sorted(WORKFLOW_DIRECTORY.glob("*.yml"))}
+    )
+
+
+def test_workflow_shared_artifact_build_mutations_are_rejected() -> None:
+    workflows = {
+        path: path.read_text() for path in sorted(WORKFLOW_DIRECTORY.glob("*.yml"))
+    }
+    workflows[COVERAGE_NIGHTLY_WORKFLOW] = workflows[COVERAGE_NIGHTLY_WORKFLOW].replace(
+        "run: make stdlib", "run: make check-libhew-fresh", 1
+    )
+    try:
+        assert_workflow_rust_tests_use_prebuilt_shared_artifact(workflows)
+    except AssertionError:
+        return
+    raise AssertionError("missing workflow shared-artifact build escaped the contract")
+
+
+def test_ci_shared_artifact_build_mutations_are_rejected() -> None:
+    ci = CI_WORKFLOW.read_text()
+    mutated = ci.replace("run: make stdlib", "run: make check-libhew-fresh")
+    try:
+        assert_ci_rust_tests_use_prebuilt_shared_artifact(mutated)
+    except AssertionError:
+        return
+    raise AssertionError("missing CI shared-artifact builds escaped the contract")
+
+
+def test_ci_verify_only_scope_mutations_are_rejected() -> None:
+    ci = CI_WORKFLOW.read_text()
+    mutations = (
+        ci.replace(
+            "    env:\n      RUN_CODE_PATH:",
+            '    env:\n      HEW_TEST_NO_BUILD: "1"\n      RUN_CODE_PATH:',
+            1,
+        ),
+        ci.replace(
+            "      - name: Build shared Rust test artifact\n        run: make stdlib",
+            "      - name: Build shared Rust test artifact\n"
+            "        env:\n"
+            '          HEW_TEST_NO_BUILD: "1"\n'
+            "        run: make stdlib",
+            1,
+        ),
+    )
+    for mutated in mutations:
+        try:
+            assert_ci_rust_tests_use_prebuilt_shared_artifact(mutated)
+        except AssertionError:
+            continue
+        raise AssertionError(
+            "a broadened CI verify-only environment escaped the contract"
+        )
+
+
+def test_docs_and_scripts_uses_the_selector_diff_base() -> None:
+    ci = CI_WORKFLOW.read_text()
+    selector = workflow_job(ci, "changes")
+    lightweight = workflow_job(ci, "docs-and-scripts")
+    for job in (selector, lightweight):
+        assert "BASE_SHA: ${{ github.event.pull_request.base.sha }}" in job
+        assert 'base_ref="${BASE_SHA}"' in job
+        assert "base_ref=HEAD^" in job
+    assert '--dry-run --base "${base_ref}"' in selector
+    assert 'args=(--base "${base_ref}")' in lightweight
 
 
 def assert_binaryen_downloader_contract(downloader: str) -> None:
@@ -1901,6 +2089,8 @@ _TESTS = [
     test_sanitizer_gate_is_behavioral_and_release_scoped,
     test_release_record_is_durable_and_tag_ready,
     test_contract_oracle_runs_in_required_ci,
+    test_workflow_rust_tests_use_prebuilt_shared_artifact,
+    test_workflow_shared_artifact_build_mutations_are_rejected,
     test_wasm_pack_consumers_prefetch_checksum_pinned_binaryen,
     test_binaryen_prefetch_pin_mutations_are_rejected,
     test_windows_test_workflows_initialise_msvc_before_lld_link,

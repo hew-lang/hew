@@ -14,7 +14,7 @@ Each gate names the paths it reads on an `# inputs:` line above its recipe in
 the Makefile.  Two file-level declarations sit in the Makefile header:
 `# global-input:` for paths that parameterise every gate, and a small positive
 `# no-gate:` allowlist for inert path categories. A gate may add
-`# preflight: never|comprehensive-only` with a reason.
+`# preflight: never|comprehensive-only|comprehensive-only-no-direct` with a reason.
 
 # Consumer scan
 
@@ -893,7 +893,11 @@ def main(argv: list[str]) -> int:
             if gate.participates():
                 print("GATE", gate.target)
         elif gate.target in selected and (
-            gate.narrow_selectable() or gate.target in directly_selected_non_rust
+            gate.narrow_selectable()
+            or (
+                gate.target in directly_selected_non_rust
+                and not gate.preflight.startswith("comprehensive-only-no-direct")
+            )
         ):
             print("GATE", gate.target)
     # The reader requires this sentinel: a stream that stops early — a crash

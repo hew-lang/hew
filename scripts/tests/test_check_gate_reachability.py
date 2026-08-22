@@ -747,6 +747,24 @@ def test_containment_refuses_an_env_prefixed_command() -> None:
     ), "a sanitizer-flagged run proves something the plain CI run does not"
 
 
+def test_containment_accepts_the_verify_only_test_prefix() -> None:
+    recipes = {
+        "verify-only": "HEW_TEST_NO_BUILD=1 cargo nextest run --workspace --profile ci"
+    }
+    blobs = ["cargo nextest run --workspace --profile ci"]
+    assert gate.prove_contained(
+        "verify-only",
+        {},
+        recipes,
+        set(),
+        {"verify-only"},
+        [],
+        blobs,
+        ["hew-cabi"],
+        set(),
+    ), "the no-build sentinel narrows artifact mutation without changing test selection"
+
+
 def test_containment_accepts_a_narrower_selection_of_what_ci_runs() -> None:
     recipes = {"test-cabi-only": "cargo nextest run --profile ci -p hew-cabi"}
     blobs = ["cargo nextest run --workspace --profile ci"]
@@ -1044,6 +1062,7 @@ _TESTS = [
     test_real_linux_workflows_provision_and_run_mqtt_without_hosting_macos_authority,
     test_containment_refuses_an_opaque_command,
     test_containment_refuses_an_env_prefixed_command,
+    test_containment_accepts_the_verify_only_test_prefix,
     test_containment_accepts_a_narrower_selection_of_what_ci_runs,
     test_containment_refuses_a_binary_profile_ci_subtracts,
     test_real_repo_state_passes_the_full_check,

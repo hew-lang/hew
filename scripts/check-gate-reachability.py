@@ -166,6 +166,12 @@ HOST_RELEASE_AUTHORITIES = (
 HOST_RELEASE_AUTHORITY_BY_TARGET = {
     authority.target: authority for authority in HOST_RELEASE_AUTHORITIES
 }
+TEST_NO_BUILD_PREFIX_RE = re.compile(r"^HEW_TEST_NO_BUILD=1\s+")
+
+
+def strip_test_no_build_prefix(command: str) -> str:
+    """Remove the one environment prefix that narrows a test to read-only."""
+    return TEST_NO_BUILD_PREFIX_RE.sub("", command, count=1)
 
 
 # The checker and dispatcher share one declaration parser and glob semantics.
@@ -219,7 +225,7 @@ def host_release_authority_is_ported(
     if authority.target not in known:
         return False
     return any(
-        segment.lstrip("@-").strip() == authority.runner
+        strip_test_no_build_prefix(segment.lstrip("@-").strip()) == authority.runner
         for segment in _command_segments(
             strip_shell_comments(recipes.get(authority.target, ""))
         )
@@ -1816,6 +1822,7 @@ def _command_is_covered(
     artefacts: frozenset[str] | set[str] = frozenset(),
 ) -> bool:
     text = _strip_keywords(" ".join(segment.split()))
+    text = strip_test_no_build_prefix(text)
     if not text or SCAFFOLDING_RE.match(text):
         return True
     precondition = ARTEFACT_PRECONDITION_RE.match(text)
@@ -2329,24 +2336,31 @@ def main() -> int:
     step_commands = ci_step_commands(workflows)
     ci_text = "\n".join(command for _, command in step_commands)
     if "ci-preflight-dispatcher.sh" in ci_text:
-        fallback = subprocess.run(
-            [
-                "bash",
-                str(DISPATCHER),
-                "--dry-run",
-                "--",
-                "some-unclassified-root-file.txt",
-            ],
-            cwd=REPO_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if fallback.returncode != 0:
-            print(fallback.stderr, file=sys.stderr)
-            return 2
-        step_commands.append(("ci dispatcher fail-closed selection", fallback.stdout))
-        ci_text += "\n" + fallback.stdout
+        for selection_name, probe_path in (
+            ("fallback", "some-unclassified-root-file.txt"),
+            ("scripts-config", "scripts/example.sh"),
+            ("counterfactual", "scripts/lib/counterfactual.sh"),
+        ):
+            selection = subprocess.run(
+                [
+                    "bash",
+                    str(DISPATCHER),
+                    "--dry-run",
+                    "--",
+                    probe_path,
+                ],
+                cwd=REPO_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if selection.returncode != 0:
+                print(selection.stderr, file=sys.stderr)
+                return 2
+            step_commands.append(
+                (f"ci dispatcher {selection_name} selection", selection.stdout)
+            )
+            ci_text += "\n" + selection.stdout
 
     print(
         f"==> parsed {len(workflows)} workflow(s); {len(live)} can trigger; "

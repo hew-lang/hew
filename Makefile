@@ -145,6 +145,16 @@
 .PHONY: all build bootstrap install-hooks hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check baselines baselines-check
 .PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-cabi-build test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-ci-coverage-check structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan legacy-path-syntax-lint hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability check-counterfactual-output check-counterfactual-output-build sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property tool-pin-contract-check
 .PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check test-python310-toml-compat
+# Repository files consumed by commands evaluated while this Makefile is
+# parsed. Tests that stage a Makefile copy read this declaration to reproduce
+# the complete parse environment.
+MAKEFILE_PARSE_INPUTS := \
+	scripts/cargo-output-dir.py \
+	scripts/lib/toml_compat.py \
+	scripts/libhew-inputs.py \
+	hew-testutil/shared-test-artifacts.tsv
+
+.PHONY: shared-test-artifact-contract check-counterfactual-output-artifacts
 .PHONY: assemble assemble-release pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
@@ -235,6 +245,8 @@ LIBHEW_NAME := libhew.a
 endif
 LIBHEW := $(DEBUG_DIR)/$(LIBHEW_NAME)
 
+TEST_RUN_ENV := HEW_TEST_NO_BUILD=1
+
 # Sources that feed the archive. The list is derived, never hand-listed:
 # hew-lib's non-dev path-dependency closure, its Rust sources and manifests,
 # the embedded assets its code names with include_str!/include_bytes!, and the
@@ -251,10 +263,21 @@ $(error $(LIBHEW_INPUTS_SCRIPT) produced no inputs for $(LIBHEW_NAME); refusing 
 treat the archive as having no sources. Run '$(LIBHEW_INPUTS_SCRIPT) files' to see why)
 endif
 
-# Prerequisite bundle for every target that LINKS a native Hew program.
-# Cargo performs the incremental rebuild through `libhew-debug`; the order-only
-# freshness oracle then re-asserts the archive at the point of use.
-LIBHEW_READY := libhew-debug | check-libhew-fresh
+# One inventory names every shared Cargo artifact a test helper can demand.
+# Rust verification reads this same table through hew-testutil; Make derives
+# the complete pre-test builder set from its final column.  Adding an artifact
+# to the verifier therefore adds its builder prerequisite at the same time.
+SHARED_TEST_ARTIFACTS_FILE := hew-testutil/shared-test-artifacts.tsv
+SHARED_TEST_ARTIFACT_TARGETS := $(sort $(shell awk -F '\t' 'NF == 7 && $$1 ~ /^[a-z]/ { print $$7 }' $(SHARED_TEST_ARTIFACTS_FILE)))
+ifeq ($(strip $(SHARED_TEST_ARTIFACT_TARGETS)),)
+$(error $(SHARED_TEST_ARTIFACTS_FILE) produced no shared test artifact targets)
+endif
+
+# Prerequisite bundle for every test target that may demand a shared Cargo
+# artifact. Cargo performs the incremental builds through the table-derived
+# targets; the order-only freshness oracle then re-asserts the host archive at
+# the point of use.
+LIBHEW_READY := $(SHARED_TEST_ARTIFACT_TARGETS) | check-libhew-fresh
 
 # Host triple used to populate lib/<triple>/ for target-aware lib lookup.
 HOST_TRIPLE := $(shell rustc -vV 2>/dev/null | awk '/^host:/ { print $$2 }')
@@ -324,11 +347,11 @@ observe:
 
 # inputs: hew-observe/* hew-runtime/src/*.rs
 observe-functional-test: hew-native observe $(LIBHEW_READY)
-	cargo test -p hew-observe --test functional -- --ignored --nocapture
+	$(TEST_RUN_ENV) cargo test -p hew-observe --test functional -- --ignored --nocapture
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 observe-functional-test-build: hew-native observe $(LIBHEW_READY)
-	cargo test -p hew-observe --test functional --no-run
+	$(TEST_RUN_ENV) cargo test -p hew-observe --test functional --no-run
 
 # Opt-in real-client proof for the advertised pure-Hew MQTT broker. Mosquitto
 # clients are an explicit external prerequisite, so this is not folded into the
@@ -342,20 +365,21 @@ mqtt-broker-e2e: hew-native $(LIBHEW_READY)
 mqtt-broker-e2e-build: hew-native $(LIBHEW_READY)
 	@:
 
-# Real multi-process proof that `hew_testutil::ensure_hew_lib_built` closes
-# the `libhew.a` uplift race: real `cargo build -p hew-lib` writers, a real
-# `hew compile` link, and a real shared NEXTEST_RUN_ID across OS processes.
+# Real multi-process proof that test-run calls to
+# `hew_testutil::ensure_hew_lib_built` are verify-only: concurrent real
+# `hew compile` links share one NEXTEST_RUN_ID and a fail-closed Cargo spy
+# proves that none of them attempts to rebuild `libhew.a`.
 # Excluded from routine `cargo nextest run` (see the #[ignore] reasons in
 # hew-testutil/tests/libhew_link_race.rs) because it repeatedly shells real
 # cargo/hew subprocesses; run explicitly here instead, same convention as
 # observe-functional-test above.
 # inputs: hew-testutil/* hew-lib/* hew-runtime/src/*.rs
 libhew-link-race-test: hew-native $(LIBHEW_READY)
-	cargo test -p hew-testutil --test libhew_link_race -- --ignored --nocapture --test-threads=1
+	$(TEST_RUN_ENV) cargo test -p hew-testutil --test libhew_link_race -- --ignored --nocapture --test-threads=1
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 libhew-link-race-test-build: hew-native $(LIBHEW_READY)
-	cargo test -p hew-testutil --test libhew_link_race --no-run
+	$(TEST_RUN_ENV) cargo test -p hew-testutil --test libhew_link_race --no-run
 
 # Build the runtime static library (debug)
 runtime:
@@ -369,8 +393,8 @@ runtime-build: runtime
 # The hew-lib umbrella crate depends on hew-runtime + all stdlib crates;
 # Cargo produces a single deduplicated staticlib.
 #
-# `stdlib` is the human-facing alias.
-stdlib: libhew-debug
+# `stdlib` is the human-facing alias for the complete shared test artifact set.
+stdlib: $(SHARED_TEST_ARTIFACT_TARGETS)
 
 # The gate is itself an artifact build; warming it is building it.
 stdlib-build: stdlib
@@ -380,9 +404,32 @@ stdlib-build: stdlib
 # phony deliberately: a fixed Make stamp cannot distinguish two different
 # CARGO_TARGET_DIR/build.target/build.target-dir selections without putting the
 # possibly space-bearing output path back into Make's target graph.
-.PHONY: libhew-debug
+.PHONY: libhew-debug libhew-test-targets
 libhew-debug: $(LIBHEW_SRCS)
-	$(LIBHEW_FRESHNESS_SCRIPT) build --debug-dir "$(DEBUG_DIR)" -- cargo build -p hew-lib $(CARGO_TARGET_FLAG)
+	env -u HEW_TEST_NO_BUILD $(LIBHEW_FRESHNESS_SCRIPT) build --debug-dir "$(DEBUG_DIR)" -- cargo build -p hew-lib $(CARGO_TARGET_FLAG)
+
+# Native cross-arch link tests consume an opposite-architecture slice from
+# Cargo's shared target directory. Build it serially after the certified host
+# archive, before the test runner starts; test helpers only verify these paths.
+# Linux only exercises this path when its matching multiarch sysroot exists.
+libhew-test-targets: libhew-debug
+ifeq ($(shell uname -s),Darwin)
+	@for triple in $(DARWIN_NATIVE_LIB_TRIPLES); do \
+		[ "$$triple" != "$(HOST_TRIPLE)" ] || continue; \
+		cargo build -p hew-lib --target "$$triple" || exit $$?; \
+	done
+else ifeq ($(shell uname -s),Linux)
+	@case "$(HOST_TRIPLE)" in \
+		aarch64-*-linux-musl) triple=x86_64-unknown-linux-musl; sysroot=/usr/x86_64-linux-musl ;; \
+		aarch64-*-linux-gnu) triple=x86_64-unknown-linux-gnu; sysroot=/usr/x86_64-linux-gnu ;; \
+		x86_64-*-linux-musl) triple=aarch64-unknown-linux-musl; sysroot=/usr/aarch64-linux-musl ;; \
+		x86_64-*-linux-gnu) triple=aarch64-unknown-linux-gnu; sysroot=/usr/aarch64-linux-gnu ;; \
+		*) exit 0 ;; \
+	esac; \
+	[ ! -d "$$sysroot" ] || cargo build -p hew-lib --target "$$triple"
+else
+	@:
+endif
 
 # Build the WASM runtime + the consolidated stdlib archive (libhew_std.a).
 #
@@ -515,13 +562,13 @@ sandbox-vm-deps:
 # every test in all four binaries via plain `cargo test`, so nothing is
 # silently skipped anywhere.
 # inputs: hew-sandbox-vm/* hew-sandbox-wasm/* hew-std/src/*.rs examples/playground/*
-sandbox-parity: hew-native sandbox-vm-deps $(LIBHEW_READY)
+sandbox-parity: wasm-runtime hew-native sandbox-vm-deps $(LIBHEW_READY)
 	npm --prefix hew-sandbox-vm run conformance
-	cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet --test playground --test ios_subset
+	$(TEST_RUN_ENV) cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet --test playground --test ios_subset
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
-sandbox-parity-build: hew-native sandbox-vm-deps $(LIBHEW_READY)
-	cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet --test playground --test ios_subset --no-run
+sandbox-parity-build: wasm-runtime hew-native sandbox-vm-deps $(LIBHEW_READY)
+	$(TEST_RUN_ENV) cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet --test playground --test ios_subset --no-run
 
 # Repo-local browser/tooling smoke:
 # manifest freshness + full hew-wasm test suite (lib + integration) + analysis-only WASM build.
@@ -530,19 +577,19 @@ sandbox-parity-build: hew-native sandbox-vm-deps $(LIBHEW_READY)
 # inputs: hew-wasm/* examples/playground/* hew-analysis/src/*.rs hew-parser/src/*.rs
 # inputs: hew-types/src/*.rs hew-lexer/src/*.rs
 playground-check: playground-manifest-check
-	cargo test -p hew-wasm
+	$(TEST_RUN_ENV) cargo test -p hew-wasm
 	$(MAKE) wasm
 
 # Build this target's test binaries; `make wasm` is left to the gate.
 playground-check-build: playground-manifest-check
-	cargo test -p hew-wasm --no-run
+	$(TEST_RUN_ENV) cargo test -p hew-wasm --no-run
 
 # Focused curated playground WASI runtime preflight.
 # inputs: hew-cli/tests/wasi_run_e2e.rs examples/playground/*
 # preflight: never — Playground WASM job (needs a provisioned wasmtime)
-playground-wasi-check:
-	cargo test -p hew-cli --test wasi_run_e2e curated_playground_examples_run_under_wasi -- --exact
-	cargo test -p hew-cli --test wasi_run_e2e supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi -- --exact
+playground-wasi-check: wasm-runtime $(LIBHEW_READY)
+	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e curated_playground_examples_run_under_wasi -- --exact
+	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi -- --exact
 
 # Standard per-branch gate: the dispatcher classifies the current diff and
 # runs the narrowest sufficient checks for its file classes, stopping at the
@@ -587,10 +634,9 @@ ci-preflight:
 # to the tests. Running `make hew-native` here also eliminates the redundant
 # compile triggered by make lint → hew-fmt-check later in that same run
 # (hew-fmt-check requires target/debug/hew but nextest does not produce it).
-ci-preflight-smoke:
+ci-preflight-smoke: runtime wasm-runtime hew-native $(LIBHEW_READY)
 	cargo fmt --all -- --check
-	$(MAKE) check-libhew-fresh
-	cargo nextest run --workspace --profile smoke
+	$(TEST_RUN_ENV) cargo nextest run --workspace --profile smoke
 	$(MAKE) hew-native
 
 # Assert that libhew.a matches the content-addressed certificate written only
@@ -952,18 +998,23 @@ assemble-release:
 test: wasm-runtime runtime $(LIBHEW_READY)
 	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
 		set -e; \
-		cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run; \
+		$(TEST_RUN_ENV) cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run; \
 		test -f "$(LIBHEW)"; \
-		cargo nextest run --workspace --exclude hew-cabi --profile ci --no-fail-fast; \
+		$(TEST_RUN_ENV) cargo nextest run --workspace --exclude hew-cabi --profile ci --no-fail-fast; \
 	else \
 		echo "WARNING: cargo-nextest not installed — per-test timeouts are not enforced." >&2; \
 		echo "         Install with: cargo install cargo-nextest" >&2; \
-		cargo test --workspace --exclude hew-cabi --no-fail-fast; \
+		$(TEST_RUN_ENV) cargo test --workspace --exclude hew-cabi --no-fail-fast; \
 	fi
 
 # Build this target's binaries the way it builds them, without running them.
 test-build: wasm-runtime runtime $(LIBHEW_READY)
-	cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run
+	$(TEST_RUN_ENV) cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run
+
+# Prove the table-derived builder produced every concrete path the verify-only
+# helpers can demand on this host.
+shared-test-artifact-contract: $(LIBHEW_READY)
+	$(TEST_RUN_ENV) cargo test -p hew-testutil --test shared_artifact_contract -- --ignored --nocapture
 
 # Canonical local macOS memory authority. This is deliberately named as a local
 # authority, not a CI `test-*` gate: hosted macOS processes cannot grant
@@ -973,7 +1024,7 @@ test-build: wasm-runtime runtime $(LIBHEW_READY)
 # ignored tests too, so a newly ignored memory verdict cannot disappear behind
 # a green nextest summary.
 macos-leak-oracle: test-leak-oracle-selftest hew-native $(LIBHEW_READY)
-	scripts/macos-leak-oracle.sh
+	$(TEST_RUN_ENV) scripts/macos-leak-oracle.sh
 
 # Platform-independent teeth for the leak harness and the runner's inventory
 # contract. The Rust counterfactuals inject missing/declined/malformed/timed-out
@@ -982,13 +1033,13 @@ macos-leak-oracle: test-leak-oracle-selftest hew-native $(LIBHEW_READY)
 # inputs: scripts/macos-leak-oracle.sh scripts/tests/test_macos_leak_oracle_runner.sh
 # inputs: hew-cli/tests/*leak*
 # inputs: scripts/macos-leak-source-inventory.py
-test-leak-oracle-selftest:
-	cargo nextest run --profile ci -p hew-cli --test leak_harness_fail_closed
+test-leak-oracle-selftest: $(LIBHEW_READY)
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-cli --test leak_harness_fail_closed
 	scripts/tests/test_macos_leak_oracle_runner.sh
 
 # The shell counterfactual needs no build; the Rust one does.
-test-leak-oracle-selftest-build:
-	cargo nextest run --profile ci -p hew-cli --test leak_harness_fail_closed --no-run
+test-leak-oracle-selftest-build: $(LIBHEW_READY)
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-cli --test leak_harness_fail_closed --no-run
 
 # The C-ABI crate, run on its own.
 #
@@ -1000,16 +1051,16 @@ test-leak-oracle-selftest-build:
 # developer machines only. This target is that missing half; every job carrying
 # an `--exclude hew-cabi` runs it.
 # inputs: hew-cabi/* hew-runtime/src/*.rs
-test-cabi:
-	cargo nextest run --profile ci-cabi -p hew-cabi
+test-cabi: $(LIBHEW_READY)
+	$(TEST_RUN_ENV) cargo nextest run --profile ci-cabi -p hew-cabi
 
 # Build test-cabi's binaries without running them. The preflight warm-up
 # calls this instead of spelling the nextest invocation out, so the profile
 # name lives in exactly one place: scripts/check-gate-reachability.py A3a
 # scans the dispatcher's own dry-run output for `--profile <fast-tier>` and
 # a second literal there would read as CI running a non-`ci` profile.
-test-cabi-build:
-	cargo nextest run --profile ci-cabi -p hew-cabi --no-run
+test-cabi-build: $(LIBHEW_READY)
+	$(TEST_RUN_ENV) cargo nextest run --profile ci-cabi -p hew-cabi --no-run
 
 # Build the combined runtime+stdlib static lib and the WASM runtime before
 # running the compiler-pipeline tests.  Several hew-cli integration tests
@@ -1024,8 +1075,8 @@ test-cabi-build:
 # inputs: hew-parser/src/*.rs hew-types/src/*.rs hew-hir/src/*.rs
 # inputs: hew-mir/src/*.rs hew-codegen-rs/src/*.rs hew-cli/src/*.rs hew-pkg/src/*.rs
 # preflight: comprehensive-only — Rust changes run the reverse-dependency closure instead
-test-compiler-pipeline: wasm-runtime hew-native $(LIBHEW_READY)
-	cargo nextest run --profile ci \
+test-compiler-pipeline: runtime wasm-runtime hew-native $(LIBHEW_READY)
+	$(TEST_RUN_ENV) cargo nextest run --profile ci \
 		-p hew-lexer \
 		-p hew-parser \
 		-p hew-types \
@@ -1037,8 +1088,8 @@ test-compiler-pipeline: wasm-runtime hew-native $(LIBHEW_READY)
 	$(MAKE) test-compiler-lifecycle
 
 # Build this target's binaries the way it builds them, without running them.
-test-compiler-pipeline-build: wasm-runtime hew-native $(LIBHEW_READY)
-	cargo nextest run --profile ci --no-run \
+test-compiler-pipeline-build: runtime wasm-runtime hew-native $(LIBHEW_READY)
+	$(TEST_RUN_ENV) cargo nextest run --profile ci --no-run \
 		-p hew-lexer \
 		-p hew-parser \
 		-p hew-types \
@@ -1202,12 +1253,12 @@ ll-identity-selftest-build:
 # Profiler allocator tests in transport.rs are skipped (they require feature = "profiler").
 # Run `cargo test -p hew-runtime` for the full suite including QUIC, TLS, and profiler paths.
 # inputs: hew-runtime/*
-test-runtime-unit:
-	cargo nextest run --profile ci -p hew-runtime --no-default-features
+test-runtime-unit: $(LIBHEW_READY)
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-runtime --no-default-features
 
 # Build this target's binaries the way it builds them, without running them.
-test-runtime-unit-build:
-	cargo nextest run --profile ci -p hew-runtime --no-default-features --no-run
+test-runtime-unit-build: $(LIBHEW_READY)
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-runtime --no-default-features --no-run
 
 # Ratcheted wrappers for the Hew-language test suites.
 #
@@ -1379,8 +1430,18 @@ test-check-gate-reachability-build:
 check-counterfactual-output:
 	scripts/ci-preflight-dispatcher.sh --check-counterfactual-output
 
+# inputs: scripts/ci-preflight-dispatcher.sh scripts/lib/counterfactual.sh
+# inputs: scripts/fuzz/oracle-selftest.sh scripts/ll-identity-selftest.sh
+# inputs: hew-testutil/shared-test-artifacts.tsv
+# preflight: comprehensive-only-no-direct — requires the shared test-artifact builder
+check-counterfactual-output-artifacts: $(LIBHEW_READY)
+	scripts/ci-preflight-dispatcher.sh --check-counterfactual-output --shared-artifact-gates
+
 # Validate the dispatcher ahead of the counterfactual gate's timeout budget.
 check-counterfactual-output-build:
+	bash -n scripts/ci-preflight-dispatcher.sh
+
+check-counterfactual-output-artifacts-build: $(LIBHEW_READY)
 	bash -n scripts/ci-preflight-dispatcher.sh
 
 # inputs: std/* scripts/stdlib-ratchet.sh scripts/stdlib-expected-failures.txt

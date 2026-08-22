@@ -71,27 +71,6 @@ use inkwell::AddressSpace;
 
 // ── repo / toolchain plumbing ─────────────────────────────────────────────
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("hew-codegen-rs has a workspace parent")
-        .to_path_buf()
-}
-
-fn target_dir() -> PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR").map_or_else(
-        || repo_root().join("target"),
-        |dir| {
-            let path = PathBuf::from(dir);
-            if path.is_absolute() {
-                path
-            } else {
-                repo_root().join(path)
-            }
-        },
-    )
-}
-
 fn llvm_bin(tool: &str) -> Option<PathBuf> {
     let brew = Command::new("brew")
         .args(["--prefix", "llvm"])
@@ -173,65 +152,31 @@ fn wasmtime() -> Option<PathBuf> {
 /// and other macOS-only system libraries that require passing extra `-framework`
 /// flags to clang. `hew-runtime` only needs `libSystem` (the default libc).
 ///
-/// Always (re)builds via `cargo build -p hew-runtime` rather than trusting an
-/// existing `libhew_runtime.a`: the `staticlib` artifact is NOT refreshed by
-/// `cargo test`/`cargo nextest` (the workspace test build emits only the
-/// rlib), so a cached archive carried across commits — e.g. one predating the
-/// `hew_cont_*` continuation substrate (`cont.rs` is newer than `origin/main`)
-/// — would otherwise be linked against freshly-emitted coro objects, failing
-/// with undefined-symbol errors. Cargo's incremental build makes this a fast
-/// no-op when the archive is already current.
+/// Rebuilt once per nextest run rather than trusted from disk: the `staticlib`
+/// artifact is NOT refreshed by `cargo test`/`cargo nextest` (the workspace
+/// test build emits only the rlib), so a cached archive carried across commits
+/// — e.g. one predating the `hew_cont_*` continuation substrate — would
+/// otherwise be linked against freshly-emitted coro objects and fail with
+/// undefined-symbol errors.
+///
+/// The build goes through the shared authority rather than a local `OnceLock`,
+/// which serializes nothing across nextest's per-test processes: this module
+/// both writes and links `libhew_runtime.a`, so an unserialized rebuild races
+/// a sibling's link against Cargo's non-atomic uplift of that same file.
 fn ensure_native_runtime() -> PathBuf {
-    static BUILT: OnceLock<PathBuf> = OnceLock::new();
-    BUILT
-        .get_or_init(|| {
-            let lib = target_dir().join("debug").join("libhew_runtime.a");
-            let status = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
-                .current_dir(repo_root())
-                .args(["build", "--quiet", "-p", "hew-runtime"])
-                .status()
-                .expect("spawn cargo build -p hew-runtime");
-            assert!(status.success(), "cargo build -p hew-runtime failed");
-            assert!(
-                lib.exists(),
-                "libhew_runtime.a not produced at {}",
-                lib.display()
-            );
-            lib
-        })
-        .clone()
+    hew_testutil::ensure_host_runtime_built().expect("build libhew_runtime.a")
 }
 
 /// Build the wasm32-wasip1 runtime archive. `None` if the wasm toolchain
 /// is unavailable (test skips rather than fails on a box without the target).
 ///
-/// Like [`ensure_native_runtime`], always (re)builds so a stale cached wasm
-/// archive is never linked; a missing target or any build failure leaves the
-/// caller to skip.
+/// Like [`ensure_native_runtime`], refreshed once per run through the shared
+/// authority so a stale cached wasm archive is never linked and no two
+/// processes rebuild it concurrently. `hew-cli`'s WASI suite bootstraps this
+/// same archive, so the serialization has to span crates. A missing target or
+/// any build failure leaves the caller to skip.
 fn ensure_wasm_runtime() -> Option<PathBuf> {
-    static BUILT: OnceLock<Option<PathBuf>> = OnceLock::new();
-    BUILT
-        .get_or_init(|| {
-            let lib = target_dir()
-                .join("wasm32-wasip1")
-                .join("debug")
-                .join("libhew_runtime.a");
-            let status = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
-                .current_dir(repo_root())
-                .args([
-                    "build",
-                    "--quiet",
-                    "-p",
-                    "hew-runtime",
-                    "--target",
-                    "wasm32-wasip1",
-                    "--no-default-features",
-                ])
-                .status()
-                .ok()?;
-            (status.success() && lib.exists()).then_some(lib)
-        })
-        .clone()
+    hew_testutil::ensure_wasm_runtime_built().ok()
 }
 
 // ── the coroutine + driver emission (via the real codegen `coro` API) ──────

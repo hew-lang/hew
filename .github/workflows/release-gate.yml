@@ -204,6 +204,9 @@ jobs:
           echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
           "./${WASMTIME_DIR}/wasmtime" --version
 
+      - name: Build shared Rust test artifact
+        run: make stdlib
+
       - name: Run Rust workspace tests
         # line-tables-only: the release build + debug test workspace + WASM +
         # browser-analysis builds together leave the runner disk-marginal —
@@ -352,6 +355,9 @@ jobs:
           echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
           "./${WASMTIME_DIR}/wasmtime" --version
 
+      - name: Build shared Rust test artifact
+        run: make stdlib
+
       - name: Run Rust workspace tests
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
@@ -458,6 +464,9 @@ jobs:
           command -v wasm-ld
           wasm-ld --version
 
+      - name: Build shared Rust test artifact
+        run: make stdlib
+
       - name: Run Rust workspace tests
         # Leak-oracle binaries drive macOS leaks(1) with MallocScribble and
         # need entitlements/wall-time hosted runners cannot give (300s
@@ -543,6 +552,9 @@ jobs:
           if (-not $bin) { throw "wasmtime.exe not found under $dest" }
           Add-Content -Path $env:GITHUB_PATH -Value $bin
           & (Join-Path $bin "wasmtime.exe") --version
+
+      - name: Build shared Rust test artifact
+        run: make stdlib
 
       - name: Run Rust workspace tests
         run: >-
@@ -663,6 +675,8 @@ jobs:
 
             # cargo-nextest is not in FreeBSD pkg yet; install once via cargo
             cargo install cargo-nextest --locked --version 0.9.120
+
+            gmake stdlib
 
             cargo nextest run --workspace \
               --exclude hew-wasm --exclude hew-cabi \

@@ -242,9 +242,15 @@ jobs:
 
       - name: Run change-scoped checks
         if: needs.changes.outputs.selected_compile != 'true' && (needs.changes.outputs.docs == 'true' || needs.changes.outputs.scripts == 'true')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          args=(--base origin/main)
+          base_ref="${BASE_SHA}"
+          if [[ -z "${base_ref}" ]]; then
+            base_ref=HEAD^
+          fi
+          args=(--base "${base_ref}")
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             args+=(--fail-fast)
           fi
@@ -282,12 +288,16 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           components: 'clippy, rustfmt'
+          targets: wasm32-wasip1
           cache-shared-key: lint
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         uses: ./.github/actions/setup-llvm
         with:
           version: ${{ env.LLVM_VERSION }}
+
+      - name: Build shared Rust test artifact
+        run: make stdlib
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -798,7 +808,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
-          targets: wasm32-unknown-unknown
+          targets: 'wasm32-unknown-unknown, wasm32-wasip1'
           tools: nextest@0.9.120
           cache-shared-key: build-test-linux
 
@@ -835,6 +845,10 @@ jobs:
       - name: Provision pinned ast-grep toolchain
         if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-ast-grep
+
+      - name: Build shared Rust test artifact
+        if: env.RUN_CODE_PATH == 'true'
+        run: make stdlib
 
       - name: Run change-scoped tests
         if: env.RUN_CODE_PATH == 'true'
@@ -961,6 +975,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
+          targets: wasm32-wasip1
           tools: nextest@0.9.120
           cache-shared-key: build-test-windows
 
@@ -973,6 +988,10 @@ jobs:
       - name: Build Hew runtime library for PDB e2e
         if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-lib --release
+
+      - name: Build shared Rust test artifact
+        if: env.RUN_CODE_PATH == 'true'
+        run: make stdlib
 
       - name: Verify Windows CodeView PDB emission
         if: env.RUN_CODE_PATH == 'true'
@@ -1049,17 +1068,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "wasm-ld found at $($wasmLd.Source) but 'wasm-ld --version' exited $LASTEXITCODE" }
 
       - name: Build hew-runtime for wasm32-wasip1 (debug)
-        # Mirrors the macOS job. The WASI tests run as debug binaries and
-        # bootstrap_wasi_runner builds this archive on demand when it is
-        # absent, so without a pre-build every parallel nextest process races
-        # to cargo-build the same non-atomically written staticlib and wasm-ld
-        # intermittently fails to open it.
+        # Mirrors the macOS job. The WASI tests run as debug binaries and only
+        # verify this archive, so it must exist before nextest starts.
         if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
 
       - name: Build hew-std for wasm32-wasip1 (debug)
-        # Same race, same medicine: bootstrap_wasi_runner also builds
-        # libhew_std.a on demand when it is missing.
+        # bootstrap_wasi_runner verifies this archive too.
         if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-std --target wasm32-wasip1
 
@@ -1072,6 +1087,8 @@ jobs:
         # hew-cabi excluded — its #[no_mangle] symbols conflict with hew-runtime
         # when both link into a test binary.
         if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST != 'true'
+        env:
+          HEW_TEST_NO_BUILD: "1"
         run: >-
           cargo nextest run
           -p hew-runtime
@@ -1093,6 +1110,8 @@ jobs:
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests run without an explicit flag.
         if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST == 'true'
+        env:
+          HEW_TEST_NO_BUILD: "1"
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm
@@ -1142,7 +1161,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
-          targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
+          targets: 'aarch64-apple-darwin, x86_64-apple-darwin, wasm32-wasip1'
           tools: nextest@0.9.120
           cache-shared-key: build-test-macos
 
@@ -1156,11 +1175,13 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
 
-      - name: Build libhew.a (runtime + stdlib)
+      - name: Build release libhew.a (runtime + stdlib)
         if: env.RUN_CODE_PATH == 'true'
-        run: |
-          cargo build -p hew-lib --release
-          cargo build -p hew-lib
+        run: cargo build -p hew-lib --release
+
+      - name: Build shared Rust test artifact
+        if: env.RUN_CODE_PATH == 'true'
+        run: make stdlib
 
       - name: Build frontend (release)
         if: env.RUN_CODE_PATH == 'true'
@@ -1197,20 +1218,13 @@ jobs:
 
       - name: Build hew-runtime for wasm32-wasip1 (debug)
         # The platform smoke tests run as debug binaries (cargo nextest run, no
-        # --release). bootstrap_wasi_runner in support/mod.rs derives the build
-        # profile from the test binary path and looks for the same profile's
-        # libhew_runtime.a before falling back to an on-demand build. Without
-        # this step the debug staticlib is absent at test startup, causing
-        # multiple parallel test processes to each launch `cargo build` for it
-        # concurrently — Cargo writes the archive non-atomically, so races
-        # corrupt or transiently delete the file and wasm-ld then fails with
-        # "cannot open .../wasm32-wasip1/debug/libhew_runtime.a".
+        # --release). bootstrap_wasi_runner derives the build profile from the
+        # test binary path and verifies that profile's libhew_runtime.a.
         if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
 
       - name: Build hew-std for wasm32-wasip1 (debug)
-        # Pre-build the stdlib WASI archive for the same reason: bootstrap_wasi_runner
-        # builds libhew_std.a on demand if absent, same concurrent-write race applies.
+        # Pre-build the stdlib WASI archive for the same verify-only contract.
         if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-std --target wasm32-wasip1
 
@@ -1227,6 +1241,8 @@ jobs:
         # The macOS leak-oracle authority is explicit local macOS validation
         # before release; Linux supplies structural/ASan coverage where applicable.
         if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST != 'true'
+        env:
+          HEW_TEST_NO_BUILD: "1"
         run: >-
           cargo nextest run
           -p hew-runtime
@@ -1249,6 +1265,8 @@ jobs:
         # The macOS leak-oracle authority is explicit local macOS validation
         # before release; Linux supplies structural/ASan coverage where applicable.
         if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST == 'true'
+        env:
+          HEW_TEST_NO_BUILD: "1"
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm

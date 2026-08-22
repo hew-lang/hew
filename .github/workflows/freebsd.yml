@@ -124,6 +124,8 @@ jobs:
             # does not yet carry cargo-nextest, so install via cargo).
             cargo install cargo-nextest --locked --version 0.9.120
 
+            gmake stdlib
+
             # Default features include "full" (encryption + profiler + quic),
             # so all QUIC transport tests run without an explicit flag.
             # The ci profile applies the same slow-timeout = 3x60 s envelope

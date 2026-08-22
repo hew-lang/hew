@@ -9414,6 +9414,17 @@ fn coerce_to_dyn_trait_arm_emits_fat_ptr_when_vtable_registry_populated() {
     let ll_path = artefacts.ll_path.expect("textual IR path is written");
     let ll = std::fs::read_to_string(&ll_path).expect("read .ll");
 
+    let no_llvm_options = EmitOptions {
+        module_name: "coerce_dyn_trait_without_llvm",
+        native: true,
+        ..options.clone()
+    };
+    let no_llvm = emit_module_without_llvm(&pipeline, &no_llvm_options)
+        .expect("object emission can opt out of textual IR");
+    assert!(no_llvm.ll_path.is_none());
+    assert!(no_llvm.native_obj_path.is_some());
+    assert!(!tmp.path().join("coerce_dyn_trait_without_llvm.ll").exists());
+
     // Fat-pointer type declaration is the canonical named struct.
     assert!(
         ll.contains("%hew.dyn.fat_ptr = type { ptr, ptr }"),

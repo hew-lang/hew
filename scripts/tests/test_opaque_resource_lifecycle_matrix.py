@@ -648,6 +648,7 @@ def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) 
                     [
                         str(HEW),
                         "compile",
+                        "--emit-llvm",
                         "--target",
                         "wasm32-unknown-unknown",
                         "--emit-dir",

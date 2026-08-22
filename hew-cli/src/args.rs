@@ -104,6 +104,9 @@ pub struct CompileArgs {
     /// `<name>.wasm` artefacts into. Default: `.tmp/compile-out`.
     #[arg(long = "emit-dir", value_name = "DIR")]
     pub emit_dir: Option<PathBuf>,
+    /// Retain the pre-optimization textual LLVM IR beside emitted artifacts.
+    #[arg(long = "emit-llvm")]
+    pub emit_llvm: bool,
     /// Emit a textual MIR dump and exit (no LLVM emission).
     /// Accepts `raw` (the lowered `RawMirFunction`), `checked` (the
     /// `CheckedMirFunction` after move/init/aliasing checks run), and
@@ -438,6 +441,9 @@ pub struct BuildArgs {
     /// linked on this host.
     #[arg(long = "emit-obj")]
     pub emit_obj: bool,
+    /// Retain the pre-optimization textual LLVM IR beside the output.
+    #[arg(long = "emit-llvm")]
+    pub emit_llvm: bool,
     /// Build with debug info (no optimization, no stripping).
     ///
     /// Emits DWARF debug info into the native object. gdb and lldb read this

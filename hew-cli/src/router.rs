@@ -257,6 +257,7 @@ mod tests {
         let command = crate::args::Command::Compile(CompileArgs {
             input: PathBuf::from("sample.hew"),
             emit_dir: None,
+            emit_llvm: false,
             dump_mir: None,
             target: None,
             opt_level: "0".to_string(),
@@ -276,6 +277,7 @@ mod tests {
             output: None,
             target: None,
             emit_obj: false,
+            emit_llvm: false,
             debug: false,
             opt_level: "0".to_string(),
             link_libs: Vec::new(),

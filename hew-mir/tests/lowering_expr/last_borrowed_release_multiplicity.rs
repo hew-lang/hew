@@ -1,4 +1,4 @@
-use hew_mir::{DropKind, ExitPath, Instr, IrPipeline};
+use hew_mir::{DropKind, ExitPath, Instr, IrPipeline, MirDiagnosticKind};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -79,5 +79,64 @@ fn spin(seed: i64) -> i64 {
     assert_eq!(
         record_drops, 1,
         "one mint before the loop must retain one release after the loop"
+    );
+}
+
+#[test]
+fn method_match_carrier_releases_on_early_return() {
+    let pipeline = pipeline_with_tc(
+        r"
+record Rec { label: string }
+
+fn probe(xs: Vec<Rec>) {
+    let value = match xs.get(0) {
+        Some(value) => value,
+        None => return,
+    };
+    println(value.label);
+}
+",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "an owned method-result carrier must release on every arm exit: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn fresh_local_match_carrier_releases_after_each_arm() {
+    let pipeline = pipeline_with_tc(
+        r#"
+enum Shape {
+    Named(string);
+    Tagged(string);
+    Empty;
+}
+
+fn probe() -> i64 {
+    let shape = Shape.Named("owned payload");
+    let cloned = clone shape;
+    let first = match shape {
+        Shape.Named(value) => 1,
+        Shape.Tagged(value) => 2,
+        Shape.Empty => 0,
+    };
+    let second = match cloned {
+        Shape.Named(value) => 1,
+        Shape.Tagged(value) => 2,
+        Shape.Empty => 0,
+    };
+    first + second
+}
+"#,
+    );
+    assert!(
+        pipeline.diagnostics.iter().all(|diagnostic| !matches!(
+            diagnostic.kind,
+            MirDiagnosticKind::ObligationUnderReleased { hard: true, .. }
+        )),
+        "a non-carrier local match must not be promoted to a hard call-carrier failure: {:?}",
+        pipeline.diagnostics
     );
 }

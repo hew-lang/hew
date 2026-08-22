@@ -8372,7 +8372,69 @@ impl Builder {
     /// [`Terminator::Suspend`]. Called immediately before the matching
     /// `finish_current_block(Terminator::Suspending*)`, mirroring the
     /// `await_deadline_ns.insert(self.current_block_id, ns)` precedent.
+    ///
+    /// Active consuming-body values have a normal body-end release, but frame
+    /// destruction while parked bypasses that edge. Mirror each safe active
+    /// release into the abandon-only plan, deduplicated by storage place so a
+    /// carrier and its repeated registration retain one release authority.
     fn record_suspend_kind(&mut self, kind: SuspendKind) {
+        let mut recorded_places = self
+            .suspend_abandon_extra_drops
+            .get(&self.current_block_id)
+            .into_iter()
+            .flat_map(|drops| drops.iter().map(|drop| drop.place))
+            .collect::<HashSet<_>>();
+        let active_drops: Vec<ElabDrop> = self
+            .active_generator_yield_values
+            .iter()
+            .filter_map(|(_, place, ty, drop_fn, start_block_id, start_instr_len)| {
+                if recorded_places.contains(place) {
+                    return None;
+                }
+                let local = base_local(*place)?;
+                if !self.generator_yield_binding_drop_safe(*start_block_id, *start_instr_len, local)
+                {
+                    return None;
+                }
+                recorded_places.insert(*place);
+                let kind = match drop_fn {
+                    crate::model::DropFnSpec::Release("hew_rc_drop") => DropKind::RcRelease,
+                    crate::model::DropFnSpec::Release("hew_weak_drop_rc") => DropKind::WeakRelease,
+                    crate::model::DropFnSpec::Release(symbol) => DropKind::CowHeap {
+                        release: crate::ownership::CowHeapRelease::from_symbol(symbol)?,
+                    },
+                    crate::model::DropFnSpec::InPlace(
+                        crate::ownership::InPlaceReleaseKind::Record,
+                    ) => DropKind::RecordInPlace,
+                    crate::model::DropFnSpec::InPlace(
+                        crate::ownership::InPlaceReleaseKind::Enum,
+                    ) => DropKind::EnumInPlace,
+                    crate::model::DropFnSpec::InPlace(
+                        crate::ownership::InPlaceReleaseKind::AggregateRecursive,
+                    ) => DropKind::AggregateRecursive,
+                    crate::model::DropFnSpec::Runtime(_)
+                    | crate::model::DropFnSpec::UserClose(_) => DropKind::Resource,
+                };
+                Some(ElabDrop {
+                    place: *place,
+                    ty: ty.clone(),
+                    drop_fn: matches!(
+                        drop_fn,
+                        crate::model::DropFnSpec::Runtime(_)
+                            | crate::model::DropFnSpec::UserClose(_)
+                    )
+                    .then(|| drop_fn.clone()),
+                    kind,
+                    guard: None,
+                })
+            })
+            .collect();
+        if !active_drops.is_empty() {
+            self.suspend_abandon_extra_drops
+                .entry(self.current_block_id)
+                .or_default()
+                .extend(active_drops);
+        }
         self.suspend_kinds.insert(self.current_block_id, kind);
     }
 

@@ -1396,13 +1396,16 @@ impl Builder {
             },
             _ => "call scrutinee expression".to_string(),
         };
-        self.call_scrutinee_diagnostics
-            .insert(scrutinee_local, (scrutinee.site, label));
-        self.finalize_typed_produced_value_owner(
+        let owner = self.finalize_typed_produced_value_owner(
             SYNTHETIC_CALL_SCRUTINEE_NAME,
             scrutinee.site,
             Place::Local(scrutinee_local),
-        )
+        );
+        if owner.is_some() {
+            self.call_scrutinee_diagnostics
+                .insert(scrutinee_local, (scrutinee.site, label));
+        }
+        owner
     }
 
     /// Reject an ownership-demanding sink whose total HIR row is unresolved.
@@ -1934,6 +1937,7 @@ impl Builder {
     /// interior alias — never its own drop) are excluded, so the re-admission
     /// never resurrects a drop those dispositions deliberately elide.
     pub(crate) fn owned_locals_exit_candidates(&self) -> Vec<(BindingId, String, ResolvedTy)> {
+        let mut seen = HashSet::new();
         self.owned_locals
             .iter()
             .filter(|entry| {
@@ -1951,6 +1955,7 @@ impl Builder {
                         .synthetic_borrowed_temp_drop_bindings
                         .contains(&entry.binding))
             })
+            .filter(|entry| seen.insert(entry.binding))
             .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect()
     }
@@ -5002,6 +5007,45 @@ mod typed_produced_owner_tests {
             kind: HirExprKind::Literal(HirLiteral::Unit),
             span: 0..0,
         }
+    }
+
+    #[test]
+    fn rebind_replaces_scope_exit_authority_for_the_same_binding() {
+        let binding = BindingId(700);
+        let place = Place::Local(9);
+        let mut value = owned_resource(SiteId(700));
+        value.ty = ResolvedTy::String;
+        let mut builder = Builder::default();
+        builder.binding_locals.insert(binding, place);
+
+        let first_warrant =
+            builder.owner_warrant_for_initializer(binding, &value, &ResolvedTy::String);
+        builder.register_owned_local(
+            binding,
+            "inner".to_string(),
+            ResolvedTy::String,
+            first_warrant,
+        );
+        builder.set_owned_local_consumed(binding, Some(place), super::DischargeSite::BindingMoved);
+        let second_warrant =
+            builder.owner_warrant_for_initializer(binding, &value, &ResolvedTy::String);
+        builder.register_owned_local(
+            binding,
+            "inner".to_string(),
+            ResolvedTy::String,
+            second_warrant,
+        );
+
+        assert_eq!(
+            builder.owned_locals_ledger().len(),
+            2,
+            "the ledger must preserve both value generations for later provenance scans"
+        );
+        assert_eq!(
+            builder.owned_locals_exit_candidates(),
+            vec![(binding, "inner".to_string(), ResolvedTy::String)],
+            "one mutable slot generation must have one scope-exit release authority"
+        );
     }
 
     #[test]

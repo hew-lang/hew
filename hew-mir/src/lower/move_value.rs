@@ -183,22 +183,17 @@ impl Builder {
         ) {
             return;
         }
-        let record_layouts = outbound_record_layouts(self);
-        let Ok(plan) = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
-            binding_ty,
-            &record_layouts,
-            &self.enum_layouts,
-            &self.opaque_handle_names,
-            &self.lifecycle_registry,
-        ) else {
-            // Unreachable for a registered carrier: the parameter registration
-            // requires a clone-total plan over the whole enum, which
-            // classifies every payload field.
-            return;
-        };
-        if matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }) {
+        if matches!(
+            hew_hir::ValueClass::of_ty(binding_ty, &self.type_classes),
+            hew_hir::ValueClass::BitCopy
+        ) {
             return;
         }
+        // This is a whole-value move, not a snapshot. Heap ownership is the
+        // required authority: the destination receives the existing value and
+        // the source payload slot is neutralized on the same edge. Requiring a
+        // clone-total plan here incorrectly excludes move-only resource
+        // composites such as `(Sender<T>, Receiver<T>)`.
         self.owned_carrier_neutralize
             .insert(dest, OwnedCarrierNeutralizeTarget::Whole(source));
     }

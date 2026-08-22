@@ -349,6 +349,9 @@ jobs:
         # libhew_std.a on demand when it is missing.
         run: cargo build -p hew-std --target wasm32-wasip1
 
+      - name: Build shared Rust test artifact
+        run: make stdlib
+
       - name: Run Rust workspace tests
         # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
         # when both are linked into a test binary (duplicate symbol errors).
@@ -431,6 +434,9 @@ jobs:
 
       - name: Build hew-runtime for wasm32-wasip1
         run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+
+      - name: Build shared Rust test artifact
+        run: make stdlib
 
       - name: Run Rust workspace tests
         # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime

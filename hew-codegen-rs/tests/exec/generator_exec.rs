@@ -302,7 +302,11 @@ fn emit_llvm_ir(repo: &Path, stem: &str, source: &str) -> String {
     std::fs::write(&path, source).expect("write temp Hew source");
 
     let mut cmd = hew_command(repo);
-    cmd.arg("compile").arg("--emit-dir").arg(&dir).arg(&path);
+    cmd.arg("compile")
+        .arg("--emit-llvm")
+        .arg("--emit-dir")
+        .arg(&dir)
+        .arg(&path);
     let output = hew_testutil::run_command_bounded(
         &mut cmd,
         format!("hew compile --emit-dir {}", dir.display()),

@@ -24,6 +24,7 @@ NPM_PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-npm-packages.ym
 RELEASE_GATE = ROOT / ".github" / "workflows" / "release-gate.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 COVERAGE_NIGHTLY_WORKFLOW = ROOT / ".github" / "workflows" / "coverage-nightly.yml"
+WORKFLOW_DIRECTORY = ROOT / ".github" / "workflows"
 RELEASE_NOTES = ROOT / "docs" / "releases" / "v0.6.0-rc1.md"
 RUNBOOK = ROOT / "docs" / "release-runbook.md"
 CHANGELOG = ROOT / "CHANGELOG.md"
@@ -1147,14 +1148,14 @@ def test_contract_oracle_runs_in_required_ci() -> None:
 def workflow_job(text: str, name: str) -> str:
     """Return one top-level GitHub Actions job without parsing unrelated YAML."""
     start = text.index(f"  {name}:\n")
-    next_job = re.search(r"^  [a-z][a-z0-9-]*:\n", text[start + 1 :], re.MULTILINE)
+    next_job = re.search(r"^  [a-z][a-z0-9_-]*:\n", text[start + 1 :], re.MULTILINE)
     end = start + 1 + next_job.start() if next_job else len(text)
     return text[start:end]
 
 
 def workflow_jobs(text: str) -> dict[str, str]:
     """Return every top-level job keyed by its workflow identifier."""
-    matches = list(re.finditer(r"^  ([a-z][a-z0-9-]*):\n", text, re.MULTILINE))
+    matches = list(re.finditer(r"^  ([a-z][a-z0-9_-]*):\n", text, re.MULTILINE))
     return {
         match.group(1): text[
             match.start() : matches[index + 1].start()
@@ -1170,6 +1171,10 @@ RUST_TEST_COMMAND = re.compile(
     r"cargo[ \t]+(?:nextest[ \t]+run|test)\b",
     re.MULTILINE,
 )
+SHARED_ARTIFACT_BUILD_COMMAND = re.compile(
+    r"^[ \t]*(?:run:[ \t]*)?(?:g?make)[ \t]+stdlib\b",
+    re.MULTILINE,
+)
 
 
 def workflow_steps(job: str) -> list[str]:
@@ -1183,6 +1188,31 @@ def workflow_steps(job: str) -> list[str]:
         ]
         for index, start in enumerate(starts)
     ]
+
+
+def workflow_jobs_section(text: str) -> dict[str, str]:
+    """Return jobs without treating trigger keys as GitHub Actions jobs."""
+    return workflow_jobs(text[text.index("jobs:\n") + len("jobs:\n") :])
+
+
+def assert_workflow_rust_tests_use_prebuilt_shared_artifact(
+    workflows: dict[Path, str],
+) -> None:
+    """Require one shared-artifact build before each direct Rust test runner."""
+    for workflow_path, text in workflows.items():
+        for name, job in workflow_jobs_section(text).items():
+            test_commands = list(RUST_TEST_COMMAND.finditer(job))
+            if not test_commands:
+                continue
+            builds = list(SHARED_ARTIFACT_BUILD_COMMAND.finditer(job))
+            assert len(builds) == 1, (
+                f"{workflow_path.name}:{name} must build the shared artifact exactly once"
+            )
+            for test_command in test_commands:
+                assert builds[0].start() < test_command.start(), (
+                    f"{workflow_path.name}:{name} starts Rust tests before "
+                    "building the shared artifact"
+                )
 
 
 def assert_ci_rust_tests_use_prebuilt_shared_artifact(ci: str) -> None:
@@ -1239,6 +1269,26 @@ def assert_ci_rust_tests_use_prebuilt_shared_artifact(ci: str) -> None:
 
 def test_ci_rust_tests_use_prebuilt_shared_artifact() -> None:
     assert_ci_rust_tests_use_prebuilt_shared_artifact(CI_WORKFLOW.read_text())
+
+
+def test_workflow_rust_tests_use_prebuilt_shared_artifact() -> None:
+    assert_workflow_rust_tests_use_prebuilt_shared_artifact(
+        {path: path.read_text() for path in sorted(WORKFLOW_DIRECTORY.glob("*.yml"))}
+    )
+
+
+def test_workflow_shared_artifact_build_mutations_are_rejected() -> None:
+    workflows = {
+        path: path.read_text() for path in sorted(WORKFLOW_DIRECTORY.glob("*.yml"))
+    }
+    workflows[COVERAGE_NIGHTLY_WORKFLOW] = workflows[COVERAGE_NIGHTLY_WORKFLOW].replace(
+        "run: make stdlib", "run: make check-libhew-fresh", 1
+    )
+    try:
+        assert_workflow_rust_tests_use_prebuilt_shared_artifact(workflows)
+    except AssertionError:
+        return
+    raise AssertionError("missing workflow shared-artifact build escaped the contract")
 
 
 def test_ci_shared_artifact_build_mutations_are_rejected() -> None:
@@ -2039,6 +2089,8 @@ _TESTS = [
     test_sanitizer_gate_is_behavioral_and_release_scoped,
     test_release_record_is_durable_and_tag_ready,
     test_contract_oracle_runs_in_required_ci,
+    test_workflow_rust_tests_use_prebuilt_shared_artifact,
+    test_workflow_shared_artifact_build_mutations_are_rejected,
     test_wasm_pack_consumers_prefetch_checksum_pinned_binaryen,
     test_binaryen_prefetch_pin_mutations_are_rejected,
     test_windows_test_workflows_initialise_msvc_before_lld_link,

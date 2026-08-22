@@ -1095,6 +1095,12 @@ fn site_source<'a>(
     }
 }
 
+fn site_is_imported_stdlib(site: &hew_hir::HirSiteSource) -> bool {
+    site.source_module.as_deref().is_some_and(|module| {
+        module == "std" || module.starts_with("std.") || module.starts_with("std::")
+    })
+}
+
 fn mir_source_context_unavailable_note(site: &hew_hir::HirSiteSource) -> String {
     site.source_module.as_ref().map_or_else(
         || ROOT_SOURCE_CONTEXT_UNAVAILABLE.to_string(),
@@ -1188,6 +1194,11 @@ pub(crate) fn render_mir_diagnostics(
             }
             continue;
         };
+        // Compiler-shipped implementation advisories are enforced by the
+        // stdlib source gate; they are not actionable in a user build.
+        if advisory && site_is_imported_stdlib(site) {
+            continue;
+        }
         let Some((source, filename)) =
             site_source(root_source, root_filename, module_source_map, site)
         else {
@@ -1549,6 +1560,26 @@ mod tests {
             0..4,
             "cannot find function `oops` in this scope",
         )
+    }
+
+    #[test]
+    fn imported_stdlib_site_is_not_user_facing() {
+        let stdlib = hew_hir::HirSiteSource {
+            span: 0..1,
+            source_module: Some("std.net.http".to_string()),
+        };
+        let user = hew_hir::HirSiteSource {
+            span: 0..1,
+            source_module: None,
+        };
+        let dependency = hew_hir::HirSiteSource {
+            span: 0..1,
+            source_module: Some("my_package.std_helpers".to_string()),
+        };
+
+        assert!(site_is_imported_stdlib(&stdlib));
+        assert!(!site_is_imported_stdlib(&user));
+        assert!(!site_is_imported_stdlib(&dependency));
     }
 
     #[test]

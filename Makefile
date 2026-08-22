@@ -1392,7 +1392,7 @@ test-stdlib-ratchet: hew
 
 # Every stdlib source must stay clean in isolation, and every module must stay
 # silent when checked and built through a temporary user package.
-# inputs: std/** hew-types/** hew-mir/**
+# inputs: std/** hew-types/** hew-mir/** hew-compile/** hew-cli/**
 # inputs: scripts/stdlib-user-build-clean.py scripts/stdlib-user-build-calls.tsv
 stdlib-user-build-clean: hew runtime $(LIBHEW_READY)
 	HEW_BIN="$(DEBUG_DIR)/hew" scripts/stdlib-user-build-clean.py

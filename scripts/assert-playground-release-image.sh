@@ -4,7 +4,7 @@
 #
 # This is the release's acquisition contract: whoever publishes the image —
 # the playground repository's Actions workflow, or a maintainer running
-# `make release-publish` from a playground checkout — satisfies the identical
+# `make release-publish` from a playground checkout — satisfies the identical  # external: hew-lang/playground
 # assertion. The script observes only; it never publishes, never mutates, and
 # never succeeds on a missing or mismatched image.
 #

@@ -4,18 +4,23 @@
 Two compilers check the same tree; every `ObligationUnderReleased` diagnostic
 is reduced to a NAME-INSENSITIVE key and the two site sets are differenced.
 
-The key is `(file, function, unreleased exit blocks)`. It deliberately excludes
-the owner's rendered name and the diagnostic prose, because a compiler change
+The key is `(file, function, unreleased exit block)` — ONE key per unbalanced
+exit. It deliberately excludes the owner's rendered name and the diagnostic
+prose, because a compiler change
 that renames an owner (`__hew_call_scrutinee` becoming its mint expression,
 `snapshot(...)`) or reformats the message moves EVERY site under a text diff
 while discharging none of them. Differencing rendered strings therefore scores
 renamed sites as fixed, which is how a diagnostic-rendering change can be
 reported as a substrate win. Keying on the site itself cannot.
 
-Both the pre-aggregation rendering (one diagnostic per unbalanced exit, the
-block named in `reaches <exit>[bbN]`) and the aggregated rendering (one
-diagnostic per owner, the blocks named in an `unreleased exits:` note) parse to
-the same key, so a baseline compiler and a head compiler are comparable.
+Per-exit granularity is what makes the two renderings comparable. The
+pre-aggregation rendering emits one diagnostic per unbalanced exit (the block
+named in `reaches <exit>[bbN]`); the aggregated rendering emits one diagnostic
+per owner and names every block in an `unreleased exits:` note. Both explode to
+the same set of per-exit keys, so a baseline compiler and a head compiler are
+comparable. Keying on the whole exit SET instead would score every aggregated
+finding as a removal plus an addition, which measures the reshape and not the
+ownership.
 
 Removed sites are the claim that needs proving: a site that no longer emits is
 either genuinely discharged or silently suppressed, and only an executed leak
@@ -39,24 +44,25 @@ EXITS_NOTE = re.compile(r"unreleased exits: ([^\n]+)")
 REACHES = re.compile(r"\b\w+\[bb(\d+)\]")
 BLOCK = re.compile(r"bb(\d+)")
 
-Site = tuple[str, str, tuple[int, ...]]
+Site = tuple[str, str, int]
 
 
-def diagnostic_sites(entry: dict, relpath: str) -> Site | None:
-    """The name-insensitive key for one under-release diagnostic, or `None`."""
+def diagnostic_sites(entry: dict, relpath: str) -> set[Site]:
+    """The name-insensitive keys for one under-release diagnostic, one per exit."""
     if entry.get("code") != "ObligationUnderReleased":
-        return None
+        return set()
     message = entry.get("message", "")
     function_match = FUNCTION.search(message)
     if function_match is None:
-        return None
+        return set()
     notes = " ".join(note.get("message", "") for note in entry.get("notes", []))
     exits_match = EXITS_NOTE.search(notes)
     if exits_match is not None:
         blocks = [int(block) for block in BLOCK.findall(exits_match.group(1))]
     else:
         blocks = [int(block) for block in REACHES.findall(message)]
-    return (relpath, function_match.group(1), tuple(sorted(set(blocks))))
+    function = function_match.group(1)
+    return {(relpath, function, block) for block in blocks}
 
 
 def sites_for_file(compiler: Path, source: Path, root: Path) -> set[Site]:
@@ -75,11 +81,9 @@ def sites_for_file(compiler: Path, source: Path, root: Path) -> set[Site]:
             f"{result.stdout}\n{result.stderr}"
         ) from None
     relpath = str(source.relative_to(root))
-    found = set()
+    found: set[Site] = set()
     for entry in entries:
-        site = diagnostic_sites(entry, relpath)
-        if site is not None:
-            found.add(site)
+        found |= diagnostic_sites(entry, relpath)
     return found
 
 
@@ -92,9 +96,8 @@ def sites_for_tree(compiler: Path, root: Path) -> set[Site]:
 
 def render(label: str, sites: set[Site]) -> str:
     lines = [f"{label} ({len(sites)}):"]
-    for relpath, function, blocks in sorted(sites):
-        exits = ", ".join(f"bb{block}" for block in blocks)
-        lines.append(f"  {relpath}::{function} [{exits}]")
+    for relpath, function, block in sorted(sites):
+        lines.append(f"  {relpath}::{function} [bb{block}]")
     return "\n".join(lines)
 
 

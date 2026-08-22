@@ -55,17 +55,21 @@ class SiteKeyTests(unittest.TestCase):
             aggregated("parse_result", "try_parse(...)", "bb2"), "src/stage.hew"
         )
         self.assertEqual(before, after)
-        self.assertEqual(before, ("src/stage.hew", "parse_result", (2,)))
+        self.assertEqual(before, {("src/stage.hew", "parse_result", 2)})
 
-    def test_aggregating_two_exits_is_not_the_same_site_as_one(self) -> None:
-        one = DIFF.diagnostic_sites(
-            aggregated("parse_result", "try_parse(...)", "bb2"), "src/stage.hew"
+    def test_aggregating_two_exits_matches_two_per_exit_findings(self) -> None:
+        per_exit_pair = DIFF.diagnostic_sites(
+            per_exit("parse_result", "__hew_call_scrutinee", "return[bb2]"),
+            "src/stage.hew",
+        ) | DIFF.diagnostic_sites(
+            per_exit("parse_result", "__hew_call_scrutinee", "return[bb11]"),
+            "src/stage.hew",
         )
-        two = DIFF.diagnostic_sites(
+        one_aggregate = DIFF.diagnostic_sites(
             aggregated("parse_result", "try_parse(...)", "bb2, bb11"),
             "src/stage.hew",
         )
-        self.assertNotEqual(one, two)
+        self.assertEqual(per_exit_pair, one_aggregate)
 
     def test_same_function_name_in_another_file_is_another_site(self) -> None:
         here = DIFF.diagnostic_sites(
@@ -77,10 +81,11 @@ class SiteKeyTests(unittest.TestCase):
         self.assertNotEqual(here, there)
 
     def test_other_diagnostic_kinds_are_not_sites(self) -> None:
-        self.assertIsNone(
+        self.assertEqual(
             DIFF.diagnostic_sites(
                 {"code": "ObligationOverReleased", "message": "x"}, "src/a.hew"
-            )
+            ),
+            set(),
         )
 
 

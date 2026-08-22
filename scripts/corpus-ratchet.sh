@@ -73,6 +73,9 @@ source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
 # shellcheck source=scripts/lib/cargo-output-dir.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
+# shellcheck source=scripts/lib/bare-variant-ratchet.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/bare-variant-ratchet.sh"
 
 usage() {
     cat <<'EOF'
@@ -638,11 +641,15 @@ hew_corpus_diagnostic() {
 DOC_FENCE_OUTDIR=""
 DOC_FENCE_EXPECTED_CKSUM_STR=""
 DOC_FENCE_STALE=""
+DOC_FENCE_BARE_VARIANTS_STR=""
+DOC_FENCE_BARE_VARIANT_COUNT=0
+DOC_FENCE_STALE_COUNT=0
 
 DOC_FENCE_SOURCES=(
     "docs/hew-language-guide.md:guide"
     "docs/specs/HEW-SPEC-2026.md:spec"
 )
+DOC_FENCE_LANGUAGE_DIR="$REPO_ROOT/docs/language"
 
 # Substrings that, in the five lines before a ```hew fence, mark it skippable.
 DOC_FENCE_NYI_PATTERNS=("Not yet implemented" "doctest: skip" "doctest:skip")
@@ -650,15 +657,46 @@ DOC_FENCE_NYI_PATTERNS=("Not yet implemented" "doctest: skip" "doctest:skip")
 DOC_FENCE_IDS=()
 DOC_FENCE_SKIPPED=()
 
+doc_fence_add_language_sources() {
+    local language_doc language_name relative_path
+    local found=0
+
+    if [[ ! -d "$DOC_FENCE_LANGUAGE_DIR" ]]; then
+        echo "error: language documentation directory not found: $DOC_FENCE_LANGUAGE_DIR" >&2
+        exit 1
+    fi
+
+    while IFS= read -r language_doc; do
+        found=1
+        relative_path="${language_doc#"$REPO_ROOT"/}"
+        language_name="${language_doc##*/}"
+        language_name="${language_name%.hew}"
+        DOC_FENCE_SOURCES+=("$relative_path:lang-$language_name")
+    done < <(find "$DOC_FENCE_LANGUAGE_DIR" -maxdepth 1 -type f -name '*.hew' -print | LC_ALL=C sort)
+
+    if (( found == 0 )); then
+        echo "error: no language documentation modules found in $DOC_FENCE_LANGUAGE_DIR" >&2
+        exit 1
+    fi
+}
+
 doc_fence_extract() {
     local filepath="$1"
     local prefix="$2"
     local lines=()
     local line total fence_num i stripped fence_id skip j ctx_line marker
-    local content fline fstripped outfile
+    local content fline fstripped outfile strip_doc_prefix=0
+
+    [[ "$filepath" == *.hew ]] && strip_doc_prefix=1
 
     # mapfile requires bash 4; use a while loop for bash 3 (macOS ships 3.x).
     while IFS= read -r line; do
+        if (( strip_doc_prefix )); then
+            case "$line" in
+                '//!'*) line="${line#//!}"; line="${line# }" ;;
+                *)      line="" ;;
+            esac
+        fi
         lines+=("$line")
     done < "$filepath"
 
@@ -743,12 +781,14 @@ doc_fence_read_expected() {
 run_doc_fences() {
     local entry doc_path prefix full_path total_fences
     local pass=0 fail=0 skip=0 idx fence_id is_skip outfile check_rc
+    local check_output bare_variants
 
     DOC_FENCE_OUTDIR="${OUTDIR_ARG:-$REPO_ROOT/.tmp/doc-fences}"
 
     require_hew_bin
     require_expected_failures_file
     mkdir -p "$DOC_FENCE_OUTDIR"
+    doc_fence_add_language_sources
 
     echo "==> Doc-test harness: extracting hew fences from docs/"
     for entry in "${DOC_FENCE_SOURCES[@]}"; do
@@ -784,7 +824,14 @@ run_doc_fences() {
         fi
 
         check_rc=0
-        "$HEW_BIN" check "$outfile" >/dev/null 2>&1 || check_rc=$?
+        check_output="$("$HEW_BIN" check "$outfile" 2>&1)" || check_rc=$?
+        bare_variants=""
+        if bare_variants="$(
+            printf '%s\n' "$check_output" \
+                | grep -E ': warning: E_BARE_VARIANT_(PATTERN|EXPR):'
+        )"; then
+            DOC_FENCE_BARE_VARIANTS_STR="${DOC_FENCE_BARE_VARIANTS_STR}${bare_variants}"$'\n'
+        fi
 
         if [[ "$check_rc" == "0" ]]; then
             pass=$(( pass + 1 ))
@@ -797,6 +844,7 @@ run_doc_fences() {
     echo ""
     echo "==> Results: $pass passed, $fail failed, $skip skipped (NYI/aspirational)"
     echo "    Total fences: $total_fences"
+    echo "    Bare variants: $(count_set "$DOC_FENCE_BARE_VARIANTS_STR")"
     echo ""
     echo "==> Doc-test ratchet"
     echo "    Expected failures: $(count_set "$EXPECTED_STR")"
@@ -819,7 +867,7 @@ doc_fence_diagnostic() {
 # label must be re-verified instead of trusted by position alone.
 # Reached through RATCHET_EXTRA_FAIL_FN; shellcheck cannot see an indirect call.
 # shellcheck disable=SC2329
-doc_fence_stale_metadata() {
+doc_fence_extra_failures() {
     local entry name recorded_cksum actual_cksum outfile plural
 
     case "$1" in
@@ -835,12 +883,27 @@ doc_fence_stale_metadata() {
                     DOC_FENCE_STALE="${DOC_FENCE_STALE}${name} ${recorded_cksum} ${actual_cksum}"$'\n'
                 fi
             done <<< "$DOC_FENCE_EXPECTED_CKSUM_STR"
-            RATCHET_EXTRA_FAIL_COUNT="$(count_set "$DOC_FENCE_STALE")"
+            DOC_FENCE_STALE_COUNT="$(count_set "$DOC_FENCE_STALE")"
+            DOC_FENCE_BARE_VARIANT_COUNT="$(count_set "$DOC_FENCE_BARE_VARIANTS_STR")"
+            RATCHET_EXTRA_FAIL_COUNT=$((
+                DOC_FENCE_STALE_COUNT + DOC_FENCE_BARE_VARIANT_COUNT
+            ))
             ;;
         report)
+            if (( DOC_FENCE_BARE_VARIANT_COUNT > 0 )); then
+                echo "$(bare_variant_ratchet_failure_message "$DOC_FENCE_BARE_VARIANT_COUNT") in doc fences:"
+                while IFS= read -r entry; do
+                    [[ -z "$entry" ]] && continue
+                    echo "  BARE VARIANT: $entry"
+                done <<< "$DOC_FENCE_BARE_VARIANTS_STR"
+                echo ""
+                echo "  Qualify every bare variant; bare variant diagnostics are not ratcheted."
+                echo ""
+            fi
+            (( DOC_FENCE_STALE_COUNT > 0 )) || return 0
             plural="ies"
-            (( RATCHET_EXTRA_FAIL_COUNT == 1 )) && plural="y"
-            echo "RATCHET FAIL: $RATCHET_EXTRA_FAIL_COUNT stale expected-failure metadata entr${plural}:"
+            (( DOC_FENCE_STALE_COUNT == 1 )) && plural="y"
+            echo "RATCHET FAIL: $DOC_FENCE_STALE_COUNT stale expected-failure metadata entr${plural}:"
             while IFS= read -r entry; do
                 [[ -z "$entry" ]] && continue
                 read -r name recorded_cksum actual_cksum <<< "$entry"
@@ -901,7 +964,7 @@ case "$CORPUS" in
         RATCHET_FAIL_LEADING_BLANK=1
         RATCHET_VERDICT_LABEL="Doc-test ratchet"
         RATCHET_DIAGNOSTIC_FN=doc_fence_diagnostic
-        RATCHET_EXTRA_FAIL_FN=doc_fence_stale_metadata
+        RATCHET_EXTRA_FAIL_FN=doc_fence_extra_failures
         RATCHET_UNEXPECTED_HELP="  A doc fence that previously passed now fails — this is a documentation
   regression.  Fix the fence in the doc file, OR if the failure is
   intentional (e.g. the surface is now NYI), add a '<!-- doctest: skip -->'

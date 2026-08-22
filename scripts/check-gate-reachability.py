@@ -2888,12 +2888,14 @@ def main() -> int:
     tests = harness_tests()
     invocations = harness_invocation_text(ci_text, recipes, reached)
     orphans = [test for test in tests if test not in invocations]
+    print(f"\n==> A11: CI invokes harness self-tests ({len(tests)} self-test(s))")
     for test in orphans:
         findings.fail(
             "A11",
             test,
             "no CI-reached command invokes this self-test.",
         )
+    print(f"    {len(tests) - len(orphans)}/{len(tests)} self-tests are invoked.")
 
     # ── Verdict ───────────────────────────────────────────────────────────────
     print("")

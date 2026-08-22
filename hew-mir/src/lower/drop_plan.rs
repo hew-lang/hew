@@ -109,6 +109,24 @@ pub(super) fn elaborate(
     // below — the same `(binding, name, ty)` tuples the provers read before the
     // ledger carried richer facts, in the same declaration order.
     let owned_locals_snapshot = builder.owned_locals_snapshot();
+    let aggregate_member_neutralized_bindings: HashSet<BindingId> = checked
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::NeutralizePayloadSlot {
+                place,
+                authority: crate::model::NeutralizeAuthority::AggregateMemberConsume,
+                ..
+            } => builder
+                .binding_locals
+                .iter()
+                .find_map(|(binding, binding_place)| {
+                    (*binding_place == *place).then_some(*binding)
+                }),
+            _ => None,
+        })
+        .collect();
     for (binding, name, ty) in owned_locals_snapshot.iter().rev() {
         if builder.back_edge_only_iteration_owners.contains(binding) {
             continue;
@@ -638,7 +656,7 @@ pub(super) fn elaborate(
     // the temp must not drop. A returned tuple is excluded too (the ReturnSlot
     // owns it). Everything the prover does not clear leaks rather than
     // double-frees.
-    let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
+    let mut tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
@@ -651,13 +669,27 @@ pub(super) fn elaborate(
         &builder.proven_borrow_call_args,
     );
 
+    for allowed in [
+        &mut enum_composite_drop_allowed,
+        &mut owned_vec_drop_allowed,
+        &mut local_collection_drop_allowed,
+        &mut closure_vec_drop_allowed,
+        &mut plain_vec_drop_allowed,
+        &mut owned_record_drop_allowed,
+        &mut tuple_composite_drop_allowed,
+    ] {
+        allowed.extend(aggregate_member_neutralized_bindings.iter().copied());
+    }
+
     // W5.021 (defect #1) — owned members the caller now owns via a returned
     // aggregate; excluded from every drop class below (see the function doc).
-    let returned_aggregate_members = derive_returned_aggregate_member_bindings(
+    let mut returned_aggregate_members = derive_returned_aggregate_member_bindings(
         &checked.blocks,
         &owned_locals_snapshot,
         &builder.binding_locals,
     );
+    returned_aggregate_members
+        .retain(|binding| !aggregate_member_neutralized_bindings.contains(binding));
     // Path-sensitive re-admission map for values handed to the caller through the
     // return flow. The blanket exclusion (an aggregate member the return handoff
     // removes, `semver::try_parse`; or a whole-value return that retracts its
@@ -679,7 +711,7 @@ pub(super) fn elaborate(
     // release-consumer; the consumer owns the single free, so the source binding
     // must not also drop. The local-aggregate analogue of
     // `returned_aggregate_members` (see the function doc).
-    let consumed_local_aggregate_members = derive_consumed_local_aggregate_member_bindings(
+    let mut consumed_local_aggregate_members = derive_consumed_local_aggregate_member_bindings(
         &checked.blocks,
         &owned_locals_snapshot,
         &builder.binding_locals,
@@ -688,18 +720,22 @@ pub(super) fn elaborate(
         &builder.enum_layouts,
         builder.type_classes.lifecycle_registry(),
     );
+    consumed_local_aggregate_members
+        .retain(|binding| !aggregate_member_neutralized_bindings.contains(binding));
     // CAP-08 — owned handle-leaf bindings moved into an actor initial-state
     // record consumed by `SpawnActor`. The actor's synthesised `state_drop_fn`
     // is the single free site (Stream→`hew_stream_close` / Sink→`hew_sink_close`),
     // so the source binding's own scope-exit drop is removed here. The W3.053
     // gate consumes the SAME derivation via `source_excluded` so its free-count
     // model matches the drop this removal actually elides.
-    let spawn_consumed_handle_members = derive_spawn_consumed_handle_bindings(
+    let mut spawn_consumed_handle_members = derive_spawn_consumed_handle_bindings(
         &checked.blocks,
         &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
     );
+    spawn_consumed_handle_members
+        .retain(|binding| !aggregate_member_neutralized_bindings.contains(binding));
 
     // Escaping-closure pair env-box drop allow-set. Starts from the
     // `Let`-admitted ownership ledger (heap-mode literal / call result /
@@ -2672,7 +2708,10 @@ fn apply_balance_instr(
             }
         }
         Instr::NeutralizePayloadSlot { place, .. } => {
-            if let Some(root) = cx.tracked_carrier(*place) {
+            if let Some(root) = cx
+                .tracked_root(*place)
+                .or_else(|| cx.tracked_carrier(*place))
+            {
                 let entry = obligation_entry(state, root);
                 match entry.neutralized {
                     PayloadNeutralized::No => {
@@ -3686,6 +3725,10 @@ pub(super) fn validate_discharge_authority_corroboration(
 
 /// Testable core of [`validate_discharge_authority_corroboration`] — hand-
 /// constructed blocks, no `RawMirFunction`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one corroboration proof keeps its primitive routing facts and findings together"
+)]
 fn validate_discharge_authority_corroboration_over(
     function: &str,
     blocks: &[BasicBlock],
@@ -3699,9 +3742,14 @@ fn validate_discharge_authority_corroboration_over(
     for block in blocks {
         for instr in &block.instructions {
             match instr {
-                Instr::Move { dest, .. } | Instr::WitnessMove { dest, .. } => {
+                Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => {
                     if let Some(local) = whole_owner_local(*dest) {
                         move_destinations.insert(local);
+                    }
+                    if let Place::MachineVariant { local, .. } | Place::EnumVariant { local, .. } =
+                        dest
+                    {
+                        aggregate_member_destinations.insert((*src, Place::Local(*local)));
                     }
                 }
                 Instr::TupleConstruct { elements, dest } => {
@@ -3712,8 +3760,37 @@ fn validate_discharge_authority_corroboration_over(
                     aggregate_member_destinations
                         .extend(fields.iter().map(|(_offset, source)| (*source, *dest)));
                 }
+                Instr::RecordFieldStore { record, src, .. } => {
+                    aggregate_member_destinations.insert((*src, *record));
+                }
                 _ => {}
             }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                let (Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. }) = instr
+                else {
+                    continue;
+                };
+                let Some(dest_local) = whole_owner_local(*dest) else {
+                    continue;
+                };
+                let inherited: Vec<Place> = aggregate_member_destinations
+                    .iter()
+                    .filter_map(|(source, aggregate)| {
+                        (whole_owner_local(*source) == Some(dest_local)).then_some(*aggregate)
+                    })
+                    .collect();
+                for aggregate in inherited {
+                    changed |= aggregate_member_destinations.insert((*src, aggregate));
+                }
+            }
+        }
+        if !changed {
+            break;
         }
     }
     let mut findings = Vec::new();
@@ -3734,6 +3811,7 @@ fn validate_discharge_authority_corroboration_over(
             let corroborated = if matches!(
                 authority,
                 crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume
+                    | crate::model::NeutralizeAuthority::AggregateMemberConsume
             ) {
                 aggregate_member_destinations.contains(&(*place, *transferee))
             } else {
@@ -3743,6 +3821,7 @@ fn validate_discharge_authority_corroboration_over(
                 let primitive = if matches!(
                     authority,
                     crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume
+                        | crate::model::NeutralizeAuthority::AggregateMemberConsume
                 ) {
                     format!(
                         "the primitive instruction stream never constructs {transferee:?} from \
@@ -6848,6 +6927,12 @@ pub(super) fn string_binder_read_is_user_fn_borrow(
 /// there must get the SAME arg[0] receiver-borrow exemption. Conservative:
 /// `false` unless the only references to `binder` are the borrowed receiver.
 pub(super) fn binder_read_is_borrow_safe_instr(instr: &Instr, binder: u32) -> bool {
+    if matches!(
+        instr,
+        Instr::ValueSnapshotClone { src, .. } if place_refs_local(*src, binder)
+    ) {
+        return true;
+    }
     if matches!(
         instr,
         Instr::IntCmp { lhs, rhs, .. }

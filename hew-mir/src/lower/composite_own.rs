@@ -95,8 +95,9 @@ pub(super) use tuple_handle_projection::derive_owned_tuple_handle_projection_bin
 ///    exactly that call as its predecessor, and the escaping binder's
 ///    provenance is `Unique { root, field }` — the value flow proves both the
 ///    root and WHICH field escaped. The escaped field is never discharged:
-///    for a moved-out binder the escapee owns it; for a retained `string`
-///    clone the original keeps its pre-existing leak.
+///    for a moved-out binder the escapee owns it. A proven retained `string`
+///    clone is the exception: the escapee owns an independent share, so this
+///    pass also discharges the record's original field.
 /// 3. No binder of the root is the base local of another `owned_locals`
 ///    binding and none is the place of an inline `Drop` — an extracted
 ///    field with its own release path (`let g = b.gen`) is a second owner
@@ -275,7 +276,7 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                     match provenance.get(&$binder) {
                         Some(FieldBinderProvenance::Unique { root, field }) => {
                             if let Some(scan) = scans.get_mut(root) {
-                                scan.escapes.push((bid, Some($pos), *field));
+                                scan.escapes.push((bid, Some($pos), *field, $binder));
                             }
                         }
                         Some(FieldBinderProvenance::RootOnly { root }) => poison!(*root),
@@ -563,7 +564,7 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                     match provenance.get(&l) {
                         Some(FieldBinderProvenance::Unique { root, field }) => {
                             if let Some(scan) = scans.get_mut(root) {
-                                scan.escapes.push((bid, None, *field));
+                                scan.escapes.push((bid, None, *field, l));
                             }
                         }
                         Some(FieldBinderProvenance::RootOnly { root }) => {
@@ -600,7 +601,7 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
         if scan.poisoned || member_count.get(&root).copied().unwrap_or(0) != 1 {
             continue;
         }
-        let &[(esc_block, esc_idx, esc_field)] = &scan.escapes[..] else {
+        let &[(esc_block, esc_idx, esc_field, esc_binder)] = &scan.escapes[..] else {
             continue;
         };
         if field_binders
@@ -645,9 +646,10 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
             continue;
         }
         let record_ty = &root_record_ty[&root];
+        let retained_clone_escape = retained_string_field_aliases.contains(&esc_binder);
         let siblings: Vec<Instr> = owned_field_list(record_ty)
             .into_iter()
-            .filter(|(idx, _)| *idx != esc_field)
+            .filter(|(idx, _)| retained_clone_escape || *idx != esc_field)
             .filter(|(_, ty)| field_dischargeable(ty))
             .map(|(idx, ty)| Instr::FieldDropInPlace {
                 base: Place::Local(root),

@@ -5596,6 +5596,416 @@ fn local_read_after_site(
     false
 }
 
+/// Null moved-from owners only after their aggregate sink has completed.
+fn neutralize_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let candidates = builder.owned_locals_exit_candidates();
+    let transfer_bindings: HashSet<BindingId> = blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .filter_map(|statement| match statement {
+            MirStatement::AggregateAlias { binding, .. }
+            | MirStatement::Use {
+                binding,
+                intent: IntentKind::Consume | IntentKind::Discharge,
+                ..
+            } => Some(*binding),
+            _ => None,
+        })
+        .collect();
+    let candidate_by_root: HashMap<u32, BindingId> = candidates
+        .iter()
+        .filter(|(binding, _name, ty)| {
+            transfer_bindings.contains(binding)
+                && !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
+                && !drop_plan::ty_is_owned_handle_leaf(ty)
+        })
+        .filter_map(|(binding, _name, _ty)| {
+            builder
+                .binding_locals
+                .get(binding)
+                .and_then(|place| base_local(*place))
+                .map(|local| (local, *binding))
+        })
+        .collect();
+    if candidate_by_root.is_empty() {
+        return;
+    }
+    let alias_to_root =
+        propagate_whole_value_alias_roots(blocks, candidate_by_root.keys().copied());
+
+    for block in blocks {
+        let mut index = 0;
+        while index < block.instructions.len() {
+            let sinks: Vec<(Place, Place)> = match &block.instructions[index] {
+                Instr::TupleConstruct { elements, dest } => {
+                    elements.iter().map(|source| (*source, *dest)).collect()
+                }
+                Instr::RecordInit { fields, dest, .. } => fields
+                    .iter()
+                    .map(|(_offset, source)| (*source, *dest))
+                    .collect(),
+                Instr::RecordFieldStore { record, src, .. } => vec![(*src, *record)],
+                Instr::Move {
+                    dest: Place::MachineVariant { local, .. } | Place::EnumVariant { local, .. },
+                    src,
+                } => vec![(*src, Place::Local(*local))],
+                _ => Vec::new(),
+            };
+            index += 1;
+            let mut roots = HashSet::new();
+            for (source, destination) in sinks {
+                let Some(source_local) = base_local(source) else {
+                    continue;
+                };
+                let root = alias_to_root
+                    .get(&source_local)
+                    .copied()
+                    .unwrap_or(source_local);
+                if !candidate_by_root.contains_key(&root) || !roots.insert(root) {
+                    continue;
+                }
+                shift_instr_spans_on_insert(
+                    &mut builder.instr_spans,
+                    block.id,
+                    u32::try_from(index).unwrap_or(u32::MAX),
+                );
+                block.instructions.insert(
+                    index,
+                    Instr::NeutralizePayloadSlot {
+                        place: Place::Local(root),
+                        transferee: Some(destination),
+                        authority: crate::model::NeutralizeAuthority::AggregateMemberConsume,
+                    },
+                );
+                index += 1;
+            }
+        }
+    }
+}
+
+/// Release an owned element cloned from a collection after its sole borrowing read.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one proof pass keeps clone provenance, use classification, and release insertion together"
+)]
+fn release_cloned_collection_result_temps(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let cloned_locals: HashSet<u32> = blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            Terminator::Call {
+                authority:
+                    crate::model::CallAuthority::Runtime(
+                        hew_types::runtime_call::RuntimeCallFamily::VecGet(
+                            hew_types::runtime_call::VecGetElem::Clone,
+                        ),
+                    ),
+                dest: Some(place),
+                ..
+            } => base_local(*place),
+            _ => None,
+        })
+        .collect();
+    let record_layouts = outbound_record_layouts(builder);
+    let mut inserts = Vec::new();
+
+    for local in cloned_locals {
+        let Some(ty) = builder.locals.get(local as usize).cloned() else {
+            continue;
+        };
+        let mut reads = Vec::new();
+        let mut admissible = true;
+        for block in blocks.iter() {
+            for (index, instruction) in block.instructions.iter().enumerate() {
+                let (instruction_reads, _writes, _) =
+                    crate::dataflow::instr_reads_writes(instruction);
+                if !instruction_reads
+                    .iter()
+                    .any(|read| base_local(*read) == Some(local))
+                {
+                    continue;
+                }
+                let borrowed_field = matches!(
+                    instruction,
+                    Instr::RecordFieldLoad { record, dest, .. }
+                        | Instr::TupleFieldLoad { tuple: record, dest, .. }
+                        if base_local(*record) == Some(local)
+                            && base_local(*dest)
+                                .and_then(|dest| builder.locals.get(dest as usize))
+                                .is_some_and(|field_ty| {
+                                    ValueClass::of_ty(field_ty, &builder.type_classes)
+                                        == ValueClass::BitCopy
+                                })
+                );
+                let borrowed_clone = matches!(
+                    instruction,
+                    Instr::RecordCloneInplace { src, .. }
+                        | Instr::EnumCloneInplace { src, .. }
+                        | Instr::ValueSnapshotClone { src, .. }
+                        if base_local(*src) == Some(local)
+                );
+                if !borrowed_field && !borrowed_clone {
+                    admissible = false;
+                    break;
+                }
+                reads.push((block.id, index));
+            }
+            if !admissible
+                || terminator_source_places(&block.terminator, builder.suspend_kinds.get(&block.id))
+                    .iter()
+                    .any(|read| base_local(*read) == Some(local))
+            {
+                admissible = false;
+                break;
+            }
+        }
+        let Some((read_block, last_index)) = reads.last().copied() else {
+            continue;
+        };
+        if !admissible || reads.iter().any(|(block, _)| *block != read_block) {
+            continue;
+        }
+        let release = match crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+            &ty,
+            &record_layouts,
+            &builder.enum_layouts,
+            &builder.opaque_handle_names,
+            &builder.lifecycle_registry,
+        ) {
+            Ok(plan) => Instr::ValueSnapshotDrop {
+                value: Place::Local(local),
+                ty: ty.clone(),
+                plan,
+                boundary: crate::model::PreparedCarrierBoundary::LocalCall,
+                guard: None,
+            },
+            Err(_)
+                if builder.is_owned_aggregate_record_ty(&ty)
+                    && builder.field_drop_in_place_admissible(&ty) =>
+            {
+                Instr::Drop {
+                    place: Place::Local(local),
+                    ty,
+                    drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                        crate::ownership::InPlaceReleaseKind::Record,
+                    )),
+                }
+            }
+            Err(_) => continue,
+        };
+        inserts.push((read_block, last_index + 1, local, release));
+    }
+
+    inserts.sort_unstable_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+    for (block_id, insert_at, local, release) in inserts {
+        let Some(block) = blocks.iter_mut().find(|block| block.id == block_id) else {
+            continue;
+        };
+        shift_instr_spans_on_insert(
+            &mut builder.instr_spans,
+            block_id,
+            u32::try_from(insert_at).unwrap_or(u32::MAX),
+        );
+        block.instructions.insert(insert_at, release);
+        let bindings: Vec<BindingId> = builder
+            .binding_locals
+            .iter()
+            .filter_map(|(binding, place)| (base_local(*place) == Some(local)).then_some(*binding))
+            .collect();
+        for binding in bindings {
+            builder.set_owned_local_disposition(binding, Disposition::ScopeReleased);
+        }
+    }
+}
+
+/// Whether every terminating path from `start` executes `postdominator`.
+fn block_postdominates_owner_mint(blocks: &[BasicBlock], start: u32, postdominator: u32) -> bool {
+    if start == postdominator {
+        return true;
+    }
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|block| (block.id, block)).collect();
+    let mut reachable = HashSet::new();
+    let mut worklist = vec![start];
+    while let Some(block_id) = worklist.pop() {
+        if block_id == postdominator || !reachable.insert(block_id) {
+            continue;
+        }
+        if let Some(block) = by_id.get(&block_id) {
+            worklist.extend(block.successors());
+        }
+    }
+    !blocks
+        .iter()
+        .any(|block| reachable.contains(&block.id) && block.successors().is_empty())
+}
+
+/// Release a typed owner immediately after its final proven borrowing read.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one proof pass keeps owner eligibility, postdominance, and release insertion together"
+)]
+fn release_last_borrowed_typed_owners(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let mut candidates = Vec::new();
+    let mut candidate_locals = HashSet::new();
+    for (binding, _name, ty) in builder.owned_locals_exit_candidates() {
+        if !builder
+            .typed_produced_value_owner_bindings
+            .contains(&binding)
+        {
+            continue;
+        }
+        if matches!(ty, ResolvedTy::Bytes) {
+            continue;
+        }
+        let Some(place) = builder.binding_locals.get(&binding).copied() else {
+            continue;
+        };
+        let Some(local) = base_local(place) else {
+            continue;
+        };
+        if !candidate_locals.insert(local) {
+            continue;
+        }
+        candidates.push((binding, local, place, ty));
+    }
+
+    for (binding, local, place, ty) in candidates {
+        let record_layouts = outbound_record_layouts(builder);
+        let mut reads = Vec::new();
+        let mut admissible = true;
+        for block in blocks.iter() {
+            for (index, instruction) in block.instructions.iter().enumerate() {
+                let (instruction_reads, _writes, _) =
+                    crate::dataflow::instr_reads_writes(instruction);
+                if !instruction_reads
+                    .iter()
+                    .any(|read| base_local(*read) == Some(local))
+                {
+                    continue;
+                }
+                let borrowed_field = matches!(
+                    instruction,
+                    Instr::RecordFieldLoad { record, dest, .. }
+                        | Instr::TupleFieldLoad { tuple: record, dest, .. }
+                        if base_local(*record) == Some(local)
+                            && base_local(*dest)
+                                .and_then(|dest| builder.locals.get(dest as usize))
+                                .is_some_and(|field_ty| {
+                                    ValueClass::of_ty(field_ty, &builder.type_classes)
+                                        == ValueClass::BitCopy
+                                })
+                );
+                let borrowed_clone = matches!(
+                    instruction,
+                    Instr::RecordCloneInplace { src, .. }
+                        | Instr::EnumCloneInplace { src, .. }
+                        | Instr::ValueSnapshotClone { src, .. }
+                        if base_local(*src) == Some(local)
+                );
+                if !borrowed_field
+                    && !borrowed_clone
+                    && !drop_plan::binder_read_is_borrow_safe_instr(instruction, local)
+                {
+                    admissible = false;
+                    break;
+                }
+                reads.push((block.id, index));
+            }
+            if !admissible
+                || terminator_source_places(&block.terminator, builder.suspend_kinds.get(&block.id))
+                    .iter()
+                    .any(|read| base_local(*read) == Some(local))
+            {
+                admissible = false;
+                break;
+            }
+        }
+        let Some((read_block, last_index)) = reads.last().copied() else {
+            continue;
+        };
+        if !admissible || reads.iter().any(|(block, _)| *block != read_block) {
+            continue;
+        }
+        let already_released = blocks.iter().any(|block| {
+            block.instructions.iter().any(|instruction| {
+                matches!(instruction, Instr::Drop { place, .. } if base_local(*place) == Some(local))
+                    || matches!(instruction, Instr::ValueSnapshotDrop { value, .. } if base_local(*value) == Some(local))
+            })
+        });
+        if already_released {
+            continue;
+        }
+        let mut mint_blocks = HashSet::new();
+        for block in blocks.iter() {
+            for instruction in &block.instructions {
+                let (_reads, writes, _mutates) = crate::dataflow::instr_reads_writes(instruction);
+                if writes.iter().any(|write| base_local(*write) == Some(local)) {
+                    mint_blocks.insert(block.id);
+                }
+            }
+            if drop_plan::terminator_mint_places(&block.terminator)
+                .iter()
+                .any(|write| base_local(*write) == Some(local))
+            {
+                mint_blocks.insert(block.id);
+            }
+        }
+        if mint_blocks.is_empty()
+            || mint_blocks
+                .iter()
+                .any(|mint| !block_postdominates_owner_mint(blocks, *mint, read_block))
+        {
+            continue;
+        }
+        let release = if matches!(ty, ResolvedTy::String) {
+            Instr::Drop {
+                place,
+                ty: ty.clone(),
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+            }
+        } else {
+            match crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+                &ty,
+                &record_layouts,
+                &builder.enum_layouts,
+                &builder.opaque_handle_names,
+                &builder.lifecycle_registry,
+            ) {
+                Ok(plan) => Instr::ValueSnapshotDrop {
+                    value: place,
+                    ty: ty.clone(),
+                    plan,
+                    boundary: crate::model::PreparedCarrierBoundary::LocalCall,
+                    guard: None,
+                },
+                Err(_)
+                    if builder.is_owned_aggregate_record_ty(&ty)
+                        && builder.field_drop_in_place_admissible(&ty) =>
+                {
+                    Instr::Drop {
+                        place,
+                        ty: ty.clone(),
+                        drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                            crate::ownership::InPlaceReleaseKind::Record,
+                        )),
+                    }
+                }
+                Err(_) => continue,
+            }
+        };
+        let Some(block) = blocks.iter_mut().find(|block| block.id == read_block) else {
+            continue;
+        };
+        let insert_at = last_index + 1;
+        shift_instr_spans_on_insert(
+            &mut builder.instr_spans,
+            block.id,
+            u32::try_from(insert_at).unwrap_or(u32::MAX),
+        );
+        block.instructions.insert(insert_at, release);
+        builder.set_owned_local_disposition(binding, Disposition::ScopeReleased);
+    }
+}
+
 /// Null scalar handle sources after an exact tuple/record constructor has
 /// moved them into a value that reaches the return slot.
 ///
@@ -5812,6 +6222,119 @@ fn splice_body_ownership_releases(
     }
     finalize_string_local_share_intents(&mut *blocks, builder);
     splice_escaped_record_sibling_field_drops(blocks, builder);
+    splice_pretransfer_record_exit_drops(&mut *blocks, builder);
+}
+
+/// Release an escaped record on exits reached before its field transfer.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one proof pass keeps transfer reachability, dominance, and exit splicing together"
+)]
+fn splice_pretransfer_record_exit_drops(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let candidates: HashMap<u32, (BindingId, ResolvedTy)> = builder
+        .owned_locals_exit_candidates()
+        .into_iter()
+        .filter(|(_binding, _name, ty)| {
+            builder.is_owned_aggregate_record_ty(ty) && builder.field_drop_in_place_admissible(ty)
+        })
+        .filter_map(|(binding, _name, ty)| {
+            builder
+                .binding_locals
+                .get(&binding)
+                .and_then(|place| base_local(*place))
+                .map(|local| (local, (binding, ty)))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return;
+    }
+
+    let mut transfer_blocks: HashMap<u32, HashSet<u32>> = HashMap::new();
+    let mut mint_blocks: HashMap<u32, HashSet<u32>> = HashMap::new();
+    for block in blocks.iter() {
+        for instruction in &block.instructions {
+            if let Instr::FieldDropInPlace { base, .. } = instruction {
+                if let Some(local) =
+                    base_local(*base).filter(|local| candidates.contains_key(local))
+                {
+                    transfer_blocks.entry(local).or_default().insert(block.id);
+                }
+            }
+            let (_reads, writes, _mutates) = crate::dataflow::instr_reads_writes(instruction);
+            for local in writes.into_iter().filter_map(base_local) {
+                if candidates.contains_key(&local) {
+                    mint_blocks.entry(local).or_default().insert(block.id);
+                }
+            }
+        }
+        for local in drop_plan::terminator_mint_places(&block.terminator)
+            .into_iter()
+            .filter_map(base_local)
+        {
+            if candidates.contains_key(&local) {
+                mint_blocks.entry(local).or_default().insert(block.id);
+            }
+        }
+    }
+    let dominators = block_dominators(blocks);
+    let mut inserts = Vec::new();
+    for block in blocks
+        .iter()
+        .filter(|block| matches!(block.terminator, Terminator::Return))
+    {
+        for (local, (_binding, ty)) in &candidates {
+            let Some(transfers) = transfer_blocks.get(local) else {
+                continue;
+            };
+            let Some(mints) = mint_blocks.get(local) else {
+                continue;
+            };
+            if !mints.iter().any(|mint| {
+                dominators
+                    .get(&block.id)
+                    .is_some_and(|exit_dominators| exit_dominators.contains(mint))
+            }) {
+                continue;
+            }
+            let transfer_can_reach_exit = transfers.iter().any(|transfer| {
+                *transfer == block.id
+                    || cfg_util::blocks_reachable_from(blocks, *transfer).contains(&block.id)
+            });
+            if transfer_can_reach_exit {
+                continue;
+            }
+            let already_released = block.instructions.iter().any(|instruction| {
+                matches!(instruction, Instr::Drop { place, .. } if base_local(*place) == Some(*local))
+                    || matches!(instruction, Instr::ValueSnapshotDrop { value, .. } if base_local(*value) == Some(*local))
+            });
+            if already_released {
+                continue;
+            }
+            inserts.push((block.id, *local, ty.clone()));
+        }
+    }
+
+    for (block_id, local, ty) in inserts {
+        let Some(block) = blocks.iter_mut().find(|block| block.id == block_id) else {
+            continue;
+        };
+        let insert_at = block.instructions.len();
+        shift_instr_spans_on_insert(
+            &mut builder.instr_spans,
+            block_id,
+            u32::try_from(insert_at).unwrap_or(u32::MAX),
+        );
+        block.instructions.insert(
+            insert_at,
+            Instr::Drop {
+                place: Place::Local(local),
+                ty,
+                drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                    crate::ownership::InPlaceReleaseKind::Record,
+                )),
+            },
+        );
+    }
 }
 
 /// #2212 — an owned record whose field escapes through a binder loses its
@@ -5906,8 +6429,11 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
         &resolved_outbound,
         &projection_tainted,
     );
+    neutralize_aggregate_member_sources(&mut *blocks, builder);
     neutralize_returned_aggregate_handle_sources(&mut *blocks, builder);
     neutralize_divergent_selection_sources(&mut *blocks, builder, &projection_tainted);
+    release_cloned_collection_result_temps(&mut *blocks, builder);
+    release_last_borrowed_typed_owners(&mut *blocks, builder);
 }
 
 /// Which body-kind-specific splices [`finalize_body`] runs on top of the shared
@@ -8129,10 +8655,10 @@ enum NestedUseSite {
 #[derive(Default)]
 struct RootScan {
     poisoned: bool,
-    /// Escape events: (block id, instruction index, field). `None` marks a
-    /// call terminator whose unique continuation is the post-call insertion
-    /// point.
-    escapes: Vec<(u32, Option<usize>, u32)>,
+    /// Escape events: (block id, instruction index, field, binder). `None`
+    /// marks a call terminator whose unique continuation is the post-call
+    /// insertion point.
+    escapes: Vec<(u32, Option<usize>, u32, u32)>,
     /// Non-escape uses of the root or its binders; `None` index = the
     /// block's terminator.
     sites: Vec<(u32, Option<usize>)>,

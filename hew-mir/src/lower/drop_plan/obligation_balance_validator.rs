@@ -220,6 +220,34 @@ fn discharge_authority_corroborates_returned_aggregate_member() {
     );
 }
 
+#[test]
+fn discharge_authority_corroborates_aggregate_member_through_move_alias() {
+    let blocks = vec![block(
+        0,
+        vec![
+            Instr::Move {
+                dest: Place::Local(2),
+                src: Place::Local(1),
+            },
+            Instr::RecordInit {
+                ty: ResolvedTy::Unit,
+                fields: vec![(FieldOffset(0), Place::Local(2))],
+                dest: Place::Local(9),
+            },
+            Instr::NeutralizePayloadSlot {
+                place: Place::Local(1),
+                transferee: Some(Place::Local(9)),
+                authority: NeutralizeAuthority::AggregateMemberConsume,
+            },
+        ],
+        Terminator::Return,
+    )];
+    assert!(
+        validate_discharge_authority_corroboration_over("f", &blocks).is_empty(),
+        "a record member routed through a move alias must corroborate its transfer"
+    );
+}
+
 /// A whole-local rebind out of a PARAMETER (`var iter = self;`) is a
 /// caller-retained borrow alias: the rebound local must never produce a
 /// definite under-release, even when re-minted per loop iteration from

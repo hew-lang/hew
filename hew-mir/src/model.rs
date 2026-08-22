@@ -4629,6 +4629,11 @@ pub enum NeutralizeAuthority {
     /// aggregate `dest`; nulling the source leaves the returned aggregate as
     /// the sole close authority. `transferee` is that constructor destination.
     ReturnedAggregateMemberConsume,
+    /// A whole owned local moved into a tuple, record, enum payload, or record
+    /// field. The constructor/store has copied the value into `transferee`;
+    /// nulling the source makes its path-complete scope drop safe while the
+    /// destination becomes the sole owner on the completed path.
+    AggregateMemberConsume,
     /// A DIVERGENT-ARM VALUE SELECTION: two or more mutually-exclusive control
     /// paths each move a whole owned local into the same branch-join result
     /// slot (`let out = match c { true => a, false => b };`, the if/else and
@@ -4661,6 +4666,7 @@ impl NeutralizeAuthority {
             NeutralizeAuthority::SendTransferLastUse
             | NeutralizeAuthority::WholeCarrierConsume
             | NeutralizeAuthority::ReturnedAggregateMemberConsume
+            | NeutralizeAuthority::AggregateMemberConsume
             | NeutralizeAuthority::DivergentSelectionTransfer => true,
             NeutralizeAuthority::MoveOutArmConsume | NeutralizeAuthority::EphemeralTempConsume => {
                 false

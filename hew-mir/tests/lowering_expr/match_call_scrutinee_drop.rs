@@ -194,6 +194,113 @@ fn main() {
     );
 }
 
+/// Moving a payload binder into an early return transfers only the selected
+/// payload slot. The direct-call carrier still owns its shell and every
+/// remaining slot, so that same return edge must release the neutralized
+/// carrier rather than treating the partial transfer as a whole-owner escape.
+#[test]
+fn returned_payload_binder_releases_remaining_call_carrier_on_early_return() {
+    let p = pipeline_with_tc(
+        r#"
+record Snap { label: string, terminal: bool }
+
+actor Svc {
+    receive fn snapshot() -> Snap {
+        Snap { label: "ready".to_upper(), terminal: true }
+    }
+}
+
+fn empty_snap() -> Snap {
+    Snap { label: "", terminal: false }
+}
+
+fn poll(svc: LocalPid<Svc>) -> Snap {
+    var i = 0;
+    while i < 3 {
+        match await svc.snapshot() {
+            .Ok(s) => {
+                if s.terminal {
+                    return s;
+                }
+            },
+            .Err(_) => {},
+        }
+        i = i + 1;
+    }
+    empty_snap()
+}
+
+fn poll_let(svc: LocalPid<Svc>) -> Snap {
+    var i = 0;
+    while i < 3 {
+        let result = await svc.snapshot();
+        match result {
+            .Ok(s) => {
+                if s.terminal {
+                    return s;
+                }
+            },
+            .Err(_) => {},
+        }
+        i = i + 1;
+    }
+    empty_snap()
+}
+"#,
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "the payload transfer and remaining carrier release must balance: {:?}",
+        p.diagnostics
+    );
+    for name in ["poll", "poll_let"] {
+        let poll = p
+            .raw_mir
+            .iter()
+            .find(|function| function.name == name)
+            .unwrap_or_else(|| panic!("raw fn {name}"));
+        let return_block = poll
+            .blocks
+            .iter()
+            .find(|block| {
+                matches!(block.terminator, hew_mir::Terminator::Return)
+                    && block.instructions.iter().any(|instr| {
+                        matches!(
+                            instr,
+                            Instr::NeutralizePayloadSlot {
+                                place: hew_mir::Place::MachineVariant { .. },
+                                ..
+                            }
+                        )
+                    })
+            })
+            .unwrap_or_else(|| panic!("payload-return block in {name}"));
+        let neutralize = return_block
+            .instructions
+            .iter()
+            .position(|instr| matches!(instr, Instr::NeutralizePayloadSlot { .. }))
+            .expect("payload slot transfer");
+        let release = return_block
+            .instructions
+            .iter()
+            .position(|instr| {
+                matches!(
+                    instr,
+                    Instr::Drop {
+                        place: hew_mir::Place::Local(_),
+                        drop_fn: Some(_),
+                        ..
+                    }
+                )
+            })
+            .expect("remaining carrier release");
+        assert!(
+            release > neutralize,
+            "the carrier release must follow the selected payload transfer in {name}"
+        );
+    }
+}
+
 /// Bytes-payload admission (the second #2429 gap): a LET-BOUND
 /// `Result<bytes, string>` whose payload binder is only read by the borrowing
 /// `b.len()` keeps the composite's `EnumInPlace` drop. Before the fix the

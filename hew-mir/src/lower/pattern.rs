@@ -4379,6 +4379,7 @@ impl Builder {
         });
         let call_scrutinee_owner_needs_arm_release = call_scrutinee_owner.is_some()
             && (matches!(scrutinee.kind, HirExprKind::Call { .. })
+                || self.actor_ask_result_locals.contains(&scrutinee_local)
                 || (method_carrier_has_direct_payload_handoff
                     && self
                         .method_scrutinee_emitted_symbol(scrutinee)
@@ -5201,14 +5202,29 @@ impl Builder {
             // lowers (the fall-through path uses the body-end drop instead).
             let active_yield_mark = self.active_generator_yield_values.len();
             for (_binding, place, ty, _site) in &generator_yield_drop_bindings {
-                let drop_fn = match self.generator_yield_drop_symbol(ty) {
-                    ReleaseSymbolVerdict::Wired(symbol) => {
-                        Some(crate::model::DropFnSpec::Release(symbol))
+                let is_actor_ask_carrier = base_local(*place)
+                    .is_some_and(|local| self.actor_ask_result_locals.contains(&local));
+                let drop_fn = if is_actor_ask_carrier {
+                    // The typed actor-ask publication minted the whole
+                    // carrier owner. Its selected payload may transfer out,
+                    // but the neutralized shell still needs its terminal
+                    // recursive release on this edge. This is the same
+                    // path-complete authority used by the wildcard arm above;
+                    // it deliberately does not depend on whether the enum is
+                    // eligible as a generic yielded payload.
+                    Some(crate::model::DropFnSpec::InPlace(
+                        crate::ownership::InPlaceReleaseKind::Enum,
+                    ))
+                } else {
+                    match self.generator_yield_drop_symbol(ty) {
+                        ReleaseSymbolVerdict::Wired(symbol) => {
+                            Some(crate::model::DropFnSpec::Release(symbol))
+                        }
+                        ReleaseSymbolVerdict::WiredInPlace(kind) => {
+                            Some(crate::model::DropFnSpec::InPlace(kind))
+                        }
+                        ReleaseSymbolVerdict::NoDropPath | ReleaseSymbolVerdict::Unwired(_) => None,
                     }
-                    ReleaseSymbolVerdict::WiredInPlace(kind) => {
-                        Some(crate::model::DropFnSpec::InPlace(kind))
-                    }
-                    ReleaseSymbolVerdict::NoDropPath | ReleaseSymbolVerdict::Unwired(_) => None,
                 };
                 if let Some(drop_fn) = drop_fn {
                     let depth = self.active_scopes.len();
@@ -5287,14 +5303,34 @@ impl Builder {
                             });
                     }
                 }
-                self.emit_generator_yield_binding_drop(
-                    binding,
-                    place,
-                    &ty,
-                    body_start_block_id,
-                    body_start_instr_len,
-                    site,
-                );
+                let is_actor_ask_carrier = base_local(place)
+                    .is_some_and(|local| self.actor_ask_result_locals.contains(&local));
+                if is_actor_ask_carrier {
+                    if let Some(local) = base_local(place) {
+                        if self.generator_yield_binding_drop_safe(
+                            body_start_block_id,
+                            body_start_instr_len,
+                            local,
+                        ) {
+                            self.push_instr(Instr::Drop {
+                                place,
+                                ty,
+                                drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                                    crate::ownership::InPlaceReleaseKind::Enum,
+                                )),
+                            });
+                        }
+                    }
+                } else {
+                    self.emit_generator_yield_binding_drop(
+                        binding,
+                        place,
+                        &ty,
+                        body_start_block_id,
+                        body_start_instr_len,
+                        site,
+                    );
+                }
             }
             // A non-diverging arm body leaves the cursor reachable: this Goto
             // links a live predecessor into the join. A diverging body

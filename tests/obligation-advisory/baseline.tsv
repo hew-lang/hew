@@ -13,5 +13,7 @@ pM.hew	0	0	0	check
 pN.hew	0	0	0	check
 rA.hew	0	0	0	check
 rC.hew	0	0	0	clean
+rG_inline.hew	0	0	0	clean
+rG_let.hew	0	0	0	clean
 retained_call_carriers/main.hew	0	0	0	check
 retained_hard_refusal.hew	0	1	1	refuse

@@ -337,16 +337,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "wasm-ld found at $($wasmLd.Source) but 'wasm-ld --version' exited $LASTEXITCODE" }
 
       - name: Build hew-runtime for wasm32-wasip1 (debug)
-        # The full workspace nextest below runs debug test binaries, and
-        # bootstrap_wasi_runner() builds this archive on demand when it is
-        # absent. Without a pre-build, every parallel nextest process races to
-        # cargo-build the same non-atomically written staticlib and wasm-ld
-        # intermittently fails to open it. Mirrors ci.yml's Windows job.
         run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
 
       - name: Build hew-std for wasm32-wasip1 (debug)
-        # Same race, same medicine: bootstrap_wasi_runner() also builds
-        # libhew_std.a on demand when it is missing.
         run: cargo build -p hew-std --target wasm32-wasip1
 
       - name: Build shared Rust test artifact

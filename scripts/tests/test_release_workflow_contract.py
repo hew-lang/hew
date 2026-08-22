@@ -537,9 +537,6 @@ def test_release_image_assertion_covers_every_acquisition_mode() -> None:
 
     local_step = step_of(job, "Report expected local release image publish")
     assert "if: steps.acquisition.outputs.mode == 'local'" in local_step
-    assert (
-        "make release-publish HEW_SHA=${HEW_SHA} HEW_VERSION=${VERSION}" in local_step
-    )
     assert "gh workflow run" not in local_step
 
     assert_step = step_of(

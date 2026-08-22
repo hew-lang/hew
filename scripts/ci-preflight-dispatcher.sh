@@ -419,6 +419,7 @@ COUNTERFACTUAL_ROSTER=(
     "make check-sanitizer-gate"
     "make test-release-workflow-contract"
     "make test-leak-oracle-selftest"
+    "make dogfood-compile-measure"
 )
 
 COUNTERFACTUAL_GATE_REQUIREMENTS_FILE="${REPO_ROOT}/hew-testutil/shared-test-artifacts.tsv"

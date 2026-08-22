@@ -365,6 +365,67 @@ fn main() -> i64 {
     );
 }
 
+/// A projected record field returned through a shared match-result local
+/// transfers only that field. The record's other owned field must be released
+/// on the predecessor where the projection is still uniquely attributed.
+#[test]
+fn vec_clone_match_field_return_releases_the_record_sibling() {
+    let p = pipeline_with_tc(
+        r#"
+record Secret { value: string, kind: string }
+enum CredErr { Missing(string); Denied(string) }
+
+fn resolve(n: i64) -> Result<Secret, CredErr> {
+    if n == 0 { return Err(CredErr.Missing("missing".to_upper())); }
+    Ok(Secret { value: "secret".to_upper(), kind: "api".to_upper() })
+}
+
+fn collect(n: i64) -> string {
+    let bag: Vec<Secret> = [];
+    let secret = match resolve(n) {
+        Err(_) => return "error",
+        Ok(value) => value,
+    };
+    bag.push(secret);
+    let first = bag.get(0);
+    match first {
+        Some(found) => found.value,
+        None => "empty",
+    }
+}
+"#,
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        p.diagnostics
+    );
+    let collect = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "collect")
+        .expect("raw fn collect");
+    let sibling_drops = collect
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter(|instruction| {
+            matches!(
+                instruction,
+                Instr::FieldDropInPlace {
+                    field: hew_mir::FieldAddr::Record(hew_mir::FieldOffset(1)),
+                    ty: hew_types::ResolvedTy::String,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        sibling_drops, 1,
+        "the returned value field must leave one exact release for the kind sibling"
+    );
+}
+
 /// Negative control — escaping payload stays fail-closed. When the arm moves
 /// the payload into an outer binding that survives the loop back-edge, the
 /// composite must stay EXCLUDED from the per-iteration release (freeing it

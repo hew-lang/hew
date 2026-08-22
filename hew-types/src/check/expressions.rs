@@ -1655,14 +1655,7 @@ impl Checker {
                     self.mark_module_owner_bindings_used(source_owner);
                 }
             }
-            if let Some(caller) = &self.current_function {
-                // The callee edge records the RESOLVED key so dead-code
-                // reachability stays aligned with canonical `fn_def_spans`.
-                self.call_graph
-                    .entry(caller.clone())
-                    .or_default()
-                    .insert(fn_sig_key.clone());
-            }
+            self.record_call_edge(&fn_sig_key);
             let sig = self.fn_sigs[&fn_sig_key].clone();
             // local-shadows-global: when the fn_sig slot was won by a builtin enum
             // variant, prefer any user-declared enum that has a variant with the

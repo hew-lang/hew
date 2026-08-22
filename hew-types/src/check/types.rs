@@ -3266,12 +3266,9 @@ pub struct Checker {
         HashMap<ImportBindingKey, std::collections::BTreeSet<String>>,
     /// Call graph: maps caller function name → set of callee function names.
     ///
-    /// rc1-F1 stage A classification: CANONICALIZED with `fn_sigs` — caller
-    /// keys are `current_function` (a canonical fn-sig key) and callee keys
-    /// are the resolved fn-sig keys, so dead-code reachability joins against
-    /// canonical `fn_def_spans` without a bare/scoped rewrite. Bare callee
-    /// entries remain for builtins/externs, which have no declaration span
-    /// and never participate in dead-code findings.
+    /// Every endpoint passes through `record_call_edge`, which resolves the
+    /// same canonical identity used by `fn_def_spans`. Bare builtin and extern
+    /// callees have no declaration span and never participate in findings.
     pub(super) call_graph: HashMap<String, HashSet<String>>,
     /// Name of the function currently being checked (for call graph tracking).
     pub(super) current_function: Option<String>,

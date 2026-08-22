@@ -1,0 +1,13 @@
+import callgraph_reach_fixture.runner.math;
+
+pub type NativeConfig {
+    value: i64;
+}
+
+fn reachable_helper(value: i64) -> i64 {
+    math.double(value)
+}
+
+pub fn run_once(config: NativeConfig) -> i64 {
+    reachable_helper(config.value) + 2
+}

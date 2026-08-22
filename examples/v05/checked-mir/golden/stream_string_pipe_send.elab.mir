@@ -1273,14 +1273,16 @@ fn std$stream$try_from_file -> Result<Stream<string>, std.fs.IoError>
 fn std$stream$to_file -> Result<Sink<string>, string>
   statements:
     use BindingId(89) path site=SiteId(659) ty=string intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(658) ty=Sink<string>
     bind BindingId(90) s site=SiteId(658) ty=Sink<string>
     use BindingId(90) s site=SiteId(663) ty=Sink<string> intent=Read
     use BindingId(90) s site=SiteId(667) ty=Sink<string> intent=Read
     agg_alias BindingId(90) s site=SiteId(667) ty=Sink<string>
-    bind BindingId(4294967229) __hew_produced_value site=SiteId(661) ty=Result<Sink<string>, string>
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(666) ty=Result<Sink<string>, string>
+    bind BindingId(4294967227) __hew_produced_value site=SiteId(661) ty=Result<Sink<string>, string>
     return site=Some(SiteId(657)) ty=Result<Sink<string>, string>
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(670) ty=string
-    bind BindingId(4294967230) __hew_produced_value site=SiteId(669) ty=Result<Sink<string>, string>
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(670) ty=string
+    bind BindingId(4294967228) __hew_produced_value site=SiteId(669) ty=Result<Sink<string>, string>
     drop BindingId(90) s ty=Sink<string>
   drop_plans:
     call[bb0 hew_stream_from_file_write -> bb1] ->
@@ -1305,14 +1307,17 @@ fn std$stream$to_file -> Result<Sink<string>, string>
 fn std$stream$try_to_file -> Result<Sink<string>, std.fs.IoError>
   statements:
     use BindingId(91) path site=SiteId(674) ty=string intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(673) ty=Sink<string>
     bind BindingId(92) s site=SiteId(673) ty=Sink<string>
     use BindingId(92) s site=SiteId(678) ty=Sink<string> intent=Read
     use BindingId(92) s site=SiteId(682) ty=Sink<string> intent=Read
     agg_alias BindingId(92) s site=SiteId(682) ty=Sink<string>
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(681) ty=Result<Sink<string>, std.fs.IoError>
+    bind BindingId(4294967228) __hew_produced_value site=SiteId(676) ty=Result<Sink<string>, std.fs.IoError>
     return site=Some(SiteId(672)) ty=Result<Sink<string>, std.fs.IoError>
     bind BindingId(93) kind site=SiteId(684) ty=i64
     bind BindingId(94) errno site=SiteId(687) ty=i32
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(689) ty=string
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(689) ty=string
     eval site=SiteId(689) ty=string
     use BindingId(93) kind site=SiteId(693) ty=i64 intent=Read
     use BindingId(94) errno site=SiteId(695) ty=i32 intent=Read

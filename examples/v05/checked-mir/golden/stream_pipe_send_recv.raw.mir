@@ -2270,6 +2270,7 @@ fn std$stream$to_file(string) -> Result<Sink<string>, string> [conv=default]
     stmt: use BindingId(94) path site=SiteId(691) ty=string intent=Read
     _1 = call hew_stream_from_file_write(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(690) ty=Sink<string>
     stmt: bind BindingId(95) s site=SiteId(690) ty=Sink<string>
     stmt: use BindingId(95) s site=SiteId(695) ty=Sink<string> intent=Read
     _2 = move _1
@@ -2279,6 +2280,7 @@ fn std$stream$to_file(string) -> Result<Sink<string>, string> [conv=default]
   bb3:
     stmt: use BindingId(95) s site=SiteId(699) ty=Sink<string> intent=Read
     stmt: agg_alias BindingId(95) s site=SiteId(699) ty=Sink<string>
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(698) ty=Result<Sink<string>, string>
     _6 = const.i64 0
     mtag5 = move _6
     mvar5.0.0 = move _2
@@ -2288,14 +2290,14 @@ fn std$stream$to_file(string) -> Result<Sink<string>, string> [conv=default]
   bb4:
     _9 = call hew_stream_last_error() -> bb6
   bb5:
-    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(693) ty=Result<Sink<string>, string>
+    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(693) ty=Result<Sink<string>, string>
     stmt: return site=Some(SiteId(689)) ty=Result<Sink<string>, string>
     _12 = move _3
     ret = move _12
     return
   bb6:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(702) ty=string
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(701) ty=Result<Sink<string>, string>
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(702) ty=string
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(701) ty=Result<Sink<string>, string>
     _10 = const.i64 1
     mtag8 = move _10
     mvar8.1.0 = move _9
@@ -2329,6 +2331,7 @@ fn std$stream$try_to_file(string) -> Result<Sink<string>, std.fs.IoError> [conv=
     stmt: use BindingId(96) path site=SiteId(706) ty=string intent=Read
     _1 = call hew_stream_from_file_write(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(705) ty=Sink<string>
     stmt: bind BindingId(97) s site=SiteId(705) ty=Sink<string>
     stmt: use BindingId(97) s site=SiteId(710) ty=Sink<string> intent=Read
     _2 = move _1
@@ -2338,6 +2341,7 @@ fn std$stream$try_to_file(string) -> Result<Sink<string>, std.fs.IoError> [conv=
   bb3:
     stmt: use BindingId(97) s site=SiteId(714) ty=Sink<string> intent=Read
     stmt: agg_alias BindingId(97) s site=SiteId(714) ty=Sink<string>
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(713) ty=Result<Sink<string>, std.fs.IoError>
     _6 = const.i64 0
     mtag5 = move _6
     mvar5.0.0 = move _2
@@ -2347,6 +2351,7 @@ fn std$stream$try_to_file(string) -> Result<Sink<string>, std.fs.IoError> [conv=
   bb4:
     _8 = call hew_stream_last_error_kind() -> bb6
   bb5:
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(708) ty=Result<Sink<string>, std.fs.IoError>
     stmt: return site=Some(SiteId(704)) ty=Result<Sink<string>, std.fs.IoError>
     _19 = move _3
     ret = move _19
@@ -2361,7 +2366,7 @@ fn std$stream$try_to_file(string) -> Result<Sink<string>, std.fs.IoError> [conv=
     _12 = move _11
     _13 = call hew_stream_last_error() -> bb8
   bb8:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(721) ty=string
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(721) ty=string
     stmt: eval site=SiteId(721) ty=string
     stmt: use BindingId(98) kind site=SiteId(725) ty=i64 intent=Read
     stmt: use BindingId(99) errno site=SiteId(727) ty=i32 intent=Read

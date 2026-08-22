@@ -35430,6 +35430,15 @@ fn lower_function<'ctx>(
     // CoroSplit reads these to build the `.resume`/`.destroy`/`.cleanup`
     // outlines; the runtime's `hew_cont_*` verbs drive the resulting frame.
     if let Some(coro) = fn_ctx.coro {
+        // Synthesized suspend/cleanup control flow must not inherit the final
+        // user statement's line. At O0 that creates an earlier breakpoint
+        // location in the ramp's frame-handoff path, before post-suspend locals
+        // have been stored. Attribute the compiler-owned epilogue to the
+        // function entry instead; calls still retain the verifier-required
+        // location without masquerading as a user statement.
+        if let Some(loc) = entry_debug_loc {
+            fn_ctx.builder.set_current_debug_location(loc);
+        }
         // Reconstruct the CoroContext (a bundle of borrows + the handle/token)
         // to reuse the canonical `coro.rs` epilogue helpers.
         let cc = crate::coro::CoroContext {

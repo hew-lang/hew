@@ -5723,7 +5723,7 @@ fn neutralize_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut 
     reason = "one proof pass keeps clone provenance, use classification, and release insertion together"
 )]
 fn release_cloned_collection_result_temps(blocks: &mut [BasicBlock], builder: &mut Builder) {
-    let cloned_locals: HashSet<u32> = blocks
+    let cloned_locals: HashMap<u32, HashSet<u32>> = blocks
         .iter()
         .filter_map(|block| match &block.terminator {
             Terminator::Call {
@@ -5735,14 +5735,20 @@ fn release_cloned_collection_result_temps(blocks: &mut [BasicBlock], builder: &m
                     ),
                 dest: Some(place),
                 ..
-            } => base_local(*place),
+            } => base_local(*place).map(|local| (local, block.id)),
             _ => None,
         })
-        .collect();
+        .fold(HashMap::new(), |mut by_local, (local, mint_block)| {
+            by_local
+                .entry(local)
+                .or_insert_with(HashSet::new)
+                .insert(mint_block);
+            by_local
+        });
     let record_layouts = outbound_record_layouts(builder);
     let mut inserts = Vec::new();
 
-    for local in cloned_locals {
+    for (local, mint_blocks) in cloned_locals {
         let Some(ty) = builder.locals.get(local as usize).cloned() else {
             continue;
         };
@@ -5796,6 +5802,13 @@ fn release_cloned_collection_result_temps(blocks: &mut [BasicBlock], builder: &m
             continue;
         };
         if !admissible || reads.iter().any(|(block, _)| *block != read_block) {
+            continue;
+        }
+        if mint_blocks
+            .iter()
+            .any(|mint| !block_postdominates_owner_mint(blocks, *mint, read_block))
+            || !block_executes_at_most_once_per_owner_mint(blocks, &mint_blocks, read_block)
+        {
             continue;
         }
         let release = match crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
@@ -5870,6 +5883,41 @@ fn block_postdominates_owner_mint(blocks: &[BasicBlock], start: u32, postdominat
     !blocks
         .iter()
         .any(|block| reachable.contains(&block.id) && block.successors().is_empty())
+}
+
+/// Whether each execution of `release_block` follows a new owner generation.
+fn block_executes_at_most_once_per_owner_mint(
+    blocks: &[BasicBlock],
+    mint_blocks: &HashSet<u32>,
+    release_block: u32,
+) -> bool {
+    if mint_blocks.is_empty() {
+        return false;
+    }
+    if mint_blocks.contains(&release_block) {
+        return true;
+    }
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|block| (block.id, block)).collect();
+    if !by_id.contains_key(&release_block)
+        || mint_blocks.iter().any(|mint| !by_id.contains_key(mint))
+    {
+        return false;
+    }
+
+    let mut seen = HashSet::new();
+    let mut worklist = by_id[&release_block].successors();
+    while let Some(block_id) = worklist.pop() {
+        if mint_blocks.contains(&block_id) || !seen.insert(block_id) {
+            continue;
+        }
+        if block_id == release_block {
+            return false;
+        }
+        if let Some(block) = by_id.get(&block_id) {
+            worklist.extend(block.successors());
+        }
+    }
+    true
 }
 
 /// Release a typed owner immediately after its final proven borrowing read.
@@ -5993,6 +6041,7 @@ fn release_last_borrowed_typed_owners(blocks: &mut [BasicBlock], builder: &mut B
             || mint_blocks
                 .iter()
                 .any(|mint| !block_postdominates_owner_mint(blocks, *mint, read_block))
+            || !block_executes_at_most_once_per_owner_mint(blocks, &mint_blocks, read_block)
         {
             continue;
         }

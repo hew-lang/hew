@@ -22,7 +22,7 @@
 #    dedicated target dir (target/forced-cancel-gate/), isolated from the
 #    default build so the test-only hook never reaches a production archive.
 # 2. Compile the probe fixture to a relocatable object (`hew build
-#    --emit-obj`), then link with clang against the feature-enabled
+#    --emit-obj --emit-llvm`), then link with clang against the feature-enabled
 #    `libhew.a` (mirrors `asan-fixture-check.sh`'s manual-link pattern).
 # 3. Run the binary; assert the cancelled value task reports cancellation, the
 #    genuine zero task reports `x=0 y=0`, and a post-publication cancellation
@@ -72,7 +72,7 @@ PROBE_BIN="${WORK_DIR}/forced_cancel_composite_probe"
 
 echo ""
 echo "=== forced-cancel-composite-check: compiling probe ==="
-( cd "${WORK_DIR}" && "${GATE_HEW}" build --emit-obj "${PROBE_SRC}" 2>&1 | sed 's/^/    /' )
+( cd "${WORK_DIR}" && "${GATE_HEW}" build --emit-obj --emit-llvm "${PROBE_SRC}" 2>&1 | sed 's/^/    /' )
 
 if [[ ! -f "${PROBE_OBJ}" ]]; then
   echo "forced-cancel-composite-check: expected object ${PROBE_OBJ} not found after --emit-obj" >&2

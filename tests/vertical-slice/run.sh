@@ -47,8 +47,14 @@ trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_o
 
 compile_accept() {
   local fixture="$1"
+  local emit_llvm=()
+  case "${fixture}" in
+    link_monitor_value_monitor_in_actor|actor_channel_shadow_sender_codec)
+      emit_llvm=(--emit-llvm)
+      ;;
+  esac
   local status=0
-  if "${HEW}" compile "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" >"${accept_output}" 2>&1; then
+  if "${HEW}" compile "${emit_llvm[@]}" "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" >"${accept_output}" 2>&1; then
     status=0
   else
     status=$?

@@ -68,7 +68,8 @@ impl fmt::Display for DepSpec {
 /// Table form of a dependency specification.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DepTable {
-    /// Semver version requirement (required).
+    /// Semver version requirement (defaults to `"*"` for path dependencies).
+    #[serde(default = "default_dependency_version")]
     pub version: String,
     /// If `true`, only included when a feature enables it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -85,6 +86,10 @@ pub struct DepTable {
     /// Local path dependency (not publishable).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+}
+
+fn default_dependency_version() -> String {
+    "*".to_string()
 }
 
 /// Errors that can occur when reading, parsing, or writing a `hew.toml` manifest.
@@ -429,6 +434,33 @@ pub fn add_dependency(
     save_manifest(path, &manifest)
 }
 
+/// Add or update a local path dependency in the `hew.toml` at `path`.
+///
+/// # Errors
+///
+/// Returns [`ManifestError`] when the manifest cannot be read, parsed,
+/// serialized, or written.
+pub fn add_path_dependency(
+    path: &Path,
+    name: &str,
+    version: &str,
+    dependency_path: &Path,
+) -> Result<(), ManifestError> {
+    let mut manifest = parse_manifest(path)?;
+    manifest.dependencies.insert(
+        name.to_string(),
+        DepSpec::Table(DepTable {
+            version: version.to_string(),
+            optional: None,
+            features: None,
+            default_features: None,
+            registry: None,
+            path: Some(dependency_path.to_string_lossy().into_owned()),
+        }),
+    );
+    save_manifest(path, &manifest)
+}
+
 /// Validate that a manifest has all required fields for publishing.
 ///
 /// Returns a list of missing field names. An empty list means the manifest is
@@ -638,6 +670,41 @@ mod tests {
             }
             DepSpec::Version(_) => panic!("expected table dependency"),
         }
+    }
+
+    #[test]
+    fn path_dependency_defaults_to_any_version() {
+        let file = write_temp(concat!(
+            "[package]\n",
+            "name = \"app\"\n",
+            "version = \"0.1.0\"\n",
+            "\n[dependencies]\n",
+            "local = { path = \"../local\" }\n",
+        ));
+
+        let manifest = parse_manifest(file.path()).unwrap();
+        let DepSpec::Table(dependency) = &manifest.dependencies["local"] else {
+            panic!("expected path dependency table");
+        };
+        assert_eq!(dependency.version, "*");
+        assert_eq!(dependency.path.as_deref(), Some("../local"));
+    }
+
+    #[test]
+    fn add_path_dependency_persists_local_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hew.toml");
+        write_default_manifest(&path, "myproject").unwrap();
+
+        add_path_dependency(&path, "local", "*", Path::new("../local")).unwrap();
+
+        let manifest = parse_manifest(&path).unwrap();
+        let DepSpec::Table(dependency) = &manifest.dependencies["local"] else {
+            panic!("expected path dependency table");
+        };
+        assert_eq!(dependency.version, "*");
+        assert_eq!(dependency.path.as_deref(), Some("../local"));
+        assert!(dependency.registry.is_none());
     }
 
     #[test]

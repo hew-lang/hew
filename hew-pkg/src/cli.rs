@@ -31,6 +31,9 @@ pub enum PkgCommand {
         /// Use a named registry from config
         #[arg(long, short = 'r')]
         registry: Option<String>,
+        /// Add a dependency from a local directory
+        #[arg(long, value_name = "DIR", conflicts_with = "registry")]
+        path: Option<PathBuf>,
     },
     /// Install dependencies into .hew/packages/
     Install {
@@ -221,7 +224,8 @@ pub fn dispatch(cmd: &PkgCommand) {
             package,
             version,
             registry: reg,
-        } => cmd_add(package, version, reg.as_deref()),
+            path,
+        } => cmd_add(package, version, reg.as_deref(), path.as_deref()),
         PkgCommand::Install {
             locked,
             registry: reg,
@@ -513,7 +517,7 @@ fn ensure_gitignore_entry(dir: &Path, entry: &str) {
     }
 }
 
-fn cmd_add(pkg: &str, version: &str, registry_name: Option<&str>) {
+fn cmd_add(pkg: &str, version: &str, registry_name: Option<&str>, dependency_path: Option<&Path>) {
     if !is_valid_package_name(pkg) {
         eprintln!("hew add: {}", invalid_package_name_message(pkg));
         std::process::exit(1);
@@ -530,7 +534,37 @@ fn cmd_add(pkg: &str, version: &str, registry_name: Option<&str>) {
         eprintln!("Run `hew init` to create one.");
         std::process::exit(1);
     }
-    match manifest::add_dependency(&manifest_path, pkg, version, registry_name) {
+    let result = if let Some(path) = dependency_path {
+        let resolved = cwd.join(path);
+        let dependency_manifest = resolved.join("hew.toml");
+        match manifest::parse_manifest(&dependency_manifest) {
+            Ok(dependency) if dependency.package.name == pkg => {
+                manifest::add_path_dependency(&manifest_path, pkg, version, path)
+            }
+            Ok(dependency) => {
+                eprintln!(
+                    "hew add: path dependency `{pkg}` at `{}` declares package name `{}`",
+                    resolved.display(),
+                    dependency.package.name
+                );
+                std::process::exit(1);
+            }
+            Err(error) => {
+                eprintln!(
+                    "hew add: cannot load path dependency `{pkg}` at `{}`: {error}",
+                    resolved.display()
+                );
+                std::process::exit(1);
+            }
+        }
+    } else {
+        manifest::add_dependency(&manifest_path, pkg, version, registry_name)
+    };
+    match result {
+        Ok(()) if dependency_path.is_some() => println!(
+            "Added {pkg} from {} to hew.toml",
+            dependency_path.expect("checked path dependency").display()
+        ),
         Ok(()) => println!("Added {pkg}@{version} to hew.toml"),
         Err(e) => {
             eprintln!("hew add: {e}");
@@ -693,20 +727,36 @@ fn cmd_install(
             std::process::exit(1);
         }
         let version = &package.version;
-        let target = registry.package_dir(name, version);
-        if !target.is_dir() {
-            eprintln!(
-                "hew install: confirmed package {name}@{version} is missing from cache at {}",
-                target.display()
-            );
-            std::process::exit(1);
-        }
-        let pkg_checksum = match checksum::compute_dir_checksum(&target) {
-            Ok(checksum) => Some(checksum),
-            Err(error) => {
-                eprintln!("warning: cannot compute checksum for {name}@{version}: {error}");
-                None
+        let (target, source, locked_path, pkg_checksum) = match &package.source {
+            resolver::PackageSource::Registry => {
+                let target = registry.package_dir(name, version);
+                if !target.is_dir() {
+                    eprintln!(
+                        "hew install: confirmed package {name}@{version} is missing from cache at {}",
+                        target.display()
+                    );
+                    std::process::exit(1);
+                }
+                let checksum = match checksum::compute_dir_checksum(&target) {
+                    Ok(checksum) => Some(checksum),
+                    Err(error) => {
+                        eprintln!("warning: cannot compute checksum for {name}@{version}: {error}");
+                        None
+                    }
+                };
+                (target, "registry", None, checksum)
             }
+            resolver::PackageSource::Path(path) => (
+                path.clone(),
+                "path",
+                Some(
+                    package
+                        .direct_path
+                        .clone()
+                        .unwrap_or_else(|| path.to_string_lossy().into_owned()),
+                ),
+                None,
+            ),
         };
 
         lock_packages.push(lockfile::LockedPackage {
@@ -715,8 +765,8 @@ fn cmd_install(
             version: version.clone(),
             checksum: pkg_checksum,
             signature: None,
-            source: "registry".to_string(),
-            path: None,
+            source: source.to_string(),
+            path: locked_path,
         });
 
         // Build the local symlink path: replace :: with / separators.

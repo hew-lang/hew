@@ -1745,7 +1745,7 @@ machine Log {
     on Append(item): Filled => Filled reenter {
         let v = self.items; v.push(item); Filled { items: v }
     }
-    on Clear: Filled => Empty { Empty }
+    on Clear: Filled => Empty { Log.Empty }
     default { state }
 }
 fn main() {
@@ -1798,9 +1798,9 @@ machine Conn {
     state Dead;
     on Start: Idle => Live { Live { hits: 0 } }
     on Bump: Live => Live reenter {
-        if self.hits + 1 >= 3 { Dead } else { Live { hits: self.hits + 1 } }
+        if self.hits + 1 >= 3 { Conn.Dead } else { Live { hits: self.hits + 1 } }
     }
-    on Kill: _ => Dead { Dead }
+    on Kill: _ => Dead { Conn.Dead }
     on Start: _ => _ { state }
     on Bump: _ => _ { state }
 }
@@ -1821,7 +1821,7 @@ machine Door {
     state Shut;
     state Ajar { angle: i64; }
     on Open: Shut => Ajar { Ajar { angle: 90 } }
-    on Close: Ajar => Shut { Shut }
+    on Close: Ajar => Shut { Door.Shut }
     default { state }
 }
 fn drive(d: Door) -> string {

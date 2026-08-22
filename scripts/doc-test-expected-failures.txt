@@ -105,7 +105,7 @@ spec-0077   3711765580   # SNIPPET: bare `let`/`var` — machine state illustrat
 spec-0078   1861586926   # SNIPPET: bare `let` after machine transitions — illustration
 spec-0079   3943447574   # SNIPPET: bare `let m = ...` — machine instantiation illustration
 spec-0080   249349858   # SNIPPET: bare `Option` identifier — option-type illustration
-spec-0081   2813060693   # IMPL-GAP: undefined `StateB` — machine-state enum reference illustration
+spec-0081   1181031507   # IMPL-GAP: undefined `StateB` — machine-state enum reference illustration
 spec-0082   3707425012   # SPEC-BUG: interleaved `event` declarations — old machine syntax pre-`events {}`
 spec-0083   813722226   # SNIPPET: bare `on event { ... }` — machine transition illustration
 spec-0084   2915754722   # SNIPPET: bare `on event ...` — machine state illustration

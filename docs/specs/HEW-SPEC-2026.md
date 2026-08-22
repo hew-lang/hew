@@ -2650,7 +2650,7 @@ machine Name {
     on EventY: StateA => StateB { StateB { field: event.payload } }
 
     // Head binding: name payload fields at the rule site
-    on EventY(payload): StateB => StateA { StateA }
+    on EventY(payload): StateB => StateA { Name.StateA }
 
     // Self-transition with reenter (runs exit/entry even when state is unchanged)
     on EventX: StateB => StateB reenter { StateB { field: self.field } }

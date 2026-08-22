@@ -16,6 +16,8 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = ROOT / "tests" / "obligation-advisory"
 BASELINE = ROOT / "tests" / "obligation-advisory" / "baseline.tsv"
+FIXED_SITES = ROOT / "tests" / "obligation-advisory" / "dogfood-fixed-sites.tsv"
+DOGFOOD_SITE_COUNT = 93
 HEW = Path(os.environ.get("HEW_BIN", ROOT / "target" / "debug" / "hew"))
 RELEASE_HEW = Path(
     os.environ.get("HEW_RELEASE_BIN", ROOT / "target" / "release-lib" / "hew")
@@ -76,6 +78,47 @@ def read_baseline() -> dict[str, tuple[int, int, int, str]]:
                 runtime,
             )
     return rows
+
+
+def read_fixed_sites(
+    expected: dict[str, tuple[int, int, int, str]],
+) -> tuple[int, int]:
+    sites: set[str] = set()
+    fixed = 0
+    silenced = 0
+    with FIXED_SITES.open(encoding="utf-8") as stream:
+        for line in stream:
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            site, binding, disposition, mechanism, proof_text = line.split("\t")
+            if site in sites:
+                raise ValueError(f"duplicate dogfood site {site!r}")
+            sites.add(site)
+            if not binding or not mechanism:
+                raise ValueError(f"{site}: binding and release mechanism are required")
+            if disposition == "fixed":
+                fixed += 1
+            elif disposition == "silenced":
+                silenced += 1
+            else:
+                raise ValueError(f"{site}: unknown disposition {disposition!r}")
+            proofs = proof_text.split(",") if proof_text else []
+            if disposition == "fixed" and not proofs:
+                raise ValueError(f"{site}: fixed site has no leak-oracle proof")
+            for proof in proofs:
+                row = expected.get(proof)
+                if row is None:
+                    raise ValueError(f"{site}: unknown proof fixture {proof!r}")
+                if row[3] != RUNTIME_CLEAN:
+                    raise ValueError(f"{site}: proof fixture {proof!r} is not executed")
+    if len(sites) != DOGFOOD_SITE_COUNT:
+        raise ValueError(
+            f"expected {DOGFOOD_SITE_COUNT} dogfood sites, found {len(sites)}"
+        )
+    if silenced:
+        raise ValueError(f"dogfood classification retains {silenced} silenced site(s)")
+    return fixed, silenced
 
 
 def corpus_entries() -> set[str]:
@@ -221,6 +264,11 @@ def main() -> int:
     except (OSError, ValueError) as error:
         print(f"error: invalid baseline: {error}", file=sys.stderr)
         return 1
+    try:
+        fixed_sites, silenced_sites = read_fixed_sites(expected)
+    except (OSError, ValueError) as error:
+        print(f"error: invalid dogfood classification: {error}", file=sys.stderr)
+        return 1
     entries = corpus_entries()
     if not expected or set(expected) != entries:
         print(
@@ -293,7 +341,8 @@ def main() -> int:
         "ownership-advisory: "
         f"fixtures={len(expected)} profiles=4 advisories={totals[0]} "
         f"blocking_mir={totals[1]} runtime={len(clean_fixtures)} "
-        f"refusals={len(refused_fixtures)} oracle={host}"
+        f"refusals={len(refused_fixtures)} fixed_sites={fixed_sites} "
+        f"silenced_sites={silenced_sites} oracle={host}"
     )
     return 0
 

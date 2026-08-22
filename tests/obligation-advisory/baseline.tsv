@@ -8,10 +8,10 @@ pG.hew	0	0	0	check
 pH.hew	0	0	0	check
 pJ.hew	0	0	0	check
 pK.hew	0	0	0	check
-pL.hew	0	0	0	check
-pM.hew	0	0	0	check
-pN.hew	0	0	0	check
-rA.hew	0	0	0	check
+pL.hew	0	0	0	clean
+pM.hew	0	0	0	clean
+pN.hew	0	0	0	clean
+rA.hew	0	0	0	clean
 rC.hew	0	0	0	clean
 rG_inline.hew	0	0	0	clean
 rG_let.hew	0	0	0	clean

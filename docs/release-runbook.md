@@ -229,8 +229,8 @@ but every arm must succeed before the graph rejoins:
      repository variable `PLAYGROUND_PUBLISH_MODE` selects how it is acquired
      — `actions` dispatches the playground build workflow and watches it;
      `local` dispatches nothing and waits for a maintainer to run
-     `make release-publish HEW_SHA=<sha> HEW_VERSION=<version>` from a
-     playground checkout. The job logs the exact invocation and fails if the
+     `make release-publish HEW_SHA=<sha> HEW_VERSION=<version>` from a playground checkout. <!-- external-target: hew-lang/playground -->
+     The job logs the exact invocation and fails if the
      image does not arrive. Then verify the published image, API, and
      `hew run` smoke path against the candidate version.
 5. Only after both arms are green, pin the candidate and cut over the banner in

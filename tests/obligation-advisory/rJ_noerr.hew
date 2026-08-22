@@ -1,0 +1,42 @@
+import std.string;
+
+record Snap { label: string, n: i64, terminal: bool }
+enum Fail { Missing(i64) }
+
+// rJ with a heap-free Err payload: isolates the Ok-carrier shell from the
+// error-variant string.
+fn snapshot(k: i64) -> Result<Snap, Fail> {
+    if k % 4 == 3 {
+        return Err(Fail.Missing(k));
+    }
+    Ok(Snap { label: "snap-" + string.from_int(k), n: k, terminal: k % 7 == 6 })
+}
+
+fn empty_snap() -> Snap {
+    Snap { label: "", n: -1, terminal: false }
+}
+
+fn poll(base: i64) -> Snap {
+    var i = 0;
+    while i < 8 {
+        match snapshot(base + i) {
+            .Ok(s) => {
+                if s.terminal {
+                    return s;
+                }
+            },
+            .Err(_) => {},
+        }
+        i = i + 1;
+    }
+    empty_snap()
+}
+
+fn main() {
+    var k: i64 = 0;
+    while k < 200000 {
+        let _ = poll(k);
+        k = k + 1;
+    }
+    println(poll(0).label);
+}

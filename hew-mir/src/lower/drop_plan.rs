@@ -262,6 +262,39 @@ pub(super) fn elaborate(
             .flatten()
             .copied(),
     );
+    let call_carrier_has_declared_release = |ty: &ResolvedTy| {
+        super::composite_own::direct_payload_has_registered_resource_record(
+            ty,
+            &builder.enum_layouts,
+            &builder.lifecycle_registry,
+        )
+    };
+    let call_carrier_shell_drop_safe = |ty: &ResolvedTy| {
+        super::composite_own::enum_payloads_are_shell_drop_safe(
+            ty,
+            &builder.enum_layouts,
+            &builder.record_field_orders,
+            &builder.type_classes,
+            &outbound_records,
+            &builder.opaque_handle_names,
+            &builder.lifecycle_registry,
+        )
+    };
+    // A typed call-result mint is the release authority for its exact carrier
+    // generation. Re-admit that binding even when a selected payload move
+    // makes the generic sole-owner scan conservative: projection consumes
+    // null their source slot, so the tag-aware drop releases only the shell
+    // and payload slots that remain owned on each exit.
+    enum_composite_drop_allowed.extend(builder.binding_locals.iter().filter_map(
+        |(binding, place)| {
+            let local = base_local(*place)?;
+            let ty = builder.locals.get(local as usize)?;
+            (builder.call_scrutinee_carrier_mint_locals.contains(&local)
+                && !call_carrier_has_declared_release(ty)
+                && call_carrier_shell_drop_safe(ty))
+            .then_some(*binding)
+        },
+    ));
     // A carrier with a projected payload transfer and an explicit tag-aware
     // shell drop uses the same null-after-transfer protocol on every exit.
     // Re-admit that exact binding for its ordinary scope and loop-edge plans:
@@ -298,7 +331,7 @@ pub(super) fn elaborate(
                     .then_some(local)
             })
         })
-        .filter(|local| builder.actor_ask_result_locals.contains(local))
+        .filter(|local| builder.call_scrutinee_carrier_mint_locals.contains(local))
         .collect();
     enum_composite_drop_allowed.extend(builder.binding_locals.iter().filter_map(
         |(binding, place)| {
@@ -307,6 +340,25 @@ pub(super) fn elaborate(
                 .map(|_| *binding)
         },
     ));
+
+    // The generic sole-owner proof predates call-carrier minting and can admit
+    // a nested affine payload whose helper family codegen cannot synthesize.
+    // A minted carrier must pass the same structural shell-safety authority as
+    // the explicit arm release above; otherwise keep it out of every enum drop
+    // plan so the obligation validator reports the missing discharge.
+    enum_composite_drop_allowed.retain(|binding| {
+        let Some(local) = builder
+            .binding_locals
+            .get(binding)
+            .and_then(|place| base_local(*place))
+        else {
+            return true;
+        };
+        !builder.call_scrutinee_carrier_mint_locals.contains(&local)
+            || builder.locals.get(local as usize).is_some_and(|ty| {
+                call_carrier_has_declared_release(ty) || call_carrier_shell_drop_safe(ty)
+            })
+    });
 
     // Machine-typed owned locals. A machine value is `ValueClass::Unknown`, so
     // before this derivation its binding fell through every drop class and the
@@ -2330,6 +2382,9 @@ struct ObligationCtx<'a> {
     /// Empty COW literals inserted immediately after an aggregate ownership
     /// handoff to clear the moved-from publication slot.
     cow_handoff_commit_sites: &'a HashSet<(u32, usize)>,
+    /// Exact call/await result generations whose projected-slot neutralize is
+    /// only a partial transfer; the remaining carrier still needs a drop.
+    partial_transfer_carrier_mints: &'a HashSet<u32>,
 }
 
 impl ObligationCtx<'_> {
@@ -2757,6 +2812,14 @@ fn apply_balance_instr(
                 .tracked_root(*place)
                 .or_else(|| cx.tracked_carrier(*place))
             {
+                if payload_carrier_local(*place).is_some()
+                    && cx.partial_transfer_carrier_mints.contains(&root)
+                {
+                    // The selected payload moved, but this minted call carrier
+                    // still owns its shell and unselected slots. Only a later
+                    // carrier drop discharges the whole-generation obligation.
+                    return;
+                }
                 let entry = obligation_entry(state, root);
                 match entry.neutralized {
                     PayloadNeutralized::No => {
@@ -3288,6 +3351,20 @@ pub(super) fn validate_obligation_balance(
                 .map(|ty| (root, format!("{ty}")))
         })
         .collect();
+    let partial_transfer_carrier_mints = builder
+        .call_scrutinee_carrier_mint_locals
+        .iter()
+        .copied()
+        .filter(|local| {
+            raw.locals.get(*local as usize).is_none_or(|ty| {
+                !super::composite_own::direct_payload_has_registered_resource_record(
+                    ty,
+                    &builder.enum_layouts,
+                    &builder.lifecycle_registry,
+                )
+            })
+        })
+        .collect();
     validate_obligation_balance_with(
         elab,
         &raw.blocks,
@@ -3295,6 +3372,7 @@ pub(super) fn validate_obligation_balance(
         &tracked,
         (&local_types, &mint_sites),
         &builder.parameter_locals,
+        &partial_transfer_carrier_mints,
     )
 }
 
@@ -3309,6 +3387,7 @@ fn validate_obligation_balance_with(
     tracked_in: &BTreeMap<u32, String>,
     diagnostic_info: (&BTreeMap<u32, String>, &BTreeMap<u32, SiteId>),
     parameter_locals: &HashSet<u32>,
+    partial_transfer_carrier_mints: &HashSet<u32>,
 ) -> Vec<MirCheck> {
     // Iteration cap for the monotone worklist. The lattice is finite and the
     // transfer monotone, so convergence is guaranteed well within this bound;
@@ -3322,6 +3401,7 @@ fn validate_obligation_balance_with(
         tracked_in,
         diagnostic_info,
         parameter_locals,
+        partial_transfer_carrier_mints,
         iteration_cap,
     )
 }
@@ -3331,6 +3411,7 @@ fn validate_obligation_balance_with(
 /// unverified verdict a converging body would never reach).
 #[allow(
     clippy::too_many_lines,
+    clippy::too_many_arguments,
     reason = "single fixpoint + exit-verdict walk; splitting would obscure \
               the dataflow (mirrors validate_cross_block_split_consume)"
 )]
@@ -3341,6 +3422,7 @@ fn validate_obligation_balance_capped(
     tracked_in: &BTreeMap<u32, String>,
     diagnostic_info: (&BTreeMap<u32, String>, &BTreeMap<u32, SiteId>),
     parameter_locals: &HashSet<u32>,
+    partial_transfer_carrier_mints: &HashSet<u32>,
     iteration_cap: usize,
 ) -> Vec<MirCheck> {
     use std::collections::VecDeque;
@@ -3443,6 +3525,7 @@ fn validate_obligation_balance_capped(
         parameter_locals,
         retained_move_sites: &retained_move_sites,
         cow_handoff_commit_sites: &cow_handoff_commit_sites,
+        partial_transfer_carrier_mints,
     };
 
     // Scope-exit releases ride the NORMAL-continuation exit plans (a

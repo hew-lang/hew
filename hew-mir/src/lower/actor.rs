@@ -2555,9 +2555,6 @@ impl Builder {
         // Its type comes from the HIR expression's checker-assigned type, which is
         // `Result<reply_ty, AskError>` after the unification fix in the type checker.
         let result_dest = self.alloc_local(self.subst_ty(&expr.ty));
-        if let Place::Local(local) = result_dest {
-            self.actor_ask_result_locals.insert(local);
-        }
         let reply_dest = self.alloc_local(reply_ty.clone());
         let error_dest = self.alloc_local(
             hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("AskError")

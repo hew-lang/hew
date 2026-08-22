@@ -632,10 +632,9 @@ pub(super) fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::EnumCloneInplace { .. }
         | Instr::ValueSnapshotClone { .. }
         | Instr::ValueSnapshotDrop { .. } => false,
-        // Neutralizing a projection of the tracked owner witnesses that its
-        // release authority moved to the transferee. A later body-end drop of
-        // that same owner would be a second static discharge. Neutralizations
-        // rooted in any other local remain ordinary non-escaping instructions.
+        // Neutralizing a projection normally suppresses a body-end root drop.
+        // Minted call carriers apply their narrower shell-safety authority in
+        // the caller and may exempt a null-safe projected transfer.
         Instr::NeutralizePayloadSlot { place, .. } => refs(*place),
         Instr::AggregateProjectionNeutralize { root, .. } => refs(*root),
     }

@@ -797,10 +797,12 @@ struct Builder {
     /// registration. Carried as a side-table (not a carrier/Terminator field) so
     /// the eight `Suspending*` carriers stay unchanged (codegen-locals shape).
     pub(crate) await_deadline_ns: HashMap<u32, i64>,
-    /// Result-carrier locals minted by actor asks. Pattern lowering uses this
-    /// identity to apply the ask carrier's payload-transfer cleanup without
-    /// extending that protocol to unrelated enum-producing calls.
-    pub(crate) actor_ask_result_locals: HashSet<u32>,
+    /// Exact MIR generations for which the typed produced-value boundary
+    /// minted an owned call/await result. The fact is recorded at the owner
+    /// mint and follows exact whole-value handoffs; syntax and linker spelling
+    /// never grant membership. Partial payload-transfer cleanup uses this one
+    /// provenance ledger for direct calls, methods, actor asks, and awaits.
+    pub(crate) call_scrutinee_carrier_mint_locals: HashSet<u32>,
     /// Maps the id of a basic block that ends in one of the ten collapsed
     /// suspension carriers to the carrier's distinguishing payload
     /// ([`SuspendKind`]). Populated at each `finish_current_block(Suspending*)`
@@ -6099,16 +6101,93 @@ fn release_last_borrowed_typed_owners(blocks: &mut [BasicBlock], builder: &mut B
     }
 }
 
-/// Null scalar handle sources after an exact tuple/record constructor has
-/// moved them into a value that reaches the return slot.
+/// Null owned member sources after an exact tuple, record, or enum constructor
+/// has moved them into a value that reaches the return slot.
 ///
-/// Aggregate construction byte-copies handle words. The returned-member drop
+/// Aggregate construction byte-copies owned storage. The returned-member drop
 /// proof already makes the constructor destination the caller's owner and
-/// suppresses the source close on that path; this companion rewrite clears the
-/// stale source slot so crash-cleanup escrow cannot close the selected handle
-/// again during the normal return sweep. Unselected siblings are untouched and
+/// suppresses the source release on that path; this companion rewrite clears
+/// the stale source slot so generation-sensitive scope and crash cleanup cannot
+/// release the transferred member again during the normal return sweep. Unselected
+/// siblings are untouched and
 /// keep their path-sensitive exit closes.
-fn neutralize_returned_aggregate_handle_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
+fn returned_aggregate_member_source_targets(
+    candidates: &[(BindingId, String, ResolvedTy)],
+    returned_members: &HashSet<BindingId>,
+    builder: &Builder,
+) -> HashMap<Place, Place> {
+    candidates
+        .iter()
+        .filter(|(binding, _name, ty)| {
+            returned_members.contains(binding)
+                && (matches!(ty, ResolvedTy::String | ResolvedTy::Bytes)
+                    || drop_plan::ty_is_owned_handle_leaf(ty)
+                    || crate::model::ty_owns_heap_mir(
+                        ty,
+                        &builder.record_field_orders,
+                        &builder.enum_layouts,
+                    ))
+        })
+        .filter_map(|(binding, _name, _ty)| {
+            let place = builder.binding_locals.get(binding).copied()?;
+            let target = builder
+                .projected_payload_provenance
+                .get(binding)
+                .and_then(|provenance| {
+                    matches!(
+                        provenance.origin,
+                        ProjectedPayloadOrigin::OwnedBinding(_)
+                            | ProjectedPayloadOrigin::EphemeralTemp
+                    )
+                    .then_some(provenance.source_place)
+                })
+                .unwrap_or(place);
+            Some((place, target))
+        })
+        .collect()
+}
+
+fn aggregate_member_consumed_sources(blocks: &[BasicBlock]) -> HashSet<Place> {
+    blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::NeutralizePayloadSlot {
+                place,
+                authority: crate::model::NeutralizeAuthority::AggregateMemberConsume,
+                ..
+            } => Some(*place),
+            _ => None,
+        })
+        .collect()
+}
+
+fn returned_aggregate_member_source_target(
+    source: Place,
+    dest: Place,
+    candidate_places: &HashMap<Place, Place>,
+    already_neutralized: &HashSet<Place>,
+    builder: &Builder,
+) -> Option<Place> {
+    if already_neutralized.contains(&source) {
+        return None;
+    }
+    candidate_places.get(&source).copied().or_else(|| {
+        let local = matches!(
+            dest,
+            Place::MachineVariant { .. } | Place::EnumVariant { .. }
+        )
+        .then(|| base_local(source))
+        .flatten()?;
+        builder
+            .locals
+            .get(local as usize)
+            .is_some_and(|ty| builder.field_drop_in_place_admissible(ty))
+            .then_some(source)
+    })
+}
+
+fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let candidates = builder.owned_locals_exit_candidates();
     let returned_members =
         derive_returned_aggregate_member_bindings(blocks, &candidates, &builder.binding_locals);
@@ -6116,16 +6195,9 @@ fn neutralize_returned_aggregate_handle_sources(blocks: &mut [BasicBlock], build
         return;
     }
 
-    let candidate_places: HashSet<Place> = candidates
-        .iter()
-        .filter(|(binding, _name, ty)| {
-            returned_members.contains(binding) && drop_plan::ty_is_owned_handle_leaf(ty)
-        })
-        .filter_map(|(binding, _name, _ty)| builder.binding_locals.get(binding).copied())
-        .collect();
-    if candidate_places.is_empty() {
-        return;
-    }
+    let candidate_places =
+        returned_aggregate_member_source_targets(&candidates, &returned_members, builder);
+    let already_neutralized = aggregate_member_consumed_sources(blocks);
 
     // Reverse the exact whole-value move graph from the return slot. A
     // constructor qualifies only when its own destination is in this closure;
@@ -6168,6 +6240,10 @@ fn neutralize_returned_aggregate_handle_sources(blocks: &mut [BasicBlock], build
                     *dest,
                     fields.iter().map(|(_offset, source)| *source).collect(),
                 ),
+                Instr::Move {
+                    dest: dest @ (Place::MachineVariant { .. } | Place::EnumVariant { .. }),
+                    src,
+                } => (*dest, vec![*src]),
                 _ => {
                     index += 1;
                     continue;
@@ -6181,7 +6257,16 @@ fn neutralize_returned_aggregate_handle_sources(blocks: &mut [BasicBlock], build
             let mut neutralized = HashSet::new();
             let sources: Vec<Place> = sources
                 .into_iter()
-                .filter(|source| candidate_places.contains(source) && neutralized.insert(*source))
+                .filter_map(|source| {
+                    returned_aggregate_member_source_target(
+                        source,
+                        dest,
+                        &candidate_places,
+                        &already_neutralized,
+                        builder,
+                    )
+                })
+                .filter(|target| neutralized.insert(*target))
                 .collect();
             index += 1;
             for source in sources {
@@ -6523,7 +6608,7 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
         &projection_tainted,
     );
     neutralize_aggregate_member_sources(&mut *blocks, builder);
-    neutralize_returned_aggregate_handle_sources(&mut *blocks, builder);
+    neutralize_returned_aggregate_member_sources(&mut *blocks, builder);
     neutralize_divergent_selection_sources(&mut *blocks, builder, &projection_tainted);
     release_partially_transferred_return_carriers(&mut *blocks, builder);
     release_cloned_collection_result_temps(&mut *blocks, builder);
@@ -6542,6 +6627,7 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
 /// structural local type as the release authority. Parameters remain
 /// caller-owned and keep their separate terminal snapshot protocol.
 fn release_partially_transferred_return_carriers(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let record_layouts = outbound_record_layouts(builder);
     for block in blocks {
         if !matches!(block.terminator, Terminator::Return) {
             continue;
@@ -6554,7 +6640,7 @@ fn release_partially_transferred_return_carriers(blocks: &mut [BasicBlock], buil
                     place: Place::MachineVariant { local, .. },
                     ..
                 } if !builder.parameter_locals.contains(local)
-                    && builder.actor_ask_result_locals.contains(local) =>
+                    && builder.call_scrutinee_carrier_mint_locals.contains(local) =>
                 {
                     let ty = builder.locals.get(*local as usize)?;
                     let owns_heap = crate::model::ty_owns_heap_mir(
@@ -6565,7 +6651,20 @@ fn release_partially_transferred_return_carriers(blocks: &mut [BasicBlock], buil
                     let is_enum = matches!(ty, ResolvedTy::Named { name, args, .. }
                         if crate::model::find_enum_layout(name, args, &builder.enum_layouts)
                             .is_some());
-                    (owns_heap && is_enum).then(|| (*local, ty.clone()))
+                    let shell_safe = !composite_own::direct_payload_has_registered_resource_record(
+                        ty,
+                        &builder.enum_layouts,
+                        &builder.lifecycle_registry,
+                    ) && composite_own::enum_payloads_are_shell_drop_safe(
+                        ty,
+                        &builder.enum_layouts,
+                        &builder.record_field_orders,
+                        &builder.type_classes,
+                        &record_layouts,
+                        &builder.opaque_handle_names,
+                        &builder.lifecycle_registry,
+                    );
+                    (owns_heap && is_enum && shell_safe).then(|| (*local, ty.clone()))
                 }
                 _ => None,
             })

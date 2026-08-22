@@ -74,11 +74,6 @@ fn goto_drops(p: &IrPipeline, fn_name: &str) -> Vec<ElabDrop> {
     drops_matching(p, fn_name, |exit| matches!(exit, ExitPath::Goto { .. }))
 }
 
-/// Every `ElabDrop` across every exit of the named function.
-fn all_exit_drops(p: &IrPipeline, fn_name: &str) -> Vec<ElabDrop> {
-    drops_matching(p, fn_name, |_| true)
-}
-
 fn enum_in_place(drops: &[ElabDrop]) -> Vec<ElabDrop> {
     drops
         .iter()
@@ -533,13 +528,11 @@ fn collect(n: i64) -> string {
     );
 }
 
-/// Negative control — escaping payload stays fail-closed. When the arm moves
-/// the payload into an outer binding that survives the loop back-edge, the
-/// composite must stay EXCLUDED from the per-iteration release (freeing it
-/// would leave the outer binding dangling — the #2384 class). Leak, never
-/// double-free.
+/// Moving a payload into an outer binding neutralizes its source slot. The
+/// carrier therefore keeps its back-edge release for the shell and sibling
+/// slot without invalidating the escaped payload.
 #[test]
-fn escaping_payload_keeps_composite_excluded_from_backedge_drop() {
+fn escaping_payload_neutralizes_slot_before_backedge_carrier_drop() {
     let p = pipeline_with_tc(
         r#"
 fn f() -> Result<string, string> {
@@ -560,11 +553,86 @@ fn main() {
 }
 "#,
     );
-    let all = enum_in_place(&all_exit_drops(&p, "main"));
     assert!(
-        all.is_empty(),
-        "a payload moved to an outer surviving binding escapes the composite; \
-         the prover must keep the scrutinee excluded on every plan \
-         (leak-not-double-free); got {all:?}"
+        p.diagnostics.is_empty(),
+        "the escaped payload and remaining carrier must both balance: {:?}",
+        p.diagnostics
+    );
+    let main = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("raw fn main");
+    assert!(
+        main.blocks.iter().any(
+            |block| block.instructions.iter().any(|instruction| matches!(
+                instruction,
+                Instr::NeutralizePayloadSlot {
+                    place: hew_mir::Place::MachineVariant { .. },
+                    ..
+                }
+            ))
+        ),
+        "the escaped payload must clear its carrier slot"
+    );
+    let backedge = enum_in_place(&goto_drops(&p, "main"));
+    assert!(
+        !backedge.is_empty(),
+        "the neutralized carrier must release on the loop back-edge"
+    );
+}
+
+/// A payload may itself contain a carrier whose selected leaf escapes. The
+/// nested match must retain the original call carrier's projection authority:
+/// clearing only the copied inner temp leaves the original record field live
+/// and its terminal carrier drop would free the escaped string a second time.
+#[test]
+fn nested_record_payload_escape_neutralizes_original_call_carrier() {
+    let p = pipeline_with_tc(
+        r#"
+record Slot { generation: i64, value: Option<string> }
+
+fn clone_slot() -> Option<Slot> {
+    Some(Slot { generation: 1, value: Some("payload".to_upper()) })
+}
+
+fn take() -> Option<string> {
+    match clone_slot() {
+        Some(slot) => match slot.value {
+            Some(value) => Some(value),
+            None => None,
+        },
+        None => None,
+    }
+}
+"#,
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "the nested payload transfer and original carrier release must balance: {:?}",
+        p.diagnostics
+    );
+    let take = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "take")
+        .expect("raw fn take");
+    let projection_paths = take
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instruction| match instruction {
+            Instr::AggregateProjectionNeutralize {
+                root: hew_mir::Place::MachineVariant { .. },
+                fields,
+                ..
+            } => Some(fields.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        projection_paths,
+        vec![vec![1]],
+        "the escaped inner payload must clear field 1 in the original outer carrier"
     );
 }

@@ -23,7 +23,7 @@ machine F {
     state S2;
 
     on a: S1 => S2 {
-        S2
+        F.S2
     }
     on a: _ => _ {
         state

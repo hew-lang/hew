@@ -9,10 +9,10 @@ machine RunLifecycle {
     state Completed;
 
     on StageFailed: Running => Failed {
-        Failed
+        RunLifecycle.Failed
     }
     on GateCompleted: Running => Completed {
-        Completed
+        RunLifecycle.Completed
     }
     default {
         state

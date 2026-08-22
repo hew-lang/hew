@@ -30,7 +30,7 @@ machine InnerA {
     state Done;
 
     on go: Ready => Done {
-        Done
+        InnerA.Done
     }
     on go: _ => _ {
         state
@@ -46,7 +46,7 @@ machine OuterA {
     state Empty;
 
     on step: Holding => Empty {
-        Empty
+        OuterA.Empty
     }
     on step: _ => _ {
         state
@@ -79,7 +79,7 @@ machine OuterB {
     state EmptyB;
 
     on step: HoldingB => EmptyB {
-        EmptyB
+        OuterB.EmptyB
     }
     on step: _ => _ {
         state
@@ -95,7 +95,7 @@ machine InnerB {
     state DoneB;
 
     on go: ReadyB => DoneB {
-        DoneB
+        InnerB.DoneB
     }
     on go: _ => _ {
         state

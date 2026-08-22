@@ -6076,7 +6076,7 @@ impl Checker {
                 // `current_module` (None = root): it is the display/provenance
                 // axis, and the legacy root render at publication boundaries
                 // derives from it.
-                let scoped_name = self.canonical_fn_identity(self.canonical_fn_owner(), &fd.name);
+                let scoped_name = Self::declared_fn_identity(self.canonical_fn_owner(), &fd.name);
                 if let Some((prev_span, _)) = self.fn_def_spans.get(&scoped_name) {
                     // Root diagnostics render the bare leaf, exactly as the
                     // declaration is spelled in source.

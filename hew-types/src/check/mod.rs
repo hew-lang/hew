@@ -341,6 +341,16 @@ impl Checker {
         self.fn_sigs.contains_key(&scoped).then_some(scoped)
     }
 
+    /// Mint the declaration-table identity for a free function owned by a
+    /// known lexical scope. A source-less root deliberately keeps its bare
+    /// key; imported bindings are resolution facts and must never rename the
+    /// declaration that shadows them.
+    pub(super) fn declared_fn_identity(owner: Option<&str>, name: &str) -> String {
+        owner
+            .and_then(|owner| scoped_module_item_name(Some(owner), name))
+            .unwrap_or_else(|| name.to_string())
+    }
+
     /// Return the declaration-table identity for a free function.
     ///
     /// `owner` is supplied while minting a declaration or resolving a known
@@ -352,7 +362,10 @@ impl Checker {
             return name.to_string();
         }
         if let Some(owner) = owner {
-            return scoped_module_item_name(Some(owner), name).unwrap_or_else(|| name.to_string());
+            return Self::declared_fn_identity(Some(owner), name);
+        }
+        if let Some((_, declaring_module)) = self.fn_def_spans.get(name) {
+            return Self::declared_fn_identity(declaring_module.as_deref(), name);
         }
         if let Some(source) = self.import_fn_name_aliases.get(&(
             self.current_module.clone(),
@@ -360,11 +373,6 @@ impl Checker {
             name.to_string(),
         )) {
             return source.clone();
-        }
-        if let Some((_, Some(declaring_module))) = self.fn_def_spans.get(name) {
-            let leaf = name.rsplit('.').next().unwrap_or(name);
-            return scoped_module_item_name(Some(declaring_module), leaf)
-                .unwrap_or_else(|| name.to_string());
         }
         name.to_string()
     }

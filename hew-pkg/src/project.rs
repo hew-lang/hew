@@ -6,7 +6,7 @@
 //! a package starts, what it compiles, and what the produced binary is called.
 
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::manifest::{self, HewManifest, ManifestError};
 
@@ -54,6 +54,8 @@ impl ResolvedPackage {
 /// as a source path, so no raw `Is a directory` OS error can escape.
 #[derive(Debug)]
 pub enum ResolveError {
+    /// The process current directory could not be read to resolve a relative path.
+    CurrentDirectory(std::io::Error),
     /// The starting directory does not exist or is not a directory.
     NotADirectory(PathBuf),
     /// No `hew.toml` in the starting directory or any ancestor.
@@ -79,6 +81,9 @@ pub enum ResolveError {
 impl fmt::Display for ResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CurrentDirectory(source) => {
+                write!(f, "cannot read the current directory: {source}")
+            }
             Self::NotADirectory(path) => {
                 write!(f, "{} is not a directory", path.display())
             }
@@ -131,7 +136,8 @@ pub fn find_package_root(start: &Path) -> Option<PathBuf> {
 /// source file to exist.
 ///
 /// `start` is the current directory for the no-argument forms, or the directory
-/// the user named. Search walks up from `start`, so running inside a package
+/// the user named. Relative paths are made absolute against the current
+/// directory before the search walks up, so running inside a package
 /// subdirectory builds the enclosing package.
 ///
 /// # Errors
@@ -139,11 +145,11 @@ pub fn find_package_root(start: &Path) -> Option<PathBuf> {
 /// Returns [`ResolveError`] when `start` is not a directory, no manifest is
 /// found, the manifest fails to parse, or the entry-point file is absent.
 pub fn resolve_package(start: &Path) -> Result<ResolvedPackage, ResolveError> {
+    let start = absolute_normalized_path(start)?;
     if !start.is_dir() {
-        return Err(ResolveError::NotADirectory(start.to_path_buf()));
+        return Err(ResolveError::NotADirectory(start));
     }
-    let root =
-        find_package_root(start).ok_or_else(|| ResolveError::NoManifest(start.to_path_buf()))?;
+    let root = find_package_root(&start).ok_or_else(|| ResolveError::NoManifest(start.clone()))?;
     let manifest_path = root.join(MANIFEST_FILE);
     let manifest =
         manifest::parse_manifest(&manifest_path).map_err(|source| ResolveError::Manifest {
@@ -164,6 +170,30 @@ pub fn resolve_package(start: &Path) -> Result<ResolvedPackage, ResolveError> {
         });
     }
     Ok(resolved)
+}
+
+fn absolute_normalized_path(path: &Path) -> Result<PathBuf, ResolveError> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(ResolveError::CurrentDirectory)?
+            .join(path)
+    };
+
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    Ok(normalized)
 }
 
 /// Build the package's own `[native]` FFI crate and return the archive the

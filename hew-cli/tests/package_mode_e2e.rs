@@ -208,6 +208,31 @@ fn build_from_a_subdirectory_resolves_the_enclosing_package() {
     assert_prints_greeting(&binary_in(dir.path(), "walkup"));
 }
 
+/// A relative directory argument resolves from the invocation directory, then
+/// walks through it to reach the enclosing package.
+#[test]
+fn build_relative_directory_from_a_subdirectory_resolves_the_enclosing_package() {
+    require_codegen();
+    let dir = workspace();
+    write_package(dir.path(), "relativewalkup", "main.hew", "");
+    let invocation = dir.path().join("util").join("deep");
+    let argument = invocation.join("sub");
+    std::fs::create_dir_all(&argument).expect("create invocation subdirectory");
+
+    let output = Command::new(hew_binary())
+        .args(["build", "sub"])
+        .current_dir(&invocation)
+        .output()
+        .expect("run hew build sub");
+
+    assert!(
+        output.status.success(),
+        "relative directory build failed\n{}",
+        describe_output(&output),
+    );
+    assert_prints_greeting(&binary_in(dir.path(), "relativewalkup"));
+}
+
 /// The package's `[native]` crate is a prerequisite: when it cannot build, the
 /// package build stops there and never produces a binary.
 #[test]
@@ -249,14 +274,16 @@ fn native_prerequisite_failure_stops_the_build() {
 /// Outside any package, the file-less form is a usage error naming the search
 /// origin and the way out.
 #[test]
-fn no_manifest_anywhere_reports_a_usage_error() {
+fn relative_directory_without_a_manifest_reports_a_usage_error() {
     let dir = support::tempdir();
+    let argument = dir.path().join("empty");
+    std::fs::create_dir(&argument).expect("create empty directory");
 
     let output = Command::new(hew_binary())
-        .arg("build")
+        .args(["build", "empty"])
         .current_dir(dir.path())
         .output()
-        .expect("run hew build");
+        .expect("run hew build empty");
 
     assert_eq!(
         output.status.code(),
@@ -266,7 +293,9 @@ fn no_manifest_anywhere_reports_a_usage_error() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no hew.toml") && stderr.contains("hew init"),
+        stderr.contains("no hew.toml in ")
+            && stderr.contains("empty")
+            && stderr.contains("hew init"),
         "error should name the missing manifest and the way out:\n{}",
         describe_output(&output),
     );

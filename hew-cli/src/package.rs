@@ -84,7 +84,9 @@ fn resolve_package(dir: &Path) -> Result<Input, Failure> {
 fn exit_code(error: &ResolveError) -> i32 {
     match error {
         ResolveError::NotADirectory(_) | ResolveError::NoManifest(_) => 2,
-        ResolveError::Manifest { .. } | ResolveError::MissingEntry { .. } => 1,
+        ResolveError::CurrentDirectory(_)
+        | ResolveError::Manifest { .. }
+        | ResolveError::MissingEntry { .. } => 1,
     }
 }
 

@@ -13,6 +13,12 @@ use std::time::{Duration, Instant};
 /// Default wall-clock deadline for Hew execution tests.
 pub const DEFAULT_EXEC_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Return the host-native executable path for a compiled Hew program.
+#[must_use]
+pub fn compiled_binary_path(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+}
+
 /// Per-stream capture cap for bounded process output.
 ///
 /// Four MiB is large enough for useful failure diagnostics while preventing a
@@ -1181,6 +1187,14 @@ mod hew_lib_bootstrap_tests {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn compiled_binary_path_uses_host_executable_suffix() {
+        assert_eq!(
+            compiled_binary_path(Path::new("output"), "program"),
+            PathBuf::from(format!("output/program{}", std::env::consts::EXE_SUFFIX))
+        );
+    }
 
     #[test]
     fn transient_spawn_pressure_is_retried_before_child_execution() {

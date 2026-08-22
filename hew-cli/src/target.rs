@@ -145,6 +145,11 @@ impl TargetSpec {
         }
     }
 
+    /// Return the executable path for `stem` under `dir`.
+    pub fn executable_path(&self, dir: &std::path::Path, stem: &str) -> std::path::PathBuf {
+        dir.join(format!("{stem}{}", self.executable_suffix()))
+    }
+
     /// File extension for a relocatable object file on this target.
     ///
     /// COFF targets use `.obj`; ELF/Mach-O/Wasm targets use `.o`. Drives the
@@ -615,8 +620,8 @@ impl ExecutionTarget {
         self.spec.normalized_triple()
     }
 
-    pub fn executable_suffix(&self) -> &'static str {
-        self.spec.executable_suffix()
+    pub fn executable_path(&self, dir: &std::path::Path, stem: &str) -> std::path::PathBuf {
+        self.spec.executable_path(dir, stem)
     }
 
     #[cfg(test)]
@@ -659,6 +664,10 @@ mod tests {
         // coverage before widening to additional Windows link modes.
         let spec = TargetSpec::from_requested(Some("x86_64-pc-windows-gnu")).expect("target");
         assert_eq!(spec.executable_suffix(), ".exe");
+        assert_eq!(
+            spec.executable_path(std::path::Path::new("out"), "program"),
+            std::path::Path::new("out/program.exe")
+        );
         assert_eq!(spec.object_suffix(), ".obj");
     }
 

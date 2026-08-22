@@ -115,6 +115,7 @@ pub struct TestSummary {
 #[derive(Debug)]
 pub struct TestCompilePaths {
     paths: crate::NativeBuildPaths,
+    target: crate::target::TargetSpec,
 }
 
 impl TestCompilePaths {
@@ -165,12 +166,15 @@ impl TestCompilePaths {
                 hew_lib.display()
             ));
         }
+        let target = crate::target::TargetSpec::from_requested(None)
+            .map_err(|error| format!("cannot determine the host target: {error}"))?;
         Ok(Self {
             paths: crate::NativeBuildPaths {
                 project_dir,
                 module_search_paths,
                 hew_lib,
             },
+            target,
         })
     }
 }
@@ -445,8 +449,11 @@ fn compile_test(
     let source_path = Path::new(&test.file);
     let binary_name = source_path
         .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| "test source path has no file stem".to_string())?;
-    let binary_path = emit_dir.path().join(binary_name);
+    let binary_path = compile_paths
+        .target
+        .executable_path(emit_dir.path(), binary_name);
     let extra_libs = ffi_lib.into_iter().map(str::to_owned).collect::<Vec<_>>();
 
     crate::diagnostic::start_diagnostic_capture();
@@ -872,6 +879,8 @@ fn test_timeout() {
                 module_search_paths: Vec::new(),
                 hew_lib: PathBuf::new(),
             },
+            target: crate::target::TargetSpec::from_requested(None)
+                .expect("the test host target should resolve"),
         };
         let summary = run_tests(
             &tests,

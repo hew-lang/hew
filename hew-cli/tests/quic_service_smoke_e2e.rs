@@ -258,12 +258,8 @@ fn quic_service_example_round_trip_succeeds() {
         .prefix("quic-service-smoke-")
         .tempdir_in(repo_root())
         .expect("create smoke workspace in repo root");
-    let server_binary = workspace
-        .path()
-        .join(format!("service_server{}", std::env::consts::EXE_SUFFIX));
-    let client_binary = workspace
-        .path()
-        .join(format!("service_client{}", std::env::consts::EXE_SUFFIX));
+    let server_binary = hew_testutil::compiled_binary_path(workspace.path(), "service_server");
+    let client_binary = hew_testutil::compiled_binary_path(workspace.path(), "service_client");
 
     build_example_binary(&example_dir.join("server.hew"), &server_binary);
     build_example_binary(&example_dir.join("client.hew"), &client_binary);

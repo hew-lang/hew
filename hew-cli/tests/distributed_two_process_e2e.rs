@@ -103,7 +103,7 @@ fn compiled_node_binary() -> &'static Path {
                 support::describe_output(&output)
             );
 
-            let binary = emit_path.join("dist_node");
+            let binary = hew_testutil::compiled_binary_path(&emit_path, "dist_node");
             assert!(
                 binary.is_file(),
                 "compiled dist_node binary missing at {}",

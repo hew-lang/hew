@@ -349,7 +349,7 @@ fn build_staticlib(dir: &Path, name: &str, source: &str) -> Option<PathBuf> {
 fn build_and_run(dir: &Path, name: &str, source: &str, lib: Option<&Path>) -> String {
     let prog = dir.join(format!("{name}.hew"));
     std::fs::write(&prog, source).expect("write fixture .hew");
-    let bin = dir.join(name);
+    let bin = hew_testutil::compiled_binary_path(dir, name);
 
     let mut compile = Command::new(hew_binary());
     compile.arg("build");
@@ -1467,7 +1467,7 @@ fn a_record_literal_of_a_domestic_field_keeps_working() {
 fn build_expecting_failure(dir: &Path, name: &str, source: &str, lib: Option<&Path>) -> String {
     let prog = dir.join(format!("{name}.hew"));
     std::fs::write(&prog, source).expect("write fixture .hew");
-    let bin = dir.join(name);
+    let bin = hew_testutil::compiled_binary_path(dir, name);
 
     let mut compile = Command::new(hew_binary());
     compile.arg("build");

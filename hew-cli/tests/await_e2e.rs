@@ -31,9 +31,7 @@ fn build_example(category: &str, name: &str) -> (tempfile::TempDir, PathBuf) {
     );
 
     let dir = support::tempdir();
-    let binary = dir
-        .path()
-        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    let binary = hew_testutil::compiled_binary_path(dir.path(), name);
     let mut command = Command::new(hew_binary());
     command
         .arg("build")

@@ -59,7 +59,9 @@ fn build_and_run(name: &str, dir: &Path, stem: &str) {
             "build",
             fixture(name).to_str().expect("fixture path must be UTF-8"),
             "-o",
-            dir.join(stem).to_str().expect("output path must be UTF-8"),
+            hew_testutil::compiled_binary_path(dir, stem)
+                .to_str()
+                .expect("output path must be UTF-8"),
         ])
         .current_dir(dir)
         .output()
@@ -70,7 +72,7 @@ fn build_and_run(name: &str, dir: &Path, stem: &str) {
         describe_output(&build)
     );
 
-    let binary = dir.join(stem);
+    let binary = hew_testutil::compiled_binary_path(dir, stem);
     let run = run_bounded_command(Command::new(&binary), format!("run {}", binary.display()));
     assert!(
         run.status.success(),

@@ -131,8 +131,6 @@ fn compile_native_link_produces_runnable_binary() {
 /// `hew build` names its output through `TargetSpec::executable_suffix`;
 /// `hew compile` used the bare module stem, so on Windows it produced (and
 /// reported) an extensionless file that the shell does not treat as a program.
-/// Asserted against `std::env::consts::EXE_SUFFIX` — an oracle independent of
-/// the target table the compiler consults.
 #[test]
 fn compiled_binary_carries_the_host_executable_extension() {
     require_codegen();
@@ -144,7 +142,10 @@ fn compiled_binary_carries_the_host_executable_extension() {
         .expect("compiled binary has a file name");
     assert_eq!(
         file_name,
-        format!("prog{}", std::env::consts::EXE_SUFFIX),
+        hew_testutil::compiled_binary_path(std::path::Path::new(""), "prog")
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("expected binary path has a UTF-8 file name"),
         "the compiled binary must be named like an executable on this host"
     );
     assert!(

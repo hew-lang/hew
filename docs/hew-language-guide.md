@@ -1655,13 +1655,13 @@ machine Counter {
     events { Inc; Reset; }
     state Zero;
     state NonZero { value: i64; }
-    on Inc: Zero => NonZero { NonZero { value: 1 } }
-    on Inc: NonZero => NonZero reenter { NonZero { value: self.value + 1 } }
-    on Reset: NonZero => Zero { Zero }
+    on Inc: Zero => NonZero { Counter.NonZero { value: 1 } }
+    on Inc: NonZero => NonZero reenter { Counter.NonZero { value: self.value + 1 } }
+    on Reset: NonZero => Zero { Counter.Zero }
     default { state }
 }
 fn main() {
-    var c = Zero;
+    var c = Counter.Zero;
     c.step(.Inc); c.step(.Inc); c.step(.Inc);
     println(c.state_name());            // NonZero
     match c {
@@ -1673,7 +1673,7 @@ fn main() {
 }
 ```
 
-A machine is a value type. Inside the body, state constructors are bare (`NonZero { value: 1 }`); contextual event arguments use `.Variant` (`step(.Inc)`). Outside use the qualifier (`Counter.Zero`, `CounterEvent.Inc`). `step()` mutates in place — the receiver must be a `var`. End with `default { state }` to make uncovered cells a no-op stay. Every (state, event) cell must be covered or it is a compile error.
+A machine is a value type. State constructors use a machine-qualified dotted form both inside and outside transition bodies (`Counter.NonZero { value: 1 }`, `Counter.Zero`); contextual event arguments use `.Variant` (`step(.Inc)`). Event constructors use the event-type qualifier outside contextual positions (`CounterEvent.Inc`). This behaviour keeps state-constructor resolution explicit. `step()` mutates in place — the receiver must be a `var`. End with `default { state }` to make uncovered cells a no-op stay. Every (state, event) cell must be covered or it is a compile error.
 
 > **Why `default` is a blanket catch-all, and what that costs you.** Without
 > `default`, every `(state, event)` pair not covered by an explicit `on`

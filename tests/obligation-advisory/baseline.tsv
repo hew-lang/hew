@@ -1,16 +1,17 @@
-# fixture	advisories	blocking_mir	exit_code
-cross_module_result/main.hew	0	0	0
-direct_call_terminal_carriers.hew	0	0	0
-escaping_direct_call_binding.hew	0	0	0
-many_return_blocks.hew	0	0	0
-pF.hew	0	0	0
-pG.hew	0	0	0
-pH.hew	0	0	0
-pJ.hew	0	0	0
-pK.hew	0	0	0
-pL.hew	0	0	0
-pM.hew	0	0	0
-pN.hew	0	0	0
-rA.hew	0	0	0
-rC.hew	0	0	0
-retained_call_carriers/main.hew	0	0	0
+# fixture	advisories	blocking_mir	exit_code	runtime
+cross_module_result/main.hew	0	0	0	check
+direct_call_terminal_carriers.hew	0	0	0	clean
+escaping_direct_call_binding.hew	0	0	0	check
+many_return_blocks.hew	0	0	0	check
+pF.hew	0	0	0	check
+pG.hew	0	0	0	check
+pH.hew	0	0	0	check
+pJ.hew	0	0	0	check
+pK.hew	0	0	0	check
+pL.hew	0	0	0	check
+pM.hew	0	0	0	check
+pN.hew	0	0	0	check
+rA.hew	0	0	0	check
+rC.hew	0	0	0	clean
+retained_call_carriers/main.hew	0	0	0	check
+retained_hard_refusal.hew	0	1	1	refuse

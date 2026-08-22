@@ -1,0 +1,26 @@
+enum EnumHeapMoveChoice { Pair(string, i64); }
+record EnumHeapMoveCarrier {
+    choice: EnumHeapMoveChoice,
+    sibling: string,
+}
+
+fn project(i: i64) -> string {
+    let r = EnumHeapMoveCarrier {
+        choice: EnumHeapMoveChoice.Pair(string_concat("enum-", "payload"), i),
+        sibling: string_concat("sibling-", "payload"),
+    };
+    match r.choice {
+        EnumHeapMoveChoice.Pair(text, _) => text,
+    }
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 64 {
+        let moved = project(i);
+        total = total + moved.len();
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

@@ -1,0 +1,23 @@
+record TupleHeapMoveCarrier {
+    pair: (string, i64),
+    sibling: string,
+}
+
+fn project(i: i64) -> string {
+    let r = TupleHeapMoveCarrier {
+        pair: (string_concat("tuple-", "payload"), i),
+        sibling: string_concat("sibling-", "payload"),
+    };
+    r.pair.0
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 64 {
+        let moved = project(i);
+        total = total + moved.len();
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

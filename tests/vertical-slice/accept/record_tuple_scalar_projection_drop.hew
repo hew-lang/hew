@@ -1,0 +1,26 @@
+//! Reading a scalar through a heap-owning tuple field keeps the record's
+//! recursive scope drop. Each helper frame owns two strings; a projection read
+//! must release both exactly once when the frame returns.
+
+record Carrier {
+    pair: (string, i64),
+    sibling: string,
+}
+
+fn read_scalar(i: i64) -> i64 {
+    let r = Carrier {
+        pair: (string_concat("pair-", "payload"), i),
+        sibling: string_concat("sibling-", "payload"),
+    };
+    r.pair.1
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 2000 {
+        total = total + read_scalar(i);
+        i = i + 1;
+    }
+    if total == 1999000 { 0 } else { 1 }
+}

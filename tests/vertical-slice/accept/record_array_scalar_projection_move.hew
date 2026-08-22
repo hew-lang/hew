@@ -1,0 +1,22 @@
+record ArrayScalarMoveCarrier { items: Vec<i64>, sibling: string }
+
+fn project(i: i64) -> i64 {
+    let values: Vec<i64> = Vec.new();
+    values.push(i);
+    let r = ArrayScalarMoveCarrier {
+        items: values,
+        sibling: string_concat("sibling-", "payload"),
+    };
+    let moved = r.items[0];
+    moved
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 64 {
+        total = total + project(i);
+        i = i + 1;
+    }
+    if total == 2016 { 0 } else { 1 }
+}

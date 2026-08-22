@@ -1,0 +1,25 @@
+enum EnumScalarReadChoice { Pair(string, i64); }
+record EnumScalarReadCarrier {
+    choice: EnumScalarReadChoice,
+    sibling: string,
+}
+
+fn project(i: i64) -> i64 {
+    let r = EnumScalarReadCarrier {
+        choice: EnumScalarReadChoice.Pair(string_concat("enum-", "payload"), i),
+        sibling: string_concat("sibling-", "payload"),
+    };
+    match r.choice {
+        EnumScalarReadChoice.Pair(_, value) => value,
+    }
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 64 {
+        total = total + project(i);
+        i = i + 1;
+    }
+    if total == 2016 { 0 } else { 1 }
+}

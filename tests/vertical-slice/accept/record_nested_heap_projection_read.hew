@@ -1,0 +1,26 @@
+record NestedHeapReadInner { text: string, value: i64 }
+record NestedHeapReadCarrier {
+    inner: NestedHeapReadInner,
+    sibling: string,
+}
+
+fn project(i: i64) -> i64 {
+    let r = NestedHeapReadCarrier {
+        inner: NestedHeapReadInner {
+            text: string_concat("inner-", "payload"),
+            value: i,
+        },
+        sibling: string_concat("sibling-", "payload"),
+    };
+    r.inner.text.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 64 {
+        total = total + project(i);
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

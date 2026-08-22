@@ -1,0 +1,21 @@
+record ArrayScalarReadCarrier { items: Vec<i64>, sibling: string }
+
+fn project(i: i64) -> i64 {
+    let values: Vec<i64> = Vec.new();
+    values.push(i);
+    let r = ArrayScalarReadCarrier {
+        items: values,
+        sibling: string_concat("sibling-", "payload"),
+    };
+    r.items[0]
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 64 {
+        total = total + project(i);
+        i = i + 1;
+    }
+    if total == 2016 { 0 } else { 1 }
+}

@@ -1,0 +1,27 @@
+record NestedScalarMoveInner { text: string, value: i64 }
+record NestedScalarMoveCarrier {
+    inner: NestedScalarMoveInner,
+    sibling: string,
+}
+
+fn project(i: i64) -> i64 {
+    let r = NestedScalarMoveCarrier {
+        inner: NestedScalarMoveInner {
+            text: string_concat("inner-", "payload"),
+            value: i,
+        },
+        sibling: string_concat("sibling-", "payload"),
+    };
+    let moved = r.inner.value;
+    moved
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 64 {
+        total = total + project(i);
+        i = i + 1;
+    }
+    if total == 2016 { 0 } else { 1 }
+}

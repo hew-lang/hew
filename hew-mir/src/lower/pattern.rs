@@ -4646,6 +4646,7 @@ impl Builder {
                             scrutinee,
                             variant_idx,
                             binding.field_idx,
+                            &binding_ty,
                         )
                     })
                     .flatten();
@@ -4932,6 +4933,7 @@ impl Builder {
                         scrutinee,
                         variant_idx,
                         field_idx,
+                        &field_ty,
                     ) else {
                         continue;
                     };

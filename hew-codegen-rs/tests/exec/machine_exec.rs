@@ -1,8 +1,7 @@
 //! End-to-end machine execution fixtures for `m.step(ev)` and `m.state_name()`.
 //!
-//! The CLI currently emits textual LLVM IR as part of `hew compile`; there is
-//! no separate `--emit-llvm` flag. These tests invoke that public compile path,
-//! read the emitted `.ll`, and then run the same fixtures through `hew run`.
+//! These tests request textual LLVM IR from the public `hew compile` path, read
+//! the emitted `.ll`, and then run the same fixtures through `hew run`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -183,6 +182,7 @@ fn compile_fixture(repo: &Path, fixture: &MachineFixture) -> String {
     let mut command = hew_command(repo);
     command
         .arg("compile")
+        .arg("--emit-llvm")
         .arg(fixture_path(repo, fixture.stem))
         .arg("--emit-dir")
         .arg(&out_dir);

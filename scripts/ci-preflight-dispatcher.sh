@@ -318,11 +318,13 @@ PREFLIGHT_COUNTERFACTUAL_MARKER='CF-'
 
 extract_failure_lines() {
     local log="$1"
+    local failure_line_re="${2:-$PREFLIGHT_FAILURE_LINE_RE}"
+    local counterfactual_marker="${3:-$PREFLIGHT_COUNTERFACTUAL_MARKER}"
 
     [[ -s "$log" ]] || return 0
     sed $'s/\033\\[[0-9;?]*[a-zA-Z]//g' "$log" \
-        | grep -v -E "^${PREFLIGHT_COUNTERFACTUAL_MARKER}" \
-        | grep -E "$PREFLIGHT_FAILURE_LINE_RE" || true
+        | grep -v -E "^${counterfactual_marker}" \
+        | grep -E "$failure_line_re" || true
 }
 
 extract_first_failure() {
@@ -445,7 +447,12 @@ run_counterfactual_output_check() {
         fi
         log="$(mktemp "${TMPDIR:-/tmp}/hew-counterfactual-output.XXXXXX")"
         printf '%s\n' "$output" > "$log"
-        offenders="$(extract_failure_lines "$log")"
+        offenders="$(
+            extract_failure_lines \
+                "$log" \
+                "$PREFLIGHT_FAILURE_LINE_RE" \
+                "${PREFLIGHT_COUNTERFACTUAL_MARKER}"
+        )"
         rm -f "$log"
         marked="$(printf '%s\n' "$output" | grep -c -E "^${PREFLIGHT_COUNTERFACTUAL_MARKER}" || true)"
         if [[ -n "$offenders" ]]; then

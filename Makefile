@@ -64,8 +64,6 @@
 # no-gate: .editorconfig — editor metadata
 # no-gate: .vscode/* — editor metadata
 # no-gate: .idea/* — editor metadata
-# no-gate: editors/nano/hew.nanorc — generated/read only by the operator-run
-#     scripts/sync-downstream.sh, which is not reached by CI
 # ============================================================================
 
 # ============================================================================
@@ -159,9 +157,13 @@ help:
 		'Test: make test | test-hew-ratchet | test-stdlib-ratchet' \
 		'Release: make pre-release'
 
+# inputs: scripts/*.sh
 shell-script-lint:
-	bash -n scripts/*.sh
+	@for script in scripts/*.sh; do bash -n "$$script" || exit; done
 	shellcheck scripts/*.sh
+
+shell-script-lint-build:
+	@:
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
@@ -1514,7 +1516,7 @@ test-example-expectations-selftest-build:
 #
 # Run `make test-doc-examples` after any docs/ change to confirm no fence
 # regressions were introduced.
-# inputs: docs/hew-language-guide.md docs/specs/HEW-SPEC-2026.md
+# inputs: docs/hew-language-guide.md docs/specs/HEW-SPEC-2026.md docs/language/*.hew
 # inputs: scripts/corpus-ratchet.sh scripts/doc-test-expected-failures.txt
 test-doc-examples: hew
 	@HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh doc-fences
@@ -1737,9 +1739,10 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
+.SECONDEXPANSION:
 # inputs: *
 # preflight: never — aggregate; the preflight selects its leaf gates individually and runs workspace clippy directly
-lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan legacy-path-syntax-lint codegen-carried-identity-gate codegen-trap-inventory-check verify-ffi test-verify-ffi test-cabi-surface test-python310-toml-compat verify-sys-lane-closure hew-fmt-check sandbox-parity-coverage-check tool-pin-contract-check lint-ci-coverage-check
+lint: $$(LINT_GATES)
 	cargo clippy --workspace --tests -- -D warnings
 
 # Clippy's check artifacts are a separate fingerprint from rustc's, so the
@@ -1748,6 +1751,7 @@ lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan legacy-p
 lint-build: structural-lint-bootstrap-install
 	cargo clippy --workspace --tests
 
+LINT_GATES += legacy-path-syntax-lint
 # inputs: examples/*.hew std/*.hew README.md CHANGELOG.md docs/*.md
 # inputs: scripts/lint-legacy-path-syntax.py
 legacy-path-syntax-lint:
@@ -1757,6 +1761,7 @@ legacy-path-syntax-lint:
 legacy-path-syntax-lint-build:
 	@:
 
+LINT_GATES += lint-ci-coverage-check
 # inputs: Makefile .github/workflows/ci.yml scripts/check-lint-ci-coverage.py
 # inputs: scripts/tests/test_check_lint_ci_coverage.py
 # inputs: scripts/tests/test_playground_path_filter_oracle.py
@@ -1777,6 +1782,7 @@ lint-ci-coverage-check-build:
 # target instead of drifting. --install-only stops after the verified
 # install: the audit and the scan belong to the structural-lint recipe
 # below, so provisioning a consumer never re-runs the lint gate.
+LINT_GATES += structural-lint
 .NOTPARALLEL: structural-lint structural-lint-bootstrap
 # inputs: *.rs *.hew rules/* sgconfig.yml tools/ast-grep.lock scripts/ast-grep-lint.sh
 # inputs: scripts/structural-authority-audit.py
@@ -1849,6 +1855,7 @@ freebsd-workflow-contract-check-build:
 preflight-plan-mark-%:
 	@echo "==preflight-plan==$*"
 
+LINT_GATES += tool-pin-contract-check
 # Keep build-system tool verification and every CI installer on one exact pin.
 # inputs: scripts/tests/test_tool_pin_contract.py xtask/src/build_system.rs
 # inputs: .github/workflows/* .github/actions/*
@@ -1859,6 +1866,7 @@ tool-pin-contract-check:
 tool-pin-contract-check-build:
 	@:
 
+LINT_GATES += sandbox-parity-coverage-check
 # Assert every VM-dependent hew-sandbox-wasm test binary (one containing a
 # function that spawns the hew-sandbox-vm Node runner) is excluded WHOLE
 # from the generic nextest default-filter (.config/nextest.toml,
@@ -1915,6 +1923,7 @@ test-release-workflow-contract:
 test-release-workflow-contract-build:
 	@:
 
+LINT_GATES += test-build-harness
 # inputs: scripts/tests/test_ci_preflight_dispatcher.py
 # inputs: scripts/tests/test_ci_preflight_timeout.sh
 # inputs: scripts/tests/test_playground_path_filter_oracle.py
@@ -1926,8 +1935,6 @@ test-release-workflow-contract-build:
 # no job at all -- the state check-gate-reachability.py's A6 assertion now
 # refuses for every scripts/tests/ file. All five use stubs or temporary trees;
 # none needs a built compiler.
-.PHONY: test-build-harness
-LINT_GATES += test-build-harness
 test-build-harness:
 	python3 scripts/tests/test_ci_preflight_dispatcher.py
 	bash scripts/tests/test_ci_preflight_timeout.sh
@@ -1939,6 +1946,7 @@ test-build-harness:
 test-build-harness-build:
 	@:
 
+LINT_GATES += leak-scan
 # Scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths)
 # and scan commit-message bodies of commits not yet on origin/main for the same tokens.
 # Runs fast (<2 s each, git-grep and git-log only).
@@ -1952,6 +1960,7 @@ leak-scan:
 leak-scan-build:
 	@:
 
+LINT_GATES += hew-fmt-check
 # Check that std/ and examples/ .hew sources are formatted.
 # Run `find std examples -name "*.hew" -print0 | xargs -0 hew fmt` to fix.
 # inputs: std/*.hew examples/*.hew hew-parser/src/*.rs hew-cli/src/*.rs
@@ -2034,6 +2043,7 @@ hew-check-all-build: hew
 	@:
 
 .PHONY: codegen-carried-identity-gate
+LINT_GATES += codegen-carried-identity-gate
 # inputs: hew-codegen-rs/src/*.rs
 codegen-carried-identity-gate:
 	@if rg -n 'contains\("__recv__"\)|split_once\("__recv__"\)|strip_suffix\("__step"\)|starts_with\("hew_metric_"\)|hew_tcp_connect|hew_dns_|actor_name_from_handler_symbol|actor_layout_key_from_handler_symbol|is_machine_step_symbol|module_uses_blocking_offload' hew-codegen-rs/src; then \
@@ -2103,6 +2113,7 @@ test-ci-preflight-dispatcher-build:
 	@:
 
 .PHONY: codegen-trap-inventory-check
+LINT_GATES += codegen-trap-inventory-check
 # inputs: hew-codegen-rs/src/*.rs scripts/check-codegen-trap-inventory.py
 codegen-trap-inventory-check:
 	python3 scripts/check-codegen-trap-inventory.py
@@ -2160,6 +2171,7 @@ stdlib-lint: stdlib-errno-gate
 stdlib-lint-build:
 	@:
 
+LINT_GATES += runtime-poison-safe-lint
 # Grep-gate: fail on raw .lock()/.read()/.write() against any runtime global
 # that has been migrated to the PoisonSafe/PoisonSafeRw wrapper, and on the
 # `if let Ok(_) = X.lock()` anti-pattern anywhere in hew-runtime/src/. Extend
@@ -2182,6 +2194,7 @@ runtime-poison-safe-lint-self-test:
 runtime-poison-safe-lint-self-test-build:
 	@:
 
+LINT_GATES += lint-wasm-todo
 # Validate the repository-owned WASM backlog authority and every actionable
 # WASM-TODO(<stable-backlog-id>): marker. The self-test pins fail-closed
 # behaviour independently of the live corpus.
@@ -2271,6 +2284,7 @@ coverage-branch:
 # Validates that every hew-runtime #[no_mangle] export is classified in
 # scripts/jit-symbol-classification.toml (stable vs internal).
 
+LINT_GATES += verify-ffi
 # inputs: hew-runtime/src/*.rs hew-std/src/*.rs scripts/verify-ffi-symbols.py
 # inputs: scripts/jit-symbol-classification.toml scripts/ffi-ownership-ratchet.toml
 verify-ffi: cabi-surface-check
@@ -2287,6 +2301,7 @@ ffi-ownership-ratchet-record:
 verify-ffi-build:
 	@:
 
+LINT_GATES += test-verify-ffi
 # inputs: scripts/verify-ffi-symbols.py scripts/tests/test_verify_ffi_symbols.py
 test-verify-ffi:
 	python3 scripts/tests/test_verify_ffi_symbols.py
@@ -2308,6 +2323,7 @@ cabi-surface-check:
 cabi-surface-check-build:
 	@:
 
+LINT_GATES += test-cabi-surface
 # inputs: scripts/generate-cabi-surface.py scripts/tests/test_cabi_surface.py
 test-cabi-surface:
 	python3 scripts/tests/test_cabi_surface.py
@@ -2316,6 +2332,7 @@ test-cabi-surface:
 test-cabi-surface-build:
 	@:
 
+LINT_GATES += test-python310-toml-compat
 # The release macOS validator uses Python 3.10, which has no stdlib tomllib.
 # Force the dependency-free parser even on newer CI interpreters and run every
 # production consumer of repository TOML policy/configuration.
@@ -2327,6 +2344,7 @@ test-python310-toml-compat:
 test-python310-toml-compat-build:
 	@:
 
+LINT_GATES += verify-sys-lane-closure
 # ── System-lane closure ────────────────────────────────────────────────────
 # docs/internal/jit-host-abi.md forbids any `stable` symbol from producing,
 # installing, mutating, observing or destroying system-lane state. That is a

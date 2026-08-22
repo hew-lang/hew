@@ -41,6 +41,7 @@ gate-source literals and Rust assets compiled with `include_str!`/
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -321,7 +322,7 @@ def source_closure(root: Path, seeds: Iterable[str]) -> list[str]:
 
 
 def _python_modules(root: Path, rel: str, text: str) -> list[str]:
-    """Repository modules a python file imports, packages included."""
+    """Repository modules a Python file imports, including explicit file specs."""
     directory = Path(rel).parent
     search = _search_path(rel, text) + [directory, Path("scripts"), Path("scripts/lib")]
     found: list[str] = []
@@ -341,6 +342,32 @@ def _python_modules(root: Path, rel: str, text: str) -> list[str]:
             else:
                 continue
             break
+    if "spec_from_file_location" in text:
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            tree = None
+        files, _directories = tracked_paths(root)
+        for node in ast.walk(tree) if tree is not None else ():
+            if not isinstance(node, ast.Call) or len(node.args) < 2:
+                continue
+            function = node.func
+            if not (
+                isinstance(function, ast.Attribute)
+                and function.attr == "spec_from_file_location"
+            ):
+                continue
+            for value in ast.walk(node.args[1]):
+                if not (
+                    isinstance(value, ast.Constant)
+                    and isinstance(value.value, str)
+                    and value.value.endswith(".py")
+                ):
+                    continue
+                for candidate in _candidates(value.value, rel, None):
+                    if candidate in files and candidate not in found:
+                        found.append(candidate)
+                        break
     return found
 
 

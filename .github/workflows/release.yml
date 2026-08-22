@@ -22,7 +22,8 @@
 # Required variable and secrets for the required playground release image:
 #   vars.PLAYGROUND_PUBLISH_MODE — how the release image is acquired; exactly
 #     `actions` (dispatch the playground build workflow and watch it) or
-#     `local` (a maintainer publishes it with `make release-publish`). Any
+#     `local` (a maintainer runs the playground checkout's release-publish
+#     target). Any
 #     other value, including unset, fails the release.
 #   secrets.PLAYGROUND_APP_ID — GitHub App ID for the playground App
 #   secrets.PLAYGROUND_APP_PRIVATE_KEY — Private key for the playground App
@@ -1575,8 +1576,9 @@ jobs:
   # The job's contract is the release image itself: for this tag, an image
   # exists in the registry and it binds this release commit. How the image gets
   # there is an acquisition mode, not the contract — `actions` dispatches the
-  # playground build workflow, `local` waits for a maintainer's
-  # `make release-publish`. Both modes end at the identical assertion.
+  # playground build workflow, `local` waits for a maintainer to run the
+  # playground checkout's release-publish target. Both modes end at the
+  # identical assertion.
   playground:
     needs: release
     runs-on: ubuntu-24.04
@@ -1775,7 +1777,7 @@ jobs:
           VERSION="${RELEASE_TAG#v}"
           echo "Acquisition mode is 'local': no playground workflow was dispatched."
           echo "Publish the release image from a hew-lang/playground checkout:"
-          echo "  make release-publish HEW_SHA=${HEW_SHA} HEW_VERSION=${VERSION}"
+          echo "  Run the playground checkout's release-publish target with HEW_SHA=${HEW_SHA} HEW_VERSION=${VERSION}"
           echo "This job waits up to ${DEADLINE_MINUTES}m for that image and fails if it does not arrive."
 
       - name: Assert release image exists and binds the release commit

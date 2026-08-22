@@ -363,10 +363,9 @@ emit_failure_annotation() {
 # replay IS the evidence that the bait path ran, so a gate that produces none is
 # either gutted or was never counterfactual-carrying and does not belong here.
 #
-# The roster covers the gates that need no compiler build, keeping this a fast
-# check rather than a second preflight.  A gate that needs `make hew` is proved
-# by the preflight run itself: its first-failure line is only ever consulted
-# once it has already failed.
+# The roster covers every gate that carries a self-contained counterfactual,
+# including compiler-backed gates. Membership is the proof that the
+# counterfactual ran and remained safe for first-failure extraction.
 # test-stdlib-execution-proofs and freebsd-workflow-contract-check are
 # deliberately absent: both are plain assertion gates that never drive a tool
 # against rigged input, so they carry no counterfactual to mark and nothing here
@@ -379,6 +378,7 @@ COUNTERFACTUAL_ROSTER=(
     "make check-sanitizer-gate"
     "make test-release-workflow-contract"
     "make test-leak-oracle-selftest"
+    "make dogfood-compile-measure"
 )
 
 run_counterfactual_output_check() {

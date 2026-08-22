@@ -1679,12 +1679,22 @@ fn cmd_key_register(registry_name: Option<&str>) {
         }
     };
 
+    if let Some(name) = registry_name {
+        resolve_named_registry_or_exit(name);
+    }
     let cred_path = credentials::credentials_path();
-    let Ok(token) = resolve_registry_token(&cred_path, registry_name) else {
-        eprintln!("hew key register: not logged in");
-        eprintln!("Run `hew login` first.");
+    let token = resolve_registry_token(&cred_path, registry_name).unwrap_or_else(|err| {
+        match err {
+            credentials::CredentialError::NotLoggedIn => {
+                eprintln!("hew key register: not logged in");
+                eprintln!("Run `hew login` first.");
+            }
+            credentials::CredentialError::Parse(_) | credentials::CredentialError::Io(_) => {
+                eprintln!("hew key register: {err}");
+            }
+        }
         std::process::exit(1);
-    };
+    });
 
     match register_signing_key(registry_name, token, &keypair.public_key_base64()) {
         Ok(fp) => println!("Key registered with registry (fingerprint: {fp})"),

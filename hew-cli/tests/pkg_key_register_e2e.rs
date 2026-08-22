@@ -15,8 +15,9 @@ mod support;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
+use std::time::Duration;
 
-use support::http_canned::spawn_canned_response_server;
+use support::http_canned::spawn_recording_canned_response_server;
 
 const REGISTRY_NAME: &str = "testreg";
 
@@ -64,7 +65,11 @@ fn write_named_registry(home: &Path, api_url: &str) {
 fn key_register_with_an_existing_key_registers_it_and_exits_zero() {
     let home = support::tempdir();
     generate_signing_key(home.path());
-    let port = spawn_canned_response_server(
+    let expected_public_key = fs::read_to_string(home.path().join(".hew/keys/id_ed25519.pub"))
+        .expect("read generated public key")
+        .trim()
+        .to_owned();
+    let (port, request_rx) = spawn_recording_canned_response_server(
         "200 OK",
         r#"{"fingerprint":"SHA256:0hOtRl0FvXqAr7cUf3jTSTfvhO2fYnTEXPz1yeF3aRM"}"#,
     );
@@ -87,6 +92,15 @@ fn key_register_with_an_existing_key_registers_it_and_exits_zero() {
         stdout.contains("SHA256:0hOtRl0FvXqAr7cUf3jTSTfvhO2fYnTEXPz1yeF3aRM"),
         "stdout missing the registry's fingerprint:\n{stdout}"
     );
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("registration request");
+    assert_eq!(request.method, "PUT");
+    assert_eq!(request.path, "/keys");
+    let body: serde_json::Value =
+        serde_json::from_slice(&request.body).expect("registration JSON body");
+    assert_eq!(body["key_type"], "ed25519");
+    assert_eq!(body["public_key"], expected_public_key);
 }
 
 #[test]
@@ -148,6 +162,57 @@ fn key_register_without_credentials_exits_one_and_names_login() {
     assert!(
         stderr.contains("hew login"),
         "stderr does not name the command that authenticates:\n{stderr}"
+    );
+}
+
+#[test]
+fn key_register_with_corrupt_credentials_surfaces_the_parse_error() {
+    let home = support::tempdir();
+    generate_signing_key(home.path());
+    let hew_dir = home.path().join(".hew");
+    fs::write(hew_dir.join("credentials.toml"), "not valid toml {{{")
+        .expect("write corrupt credentials");
+
+    let output = key_command(home.path(), &["register"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1\n{}",
+        support::describe_output(&output)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid credentials file"),
+        "stderr missing credential parse diagnostic:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("not logged in"),
+        "parse failure must not be reported as logged out:\n{stderr}"
+    );
+}
+
+#[test]
+fn key_register_with_unknown_named_registry_surfaces_the_config_error() {
+    let home = support::tempdir();
+    generate_signing_key(home.path());
+
+    let output = key_command(home.path(), &["register", "--registry", "unknown"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1\n{}",
+        support::describe_output(&output)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown registry 'unknown'"),
+        "stderr missing unknown-registry diagnostic:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("not logged in"),
+        "unknown registry must not be reported as logged out:\n{stderr}"
     );
 }
 

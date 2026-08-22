@@ -995,7 +995,10 @@ fn compile_build_binary_with_hew_lib(
     options: &compile::CompileOptions,
     hew_lib: Option<&Path>,
 ) -> Result<(), ()> {
+    let wall_started = std::time::Instant::now();
+    let lower_started = std::time::Instant::now();
     let (pipeline, native_pkg_dirs) = lower_file_to_mir_for_target(input, target, options)?;
+    measure_compile_phase("MIR lowering", lower_started.elapsed());
     let emit_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = output_path
         .file_stem()
@@ -1006,6 +1009,7 @@ fn compile_build_binary_with_hew_lib(
     } else {
         CompileEmitTarget::Native
     };
+    let backend_started = std::time::Instant::now();
     let artefacts = emit_module_for_target(
         &pipeline,
         module_name,
@@ -1020,8 +1024,9 @@ fn compile_build_binary_with_hew_lib(
         emit_llvm,
         Some(input),
     )?;
+    measure_compile_phase("backend", backend_started.elapsed());
 
-    match emit_target {
+    let result = match emit_target {
         CompileEmitTarget::Native => {
             let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
                 eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
@@ -1062,6 +1067,19 @@ fn compile_build_binary_with_hew_lib(
             })?;
             remove_intermediate_object(obj)
         }
+    };
+    if result.is_ok() {
+        measure_compile_phase("wall", wall_started.elapsed());
+    }
+    result
+}
+
+fn measure_compile_phase(phase: &str, elapsed: std::time::Duration) {
+    if std::env::var_os("HEW_MEASURE_TIMINGS").is_some() {
+        eprintln!(
+            "hew measure: {phase} {:.3} ms",
+            elapsed.as_secs_f64() * 1_000.0
+        );
     }
 }
 

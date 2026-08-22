@@ -1580,12 +1580,17 @@ fn render_mir_check(check: &MirCheck) -> String {
         }
         MirCheck::ObligationUnderReleased {
             function,
-            block,
+            blocks,
+            site,
             name,
+            mint_provenance,
             hard,
             reason,
             ..
-        } => format!("ObligationUnderReleased {function} bb{block} {name} hard={hard} {reason:?}"),
+        } => format!(
+            "ObligationUnderReleased {function} blocks={blocks:?} site={site:?} \
+             {name} mint={mint_provenance:?} hard={hard} {reason:?}"
+        ),
         MirCheck::ObligationOverReleased {
             function,
             block,
@@ -1762,6 +1767,13 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         MirDiagnosticKind::ExternStringOwnershipUnresolved { symbol } => {
             format!("ExternStringOwnershipUnresolved {symbol}")
         }
+        MirDiagnosticKind::ImportedResourcePayloadSummaryMissing {
+            symbol,
+            payload_ty,
+            site,
+        } => format!(
+            "ImportedResourcePayloadSummaryMissing {symbol} payload={payload_ty} site={site:?}"
+        ),
         MirDiagnosticKind::UnsupportedUserRecordValueClass { name, reason } => {
             format!("UnsupportedUserRecordValueClass {name} {reason:?}")
         }
@@ -1799,12 +1811,14 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         }
         MirDiagnosticKind::ObligationUnderReleased {
             function,
-            block,
+            blocks,
+            site,
             name,
             hard,
             reason,
+            ..
         } => format!(
-            "ObligationUnderReleased {function} bb{block} {name} hard={hard} {reason:?}"
+            "ObligationUnderReleased {function} blocks={blocks:?} site={site:?} {name} hard={hard} {reason:?}"
         ),
         MirDiagnosticKind::ObligationOverReleased {
             function,

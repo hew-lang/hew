@@ -631,11 +631,12 @@ pub(super) fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         // EnumCloneInplace has the same non-consuming-read semantics.
         | Instr::EnumCloneInplace { .. }
         | Instr::ValueSnapshotClone { .. }
-        | Instr::ValueSnapshotDrop { .. }
-        // A payload-slot neutralize nulls the scrutinee's transferred slot; it
-        // does not hand any local out of the body.
-        | Instr::NeutralizePayloadSlot { .. }
-        | Instr::AggregateProjectionNeutralize { .. } => false,
+        | Instr::ValueSnapshotDrop { .. } => false,
+        // Neutralizing a projection normally suppresses a body-end root drop.
+        // Minted call carriers apply their narrower shell-safety authority in
+        // the caller and may exempt a null-safe projected transfer.
+        Instr::NeutralizePayloadSlot { place, .. } => refs(*place),
+        Instr::AggregateProjectionNeutralize { root, .. } => refs(*root),
     }
 }
 /// True when a terminator transfers ownership of `local` out of the body: a

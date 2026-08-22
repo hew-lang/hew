@@ -1,3 +1,5 @@
+use hew_hir::HirProducedValueProducer;
+
 use super::{
     actor_name_from_handle_ty, affine_release_needs_drop_flag, base_local, binding_ref_target,
     callee_returns_fresh_owner, callee_returns_retained_string_owner,
@@ -474,6 +476,21 @@ impl Builder {
             return;
         };
         let provisional = self.owned_locals[index].binding;
+        if let (Some(source_local), Some(destination_local)) = (
+            base_local(source),
+            self.binding_locals
+                .get(&binding)
+                .copied()
+                .and_then(base_local),
+        ) {
+            if self
+                .call_scrutinee_carrier_mint_locals
+                .remove(&source_local)
+            {
+                self.call_scrutinee_carrier_mint_locals
+                    .insert(destination_local);
+            }
+        }
         if let Some(destination) = self.binding_locals.get(&binding).copied() {
             self.typed_produced_value_handoffs
                 .insert((source, destination));
@@ -543,6 +560,17 @@ impl Builder {
             return;
         };
         let provisional = self.owned_locals.remove(index).binding;
+        if let (Some(source_local), Some(destination_local)) =
+            (base_local(source), base_local(dest))
+        {
+            if self
+                .call_scrutinee_carrier_mint_locals
+                .remove(&source_local)
+            {
+                self.call_scrutinee_carrier_mint_locals
+                    .insert(destination_local);
+            }
+        }
         self.synthetic_owner_publication_sites.remove(&provisional);
         // Record the assignment move as a typed handoff, exactly as the `let`
         // adoption seam does. `finalize_string_ownership` consults this set to
@@ -653,6 +681,23 @@ impl Builder {
         else {
             return;
         };
+        let call_carrier_mint = matches!(
+            fact.producer,
+            HirProducedValueProducer::Call
+                | HirProducedValueProducer::ActorAsk
+                | HirProducedValueProducer::RemoteActorAsk
+                | HirProducedValueProducer::Await
+                | HirProducedValueProducer::AwaitTask
+                | HirProducedValueProducer::AwaitRestart
+                | HirProducedValueProducer::ConnAwaitRead
+                | HirProducedValueProducer::ListenerAwaitAccept
+                | HirProducedValueProducer::ChannelRecvAwait
+                | HirProducedValueProducer::StreamRecvAwait
+                | HirProducedValueProducer::CallDynMethod
+                | HirProducedValueProducer::CallTraitMethodStatic
+                | HirProducedValueProducer::VarSelfMethodCall
+                | HirProducedValueProducer::ResolvedImplCall
+        );
         if matches!(fact.ownership, ProducedValueOwnership::ReceiverIdentity) {
             self.transfer_identity_owner(expr.site, fact.receiver, place);
             return;
@@ -807,6 +852,9 @@ impl Builder {
             warrant,
         );
         self.typed_produced_value_owner_bindings.insert(binding);
+        if call_carrier_mint {
+            self.call_scrutinee_carrier_mint_locals.insert(local);
+        }
         if matches!(ty, ResolvedTy::TraitObject { .. }) {
             self.dyn_trait_storage
                 .insert(binding, crate::TraitObjectStorage::HeapBoxed);
@@ -1389,11 +1437,23 @@ impl Builder {
         scrutinee: &HirExpr,
         scrutinee_local: u32,
     ) -> Option<(BindingId, ResolvedTy)> {
-        self.finalize_typed_produced_value_owner(
+        let label = match &scrutinee.kind {
+            HirExprKind::Call { callee, .. } => match &callee.kind {
+                HirExprKind::BindingRef { name, .. } => format!("{name}(...)"),
+                _ => "direct call expression".to_string(),
+            },
+            _ => "call scrutinee expression".to_string(),
+        };
+        let owner = self.finalize_typed_produced_value_owner(
             SYNTHETIC_CALL_SCRUTINEE_NAME,
             scrutinee.site,
             Place::Local(scrutinee_local),
-        )
+        );
+        if owner.is_some() {
+            self.call_scrutinee_diagnostics
+                .insert(scrutinee_local, (scrutinee.site, label));
+        }
+        owner
     }
 
     /// Reject an ownership-demanding sink whose total HIR row is unresolved.
@@ -1569,12 +1629,22 @@ impl Builder {
     }
     pub(crate) fn register_discarded_call_result_owner(&mut self, expr: &HirExpr, place: Place) {
         let typed_ty = self.subst_ty(&expr.ty);
-        if !ty_is_heap_owning_enum_composite(
+        let enum_in_place = ty_is_heap_owning_enum_composite(
             &typed_ty,
             &self.record_field_orders,
             &self.enum_layouts,
             self.type_classes.lifecycle_registry(),
-        ) {
+        );
+        let owns_heap = crate::model::ty_owns_heap_mir(
+            &typed_ty,
+            &self.record_field_orders,
+            &self.enum_layouts,
+        );
+        let is_resource = matches!(
+            ValueClass::of_ty(&typed_ty, &self.type_classes),
+            ValueClass::AffineResource | ValueClass::Linear
+        );
+        if !enum_in_place && !owns_heap && !is_resource {
             return;
         }
         let Some((binding, ty)) = self.finalize_typed_produced_value_owner(
@@ -1606,13 +1676,31 @@ impl Builder {
             ty: ty.clone(),
             intent: IntentKind::Consume,
         });
-        self.push_instr(Instr::Drop {
-            place,
-            ty,
-            drop_fn: Some(crate::model::DropFnSpec::InPlace(
-                crate::ownership::InPlaceReleaseKind::Enum,
-            )),
-        });
+        let before = self.instructions.len();
+        if enum_in_place {
+            self.push_instr(Instr::Drop {
+                place,
+                ty: ty.clone(),
+                drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                    crate::ownership::InPlaceReleaseKind::Enum,
+                )),
+            });
+        } else {
+            self.emit_local_overwrite_release(place, &ty);
+        }
+        if self.instructions.len() == before {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "owned discarded result release".to_string(),
+                    site: expr.site,
+                },
+                note: format!(
+                    "discarded owned value of type {} has no complete inline release plan",
+                    ty.user_facing()
+                ),
+            });
+            return;
+        }
         self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
     }
     pub(crate) fn record_iteration_owner_drop(
@@ -1897,6 +1985,7 @@ impl Builder {
     /// interior alias — never its own drop) are excluded, so the re-admission
     /// never resurrects a drop those dispositions deliberately elide.
     pub(crate) fn owned_locals_exit_candidates(&self) -> Vec<(BindingId, String, ResolvedTy)> {
+        let mut seen = HashSet::new();
         self.owned_locals
             .iter()
             .filter(|entry| {
@@ -1914,6 +2003,7 @@ impl Builder {
                         .synthetic_borrowed_temp_drop_bindings
                         .contains(&entry.binding))
             })
+            .filter(|entry| seen.insert(entry.binding))
             .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect()
     }
@@ -4965,6 +5055,45 @@ mod typed_produced_owner_tests {
             kind: HirExprKind::Literal(HirLiteral::Unit),
             span: 0..0,
         }
+    }
+
+    #[test]
+    fn rebind_replaces_scope_exit_authority_for_the_same_binding() {
+        let binding = BindingId(700);
+        let place = Place::Local(9);
+        let mut value = owned_resource(SiteId(700));
+        value.ty = ResolvedTy::String;
+        let mut builder = Builder::default();
+        builder.binding_locals.insert(binding, place);
+
+        let first_warrant =
+            builder.owner_warrant_for_initializer(binding, &value, &ResolvedTy::String);
+        builder.register_owned_local(
+            binding,
+            "inner".to_string(),
+            ResolvedTy::String,
+            first_warrant,
+        );
+        builder.set_owned_local_consumed(binding, Some(place), super::DischargeSite::BindingMoved);
+        let second_warrant =
+            builder.owner_warrant_for_initializer(binding, &value, &ResolvedTy::String);
+        builder.register_owned_local(
+            binding,
+            "inner".to_string(),
+            ResolvedTy::String,
+            second_warrant,
+        );
+
+        assert_eq!(
+            builder.owned_locals_ledger().len(),
+            2,
+            "the ledger must preserve both value generations for later provenance scans"
+        );
+        assert_eq!(
+            builder.owned_locals_exit_candidates(),
+            vec![(binding, "inner".to_string(), ResolvedTy::String)],
+            "one mutable slot generation must have one scope-exit release authority"
+        );
     }
 
     #[test]

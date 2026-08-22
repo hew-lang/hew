@@ -1,0 +1,23 @@
+import std.string;
+
+fn owner(number: i64) -> string {
+    "owner-" + string.from_int(number)
+}
+
+fn has_owner(number: i64) -> i64 {
+    let ownership_error = owner(number);
+    if ownership_error != "" {
+        return 1;
+    }
+    0
+}
+
+fn main() {
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < 1000000 {
+        total = total + has_owner(i);
+        i = i + 1;
+    }
+    println(total);
+}

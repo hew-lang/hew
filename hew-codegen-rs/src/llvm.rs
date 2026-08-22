@@ -5431,13 +5431,10 @@ fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Clo
                 | IoHandleKind::Sink
                 | IoHandleKind::Generator
                 | IoHandleKind::CancellationToken,
-        } => Err(CodegenError::FailClosed(
-            "Stream/Sink/Generator/CancellationToken handle field reached per-field \
-             clone helper; these pointer-backed handles have no dup runtime symbol, \
-             so cloning (supervisor restart / aggregate clone) is unsupported. Only \
-             the drop direction is wired; move the handle instead of cloning it."
-                .into(),
-        )),
+        } => Err(CodegenError::FailClosed(format!(
+            "{kind:?} reached the per-field clone helper; Stream, Sink, Generator, and \
+             CancellationToken handles have no dup runtime symbol, so cloning is unsupported"
+        ))),
         StateFieldCloneKind::UserRecord { .. } => Err(CodegenError::FailClosed(
             "UserRecord arm requires per-record synthesised helper, not a \
              runtime extern — caller must dispatch separately"
@@ -6661,6 +6658,22 @@ fn emit_field_clone_step<'ctx>(
             builder
                 .build_unconditional_branch(next_bb)
                 .llvm_ctx_with(|| format!("opaque handle clone store term f{field_idx}"))?;
+            return Ok(());
+        }
+        StateFieldCloneKind::IoHandle {
+            kind:
+                IoHandleKind::Stream
+                | IoHandleKind::Sink
+                | IoHandleKind::Generator
+                | IoHandleKind::CancellationToken,
+        } => {
+            builder
+                .build_unconditional_branch(rollback_bb)
+                .llvm_ctx_with(|| format!("io handle clone refusal f{field_idx}"))?;
+            builder.position_at_end(store_bb);
+            builder
+                .build_unconditional_branch(next_bb)
+                .llvm_ctx_with(|| format!("io handle clone store term f{field_idx}"))?;
             return Ok(());
         }
         StateFieldCloneKind::Resource { name, .. } => {
@@ -25422,6 +25435,33 @@ fn emit_heap_slot_drop<'ctx>(
         // way (#2208 F4).
         let w = fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
         match kind {
+            io_kind @ StateFieldCloneKind::IoHandle { .. } => {
+                let helper = drop_helper_for_kind(&io_kind)?.ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "aggregate-recursive drop: I/O handle {ty:?} has no drop helper"
+                    ))
+                })?;
+                let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+                let handle = fn_ctx
+                    .builder
+                    .build_load(ptr_ty, slot_ptr, &format!("{label}_io_handle"))
+                    .llvm_ctx_with(|| format!("{label} I/O handle load"))?
+                    .into_pointer_value();
+                let helper_fn = get_or_declare_drop_helper(fn_ctx.ctx, fn_ctx.llvm_mod, &helper);
+                fn_ctx
+                    .builder
+                    .build_call(
+                        helper_fn,
+                        &[handle.into()],
+                        &format!("{label}_io_handle_drop"),
+                    )
+                    .llvm_ctx_with(|| format!("{label} I/O handle drop call"))?;
+                fn_ctx
+                    .builder
+                    .build_store(slot_ptr, ptr_ty.const_null())
+                    .llvm_ctx_with(|| format!("{label} I/O handle null store"))?;
+                return Ok(());
+            }
             StateFieldCloneKind::UserRecord { name } => {
                 let helper = get_or_declare_record_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &name);
                 if helper.count_basic_blocks() == 0 {

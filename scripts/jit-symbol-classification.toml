@@ -2897,6 +2897,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_sink_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_stream_is_valid"

@@ -552,6 +552,34 @@ fn consuming_guard(path: string, flag: bool) {
 fn main() {}
 "#;
 
+const SINK_WITH_BORROWED_ERROR_SIBLING: &str = r#"
+fn make(path: string) -> Result<Sink<string>, string> {
+    unsafe {
+        let sink = hew_stream_from_file_write(path);
+        if hew_sink_is_valid(sink) {
+            Ok(sink)
+        } else {
+            Err(path)
+        }
+    }
+}
+
+extern "C" {
+    fn hew_stream_from_file_write(path: string) -> Sink<string>;
+    fn hew_sink_is_valid(sink: Sink<string>) -> bool;
+    fn hew_sink_close(consume sink: Sink<string>);
+}
+
+fn close_fresh_payload(path: string) {
+    match make(path) {
+        .Ok(sink) => sink.close(),
+        .Err(_) => {},
+    }
+}
+
+fn main() {}
+"#;
+
 /// Blocks from which the call to `callee` is still reachable — every block
 /// that can run while that call's answer is still outstanding, including the
 /// call's own block. A guard's answer is outstanding exactly here.
@@ -653,4 +681,18 @@ fn consuming_guard_over_a_handed_off_sink_is_refused() {
          diagnostics were {:#?}",
         pipeline.diagnostics
     );
+}
+
+#[test]
+fn fresh_sink_payload_ignores_a_borrowed_error_sibling() {
+    let pipeline = pipeline_with_runtime_contracts(SINK_WITH_BORROWED_ERROR_SIBLING);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "the selected Sink field has its own freshness proof: {:#?}",
+        pipeline.diagnostics
+    );
+    assert_each_exit_has_unique_close_authorities(elaborated_function(
+        &pipeline,
+        "close_fresh_payload",
+    ));
 }

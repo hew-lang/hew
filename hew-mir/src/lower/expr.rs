@@ -161,6 +161,7 @@ pub(super) fn binding_seeds_drop_elaboration(
 #[cfg(test)]
 mod builtin_vec_iter_static_next_tests {
     use super::*;
+    use hew_hir::ScopeId;
 
     fn iterator_next_target() -> hew_types::CallTarget {
         hew_types::CallTarget::static_trait(
@@ -193,6 +194,27 @@ mod builtin_vec_iter_static_next_tests {
             builtin_vec_iter_static_next_element(&other_iterator_method, &builtin_cursor, 0)
                 .is_none(),
             "a different Iterator method must remain ordinary static dispatch"
+        );
+    }
+
+    #[test]
+    fn var_self_writeback_preserves_the_receiver_declaration_scope() {
+        let binding = BindingId(700);
+        let outer_scope = ScopeId(30);
+        let loop_scope = ScopeId(31);
+        let mut builder = Builder {
+            active_scopes: vec![outer_scope],
+            ..Builder::default()
+        };
+        builder.binding_locals.insert(binding, Place::Local(1));
+        builder.record_binding_scope(binding);
+
+        builder.active_scopes.push(loop_scope);
+        builder.restore_var_self_receiver_binding(binding, "inner", &ResolvedTy::I64, SiteId(700));
+
+        assert_eq!(
+            builder.binding_scope[&binding], outer_scope,
+            "a write-back is a new value generation, not a new lexical declaration"
         );
     }
 }
@@ -2911,10 +2933,16 @@ impl Builder {
                                     });
                                 }
                                 ProjectedPayloadOrigin::EphemeralTemp => {
-                                    self.push_move_out_neutralize(
-                                        provenance.source_place,
-                                        crate::model::NeutralizeAuthority::EphemeralTempConsume,
-                                    );
+                                    let carrier_transfer =
+                                        self.binding_locals.get(id).is_some_and(|place| {
+                                            self.owned_carrier_authority(*place).is_some()
+                                        });
+                                    if !carrier_transfer {
+                                        self.push_move_out_neutralize(
+                                            provenance.source_place,
+                                            crate::model::NeutralizeAuthority::EphemeralTempConsume,
+                                        );
+                                    }
                                 }
                                 ProjectedPayloadOrigin::Reject(reason) => {
                                     // Do NOT emit the unsound temp-neutralize —
@@ -2988,6 +3016,22 @@ impl Builder {
                     return Some(dest);
                 }
                 let place = self.binding_locals.get(id).copied();
+                if let Some(place) = place {
+                    if matches!(
+                        self.binding_ref_use_intent(expr),
+                        IntentKind::Consume | IntentKind::Discharge
+                    ) && matches!(
+                        ValueClass::of_ty(&use_ty, &self.type_classes),
+                        ValueClass::AffineResource | ValueClass::Linear
+                    ) && matches!(
+                        self.owned_carrier_authority(place),
+                        Some(super::OwnedCarrierNeutralizeTarget::Whole(
+                            Place::MachineVariant { .. } | Place::EnumVariant { .. }
+                        ))
+                    ) {
+                        return Some(self.transfer_owned_carrier_place(place, &use_ty));
+                    }
+                }
                 if place.is_none() {
                     if self.poisoned_let_bindings.contains(id) {
                         // The binding's `let` initializer already failed to lower
@@ -8965,7 +9009,6 @@ impl Builder {
         site: SiteId,
     ) {
         self.push_bind_statement(binding_id, name.to_string(), site, ty.clone());
-        self.record_binding_scope(binding_id);
         if self.binding_seeds_drop_elaboration(ty)
             && !self.owned_locals.iter().any(|entry| {
                 entry.binding == binding_id && entry.disposition == Disposition::ScopeExit

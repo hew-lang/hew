@@ -145,6 +145,7 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
         | hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { .. }
+        | hew_mir::MirDiagnosticKind::ImportedResourcePayloadSummaryMissing { .. }
         | hew_mir::MirDiagnosticKind::UnresolvedPlace { .. }
         | hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { .. }
         | hew_mir::MirDiagnosticKind::EscapingCaptureAliasesEnclosingEnv { .. }
@@ -573,6 +574,9 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { .. } => {
             "ExternStringOwnershipUnresolved"
         }
+        hew_mir::MirDiagnosticKind::ImportedResourcePayloadSummaryMissing { .. } => {
+            "ImportedResourcePayloadSummaryMissing"
+        }
         hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { .. } => {
             "UnsupportedUserRecordValueClass"
         }
@@ -672,7 +676,9 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
             offending_sites.first().copied()
         }
         hew_mir::MirDiagnosticKind::MustConsume { bind_site, .. } => Some(*bind_site),
-        hew_mir::MirDiagnosticKind::SelectArmNotImplemented { site, .. }
+        hew_mir::MirDiagnosticKind::ImportedResourcePayloadSummaryMissing { site, .. }
+        | hew_mir::MirDiagnosticKind::ObligationUnderReleased { site, .. }
+        | hew_mir::MirDiagnosticKind::SelectArmNotImplemented { site, .. }
         | hew_mir::MirDiagnosticKind::NotYetImplemented { site, .. }
         | hew_mir::MirDiagnosticKind::InvalidActorSpawnArgument { site, .. }
         | hew_mir::MirDiagnosticKind::MissingActorSpawnArgument { site, .. }
@@ -693,7 +699,6 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
         | hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { .. }
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
-        | hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. }
         | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. }
         | hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
@@ -760,6 +765,13 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
              from its defining-module provenance; neither adopting it nor treating it as a \
              header-aware Hew string is memory safe by default"
         ),
+        hew_mir::MirDiagnosticKind::ImportedResourcePayloadSummaryMissing {
+            symbol,
+            payload_ty,
+            ..
+        } => format!(
+            "cannot establish ownership of `{symbol}` payload `{payload_ty}` without a measured per-variant return summary"
+        ),
         hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { name, .. } => format!(
             "record type `{name}` has a value class that MIR cannot lower yet"
         ),
@@ -795,12 +807,20 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
         hew_mir::MirDiagnosticKind::ObligationUnderReleased {
             function,
             name,
+            local_ty,
+            blocks,
             reason,
             ..
         } => {
+            let typed_name = if local_ty.is_empty() {
+                format!("owned value `{name}`")
+            } else {
+                format!("owned value `{name}` of type `{local_ty}`")
+            };
             format!(
-                "obligation balance in `{function}`: owned value `{name}` is \
-                 never released on an exit path (leak): {reason}"
+                "obligation balance in `{function}`: {typed_name} is never \
+                 released on {} exit path(s) (leak): {reason}",
+                blocks.len(),
             )
         }
         hew_mir::MirDiagnosticKind::ObligationOverReleased {
@@ -980,9 +1000,16 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
     format!("{}: {message}", mir_diagnostic_prefix(&diagnostic.kind))
 }
 
+fn mir_block_list(blocks: &[u32]) -> String {
+    blocks
+        .iter()
+        .map(|block| format!("bb{block}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
-    let mut notes = Vec::new();
-    notes.push(format!("MIR kind: {}", mir_kind_name(&diagnostic.kind)));
+    let mut notes = vec![format!("MIR kind: {}", mir_kind_name(&diagnostic.kind))];
     match &diagnostic.kind {
         hew_mir::MirDiagnosticKind::UseAfterConsume {
             binding,
@@ -1028,6 +1055,7 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
         }
         hew_mir::MirDiagnosticKind::SelectArmNotImplemented { site, .. }
         | hew_mir::MirDiagnosticKind::NotYetImplemented { site, .. }
+        | hew_mir::MirDiagnosticKind::ImportedResourcePayloadSummaryMissing { site, .. }
         | hew_mir::MirDiagnosticKind::InvalidActorSpawnArgument { site, .. }
         | hew_mir::MirDiagnosticKind::MissingActorSpawnArgument { site, .. }
         | hew_mir::MirDiagnosticKind::UnresolvedPlace { site, .. }
@@ -1042,13 +1070,15 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
             notes.push(format!("site: {site}"));
         }
         hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, .. }
-        | hew_mir::MirDiagnosticKind::ObligationUnderReleased { block, .. }
         | hew_mir::MirDiagnosticKind::ObligationOverReleased { block, .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { block, .. }
         | hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { block, .. }
         | hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { block, .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { block, .. } => {
             notes.push(format!("block: {block}"));
+        }
+        hew_mir::MirDiagnosticKind::ObligationUnderReleased { blocks, .. } => {
+            notes.push(format!("unreleased exits: {}", mir_block_list(blocks)));
         }
         hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { field_index, .. } => {
             notes.push(format!("field index: {field_index}"));

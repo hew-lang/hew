@@ -742,13 +742,38 @@ pub(super) fn propagate_whole_value_alias_roots_excluding_moves(
     candidate_locals: impl IntoIterator<Item = u32>,
     excluded_moves: &HashSet<(u32, usize)>,
 ) -> HashMap<u32, u32> {
+    propagate_seeded_whole_value_alias_roots_excluding_moves(
+        blocks,
+        candidate_locals.into_iter().map(|local| (local, local)),
+        excluded_moves,
+    )
+}
+
+/// Close caller-provided `(alias, root)` seeds over whole-value local moves.
+/// Projection-aware callers seed the first payload binder here; the shared
+/// conflict-aware fixpoint then carries that carrier root through every local
+/// publication without treating the projection itself as a whole-value copy.
+pub(super) fn propagate_seeded_whole_value_alias_roots_excluding_moves(
+    blocks: &[BasicBlock],
+    seeds: impl IntoIterator<Item = (u32, u32)>,
+    excluded_moves: &HashSet<(u32, usize)>,
+) -> HashMap<u32, u32> {
     let mut alias_of: HashMap<u32, u32> = HashMap::new();
-    for local in candidate_locals {
-        alias_of.insert(local, local);
-    }
     // Slots reachable from two distinct roots: evicted from `alias_of` and
     // permanently barred from re-entry so the fixpoint stays monotone.
     let mut conflicted: HashSet<u32> = HashSet::new();
+    for (alias, root) in seeds {
+        if conflicted.contains(&alias) {
+            continue;
+        }
+        match alias_of.insert(alias, root) {
+            Some(previous) if previous != root => {
+                alias_of.remove(&alias);
+                conflicted.insert(alias);
+            }
+            _ => {}
+        }
+    }
     loop {
         let mut changed = false;
         for block in blocks {
@@ -1338,6 +1363,41 @@ pub(super) fn place_is_tag_read(place: Place) -> bool {
 mod slice3_invariants {
     use super::*;
     use crate::model::{CaptureKind, Direction};
+
+    #[test]
+    fn projection_seed_closes_over_a_whole_value_move_chain() {
+        let blocks = vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::Move {
+                    dest: Place::Local(94),
+                    src: Place::EnumVariant {
+                        local: 77,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Instr::Move {
+                    dest: Place::Local(73),
+                    src: Place::Local(94),
+                },
+                Instr::Move {
+                    dest: Place::Local(95),
+                    src: Place::Local(73),
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+        let aliases = propagate_seeded_whole_value_alias_roots_excluding_moves(
+            &blocks,
+            [(94, 77)],
+            &HashSet::new(),
+        );
+        assert_eq!(aliases.get(&94), Some(&77));
+        assert_eq!(aliases.get(&73), Some(&77));
+        assert_eq!(aliases.get(&95), Some(&77));
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     use hew_runtime::{

@@ -12,14 +12,15 @@ use super::{
     derive_owned_tuple_handle_projection_bindings, derive_returned_aggregate_member_bindings,
     derive_returned_member_transfer_blocks, derive_spawn_consumed_handle_bindings,
     derive_tuple_composite_drop_allowed, instr_source_places, outbound_record_layouts,
-    place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
+    place_is_interior_projection, place_refs_local,
+    propagate_seeded_whole_value_alias_roots_excluding_moves, propagate_whole_value_alias_roots,
     retained_string_terminator_drop_safe, short_name, string_call_borrows,
     terminator_source_places, user_record_layout_key, vec_iter_record_init_vec_source, BTreeMap,
     BasicBlock, BindingId, BlockKind, Builder, BuiltinType, CheckedMirFunction,
     ClosureEnvFieldOwnership, ClosurePairRhs, Disposition, DropKind, DropPlan, ElabBlock, ElabDrop,
     ElaboratedMirFunction, ExitPath, HashMap, HashSet, HirExpr, HirExprKind, Instr, IntentKind,
     LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, ParamCrashCleanupKind,
-    Place, RawMirFunction, ResolvedRef, ResolvedTy, ScopeId, SuspendKind, Terminator,
+    Place, RawMirFunction, ResolvedRef, ResolvedTy, ScopeId, SiteId, SuspendKind, Terminator,
     TraitObjectStorage, ValueClass, ENTRY_BLOCK_ID,
 };
 #[cfg(test)]
@@ -108,6 +109,24 @@ pub(super) fn elaborate(
     // below — the same `(binding, name, ty)` tuples the provers read before the
     // ledger carried richer facts, in the same declaration order.
     let owned_locals_snapshot = builder.owned_locals_snapshot();
+    let aggregate_member_neutralized_bindings: HashSet<BindingId> = checked
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::NeutralizePayloadSlot {
+                place,
+                authority: crate::model::NeutralizeAuthority::AggregateMemberConsume,
+                ..
+            } => builder
+                .binding_locals
+                .iter()
+                .find_map(|(binding, binding_place)| {
+                    (*binding_place == *place).then_some(*binding)
+                }),
+            _ => None,
+        })
+        .collect();
     for (binding, name, ty) in owned_locals_snapshot.iter().rev() {
         if builder.back_edge_only_iteration_owners.contains(binding) {
             continue;
@@ -243,6 +262,103 @@ pub(super) fn elaborate(
             .flatten()
             .copied(),
     );
+    let call_carrier_has_declared_release = |ty: &ResolvedTy| {
+        super::composite_own::direct_payload_has_registered_resource_record(
+            ty,
+            &builder.enum_layouts,
+            &builder.lifecycle_registry,
+        )
+    };
+    let call_carrier_shell_drop_safe = |ty: &ResolvedTy| {
+        super::composite_own::enum_payloads_are_shell_drop_safe(
+            ty,
+            &builder.enum_layouts,
+            &builder.record_field_orders,
+            &builder.type_classes,
+            &outbound_records,
+            &builder.opaque_handle_names,
+            &builder.lifecycle_registry,
+        )
+    };
+    // A typed call-result mint is the release authority for its exact carrier
+    // generation. Re-admit that binding even when a selected payload move
+    // makes the generic sole-owner scan conservative: projection consumes
+    // null their source slot, so the tag-aware drop releases only the shell
+    // and payload slots that remain owned on each exit.
+    enum_composite_drop_allowed.extend(builder.binding_locals.iter().filter_map(
+        |(binding, place)| {
+            let local = base_local(*place)?;
+            let ty = builder.locals.get(local as usize)?;
+            (builder.call_scrutinee_carrier_mint_locals.contains(&local)
+                && !call_carrier_has_declared_release(ty)
+                && call_carrier_shell_drop_safe(ty))
+            .then_some(*binding)
+        },
+    ));
+    // A carrier with a projected payload transfer and an explicit tag-aware
+    // shell drop uses the same null-after-transfer protocol on every exit.
+    // Re-admit that exact binding for its ordinary scope and loop-edge plans:
+    // transferred paths see a null slot, while paths that keep the payload
+    // still perform the required release.
+    let partially_transferred_carriers: HashSet<u32> = checked
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.terminator, Terminator::Return))
+        .flat_map(|block| {
+            block.instructions.iter().filter_map(|instruction| {
+                let local = match instruction {
+                    Instr::NeutralizePayloadSlot {
+                        place: Place::MachineVariant { local, .. },
+                        ..
+                    } => *local,
+                    _ => return None,
+                };
+                block
+                    .instructions
+                    .iter()
+                    .any(|candidate| {
+                        matches!(
+                            candidate,
+                            Instr::Drop {
+                                place: Place::Local(drop_local),
+                                drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                                    crate::ownership::InPlaceReleaseKind::Enum,
+                                )),
+                                ..
+                            } if *drop_local == local
+                        )
+                    })
+                    .then_some(local)
+            })
+        })
+        .filter(|local| builder.call_scrutinee_carrier_mint_locals.contains(local))
+        .collect();
+    enum_composite_drop_allowed.extend(builder.binding_locals.iter().filter_map(
+        |(binding, place)| {
+            base_local(*place)
+                .filter(|local| partially_transferred_carriers.contains(local))
+                .map(|_| *binding)
+        },
+    ));
+
+    // The generic sole-owner proof predates call-carrier minting and can admit
+    // a nested affine payload whose helper family codegen cannot synthesize.
+    // A minted carrier must pass the same structural shell-safety authority as
+    // the explicit arm release above; otherwise keep it out of every enum drop
+    // plan so the obligation validator reports the missing discharge.
+    enum_composite_drop_allowed.retain(|binding| {
+        let Some(local) = builder
+            .binding_locals
+            .get(binding)
+            .and_then(|place| base_local(*place))
+        else {
+            return true;
+        };
+        !builder.call_scrutinee_carrier_mint_locals.contains(&local)
+            || builder.locals.get(local as usize).is_some_and(|ty| {
+                call_carrier_has_declared_release(ty) || call_carrier_shell_drop_safe(ty)
+            })
+    });
 
     // Machine-typed owned locals. A machine value is `ValueClass::Unknown`, so
     // before this derivation its binding fell through every drop class and the
@@ -637,7 +753,7 @@ pub(super) fn elaborate(
     // the temp must not drop. A returned tuple is excluded too (the ReturnSlot
     // owns it). Everything the prover does not clear leaks rather than
     // double-frees.
-    let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
+    let mut tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
@@ -650,13 +766,27 @@ pub(super) fn elaborate(
         &builder.proven_borrow_call_args,
     );
 
+    for allowed in [
+        &mut enum_composite_drop_allowed,
+        &mut owned_vec_drop_allowed,
+        &mut local_collection_drop_allowed,
+        &mut closure_vec_drop_allowed,
+        &mut plain_vec_drop_allowed,
+        &mut owned_record_drop_allowed,
+        &mut tuple_composite_drop_allowed,
+    ] {
+        allowed.extend(aggregate_member_neutralized_bindings.iter().copied());
+    }
+
     // W5.021 (defect #1) — owned members the caller now owns via a returned
     // aggregate; excluded from every drop class below (see the function doc).
-    let returned_aggregate_members = derive_returned_aggregate_member_bindings(
+    let mut returned_aggregate_members = derive_returned_aggregate_member_bindings(
         &checked.blocks,
         &owned_locals_snapshot,
         &builder.binding_locals,
     );
+    returned_aggregate_members
+        .retain(|binding| !aggregate_member_neutralized_bindings.contains(binding));
     // Path-sensitive re-admission map for values handed to the caller through the
     // return flow. The blanket exclusion (an aggregate member the return handoff
     // removes, `semver::try_parse`; or a whole-value return that retracts its
@@ -678,7 +808,7 @@ pub(super) fn elaborate(
     // release-consumer; the consumer owns the single free, so the source binding
     // must not also drop. The local-aggregate analogue of
     // `returned_aggregate_members` (see the function doc).
-    let consumed_local_aggregate_members = derive_consumed_local_aggregate_member_bindings(
+    let mut consumed_local_aggregate_members = derive_consumed_local_aggregate_member_bindings(
         &checked.blocks,
         &owned_locals_snapshot,
         &builder.binding_locals,
@@ -687,18 +817,22 @@ pub(super) fn elaborate(
         &builder.enum_layouts,
         builder.type_classes.lifecycle_registry(),
     );
+    consumed_local_aggregate_members
+        .retain(|binding| !aggregate_member_neutralized_bindings.contains(binding));
     // CAP-08 — owned handle-leaf bindings moved into an actor initial-state
     // record consumed by `SpawnActor`. The actor's synthesised `state_drop_fn`
     // is the single free site (Stream→`hew_stream_close` / Sink→`hew_sink_close`),
     // so the source binding's own scope-exit drop is removed here. The W3.053
     // gate consumes the SAME derivation via `source_excluded` so its free-count
     // model matches the drop this removal actually elides.
-    let spawn_consumed_handle_members = derive_spawn_consumed_handle_bindings(
+    let mut spawn_consumed_handle_members = derive_spawn_consumed_handle_bindings(
         &checked.blocks,
         &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
     );
+    spawn_consumed_handle_members
+        .retain(|binding| !aggregate_member_neutralized_bindings.contains(binding));
 
     // Escaping-closure pair env-box drop allow-set. Starts from the
     // `Let`-admitted ownership ledger (heap-mode literal / call result /
@@ -2248,6 +2382,9 @@ struct ObligationCtx<'a> {
     /// Empty COW literals inserted immediately after an aggregate ownership
     /// handoff to clear the moved-from publication slot.
     cow_handoff_commit_sites: &'a HashSet<(u32, usize)>,
+    /// Exact call/await result generations whose projected-slot neutralize is
+    /// only a partial transfer; the remaining carrier still needs a drop.
+    partial_transfer_carrier_mints: &'a HashSet<u32>,
 }
 
 impl ObligationCtx<'_> {
@@ -2355,7 +2492,7 @@ fn collect_payload_alias_map(blocks: &[BasicBlock]) -> HashMap<u32, u32> {
             }
         }
     }
-    let mut alias_to: HashMap<u32, u32> = HashMap::new();
+    let mut seeds = Vec::new();
     for block in blocks {
         for instr in &block.instructions {
             let (dest, src) = match instr {
@@ -2374,11 +2511,86 @@ fn collect_payload_alias_map(blocks: &[BasicBlock]) -> HashMap<u32, u32> {
             // still traces to the carrier's slot — the binder is then also
             // outside the balance (its ownership story is the carrier's).
             if !neutralized_slots.contains(&src) && binder != carrier {
-                alias_to.insert(binder, carrier);
+                seeds.push((binder, carrier));
             }
         }
     }
-    alias_to
+    // Retains and return publications mint or transfer an independently
+    // discharged owner rather than extending this storage-alias chain. Keep
+    // both boundaries out of the closure: folding a return publication back
+    // into its carrier attributes the caller transfer and the carrier drop to
+    // one obligation, producing a false double-release verdict.
+    let mut ownership_boundary_moves = collect_retained_move_sites(blocks);
+    let returned_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src,
+            }
+            | Instr::WitnessMove {
+                dest: Place::ReturnSlot,
+                src,
+                ..
+            } => whole_owner_local(*src),
+            _ => None,
+        })
+        .collect();
+    for block in blocks {
+        for (index, instr) in block.instructions.iter().enumerate() {
+            if matches!(instr, Instr::Move { dest, .. } | Instr::WitnessMove { dest, .. }
+                if whole_owner_local(*dest).is_some_and(|local| returned_locals.contains(&local)))
+            {
+                ownership_boundary_moves.insert((block.id, index));
+            }
+        }
+    }
+    propagate_seeded_whole_value_alias_roots_excluding_moves(
+        blocks,
+        seeds,
+        &ownership_boundary_moves,
+    )
+}
+
+#[cfg(test)]
+mod payload_alias_closure_tests {
+    use super::*;
+
+    #[test]
+    fn return_publication_stops_projection_alias_closure() {
+        let blocks = vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::Move {
+                    dest: Place::Local(8),
+                    src: Place::MachineVariant {
+                        local: 2,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Instr::Move {
+                    dest: Place::Local(1),
+                    src: Place::Local(8),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+
+        let aliases = collect_payload_alias_map(&blocks);
+        assert_eq!(aliases.get(&8), Some(&2));
+        assert_eq!(
+            aliases.get(&1),
+            None,
+            "the returned publication owns its caller transfer independently"
+        );
+    }
 }
 
 /// Re-derive the explicit whole-local retain/share protocol from primitive
@@ -2596,7 +2808,18 @@ fn apply_balance_instr(
             }
         }
         Instr::NeutralizePayloadSlot { place, .. } => {
-            if let Some(root) = cx.tracked_carrier(*place) {
+            if let Some(root) = cx
+                .tracked_root(*place)
+                .or_else(|| cx.tracked_carrier(*place))
+            {
+                if payload_carrier_local(*place).is_some()
+                    && cx.partial_transfer_carrier_mints.contains(&root)
+                {
+                    // The selected payload moved, but this minted call carrier
+                    // still owns its shell and unselected slots. Only a later
+                    // carrier drop discharges the whole-generation obligation.
+                    return;
+                }
                 let entry = obligation_entry(state, root);
                 match entry.neutralized {
                     PayloadNeutralized::No => {
@@ -3037,8 +3260,11 @@ fn apply_balance_terminator(
 /// `Disposition::AliasOf` interior aliases (not independent mints) and
 /// parameter slots (by-value params are caller-retained `CoW` borrows — the
 /// caller owns the release; A278).
-fn tracked_obligation_locals(builder: &Builder) -> BTreeMap<u32, String> {
+fn tracked_obligation_locals_with_sites(
+    builder: &Builder,
+) -> (BTreeMap<u32, String>, BTreeMap<u32, SiteId>) {
     let mut tracked: BTreeMap<u32, String> = BTreeMap::new();
+    let mut mint_sites: BTreeMap<u32, SiteId> = BTreeMap::new();
     for entry in builder.owned_locals_ledger() {
         if matches!(entry.disposition, Disposition::AliasOf) {
             continue;
@@ -3068,9 +3294,28 @@ fn tracked_obligation_locals(builder: &Builder) -> BTreeMap<u32, String> {
         if builder.parameter_locals.contains(&local) {
             continue;
         }
-        tracked.entry(local).or_insert_with(|| entry.name.clone());
+        let binding_site = builder
+            .statements
+            .iter()
+            .find_map(|statement| match statement {
+                MirStatement::Bind { binding, site, .. } if *binding == entry.binding => {
+                    Some(*site)
+                }
+                _ => None,
+            });
+        let diagnostic = builder.call_scrutinee_diagnostics.get(&local);
+        let name = diagnostic.map_or_else(|| entry.name.clone(), |(_, label)| label.clone());
+        let site = diagnostic.map(|(site, _)| *site).or(binding_site);
+        tracked.entry(local).or_insert(name);
+        if let Some(site) = site {
+            mint_sites.entry(local).or_insert(site);
+        }
     }
-    tracked
+    (tracked, mint_sites)
+}
+
+fn tracked_obligation_locals(builder: &Builder) -> BTreeMap<u32, String> {
+    tracked_obligation_locals_with_sites(builder).0
 }
 
 /// S1 obligation-balance validation over one elaborated function. See the
@@ -3083,13 +3328,14 @@ pub(super) fn validate_obligation_balance(
     raw: &RawMirFunction,
     builder: &Builder,
 ) -> Vec<MirCheck> {
-    let mut tracked = tracked_obligation_locals(builder);
+    let (mut tracked, mut mint_sites) = tracked_obligation_locals_with_sites(builder);
     // Structural parameter exclusion: `locals[0..params.len()]` ARE the
     // parameter slots (the RawMirFunction invariant). Synthesized bodies can
     // register a param-backed binding without a `parameter_locals` entry;
     // by-value params are caller-retained borrows either way.
     let n_params = u32::try_from(raw.params.len()).unwrap_or(u32::MAX);
     tracked.retain(|local, _| *local >= n_params);
+    mint_sites.retain(|local, _| tracked.contains_key(local));
     if tracked.is_empty() {
         return Vec::new();
     }
@@ -3105,13 +3351,28 @@ pub(super) fn validate_obligation_balance(
                 .map(|ty| (root, format!("{ty}")))
         })
         .collect();
+    let partial_transfer_carrier_mints = builder
+        .call_scrutinee_carrier_mint_locals
+        .iter()
+        .copied()
+        .filter(|local| {
+            raw.locals.get(*local as usize).is_none_or(|ty| {
+                !super::composite_own::direct_payload_has_registered_resource_record(
+                    ty,
+                    &builder.enum_layouts,
+                    &builder.lifecycle_registry,
+                )
+            })
+        })
+        .collect();
     validate_obligation_balance_with(
         elab,
         &raw.blocks,
         &raw.suspend_kinds,
         &tracked,
-        &local_types,
+        (&local_types, &mint_sites),
         &builder.parameter_locals,
+        &partial_transfer_carrier_mints,
     )
 }
 
@@ -3124,8 +3385,9 @@ fn validate_obligation_balance_with(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
     tracked_in: &BTreeMap<u32, String>,
-    local_types: &BTreeMap<u32, String>,
+    diagnostic_info: (&BTreeMap<u32, String>, &BTreeMap<u32, SiteId>),
     parameter_locals: &HashSet<u32>,
+    partial_transfer_carrier_mints: &HashSet<u32>,
 ) -> Vec<MirCheck> {
     // Iteration cap for the monotone worklist. The lattice is finite and the
     // transfer monotone, so convergence is guaranteed well within this bound;
@@ -3137,8 +3399,9 @@ fn validate_obligation_balance_with(
         blocks,
         suspend_kinds,
         tracked_in,
-        local_types,
+        diagnostic_info,
         parameter_locals,
+        partial_transfer_carrier_mints,
         iteration_cap,
     )
 }
@@ -3148,6 +3411,7 @@ fn validate_obligation_balance_with(
 /// unverified verdict a converging body would never reach).
 #[allow(
     clippy::too_many_lines,
+    clippy::too_many_arguments,
     reason = "single fixpoint + exit-verdict walk; splitting would obscure \
               the dataflow (mirrors validate_cross_block_split_consume)"
 )]
@@ -3156,12 +3420,14 @@ fn validate_obligation_balance_capped(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
     tracked_in: &BTreeMap<u32, String>,
-    local_types: &BTreeMap<u32, String>,
+    diagnostic_info: (&BTreeMap<u32, String>, &BTreeMap<u32, SiteId>),
     parameter_locals: &HashSet<u32>,
+    partial_transfer_carrier_mints: &HashSet<u32>,
     iteration_cap: usize,
 ) -> Vec<MirCheck> {
     use std::collections::VecDeque;
 
+    let (local_types, mint_sites) = diagnostic_info;
     let mut findings = Vec::new();
     if blocks.is_empty() || tracked_in.is_empty() {
         return findings;
@@ -3259,6 +3525,7 @@ fn validate_obligation_balance_capped(
         parameter_locals,
         retained_move_sites: &retained_move_sites,
         cow_handoff_commit_sites: &cow_handoff_commit_sites,
+        partial_transfer_carrier_mints,
     };
 
     // Scope-exit releases ride the NORMAL-continuation exit plans (a
@@ -3391,6 +3658,8 @@ fn validate_obligation_balance_capped(
         }
     }
 
+    let mut under_released: BTreeMap<u32, UnderReleaseAggregate> = BTreeMap::new();
+
     // Verdict per terminal ownership edge: Return folds the ordinary function
     // exit plan; Suspend folds the abandon-only frame plan. The default park
     // edge is not terminal ownership transfer — the owner remains in frame.
@@ -3429,21 +3698,23 @@ fn validate_obligation_balance_capped(
                 } else {
                     ob.mint_lo
                 };
-                findings.push(MirCheck::ObligationUnderReleased {
-                    function: elab.name.clone(),
-                    block,
-                    name: name.clone(),
-                    local_ty: local_types.get(root).cloned().unwrap_or_default(),
-                    hard: retained_path_under_released || ob.explicit_retain_lo,
-                    reason: format!(
-                        "owned local `{name}` reaches {exit_label}[bb{block}] with at least \
-                         {mint_lo} owner mint(s), but at most {discharge_hi} discharge(s) on \
-                         every path modelling: one or more owners have no terminal drop or \
-                         ownership transfer before the exit (mint without discharge = leak)",
-                        mint_lo = reported_mints,
-                        discharge_hi = ob.hi,
-                    ),
-                });
+                let aggregate = under_released.entry(*root).or_default();
+                aggregate.blocks.push(block);
+                aggregate.exits.push(format!("{exit_label}[bb{block}]"));
+                let exit_provenance = if ob.explicit_retain_lo {
+                    crate::model::ObligationMintProvenance::ExplicitRetain
+                } else if ob.explicit_retain_hi {
+                    crate::model::ObligationMintProvenance::Mixed
+                } else {
+                    crate::model::ObligationMintProvenance::Ordinary
+                };
+                aggregate.mint_provenance = Some(
+                    aggregate
+                        .mint_provenance
+                        .map_or(exit_provenance, |current| current.join(exit_provenance)),
+                );
+                aggregate.max_mints = aggregate.max_mints.max(reported_mints);
+                aggregate.max_discharges = aggregate.max_discharges.max(ob.hi);
             } else if ob.max_definite > ob.mint_hi {
                 findings.push(MirCheck::ObligationOverReleased {
                     function: elab.name.clone(),
@@ -3461,6 +3732,36 @@ fn validate_obligation_balance_capped(
                 });
             }
         }
+    }
+    for (root, mut aggregate) in under_released {
+        aggregate.blocks.sort_unstable();
+        aggregate.blocks.dedup();
+        aggregate.exits.sort();
+        aggregate.exits.dedup();
+        let name = tracked
+            .get(&root)
+            .cloned()
+            .unwrap_or_else(|| format!("local_{root}"));
+        let mint_provenance = aggregate.mint_provenance.unwrap_or_default();
+        findings.push(MirCheck::ObligationUnderReleased {
+            function: elab.name.clone(),
+            blocks: aggregate.blocks,
+            site: mint_sites.get(&root).copied().unwrap_or(SiteId(0)),
+            name: name.clone(),
+            local_ty: local_types.get(&root).cloned().unwrap_or_default(),
+            mint_provenance,
+            hard: mint_provenance.is_blocking(),
+            reason: format!(
+                "owned value `{name}` has up to {mints} owner mint(s), but at most \
+                 {discharges} discharge(s), on {count} reachable exit path(s): {exits}; \
+                 one or more owners have no terminal drop or ownership transfer before \
+                 those exits (mint without discharge = leak)",
+                mints = aggregate.max_mints,
+                discharges = aggregate.max_discharges,
+                count = aggregate.exits.len(),
+                exits = aggregate.exits.join(", "),
+            ),
+        });
     }
     findings
 }
@@ -3536,6 +3837,10 @@ pub(super) fn validate_discharge_authority_corroboration(
 
 /// Testable core of [`validate_discharge_authority_corroboration`] — hand-
 /// constructed blocks, no `RawMirFunction`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one corroboration proof keeps its primitive routing facts and findings together"
+)]
 fn validate_discharge_authority_corroboration_over(
     function: &str,
     blocks: &[BasicBlock],
@@ -3549,9 +3854,14 @@ fn validate_discharge_authority_corroboration_over(
     for block in blocks {
         for instr in &block.instructions {
             match instr {
-                Instr::Move { dest, .. } | Instr::WitnessMove { dest, .. } => {
+                Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => {
                     if let Some(local) = whole_owner_local(*dest) {
                         move_destinations.insert(local);
+                    }
+                    if let Place::MachineVariant { local, .. } | Place::EnumVariant { local, .. } =
+                        dest
+                    {
+                        aggregate_member_destinations.insert((*src, Place::Local(*local)));
                     }
                 }
                 Instr::TupleConstruct { elements, dest } => {
@@ -3562,8 +3872,37 @@ fn validate_discharge_authority_corroboration_over(
                     aggregate_member_destinations
                         .extend(fields.iter().map(|(_offset, source)| (*source, *dest)));
                 }
+                Instr::RecordFieldStore { record, src, .. } => {
+                    aggregate_member_destinations.insert((*src, *record));
+                }
                 _ => {}
             }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                let (Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. }) = instr
+                else {
+                    continue;
+                };
+                let Some(dest_local) = whole_owner_local(*dest) else {
+                    continue;
+                };
+                let inherited: Vec<Place> = aggregate_member_destinations
+                    .iter()
+                    .filter_map(|(source, aggregate)| {
+                        (whole_owner_local(*source) == Some(dest_local)).then_some(*aggregate)
+                    })
+                    .collect();
+                for aggregate in inherited {
+                    changed |= aggregate_member_destinations.insert((*src, aggregate));
+                }
+            }
+        }
+        if !changed {
+            break;
         }
     }
     let mut findings = Vec::new();
@@ -3584,6 +3923,7 @@ fn validate_discharge_authority_corroboration_over(
             let corroborated = if matches!(
                 authority,
                 crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume
+                    | crate::model::NeutralizeAuthority::AggregateMemberConsume
             ) {
                 aggregate_member_destinations.contains(&(*place, *transferee))
             } else {
@@ -3593,6 +3933,7 @@ fn validate_discharge_authority_corroboration_over(
                 let primitive = if matches!(
                     authority,
                     crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume
+                        | crate::model::NeutralizeAuthority::AggregateMemberConsume
                 ) {
                     format!(
                         "the primitive instruction stream never constructs {transferee:?} from \
@@ -6691,6 +7032,12 @@ pub(super) fn string_binder_read_is_user_fn_borrow(
 pub(super) fn binder_read_is_borrow_safe_instr(instr: &Instr, binder: u32) -> bool {
     if matches!(
         instr,
+        Instr::ValueSnapshotClone { src, .. } if place_refs_local(*src, binder)
+    ) {
+        return true;
+    }
+    if matches!(
+        instr,
         Instr::IntCmp { lhs, rhs, .. }
             if place_refs_local(*lhs, binder) || place_refs_local(*rhs, binder)
     ) {
@@ -8740,13 +9087,10 @@ mod twin_gate_classifier {
             (ProducedValueOwnership::Borrowed, false),
             // A receiver-identity result IS the receiver's storage.
             (ProducedValueOwnership::ReceiverIdentity, false),
-            // A foreign result mints no caller-side release; it is outside the
-            // payload-transfer rule and keeps the legacy admission.
-            (ProducedValueOwnership::NoOwner, true),
-            // The interim legacy fail-open window: an unresolved call still
-            // admits. This row fails when that window closes, which is the
-            // signal to retire the row rather than loosen the classifier.
-            (ProducedValueOwnership::Unknown, true),
+            // A foreign result has no proved caller-side owner to transfer.
+            (ProducedValueOwnership::NoOwner, false),
+            // An unresolved call has no ownership proof and fails closed.
+            (ProducedValueOwnership::Unknown, false),
         ];
         for (ownership, admits) in cases {
             let b = Builder {
@@ -9180,3 +9524,11 @@ mod returned_member_read_aliases {
 }
 #[cfg(test)]
 mod obligation_balance_validator;
+#[derive(Default)]
+struct UnderReleaseAggregate {
+    blocks: Vec<u32>,
+    exits: Vec<String>,
+    mint_provenance: Option<crate::model::ObligationMintProvenance>,
+    max_mints: u8,
+    max_discharges: u8,
+}

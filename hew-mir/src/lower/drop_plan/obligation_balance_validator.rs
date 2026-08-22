@@ -85,14 +85,60 @@ fn run_with_suspend_kinds(
         .collect();
     let params = HashSet::new();
     let local_types = BTreeMap::new();
+    let mint_sites: BTreeMap<u32, SiteId> = tracked
+        .keys()
+        .copied()
+        .map(|local| (local, SiteId(local)))
+        .collect();
     validate_obligation_balance_with(
         &elab,
         blocks,
         suspend_kinds,
         &tracked,
-        &local_types,
+        (&local_types, &mint_sites),
         &params,
+        &HashSet::new(),
     )
+}
+
+#[test]
+fn minted_call_carrier_partial_transfer_without_drop_stays_advisory() {
+    let blocks = vec![block(
+        0,
+        vec![
+            mint(1),
+            Instr::NeutralizePayloadSlot {
+                place: variant_place(1),
+                transferee: None,
+                authority: NeutralizeAuthority::EphemeralTempConsume,
+            },
+        ],
+        Terminator::Return,
+    )];
+    let plans = vec![(ExitPath::Return { block: 0 }, DropPlan::default())];
+    let elab = elab_with_plans(plans);
+    let tracked = [(1_u32, "call carrier".to_string())].into_iter().collect();
+    let local_types = [(1_u32, "Result<Snap, Fail>".to_string())]
+        .into_iter()
+        .collect();
+    let mint_sites = [(1_u32, SiteId(7))].into_iter().collect();
+    let partial_transfer_carrier_mints = [1_u32].into_iter().collect();
+    let findings = validate_obligation_balance_with(
+        &elab,
+        &blocks,
+        &HashMap::new(),
+        &tracked,
+        (&local_types, &mint_sites),
+        &HashSet::new(),
+        &partial_transfer_carrier_mints,
+    );
+    assert!(
+        matches!(
+            findings.as_slice(),
+            [MirCheck::ObligationUnderReleased { hard: false, .. }]
+        ),
+        "a partial call-carrier transfer without a shell drop must remain advisory: {findings:?}"
+    );
 }
 
 use crate::model::NeutralizeAuthority;
@@ -215,6 +261,34 @@ fn discharge_authority_corroborates_returned_aggregate_member() {
     );
 }
 
+#[test]
+fn discharge_authority_corroborates_aggregate_member_through_move_alias() {
+    let blocks = vec![block(
+        0,
+        vec![
+            Instr::Move {
+                dest: Place::Local(2),
+                src: Place::Local(1),
+            },
+            Instr::RecordInit {
+                ty: ResolvedTy::Unit,
+                fields: vec![(FieldOffset(0), Place::Local(2))],
+                dest: Place::Local(9),
+            },
+            Instr::NeutralizePayloadSlot {
+                place: Place::Local(1),
+                transferee: Some(Place::Local(9)),
+                authority: NeutralizeAuthority::AggregateMemberConsume,
+            },
+        ],
+        Terminator::Return,
+    )];
+    assert!(
+        validate_discharge_authority_corroboration_over("f", &blocks).is_empty(),
+        "a record member routed through a move alias must corroborate its transfer"
+    );
+}
+
 /// A whole-local rebind out of a PARAMETER (`var iter = self;`) is a
 /// caller-retained borrow alias: the rebound local must never produce a
 /// definite under-release, even when re-minted per loop iteration from
@@ -242,13 +316,15 @@ fn param_rebind_and_tuple_load_remint_accept() {
     let suspend_kinds = HashMap::new();
     let params: HashSet<u32> = [0_u32].into_iter().collect();
     let local_types = BTreeMap::new();
+    let mint_sites = BTreeMap::new();
     let findings = validate_obligation_balance_with(
         &elab,
         &blocks,
         &suspend_kinds,
         &tracked,
-        &local_types,
+        (&local_types, &mint_sites),
         &params,
+        &HashSet::new(),
     );
     assert!(
         findings.is_empty(),
@@ -284,6 +360,7 @@ fn bytes_retain_move_requires_independent_destination_release() {
             findings.as_slice(),
             [MirCheck::ObligationUnderReleased {
                 name,
+                mint_provenance: crate::model::ObligationMintProvenance::ExplicitRetain,
                 hard: true,
                 ..
             }] if name == "retained"
@@ -322,6 +399,7 @@ fn string_retain_move_preserves_source_obligation() {
             findings.as_slice(),
             [MirCheck::ObligationUnderReleased {
                 name,
+                mint_provenance: crate::model::ObligationMintProvenance::Ordinary,
                 hard: false,
                 ..
             }] if name == "source"
@@ -353,10 +431,16 @@ fn standalone_retain_adds_an_owner_obligation() {
     assert!(
         matches!(
             findings.as_slice(),
-            [MirCheck::ObligationUnderReleased { hard: true, .. }]
+            [MirCheck::ObligationUnderReleased {
+                mint_provenance: crate::model::ObligationMintProvenance::ExplicitRetain,
+                hard: true,
+                ..
+            }]
         ),
         "one terminal drop cannot pay two owner mints after an explicit retain: {findings:?}"
     );
+    let diagnostic = check_to_diagnostic(&findings[0]).expect("retain finding must be visible");
+    assert!(diagnostic.note.starts_with("an explicit MIR retain minted"));
 }
 
 #[test]
@@ -400,7 +484,7 @@ fn ordinary_empty_bytes_literal_still_mints_an_owner() {
     assert!(
         matches!(
             findings.as_slice(),
-            [MirCheck::ObligationUnderReleased { block: 0, .. }]
+            [MirCheck::ObligationUnderReleased { blocks, .. }] if blocks == &[0]
         ),
         "an ordinary empty bytes allocation still needs its own release: {findings:?}"
     );
@@ -472,11 +556,19 @@ fn branch_local_retain_debt_is_not_diluted_at_join() {
     assert!(
         matches!(
             findings.as_slice(),
-            [MirCheck::ObligationUnderReleased { hard: true, .. }]
+            [MirCheck::ObligationUnderReleased {
+                mint_provenance: crate::model::ObligationMintProvenance::Mixed,
+                hard: true,
+                ..
+            }]
         ),
         "the retained branch has two mints but only one release; the balanced sibling must \
          not dilute that explicit owner debt at the join: {findings:?}"
     );
+    let diagnostic = check_to_diagnostic(&findings[0]).expect("mixed finding must be visible");
+    assert!(diagnostic
+        .note
+        .starts_with("at least one failing exit path carries an explicit MIR retain"));
 }
 
 #[test]
@@ -522,13 +614,15 @@ fn fixpoint_cap_exhaustion_fails_closed_unverified() {
     let suspend_kinds = HashMap::new();
     let params = HashSet::new();
     let local_types = BTreeMap::new();
+    let mint_sites = BTreeMap::new();
     let findings = validate_obligation_balance_capped(
         &elab,
         &blocks,
         &suspend_kinds,
         &tracked,
-        &local_types,
+        (&local_types, &mint_sites),
         &params,
+        &HashSet::new(),
         0,
     );
     assert!(
@@ -597,11 +691,54 @@ fn branch_around_missing_guard_drop_rejects_under_release() {
         1,
         "exactly the guard exit is unbalanced: {findings:?}"
     );
-    let MirCheck::ObligationUnderReleased { block, name, .. } = &findings[0] else {
+    let MirCheck::ObligationUnderReleased { blocks, name, .. } = &findings[0] else {
         panic!("expected under-release, got {:?}", findings[0]);
     };
-    assert_eq!(*block, 1);
+    assert_eq!(blocks, &[1]);
     assert_eq!(name, "leaked");
+}
+
+#[test]
+fn under_release_aggregates_all_exits_and_projects_the_mint_site() {
+    let blocks = vec![
+        block(
+            0,
+            vec![mint(1)],
+            Terminator::Branch {
+                cond: Place::Local(0),
+                then_target: 1,
+                else_target: 2,
+            },
+        ),
+        block(1, Vec::new(), Terminator::Return),
+        block(2, Vec::new(), Terminator::Return),
+    ];
+    let plans = vec![
+        (ExitPath::Return { block: 1 }, DropPlan::default()),
+        (ExitPath::Return { block: 2 }, DropPlan::default()),
+    ];
+    let findings = run(blocks, plans, &[(1, "resolve(...)")]);
+    let [MirCheck::ObligationUnderReleased {
+        blocks, site, name, ..
+    }] = findings.as_slice()
+    else {
+        panic!("expected one aggregated under-release: {findings:?}");
+    };
+    assert_eq!(blocks, &[1, 2]);
+    assert_eq!(*site, SiteId(1));
+    assert_eq!(name, "resolve(...)");
+
+    let diagnostic = check_to_diagnostic(&findings[0]).expect("finding must be visible");
+    assert!(diagnostic.note.contains("advisory warning"));
+    let MirDiagnosticKind::ObligationUnderReleased {
+        blocks, site, name, ..
+    } = diagnostic.kind
+    else {
+        panic!("expected projected under-release diagnostic");
+    };
+    assert_eq!(blocks, vec![1, 2]);
+    assert_eq!(site, SiteId(1));
+    assert_eq!(name, "resolve(...)");
 }
 
 /// The fixed round-4 shape: every return path carries exactly one
@@ -1125,7 +1262,7 @@ fn suspend_resume_without_return_drop_is_under_release() {
     assert!(
         matches!(
             findings.as_slice(),
-            [MirCheck::ObligationUnderReleased { block: 1, .. }]
+            [MirCheck::ObligationUnderReleased { blocks, .. }] if blocks == &[1]
         ),
         "only the resumed return edge is under-released: {findings:?}"
     );
@@ -1167,7 +1304,7 @@ fn suspend_abandon_without_frame_drop_is_under_release() {
     assert!(
         matches!(
             findings.as_slice(),
-            [MirCheck::ObligationUnderReleased { block: 0, .. }]
+            [MirCheck::ObligationUnderReleased { blocks, .. }] if blocks == &[0]
         ),
         "only the abandon edge with no frame drop is under-released: {findings:?}"
     );
@@ -1259,7 +1396,7 @@ fn suspend_result_mint_is_resume_edge_local() {
     assert!(
         matches!(
             findings.as_slice(),
-            [MirCheck::ObligationUnderReleased { block: 1, .. }]
+            [MirCheck::ObligationUnderReleased { blocks, .. }] if blocks == &[1]
         ),
         "the resumed result is minted only on resume, never on abandon: {findings:?}"
     );

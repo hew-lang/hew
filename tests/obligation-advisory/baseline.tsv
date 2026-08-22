@@ -1,0 +1,21 @@
+# fixture	advisories	blocking_mir	exit_code	runtime
+cross_module_result/main.hew	0	0	0	check
+direct_call_terminal_carriers.hew	0	0	0	clean
+escaping_direct_call_binding.hew	0	0	0	check
+many_return_blocks.hew	0	0	0	check
+pF.hew	0	0	0	check
+pG.hew	0	0	0	check
+pH.hew	0	0	0	check
+pJ.hew	0	0	0	check
+pK.hew	0	0	0	check
+pL.hew	0	0	0	clean
+pM.hew	0	0	0	clean
+pN.hew	0	0	0	clean
+rA.hew	0	0	0	clean
+rC.hew	0	0	0	clean
+rG_inline.hew	0	0	0	clean
+rG_let.hew	0	0	0	clean
+rJ_noerr.hew	0	0	0	clean
+rK_noloop.hew	0	0	0	clean
+retained_call_carriers/main.hew	0	0	0	check
+retained_hard_refusal.hew	0	1	1	refuse

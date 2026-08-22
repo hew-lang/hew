@@ -60,7 +60,9 @@ use resource_payload_handoff::direct_independent_resource_payloads;
 use retained_string_aliases::{
     retained_string_field_load_aliases, uniquely_defined_retained_string_field_load_aliases,
 };
-pub(super) use shell_drop_safety::enum_payloads_are_shell_drop_safe;
+pub(super) use shell_drop_safety::{
+    direct_payload_has_registered_resource_record, enum_payloads_are_shell_drop_safe,
+};
 pub(super) use tuple_handle_projection::derive_owned_tuple_handle_projection_bindings;
 
 /// #2212 — discharge the non-escaped owned sibling fields of a record whose
@@ -95,8 +97,9 @@ pub(super) use tuple_handle_projection::derive_owned_tuple_handle_projection_bin
 ///    exactly that call as its predecessor, and the escaping binder's
 ///    provenance is `Unique { root, field }` — the value flow proves both the
 ///    root and WHICH field escaped. The escaped field is never discharged:
-///    for a moved-out binder the escapee owns it; for a retained `string`
-///    clone the original keeps its pre-existing leak.
+///    for a moved-out binder the escapee owns it. A proven retained `string`
+///    clone is the exception: the escapee owns an independent share, so this
+///    pass also discharges the record's original field.
 /// 3. No binder of the root is the base local of another `owned_locals`
 ///    binding and none is the place of an inline `Drop` — an extracted
 ///    field with its own release path (`let g = b.gen`) is a second owner
@@ -211,8 +214,20 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
     };
     let retained_string_field_aliases =
         uniquely_defined_retained_string_field_load_aliases(blocks, local_tys);
-    let field_binders = collect_record_field_binders(blocks, &alias_of, &local_is_heap_owning);
-    let provenance = attribute_field_binder_provenance(blocks, &alias_of, &field_binders);
+    let all_field_binders = collect_record_field_binders(blocks, &alias_of, &local_is_heap_owning);
+    let provenance = attribute_field_binder_provenance(blocks, &alias_of, &all_field_binders);
+    // A join local with another, unrelated definition is not an ownership
+    // hand-off. Stop the binder chain at its last uniquely-attributed source
+    // so sibling cleanup can run on that predecessor before the values merge.
+    let field_binders: HashSet<u32> = all_field_binders
+        .into_iter()
+        .filter(|local| {
+            !matches!(
+                provenance.get(local),
+                Some(FieldBinderProvenance::Ambiguous) | None
+            )
+        })
+        .collect();
     let binder_root = |binder: u32| -> Option<u32> {
         match provenance.get(&binder) {
             Some(
@@ -275,7 +290,7 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                     match provenance.get(&$binder) {
                         Some(FieldBinderProvenance::Unique { root, field }) => {
                             if let Some(scan) = scans.get_mut(root) {
-                                scan.escapes.push((bid, Some($pos), *field));
+                                scan.escapes.push((bid, Some($pos), *field, $binder));
                             }
                         }
                         Some(FieldBinderProvenance::RootOnly { root }) => poison!(*root),
@@ -563,7 +578,7 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                     match provenance.get(&l) {
                         Some(FieldBinderProvenance::Unique { root, field }) => {
                             if let Some(scan) = scans.get_mut(root) {
-                                scan.escapes.push((bid, None, *field));
+                                scan.escapes.push((bid, None, *field, l));
                             }
                         }
                         Some(FieldBinderProvenance::RootOnly { root }) => {
@@ -600,7 +615,7 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
         if scan.poisoned || member_count.get(&root).copied().unwrap_or(0) != 1 {
             continue;
         }
-        let &[(esc_block, esc_idx, esc_field)] = &scan.escapes[..] else {
+        let &[(esc_block, esc_idx, esc_field, esc_binder)] = &scan.escapes[..] else {
             continue;
         };
         if field_binders
@@ -645,9 +660,10 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
             continue;
         }
         let record_ty = &root_record_ty[&root];
+        let retained_clone_escape = retained_string_field_aliases.contains(&esc_binder);
         let siblings: Vec<Instr> = owned_field_list(record_ty)
             .into_iter()
-            .filter(|(idx, _)| *idx != esc_field)
+            .filter(|(idx, _)| retained_clone_escape || *idx != esc_field)
             .filter(|(_, ty)| field_dischargeable(ty))
             .map(|(idx, ty)| Instr::FieldDropInPlace {
                 base: Place::Local(root),
@@ -1534,7 +1550,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // alias until a corroborating neutralize transfers ownership onward.
     let source_slot_is_consumed =
         |block: &BasicBlock, instr_index: usize, source: Place, dest: Place| -> bool {
-            block
+            let directly_consumed = block
                 .instructions
                 .get(instr_index + 1)
                 .is_some_and(|later| match later {
@@ -1554,7 +1570,26 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             | crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume,
                     } => *place == source && *transferee == Some(dest),
                     _ => false,
-                })
+                });
+            let forwarded_consumed = matches!(
+                (
+                    block.instructions.get(instr_index + 1),
+                    block.instructions.get(instr_index + 2),
+                ),
+                (
+                    Some(Instr::Move {
+                        dest: forwarded,
+                        src,
+                    }),
+                    Some(Instr::NeutralizePayloadSlot {
+                        place,
+                        transferee: Some(transferee),
+                        authority:
+                            crate::model::NeutralizeAuthority::WholeCarrierConsume,
+                    }),
+                ) if *src == dest && *place == source && *transferee == *forwarded
+            );
+            directly_consumed || forwarded_consumed
         };
     let aggregate_field_is_consumed =
         |block: &BasicBlock, instr_index: usize, root: Place, dest: Place, field: u32| -> bool {
@@ -1670,7 +1705,18 @@ pub(super) fn derive_enum_composite_drop_allowed(
     let retained_string_payload_aliases =
         uniquely_defined_retained_string_field_load_aliases(blocks, local_tys);
     payload_binders.retain(|local, _| !retained_string_payload_aliases.contains(local));
-
+    let neutralized_payload_owner_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::NeutralizePayloadSlot {
+                place,
+                transferee: Some(transferee),
+                ..
+            } if place_is_interior_projection(*place) => base_local(*transferee),
+            _ => None,
+        })
+        .collect();
     // Escape scan. A composite root is excluded if:
     //   (a) any alias-set member is read into an OWNING sink (a source operand
     //       that is NOT the whole-value `Move` hand-off already folded into the
@@ -1799,10 +1845,21 @@ pub(super) fn derive_enum_composite_drop_allowed(
                     // unexempted it wrongly excludes the parent composite from
                     // its `EnumInPlace` drop and leaks the inner payload (W5.020
                     // nested-payload leak).
+                    let transfers_neutralized_payload_within_carrier_scope =
+                        neutralized_payload_owner_locals.contains(&sl)
+                            && dest_local.is_some_and(|dl| {
+                                matches!(
+                                    payload_binder_candidate_root.get(&sl),
+                                    Some(PayloadBinderRoot::Root(root))
+                                        if local_scope.contains_key(root)
+                                            && local_scope.get(root) == local_scope.get(&dl)
+                                )
+                            });
                     if payload_binders.contains_key(&sl)
                         && !place_is_tag_read(*src)
                         && !retained_string_move
                         && !retained_bytes_move
+                        && !transfers_neutralized_payload_within_carrier_scope
                     {
                         let benign_handoff = dest_local
                             .is_some_and(|dl| payload_binders.contains_key(&dl))
@@ -1881,6 +1938,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                     | Instr::TupleFieldLoad { .. }
                     | Instr::RecordFieldDrop { .. }
                     | Instr::FieldDropInPlace { .. }
+                    | Instr::NeutralizePayloadSlot { .. }
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
@@ -2045,7 +2103,6 @@ pub(super) fn derive_enum_composite_drop_allowed(
         &declared_release_payload_candidate_locals,
         &mut excluded_roots,
     );
-
     let mut allowed = HashSet::new();
     for (&local, &binding) in &candidate_local_to_binding {
         let root = alias_of.get(&local).copied().unwrap_or(local);

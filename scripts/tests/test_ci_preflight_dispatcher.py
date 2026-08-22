@@ -1271,33 +1271,18 @@ def test_scripts_config_budget_annotation() -> None:
     )
 
 
-def run_with_fake_nextest(version: str) -> subprocess.CompletedProcess[str]:
-    """Run a compiling lane with `cargo nextest --version` reporting `version`."""
-    with tempfile.TemporaryDirectory() as bin_dir:
-        fake_cargo = Path(bin_dir) / "cargo"
-        fake_cargo.write_text(
-            "#!/bin/sh\n"
-            'if [ "$1" = "nextest" ] && [ "$2" = "--version" ]; then\n'
-            f"  printf 'cargo-nextest {version} (deadbeef 2026-01-01)\\n'\n"
-            "  exit 0\n"
-            "fi\n"
-            'if [ "$1" = "metadata" ]; then\n'
-            '  printf \'{"packages":[],"target_directory":"target"}\\n\'\n'
-            "  exit 0\n"
-            "fi\n"
-            "exit 0\n",
-            encoding="utf-8",
-        )
-        fake_cargo.chmod(0o755)
-        return _run_dispatcher_process(
-            ["bash", str(SCRIPT), "--", "hew-parser/src/lib.rs"],
-            env={
-                "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
-                "PREFLIGHT_TEST_COMMANDS": "true",
-            },
-            timeout=60,
-            path_prefix=(Path(bin_dir),),
-        )
+def run_with_injected_nextest(version: str) -> subprocess.CompletedProcess[str]:
+    """Run a compiling selection with explicit installed and pinned versions."""
+    return _run_dispatcher_process(
+        ["bash", str(SCRIPT), "--", "hew-parser/src/lib.rs"],
+        env={
+            "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+            "PREFLIGHT_TEST_COMMANDS": "true",
+            "PREFLIGHT_TEST_NEXTEST_VERSION": version,
+            "PREFLIGHT_TEST_NEXTEST_PIN": pinned_nextest_version(),
+        },
+        timeout=60,
+    )
 
 
 def pinned_nextest_version() -> str:
@@ -1310,7 +1295,7 @@ def pinned_nextest_version() -> str:
 
 def test_a_nextest_older_than_the_pin_stops_the_preflight() -> None:
     """Three reds were an unpinned nextest rejecting a flag the gates pass."""
-    result = run_with_fake_nextest("0.9.99")
+    result = run_with_injected_nextest("0.9.99")
 
     assert result.returncode != 0, result.stdout
     assert "older than the pinned" in result.stderr, result.stderr
@@ -1320,7 +1305,7 @@ def test_a_nextest_older_than_the_pin_stops_the_preflight() -> None:
 def test_the_preflight_reads_its_pin_from_the_tool_pin_contract() -> None:
     """One declaration for the whole build system, not a second copy here."""
     pinned = pinned_nextest_version()
-    result = run_with_fake_nextest(pinned)
+    result = run_with_injected_nextest(pinned)
 
     assert result.returncode == 0, result.stderr
     assert f"satisfies the pinned {pinned}" in result.stdout, result.stdout

@@ -1684,9 +1684,21 @@ run_timed_command() {
 assert_nextest_pin() {
     local contract="scripts/tests/test_tool_pin_contract.py"
     local pin installed oldest reported
-    pin="$(sed -n 's/^[[:space:]]*"NEXTEST": ("cargo-nextest", "\([0-9][0-9.]*\)").*/\1/p' "$contract")"
+    if [[ -n "${PREFLIGHT_TEST_NEXTEST_PIN:-}" || -n "${PREFLIGHT_TEST_NEXTEST_VERSION:-}" ]]; then
+        if [[ "${PREFLIGHT_TEST_ALLOW_OVERRIDE:-}" != "1" ]]; then
+            die "PREFLIGHT_TEST_NEXTEST_PIN and PREFLIGHT_TEST_NEXTEST_VERSION require PREFLIGHT_TEST_ALLOW_OVERRIDE=1 for test-only use."
+        fi
+        [[ -n "${PREFLIGHT_TEST_NEXTEST_PIN:-}" ]] ||
+            die "PREFLIGHT_TEST_NEXTEST_PIN must accompany PREFLIGHT_TEST_NEXTEST_VERSION."
+        [[ -n "${PREFLIGHT_TEST_NEXTEST_VERSION:-}" ]] ||
+            die "PREFLIGHT_TEST_NEXTEST_VERSION must accompany PREFLIGHT_TEST_NEXTEST_PIN."
+        pin="$PREFLIGHT_TEST_NEXTEST_PIN"
+        reported="cargo-nextest $PREFLIGHT_TEST_NEXTEST_VERSION (test fixture)"
+    else
+        pin="$(sed -n 's/^[[:space:]]*"NEXTEST": ("cargo-nextest", "\([0-9][0-9.]*\)").*/\1/p' "$contract")"
+        reported="$(cargo nextest --version 2>/dev/null)"
+    fi
     [[ -n "$pin" ]] || die "no cargo-nextest pin in $contract (PINS[\"NEXTEST\"])"
-    reported="$(cargo nextest --version 2>/dev/null)"
     installed="$(printf '%s\n' "$reported" | sed -n 's/^cargo-nextest \([0-9][0-9.]*\).*/\1/p' | head -1)"
     [[ -n "$installed" ]] || die "cargo-nextest is not installed; every test gate runs through it (cargo install cargo-nextest --locked)"
     oldest="$(printf '%s\n%s\n' "$pin" "$installed" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)"
@@ -1699,7 +1711,12 @@ assert_nextest_pin() {
 # acquire a tool that only those replaced commands consume.  The routing result
 # still reports requires_compile above; only execution-time provisioning is
 # synthetic here.
-if [[ "$REQUIRES_COMPILE" == "true" && -z "${PREFLIGHT_TEST_COMMANDS:-}" ]]; then
+if [[ "$REQUIRES_COMPILE" == "true" ]] &&
+    {
+        [[ -z "${PREFLIGHT_TEST_COMMANDS:-}" ]] ||
+            [[ -n "${PREFLIGHT_TEST_NEXTEST_VERSION:-}" ]] ||
+            [[ -n "${PREFLIGHT_TEST_NEXTEST_PIN:-}" ]]
+    }; then
     assert_nextest_pin
 fi
 

@@ -1989,7 +1989,8 @@ _TARGET_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _TARGET_SHAPED_RE = re.compile(r"^[A-Za-z0-9_.]+-[A-Za-z0-9_.-]*$")
 _EXTERNAL_TARGET_ANNOTATION_RE = re.compile(
     r"(?:#\s*external|<!--\s*external-target)\s*:\s*"
-    r"[A-Za-z0-9][A-Za-z0-9._/-]*(?:\s*-->)?\s*$"
+    r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*"
+    r"(?:\s*-->)?\s*$"
 )
 
 

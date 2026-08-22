@@ -900,7 +900,7 @@ assemble: | hew hew-native hew-lsp observe runtime stdlib wasm-runtime
 	@rm -rf $(BUILD_DIR)/std
 	@mkdir -p $(BUILD_DIR)/std
 	@# Compiler driver
-	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)"              "$(BUILD_DIR)/bin/hew"
+	@ln -sfn "$(LINK_UP2)$(DEBUG_HEW)"                    "$(BUILD_DIR)/bin/hew"
 	@# Language server
 	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew-lsp"            "$(BUILD_DIR)/bin/hew-lsp"
 	@# TUI actor observer (sibling binary — `hew observe` delegates here)
@@ -935,7 +935,7 @@ assemble: | hew hew-native hew-lsp observe runtime stdlib wasm-runtime
 	@for f in std/*.hew; do \
 		ln -sfn "../../$$f" "$(BUILD_DIR)/std/$$(basename $$f)"; \
 	done
-	@echo "build/ assembled (release-lib compiler, debug support tools). Add to PATH:"
+	@echo "build/ assembled (debug). Add to PATH:"
 	@echo "  export PATH=\"$(CURDIR)/$(BUILD_DIR)/bin:\$$PATH\""
 
 # ── Release build ───────────────────────────────────────────────────────────
@@ -1006,7 +1006,7 @@ endif
 # Assemble build/ with release symlinks.
 assemble-release:
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
-	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)"              "$(BUILD_DIR)/bin/hew"
+	@ln -sfn "$(LINK_UP2)$(RELEASE_DIR)/hew"              "$(BUILD_DIR)/bin/hew"
 	@ln -sfn "$(LINK_UP2)$(RELEASE_DIR)/hew-lsp"          "$(BUILD_DIR)/bin/hew-lsp"
 	@ln -sfn "$(LINK_UP2)$(RELEASE_DIR)/hew-observe"      "$(BUILD_DIR)/bin/hew-observe"
 	@# Combined Hew library (runtime + all stdlib packages), from the non-LTO
@@ -1241,17 +1241,17 @@ test-package-install-build: hew-native runtime $(LIBHEW_READY)
 # inputs: hew-hir/src/*.rs hew-mir/src/*.rs hew-codegen-rs/src/*.rs
 # fixture and diffs against the committed goldens; `make baselines` recaptures
 # them (only in a commit that justifies the dump change).
-checked-mir-verify: hew
-	HEW_BIN="$(BUILD_DIR)/bin/hew" bash scripts/checked-mir-corpus.sh verify
+checked-mir-verify: hew-native
+	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh verify
 
 # Regen seam (see above): driven by `make baselines`, not run directly.
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
-checked-mir-verify-build: hew
+checked-mir-verify-build: hew-native
 	@:
 
-checked-mir-golden: hew
-	HEW_BIN="$(BUILD_DIR)/bin/hew" bash scripts/checked-mir-corpus.sh golden
+checked-mir-golden: hew-native
+	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh golden
 
 # Execution gate for the same corpus: build and run every fixture and diff
 # a transcript (exit status + verbatim stdout) against its committed
@@ -1264,17 +1264,17 @@ checked-mir-golden: hew
 # expectation fails, an expectation for a fixture without `main` fails.
 # inputs: examples/v05/checked-mir/* scripts/checked-mir-corpus.sh hew-types/src/*.rs
 # inputs: hew-hir/src/*.rs hew-mir/src/*.rs hew-codegen-rs/src/*.rs hew-runtime/src/*.rs
-checked-mir-run: hew runtime stdlib check-libhew-fresh
-	HEW_BIN="$(BUILD_DIR)/bin/hew" bash scripts/checked-mir-corpus.sh run
+checked-mir-run: hew-native runtime stdlib check-libhew-fresh
+	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh run
 
 # Regen seam (see above): driven by `make baselines`, not run directly.
 
 # Artifacts only: the freshness check belongs to the gate.
-checked-mir-run-build: hew runtime stdlib
+checked-mir-run-build: hew-native runtime stdlib
 	@:
 
-checked-mir-expect: hew runtime stdlib check-libhew-fresh
-	HEW_BIN="$(BUILD_DIR)/bin/hew" bash scripts/checked-mir-corpus.sh expect
+checked-mir-expect: hew-native runtime stdlib check-libhew-fresh
+	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh expect
 
 # Per-function .ll byte-identity oracle (tests/ll-oracle/corpus/): proves a
 # pure codegen refactor (dedup, extract-helper, file-split) emits zero changed
@@ -1284,17 +1284,17 @@ checked-mir-expect: hew runtime stdlib check-libhew-fresh
 # wasm32 targets are covered.
 # inputs: tests/ll-oracle/* scripts/ll-corpus.sh scripts/ll-byte-identity.sh
 # inputs: hew-hir/src/*.rs hew-mir/src/*.rs hew-codegen-rs/src/*.rs
-ll-diff: hew
-	HEW_BIN="$(BUILD_DIR)/bin/hew" bash scripts/ll-corpus.sh verify
+ll-diff: hew-native
+	HEW_BIN="$(DEBUG_HEW)" bash scripts/ll-corpus.sh verify
 
 # Regen seam (see above): driven by `make baselines`, not run directly.
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
-ll-diff-build: hew
+ll-diff-build: hew-native
 	@:
 
-ll-golden: hew
-	HEW_BIN="$(BUILD_DIR)/bin/hew" bash scripts/ll-corpus.sh golden
+ll-golden: hew-native
+	HEW_BIN="$(DEBUG_HEW)" bash scripts/ll-corpus.sh golden
 
 # Dogfood-shaped compile-time measurement gate. Its raw IR byte count and
 # structural counts are exact; timings are printed for observation only.
@@ -1544,10 +1544,10 @@ check-counterfactual-output-artifacts-build: $(LIBHEW_READY)
 	bash -n scripts/ci-preflight-dispatcher.sh
 
 # inputs: std/* scripts/corpus-ratchet.sh scripts/stdlib-expected-failures.txt
-test-stdlib-ratchet: hew ## Test: type-check the standard library against its ratchet
+test-stdlib-ratchet: hew-native ## Test: type-check the standard library against its ratchet
 	@bash scripts/tests/test_stdlib_ratchet_deprecations.sh
 	@echo "==> Type-checking stdlib (ratcheted)"
-	HEW_BIN="$(BUILD_DIR)/bin/hew" scripts/corpus-ratchet.sh stdlib
+	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh stdlib
 
 # Every stdlib source must stay clean in isolation, and every module must stay
 # silent when checked and built through a temporary user package.
@@ -1561,7 +1561,7 @@ stdlib-user-build-clean-build: hew runtime $(LIBHEW_READY)
 	@:
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
-test-stdlib-ratchet-build: hew
+test-stdlib-ratchet-build: hew-native
 	@:
 
 # Verify the public stdlib index has exactly one executable fixture proof per
@@ -1676,11 +1676,11 @@ test-example-expectations-selftest-build:
 # regressions were introduced.
 # inputs: docs/hew-language-guide.md docs/specs/HEW-SPEC-2026.md docs/language/*.hew
 # inputs: scripts/corpus-ratchet.sh scripts/doc-test-expected-failures.txt
-test-doc-examples: hew
-	@HEW_BIN="$(BUILD_DIR)/bin/hew" scripts/corpus-ratchet.sh doc-fences
+test-doc-examples: hew-native
+	@HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh doc-fences
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
-test-doc-examples-build: hew
+test-doc-examples-build: hew-native
 	@:
 
 # Exercise pipe-safe membership wiring across every shell ratchet, then drive
@@ -2185,12 +2185,12 @@ hew-fmt-property-build: hew
 # See scripts/corpus-ratchet.sh for the allowlist format and classification guide.
 # inputs: *.hew */hew.toml scripts/corpus-ratchet.sh
 # inputs: scripts/hew-corpus-expected-failures.txt
-hew-check-all: hew
+hew-check-all: hew-native
 	@echo "==> hew-check-all: compiling full .hew corpus"
-	HEW_BIN="$(BUILD_DIR)/bin/hew" scripts/corpus-ratchet.sh hew-corpus
+	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh hew-corpus
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
-hew-check-all-build: hew
+hew-check-all-build: hew-native
 	@:
 
 .PHONY: codegen-carried-identity-gate

@@ -2,6 +2,7 @@
 
 import re
 import shlex
+import subprocess
 from pathlib import Path
 from typing import Callable
 
@@ -775,8 +776,20 @@ def test_dispatcher_copy_cannot_mask_required_job_mutation() -> None:
     workflow = CI_WORKFLOW.read_text()
     job = _job_block(workflow, REQUIRED_CI_JOB)
     assert job.count(f"run: {CONTRACT_COMMAND}") == 1
-    dispatcher = (ROOT / "scripts/ci-preflight-dispatcher.sh").read_text()
-    assert f'add_command "{CONTRACT_COMMAND}"' in dispatcher
+    dispatched = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts/ci-preflight-dispatcher.sh"),
+            "--dry-run",
+            "--",
+            ".github/workflows/freebsd.yml",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert CONTRACT_COMMAND in dispatched, dispatched
     mutated_job = job.replace(
         f"run: {CONTRACT_COMMAND}",
         "run: echo contract-check-removed",

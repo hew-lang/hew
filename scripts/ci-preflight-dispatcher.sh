@@ -217,11 +217,17 @@ command_timeout() {
     local cmd="$1"
     local baseline
     local floor
+    local tier="$CMD_TIMEOUT"
+    # A `make` gate builds its own prerequisites, so its stuck ceiling is the
+    # wide tier wherever it is selected; the cargo commands keep the narrow one.
+    if [[ "$cmd" == make\ * ]] && (( PREFLIGHT_TIMEOUT_FALLBACK > tier )); then
+        tier="$PREFLIGHT_TIMEOUT_FALLBACK"
+    fi
     floor="$(command_timeout_floor "$cmd")"
-    if (( floor > CMD_TIMEOUT )); then
+    if (( floor > tier )); then
         baseline="$floor"
     else
-        baseline="$CMD_TIMEOUT"
+        baseline="$tier"
     fi
     scale_timeout_budget "$baseline"
 }
@@ -444,10 +450,10 @@ run_counterfactual_output_check() {
 
 DRY_RUN=0
 FAIL_FAST=0
+CLASSIFY_ONLY=0
 CHECK_COUNTERFACTUAL_OUTPUT=0
 BASE_REF=""
 EXPLICIT_PATHS=0
-LANE=""
 LANE_REASON=""
 CHANGED_FILES=()
 CHANGED_CRATE_DIRS=()
@@ -473,6 +479,12 @@ Dispatch a conservative local CI preflight based on changed files.
 - With no paths, the script inspects committed, staged, unstaged, and untracked changes.
 - By default, all selected commands run and failures are reported together at the end.
 - --fail-fast           Stop after the first failed command.
+- --classify            Print '<path>\t<gate,gate,...>' for each path and exit. With no
+                        paths, reads newline-separated paths from stdin.
+- Routing rule: a changed path selects every gate whose declared `# inputs:` it matches,
+  and the preflight runs the union of those gates over the reverse-dependency closure of
+  the changed crates. A path matching no declaration and no positive no-gate pattern is
+  undeclared: it fails closed to comprehensive and is named in the Reason line.
 - If the first-slice routing is unclear, the script runs the broader local check profile.
 - --explain-warmup <cmd> Print the warm-up derived from <cmd> and exit; fails when <cmd>
                         has no derivable warm-up.
@@ -572,6 +584,31 @@ collect_paths_from_command() {
     done < <("$@")
 }
 
+# Collect from `git diff --name-status`, taking BOTH sides of a rename or copy.
+#
+# WHY: `--name-only` reports only the destination of an R/C entry, so moving a
+# file out of one declared set and into another dropped the gate that owned the
+# OLD path — precisely the change most likely to break it.  A rename is a
+# change to both locations, and both are routed.
+collect_paths_from_status() {
+    local status=""
+    local first=""
+    local second=""
+    while IFS=$'\t' read -r status first second; do
+        [[ -n "$status" ]] || continue
+        case "$status" in
+            R*|C*)
+                [[ -n "$first" ]] && append_unique_path "$(normalize_path "$first")"
+                [[ -n "$second" ]] && append_unique_path "$(normalize_path "$second")"
+                ;;
+            *)
+                [[ -n "$first" ]] && append_unique_path "$(normalize_path "$first")"
+                ;;
+        esac
+    done < <("$@")
+    return 0
+}
+
 add_command() {
     local command="$1"
     local existing
@@ -594,239 +631,101 @@ has_commands() {
     [[ ${COMMANDS[0]+set} == set ]]
 }
 
-is_docs_path() {
-    case "$1" in
-        docs/*|*.md|AUTHORS|LICENSE|LICENSE-*|NOTICE)
-            return 0
-            ;;
-    esac
-    return 1
-}
+# ═══════════════════════════════════════════════════════════════════════════
+# GATE SELECTION.
+#
+#   Every gate DECLARES the paths it reads, on an `# inputs:` line above its
+#   recipe in the Makefile.  This dispatcher selects every gate whose declared
+#   inputs intersect the diff.  The comprehensive profile is every
+#   participating gate, so it is a SUPERSET of any narrower selection by
+#   construction — not by a curated list somebody has to keep in step.
+#
+#   There is no separate path table. A gate that grows a new input root is
+#   edited next to the recipe that reads it.
+#
+#   Three declarations, all in the Makefile, all machine-read here and asserted
+#   by scripts/check-gate-reachability.py (A6/A7):
+#
+#     # inputs: <glob>...          the paths a gate reads
+#     # preflight: <marker>        never / comprehensive-only, with the reason
+#     # global-input: <glob> — ..  parameterises every gate; forces comprehensive
+#     # no-gate: <glob> — ..       positive inert-path allowlist
+#
+#   A gate whose only declared input is the bare `*` is a TREE-WIDE SCANNER
+#   (leak-scan, lint-wasm-todo): it is always selected, and it deliberately does
+#   not count as "something reads this path" — otherwise no path could ever be
+#   unclassified and the fail-closed answer would be unreachable.
+#
+#   Glob syntax: `*` matches any characters including `/`.
+#
+#   scripts/lib/gate_inputs.py also scans likely consumers as an advisory
+#   lint. Static analysis is incomplete, so scan results never select a gate,
+#   widen the no-gate set, or otherwise narrow this plan.
 
-is_grammar_path() {
-    case "$1" in
-        docs/specs/Hew.g4|docs/specs/grammar.ebnf)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_parser_path() {
-    case "$1" in
-        hew-parser/*|hew-lexer/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_types_path() {
-    case "$1" in
-        hew-types/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_compiler_pipeline_path() {
-    case "$1" in
-        hew-hir/*|hew-mir/*|hew-codegen-rs/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_cli_path() {
-    case "$1" in
-        # Direct CLI crates.
-        hew-cli/*|hew-pkg/*)
-            return 0
-            ;;
-        # CLI pipeline support crates: compile pipeline, C ABI helpers,
-        # and code generators.  Changes here are covered by
-        # cargo nextest run -p hew-cli -p hew-pkg because hew-cli links
-        # the full pipeline including hew-runtime (which links hew-cabi)
-        # and hew-compile.
-        hew-compile/*|hew-cabi/*|hew-capability-gen/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_observe_path() {
-    case "$1" in
-        hew-observe/Cargo.toml|hew-observe/src/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_runtime_path() {
-    case "$1" in
-        hew-runtime/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_runtime_testkit_path() {
-    case "$1" in
-        hew-runtime-testkit/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_hew_lib_path() {
-    case "$1" in
-        hew-lib/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_stdlib_net_path() {
-    case "$1" in
-        std/net/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_analysis_path() {
-    case "$1" in
-        hew-analysis/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_lsp_path() {
-    case "$1" in
-        hew-lsp/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_wasm_path() {
-    case "$1" in
-        hew-wasm/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_sandbox_fixture_path() {
-    case "$1" in
-        hew-sandbox-vm/fixtures/*|hew-sandbox-vm/test/build-fixtures.test.mjs|xtask/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_sandbox_parity_path() {
-    case "$1" in
-        hew-sandbox-wasm/tests/parity.rs|hew-sandbox-wasm/Cargo.toml|\
-        hew-sandbox-vm/src/interpreter/parity-runner.ts|hew-sandbox-vm/package.json|\
-        examples/playground/basics/hello_world.hew|examples/playground/basics/fibonacci.hew|\
-        examples/playground/concurrency/counter_actor.hew|examples/playground/concurrency/actor_pipeline.hew|\
-        examples/playground/concurrency/supervisor.hew|examples/playground/machines/traffic_light.hew)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_vertical_slice_path() {
-    # tests/pkg-import is the cross-module package-import sibling of the
-    # vertical-slice oracle: same end-to-end compiler ladder, same lane.
-    # tests/fuzz-oracle is the trap/signal ratchet — same compiler-ladder tier.
-    case "$1" in
-        tests/vertical-slice/*|tests/pkg-import/*|tests/fuzz-oracle/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_hew_tests_path() {
-    case "$1" in
-        tests/hew/*|tests/core-matrix/*|scripts/core-matrix.py|scripts/core-matrix-gen.py)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_trap_fixtures_path() {
-    # MIR bounds/trap lowering and the fuzz-oracle fixture corpus.
-    # Changes here must run make fuzz-oracle — the ratchet that checks trap
-    # signal codes (SIGILL/SIGTRAP) and expected-failures.txt alignment.
-    case "$1" in
-        hew-mir/src/lower.rs|\
-        hew-mir/src/model.rs|\
-        hew-codegen-rs/src/llvm.rs|\
-        tests/fuzz-oracle/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_capability_authority_path() {
-    # hew-capability-gen's authority ratchet (tests/authority.rs) pins checker
-    # coverage over the capability surface STRUCTURALLY — the crate has no
-    # cargo dependency on hew-mir or hew-types, so the reverse-dependency
-    # closure that feeds AFFECTED_PACKAGE_ARGS can never select it.  A
-    # hew-mir / hew-types change can therefore break the ratchet while every
-    # closure-routed test stays green (escape class: structural ratchets that
-    # live outside the cargo dependency graph).
-    case "$1" in
-        hew-mir/*|hew-types/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_ll_oracle_path() {
-    # The ll-oracle golden corpus (tests/ll-oracle/corpus/golden) pins the
-    # emitted per-function LLVM IR.  Any MIR-lowering or codegen emission
-    # change can drift it (e.g. an epilogue reorder), and nothing else in the
-    # narrow lanes diffs those goldens — only make ll-diff does (~45s).
-    case "$1" in
-        hew-hir/*|hew-mir/*|hew-codegen-rs/*|tests/ll-oracle/*)
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-is_scripts_config_path() {
-    case "$1" in
-        .gitignore|scripts/*|.github/*)
-            return 0
-            ;;
-        # License and attribution files are policy inputs, not compiler inputs.
-        THIRD-PARTY-LICENSES|NOTICE|about.toml|about.hbs|deny.toml|LICENSE-*|LICENSE)
-            return 0
-            ;;
-    esac
-    return 1
+# Runs the selector over the changed paths.  Sets:
+#   SELECTED_GATES   make targets to run, in Makefile order
+#   UNDECLARED_PATHS   paths no gate declares and no `no-gate` entry covers
+#   GLOBAL_PATHS     paths declared as global inputs
+#   COMPREHENSIVE    1 when the whole gate set must run
+#   NEEDS_RUST_CLOSURE 1 when a Rust input changed
+select_gates() {
+    local mode="$1"
+    shift
+    local key value
+    SELECTED_GATES=()
+    UNDECLARED_PATHS=()
+    GLOBAL_PATHS=()
+    COMPREHENSIVE=0
+    NEEDS_RUST_CLOSURE=0
+    # The selector's exit status is CHECKED, and its stream must end with the
+    # END sentinel.  Reading it through process substitution discarded both: a
+    # selector that raised produced no records, which read as "no gate matches"
+    # and narrowed the plan to `cargo fmt` with exit 0.  A router that cannot
+    # decide must run everything or stop; it must never quietly run less.
+    local records=""
+    local status=0
+    local selector=(python3 "$REPO_ROOT/scripts/lib/gate_inputs.py" select "$REPO_ROOT" --mode "$mode")
+    # Test-only selector replacement, behind the same sentinel as the command
+    # and warm-up overrides, so the fail-closed path can be exercised without a
+    # second copy of the repository.
+    if [[ -n "${PREFLIGHT_TEST_SELECTOR:-}" ]]; then
+        if [[ "${PREFLIGHT_TEST_ALLOW_OVERRIDE:-}" != "1" ]]; then
+            die "PREFLIGHT_TEST_SELECTOR requires PREFLIGHT_TEST_ALLOW_OVERRIDE=1 for test-only use"
+        fi
+        selector=(bash -c "$PREFLIGHT_TEST_SELECTOR")
+    fi
+    records="$(printf '%s\n' "$@" | "${selector[@]}")" || status=$?
+    if (( status != 0 )); then
+        die "gate selector failed (exit $status); refusing to narrow the preflight on an undecided routing"
+    fi
+    local saw_end=0
+    while IFS=' ' read -r key value; do
+        case "$key" in
+            MODE)
+                case "$value" in
+                    selected) ;;
+                    comprehensive) COMPREHENSIVE=1 ;;
+                    *) die "selector emitted an invalid MODE value: $value" ;;
+                esac
+                ;;
+            GATE) SELECTED_GATES+=("$value") ;;
+            UNDECLARED) UNDECLARED_PATHS+=("$value") ;;
+            GLOBAL) GLOBAL_PATHS+=("$value") ;;
+            RUSTCLOSURE)
+                case "$value" in
+                    0) ;;
+                    1) NEEDS_RUST_CLOSURE=1 ;;
+                    *) die "selector emitted an invalid RUSTCLOSURE value: $value" ;;
+                esac
+                ;;
+            END) saw_end=1 ;;
+            "") ;;
+            *) die "selector emitted an unknown record: $key $value" ;;
+        esac
+    done <<< "$records"
+    if (( saw_end != 1 )); then
+        die "gate selector produced a truncated record stream (no END); refusing to narrow the preflight on a partial routing"
+    fi
 }
 
 # Warm artifact construction, ahead of the per-command watchdog budgets, so
@@ -1025,6 +924,10 @@ while [[ $# -gt 0 ]]; do
             FAIL_FAST=1
             shift
             ;;
+        --classify)
+            CLASSIFY_ONLY=1
+            shift
+            ;;
         --explain-warmup)
             shift
             [[ $# -gt 0 ]] || die "--explain-warmup requires a command"
@@ -1107,7 +1010,7 @@ fi
 
 ci_preflight_base_unresolved=0
 
-if (( EXPLICIT_PATHS == 0 )); then
+if (( EXPLICIT_PATHS == 0 && CLASSIFY_ONLY == 0 )); then
     if [[ -z "$BASE_REF" ]]; then
         if [[ -n "${CI_PREFLIGHT_BASE:-}" ]]; then
             if git rev-parse --verify "$CI_PREFLIGHT_BASE" >/dev/null 2>&1; then
@@ -1130,11 +1033,30 @@ if (( EXPLICIT_PATHS == 0 )); then
     fi
 
     if [[ -n "$BASE_REF" ]]; then
-        collect_paths_from_command git diff --name-only --diff-filter=ACMRD "$BASE_REF...HEAD"
+        collect_paths_from_status git diff --name-status --diff-filter=ACMRD "$BASE_REF...HEAD"
     fi
-    collect_paths_from_command git diff --cached --name-only --diff-filter=ACMRD
-    collect_paths_from_command git diff --name-only --diff-filter=ACMRD
+    collect_paths_from_status git diff --cached --name-status --diff-filter=ACMRD
+    collect_paths_from_status git diff --name-status --diff-filter=ACMRD
     collect_paths_from_command git ls-files --others --exclude-standard
+fi
+
+if (( CLASSIFY_ONLY == 1 )); then
+    # Streamed through the same selector the routing uses, one path at a time,
+    # so the answer this prints is the answer the routing would give.
+    classify_paths=()
+    if has_changed_files; then
+        classify_paths=("${CHANGED_FILES[@]}")
+    else
+        while IFS= read -r classify_input; do
+            [[ -n "$classify_input" ]] || continue
+            classify_paths+=("$(normalize_path "$classify_input")")
+        done
+    fi
+    if (( ${#classify_paths[@]} > 0 )); then
+        printf '%s\n' "${classify_paths[@]}" \
+            | python3 "$REPO_ROOT/scripts/lib/gate_inputs.py" classify "$REPO_ROOT"
+    fi
+    exit 0
 fi
 
 if ! has_changed_files; then
@@ -1143,135 +1065,21 @@ if ! has_changed_files; then
     exit 0
 fi
 
-fallback_lane=0
-has_grammar=0
-has_parser=0
-has_types=0
-has_cli=0
-has_compiler_pipeline=0
-has_runtime_net=0
-has_observe=0
-has_runtime_testkit=0
-has_vertical_slice=0
-has_hew_tests=0
-has_scripts_config=0
-has_wasm=0
-needs_codegen_release_smoke=0
-needs_stdlib_lint=0
-needs_hew_suite=0
-needs_hew_corpus=0
-needs_hew_fmt_property=0
-needs_sandbox_fixture_check=0
-needs_sandbox_parity=0
-needs_trap_fixtures=0
-needs_runtime_compiled_suite=0
-needs_capability_authority=0
-needs_ll_diff=0
-
 for path in "${CHANGED_FILES[@]}"; do
-    crate_dir="${path%%/*}"
-    if [[ "$path" == */* && -f "$REPO_ROOT/$crate_dir/Cargo.toml" ]]; then
-        append_unique_crate "$crate_dir"
-    fi
-
-    case "$path" in
-        std/*)
-            # .hew sources under std/net/* still need stdlib-lint (int-surface / errno-gate);
-            # only Rust files there are fully covered by the runtime-net lane.
-            case "$path" in
-                *.hew)
-                    needs_stdlib_lint=1
-                    # Any .hew stdlib change can affect test-hew or test-stdlib
-                    # outcomes; run both suites via the ratchet so regressions
-                    # surface before push.
-                    needs_hew_suite=1
-                    ;;
-                *)
-                    if ! is_stdlib_net_path "$path"; then
-                        needs_stdlib_lint=1
-                    fi
-                    ;;
-            esac
-            ;;
-    esac
-
-    # Parallel side-channel: any tracked .hew file change triggers needs_hew_corpus
-    # so that the repo-wide corpus sweep runs on every lane where a .hew file
-    # changed.  This mirrors the needs_hew_suite / needs_stdlib_lint pattern.
-    # The flag is a no-op when the lane already includes make hew-check-all
-    # (the fallback lane) — checked in the append block below.
-    case "$path" in
-        *.hew)
-            needs_hew_corpus=1
-            needs_hew_fmt_property=1
-            ;;
-    esac
-
-    case "$path" in
-        hew-parser/*|hew-cli/src/main.rs|hew-cli/src/args.rs)
-            needs_hew_fmt_property=1
-            ;;
-    esac
-
-    # Parallel side-channel: trap-fixture paths set needs_trap_fixtures regardless
-    # of which primary bucket claims the path.  This mirrors the needs_hew_suite /
-    # needs_stdlib_lint pattern — the flag appends make fuzz-oracle after the
-    # lane body without changing the lane selector itself.
-    if is_trap_fixtures_path "$path"; then
-        needs_trap_fixtures=1
-    fi
-
-    # Parallel side-channels in the same pattern: these flags append catching
-    # gates after the lane body without changing the lane selector.
-    if is_capability_authority_path "$path"; then
-        needs_capability_authority=1
-    fi
-    if is_ll_oracle_path "$path"; then
-        needs_ll_diff=1
-    fi
-
-    if is_sandbox_parity_path "$path"; then
-        has_scripts_config=1
-        needs_sandbox_parity=1
-    elif is_sandbox_fixture_path "$path"; then
-        has_scripts_config=1
-        needs_sandbox_fixture_check=1
-    elif is_grammar_path "$path"; then
-        has_grammar=1
-    elif is_docs_path "$path"; then
-        continue
-    elif is_scripts_config_path "$path"; then
-        has_scripts_config=1
-    elif is_parser_path "$path"; then
-        has_parser=1
-    elif is_types_path "$path"; then
-        has_types=1
-    elif is_compiler_pipeline_path "$path"; then
-        has_compiler_pipeline=1
-    elif is_cli_path "$path"; then
-        has_cli=1
-    elif is_observe_path "$path"; then
-        has_observe=1
-    elif is_runtime_path "$path" || is_hew_lib_path "$path" || is_stdlib_net_path "$path" || is_analysis_path "$path" || is_lsp_path "$path"; then
-        has_runtime_net=1
-        if is_runtime_path "$path" || is_hew_lib_path "$path" || is_stdlib_net_path "$path"; then
-            needs_runtime_compiled_suite=1
+    # Nearest ancestor carrying a Cargo.toml, so nested workspace members
+    # (std/encoding/binary, std/text/template) reach the closure below.
+    crate_dir="${path%/*}"
+    while [[ "$crate_dir" != "$path" && -n "$crate_dir" && "$crate_dir" != "." ]]; do
+        if [[ -f "$REPO_ROOT/$crate_dir/Cargo.toml" ]]; then
+            append_unique_crate "$crate_dir"
+            break
         fi
-    elif is_runtime_testkit_path "$path"; then
-        has_runtime_testkit=1
-    elif is_vertical_slice_path "$path"; then
-        has_vertical_slice=1
-    elif is_hew_tests_path "$path"; then
-        has_hew_tests=1
-    elif is_wasm_path "$path"; then
-        has_wasm=1
-        needs_sandbox_fixture_check=1
-    else
-        # Fail closed for repo areas without a proven narrow target, such as
-        # tests/corpus, tools, installers, editors, and hew-observe/test-harness.
-        fallback_lane=1
-    fi
+        [[ "$crate_dir" == */* ]] || break
+        crate_dir="${crate_dir%/*}"
+    done
 done
+
+select_gates selected "${CHANGED_FILES[@]}"
 
 AFFECTED_PACKAGE_ARGS=""
 if [[ ${CHANGED_CRATE_DIRS[0]+set} == set ]]; then
@@ -1282,11 +1090,23 @@ if [[ ${CHANGED_CRATE_DIRS[0]+set} == set ]]; then
         cargo metadata --no-deps --format-version 1 | python3 -c '
 import json, pathlib, sys
 changed = set(sys.argv[1:])
-packages = json.load(sys.stdin)["packages"]
+metadata = json.load(sys.stdin)
+workspace_root = pathlib.Path(metadata["workspace_root"])
+packages = metadata["packages"]
+
+
+def relative_dir(package):
+    directory = pathlib.Path(package["manifest_path"]).parent
+    try:
+        return str(directory.relative_to(workspace_root))
+    except ValueError:
+        return str(directory)
+
+
 selected = {
     package["name"]
     for package in packages
-    if pathlib.Path(package["manifest_path"]).parent.name in changed
+    if relative_dir(package) in changed
 }
 dependencies = {
     package["name"]: {dependency["name"] for dependency in package["dependencies"]}
@@ -1304,365 +1124,24 @@ print("\n".join(sorted(selected)))
     )
 fi
 
-compiler_related=0
-if (( has_compiler_pipeline == 1 || has_vertical_slice == 1 )); then
-    compiler_related=1
+# Formatting is first everywhere: it is seconds, and a format failure should not
+# wait behind a compile.
+add_command "cargo fmt --all -- --check"
+
+if (( COMPREHENSIVE == 1 )); then
+    # The comprehensive profile runs the workspace forms of the two closure
+    # commands.  `cargo clippy --workspace --tests` subsumes any closure clippy
+    # and `make test` subsumes any closure nextest, which is what keeps
+    # comprehensive a superset of every narrower selection.
+    add_command "cargo clippy --workspace --tests -- -D warnings"
+elif (( NEEDS_RUST_CLOSURE == 1 )); then
+    add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
+    add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
 fi
 
-if (( compiler_related == 1 )); then
-    # HIR/MIR/codegen and vertical-slice fixture changes are part of the same
-    # end-to-end compiler ladder.  Keep mixed parser/types/CLI edits narrow by
-    # running the compiler-pipeline lane instead of falling back solely because
-    # adjacent compiler stages changed together.
-    has_parser=0
-    has_types=0
-    has_cli=0
-fi
-
-runtime_related=0
-if (( has_runtime_net == 1 || has_observe == 1 || has_runtime_testkit == 1 )); then
-    runtime_related=1
-fi
-
-bucket_count=$((has_grammar + has_parser + has_types + has_cli + compiler_related + runtime_related + has_hew_tests + has_scripts_config + has_wasm))
-
-if (( fallback_lane == 1 )); then
-    LANE="fallback"
-    LANE_REASON="changed files extend beyond the first-slice targeted buckets"
-elif (( bucket_count == 0 )); then
-    LANE="docs"
-    LANE_REASON="docs-only change"
-elif (( bucket_count > 1 )); then
-    # Before falling back unconditionally, check for narrow multi-bucket
-    # combinations where the union of narrow targets provably covers all
-    # changed crates' reverse-dep closure.  Only promote when every bucket
-    # in the set is covered by a known-complete narrow target.
-    #
-    # Conservative invariant: any unrecognised combination falls back.
-    # Every promoted combination must have a dispatcher test case.
-    #
-    #   parser + types: the compiler-pipeline suite covers both buckets and
-    #     their HIR/MIR/codegen consumers.
-    if (( has_parser == 1 && has_types == 1 && bucket_count == 2 )); then
-        LANE="types"
-        LANE_REASON="parser + type-checker changed; compiler pipeline covers both"
-    else
-        LANE="fallback"
-        LANE_REASON="multiple targeted buckets changed; keeping the first slice conservative"
-    fi
-elif (( has_scripts_config == 1 )); then
-    LANE="scripts-config"
-    LANE_REASON="build / scripts / workflow configuration changed"
-elif (( has_grammar == 1 )); then
-    LANE="grammar"
-    LANE_REASON="grammar/spec inputs changed"
-elif (( has_parser == 1 )); then
-    LANE="parser"
-    LANE_REASON="parser/frontend surface changed"
-elif (( has_types == 1 )); then
-    LANE="types"
-    LANE_REASON="type-checker surface changed"
-elif (( compiler_related == 1 )); then
-    if (( has_compiler_pipeline == 1 )); then
-        LANE="compiler-pipeline"
-        LANE_REASON="HIR / MIR / codegen compiler pipeline changed"
-    else
-        LANE="vertical-slice"
-        LANE_REASON="vertical-slice fixtures changed"
-    fi
-elif (( runtime_related == 1 )); then
-    if (( has_observe == 1 && has_runtime_net == 0 && has_runtime_testkit == 0 )); then
-        LANE="observe"
-        LANE_REASON="hew-observe runtime observability surface changed"
-    elif (( has_runtime_testkit == 1 && has_runtime_net == 0 && has_observe == 0 )); then
-        LANE="runtime-testkit"
-        LANE_REASON="runtime testkit surface changed"
-    else
-        LANE="runtime-net"
-        LANE_REASON="runtime / std/net / analysis / lsp / observability surface changed"
-    fi
-elif (( has_hew_tests == 1 )); then
-    LANE="hew-tests"
-    LANE_REASON="Hew test files changed"
-elif (( has_wasm == 1 )); then
-    LANE="wasm"
-    LANE_REASON="hew-wasm browser WASM surface changed"
-else
-    LANE="cli"
-    LANE_REASON="CLI surface changed"
-fi
-
-case "$LANE" in
-    docs)
-        add_command "make doc-ratchet-selftest"
-        ;;
-    scripts-config)
-        add_command "make structural-lint"
-        add_command "make leak-scan"
-        add_command "make test-release-workflow-contract"
-        add_command "make test-stdlib-execution-proofs"
-        add_command "cargo fmt --all -- --check"
-        add_command "make freebsd-workflow-contract-check"
-        add_command "make o2-differential-selftest"
-        add_command "make doc-ratchet-selftest"
-        add_command "make check-counterfactual-output"
-        ;;
-    grammar)
-        # The ANTLR mirror target was deleted with the rest of the
-        # never-in-CI targets (#2811) and this dispatch survived it, so every
-        # grammar-spec diff since has died on "No rule to make target". The
-        # spec has no automated gate today (LESSONS: grammar-mirror); this lane
-        # runs what covers a spec diff and claims nothing more.
-        add_command "cargo fmt --all -- --check"
-        ;;
-    parser)
-        add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
-        add_command "make hew-native wasm-runtime"
-        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
-        add_command "make hew-fmt-property"
-        ;;
-    types)
-        # A type-checker change can break hew-hir / hew-mir tests, so use the
-        # full frontend pipeline rather than a package subset.
-        add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
-        add_command "make hew-native wasm-runtime"
-        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
-        add_command "make fuzz-oracle"
-        # A type-checker change reaches MIR lowering and can drift the checked-MIR
-        # golden corpus (examples/v05/checked-mir) just as a lowering edit can.
-        # Run the same golden diff here so the drift is caught locally rather than
-        # at hosted CI.  Fast (~45s), well within this lane's budget.
-        add_command "make checked-mir-verify"
-        # The golden diff never loads the programs.  Execute the corpus too, so
-        # a retype that changes runtime behaviour fails here instead of leaving
-        # a byte-identical dump over a crashing binary.
-        add_command "make checked-mir-run"
-        ;;
-    cli)
-        add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
-        add_command "make hew-native wasm-runtime"
-        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
-        add_command "make hew-fmt-property"
-        ;;
-    compiler-pipeline)
-        add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
-        add_command "make hew-native wasm-runtime"
-        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
-        add_command "make test-opaque-resource-lifecycle-matrix"
-        add_command "make test-vertical-slice"
-        add_command "make test-pkg-import"
-        # fuzz-oracle catches trap signal-code regressions (SIGILL/SIGTRAP) and
-        # ratchet mismatches invisible to the nextest workspace run (#2025).
-        add_command "make fuzz-oracle"
-        # checked-mir-verify diffs every fixture's --dump-mir against the
-        # committed golden corpus (examples/v05/checked-mir).  A drop-plan or
-        # lowering edit that shifts the emitted MIR drifts these goldens; without
-        # this step the drift only surfaces at hosted CI's Build & test (Linux)
-        # job, costing a full hosted cycle.  Fast (compile-and-compare, ~45s).
-        add_command "make checked-mir-verify"
-        # A drop-plan edit can leave every golden byte-identical and still make
-        # the compiled fixture crash — the goldens are text, nothing runs them.
-        # checked-mir-run builds and executes the corpus and diffs exit status
-        # and stdout, so that failure mode surfaces here.
-        add_command "make checked-mir-run"
-        ;;
-    vertical-slice)
-        add_command "cargo fmt --all -- --check"
-        add_command "make test-vertical-slice"
-        add_command "make test-pkg-import"
-        # fuzz-oracle reads the vertical-slice/accept fixtures: a fixture change
-        # that skips fuzz-oracle misses the trap signal-code ratchet (#2025).
-        add_command "make fuzz-oracle"
-        ;;
-    observe)
-        add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
-        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
-        add_command "make observe-functional-test"
-        ;;
-    runtime-testkit)
-        add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
-        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
-        ;;
-    hew-tests)
-        add_command "cargo fmt --all -- --check"
-        add_command "make test-hew-ratchet"
-        add_command "make test-core-matrix"
-        add_command "make test-stdlib-ratchet"
-        ;;
-    runtime-net)
-        add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
-        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
-        if (( needs_runtime_compiled_suite == 1 )); then
-            add_command "make stdlib"
-            add_command "make check-libhew-fresh"
-        # Runtime ABI changes (e.g. HewCont layout / continuation resume protocol)
-        # are invisible to rlib unit tests alone — a Rust unit test can pass over a
-        # garbage codegen path.  Run the compiled .hew suites so a local preflight
-        # catches the same class of breakage that CI's fallback lane would catch.
-            add_command "make test-hew-ratchet"
-            add_command "make test-vertical-slice"
-        # await_e2e covers the suspend/resume crash-recovery path; this lane owns
-        # the runtime surface where that breakage originates (#2023).
-            add_command "cargo nextest run --profile ci -p hew-cli --test await_e2e"
-        # fuzz-oracle catches trap signal-code regressions visible via the runtime.
-            add_command "make fuzz-oracle"
-            add_command "make mqtt-broker-e2e"
-            add_command "make observe-functional-test"
-        fi
-        ;;
-    wasm)
-        # hew-wasm/* changes: run the WASM lib tests and the playground build
-        # (which includes wasm-pack --release and the curated-manifest smoke test).
-        add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
-        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
-        add_command "make playground-check"
-        ;;
-    fallback)
-        # Keep the fast smoke target as a direct local opt-in. Its nextest
-        # selection is a subset of the full workspace run below, so running it
-        # here would make it a serial prefix of its own superset. Format checking
-        # remains first for quick feedback, and make lint supplies clippy,
-        # structural-lint, Hew formatting, and the remaining static checks.
-        #
-        # Hew-language suites run after the Rust workspace to keep the ratchet
-        # verdict separate from the Rust test verdict.
-        #
-        # The sequence below mirrors CI's build-and-test job exactly so a green
-        # fallback preflight predicts a green merge-queue outcome.
-        add_command "cargo fmt --all -- --check"
-        add_command "make lint"
-        add_command "make freebsd-workflow-contract-check"
-        add_command "make playground-check"
-        add_command "make test"
-        add_command "make test-compiler-pipeline"
-        add_command "make test-opaque-resource-lifecycle-matrix-external"
-        add_command "make test-vertical-slice"
-        add_command "make test-pkg-import"
-        add_command "make fuzz-oracle"
-        add_command "make test-hew-ratchet"
-        add_command "make test-core-matrix"
-        add_command "make test-o2-differential"
-        add_command "make o2-differential-selftest"
-        add_command "make test-release-workflow-contract"
-        add_command "make test-stdlib-ratchet"
-        add_command "make test-stdlib-execution-proofs"
-        add_command "make test-doc-examples"
-        add_command "make doc-ratchet-selftest"
-        add_command "make sandbox-parity"
-        add_command "make checked-mir-verify"
-        add_command "make checked-mir-run"
-        add_command "make ll-diff"
-        add_command "make ll-identity-selftest"
-        add_command "make hew-check-all"
-        add_command "make hew-fmt-property"
-        add_command "make test-cabi"
-        add_command "make check-sanitizer-gate"
-        add_command "make check-gate-reachability"
-        add_command "make check-counterfactual-output"
-        add_command "make test-leak-oracle-selftest"
-        add_command "make test-ux-examples"
-        add_command "make test-surface-examples"
-        add_command "make test-package-install"
-        add_command "make test-runtime-unit"
-        add_command "make fuzz-oracle-selftest"
-        add_command "make libhew-link-race-test"
-        add_command "make mqtt-broker-e2e"
-        add_command "make observe-functional-test"
-        ;;
-    *)
-        die "unhandled lane: $LANE"
-        ;;
-esac
-
-if (( needs_codegen_release_smoke == 1 )); then
-    # Build the release binary and run a hew run smoke test.  This specifically
-    # guards against process-exit aborts (e.g. static std::regex locale init
-    # crossing libc++ ABI boundaries — issue #1606) that only surface in
-    # release builds and are invisible to unit tests and debug builds.
-    add_command "make test-release-binary"
-fi
-
-if (( needs_stdlib_lint == 1 )); then
-    add_command "make stdlib-lint"
-fi
-
-if (( needs_hew_suite == 1 )) && [[ "$LANE" != "fallback" && "$LANE" != "hew-tests" ]]; then
-    # A .hew file under std/ changed: run both suites through their ratchets.
-    # This catches breakage in test-hew (which imports stdlib) and in test-stdlib
-    # (type-check of the modified file itself) before the diff reaches CI.
-    # Skip when LANE is fallback or hew-tests: both already include the ratchets.
-    add_command "make test-hew-ratchet"
-    add_command "make test-stdlib-ratchet"
-fi
-
-if (( needs_hew_corpus == 1 )) && [[ "$LANE" != "fallback" ]]; then
-    # A tracked .hew file changed.  Run the repo-wide corpus sweep so any new
-    # "undefined symbol" or type mismatch introduced by the diff surfaces
-    # before push.  Skip when LANE is fallback: it already covers the whole
-    # test suite (including hew-check-all's constituency) via make test +
-    # make test-hew-ratchet.
-    add_command "make hew-check-all"
-fi
-
-if (( needs_hew_fmt_property == 1 )) && [[ "$LANE" != "fallback" && "$LANE" != "parser" && "$LANE" != "cli" ]]; then
-    # Any Hew source change exercises the formatter property over the complete
-    # derived corpus, independently of the primary lane for that source file.
-    add_command "make hew-fmt-property"
-fi
-
-if (( needs_sandbox_fixture_check == 1 )); then
-    add_command "make sandbox-fixtures-check"
-fi
-
-if (( needs_sandbox_parity == 1 )); then
-    add_command "make sandbox-parity"
-fi
-
-if (( needs_trap_fixtures == 1 )) && [[ "$LANE" != "fallback" && "$LANE" != "compiler-pipeline" && "$LANE" != "types" && "$LANE" != "runtime-net" && "$LANE" != "vertical-slice" ]]; then
-    # MIR bounds/trap lowering or fuzz-oracle corpus changed in a lane that does
-    # not already include fuzz-oracle.  Append it so the trap signal-code ratchet
-    # runs before push regardless of the primary lane selected.
-    add_command "make fuzz-oracle"
-fi
-
-if (( needs_capability_authority == 1 )) && [[ "$LANE" != "fallback" ]]; then
-    # hew-mir / hew-types changed: run the capability authority ratchet
-    # (hew-capability-gen/tests/authority.rs), which pins checker coverage
-    # structurally and sits OUTSIDE the reverse-dep closure — no closure-routed
-    # nextest run ever selects it (see is_capability_authority_path).  Cheap:
-    # the crate depends only on serde/serde_json/toml.  The hew-cli
-    # ownership/affine suites (e.g. affine_resource_carrier_boundaries) do NOT
-    # need an explicit entry here: hew-cli is a reverse dependency of both
-    # crates, so the lane's closure nextest run already carries them — pinned
-    # by test_mir_types_diff_routes_cross_crate_catching_gates.
-    # Skip when LANE is fallback: make test covers the whole workspace.
-    add_command "cargo nextest run --profile ci -p hew-capability-gen"
-fi
-
-if (( needs_ll_diff == 1 )) && [[ "$LANE" != "fallback" ]]; then
-    # MIR lowering / codegen emission changed: diff the ll-oracle golden corpus
-    # so an emission drift (an epilogue reorder, a changed intrinsic sequence)
-    # surfaces locally with the regen instruction instead of costing a hosted
-    # CI cycle.  Intentional drifts regenerate via make baselines in the same
-    # commit.  Skip when LANE is fallback: it already includes make ll-diff.
-    add_command "make ll-diff"
-fi
-
-# Orchestration-token leak scan — run on every push for every lane.
-# Catches lane IDs, Q-tags, and .tmp/ path references in committed source before review.
-# Fast (<2 s, git grep only).  Fallback lane gets this via `make lint`; scripts-config
-# lane gets it explicitly above; all other lanes get it here so no lane silently skips.
-if [[ "$LANE" != "fallback" && "$LANE" != "scripts-config" ]]; then
-    add_command "make leak-scan"
-fi
+for selected_gate in "${SELECTED_GATES[@]+"${SELECTED_GATES[@]}"}"; do
+    add_command "make $selected_gate"
+done
 
 # Test-only override for dispatcher command execution. This keeps failure-policy
 # tests deterministic without widening the public command-substitution surface.
@@ -1783,57 +1262,26 @@ else
         echo "Source: working tree"
     fi
 fi
-case "$LANE" in
-    docs)
-        PROFILE_LABEL="docs-only"
-        ;;
-    scripts-config)
-        PROFILE_LABEL="scripts-config"
-        ;;
-    grammar)
-        PROFILE_LABEL="grammar"
-        ;;
-    parser)
-        PROFILE_LABEL="parser"
-        ;;
-    types)
-        PROFILE_LABEL="types"
-        ;;
-    cli)
-        PROFILE_LABEL="cli"
-        ;;
-    compiler-pipeline)
-        PROFILE_LABEL="compiler-pipeline"
-        ;;
-    vertical-slice)
-        PROFILE_LABEL="vertical-slice"
-        ;;
-    observe)
-        PROFILE_LABEL="observe"
-        ;;
-    runtime-testkit)
-        PROFILE_LABEL="runtime-testkit"
-        ;;
-    hew-tests)
-        PROFILE_LABEL="hew-tests"
-        ;;
-    runtime-net)
-        PROFILE_LABEL="runtime-net"
-        ;;
-    fallback)
-        PROFILE_LABEL="comprehensive"
-        ;;
-    *)
-        PROFILE_LABEL="$LANE"
-        ;;
-esac
+# The profile label is the gate count because gates are selected directly from
+# their own declared inputs.
+if (( COMPREHENSIVE == 1 )); then
+    PROFILE_LABEL="comprehensive"
+elif (( ${#SELECTED_GATES[@]} == 0 )); then
+    PROFILE_LABEL="no-gate"
+else
+    PROFILE_LABEL="selected(${#SELECTED_GATES[@]})"
+fi
 
-REQUIRES_COMPILE=true
-case "$LANE" in
-    docs|scripts-config|grammar)
-        REQUIRES_COMPILE=false
-        ;;
-esac
+if (( ${#UNDECLARED_PATHS[@]} > 0 )); then
+    LANE_REASON="comprehensive: $(printf 'undeclared: %s; ' "${UNDECLARED_PATHS[@]}")"
+    LANE_REASON="${LANE_REASON%; }"
+elif (( ${#GLOBAL_PATHS[@]} > 0 )); then
+    LANE_REASON="comprehensive: a global input changed, which parameterises every gate — ${GLOBAL_PATHS[*]}"
+elif (( COMPREHENSIVE == 1 )); then
+    LANE_REASON="comprehensive: every participating gate"
+else
+    LANE_REASON="${#SELECTED_GATES[@]} gate(s) whose declared inputs intersect the diff (see the # inputs: line above each recipe in the Makefile)"
+fi
 
 # The command override replaces the gate list with synthetic commands for the
 # failure-policy tests; those are not gates and have nothing to warm.
@@ -1859,6 +1307,19 @@ if [[ -n "${PREFLIGHT_TEST_WARMUP_COMMANDS:-}" ]]; then
     done <<< "$PREFLIGHT_TEST_WARMUP_COMMANDS"
 fi
 
+# Whether a toolchain is needed is read off the routing decision and the
+# warm-up pass, never derived a second time here: a Rust input in the diff means
+# the closure clippy and nextest runs compile, and a non-empty warm-up set means
+# make itself planned work for a selected gate's build form.
+#
+# Both are properties of the SELECTION, so the answer survives the test-only
+# command override, which replaces the gate list with a no-op.
+REQUIRES_COMPILE=false
+if (( COMPREHENSIVE == 1 || NEEDS_RUST_CLOSURE == 1 )) \
+    || [[ ${WARMUP_COMMANDS[0]+set} == set ]]; then
+    REQUIRES_COMPILE=true
+fi
+
 if [[ -n "$GITHUB_OUTPUT_PATH" ]]; then
     {
         printf 'profile=%s\n' "$PROFILE_LABEL"
@@ -1866,21 +1327,28 @@ if [[ -n "$GITHUB_OUTPUT_PATH" ]]; then
     } >> "$GITHUB_OUTPUT_PATH"
 fi
 
-# Resolve the per-command timeout budget for this lane.
-case "$LANE" in
-    docs)
-        CMD_TIMEOUT="$PREFLIGHT_TIMEOUT_DOCS"
-        ;;
-    fallback)
-        CMD_TIMEOUT="$PREFLIGHT_TIMEOUT_FALLBACK"
-        ;;
-    compiler-pipeline|vertical-slice|hew-tests|scripts-config)
-        CMD_TIMEOUT="$PREFLIGHT_TIMEOUT_FALLBACK"
-        ;;
-    *)
-        CMD_TIMEOUT="$PREFLIGHT_TIMEOUT_NARROW"
-        ;;
-esac
+# Job annotations for the routing decision: the selected profile, and every
+# path no gate declares.  Annotations only — the step summary carries the
+# result table, and a second writer there would make the two disagree.  A run that is silently comprehensive is otherwise
+# invisible without opening a 37,000-line log, and an undeclared path is a cost
+# somebody has to see in order to fix.
+if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    printf '::notice title=Preflight profile::%s — %s\n' "$PROFILE_LABEL" "$LANE_REASON"
+    for undeclared in "${UNDECLARED_PATHS[@]+"${UNDECLARED_PATHS[@]}"}"; do
+        printf '::warning file=%s::%s is not a declared input of any gate. Add it to the inputs line of the gate that reads it, or record it as no-gate in the Makefile header.\n' \
+            "$undeclared" "$undeclared"
+    done
+fi
+
+# Resolve the per-command timeout budget.  Per-command floors below still
+# override this tier; it is only the baseline stuck ceiling.
+if (( COMPREHENSIVE == 1 )); then
+    CMD_TIMEOUT="$PREFLIGHT_TIMEOUT_FALLBACK"
+elif [[ "$REQUIRES_COMPILE" == "true" ]]; then
+    CMD_TIMEOUT="$PREFLIGHT_TIMEOUT_NARROW"
+else
+    CMD_TIMEOUT="$PREFLIGHT_TIMEOUT_DOCS"
+fi
 
 detect_host_parallelism
 

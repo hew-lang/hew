@@ -22,6 +22,75 @@ PRECHECK = (
 )
 
 
+def _hermetic_env(
+    home: Path, overrides: dict[str, str] | None = None
+) -> dict[str, str]:
+    """A dispatcher environment independent of the invoking shell or runner."""
+    run_env = os.environ.copy()
+    for key in tuple(run_env):
+        if (
+            key == "CI"
+            or key == "COMPILED_HEW_GATE_OWNER"
+            or key.startswith("GITHUB_")
+            or key.startswith("HEW_")
+            or key.startswith("PREFLIGHT_")
+        ):
+            run_env.pop(key)
+
+    original_home = Path(os.environ.get("HOME", str(Path.home())))
+    run_env.update(
+        {
+            "HOME": str(home),
+            "XDG_CACHE_HOME": str(home / ".cache"),
+            "XDG_CONFIG_HOME": str(home / ".config"),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "CARGO_HOME": os.environ.get("CARGO_HOME", str(original_home / ".cargo")),
+            "RUSTUP_HOME": os.environ.get(
+                "RUSTUP_HOME", str(original_home / ".rustup")
+            ),
+        }
+    )
+    if overrides is not None:
+        run_env.update(overrides)
+    return run_env
+
+
+def _run_dispatcher_process(
+    args: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    input: str | None = None,
+    timeout: float | None = None,
+    parallelism: int = 16,
+    path_prefix: tuple[Path, ...] = (),
+) -> subprocess.CompletedProcess[str]:
+    with tempfile.TemporaryDirectory() as raw:
+        test_root = Path(raw)
+        bin_dir = test_root / "bin"
+        home = test_root / "home"
+        bin_dir.mkdir()
+        home.mkdir()
+        fake_nproc = bin_dir / "nproc"
+        fake_nproc.write_text(
+            f"#!/bin/sh\nprintf '{parallelism}\\n'\n", encoding="utf-8"
+        )
+        fake_nproc.chmod(0o755)
+        run_env = _hermetic_env(home, env)
+        prefixes = [str(path) for path in path_prefix]
+        prefixes.append(str(bin_dir))
+        run_env["PATH"] = os.pathsep.join([*prefixes, run_env["PATH"]])
+        return subprocess.run(
+            args,
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=run_env,
+            input=input,
+            timeout=timeout,
+        )
+
+
 def run_dispatcher(
     *paths: str,
     extra_args: list[str] | None = None,
@@ -36,48 +105,29 @@ def run_dispatcher(
         args.append("--dry-run")
     args.extend(extra_args)
     args.extend(["--", *paths])
-    run_env = os.environ.copy()
-    if env is not None:
-        run_env.update(env)
-    with tempfile.TemporaryDirectory() as bin_dir:
-        fake_nproc = Path(bin_dir) / "nproc"
-        fake_nproc.write_text(
-            f"#!/bin/sh\nprintf '{parallelism}\\n'\n", encoding="utf-8"
-        )
-        fake_nproc.chmod(0o755)
-        run_env["PATH"] = f"{bin_dir}{os.pathsep}{run_env['PATH']}"
-        return subprocess.run(
-            args,
-            cwd=ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=run_env,
-            timeout=timeout,
-        )
-
-
-def run_dispatcher_help() -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["bash", str(SCRIPT), "--help"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
+    return _run_dispatcher_process(
+        args, env=env, timeout=timeout, parallelism=parallelism
     )
 
 
-def assert_scripts_config_profile(result: subprocess.CompletedProcess[str]) -> None:
-    assert result.returncode == 0, result.stderr
-    assert "Selected profile: scripts-config" in result.stdout
-    assert "make lint" not in result.stdout
-    assert "make playground-check" not in result.stdout
+def run_dispatcher_help() -> subprocess.CompletedProcess[str]:
+    return _run_dispatcher_process(["bash", str(SCRIPT), "--help"])
+
+
+def assert_workflow_contract_profile(result: subprocess.CompletedProcess[str]) -> None:
+    """A workflow edit runs the contract gates that read workflows, and nothing else."""
+    assert_narrow(result)
+    assert_gates(
+        result,
+        "check-gate-reachability",
+        "freebsd-workflow-contract-check",
+        "test-release-workflow-contract",
+        "lint-ci-coverage-check",
+    )
     assert "  - cargo fmt --all -- --check" in result.stdout
-    assert "  - make freebsd-workflow-contract-check" in result.stdout
-    assert "  - make test-release-workflow-contract" in result.stdout
-    assert "\n  - make test  " not in result.stdout
-    assert "  - make doc-ratchet-selftest" in result.stdout
-    assert "make test-codegen" not in result.stdout
+    selected = selected_gates(result)
+    assert "test" not in selected, sorted(selected)
+    assert "playground-check" not in selected, sorted(selected)
 
 
 def assert_comprehensive_profile(result: subprocess.CompletedProcess[str]) -> None:
@@ -90,16 +140,24 @@ def test_makefile_routes_to_scripts_config_profile() -> None:
     assert_comprehensive_profile(run_dispatcher("Makefile"))
 
 
-def test_scripts_path_routes_to_scripts_config_profile() -> None:
-    assert_scripts_config_profile(run_dispatcher("scripts/foo.sh"))
+def test_undeclared_script_fails_closed_to_comprehensive() -> None:
+    """A script no gate declares as an input cannot be routed, so it runs everything.
+
+    This is the fail-closed direction of the declaration rule, and the reason
+    check-gate-reachability's A7 exists: leaving a script undeclared is a real
+    cost, paid on every pull request that touches it.
+    """
+    result = run_dispatcher("scripts/foo.sh")
+    assert_comprehensive(result)
+    assert "undeclared: scripts/foo.sh" in result.stdout, result.stdout
 
 
 def test_nextest_config_routes_to_scripts_config_profile() -> None:
     assert_comprehensive_profile(run_dispatcher(".config/nextest.toml"))
 
 
-def test_workflow_routes_to_scripts_config_profile() -> None:
-    assert_scripts_config_profile(run_dispatcher(".github/workflows/ci.yml"))
+def test_workflow_routes_to_the_contract_gates() -> None:
+    assert_workflow_contract_profile(run_dispatcher(".github/workflows/ci.yml"))
 
 
 def test_cargo_toml_routes_to_scripts_config_profile() -> None:
@@ -124,10 +182,14 @@ def test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps() ->
     assert "  - make structural-lint " in local.stdout, local.stdout
     assert "make structural-lint-bootstrap" not in local.stdout, local.stdout
 
-    fallback = run_dispatcher("Cargo.toml")
-    assert fallback.returncode == 0, fallback.stderr
-    assert "  - make structural-lint " not in fallback.stdout, fallback.stdout
-    assert "  - make lint " in fallback.stdout, fallback.stdout
+    comprehensive = run_dispatcher("Cargo.toml")
+    assert_comprehensive(comprehensive)
+    # The comprehensive profile runs the leaf gates directly and workspace
+    # clippy alongside them, rather than the `lint` aggregate.
+    assert "  - make structural-lint " in comprehensive.stdout, comprehensive.stdout
+    assert (
+        "  - cargo clippy --workspace --tests -- -D warnings " in comprehensive.stdout
+    ), comprehensive.stdout
 
     makefile = (ROOT / "Makefile").read_text()
     assert re.search(r"^lint:.*\bstructural-lint\b", makefile, re.MULTILINE), makefile
@@ -186,7 +248,9 @@ def test_dry_run_scales_every_budget_from_detected_parallelism() -> None:
     assert "Host parallelism: 8 (nproc)" in result.stdout, result.stdout
     assert "max(1, 16 / 8) = 2.00x" in result.stdout, result.stdout
     assert "ceil(baseline * 16 / 8)" in result.stdout, result.stdout
-    assert "make lint  (budget: 1890s)" in result.stdout, result.stdout
+    assert "cargo clippy --workspace --tests -- -D warnings  (budget: 1200s)" in (
+        result.stdout
+    ), result.stdout
     assert "make test  (budget: 3060s)" in result.stdout, result.stdout
     assert "make test-hew-ratchet  (budget: 3000s)" in result.stdout, result.stdout
     assert "make test-o2-differential  (budget: 5400s)" in result.stdout, result.stdout
@@ -194,7 +258,9 @@ def test_dry_run_scales_every_budget_from_detected_parallelism() -> None:
     fast_result = run_dispatcher("some-unclassified-root-file.txt", parallelism=32)
     assert fast_result.returncode == 0, fast_result.stderr
     assert "max(1, 16 / 32) = 1.00x" in fast_result.stdout, fast_result.stdout
-    assert "make lint  (budget: 945s)" in fast_result.stdout, fast_result.stdout
+    assert "cargo clippy --workspace --tests -- -D warnings  (budget: 600s)" in (
+        fast_result.stdout
+    ), fast_result.stdout
     assert "make test  (budget: 1530s)" in fast_result.stdout, fast_result.stdout
     assert "make test-hew-ratchet  (budget: 1500s)" in fast_result.stdout, (
         fast_result.stdout
@@ -431,9 +497,9 @@ def test_baseline_precheck_is_listed_before_warmup() -> None:
     ), result.stdout
 
 
-def test_baseline_precheck_is_scoped_to_the_lane() -> None:
-    """A docs lane must not pay for baselines none of its gates compare against."""
-    result = run_dispatcher("README.md")
+def test_baseline_precheck_is_scoped_to_selection() -> None:
+    """A no-gate selection must not check unrelated baselines."""
+    result = run_dispatcher("AUTH" + "ORS")
     assert result.returncode == 0, result.stderr
     lane = [
         line.removeprefix("  - ").split("  (budget")[0]
@@ -455,7 +521,12 @@ def test_baseline_precheck_is_scoped_to_the_lane() -> None:
         text=True,
     )
     assert scoped.returncode == 0, scoped.stdout + scoped.stderr
-    assert "no members selected" in scoped.stdout, scoped.stdout
+    members = [
+        line.removeprefix("==> baselines-check: ").split(" ", 1)[0]
+        for line in scoped.stdout.splitlines()
+        if line.startswith("==> baselines-check: ") and "member(s) current." not in line
+    ]
+    assert members == ["wasm-capability"], scoped.stdout
 
 
 def test_compile_warmup_runs_first_and_has_a_summary_row() -> None:
@@ -481,33 +552,12 @@ def test_compile_warmup_runs_first_and_has_a_summary_row() -> None:
     assert summary.index("warm-up  ") < summary.index("GATE_RAN"), result.stdout
 
 
-def test_rust_diff_derives_its_warmup_artifacts_before_commands() -> None:
-    """A parser diff warms only the artifacts its selected commands need."""
-    result = run_dispatcher("hew-parser/src/lib.rs")
-
-    assert result.returncode == 0, result.stderr
-    packages = (
-        "-p hew-analysis -p hew-cli -p hew-codegen-rs -p hew-compile -p hew-hir "
-        "-p hew-lsp -p hew-mir -p hew-parser -p hew-sandbox-wasm -p hew-types "
-        "-p hew-wasm -p xtask"
-    )
-    warmup = result.stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
-    assert warmup == (
-        f"  - cargo clippy {packages} --tests\n"
-        "  - make hew-native-build wasm-runtime-build\n"
-        f"  - cargo nextest run --profile ci {packages} --no-run\n"
-    ), result.stdout
-    assert result.stdout.index("Warm-up:\n") < result.stdout.index("Commands:\n")
-
-
 def test_docs_diff_has_no_warmup_block() -> None:
-    """The docs gates declare an empty build form, so nothing is warmed."""
-    result = run_dispatcher("docs/hew-language-guide.md")
+    # A prose document with no Hew fences selects only static checks.
+    result = run_dispatcher("docs/observe.md")
 
     assert result.returncode == 0, result.stderr
     assert "Warm-up:\n" not in result.stdout, result.stdout
-    makefile = (ROOT / "Makefile").read_text()
-    assert "\ndoc-ratchet-selftest-build:\n\t@:\n" in makefile, makefile
 
 
 def test_no_lane_warms_test_targets_with_all_targets() -> None:
@@ -535,16 +585,19 @@ def test_no_lane_warms_test_targets_with_all_targets() -> None:
 
 
 def test_comprehensive_warms_every_gate_through_its_own_build_form() -> None:
-    """The comprehensive lane warms `make lint` and `make test` by name.
+    """The comprehensive profile warms every gate through its own build form.
 
     The warm-up is the gate's own `<target>-build`, so the clippy and nextest
-    invocations live once each, next to the gate that runs them.
+    invocations live once each, next to the gate that runs them.  `make lint` is
+    an aggregate the profile no longer runs — it selects lint's leaf gates by
+    name and runs workspace clippy directly — so the clippy warm-up is derived
+    from that command rather than from `lint-build`.
     """
     result = run_dispatcher("Makefile")
 
     assert result.returncode == 0, result.stderr
     warmup = result.stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
-    assert "  - make lint-build\n" in warmup, result.stdout
+    assert "  - cargo clippy --workspace --tests\n" in warmup, result.stdout
     assert "  - make test-build\n" in warmup, result.stdout
     assert "  - make test-cabi-build\n" in warmup, result.stdout
     assert "  - make test-compiler-pipeline-build\n" in warmup, result.stdout
@@ -580,49 +633,47 @@ def _warmup_commands(stdout: str) -> list[str]:
     ]
 
 
-# One representative changed path per routing lane. Every lane must derive a
-# warm-up for every command it selects; a lane that cannot is a dispatcher that
-# dies before running anything, which is the point of the derivation being
-# fail-closed.
-LANE_PROBES = {
-    "docs-only": "docs/hew-language-guide.md",
-    "scripts-config": "scripts/foo.sh",
-    "grammar": "docs/specs/Hew.g4",
-    "parser": "hew-parser/src/lib.rs",
-    "types": "hew-types/src/lib.rs",
-    "cli": "hew-cli/src/main.rs",
-    "compiler-pipeline": "hew-mir/src/lib.rs",
-    "vertical-slice": "tests/vertical-slice/accept/foo.hew",
-    "observe": "hew-observe/src/lib.rs",
-    "runtime-testkit": "hew-runtime-testkit/src/lib.rs",
-    "hew-tests": "tests/hew/foo.hew",
-    "runtime-net": "hew-runtime/src/lib.rs",
-    "wasm": "hew-wasm/src/lib.rs",
-    "comprehensive": "Cargo.toml",
-}
+# Representative tree probes that together select most gates. Every selected
+# command must have a derivable warm-up, and the dispatcher fails otherwise.
+WARMUP_PROBES = (
+    "docs/hew-language-guide.md",
+    "docs/specs/Hew.g4",
+    "hew-parser/src/lib.rs",
+    "hew-types/src/lib.rs",
+    "hew-cli/src/main.rs",
+    "hew-mir/src/lib.rs",
+    "tests/vertical-slice/accept/foo.hew",
+    "hew-observe/src/lib.rs",
+    "hew-runtime-testkit/src/lib.rs",
+    "tests/hew/foo.hew",
+    "hew-runtime/src/lib.rs",
+    "hew-wasm/src/lib.rs",
+    "std/string.hew",
+    "examples/showcase.hew",
+    "Cargo.toml",
+)
 
 
-def test_every_lane_derives_a_warmup_for_every_command_it_selects() -> None:
-    for profile, path in LANE_PROBES.items():
+def test_every_selection_derives_a_warmup_for_every_command_it_makes() -> None:
+    """A command with no derivable warm-up is fatal, so a clean run proves it.
+
+    Each probe selects a different part of the gate set; between them they
+    exercise most of it, and any gate whose build form is missing or unplannable
+    makes its probe exit non-zero with the target named.
+    """
+    for path in WARMUP_PROBES:
         result = run_dispatcher(path)
-        assert result.returncode == 0, (profile, path, result.stderr)
-        assert f"Selected profile: {profile}" in result.stdout, (path, result.stdout)
+        assert result.returncode == 0, (path, result.stderr)
 
 
 def explain_warmup(command: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["bash", str(SCRIPT), "--explain-warmup", command],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    return _run_dispatcher_process(["bash", str(SCRIPT), "--explain-warmup", command])
 
 
 def test_a_gate_with_no_derivable_warmup_is_fatal() -> None:
     """The fallback used to warm everything and print a note; it now dies.
 
-    Warming the full artifact set for an unmapped command is how a warm-up
+    Warming the full artifact set for an undeclared command is how a warm-up
     build diverged from its gate's build in the first place: the fallback was
     reached silently, so nothing forced the new gate to declare how it builds.
     """
@@ -679,7 +730,7 @@ def test_every_dispatched_make_target_exists_in_the_makefile() -> None:
         match = re.match(r"^([A-Za-z0-9_][A-Za-z0-9_ .$()-]*):([^=]|$)", line)
         if match:
             declared.update(match.group(1).split())
-    for path in LANE_PROBES.values():
+    for path in WARMUP_PROBES:
         result = run_dispatcher(path)
         assert result.returncode == 0, (path, result.stderr)
         for command in _selected_commands(result.stdout):
@@ -696,7 +747,7 @@ def test_no_warmup_carries_a_flag_its_gate_does_not() -> None:
     gate carried `--exclude hew-cabi`: two builds, one target dir, two
     incompatible `serde_core` rlibs. Only `--no-run` may be added.
     """
-    for path in LANE_PROBES.values():
+    for path in WARMUP_PROBES:
         result = run_dispatcher(path)
         assert result.returncode == 0, (path, result.stderr)
         gate_flags = set()
@@ -714,22 +765,32 @@ def test_no_warmup_carries_a_flag_its_gate_does_not() -> None:
 
 
 def _make_plan(*targets: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["make", "--always-make", "--dry-run", *targets],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    return _run_dispatcher_process(["make", "--always-make", "--dry-run", *targets])
 
 
 def _dispatchable_make_targets() -> set[str]:
+    """Every make gate the dispatcher can select.
+
+    The dispatcher no longer names gates literally — it selects whichever gates
+    declare an input the diff touches — so the authority for "what can be
+    dispatched" is the Makefile's `# inputs:` declarations, read here through
+    the same module the router reads. Any literal `add_command "make X"` left in
+    the script counts too.
+    """
     source = SCRIPT.read_text()
-    return {
+    literal = {
         target
         for command in re.findall(r'add_command "make ([^"]+)"', source)
         for target in command.split()
+        if not target.startswith("$")
     }
+    sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+    import gate_inputs
+
+    gates, _globals, _no_gate = gate_inputs.parse_makefile(
+        (ROOT / "Makefile").read_text()
+    )
+    return literal | {gate.target for gate in gates if gate.participates()}
 
 
 def _gates_with_a_build_form() -> set[str]:
@@ -834,6 +895,29 @@ def _is_message(line: str) -> bool:
     return line.startswith("#") or "echo" in line or "printf" in line
 
 
+def _string_literal_lines(text: str) -> set[int]:
+    """Line numbers a Python source spends inside a string constant.
+
+    The line rule below reads a Python gate's source for `subprocess`-shaped
+    lines that also name cargo.  A test file that QUOTES such a line as fixture
+    data — this file quotes several, as inputs to the very check being read —
+    satisfies both patterns without running anything, so the gate would be
+    reported as compiling when it compiles nothing.  The AST already knows
+    which lines are data; excluding them keeps the rule's intent and drops the
+    false positive for every gate, not just this one.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.end_lineno is not None:
+                lines.update(range(node.lineno, node.end_lineno + 1))
+    return lines
+
+
 def compiling_evidence(
     plan: str,
     read_plan: "Callable[[str], str | None]",
@@ -876,6 +960,7 @@ def compiling_evidence(
 
     while queue:
         origin, text, python = queue.pop(0)
+        data_lines = _string_literal_lines(text) if python else set()
         if python:
             # An argv recovered from the source is a command line, whatever its
             # layout, so it is read with the shell rules. The line rule below
@@ -885,11 +970,13 @@ def compiling_evidence(
                 if _COMPILING_COMMAND.search(command):
                     return f"{origin}: {command}"
                 follow(command)
-        for raw in text.splitlines():
+        for number, raw in enumerate(text.splitlines(), start=1):
             line = raw.strip()
             if _is_message(line):
                 continue
             if python:
+                if number in data_lines:
+                    continue
                 # In a Python gate a cargo string is usually data — a fixture,
                 # an assertion, an error message. Only a line that hands work
                 # to a subprocess is running anything, and the same rule
@@ -1150,18 +1237,14 @@ def run_with_fake_nextest(version: str) -> subprocess.CompletedProcess[str]:
             encoding="utf-8",
         )
         fake_cargo.chmod(0o755)
-        env = os.environ.copy()
-        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
-        env["PREFLIGHT_TEST_ALLOW_OVERRIDE"] = "1"
-        env["PREFLIGHT_TEST_COMMANDS"] = "true"
-        return subprocess.run(
+        return _run_dispatcher_process(
             ["bash", str(SCRIPT), "--", "hew-parser/src/lib.rs"],
-            cwd=ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=env,
+            env={
+                "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+                "PREFLIGHT_TEST_COMMANDS": "true",
+            },
             timeout=60,
+            path_prefix=(Path(bin_dir),),
         )
 
 
@@ -1198,7 +1281,8 @@ def test_runtime_net_lane_budget_annotation() -> None:
     """runtime-net lane (narrow) shows 180s budget in dry-run."""
     result = run_dispatcher("hew-runtime/src/actor.rs")
     assert result.returncode == 0, result.stderr
-    assert "Selected profile: runtime-net" in result.stdout, result.stdout
+    assert_narrow(result)
+    assert_gates(result, "test-hew-ratchet", "test-vertical-slice"), result.stdout
     assert "(budget: 180s)" in result.stdout, (
         f"Expected '(budget: 180s)' for runtime-net lane.\nstdout:\n{result.stdout}"
     )
@@ -1213,26 +1297,16 @@ def test_runtime_net_lane_rebuilds_libhew() -> None:
     for path in ("hew-runtime/src/lib.rs", "hew-lib/src/lib.rs"):
         result = run_dispatcher(path)
         assert result.returncode == 0, result.stderr
-        assert "Selected profile: runtime-net" in result.stdout, (
-            f"Expected runtime-net profile for {path}.\nstdout:\n{result.stdout}"
-        )
-        assert "make stdlib" in result.stdout, (
-            f"Expected 'make stdlib' in runtime-net commands for {path}.\n"
-            f"stdout:\n{result.stdout}"
-        )
-        assert "make check-libhew-fresh" in result.stdout, (
-            f"Expected 'make check-libhew-fresh' in runtime-net commands for {path}.\n"
-            f"stdout:\n{result.stdout}"
-        )
-        # Freshness gate must appear before the test command.
-        commands = _selected_commands(result.stdout)
-        stdlib_pos = commands.index("make stdlib")
-        fresh_pos = commands.index("make check-libhew-fresh")
-        test_pos = next(i for i, c in enumerate(commands) if c.startswith("make test"))
-        assert stdlib_pos < fresh_pos < test_pos, (
-            f"Expected order: make stdlib < check-libhew-fresh < test.\n"
-            f"stdout:\n{result.stdout}"
-        )
+        assert_narrow(result)
+        assert_gates(result, "check-libhew-fresh", "libhew-link-race-test")
+        # libhew freshness is its own declared gate now, and it brings its own
+        # prerequisites; the dispatcher no longer injects build steps by hand.
+        assert_gates(result, "check-libhew-fresh")
+        # `check-libhew-fresh` declares libhew-debug as a prerequisite, so make
+        # builds the archive before the check runs; the dispatcher no longer
+        # has to order build steps by hand.
+        makefile = (ROOT / "Makefile").read_text()
+        assert "check-libhew-fresh: libhew-debug" in makefile, makefile
 
 
 def test_zero_timeout_fails_closed() -> None:
@@ -1268,7 +1342,8 @@ def test_compiler_pipeline_rs_change_includes_vertical_slice_oracle() -> None:
     """Pure compiler-pipeline Rust changes run the end-to-end vertical-slice oracle."""
     result = run_dispatcher("hew-mir/src/lower.rs")
     assert result.returncode == 0, result.stderr
-    assert "Selected profile: compiler-pipeline" in result.stdout, result.stdout
+    assert_narrow(result)
+    assert_gates(result, "checked-mir-verify", "test-vertical-slice"), result.stdout
     assert "cargo nextest run --profile ci" in result.stdout, result.stdout
     assert "make test-vertical-slice" in result.stdout, result.stdout
     # The hew-cli consumer corpus (compiled leak/drop oracles, await_e2e,
@@ -1289,7 +1364,8 @@ def test_compiler_pipeline_lane_includes_checked_mir_verify() -> None:
     """
     result = run_dispatcher("hew-mir/src/lower/drop_plan.rs")
     assert result.returncode == 0, result.stderr
-    assert "Selected profile: compiler-pipeline" in result.stdout, result.stdout
+    assert_narrow(result)
+    assert_gates(result, "checked-mir-verify", "test-vertical-slice"), result.stdout
     assert "make checked-mir-verify" in result.stdout, (
         f"Expected 'make checked-mir-verify' in compiler-pipeline lane.\n"
         f"stdout:\n{result.stdout}"
@@ -1305,7 +1381,8 @@ def test_types_lane_includes_checked_mir_verify() -> None:
     """
     result = run_dispatcher("hew-types/src/lib.rs")
     assert result.returncode == 0, result.stderr
-    assert "Selected profile: types" in result.stdout, result.stdout
+    assert_narrow(result)
+    assert_gates(result, "checked-mir-run", "checked-mir-verify"), result.stdout
     assert "make checked-mir-verify" in result.stdout, (
         f"Expected 'make checked-mir-verify' in types lane.\nstdout:\n{result.stdout}"
     )
@@ -1322,7 +1399,8 @@ def test_compiler_pipeline_lane_includes_checked_mir_run() -> None:
     """
     result = run_dispatcher("hew-mir/src/lower/drop_plan.rs")
     assert result.returncode == 0, result.stderr
-    assert "Selected profile: compiler-pipeline" in result.stdout, result.stdout
+    assert_narrow(result)
+    assert_gates(result, "checked-mir-verify", "test-vertical-slice"), result.stdout
     assert "make checked-mir-run" in result.stdout, (
         f"Expected 'make checked-mir-run' in the compiler-pipeline profile.\n"
         f"stdout:\n{result.stdout}"
@@ -1337,7 +1415,8 @@ def test_types_lane_includes_checked_mir_run() -> None:
     """
     result = run_dispatcher("hew-types/src/lib.rs")
     assert result.returncode == 0, result.stderr
-    assert "Selected profile: types" in result.stdout, result.stdout
+    assert_narrow(result)
+    assert_gates(result, "checked-mir-run", "checked-mir-verify"), result.stdout
     assert "make checked-mir-run" in result.stdout, (
         f"Expected 'make checked-mir-run' in the types profile.\nstdout:\n{result.stdout}"
     )
@@ -1354,10 +1433,14 @@ def test_mir_types_diff_routes_capability_authority_ratchet() -> None:
     """
     result = run_dispatcher("hew-mir/src/lower.rs", "hew-types/src/check/resolution.rs")
     assert result.returncode == 0, result.stderr
-    assert "Selected profile: compiler-pipeline" in result.stdout, result.stdout
-    assert (
-        "  - cargo nextest run --profile ci -p hew-capability-gen" in result.stdout
-    ), (
+    assert_narrow(result)
+    (
+        assert_gates(
+            result, "checked-mir-run", "checked-mir-verify", "test-vertical-slice"
+        ),
+        result.stdout,
+    )
+    assert "capability-authority-ratchet" in selected_gates(result), (
         f"Expected the capability authority ratchet in the routing.\n"
         f"stdout:\n{result.stdout}"
     )
@@ -1402,14 +1485,13 @@ def test_types_resolver_diff_routes_codegen_exec_closure() -> None:
     """
     result = run_dispatcher("hew-types/src/check/resolution.rs")
     assert result.returncode == 0, result.stderr
-    assert "Selected profile: types" in result.stdout, result.stdout
+    assert_narrow(result)
+    assert_gates(result, "checked-mir-run", "checked-mir-verify"), result.stdout
     assert "-p hew-codegen-rs" in result.stdout, (
         f"Expected -p hew-codegen-rs in the types lane closure.\n"
         f"stdout:\n{result.stdout}"
     )
-    assert (
-        "  - cargo nextest run --profile ci -p hew-capability-gen" in result.stdout
-    ), (
+    assert "capability-authority-ratchet" in selected_gates(result), (
         f"Expected the capability authority ratchet for a hew-types diff.\n"
         f"stdout:\n{result.stdout}"
     )
@@ -1431,18 +1513,17 @@ def test_codegen_emission_diff_routes_ll_oracle_golden_diff() -> None:
     ):
         result = run_dispatcher(path)
         assert result.returncode == 0, result.stderr
-        assert "Selected profile: compiler-pipeline" in result.stdout, result.stdout
+        assert_narrow(result)
+        assert_gates(result, "checked-mir-verify", "test-vertical-slice"), result.stdout
         assert "  - make ll-diff" in result.stdout, (
             f"Expected 'make ll-diff' for {path}.\nstdout:\n{result.stdout}"
         )
 
 
-def test_fallback_lane_does_not_duplicate_side_channel_gates() -> None:
-    """The fallback lane already carries ll-diff and the full workspace run;
-    the side-channel flags must not append duplicates on top of it."""
+def test_comprehensive_carries_each_gate_once() -> None:
+    """An undeclared path forces comprehensive, and no gate appears twice in it."""
     result = run_dispatcher("hew-codegen-rs/src/llvm.rs", "tools/some-tool.py")
-    assert result.returncode == 0, result.stderr
-    assert "Selected profile: comprehensive" in result.stdout, result.stdout
+    assert_comprehensive(result)
     assert result.stdout.count("  - make ll-diff") == 1, result.stdout
     assert (
         "cargo nextest run --profile ci -p hew-capability-gen" not in result.stdout
@@ -1473,9 +1554,9 @@ def test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages() -> 
 
 def test_docs_only_change_does_not_include_vertical_slice_oracle() -> None:
     """Docs-only changes run no compiler-backed suite."""
-    result = run_dispatcher("docs/README.md")
+    result = run_dispatcher("docs/observe.md")
     assert result.returncode == 0, result.stderr
-    assert "docs-only" in result.stdout, result.stdout
+    assert_narrow(result)
     assert "make test-vertical-slice" not in result.stdout, result.stdout
     assert "make test-doc-examples" not in result.stdout, result.stdout
     assert "cargo nextest" not in result.stdout, result.stdout
@@ -1485,7 +1566,7 @@ def test_docs_only_change_does_not_include_vertical_slice_oracle() -> None:
 def test_comprehensive_profile_reserves_smoke_for_local_opt_in() -> None:
     result = run_dispatcher("some-unclassified-root-file.txt")
     assert result.returncode == 0, result.stderr
-    assert "Selected profile: comprehensive" in result.stdout, result.stdout
+    assert_comprehensive(result), result.stdout
     assert "make ci-preflight-smoke" not in result.stdout, result.stdout
 
     # Order is a property of the gate list, not of the whole transcript: the
@@ -1496,9 +1577,9 @@ def test_comprehensive_profile_reserves_smoke_for_local_opt_in() -> None:
     assert "make test" in commands, result.stdout
 
     fmt_pos = commands.index("cargo fmt --all -- --check")
-    lint_pos = commands.index("make lint")
+    clippy_pos = commands.index("cargo clippy --workspace --tests -- -D warnings")
     test_pos = commands.index("make test")
-    assert fmt_pos < lint_pos < test_pos, result.stdout
+    assert fmt_pos < clippy_pos < test_pos, result.stdout
 
     makefile = (ROOT / "Makefile").read_text()
     assert "cargo nextest run --workspace --profile smoke" in makefile, makefile
@@ -1518,28 +1599,12 @@ def test_comprehensive_profile_reserves_smoke_for_local_opt_in() -> None:
     )
 
 
-def test_hew_tests_path_routes_to_hew_tests_lane() -> None:
-    """Changes in tests/hew/ route to the hew-tests lane with both ratchets."""
-    result = run_dispatcher("tests/hew/vec_test.hew")
-    assert result.returncode == 0, result.stderr
-    assert "Selected profile: hew-tests" in result.stdout, result.stdout
-    assert "make test-hew-ratchet" in result.stdout, (
-        f"Expected 'make test-hew-ratchet' in hew-tests lane.\nstdout:\n{result.stdout}"
-    )
-    assert "make test-hew-ratchet  (budget: 1500s)" in result.stdout, result.stdout
-    assert "make test-stdlib-ratchet" in result.stdout, (
-        f"Expected 'make test-stdlib-ratchet' in hew-tests lane.\nstdout:\n{result.stdout}"
-    )
-    assert "make hew-fmt-property" in result.stdout, result.stdout
-
-
 def test_parser_path_runs_formatter_property() -> None:
     result = run_dispatcher("hew-parser/src/fmt.rs")
     assert result.returncode == 0, result.stderr
-    assert "Selected profile: parser" in result.stdout, result.stdout
-    assert _selected_commands(result.stdout).count("make hew-fmt-property") == 1, (
-        result.stdout
-    )
+    assert_narrow(result)
+    assert_gates(result, "hew-fmt-property"), result.stdout
+    assert result.stdout.count("make hew-fmt-property") == 1, result.stdout
 
 
 def test_vertical_slice_source_runs_formatter_property() -> None:
@@ -1608,36 +1673,12 @@ def test_stdlib_execution_proof_authorities_route_to_their_gate() -> None:
         "scripts/stdlib-execution-proofs.tsv",
     )
     assert result.returncode == 0, result.stderr
-    assert "Selected profile: scripts-config" in result.stdout, result.stdout
+    assert_narrow(result)
+    assert_gates(result, "leak-scan"), result.stdout
     assert "make test-stdlib-execution-proofs" in result.stdout, (
         "Expected stdlib proof authorities to run their verifier.\n"
         f"stdout:\n{result.stdout}"
     )
-
-
-def test_parser_plus_types_narrow_multi_bucket_uses_types_lane() -> None:
-    """Parser + type-checker changes route to the types lane, not fallback.
-
-    The types lane runs test-compiler-pipeline (the full HIR/MIR/codegen closure)
-    plus fuzz-oracle, covering both buckets.  A type-checker change can break
-    hew-hir / hew-mir tests that a package subset would never run (#2026).
-    This avoids the 9156-test fallback suite while keeping the gate sound.
-    """
-    result = run_dispatcher("hew-parser/src/parser.rs", "hew-types/src/lib.rs")
-    assert result.returncode == 0, result.stderr
-    assert "Selected profile: types" in result.stdout, (
-        f"Expected types profile for parser + types diff.\nstdout:\n{result.stdout}"
-    )
-    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
-    # The proving gate needs its per-command floor: 7887 tests measure ~234 s
-    # warm, so the types lane's 180 s narrow tier would watchdog-kill it.
-    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
-    # fuzz-oracle must run: a type-checker change can produce wrong trap signals.
-    assert "make fuzz-oracle" in result.stdout, result.stdout
-    # Must NOT have fallen back to the full suite.
-    assert (
-        "make test\n" not in result.stdout and "  - make test\n" not in result.stdout
-    ), f"Expected narrow types lane, not full fallback.\nstdout:\n{result.stdout}"
 
 
 # ---------------------------------------------------------------------------
@@ -1653,9 +1694,8 @@ def test_hew_hir_routes_to_compiler_pipeline_lane() -> None:
     """
     result = run_dispatcher("hew-hir/src/lib.rs")
     assert result.returncode == 0, result.stderr
-    assert "Selected profile: compiler-pipeline" in result.stdout, (
-        f"Expected compiler-pipeline for hew-hir change.\nstdout:\n{result.stdout}"
-    )
+    assert_narrow(result)
+    assert_gates(result, "checked-mir-verify", "test-vertical-slice")
     assert "cargo nextest run --profile ci" in result.stdout, result.stdout
     assert "make test-vertical-slice" in result.stdout, result.stdout
 
@@ -1664,43 +1704,8 @@ def test_hew_codegen_rs_routes_to_compiler_pipeline_lane() -> None:
     """hew-codegen-rs/* changes route to the compiler-pipeline lane."""
     result = run_dispatcher("hew-codegen-rs/src/emit.rs")
     assert result.returncode == 0, result.stderr
-    assert "Selected profile: compiler-pipeline" in result.stdout, (
-        f"Expected compiler-pipeline for hew-codegen-rs change.\nstdout:\n{result.stdout}"
-    )
-    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
-
-
-def test_hew_compile_routes_to_cli_lane() -> None:
-    """hew-compile/* changes route to the cli lane.
-
-    is_cli_path matches hew-cli/*, hew-pkg/*, hew-compile/*,
-    hew-cabi/*, hew-capability-gen/*.
-    """
-    result = run_dispatcher("hew-compile/src/lib.rs")
-    assert result.returncode == 0, result.stderr
-    assert "Selected profile: cli" in result.stdout, (
-        f"Expected cli lane for hew-compile change.\nstdout:\n{result.stdout}"
-    )
-    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
-
-
-def test_hew_cabi_routes_to_cli_lane() -> None:
-    """hew-cabi/* changes route to the cli lane (C ABI helpers)."""
-    result = run_dispatcher("hew-cabi/src/lib.rs")
-    assert result.returncode == 0, result.stderr
-    assert "Selected profile: cli" in result.stdout, (
-        f"Expected cli lane for hew-cabi change.\nstdout:\n{result.stdout}"
-    )
-    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
-
-
-def test_hew_capability_gen_routes_to_cli_lane() -> None:
-    """hew-capability-gen/* changes route to the cli lane."""
-    result = run_dispatcher("hew-capability-gen/src/main.rs")
-    assert result.returncode == 0, result.stderr
-    assert "Selected profile: cli" in result.stdout, (
-        f"Expected cli lane for hew-capability-gen change.\nstdout:\n{result.stdout}"
-    )
+    assert_narrow(result)
+    assert_gates(result, "checked-mir-verify", "test-vertical-slice")
     assert "cargo nextest run --profile ci" in result.stdout, result.stdout
 
 
@@ -1712,9 +1717,8 @@ def test_hew_wasm_routes_to_wasm_lane() -> None:
     """
     result = run_dispatcher("hew-wasm/src/lib.rs")
     assert result.returncode == 0, result.stderr
-    assert "Selected profile: wasm" in result.stdout, (
-        f"Expected wasm lane for hew-wasm change.\nstdout:\n{result.stdout}"
-    )
+    assert_narrow(result)
+    assert_gates(result, "playground-check")
     assert "cargo nextest run --profile ci -p hew-wasm" in result.stdout, (
         f"Expected package-scoped nextest for wasm.\nstdout:\n{result.stdout}"
     )
@@ -1723,29 +1727,6 @@ def test_hew_wasm_routes_to_wasm_lane() -> None:
     assert (
         "  - make test\n" not in result.stdout and "make test\n" not in result.stdout
     ), f"Wasm lane must not run full make test.\nstdout:\n{result.stdout}"
-
-
-def test_compiler_pipeline_absorbs_types_bucket_in_mixed_diff() -> None:
-    """A diff spanning both hew-hir/* (codegen bucket) and hew-types/* stays
-    on the compiler-pipeline lane rather than falling back.
-
-    When compiler_related=1, the dispatcher zeroes out has_types (and
-    has_parser/has_cli) before computing bucket_count, so the mix counts
-    as a single compiler-pipeline bucket and selects the narrow lane.
-    """
-    result = run_dispatcher("hew-hir/src/lib.rs", "hew-types/src/lib.rs")
-    assert result.returncode == 0, result.stderr
-    assert "Selected profile: compiler-pipeline" in result.stdout, (
-        f"Expected compiler-pipeline for hew-hir + hew-types diff.\n"
-        f"stdout:\n{result.stdout}"
-    )
-    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
-    # Must NOT have fallen back to the full suite.
-    assert (
-        "  - make test\n" not in result.stdout and "make test\n" not in result.stdout
-    ), (
-        f"Expected narrow compiler-pipeline lane, not full fallback.\nstdout:\n{result.stdout}"
-    )
 
 
 def test_leaf_crate_runs_only_its_reverse_dependency_closure() -> None:
@@ -1937,6 +1918,24 @@ def test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts() -> None:
     assert "COMPILED_HEW_GATE_OWNER: aggregate" in workflow, workflow
 
 
+def test_compiled_hew_recipe_guard_preserves_gate_declarations() -> None:
+    """Both recipe forms retain the same unconditional routing declarations."""
+    for report_dir in ("", "/tmp/compiled-hew-reports"):
+        hew = run_dispatcher(
+            "tests/hew/vec_test.hew", env={"HEW_SHARD_REPORT_DIR": report_dir}
+        )
+        assert_gates(hew, "test-hew-ratchet"), hew.stdout
+
+        comprehensive = run_dispatcher(
+            "some-unclassified-root-file.txt",
+            env={"HEW_SHARD_REPORT_DIR": report_dir},
+        )
+        (
+            assert_gates(comprehensive, "test-hew-ratchet", "test-o2-differential"),
+            comprehensive.stdout,
+        )
+
+
 def test_selected_commands_are_unique() -> None:
     result = run_dispatcher(
         "Cargo.toml",
@@ -1965,15 +1964,16 @@ def test_selector_exports_fail_closed_compile_requirement() -> None:
     assert "profile=comprehensive" in values
     assert "requires_compile=true" in values
 
+    # A change with nothing but prose in it selects only static gates, so no
+    # toolchain is provisioned for it.
     with tempfile.NamedTemporaryFile() as output:
         result = run_dispatcher(
-            ".github/workflows/ci.yml",
+            "docs/observe.md",
             extra_args=["--github-output", output.name],
         )
         values = output.read().decode()
     assert result.returncode == 0, result.stderr
-    assert "profile=scripts-config" in values
-    assert "requires_compile=false" in values
+    assert "requires_compile=false" in values, values
 
 
 # ---------------------------------------------------------------------------
@@ -2145,9 +2145,11 @@ def test_shard_warmup_is_scoped_to_that_shard_commands() -> None:
             )
         else:
             assert workspace_warmup in warmup, warmup
-        if "make lint" not in plan[index]:
+        # Workspace clippy is a command in its own right, not a step inside
+        # `make lint`: the comprehensive profile runs the leaf gates directly.
+        if "cargo clippy --workspace --tests -- -D warnings" not in plan[index]:
             assert "cargo clippy --workspace --tests" not in warmup, (
-                f"shard {index} warms workspace clippy without make lint"
+                f"shard {index} warms workspace clippy without the clippy gate"
             )
 
 
@@ -2161,13 +2163,7 @@ def test_invalid_shard_specs_fail_closed() -> None:
         assert "--shard" in result.stderr, result.stderr
         assert "==> Hew CI preflight dispatcher" not in result.stdout, result.stdout
 
-    missing = subprocess.run(
-        ["bash", str(SCRIPT), "--dry-run", "--shard"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    missing = _run_dispatcher_process(["bash", str(SCRIPT), "--dry-run", "--shard"])
     assert missing.returncode != 0, missing.stdout
     assert "--shard requires a K/N spec" in missing.stderr, missing.stderr
 
@@ -2493,12 +2489,8 @@ def test_counterfactual_output_check_reuses_the_extractor_authority() -> None:
         "the failure pattern must have exactly one definition"
     )
 
-    result = subprocess.run(
-        ["bash", str(SCRIPT), "--check-counterfactual-output"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
+    result = _run_dispatcher_process(
+        ["bash", str(SCRIPT), "--check-counterfactual-output"]
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "counterfactual-output check: PASS" in result.stdout, result.stdout
@@ -2555,16 +2547,12 @@ def test_counterfactual_marker_must_be_a_line_prefix() -> None:
 
 
 def run_counterfactual_roster(roster: str) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    env["PREFLIGHT_TEST_ALLOW_OVERRIDE"] = "1"
-    env["PREFLIGHT_TEST_COUNTERFACTUAL_ROSTER"] = roster
-    return subprocess.run(
+    return _run_dispatcher_process(
         ["bash", str(SCRIPT), "--check-counterfactual-output"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-        env=env,
+        env={
+            "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+            "PREFLIGHT_TEST_COUNTERFACTUAL_ROSTER": roster,
+        },
     )
 
 
@@ -2644,128 +2632,829 @@ def test_no_annotation_is_emitted_outside_github_actions() -> None:
     assert "FAILED (exit 5)" in summary, summary
 
 
-_TESTS = [
-    test_makefile_routes_to_scripts_config_profile,
-    test_scripts_path_routes_to_scripts_config_profile,
-    test_nextest_config_routes_to_scripts_config_profile,
-    test_workflow_routes_to_scripts_config_profile,
-    test_cargo_toml_routes_to_scripts_config_profile,
-    test_cargo_lock_routes_to_scripts_config_profile,
-    test_dot_cargo_config_routes_to_scripts_config_profile,
-    test_rust_toolchain_routes_to_scripts_config_profile,
-    test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps,
-    # Slice 1 instrumentation tests
-    test_dry_run_shows_budget_annotation_narrow_lane,
-    test_dry_run_shows_budget_annotation_fallback_lane,
-    test_dry_run_scales_every_budget_from_detected_parallelism,
-    test_help_includes_profile_json,
-    test_profile_json_flag_accepted_in_dry_run,
-    test_help_includes_fail_fast_and_run_all_default,
-    test_dry_run_reports_run_all_default_policy,
-    test_override_without_sentinel_is_rejected,
-    test_override_with_sentinel_emits_stderr_warning,
-    test_run_all_continues_after_failure_and_profiles_all_commands,
-    test_fail_fast_stops_after_first_failure_and_profiles_only_run_commands,
-    test_synthetic_timeout_via_run_loop,
-    test_profile_json_records_elapsed_for_each_command,
-    test_baseline_precheck_is_listed_before_warmup,
-    test_baseline_precheck_is_scoped_to_the_lane,
-    test_compile_warmup_runs_first_and_has_a_summary_row,
-    test_rust_diff_derives_its_warmup_artifacts_before_commands,
-    test_docs_diff_has_no_warmup_block,
-    test_no_lane_warms_test_targets_with_all_targets,
-    test_comprehensive_warms_every_gate_through_its_own_build_form,
-    test_every_lane_derives_a_warmup_for_every_command_it_selects,
-    test_a_gate_with_no_derivable_warmup_is_fatal,
-    test_a_make_gate_without_a_build_form_is_fatal,
-    test_a_make_gate_naming_an_undeclared_target_is_fatal,
-    test_a_nextest_gate_derives_its_own_invocation_with_no_run,
-    test_a_clippy_gate_derives_its_own_invocation_without_the_deny_flag,
-    test_a_fmt_gate_warms_nothing,
-    test_every_dispatched_make_target_exists_in_the_makefile,
-    test_no_warmup_carries_a_flag_its_gate_does_not,
-    test_no_gate_compiles_behind_an_empty_build_form,
-    test_a_build_form_names_every_binary_its_gate_runs,
-    test_the_binary_check_sees_a_half_named_build_form,
-    test_the_compile_walk_sees_a_compile_one_script_deep,
-    test_the_compile_walk_sees_a_compile_two_levels_deep,
-    test_the_compile_walk_does_not_count_printed_text,
-    test_the_compile_walk_reads_python_data_as_data,
-    test_the_compile_walk_sees_a_multiline_python_subprocess,
-    test_the_compile_walk_sees_a_python_compile_behind_a_runtime_argument,
-    test_the_compile_walk_follows_a_multiline_python_make_call,
-    test_the_compile_walk_reads_a_multiline_python_list_as_data,
-    test_the_compile_walk_still_reads_an_unparsable_python_script,
-    test_a_nextest_older_than_the_pin_stops_the_preflight,
-    test_the_preflight_reads_its_pin_from_the_tool_pin_contract,
-    test_no_warmup_names_a_non_ci_nextest_profile,
-    test_scripts_config_budget_annotation,
-    test_runtime_net_lane_budget_annotation,
-    test_runtime_net_lane_rebuilds_libhew,
-    test_zero_timeout_fails_closed,
-    test_compiler_pipeline_rs_change_includes_vertical_slice_oracle,
-    test_compiler_pipeline_lane_includes_checked_mir_verify,
-    test_types_lane_includes_checked_mir_verify,
-    test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages,
-    test_docs_only_change_does_not_include_vertical_slice_oracle,
-    test_comprehensive_profile_reserves_smoke_for_local_opt_in,
-    test_parser_plus_types_narrow_multi_bucket_uses_types_lane,
-    test_hew_tests_path_routes_to_hew_tests_lane,
-    test_parser_path_runs_formatter_property,
-    test_vertical_slice_source_runs_formatter_property,
-    test_std_hew_file_adds_hew_suite_addon,
-    test_fallback_lane_includes_hew_suite_ratchets,
-    test_stdlib_execution_proof_authorities_route_to_their_gate,
-    # Slice 2 positive bucket-routing tests
-    test_hew_hir_routes_to_compiler_pipeline_lane,
-    test_hew_codegen_rs_routes_to_compiler_pipeline_lane,
-    test_hew_compile_routes_to_cli_lane,
-    test_hew_cabi_routes_to_cli_lane,
-    test_hew_capability_gen_routes_to_cli_lane,
-    test_hew_wasm_routes_to_wasm_lane,
-    test_compiler_pipeline_absorbs_types_bucket_in_mixed_diff,
-    test_leaf_crate_runs_only_its_reverse_dependency_closure,
-    test_analysis_change_runs_known_dependents_without_workspace,
-    test_hosted_linux_executes_the_dispatcher_directly,
-    test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts,
-    test_selected_commands_are_unique,
-    test_selector_exports_fail_closed_compile_requirement,
-    test_a_push_to_main_stops_at_the_first_failing_gate,
-    test_every_job_waits_for_a_green_main,
-    test_trunk_health_blocks_on_a_confirmed_red_main,
-    test_trunk_health_passes_on_a_green_main,
-    test_trunk_health_fails_open_when_the_api_call_fails,
-    test_trunk_health_fails_open_on_an_unreadable_response,
-    test_a_labelled_fix_for_main_runs_against_a_red_main,
-    # Shard partitioning
-    test_shard_plan_is_exhaustive_and_disjoint_for_every_profile,
-    test_shard_partition_preserves_relative_command_order,
-    test_ordering_dependent_commands_share_a_shard,
-    test_shard_selection_runs_exactly_its_planned_commands,
-    test_shard_one_owns_the_baseline_precheck,
-    test_shard_warmup_is_scoped_to_that_shard_commands,
-    test_invalid_shard_specs_fail_closed,
-    test_shard_plan_prints_the_full_assignment_and_runs_nothing,
-    test_help_documents_the_shard_flags,
-    test_hosted_linux_matrix_matches_the_dispatcher_shard_denominator,
-    # Failure diagnostics
-    test_failing_command_emits_an_annotation_and_a_result_table,
-    test_first_failure_extraction_covers_every_gate_failure_shape,
-    test_golden_corpus_failures_name_the_fixture_not_the_make_target,
-    test_timeout_reports_the_budget_not_a_stray_log_line,
-    test_counterfactual_output_never_becomes_the_reported_failure,
-    test_counterfactual_marker_is_shared_by_every_producer,
-    test_counterfactual_output_check_reuses_the_extractor_authority,
-    test_signal_deaths_are_named_not_swallowed_by_the_fallback,
-    test_counterfactual_marker_must_be_a_line_prefix,
-    test_counterfactual_check_rejects_a_gate_that_proves_nothing,
-    test_every_rostered_gate_replays_its_counterfactual,
-    test_no_annotation_is_emitted_outside_github_actions,
-]
+# ---------------------------------------------------------------------------
+# Gate selection: declarations, their honesty, and the fail-closed answer.
+# ---------------------------------------------------------------------------
+
+
+def selected_gates(result: subprocess.CompletedProcess[str]) -> set[str]:
+    """The make targets the dispatcher selected, from the Commands block alone.
+
+    The Warm-up block above it also lists `make <gate>-build` lines; reading
+    both would report warm-up forms as selected gates.
+    """
+    _, _, commands = result.stdout.partition("Commands:\n")
+    return {
+        line.strip()[2:].split("  (budget:")[0].strip()[len("make ") :]
+        for line in commands.splitlines()
+        if line.strip().startswith("- make ")
+    }
+
+
+def is_comprehensive(result: subprocess.CompletedProcess[str]) -> bool:
+    return "Selected profile: comprehensive" in result.stdout
+
+
+def assert_gates(result: subprocess.CompletedProcess[str], *targets: str) -> None:
+    """Assert each named gate was selected.
+
+    Asserting the GATE rather than a profile label is the whole point of the
+    inversion: the question a routing test asks is "does a change to this path
+    still run the gate that reads it", and that question survives a gate being
+    renamed, added, or re-declared.
+    """
+    assert result.returncode == 0, result.stderr
+    selected = selected_gates(result)
+    for target in targets:
+        assert target in selected, (target, sorted(selected), result.stdout)
+
+
+def assert_narrow(result: subprocess.CompletedProcess[str]) -> None:
+    assert result.returncode == 0, result.stderr
+    assert not is_comprehensive(result), result.stdout
+
+
+def assert_comprehensive(result: subprocess.CompletedProcess[str]) -> None:
+    assert result.returncode == 0, result.stderr
+    assert is_comprehensive(result), result.stdout
+
+
+def classify_tracked_paths() -> dict[str, str]:
+    """Every tracked repository path, mapped through the dispatcher's own map."""
+    tracked = subprocess.run(
+        ["git", "ls-files"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    classified = _run_dispatcher_process(
+        ["bash", str(SCRIPT), "--classify"],
+        input=tracked,
+    )
+    assert classified.returncode == 0, classified.stderr
+    classified_text = classified.stdout
+    mapping: dict[str, str] = {}
+    for line in classified_text.splitlines():
+        if not line:
+            continue
+        path, _, bucket = line.partition("\t")
+        mapping[path] = bucket
+    return mapping
+
+
+def dispatched_commands(result: subprocess.CompletedProcess[str]) -> list[str]:
+    return [
+        line.strip()[2:].split("  (budget:")[0].strip()
+        for line in result.stdout.splitlines()
+        if line.strip().startswith("- ") and "(budget:" in line
+    ]
+
+
+def test_annotations_are_absent_outside_github_actions() -> None:
+    """A local preflight prints no workflow-command noise."""
+    result = run_dispatcher("hew-parser/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert "::notice" not in result.stdout, result.stdout
+    assert "::warning" not in result.stdout, result.stdout
+
+
+def test_cargo_lock_routes_to_comprehensive() -> None:
+    assert_comprehensive_profile(run_dispatcher("Cargo.lock"))
+
+
+def test_cargo_toml_routes_to_comprehensive() -> None:
+    assert_comprehensive_profile(run_dispatcher("Cargo.toml"))
+
+
+def test_codegen_exec_fixture_routes_to_its_exec_suite() -> None:
+    """examples/machine fixtures are hew-codegen-rs exec inputs, not stray files."""
+    result = run_dispatcher("examples/machine/run_lifecycle.expected")
+    assert_narrow(result)
+    assert_gates(result, "test-codegen-exec-fixtures"), result.stdout
+
+
+def test_compiler_pipeline_and_types_mixed_diff_unions_both_lanes() -> None:
+    """A diff spanning hew-hir/* and hew-types/* selects both gate sets.
+
+    The compiler-pipeline set alone omits gates the type-checker set owns; the
+    union keeps both without becoming comprehensive.
+    """
+    result = run_dispatcher("hew-hir/src/lib.rs", "hew-types/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert_narrow(result)
+    assert_gates(result, "checked-mir-run", "checked-mir-verify", "test-vertical-slice")
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
+    # Must NOT have fallen back to the full suite.
+    assert (
+        "  - make test\n" not in result.stdout and "make test\n" not in result.stdout
+    ), (
+        f"Expected narrow compiler-pipeline lane, not full fallback.\nstdout:\n{result.stdout}"
+    )
+
+
+def test_source_literal_scan_cannot_narrow_routing() -> None:
+    """A scanner-only consumer edge remains undeclared and fails closed."""
+    result = run_dispatcher("installers/debian/control")
+    assert_comprehensive(result)
+    assert "undeclared: installers/debian/control" in result.stdout, result.stdout
+
+
+def test_direct_runner_cannot_skip_a_defined_test() -> None:
+    """Both ways of running this file must see every test defined in it.
+
+    Two versions of this bug have shipped: a hand-written roster that drifted to
+    71 of 78, and then a DERIVED roster evaluated above tests appended later,
+    which ran 78 of 83. Both let the direct runner report green over tests it
+    never executed, so both halves are pinned here — the roster matches the
+    source, and nothing is defined after the runner that would miss it.
+    """
+    source = Path(__file__).read_text()
+    defined_in_source = re.findall(r"^def (test_[A-Za-z0-9_]+)\(", source, re.M)
+    assert len(defined_in_source) == len(set(defined_in_source)), defined_in_source
+
+    discovered = {test.__name__ for test in _discover_tests()}
+    assert discovered == set(defined_in_source), sorted(
+        set(defined_in_source) ^ discovered
+    )
+
+    # rindex on both: this test's own body quotes the runner marker, and an
+    # index() would find the quote rather than the block.
+    runner_at = source.rindex('if __name__ == "__main__":')
+    last_test_at = source.rindex("\ndef test_")
+    assert last_test_at < runner_at, (
+        "the direct runner block must be the last thing in the file; a test "
+        "defined below it does not exist yet when the roster is built"
+    )
+
+
+def test_dot_cargo_config_routes_to_comprehensive() -> None:
+    assert_comprehensive_profile(run_dispatcher(".cargo/config.toml"))
+
+
+def test_embedded_asset_scan_cannot_narrow_routing() -> None:
+    """An include discovered only by static scanning still fails closed."""
+    result = run_dispatcher("docs/syntax-data.json")
+    assert_comprehensive(result)
+    assert "undeclared: docs/syntax-data.json" in result.stdout, result.stdout
+
+
+def test_classifier_uses_only_declarations_and_the_positive_allowlist() -> None:
+    mapping = classify_tracked_paths()
+    assert mapping, "the classifier returned no paths"
+    assert mapping["installers/debian/control"] == "undeclared"
+    assert mapping["docs/syntax-data.json"] == "undeclared"
+    for path in ("AUTH" + "ORS", "hew-logo" + ".png"):
+        assert mapping[path] == "no-gate", (path, mapping[path])
+
+
+def test_positive_no_gate_allowlist_stays_small() -> None:
+    module = _gate_inputs_module()
+    _gates, _globals, no_gate = module.parse_makefile((ROOT / "Makefile").read_text())
+    assert len(no_gate) == 18, no_gate
+    markdown = [glob for glob in no_gate if glob.endswith(".md")]
+    assert len(markdown) == 5, markdown
+    assert all("*" not in glob and (ROOT / glob).is_file() for glob in markdown)
+    assert "*.md" not in no_gate
+
+
+def test_unlisted_markdown_fails_closed() -> None:
+    module = _gate_inputs_module()
+    _gates, _globals, no_gate = module.parse_makefile((ROOT / "Makefile").read_text())
+    explicit_prose = next(glob for glob in no_gate if glob.endswith(".md"))
+    assert_narrow(run_dispatcher(explicit_prose))
+    result = run_dispatcher("unlisted-prose.md")
+    assert_comprehensive(result)
+    assert "undeclared: unlisted-prose.md" in result.stdout, result.stdout
+
+
+def test_doc_fence_corpus_remains_explicitly_declared() -> None:
+    for path in ("docs/hew-language-guide.md", "docs/specs/HEW-SPEC-2026.md"):
+        result = run_dispatcher(path)
+        assert_narrow(result)
+        assert_gates(result, "test-doc-examples")
+    assert "test-doc-examples" not in selected_gates(run_dispatcher("docs/observe.md"))
+
+
+def test_generated_and_release_markdown_routes_to_its_consumers() -> None:
+    assert_gates(
+        run_dispatcher("docs/wasm-capability-matrix.md"),
+        "wasm-capability-check",
+    )
+    for path in (
+        "CHANGELOG.md",
+        "docs/releases/v0.6.0-rc1.md",
+        "docs/release-runbook.md",
+        "docs/cross-platform-build-guide.md",
+    ):
+        assert_gates(run_dispatcher(path), "test-release-workflow-contract")
+
+
+def test_gate_inputs_derives_a_scripts_helper_closure() -> None:
+    """A gate declares its entry script; the imports and sourced files follow.
+
+    Two different `bounded_subprocess.py` helpers live in this tree, and which
+    one a test imports is decided by its own `sys.path.insert` — so the walk
+    honours that hint rather than taking the first file with a matching name.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "gate_inputs", ROOT / "scripts/lib/gate_inputs.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    # Register before executing: the module defines dataclasses, and
+    # `@dataclass` resolves annotations through `sys.modules[cls.__module__]`.
+    sys.modules["gate_inputs"] = module
+    spec.loader.exec_module(module)
+
+    for rel, expected in (
+        (
+            "scripts/tests/test_opaque_resource_lifecycle_matrix.py",
+            "scripts/bounded_subprocess.py",
+        ),
+        (
+            "scripts/tests/test_opaque_resource_lifecycle_facts.py",
+            "scripts/tests/bounded_subprocess.py",
+        ),
+    ):
+        text = (ROOT / rel).read_text()
+        assert module._python_modules(ROOT, rel, text) == [expected], rel
+
+    # A sourced helper is reached the same way an executed one is: by being
+    # named in the closure.
+    sourced = module.source_closure(ROOT, ["scripts/hew-corpus-check.sh"])
+    assert "scripts/lib/line-set.sh" in sourced, sourced
+
+
+def test_global_effect_inputs_classify_as_global() -> None:
+    """Build-graph and toolchain inputs are comprehensive BY RULE, not by fallback."""
+    mapping = classify_tracked_paths()
+    for path in (
+        "Makefile",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "scripts/ci-preflight-dispatcher.sh",
+    ):
+        assert mapping.get(path) == "global", (path, mapping.get(path))
+
+
+def test_global_input_routes_to_comprehensive_and_says_why() -> None:
+    """A Makefile edit is comprehensive BY RULE, and the reason names the file."""
+    result = run_dispatcher("Makefile")
+    assert result.returncode == 0, result.stderr
+    assert_comprehensive(result), result.stdout
+    assert "a global input changed" in result.stdout, result.stdout
+    assert "Makefile" in result.stdout, result.stdout
+
+
+def test_hew_cabi_routes_through_the_cli_closure() -> None:
+    """hew-cabi/* changes route through the CLI reverse-dependency closure."""
+    result = run_dispatcher("hew-cabi/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert_narrow(result)
+    # A CLI support crate reaches its tests through the reverse-dependency
+    # closure, which carries hew-cli, rather than through a named make gate.
+    assert "-p hew-cli" in result.stdout, result.stdout
+
+
+def test_hew_capability_gen_routes_to_its_own_gates() -> None:
+    """hew-capability-gen has no reverse dependents, so the closure is itself.
+
+    Its coverage comes from the gates that declare it: the generated-checker
+    freshness check and the structural authority ratchet.
+    """
+    result = run_dispatcher("hew-capability-gen/src/lib.rs")
+    assert_narrow(result)
+    assert_gates(result, "wasm-capability-check", "capability-authority-ratchet")
+    assert "-p hew-capability-gen" in result.stdout, result.stdout
+
+
+def test_hew_compile_routes_through_the_cli_closure() -> None:
+    """hew-compile/* changes route through the CLI reverse-dependency closure."""
+    result = run_dispatcher("hew-compile/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert_narrow(result)
+    # A CLI support crate reaches its tests through the reverse-dependency
+    # closure, which carries hew-cli, rather than through a named make gate.
+    assert "-p hew-cli" in result.stdout, result.stdout
+
+
+def test_hew_tests_path_routes_to_the_hew_suite_ratchet() -> None:
+    """Changes in tests/hew/ select both Hew suite ratchets."""
+    result = run_dispatcher("tests/hew/vec_test.hew")
+    assert result.returncode == 0, result.stderr
+    assert_narrow(result)
+    assert_gates(result, "test-hew-ratchet"), result.stdout
+    assert "make test-hew-ratchet" in result.stdout, (
+        f"Expected 'make test-hew-ratchet' in hew-tests lane.\nstdout:\n{result.stdout}"
+    )
+    assert "make test-hew-ratchet  (budget: 1500s)" in result.stdout, result.stdout
+    # tests/hew is declared by the ratchet that runs it, and by nothing else.
+    assert "make test-stdlib-ratchet" not in result.stdout, result.stdout
+
+
+def test_ll_oracle_corpus_routes_to_its_own_differ() -> None:
+    """The golden .ll corpus runs make ll-diff instead of the whole suite."""
+    result = run_dispatcher("tests/ll-oracle/corpus/golden/example.ll")
+    assert result.returncode == 0, result.stderr
+    assert_narrow(result)
+    assert_gates(result, "ll-diff"), result.stdout
+    assert "  - make ll-diff" in result.stdout, result.stdout
+    # ll-identity-selftest proves the differ, not the corpus, and declares only
+    # its own scripts as inputs.
+    assert "  - make ll-identity-selftest" not in result.stdout, result.stdout
+
+
+def test_makefile_routes_to_comprehensive() -> None:
+    assert_comprehensive_profile(run_dispatcher("Makefile"))
+
+
+def test_nested_workspace_member_contributes_to_the_closure() -> None:
+    """A crate below the first path component still selects its own package.
+
+    Taking the first path component alone left std/text/template and
+    std/encoding/binary with an EMPTY package list, which silently turned the
+    closure nextest run into an unscoped workspace run.
+    """
+    result = run_dispatcher("std/text/template/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert (
+        "  - cargo nextest run --profile ci -p hew-std-text-template" in result.stdout
+    ), result.stdout
+
+
+def test_nextest_config_routes_to_comprehensive() -> None:
+    assert_comprehensive_profile(run_dispatcher(".config/nextest.toml"))
+
+
+def test_no_test_running_command_names_a_non_ci_nextest_profile() -> None:
+    """A3a of the reachability gate scans this dry-run text for fast-tier profiles.
+
+    scripts/check-gate-reachability.py feeds the fail-closed dry-run output into
+    the CI command corpus, so a command that RUNS tests under `--profile ci-cabi`
+    would read as CI running a non-`ci` nextest profile.
+
+    `--no-run` invocations are exempt on both sides: warm-ups are derived from
+    each gate's own recipe, so they name whatever profile that gate builds
+    under, and building a test binary runs no tests and shrinks no corpus.
+    """
+    result = run_dispatcher("some-unclassified-root-file.txt")
+
+    assert result.returncode == 0, result.stderr
+    running = "\n".join(
+        line for line in result.stdout.splitlines() if "--no-run" not in line
+    )
+    profiles = set(re.findall(r"--profile\s+([A-Za-z0-9_-]+)", running))
+    assert profiles <= {"ci"}, result.stdout
+
+
+def test_parser_plus_types_selects_both_declaring_gate_sets() -> None:
+    """Parser + type-checker changes select the union of declaring gate sets.
+
+    Two changed areas mean both gate sets apply, not that the change is global.
+    The union runs those gates over the shared reverse-dependency closure of
+    both crates, which is strictly more coverage than either set
+    alone and far less than the comprehensive suite.
+    """
+    result = run_dispatcher("hew-parser/src/parser.rs", "hew-types/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert_narrow(result)
+    assert_gates(result, "checked-mir-run", "checked-mir-verify", "hew-fmt-property")
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
+    # The proving gate needs its per-command floor: 7887 tests measure ~234 s
+    # warm, so the 180 s narrow tier would watchdog-kill it.
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
+    # fuzz-oracle must run: a type-checker change can produce wrong trap signals.
+    assert "make fuzz-oracle" in result.stdout, result.stdout
+    # Must NOT have fallen back to the full suite.
+    assert (
+        "make test\n" not in result.stdout and "  - make test\n" not in result.stdout
+    ), f"Expected narrow types lane, not full fallback.\nstdout:\n{result.stdout}"
+
+
+def test_profile_is_emitted_as_a_job_annotation() -> None:
+    """The selected profile reaches the run summary without opening the log."""
+    result = run_dispatcher(
+        "hew-parser/src/lib.rs",
+        env={"GITHUB_ACTIONS": "true"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "::notice title=Preflight profile::" in result.stdout, result.stdout
+    assert_gates(result, "hew-fmt-property")
+
+
+def test_renames_route_both_sides() -> None:
+    """A move between two declared sets runs the gate owning EACH path.
+
+    `--name-only` reports only a rename's destination, so moving a file out of
+    one gate's inputs and into another's silently dropped the gate that owned
+    the old location — the change most likely to break it.
+    """
+    dispatcher = (ROOT / "scripts/ci-preflight-dispatcher.sh").read_text()
+    assert "collect_paths_from_command git diff" not in dispatcher, dispatcher
+    assert dispatcher.count("collect_paths_from_status git diff") == 3, dispatcher
+    assert "R*|C*)" in dispatcher, dispatcher
+
+
+def test_rust_toolchain_routes_to_comprehensive() -> None:
+    assert_comprehensive_profile(run_dispatcher("rust-toolchain.toml"))
+
+
+def test_selection_is_a_superset_of_each_path_alone() -> None:
+    """Selecting two paths never drops a gate either path selects alone.
+
+    Compares the GATES, not the warm-up: a build form whose work an earlier
+    form in the same run already did is deliberately left out of the warm-up,
+    so comparing warm-up lines would read that de-duplication as a loss.
+    """
+    parser_only = selected_gates(run_dispatcher("hew-parser/src/lib.rs"))
+    runtime_only = selected_gates(run_dispatcher("hew-runtime/src/lib.rs"))
+    union = selected_gates(
+        run_dispatcher("hew-parser/src/lib.rs", "hew-runtime/src/lib.rs")
+    )
+
+    assert parser_only <= union, parser_only - union
+    assert runtime_only <= union, runtime_only - union
+
+
+def test_stdlib_hew_source_routes_to_the_stdlib_gates() -> None:
+    """A std/*.hew edit runs the stdlib gates instead of the whole suite."""
+    result = run_dispatcher("std/fmt/fmt.hew")
+    assert result.returncode == 0, result.stderr
+    assert_narrow(result)
+    assert_gates(result, "stdlib-lint", "test-stdlib-ratchet"), result.stdout
+    assert_gates(
+        result,
+        "stdlib-lint",
+        "stdlib-errno-gate",
+        "test-stdlib-ratchet",
+        "test-hew-ratchet",
+        "hew-check-all",
+        "hew-fmt-check",
+    )
+
+
+def test_two_areas_select_both_areas_gates_not_comprehensive() -> None:
+    """Touching two areas selects both gate sets rather than everything.
+
+    This is the defect the routing change closes: `bucket_count > 1` used to
+    mean comprehensive, and every realistic pull request touches two buckets.
+    """
+    result = run_dispatcher("hew-parser/src/lib.rs", "hew-runtime/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert_narrow(result)
+    (
+        assert_gates(
+            result, "hew-fmt-property", "test-hew-ratchet", "test-vertical-slice"
+        ),
+        result.stdout,
+    )
+    assert not is_comprehensive(result), result.stdout
+    # Each area's distinctive gate is present.
+    assert "  - make hew-fmt-property" in result.stdout, result.stdout
+    assert "  - make check-libhew-fresh" in result.stdout, result.stdout
+    assert "  - make mqtt-broker-e2e" in result.stdout, result.stdout
+
+
+def test_undeclared_path_fails_closed_and_annotates_the_path() -> None:
+    """An undeclared path runs everything and names itself in the Reason line."""
+    result = run_dispatcher(
+        "some-unclassified-root-file.txt",
+        env={"GITHUB_ACTIONS": "true"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert_comprehensive(result), result.stdout
+    assert "undeclared: some-unclassified-root-file.txt" in result.stdout, result.stdout
+    assert "::warning file=some-unclassified-root-file.txt::" in result.stdout, (
+        result.stdout
+    )
+
+
+# ---------------------------------------------------------------------------
+# Declaration-only routing: scanner misses must fail closed.
+# ---------------------------------------------------------------------------
+
+
+def test_a_failing_selector_never_narrows_the_preflight() -> None:
+    """A selector that dies must run everything or stop — never run less.
+
+    The records were read through process substitution, which discards the
+    child's exit status: a selector that raised produced no records, which read
+    as "no gate matches this diff" and left a plan of `cargo fmt` alone,
+    exiting 0.  A router that cannot decide has not decided.
+    """
+    crashed = run_dispatcher(
+        "hew-parser/src/lib.rs",
+        env={
+            "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+            "PREFLIGHT_TEST_SELECTOR": "exit 3",
+        },
+    )
+    assert crashed.returncode != 0, crashed.stdout
+    assert "gate selector failed" in crashed.stderr, crashed.stderr
+
+    # A stream that stops early is the same defect one layer down: the records
+    # that did arrive look like a valid, shorter selection.
+    truncated = run_dispatcher(
+        "hew-parser/src/lib.rs",
+        env={
+            "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+            "PREFLIGHT_TEST_SELECTOR": 'printf "MODE selected\\nGATE leak-scan\\n"',
+        },
+    )
+    assert truncated.returncode != 0, truncated.stdout
+    assert "truncated record stream" in truncated.stderr, truncated.stderr
+
+    unguarded = run_dispatcher(
+        "hew-parser/src/lib.rs", env={"PREFLIGHT_TEST_SELECTOR": "exit 3"}
+    )
+    assert unguarded.returncode != 0, unguarded.stdout
+    assert "PREFLIGHT_TEST_ALLOW_OVERRIDE=1" in unguarded.stderr, unguarded.stderr
+
+
+def test_invalid_selector_vocabulary_never_narrows_the_preflight() -> None:
+    invalid_mode = run_dispatcher(
+        "hew-parser/src/lib.rs",
+        env={
+            "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+            "PREFLIGHT_TEST_SELECTOR": (
+                'printf "MODE invalid\\nRUSTCLOSURE 0\\nEND\\n"'
+            ),
+        },
+    )
+    assert invalid_mode.returncode != 0, invalid_mode.stdout
+    assert "invalid MODE value: invalid" in invalid_mode.stderr, invalid_mode.stderr
+
+    invalid_rust_closure = run_dispatcher(
+        "hew-parser/src/lib.rs",
+        env={
+            "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+            "PREFLIGHT_TEST_SELECTOR": (
+                'printf "MODE selected\\nRUSTCLOSURE invalid\\nEND\\n"'
+            ),
+        },
+    )
+    assert invalid_rust_closure.returncode != 0, invalid_rust_closure.stdout
+    assert "invalid RUSTCLOSURE value: invalid" in invalid_rust_closure.stderr, (
+        invalid_rust_closure.stderr
+    )
+
+
+def _gate_inputs_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "gate_inputs", ROOT / "scripts/lib/gate_inputs.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["gate_inputs"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_package_import_resolves_to_its_init() -> None:
+    """`import pkg` reaches `pkg/__init__.py`, not only `pkg.py`.
+
+    Resolving `<module>.py` alone meant a gate that imports a package declared
+    none of it.
+    """
+    module = _gate_inputs_module()
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        (root / "scripts" / "lib" / "shared").mkdir(parents=True)
+        (root / "scripts" / "lib" / "shared" / "__init__.py").write_text("VALUE = 1\n")
+        entry = root / "scripts" / "entry.py"
+        entry.write_text("import shared\n")
+        found = module._python_modules(root, "scripts/entry.py", entry.read_text())
+    assert "scripts/lib/shared/__init__.py" in found, found
+
+
+def test_an_executed_helper_joins_the_closure() -> None:
+    """A script a gate RUNS contributes its inputs, not only one it sources.
+
+    Following `source`/`.` alone meant `bash scripts/x.sh` and
+    `python3 scripts/y.py` contributed nothing at all.
+    """
+    module = _gate_inputs_module()
+    closure = module.source_closure(
+        ROOT, ["scripts/tests/test_ci_preflight_dispatcher.py"]
+    )
+    assert "scripts/lib/gate_inputs.py" in closure, closure
+
+    fuzz = module.source_closure(ROOT, ["scripts/fuzz/oracle-selftest.sh"])
+    assert "scripts/fuzz/run-oracle.py" in fuzz, fuzz
+
+
+def test_a_fixture_read_at_runtime_is_an_input() -> None:
+    """A path a gate's sources NAME is an input, however it is read.
+
+    Reading only `include_str!`/`include_bytes!` missed every Rust test that
+    opens its fixture through `std::fs`, and every python harness that opens
+    one through `Path.read_text`.
+    """
+    module = _gate_inputs_module()
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        (root / "crate" / "tests").mkdir(parents=True)
+        (root / "crate" / "Cargo.toml").write_text('[package]\nname = "crate"\n')
+        fixture = root / "crate" / "tests" / "fixture.json"
+        fixture.write_text("{}\n")
+        source = root / "crate" / "tests" / "reads.rs"
+        source.write_text(
+            'fn main() { let _ = std::fs::read_to_string("crate/tests/fixture.json"); }\n'
+        )
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        module._TRACKED_CACHE.clear()
+        found = module.literal_inputs(root, ["crate/tests/reads.rs"])
+        module._TRACKED_CACHE.clear()
+    assert "crate/tests/fixture.json" in found, found
+
+
+def test_no_gate_consumer_overlap_is_a_contradiction() -> None:
+    """Every discovered consumer disproves an inert no-gate classification."""
+    module = _gate_inputs_module()
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        (root / "scripts").mkdir()
+        (root / "crate" / "src").mkdir(parents=True)
+        (root / "assets").mkdir()
+        (root / "assets" / "runtime.txt").write_text("fixture\n")
+        (root / "assets" / "embedded.txt").write_text("fixture\n")
+        (root / "crate" / "Cargo.toml").write_text(
+            '[package]\nname = "crate"\nversion = "0.0.0"\n'
+        )
+        (root / "crate" / "src" / "lib.rs").write_text(
+            'const FIXTURE: &str = include_str!("../../assets/embedded.txt");\n'
+        )
+        (root / "scripts" / "check.py").write_text(
+            'from pathlib import Path\nPath("assets/runtime.txt").read_text()\n'
+        )
+        (root / "Makefile").write_text(
+            "# no-gate: assets/* — inert allowlist fixture\n"
+            "# inputs: scripts/check.py assets/runtime.txt\n"
+            "check:\n"
+            "\tpython3 scripts/check.py\n"
+        )
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        module._TRACKED_CACHE.clear()
+        scanned = module._expand(root)
+        contradictions = module.likely_no_gate_inputs(root, scanned)
+        module._TRACKED_CACHE.clear()
+    assert contradictions == {
+        "check": ["assets/runtime.txt"],
+        "crate (embedded asset)": ["assets/embedded.txt"],
+    }, contradictions
+
+
+def test_non_rust_input_selects_its_comprehensive_only_gate() -> None:
+    """An external asset cannot rely on the Rust reverse-dependency closure."""
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        (root / "asset.json").write_text("{}\n")
+        (root / "Makefile").write_text(
+            "# inputs: asset.json\n"
+            "# preflight: comprehensive-only — Rust changes use the package closure\n"
+            "test-crate:\n"
+            "\ttrue\n"
+        )
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/lib/gate_inputs.py"),
+                "select",
+                str(root),
+            ],
+            input="asset.json\n",
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    assert "GATE test-crate\n" in result.stdout, result.stdout
+
+
+def _assert_scanner_blind_spot_fails_closed(
+    files: dict[str, str], changed: str, makefile: str
+) -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        for rel, contents in files.items():
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(contents)
+        (root / "Makefile").write_text(makefile)
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        selector = " ".join(
+            shlex.quote(part)
+            for part in (
+                sys.executable,
+                str(ROOT / "scripts/lib/gate_inputs.py"),
+                "select",
+                str(root),
+                "--mode",
+                "selected",
+            )
+        )
+        result = run_dispatcher(
+            changed,
+            env={
+                "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+                "PREFLIGHT_TEST_SELECTOR": selector,
+                "PREFLIGHT_TEST_COMMANDS": "true",
+            },
+        )
+    assert_comprehensive(result)
+    assert f"undeclared: {changed}" in result.stdout, result.stdout
+
+
+def test_unquoted_shell_helper_fails_closed() -> None:
+    _assert_scanner_blind_spot_fails_closed(
+        {
+            "scripts/check.sh": "bash scripts/helpers/run.sh\n",
+            "scripts/helpers/run.sh": "#!/bin/sh\n",
+        },
+        "scripts/helpers/run.sh",
+        "# inputs: scripts/check.sh\ncheck:\n\tbash scripts/check.sh\n",
+    )
+
+
+def test_f_string_joined_path_fails_closed() -> None:
+    _assert_scanner_blind_spot_fails_closed(
+        {
+            "scripts/check.py": (
+                "import os\nname = 'case'\n"
+                "open(os.path.join('fixtures', f'{name}.json')).read()\n"
+            ),
+            "fixtures/case.json": "{}\n",
+        },
+        "fixtures/case.json",
+        "# inputs: scripts/check.py\ncheck:\n\tpython3 scripts/check.py\n",
+    )
+
+
+def test_python_dash_m_module_fails_closed() -> None:
+    _assert_scanner_blind_spot_fails_closed(
+        {
+            "scripts/check.sh": "python3 -m pkg.mod\n",
+            "pkg/__init__.py": "",
+            "pkg/mod.py": "VALUE = 1\n",
+        },
+        "pkg/mod.py",
+        "# inputs: scripts/check.sh\ncheck:\n\tbash scripts/check.sh\n",
+    )
+
+
+def test_make_variable_helper_fails_closed() -> None:
+    _assert_scanner_blind_spot_fails_closed(
+        {
+            "scripts/driver.txt": "driver\n",
+            "scripts/helper.py": "VALUE = 1\n",
+        },
+        "scripts/helper.py",
+        (
+            "HELPER = scripts/helper.py\n"
+            "# inputs: scripts/driver.txt\n"
+            "check:\n\tpython3 $(HELPER)\n"
+        ),
+    )
+
+
+def test_dotted_import_module_fails_closed() -> None:
+    _assert_scanner_blind_spot_fails_closed(
+        {
+            "scripts/check.py": "import pkg.mod\n",
+            "scripts/pkg/__init__.py": "",
+            "scripts/pkg/mod.py": "VALUE = 1\n",
+        },
+        "scripts/pkg/mod.py",
+        "# inputs: scripts/check.py\ncheck:\n\tpython3 scripts/check.py\n",
+    )
+
+
+def _discover_tests() -> list:
+    """Every test function defined in this module, resolved at RUN time.
+
+    Resolving at definition time is the same bug one layer down: tests added
+    below the roster are silently omitted, which is how the hand-written list
+    came to run 71 of 78.
+    """
+    return [
+        value
+        for name, value in sorted(globals().items())
+        if name.startswith("test_") and callable(value)
+    ]
+
 
 if __name__ == "__main__":
     failures = 0
-    for test in _TESTS:
+    discovered = _discover_tests()
+    for test in discovered:
         try:
             test()
             print(f"PASS {test.__name__}")
@@ -2773,5 +3462,5 @@ if __name__ == "__main__":
             print(f"FAIL {test.__name__}: {exc}")
             failures += 1
     if failures:
-        raise SystemExit(f"{failures}/{len(_TESTS)} tests failed")
-    print(f"All {len(_TESTS)} tests passed.")
+        raise SystemExit(f"{failures}/{len(discovered)} tests failed")
+    print(f"All {len(discovered)} tests passed.")

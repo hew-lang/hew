@@ -654,7 +654,8 @@ impl Builder {
             dest: env_place,
         });
 
-        let lowered = self.lower_closure_shim(&shim_name, &env_ty, params, ret_ty, body, captures);
+        let mut lowered =
+            self.lower_closure_shim(&shim_name, &env_ty, params, ret_ty, body, captures);
         // The suspendable-callee discriminator: the closure's invoke shim is a
         // coroutine iff its lowered MIR carries a suspend terminator — the
         // IDENTICAL structural fact codegen's `is_coroutine` reads off the same
@@ -667,6 +668,20 @@ impl Builder {
             .blocks
             .iter()
             .any(|b| terminator_is_suspend_carrier(&b.terminator));
+        if suspends {
+            lowered.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "`await` inside a closure".to_string(),
+                    site: body.site,
+                },
+                note: "a suspending closure lowers to a coroutine ramp whose native return is a \
+                       continuation handle, but function types do not yet carry suspension so \
+                       every direct, nested, and higher-order invocation can select the matching \
+                       driver; refusing the closure prevents that handle from being interpreted \
+                       as the closure's declared result"
+                    .to_string(),
+            });
+        }
         self.generated_functions.push(lowered);
 
         Some((shim_name, env_ty, env_place, suspends, field_pairs))

@@ -2805,6 +2805,17 @@ expect_check_fail_contains \
   "E_CLOSURE_CAPTURES_LAMBDA_HANDLE" \
   "closure_capture_lambda_handle"
 
+# Reject: a closure whose body suspends is a coroutine ramp, while the current
+# `fn` type does not carry suspension through direct, nested, and higher-order
+# invocation paths. Refuse the construct before codegen so no caller can read
+# the ramp's continuation handle as its declared result.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/closure_await_fail_closed.hew" \
+  "E_NOT_YET_IMPLEMENTED" \
+  "closure_await_fail_closed"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+grep -qF -- '`await` inside a closure' "${reject_output}"
+
 # Reject: remote dispatch (RemotePid ask/tell) resolving to a multi-arg
 # receive handler fails closed with E_REMOTE_PAYLOAD_UNSUPPORTED. The
 # remote wire carries one message value; a multi-arg handler's local

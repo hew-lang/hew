@@ -2113,6 +2113,56 @@ def documented_make_references(root: Path = REPO_ROOT) -> list[MakeReference]:
     return references
 
 
+_SCRIPT_PATH_RE = re.compile(r"scripts/[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:sh|py)")
+
+
+def harness_tests(root: Path = REPO_ROOT) -> list[str]:
+    """Every self-test file under `scripts/tests/`, as repo-relative paths."""
+    return sorted(
+        f"scripts/tests/{path.name}"
+        for path in (root / "scripts" / "tests").glob("test_*")
+        if path.suffix in {".py", ".sh"}
+    )
+
+
+def harness_invocation_text(
+    ci_text: str,
+    recipes: dict[str, str],
+    reached: set[str],
+    root: Path = REPO_ROOT,
+) -> str:
+    """Everything CI actually executes, with one hop into shell scripts."""
+    parts = [ci_text]
+    invokers = reached | {authority.target for authority in HOST_RELEASE_AUTHORITIES}
+    for target in sorted(invokers):
+        parts.append(executing_text(strip_shell_comments(recipes.get(target, ""))))
+
+    seen: set[str] = set()
+    frontier = [
+        match.group(0)
+        for part in parts
+        for match in _SCRIPT_PATH_RE.finditer(part)
+        if match.group(0).endswith(".sh")
+    ]
+    while frontier:
+        rel = frontier.pop()
+        if rel in seen or rel.startswith("scripts/tests/"):
+            seen.add(rel)
+            continue
+        seen.add(rel)
+        path = root / rel
+        if not path.is_file():
+            continue
+        body = executing_text(strip_shell_comments(path.read_text(encoding="utf-8")))
+        parts.append(body)
+        frontier.extend(
+            match.group(0)
+            for match in _SCRIPT_PATH_RE.finditer(body)
+            if match.group(0).endswith(".sh")
+        )
+    return "\n".join(parts)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -2820,6 +2870,18 @@ def main() -> int:
             "as a gate input; in every case, remove its no-gate match.",
         )
     print(f"    {len(no_gate_rows)} contradictory consumer relation(s).")
+
+    tests = harness_tests()
+    invocations = harness_invocation_text(ci_text, recipes, reached)
+    orphans = [test for test in tests if test not in invocations]
+    print(f"\n==> A11: CI invokes harness self-tests ({len(tests)} self-test(s))")
+    for test in orphans:
+        findings.fail(
+            "A11",
+            test,
+            "no CI-reached command invokes this self-test.",
+        )
+    print(f"    {len(tests) - len(orphans)}/{len(tests)} self-tests are invoked.")
 
     # ── Verdict ───────────────────────────────────────────────────────────────
     print("")

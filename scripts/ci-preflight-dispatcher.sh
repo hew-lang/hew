@@ -1,4 +1,26 @@
 #!/usr/bin/env bash
+# ci-preflight-dispatcher.sh — classify the current diff and run the narrowest
+# sufficient set of checks for it.
+#
+# Every `make preflight` goes through here, so this file decides what a branch
+# is gated on before it is pushed. It reads the changed paths, picks one LANE
+# (the primary classification: docs, scripts-config, parser, types,
+# compiler-pipeline, runtime-net, cli, wasm, hew-tests, or the fail-closed
+# fallback), and appends side-channel gates for changes whose blast radius the
+# lane does not cover -- a structural ratchet outside the cargo dependency
+# graph, an ll-oracle golden the lane never diffs.
+#
+# The default when a path matches nothing is the fallback lane: the widest set,
+# not the narrowest. A path nobody classified is a path nobody reasoned about.
+#
+# Every selected command runs under a wall-clock budget scaled to the host's
+# parallelism, so a hang fails the preflight instead of holding it open.
+#
+# Usage:
+#   scripts/ci-preflight-dispatcher.sh [--dry-run] [--fail-fast] [--base <ref>]
+#   scripts/ci-preflight-dispatcher.sh --help
+#
+# Its own routing and timeout counterfactuals are `make test-build-harness`.
 
 set -euo pipefail
 
@@ -294,18 +316,23 @@ PREFLIGHT_FAILURE_LINE_RE='(^|[[:space:]])FAIL \[|^[[:space:]]*FAILED?([[:space:
 # match while exiting 0, and that each one still emits marked lines at all.
 PREFLIGHT_COUNTERFACTUAL_MARKER='CF-'
 
+extract_failure_lines() {
+    local log="$1"
+    local failure_line_re="${2:-$PREFLIGHT_FAILURE_LINE_RE}"
+    local counterfactual_marker="${3:-$PREFLIGHT_COUNTERFACTUAL_MARKER}"
+
+    [[ -s "$log" ]] || return 0
+    sed $'s/\033\\[[0-9;?]*[a-zA-Z]//g' "$log" \
+        | grep -v -E "^${counterfactual_marker}" \
+        | grep -E "$failure_line_re" || true
+}
+
 extract_first_failure() {
     local log="$1"
     local status="$2"
     local line=""
 
-    if [[ -s "$log" ]]; then
-        line="$(
-            sed $'s/\033\\[[0-9;?]*[a-zA-Z]//g' "$log" \
-                | grep -v -E "^${PREFLIGHT_COUNTERFACTUAL_MARKER}" \
-                | grep -m1 -E "$PREFLIGHT_FAILURE_LINE_RE" || true
-        )"
-    fi
+    line="$(extract_failure_lines "$log" | sed -n '1p')"
     line="${line//$'\r'/}"
     line="${line//$'\t'/ }"
     # Trim surrounding whitespace without spawning another process.
@@ -388,7 +415,7 @@ COUNTERFACTUAL_ROSTER=(
 )
 
 run_counterfactual_output_check() {
-    local cmd output offenders marked
+    local cmd output offenders marked log
     local status=0
     local failures=0
     local roster=("${COUNTERFACTUAL_ROSTER[@]}")
@@ -418,12 +445,15 @@ run_counterfactual_output_check() {
             failures=$(( failures + 1 ))
             continue
         fi
+        log="$(mktemp "${TMPDIR:-/tmp}/hew-counterfactual-output.XXXXXX")"
+        printf '%s\n' "$output" > "$log"
         offenders="$(
-            printf '%s\n' "$output" \
-                | sed $'s/\033\\[[0-9;?]*[a-zA-Z]//g' \
-                | grep -v -E "^${PREFLIGHT_COUNTERFACTUAL_MARKER}" \
-                | grep -E "$PREFLIGHT_FAILURE_LINE_RE" || true
+            extract_failure_lines \
+                "$log" \
+                "$PREFLIGHT_FAILURE_LINE_RE" \
+                "${PREFLIGHT_COUNTERFACTUAL_MARKER}"
         )"
+        rm -f "$log"
         marked="$(printf '%s\n' "$output" | grep -c -E "^${PREFLIGHT_COUNTERFACTUAL_MARKER}" || true)"
         if [[ -n "$offenders" ]]; then
             echo "    OFFENDS $cmd — passed while printing failure-shaped line(s):" >&2
@@ -1595,7 +1625,11 @@ assert_nextest_pin() {
     echo "cargo-nextest $installed satisfies the pinned $pin"
 }
 
-if [[ "$REQUIRES_COMPILE" == "true" ]]; then
+# A test-only command replacement executes no selected gate, so it must not
+# acquire a tool that only those replaced commands consume.  The routing result
+# still reports requires_compile above; only execution-time provisioning is
+# synthetic here.
+if [[ "$REQUIRES_COMPILE" == "true" && -z "${PREFLIGHT_TEST_COMMANDS:-}" ]]; then
     assert_nextest_pin
 fi
 

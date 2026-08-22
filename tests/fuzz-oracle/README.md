@@ -77,8 +77,8 @@ python3 scripts/fuzz/run-oracle.py --hew /path/to/hew --timeout 30
 
 ## Connecting fuzz campaigns to this oracle
 
-The generative campaign (`scripts/fuzz/compiler.py`) and the raw cargo-fuzz
-corpus find failures; this oracle permanently records and re-verifies them.
-The seam is **hand-promotion**: take a minimized failure from a campaign,
-add it to `regressions/`, register it in `expected-failures.txt`.  The
-generative campaign remains a manual tool; CI stays corpus-deterministic.
+The cargo-fuzz targets (`make fuzz-smoke`) find failures; this oracle
+permanently records and re-verifies them.  The seam is **hand-promotion**:
+take a minimized failure from a fuzz run, add it to `regressions/`, register
+it in `expected-failures.txt`.  Fuzzing stays exploratory; CI stays
+corpus-deterministic.

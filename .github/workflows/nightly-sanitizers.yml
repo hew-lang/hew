@@ -15,6 +15,49 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
+  # Forced-cancel composite gate — a TaskEntry adapter's cancel-exit must not
+  # publish a substitute composite return value as a task result.
+  #
+  # Nightly rather than per-PR: the gate needs its own libhew built with
+  # hew-runtime/forced-cancel-test into an isolated target directory, so it
+  # cannot share the PR build cache. The per-PR coverage of the surrounding
+  # paths is the IR-shape test (hew-codegen-rs/tests/emission/) and the
+  # non-cancelled e2e suite (hew-cli/tests/); neither can force the cancel
+  # edge, which is why this dynamic proof exists at all.
+  # ─────────────────────────────────────────────────────────────────────────
+  forced-cancel-composite:
+    name: Forced-cancel composite return (dynamic)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Install llvm-${{ env.LLVM_VERSION }} (clang for the link step)
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq llvm-${{ env.LLVM_VERSION }} clang-${{ env.LLVM_VERSION }} libpolly-${{ env.LLVM_VERSION }}-dev
+          sudo update-alternatives --install /usr/bin/clang clang \
+            /usr/bin/clang-${{ env.LLVM_VERSION }} 100
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          cache-shared-key: forced-cancel-gate
+
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: target/forced-cancel-gate/
+          key: forced-cancel-gate-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: forced-cancel-gate-${{ runner.os }}-
+
+      - name: Run the forced-cancel composite gate
+        run: make forced-cancel-composite-check
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Rust runtime ASan — memory safety for the actor runtime
   # ─────────────────────────────────────────────────────────────────────────
   rust-runtime-asan:

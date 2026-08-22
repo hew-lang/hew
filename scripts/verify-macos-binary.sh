@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# verify-macos-binary.sh — assert a macOS release binary is the one we meant to
+# ship: the expected architecture, correctly signed, and linked only against
+# libraries the minimum supported macOS provides.
+#
+# Called by release.yml on the built artifact, and by the release runbook on a
+# downloaded one. A binary that runs on the builder proves nothing about a user
+# machine with a different SDK; these are the properties that differ.
+#
+# Usage: scripts/verify-macos-binary.sh <path-to-macos-binary>
+
 set -euo pipefail
 
 if [ $# -ne 1 ]; then

@@ -58,6 +58,8 @@ Usage: python3 scripts/check-sandbox-parity-coverage.py [--verbose]
 from __future__ import annotations
 
 import re
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -67,7 +69,6 @@ from corpus_nonempty import assert_nonempty  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TESTS_DIR = REPO_ROOT / "hew-sandbox-wasm" / "tests"
 NEXTEST_TOML = REPO_ROOT / ".config" / "nextest.toml"
-MAKEFILE = REPO_ROOT / "Makefile"
 
 VM_MARKER_STRING = "hew-sandbox-vm"
 
@@ -186,18 +187,36 @@ def excludes_binary(filter_value: str, binary: str) -> bool:
 
 
 def sandbox_parity_test_flags() -> str:
-    makefile_text = MAKEFILE.read_text()
-    m = re.search(
-        r"^sandbox-parity:.*\n(?:.*\n)*?^\tcargo test -p hew-sandbox-wasm(.*)$",
-        makefile_text,
-        re.MULTILINE,
+    result = subprocess.run(
+        ["make", "--no-print-directory", "-n", "sandbox-parity"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
     )
-    if not m:
+    if result.returncode != 0:
         raise SystemExit(
-            "error: could not find `sandbox-parity`'s `cargo test -p "
-            "hew-sandbox-wasm` recipe line in Makefile."
+            "error: Make could not resolve the `sandbox-parity` authority:\n"
+            f"{result.stderr}"
         )
-    return m.group(1)
+    for line in result.stdout.splitlines():
+        try:
+            words = shlex.split(line)
+        except ValueError:
+            continue
+        for index in range(len(words) - 4):
+            if words[index : index + 5] == [
+                "cargo",
+                "test",
+                "-p",
+                "hew-sandbox-wasm",
+                "--test",
+            ]:
+                return " " + " ".join(words[index + 4 :])
+    raise SystemExit(
+        "error: the resolved `sandbox-parity` Make authority does not run "
+        "`cargo test -p hew-sandbox-wasm`."
+    )
 
 
 def main() -> int:

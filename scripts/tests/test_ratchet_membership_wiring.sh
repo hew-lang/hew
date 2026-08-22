@@ -35,48 +35,22 @@ assert_exact_source_line() {
     fi
 }
 
+# The four corpus ratchets share one set-comparison implementation
+# (scripts/corpus-ratchet.sh), so there is exactly one call site per direction
+# to pin instead of eight that could drift apart.
 # shellcheck disable=SC2016
-assert_exact_source_line scripts/extract-doc-fences.sh \
-    '    if ! line_set_contains "$EXPECTED_STR" "$name"; then' \
-    "doc ratchet expected-set lookup stays pipe-safe"
-# shellcheck disable=SC2016
-assert_exact_source_line scripts/extract-doc-fences.sh \
-    '    if ! line_set_contains "$ACTUAL_STR" "$name"; then' \
-    "doc ratchet actual-set lookup stays pipe-safe"
+assert_exact_source_line scripts/corpus-ratchet.sh \
+    '        if ! line_set_contains "$against" "$entry"; then' \
+    "corpus ratchet set difference stays pipe-safe"
 
+# The reporters intentionally re-run a known-failing source to print a compact
+# diagnostic.  The corpus sweep must not use `head` under `pipefail`: a source
+# with more than three diagnostic lines would receive SIGPIPE and make the
+# reporter exit 141 before its deliberate gate verdict.  Pin the draining `sed`
+# form.
 # shellcheck disable=SC2016
-assert_exact_source_line scripts/hew-suite-ratchet.sh \
-    '    if ! line_set_contains "$EXPECTED_STR" "$name"; then' \
-    "Hew-suite ratchet expected-set lookup stays pipe-safe"
-# shellcheck disable=SC2016
-assert_exact_source_line scripts/hew-suite-ratchet.sh \
-    '    if ! line_set_contains "$ACTUAL_STR" "$name"; then' \
-    "Hew-suite ratchet actual-set lookup stays pipe-safe"
-
-# shellcheck disable=SC2016
-assert_exact_source_line scripts/stdlib-ratchet.sh \
-    '    if ! line_set_contains "$EXPECTED_STR" "$path"; then' \
-    "stdlib ratchet expected-set lookup stays pipe-safe"
-# shellcheck disable=SC2016
-assert_exact_source_line scripts/stdlib-ratchet.sh \
-    '    if ! line_set_contains "$ACTUAL_STR" "$path"; then' \
-    "stdlib ratchet actual-set lookup stays pipe-safe"
-
-# shellcheck disable=SC2016
-assert_exact_source_line scripts/hew-corpus-check.sh \
-    '    if ! line_set_contains "$EXPECTED_STR" "$path"; then' \
-    "corpus ratchet expected-set lookup stays pipe-safe"
-# shellcheck disable=SC2016
-assert_exact_source_line scripts/hew-corpus-check.sh \
-    '    if ! line_set_contains "$ACTUAL_STR" "$path"; then' \
-    "corpus ratchet actual-set lookup stays pipe-safe"
-# The corpus reporter intentionally re-runs a known-failing source to print a
-# compact diagnostic.  It must not use `head` under `pipefail`: a source with
-# more than three diagnostic lines would receive SIGPIPE and make the reporter
-# exit 141 before its deliberate gate verdict.  Pin the draining `sed` form.
-# shellcheck disable=SC2016
-assert_exact_source_line scripts/hew-corpus-check.sh \
-    '        "$HEW_BIN" check "$REPO_ROOT/$path" 2>&1 | sed -n '\''1,3{s/^/    /;p;}'\'' || true' \
+assert_exact_source_line scripts/corpus-ratchet.sh \
+    '    "$HEW_BIN" check "$REPO_ROOT/$1" 2>&1 | sed -n '\''1,3{s/^/    /;p;}'\'' || true' \
     "corpus reporter drains diagnostics beyond its three-line display"
 
 echo ""

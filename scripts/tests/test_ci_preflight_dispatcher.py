@@ -140,16 +140,16 @@ def test_makefile_routes_to_scripts_config_profile() -> None:
     assert_comprehensive_profile(run_dispatcher("Makefile"))
 
 
-def test_undeclared_script_fails_closed_to_comprehensive() -> None:
-    """A script no gate declares as an input cannot be routed, so it runs everything.
+def test_unclassified_path_fails_closed_to_comprehensive() -> None:
+    """A path no gate declares as an input cannot be routed, so it runs everything.
 
     This is the fail-closed direction of the declaration rule, and the reason
     check-gate-reachability's A7 exists: leaving a script undeclared is a real
     cost, paid on every pull request that touches it.
     """
-    result = run_dispatcher("scripts/foo.sh")
+    result = run_dispatcher("unclassified/foo.txt")
     assert_comprehensive(result)
-    assert "undeclared: scripts/foo.sh" in result.stdout, result.stdout
+    assert "undeclared: unclassified/foo.txt" in result.stdout, result.stdout
 
 
 def test_nextest_config_routes_to_scripts_config_profile() -> None:
@@ -192,7 +192,10 @@ def test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps() ->
     ), comprehensive.stdout
 
     makefile = (ROOT / "Makefile").read_text()
-    assert re.search(r"^lint:.*\bstructural-lint\b", makefile, re.MULTILINE), makefile
+    assert re.search(r"^LINT_GATES \+= structural-lint$", makefile, re.MULTILINE), (
+        makefile
+    )
+    assert re.search(r"^lint:.*\$\$\(LINT_GATES\)", makefile, re.MULTILINE), makefile
 
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
     assert re.search(
@@ -918,6 +921,31 @@ def _string_literal_lines(text: str) -> set[int]:
     return lines
 
 
+_HEREDOC_OPEN = re.compile(
+    r"<<(-)?\s*(?:'([^']+)'|\"([^\"]+)\"|([A-Za-z_][A-Za-z0-9_]*))"
+)
+
+
+def _shell_heredoc_lines(text: str) -> set[int]:
+    """Line numbers occupied by shell here-document data."""
+    lines: set[int] = set()
+    delimiter: str | None = None
+    strip_tabs = False
+    for number, raw in enumerate(text.splitlines(), start=1):
+        if delimiter is not None:
+            lines.add(number)
+            candidate = raw.lstrip("\t") if strip_tabs else raw
+            if candidate == delimiter:
+                delimiter = None
+                strip_tabs = False
+            continue
+        match = _HEREDOC_OPEN.search(raw)
+        if match is not None:
+            strip_tabs = match.group(1) is not None
+            delimiter = next(group for group in match.groups()[1:] if group)
+    return lines
+
+
 def compiling_evidence(
     plan: str,
     read_plan: "Callable[[str], str | None]",
@@ -960,7 +988,9 @@ def compiling_evidence(
 
     while queue:
         origin, text, python = queue.pop(0)
-        data_lines = _string_literal_lines(text) if python else set()
+        data_lines = (
+            _string_literal_lines(text) if python else _shell_heredoc_lines(text)
+        )
         if python:
             # An argv recovered from the source is a command line, whatever its
             # layout, so it is read with the shell rules. The line rule below
@@ -971,12 +1001,12 @@ def compiling_evidence(
                     return f"{origin}: {command}"
                 follow(command)
         for number, raw in enumerate(text.splitlines(), start=1):
+            if number in data_lines:
+                continue
             line = raw.strip()
             if _is_message(line):
                 continue
             if python:
-                if number in data_lines:
-                    continue
                 # In a Python gate a cargo string is usually data — a fixture,
                 # an assertion, an error message. Only a line that hands work
                 # to a subprocess is running anything, and the same rule
@@ -2296,7 +2326,9 @@ def test_failing_command_emits_an_annotation_and_a_result_table() -> None:
     assert annotations[0].endswith("::error: cannot find value x"), annotations[0]
 
     assert "| Command | Elapsed | Result | First failure |" in summary, summary
-    assert "| `printf 'ok\\n'` | 0s | ok |  |" in summary, summary
+    assert re.search(
+        r"^\| `printf 'ok\\n'` \| \d+s \| ok \|  \|$", summary, re.MULTILINE
+    ), summary
     failing = next(line for line in summary.splitlines() if "FAILED (exit 4)" in line)
     assert "error: cannot find value x" in failing, failing
     assert "0 failure" not in summary, summary
@@ -2811,7 +2843,7 @@ def test_classifier_uses_only_declarations_and_the_positive_allowlist() -> None:
 def test_positive_no_gate_allowlist_stays_small() -> None:
     module = _gate_inputs_module()
     _gates, _globals, no_gate = module.parse_makefile((ROOT / "Makefile").read_text())
-    assert len(no_gate) == 18, no_gate
+    assert len(no_gate) == 17, no_gate
     markdown = [glob for glob in no_gate if glob.endswith(".md")]
     assert len(markdown) == 5, markdown
     assert all("*" not in glob and (ROOT / glob).is_file() for glob in markdown)
@@ -2829,7 +2861,11 @@ def test_unlisted_markdown_fails_closed() -> None:
 
 
 def test_doc_fence_corpus_remains_explicitly_declared() -> None:
-    for path in ("docs/hew-language-guide.md", "docs/specs/HEW-SPEC-2026.md"):
+    for path in (
+        "docs/hew-language-guide.md",
+        "docs/specs/HEW-SPEC-2026.md",
+        "docs/language/actors.hew",
+    ):
         result = run_dispatcher(path)
         assert_narrow(result)
         assert_gates(result, "test-doc-examples")
@@ -2883,7 +2919,7 @@ def test_gate_inputs_derives_a_scripts_helper_closure() -> None:
 
     # A sourced helper is reached the same way an executed one is: by being
     # named in the closure.
-    sourced = module.source_closure(ROOT, ["scripts/hew-corpus-check.sh"])
+    sourced = module.source_closure(ROOT, ["scripts/corpus-ratchet.sh"])
     assert "scripts/lib/line-set.sh" in sourced, sourced
 
 

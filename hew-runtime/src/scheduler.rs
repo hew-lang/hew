@@ -7219,13 +7219,18 @@ mod tests {
     #[test]
     fn freeing_an_actor_with_a_parked_ask_unblocks_the_asking_thread() {
         struct AskTarget(*mut HewActor);
+        struct AskChannel(*mut crate::reply_channel::HewReplyChannel);
         // SAFETY: the actor outlives the asking thread's use of it -- the thread
-        // only calls the C ABI entry point, and the free below cannot complete
-        // until that call has published its node and parked.
+        // reports submission complete before this test activates or frees it.
         unsafe impl Send for AskTarget {}
+        // SAFETY: the channel is internally synchronized and this test gives
+        // the asking thread exclusive ownership of its creator reference.
+        unsafe impl Send for AskChannel {}
 
         let _sched = NoWorkerSchedulerForTest::install();
         let baseline = crate::reply_channel::active_channel_count();
+        let channel = crate::reply_channel::hew_reply_channel_new();
+        assert!(!channel.is_null());
 
         // SAFETY: fresh mailbox owned by the actor; `hew_actor_free` reclaims it.
         let mailbox = unsafe { mailbox::hew_mailbox_new() };
@@ -7251,38 +7256,68 @@ mod tests {
         // SAFETY: `actor_ptr` is a freshly-boxed, fully-initialised actor.
         assert!(unsafe { crate::lifetime::live_actors::track_actor(actor_ptr) });
 
-        // A REAL blocking ask from another thread: it mints the channel,
-        // enqueues the node carrying it, and parks in `hew_reply_wait`.
+        // A REAL blocking ask from another thread, split at the public
+        // with-channel API so submission completion is an exact rendezvous.
+        // Mailbox length is only an observability count: the lock-free queue
+        // publishes it before the producer links the node, so a non-zero count
+        // does not authorize this test's manual activation.
         let target = AskTarget(actor_ptr);
+        let channel = AskChannel(channel);
+        let (submitted_tx, submitted_rx) = std::sync::mpsc::channel::<i32>();
         let (done_tx, done_rx) = std::sync::mpsc::channel::<bool>();
         let asker = std::thread::spawn(move || {
             let target = target;
-            // SAFETY: the actor is live and tracked until the ask has parked.
-            let reply = unsafe { crate::actor::hew_actor_ask(target.0, 1, ptr::null_mut(), 0) };
+            let channel = channel;
+            // SAFETY: the actor is live through the submission acknowledgement;
+            // the channel's creator reference belongs to this thread.
+            let submitted = unsafe {
+                crate::actor::hew_actor_ask_with_channel(target.0, 1, ptr::null_mut(), 0, channel.0)
+            };
+            let _ = submitted_tx.send(submitted);
+            let reply = if submitted == 0 {
+                // SAFETY: successful submission retained the queued sender
+                // reference; this thread still owns the creator reference.
+                unsafe { crate::reply_channel::hew_reply_wait(channel.0) }
+            } else {
+                ptr::null_mut()
+            };
             if !reply.is_null() {
                 // SAFETY: a deposited reply value is caller-owned.
                 unsafe { libc::free(reply) };
             }
-            // Sent AFTER the ask returns, so the caller-side
-            // `hew_reply_channel_free` has already run and the count read on the
-            // main thread sees the fully-settled refcount.
+            // SAFETY: release this thread's creator reference after the wait.
+            unsafe { crate::reply_channel::hew_reply_channel_free(channel.0) };
+            // Sent AFTER the wait and caller-side release, so the count read on
+            // the main thread sees the fully-settled refcount.
             let _ = done_tx.send(reply.is_null());
         });
 
+        assert_eq!(
+            submitted_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the asking thread must report submission completion"),
+            0,
+            "the ask submission succeeds"
+        );
+
+        // Dispatch on a separate thread and rendezvous on the registration the
+        // free path actually consumes, not on an approximate mailbox count.
+        let activation_target = AskTarget(actor_ptr);
+        let activation = std::thread::spawn(move || {
+            let activation_target = activation_target;
+            activate_actor(activation_target.0);
+        });
+        // SAFETY: the actor stays live until the activation joins and the free below.
+        let parked = unsafe { &*actor_ptr };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        // SAFETY: mailbox is live until the free below.
-        while unsafe { mailbox::hew_mailbox_len(mailbox) } == 0 {
+        while parked.parked_ask_channel.load(Ordering::Acquire).is_null() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the ask never reached the mailbox"
+                "the ask handler never registered its parked reply channel"
             );
             std::thread::yield_now();
         }
-
-        // Dispatch it: the handler suspends still owing the reply.
-        activate_actor(actor_ptr);
-        // SAFETY: the actor is live; nothing has freed it yet.
-        let parked = unsafe { &*actor_ptr };
+        activation.join().expect("ask activation panicked");
         assert_eq!(
             parked.actor_state.load(Ordering::Acquire),
             HewActorState::Suspended as i32,

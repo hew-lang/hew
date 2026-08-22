@@ -511,6 +511,10 @@ EXEMPT_GATES: dict[str, str] = {
         "compares two runs of the same program (-O0 against -O2). The oracle is "
         "self-referential; there is no committed artefact to regenerate"
     ),
+    "forced-cancel-composite-check": (
+        "checks emitted IR and live probe behaviour; it reads no committed derived "
+        "artefact"
+    ),
     # The four entries below share one reason, and it is the strongest reason a
     # comparison can have for staying outside the registry: their expectations
     # state INTENDED behaviour, so re-recording them from observed output would

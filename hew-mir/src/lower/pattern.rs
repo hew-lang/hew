@@ -4353,6 +4353,14 @@ impl Builder {
         // release discipline.
         let call_scrutinee_owner =
             self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
+        let call_scrutinee_owner_needs_arm_release =
+            call_scrutinee_owner.is_some() && matches!(scrutinee.kind, HirExprKind::Call { .. });
+        if call_scrutinee_owner_needs_arm_release {
+            let carrier = Place::Local(scrutinee_local);
+            self.owned_carrier_neutralize
+                .entry(carrier)
+                .or_insert(super::OwnedCarrierNeutralizeTarget::Whole(carrier));
+        }
         let weak_upgrade_owner_ty = matches!(
             &scrutinee.kind,
             HirExprKind::RcIntrinsic {
@@ -4461,6 +4469,28 @@ impl Builder {
                 }
             }
 
+            let wildcard_carrier_needs_arm_release = call_scrutinee_owner_needs_arm_release
+                && !matches!(
+                    wildcard.predicate,
+                    hew_hir::HirMatchArmPredicate::Binding { .. }
+                );
+            let carrier_body_start_block = self.current_block_id;
+            let carrier_body_start_instr = self.instructions.len();
+            let active_carrier_mark = self.active_generator_yield_values.len();
+            if wildcard_carrier_needs_arm_release {
+                if let Some((_, ty)) = &call_scrutinee_owner {
+                    self.active_generator_yield_values.push((
+                        self.active_scopes.len(),
+                        Place::Local(scrutinee_local),
+                        ty.clone(),
+                        crate::model::DropFnSpec::InPlace(
+                            crate::ownership::InPlaceReleaseKind::Enum,
+                        ),
+                        carrier_body_start_block,
+                        carrier_body_start_instr,
+                    ));
+                }
+            }
             let value = self.lower_value(&wildcard.body);
             if let Some(src) = value {
                 let src =
@@ -4469,6 +4499,20 @@ impl Builder {
                     dest: result_place,
                     src,
                 });
+            }
+            self.active_generator_yield_values
+                .truncate(active_carrier_mark);
+            if !self.cursor_unreachable && wildcard_carrier_needs_arm_release {
+                if let Some((binding, ty)) = &call_scrutinee_owner {
+                    self.emit_generator_yield_binding_drop(
+                        *binding,
+                        Place::Local(scrutinee_local),
+                        ty,
+                        carrier_body_start_block,
+                        carrier_body_start_instr,
+                        wildcard.body.site,
+                    );
+                }
             }
             // A body that does not diverge leaves the cursor reachable and
             // flows to the join with the arm's value (which may be a Unit
@@ -4640,6 +4684,7 @@ impl Builder {
             // Removed from `owned_locals` below so the function-scope drop
             // pass does not also fire (which would double-free).
             let mut generator_yield_drop_bindings = Vec::new();
+            let mut call_carrier_transferred_before_body = false;
             for binding in &arm.bindings {
                 let binding_ty = self.subst_ty(&binding.ty);
                 self.push_bind_statement(
@@ -4682,11 +4727,12 @@ impl Builder {
                         binding_ty.clone(),
                         warrant,
                     );
-                    // A Weak.upgrade match binder aliases the payload slot in
-                    // the fresh Option owner. The Option remains the sole owner
-                    // unless the binder is consumed, which neutralizes that
-                    // slot and changes this disposition to ConsumedAt.
-                    if weak_upgrade_owner_ty.is_some() {
+                    // A path-complete direct-call carrier release owns every
+                    // untransferred payload slot on the selected arm. A
+                    // Weak.upgrade shell likewise remains the sole owner. In
+                    // both cases the binder is an alias unless a consuming
+                    // use transfers the slot and changes its disposition.
+                    if call_scrutinee_owner_needs_arm_release || weak_upgrade_owner_ty.is_some() {
                         self.set_owned_local_disposition(binding.binding, Disposition::AliasOf);
                     }
                 }
@@ -4986,6 +5032,7 @@ impl Builder {
                     // carrier's recursive drop unsafe: the sibling wildcard
                     // still owns and releases its payload exactly once.
                     if call_carrier_needs_skipped_payload_owner {
+                        call_carrier_transferred_before_body = true;
                         self.push_move_out_neutralize(
                             source,
                             crate::model::NeutralizeAuthority::EphemeralTempConsume,
@@ -5074,12 +5121,31 @@ impl Builder {
 
             // The arm is now selected on every reaching path: clear the
             // carrier slots whose payloads this arm's binders own.
+            if !pending_sink_handoffs.is_empty() {
+                call_carrier_transferred_before_body = true;
+            }
             for instr in pending_sink_handoffs.drain(..) {
                 self.push_instr(instr);
             }
 
             let body_start_block_id = self.current_block_id;
             let body_start_instr_len = self.instructions.len();
+            // Register the whole carrier only when no pre-body handoff already
+            // discharged it. A transfer emitted while lowering the body is
+            // detected by the shared escape scan before any edge drop fires.
+            if call_scrutinee_owner_needs_arm_release
+                && !call_carrier_transferred_before_body
+                && generator_yield_drop_bindings.is_empty()
+            {
+                if let Some((binding, ty)) = &call_scrutinee_owner {
+                    generator_yield_drop_bindings.push((
+                        *binding,
+                        Place::Local(scrutinee_local),
+                        ty.clone(),
+                        arm.body.site,
+                    ));
+                }
+            }
 
             // Register the iteration's yielded heap values as active so a
             // `break`/`continue` inside the body frees them on its edge

@@ -7,6 +7,18 @@ use hew_mir::{
 use inkwell::values::AnyValue;
 
 #[test]
+fn target_machine_optimization_follows_requested_level() {
+    assert!(matches!(
+        target_machine_optimization_level(OptLevel::O0),
+        inkwell::OptimizationLevel::None
+    ));
+    assert!(matches!(
+        target_machine_optimization_level(OptLevel::O2),
+        inkwell::OptimizationLevel::Default
+    ));
+}
+
+#[test]
 fn actor_state_transaction_classifier_is_explicit_for_every_handler_phase() {
     for kind in [
         ActorHandlerKind::Receive,

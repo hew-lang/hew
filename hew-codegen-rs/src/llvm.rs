@@ -1501,7 +1501,7 @@ fn emit_object_in_process(
     let _guard = llvm_codegen_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let machine = target_machine_for_triple(triple)?;
+    let machine = target_machine_for_triple_with_opt_level(triple, opt_level)?;
     let ctx = Context::create();
     let llvm_mod = build_module_for_target(&ctx, pipeline, module_name, Some(&machine), debug)?;
     if let Some(llvm_out) = llvm_out {
@@ -1639,6 +1639,13 @@ fn native_emission_triple() -> String {
 }
 
 fn target_machine_for_triple(triple: &str) -> CodegenResult<TargetMachine> {
+    target_machine_for_triple_with_opt_level(triple, OptLevel::O0)
+}
+
+fn target_machine_for_triple_with_opt_level(
+    triple: &str,
+    opt_level: OptLevel,
+) -> CodegenResult<TargetMachine> {
     initialise_llvm_targets();
     let target_triple = TargetTriple::create(triple);
     let target = Target::from_triple(&target_triple).map_err(|e| CodegenError::TargetSetup {
@@ -1650,7 +1657,7 @@ fn target_machine_for_triple(triple: &str) -> CodegenResult<TargetMachine> {
             &target_triple,
             "generic",
             "",
-            inkwell::OptimizationLevel::Default,
+            target_machine_optimization_level(opt_level),
             RelocMode::PIC,
             CodeModel::Default,
         )
@@ -1658,6 +1665,13 @@ fn target_machine_for_triple(triple: &str) -> CodegenResult<TargetMachine> {
             triple: triple.to_string(),
             reason: "create_target_machine returned None".to_string(),
         })
+}
+
+fn target_machine_optimization_level(opt_level: OptLevel) -> inkwell::OptimizationLevel {
+    match opt_level {
+        OptLevel::O0 => inkwell::OptimizationLevel::None,
+        OptLevel::O2 => inkwell::OptimizationLevel::Default,
+    }
 }
 
 fn initialise_llvm_targets() {

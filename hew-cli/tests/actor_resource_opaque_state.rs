@@ -236,6 +236,7 @@ fn main() {{
     let output = Command::new(hew_binary())
         .args([
             "compile",
+            "--emit-llvm",
             "--emit-dir",
             dir.path().to_str().expect("emit dir utf-8"),
             source_path.to_str().expect("source path utf-8"),
@@ -363,6 +364,7 @@ fn main() {
     let output = Command::new(hew_binary())
         .args([
             "compile",
+            "--emit-llvm",
             "--emit-dir",
             dir.path().to_str().expect("emit dir utf-8"),
             source_path.to_str().expect("source path utf-8"),
@@ -429,6 +431,7 @@ fn main() {}
     let output = Command::new(hew_binary())
         .args([
             "compile",
+            "--emit-llvm",
             "--emit-dir",
             dir.path().to_str().expect("emit dir utf-8"),
             source_path.to_str().expect("source path utf-8"),

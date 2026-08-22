@@ -39,6 +39,7 @@ fn vec_of_exact_imported_opaque_resources_uses_exact_drop_only_descriptor() {
     let compiled = Command::new(hew_binary())
         .args([
             "compile",
+            "--emit-llvm",
             "--emit-dir",
             dir.path().to_str().expect("emit dir utf-8"),
             source.to_str().expect("source path utf-8"),

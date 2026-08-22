@@ -224,6 +224,36 @@ pub fn run_command_bounded(
     run_command_bounded_impl(command, label, timeout, None)
 }
 
+/// Result of compiling a Hew source while retaining its textual LLVM IR.
+#[derive(Debug)]
+pub struct CompileWithIr {
+    /// Captured compiler output.
+    pub output: Output,
+    /// Path to the explicitly requested LLVM IR sidecar.
+    pub ll_path: PathBuf,
+}
+
+/// Run a configured `hew compile` command with textual LLVM IR explicitly emitted.
+///
+/// The caller configures the source, output directory, and any target-specific
+/// arguments before calling this helper. `ll_path` identifies the expected
+/// sidecar for the supplied source.
+///
+/// # Errors
+///
+/// Returns an error if the compiler process cannot be spawned or awaited.
+pub fn compile_with_ir(
+    command: &mut Command,
+    ll_path: impl Into<PathBuf>,
+) -> std::io::Result<CompileWithIr> {
+    command.arg("--emit-llvm");
+    let output = command.output()?;
+    Ok(CompileWithIr {
+        output,
+        ll_path: ll_path.into(),
+    })
+}
+
 /// Run a command with stdin input plus captured stdout/stderr under a deadline.
 ///
 /// # Errors

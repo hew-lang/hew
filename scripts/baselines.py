@@ -644,6 +644,8 @@ def select(
 
 MAKE_RULE = re.compile(r"^([A-Za-z0-9_.\-/]+)\s*:(?!=)\s*(.*)$")
 MAKE_INVOCATION = re.compile(r"\bmake\b((?:\s+[^\s|;&]+)*)")
+MAKE_APPEND = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*\+=\s*(.*?)\s*$")
+MAKE_VARIABLE_REF = re.compile(r"\$\$?\(([A-Za-z_][A-Za-z0-9_]*)\)")
 
 
 def makefile_prerequisites() -> dict[str, list[str]]:
@@ -652,16 +654,29 @@ def makefile_prerequisites() -> dict[str, list[str]]:
     Deliberately a shallow parse: enough to answer "does this lane reach that
     gate", which is a containment question over explicit prerequisite lists.
     """
+    lines = (ROOT / "Makefile").read_text().splitlines()
+    appended: dict[str, list[str]] = {}
+    for line in lines:
+        if line.startswith("\t"):
+            continue
+        bare = line.split("#", 1)[0].strip()
+        match = MAKE_APPEND.match(bare)
+        if match is not None:
+            appended.setdefault(match.group(1), []).extend(match.group(2).split())
+
     edges: dict[str, list[str]] = {}
-    for line in (ROOT / "Makefile").read_text().splitlines():
+    for line in lines:
         if line.startswith("\t") or line.startswith("#"):
             continue
         match = MAKE_RULE.match(line)
         if not match:
             continue
-        target, prereqs = match.group(1), match.group(2)
+        target, prereqs = match.group(1), match.group(2).split("#", 1)[0]
         if target.startswith("."):
             continue
+        prereqs = MAKE_VARIABLE_REF.sub(
+            lambda ref: " ".join(appended.get(ref.group(1), ())), prereqs
+        )
         edges.setdefault(target, []).extend(
             word for word in prereqs.split() if not word.startswith("$")
         )

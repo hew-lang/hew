@@ -305,6 +305,16 @@ fn load_project_context(
     input: &str,
     options: Option<&FrontendOptions>,
 ) -> Result<ProjectContext, FrontendFailure> {
+    // A directory is a package root, not a source file. The CLI resolves
+    // package forms through the manifest before calling in here; anything else
+    // reaching this point gets a real diagnostic rather than the raw
+    // `Is a directory` OS error a bare read would surface.
+    if Path::new(input).is_dir() {
+        return Err(FrontendFailure::message_only(format!(
+            "Error: {input} is a directory, not a .hew source file\n  \
+             hint: a package directory is built with `hew build {input}`"
+        )));
+    }
     let source = std::fs::read_to_string(input)
         .map_err(|e| FrontendFailure::message_only(format!("Error: cannot read {input}: {e}")))?;
     let input_dir = Path::new(input).parent().unwrap_or(Path::new("."));

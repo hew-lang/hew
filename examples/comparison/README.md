@@ -32,6 +32,11 @@ Define a network message format.
 Run these commands from `examples/comparison/` (or `cd examples/comparison`
 from the repository root first).
 
+An ordinary Hew application uses `[package] main` and bare `hew build` from
+inside its package. This comparison directory contains one entry per language
+and no Hew manifest, so the Hew command deliberately uses the unchanged
+explicit-file form.
+
 ```bash
 cd examples/comparison
 

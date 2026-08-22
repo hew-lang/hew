@@ -1,9 +1,9 @@
-//! Building and staging a package's `[native]` Rust FFI library.
+//! Building a package's `[native]` Rust FFI library.
 //!
 //! A package may declare a Rust crate that backs its `extern` functions via a
 //! `[native]` section in `hew.toml` (see [`crate::manifest::NativeLib`]). This
-//! module compiles that crate and locates / stages the produced library so the
-//! compiler can link it when the package is imported.
+//! module compiles that crate and locates the produced library so the compiler
+//! can link it when the package is built or imported.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -132,29 +132,6 @@ fn cargo_target_dir(cargo_toml: &Path) -> Result<PathBuf, String> {
         .and_then(serde_json::Value::as_str)
         .map(PathBuf::from)
         .ok_or_else(|| "cargo metadata missing target_directory".to_string())
-}
-
-/// Copy a built artifact into `dest_dir`, returning the staged path.
-///
-/// # Errors
-///
-/// Returns an error when the destination can't be created or the copy fails.
-pub fn stage_native(artifact: &NativeArtifact, dest_dir: &Path) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(dest_dir)
-        .map_err(|e| format!("cannot create {}: {e}", dest_dir.display()))?;
-    let file_name = artifact
-        .path
-        .file_name()
-        .ok_or_else(|| "artifact has no file name".to_string())?;
-    let dest = dest_dir.join(file_name);
-    std::fs::copy(&artifact.path, &dest).map_err(|e| {
-        format!(
-            "cannot stage {} -> {}: {e}",
-            artifact.path.display(),
-            dest.display()
-        )
-    })?;
-    Ok(dest)
 }
 
 #[cfg(test)]

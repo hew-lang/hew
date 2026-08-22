@@ -3,6 +3,11 @@
 Three progressively larger examples that demonstrate how Hew's module system
 scales from a single file to a layered directory structure.
 
+In an application package, `hew.toml` names `main.hew` (implicitly or through
+`[package] main`) and the primary commands are simply `hew check`, `hew run`,
+and `hew build`. These three directories are documentation fixtures without
+individual manifests, so their command blocks name each entry file explicitly.
+
 ## Examples at a glance
 
 | # | Directory | What it teaches |

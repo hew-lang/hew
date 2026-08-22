@@ -13,6 +13,11 @@ use serde::{Deserialize, Serialize};
 /// rejected at manifest-load time.
 pub const SUPPORTED_EDITIONS: &[&str] = &["2026"];
 
+/// Entry-point source file assumed when `[package] main` is absent. `hew init`
+/// scaffolds this name, so the overwhelming majority of manifests never need
+/// the field.
+pub const DEFAULT_MAIN: &str = "main.hew";
+
 /// The edition used when `hew.toml` omits the `edition` field. During the
 /// cutover this defaults to the current edition; a future release will refuse
 /// to load a manifest without an explicit `edition` line.
@@ -191,18 +196,39 @@ pub struct Package {
     /// Minimum Hew compiler version required (e.g. `">=0.8.0"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hew: Option<String>,
+    /// Entry-point source file, relative to the directory holding `hew.toml`.
+    /// Absent means [`DEFAULT_MAIN`]; `hew build`/`hew run`/`hew check` with no
+    /// file argument compile this file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main: Option<String>,
+}
+
+impl Package {
+    /// The entry-point source file this package declares, relative to the
+    /// directory holding `hew.toml`. Falls back to [`DEFAULT_MAIN`].
+    #[must_use]
+    pub fn main_source(&self) -> &str {
+        self.main.as_deref().unwrap_or(DEFAULT_MAIN)
+    }
+
+    /// The binary name for this package: the last dotted segment of the
+    /// package name, so `hew.db.sqlite` builds `sqlite`.
+    #[must_use]
+    pub fn binary_name(&self) -> &str {
+        self.name.rsplit('.').next().unwrap_or(&self.name)
+    }
 }
 
 /// `[native]` — declares the Rust FFI library that backs this package's `extern`
-/// functions. `hew build` builds the crate at [`crate_dir`](NativeLib::crate_dir) and
-/// stages the produced `lib<lib>.a` (or `.dylib`); the compiler links it when the
-/// package is imported, so consumers never pass `--link-lib` manually.
+/// functions. `hew build` builds the crate at [`crate_dir`](NativeLib::crate_dir);
+/// the compiler links the produced `lib<lib>.a` (or `.dylib`) when the package is
+/// built or imported, so consumers never pass `--link-lib` manually.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct NativeLib {
     /// Path to the Cargo crate directory, relative to `hew.toml` (default `"."`).
     #[serde(rename = "crate", default = "default_native_crate")]
     pub crate_dir: String,
-    /// The `[lib] name` the crate produces; the staged artifact is `lib<lib>.a`/`.dylib`.
+    /// The `[lib]` name the crate produces as `lib<lib>.a` or `lib<lib>.dylib`.
     pub lib: String,
     /// Library kind: `"staticlib"` (default) or `"cdylib"`.
     #[serde(default = "default_native_kind")]
@@ -690,6 +716,7 @@ mod tests {
                 include: None,
                 edition: default_edition(),
                 hew: None,
+                main: None,
             },
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
@@ -748,6 +775,7 @@ mod tests {
                 include: None,
                 edition: default_edition(),
                 hew: None,
+                main: None,
             },
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
@@ -926,6 +954,7 @@ mod tests {
                 include: None,
                 edition: default_edition(),
                 hew: None,
+                main: None,
             },
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
@@ -954,6 +983,7 @@ mod tests {
                 include: None,
                 edition: default_edition(),
                 hew: None,
+                main: None,
             },
             dependencies: BTreeMap::new(),
             dev_dependencies: BTreeMap::new(),
@@ -997,6 +1027,7 @@ mod tests {
                 include: None,
                 edition: default_edition(),
                 hew: None,
+                main: None,
             },
             dependencies: deps,
             dev_dependencies: BTreeMap::new(),

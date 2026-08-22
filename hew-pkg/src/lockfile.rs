@@ -187,6 +187,7 @@ mod tests {
                 include: None,
                 edition: crate::manifest::default_edition(),
                 hew: None,
+                main: None,
             },
             dependencies: deps
                 .iter()

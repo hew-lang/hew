@@ -12,8 +12,9 @@ no separate package-manager binary.
 hew init myproject
 cd myproject
 
-hew check main.hew
-hew run main.hew
+hew check
+hew build
+hew run
 
 # Add a dependency
 hew add std::net::http --version "^1.0"
@@ -29,8 +30,19 @@ hew install
 - `hew init [NAME]` — Create a manifest-first Hew project (`hew.toml` + scaffold source + `.gitignore`)
   - `--lib` — Library project template
   - `--actor` — Actor project template
-- `hew check` — Validate your manifest (with no input file)
-- `hew build` — Build and stage this package's `[native]` FFI library (with no input file)
+- `hew check [FILE|DIR]` — Validate the manifest and type-check its entry point; omit the argument to use the enclosing package
+- `hew build [FILE|DIR]` — Build the package entry point, writing `<package-root>/<package-name>` by default
+- `hew run [FILE|DIR]` — Compile and run the package entry point
+
+The package form is the idiomatic workflow. Hew finds the nearest `hew.toml`
+from the current directory (or a directory argument), then compiles
+`[package] main`. That field defaults to `main.hew` relative to the manifest.
+For a dotted package name such as `hew.db.sqlite`, the default binary is named
+`sqlite`; pass `hew build -o PATH` to choose another output. An explicit `.hew`
+file keeps the file-oriented behaviour and names its output from the file stem.
+
+When a manifest declares `[native]`, `hew build` and `hew run` build that crate
+first and link its library as a prerequisite of the package program.
 
 ### Dependency Management
 

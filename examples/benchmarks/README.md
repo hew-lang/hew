@@ -83,6 +83,11 @@ else → 404.
 
 ### Building
 
+For a normal Hew application package, `[package] main` selects the server and
+bare `hew build` writes the package-named binary in the package root. This
+benchmark directory holds two independent Hew servers beside other languages,
+so the commands below use the unchanged explicit-file form to select each one.
+
 ```bash
 cd examples/benchmarks
 

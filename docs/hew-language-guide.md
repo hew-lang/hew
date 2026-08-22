@@ -5,21 +5,32 @@ A reference for writing correct idiomatic Hew. Every example below was executed 
 ## Toolchain quick-start
 
 ```
-# Run a program
-hew run hello.hew
+# Scaffold an idiomatic package, then work from anywhere inside it
+hew init myproject
+cd myproject
+
+# Check, build, and run the entry point from hew.toml
+hew check
+hew build
+hew run
 
 # Pass arguments to your program (the -- separator is required)
-hew run hello.hew -- Alice 42
+hew run -- Alice 42
 
-# Scaffold a new project (creates main.hew; see examples/ for patterns)
-hew init myproject
-
-# Build a standalone binary
-hew build hello.hew
-
-# Check for errors without running
+# Explicit-file forms remain available for standalone sources
 hew check hello.hew
+hew build hello.hew
+hew run hello.hew
 ```
+
+`hew build`, `hew run`, and `hew check` locate the nearest `hew.toml` by
+walking up from the current directory. You can also name a package directory,
+as in `hew build .` or `hew build path/to/package`. The optional
+`[package] main` field selects an entry point relative to the manifest and
+defaults to `main.hew`. A build writes the binary into the package root, named
+after the last dotted component of the package name; `-o PATH` overrides it.
+If the package declares `[native]`, Hew builds that crate first and links it as
+a prerequisite.
 
 The `--` separator is mandatory when passing program arguments — everything before `--` is parsed as `hew run` options, and everything after is forwarded to your program as `os.args()`. Without `--`, unrecognised flags produce a usage error.
 

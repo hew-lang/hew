@@ -2339,6 +2339,7 @@ def main() -> int:
         for selection_name, probe_path in (
             ("fallback", "some-unclassified-root-file.txt"),
             ("scripts-config", "scripts/example.sh"),
+            ("counterfactual", "scripts/lib/counterfactual.sh"),
         ):
             selection = subprocess.run(
                 [

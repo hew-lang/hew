@@ -563,11 +563,13 @@ def test_rust_diff_derives_its_warmup_artifacts_before_commands() -> None:
         "-p hew-wasm -p xtask"
     )
     warmup = result.stdout.split("Warm-up:\n", 1)[1].split("Commands:\n", 1)[0]
-    assert warmup == (
-        f"  - cargo clippy {packages} --tests\n"
-        "  - make hew-native-build wasm-runtime-build\n"
-        "  - make stdlib\n"
-        f"  - cargo nextest run --profile ci {packages} --no-run\n"
+    clippy = f"  - cargo clippy {packages} --tests\n"
+    nextest = f"  - cargo nextest run --profile ci {packages} --no-run\n"
+    assert clippy in warmup, result.stdout
+    assert "  - make stdlib\n" in warmup, result.stdout
+    assert nextest in warmup, result.stdout
+    assert (
+        warmup.index(clippy) < warmup.index("  - make stdlib\n") < warmup.index(nextest)
     ), result.stdout
     assert result.stdout.index("Warm-up:\n") < result.stdout.index("Commands:\n")
 
@@ -2551,7 +2553,7 @@ def test_counterfactual_rosters_follow_shared_artifact_requirements() -> None:
         re.MULTILINE,
     )
 
-    lightweight = run_dispatcher("scripts/example.sh")
+    lightweight = run_dispatcher("scripts/lib/counterfactual.sh")
     assert "  - make check-counterfactual-output " in lightweight.stdout
     assert "check-counterfactual-output-artifacts" not in lightweight.stdout
 

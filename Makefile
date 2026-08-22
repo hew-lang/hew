@@ -1430,6 +1430,13 @@ test-check-gate-reachability-build:
 check-counterfactual-output:
 	scripts/ci-preflight-dispatcher.sh --check-counterfactual-output
 
+# inputs: scripts/ci-preflight-dispatcher.sh scripts/lib/counterfactual.sh
+# inputs: scripts/fuzz/oracle-selftest.sh scripts/ll-identity-selftest.sh
+# inputs: hew-testutil/shared-test-artifacts.tsv
+# preflight: comprehensive-only-no-direct — requires the shared test-artifact builder
+check-counterfactual-output-artifacts: $(LIBHEW_READY)
+	scripts/ci-preflight-dispatcher.sh --check-counterfactual-output --shared-artifact-gates
+
 # Validate the dispatcher ahead of the counterfactual gate's timeout budget.
 check-counterfactual-output-build:
 	bash -n scripts/ci-preflight-dispatcher.sh

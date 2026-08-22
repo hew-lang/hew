@@ -385,7 +385,7 @@ stdlib-build: stdlib
 # possibly space-bearing output path back into Make's target graph.
 .PHONY: libhew-debug libhew-test-targets
 libhew-debug: $(LIBHEW_SRCS)
-	$(LIBHEW_FRESHNESS_SCRIPT) build --debug-dir "$(DEBUG_DIR)" -- cargo build -p hew-lib $(CARGO_TARGET_FLAG)
+	env -u HEW_TEST_NO_BUILD $(LIBHEW_FRESHNESS_SCRIPT) build --debug-dir "$(DEBUG_DIR)" -- cargo build -p hew-lib $(CARGO_TARGET_FLAG)
 
 # Native cross-arch link tests consume an opposite-architecture slice from
 # Cargo's shared target directory. Build it serially after the certified host

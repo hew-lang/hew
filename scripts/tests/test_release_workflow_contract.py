@@ -1127,7 +1127,7 @@ def test_contract_oracle_runs_in_required_ci() -> None:
     ci = CI_WORKFLOW.read_text()
     assert "'.github/workflows/release.yml'" in ci
     assert 'scripts/ci-preflight-dispatcher.sh "${args[@]}"' in ci
-    assert "args=(--base origin/main)" in ci
+    assert 'args=(--base "${base_ref}")' in ci
     dispatched = subprocess.run(
         [
             "bash",
@@ -1172,17 +1172,46 @@ RUST_TEST_COMMAND = re.compile(
 )
 
 
+def workflow_steps(job: str) -> list[str]:
+    """Return the step blocks from one top-level GitHub Actions job."""
+    starts = list(re.finditer(r"^      - ", job, re.MULTILINE))
+    return [
+        job[
+            start.start() : starts[index + 1].start()
+            if index + 1 < len(starts)
+            else len(job)
+        ]
+        for index, start in enumerate(starts)
+    ]
+
+
 def assert_ci_rust_tests_use_prebuilt_shared_artifact(ci: str) -> None:
     """Require one certified libhew build before each CI Rust test runner."""
     workflow_env = ci[: ci.index("jobs:\n")]
-    assert workflow_env.count('HEW_TEST_NO_BUILD: "1"') == 1
+    assert "HEW_TEST_NO_BUILD" not in workflow_env
 
     direct_test_jobs = set()
     for name, job in workflow_jobs(ci).items():
+        job_header = job[: job.index("    steps:\n")] if "    steps:\n" in job else job
+        assert "HEW_TEST_NO_BUILD" not in job_header, (
+            f"{name} sets the verify-only environment at job scope"
+        )
+
+        for step in workflow_steps(job):
+            if "run: make stdlib" in step:
+                assert "HEW_TEST_NO_BUILD" not in step, (
+                    f"{name}'s shared-artifact build inherits the verify-only environment"
+                )
+
         test_commands = list(RUST_TEST_COMMAND.finditer(job))
         if not test_commands:
             continue
         direct_test_jobs.add(name)
+        for step in workflow_steps(job):
+            if RUST_TEST_COMMAND.search(step):
+                assert 'HEW_TEST_NO_BUILD: "1"' in step, (
+                    f"{name}'s direct Rust test step is not verify-only"
+                )
         build = "run: make stdlib"
         assert job.count(build) == 1, f"{name} must build libhew exactly once"
         assert job.index(build) < test_commands[0].start(), (
@@ -1220,6 +1249,45 @@ def test_ci_shared_artifact_build_mutations_are_rejected() -> None:
     except AssertionError:
         return
     raise AssertionError("missing CI shared-artifact builds escaped the contract")
+
+
+def test_ci_verify_only_scope_mutations_are_rejected() -> None:
+    ci = CI_WORKFLOW.read_text()
+    mutations = (
+        ci.replace(
+            "    env:\n      RUN_CODE_PATH:",
+            '    env:\n      HEW_TEST_NO_BUILD: "1"\n      RUN_CODE_PATH:',
+            1,
+        ),
+        ci.replace(
+            "      - name: Build shared Rust test artifact\n        run: make stdlib",
+            "      - name: Build shared Rust test artifact\n"
+            "        env:\n"
+            '          HEW_TEST_NO_BUILD: "1"\n'
+            "        run: make stdlib",
+            1,
+        ),
+    )
+    for mutated in mutations:
+        try:
+            assert_ci_rust_tests_use_prebuilt_shared_artifact(mutated)
+        except AssertionError:
+            continue
+        raise AssertionError(
+            "a broadened CI verify-only environment escaped the contract"
+        )
+
+
+def test_docs_and_scripts_uses_the_selector_diff_base() -> None:
+    ci = CI_WORKFLOW.read_text()
+    selector = workflow_job(ci, "changes")
+    lightweight = workflow_job(ci, "docs-and-scripts")
+    for job in (selector, lightweight):
+        assert "BASE_SHA: ${{ github.event.pull_request.base.sha }}" in job
+        assert 'base_ref="${BASE_SHA}"' in job
+        assert "base_ref=HEAD^" in job
+    assert '--dry-run --base "${base_ref}"' in selector
+    assert 'args=(--base "${base_ref}")' in lightweight
 
 
 def assert_binaryen_downloader_contract(downloader: str) -> None:

@@ -41,9 +41,6 @@ env:
   # x86_64-windows.zip.
   WASMTIME_VERSION: "v47.0.2"
   CARGO_TERM_COLOR: always
-  # Test processes consume shared Cargo artifacts read-only. Jobs that run
-  # Rust tests publish and certify libhew through Make before starting them.
-  HEW_TEST_NO_BUILD: "1"
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
@@ -245,9 +242,15 @@ jobs:
 
       - name: Run change-scoped checks
         if: needs.changes.outputs.selected_compile != 'true' && (needs.changes.outputs.docs == 'true' || needs.changes.outputs.scripts == 'true')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          args=(--base origin/main)
+          base_ref="${BASE_SHA}"
+          if [[ -z "${base_ref}" ]]; then
+            base_ref=HEAD^
+          fi
+          args=(--base "${base_ref}")
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             args+=(--fail-fast)
           fi
@@ -1082,6 +1085,8 @@ jobs:
         # hew-cabi excluded — its #[no_mangle] symbols conflict with hew-runtime
         # when both link into a test binary.
         if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST != 'true'
+        env:
+          HEW_TEST_NO_BUILD: "1"
         run: >-
           cargo nextest run
           -p hew-runtime
@@ -1103,6 +1108,8 @@ jobs:
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests run without an explicit flag.
         if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST == 'true'
+        env:
+          HEW_TEST_NO_BUILD: "1"
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm
@@ -1232,6 +1239,8 @@ jobs:
         # The macOS leak-oracle authority is explicit local macOS validation
         # before release; Linux supplies structural/ASan coverage where applicable.
         if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST != 'true'
+        env:
+          HEW_TEST_NO_BUILD: "1"
         run: >-
           cargo nextest run
           -p hew-runtime
@@ -1254,6 +1263,8 @@ jobs:
         # The macOS leak-oracle authority is explicit local macOS validation
         # before release; Linux supplies structural/ASan coverage where applicable.
         if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST == 'true'
+        env:
+          HEW_TEST_NO_BUILD: "1"
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm

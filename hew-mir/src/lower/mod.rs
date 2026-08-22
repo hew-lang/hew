@@ -797,6 +797,10 @@ struct Builder {
     /// registration. Carried as a side-table (not a carrier/Terminator field) so
     /// the eight `Suspending*` carriers stay unchanged (codegen-locals shape).
     pub(crate) await_deadline_ns: HashMap<u32, i64>,
+    /// Result-carrier locals minted by actor asks. Pattern lowering uses this
+    /// identity to apply the ask carrier's payload-transfer cleanup without
+    /// extending that protocol to unrelated enum-producing calls.
+    pub(crate) actor_ask_result_locals: HashSet<u32>,
     /// Maps the id of a basic block that ends in one of the ten collapsed
     /// suspension carriers to the carrier's distinguishing payload
     /// ([`SuspendKind`]). Populated at each `finish_current_block(Suspending*)`
@@ -6521,8 +6525,85 @@ fn prepare_body_transfers(blocks: &mut Vec<BasicBlock>, builder: &mut Builder) {
     neutralize_aggregate_member_sources(&mut *blocks, builder);
     neutralize_returned_aggregate_handle_sources(&mut *blocks, builder);
     neutralize_divergent_selection_sources(&mut *blocks, builder, &projection_tainted);
+    release_partially_transferred_return_carriers(&mut *blocks, builder);
     release_cloned_collection_result_temps(&mut *blocks, builder);
     release_last_borrowed_typed_owners(&mut *blocks, builder);
+}
+
+/// Release the remaining slots of an owned enum carrier after one selected
+/// payload transfers into the function return value.
+///
+/// A `NeutralizePayloadSlot` rooted in a `MachineVariant` is a measured partial
+/// transfer: the returned payload owns the cleared slot, while the carrier
+/// still owns its shell and every untouched slot. Scope-exit elaboration can
+/// conservatively classify the same move as a whole-owner escape and omit the
+/// carrier from an early-return plan. Close that gap directly in the primitive
+/// stream, using the neutralize authority itself as the transfer fact and the
+/// structural local type as the release authority. Parameters remain
+/// caller-owned and keep their separate terminal snapshot protocol.
+fn release_partially_transferred_return_carriers(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    for block in blocks {
+        if !matches!(block.terminator, Terminator::Return) {
+            continue;
+        }
+        let transferred_roots: Vec<(u32, ResolvedTy)> = block
+            .instructions
+            .iter()
+            .filter_map(|instr| match instr {
+                Instr::NeutralizePayloadSlot {
+                    place: Place::MachineVariant { local, .. },
+                    ..
+                } if !builder.parameter_locals.contains(local)
+                    && builder.actor_ask_result_locals.contains(local) =>
+                {
+                    let ty = builder.locals.get(*local as usize)?;
+                    let owns_heap = crate::model::ty_owns_heap_mir(
+                        ty,
+                        &builder.record_field_orders,
+                        &builder.enum_layouts,
+                    );
+                    let is_enum = matches!(ty, ResolvedTy::Named { name, args, .. }
+                        if crate::model::find_enum_layout(name, args, &builder.enum_layouts)
+                            .is_some());
+                    (owns_heap && is_enum).then(|| (*local, ty.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        for (local, ty) in transferred_roots {
+            let already_released = block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::Drop {
+                        place: Place::Local(drop_local),
+                        ..
+                    } if *drop_local == local
+                ) || matches!(
+                    instr,
+                    Instr::ValueSnapshotDrop {
+                        value: Place::Local(drop_local),
+                        ..
+                    } if *drop_local == local
+                )
+            });
+            if already_released {
+                continue;
+            }
+            let insert_at = block.instructions.len();
+            shift_instr_spans_on_insert(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(insert_at).unwrap_or(u32::MAX),
+            );
+            block.instructions.push(Instr::Drop {
+                place: Place::Local(local),
+                ty,
+                drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                    crate::ownership::InPlaceReleaseKind::Enum,
+                )),
+            });
+        }
+    }
 }
 
 /// Which body-kind-specific splices [`finalize_body`] runs on top of the shared

@@ -262,6 +262,51 @@ pub(super) fn elaborate(
             .flatten()
             .copied(),
     );
+    // A carrier with a projected payload transfer and an explicit tag-aware
+    // shell drop uses the same null-after-transfer protocol on every exit.
+    // Re-admit that exact binding for its ordinary scope and loop-edge plans:
+    // transferred paths see a null slot, while paths that keep the payload
+    // still perform the required release.
+    let partially_transferred_carriers: HashSet<u32> = checked
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.terminator, Terminator::Return))
+        .flat_map(|block| {
+            block.instructions.iter().filter_map(|instruction| {
+                let local = match instruction {
+                    Instr::NeutralizePayloadSlot {
+                        place: Place::MachineVariant { local, .. },
+                        ..
+                    } => *local,
+                    _ => return None,
+                };
+                block
+                    .instructions
+                    .iter()
+                    .any(|candidate| {
+                        matches!(
+                            candidate,
+                            Instr::Drop {
+                                place: Place::Local(drop_local),
+                                drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                                    crate::ownership::InPlaceReleaseKind::Enum,
+                                )),
+                                ..
+                            } if *drop_local == local
+                        )
+                    })
+                    .then_some(local)
+            })
+        })
+        .filter(|local| builder.actor_ask_result_locals.contains(local))
+        .collect();
+    enum_composite_drop_allowed.extend(builder.binding_locals.iter().filter_map(
+        |(binding, place)| {
+            base_local(*place)
+                .filter(|local| partially_transferred_carriers.contains(local))
+                .map(|_| *binding)
+        },
+    ));
 
     // Machine-typed owned locals. A machine value is `ValueClass::Unknown`, so
     // before this derivation its binding fell through every drop class and the
@@ -3243,30 +3288,14 @@ pub(super) fn validate_obligation_balance(
                 .map(|ty| (root, format!("{ty}")))
         })
         .collect();
-    let call_mint_sites: HashSet<SiteId> = builder
-        .call_scrutinee_diagnostics
-        .values()
-        .map(|(site, _)| *site)
-        .collect();
-    let mut findings = validate_obligation_balance_with(
+    validate_obligation_balance_with(
         elab,
         &raw.blocks,
         &raw.suspend_kinds,
         &tracked,
         (&local_types, &mint_sites),
         &builder.parameter_locals,
-    );
-    for finding in &mut findings {
-        if let MirCheck::ObligationUnderReleased { site, hard, .. } = finding {
-            // A typed direct-call carrier that survives the complete alias
-            // and cleanup construction has no safe release proof. Reject that
-            // call rather than compiling a known carrier leak.
-            if call_mint_sites.contains(site) {
-                *hard = true;
-            }
-        }
-    }
-    findings
+    )
 }
 
 /// Decomposed core of [`validate_obligation_balance`] — the unit-test entry

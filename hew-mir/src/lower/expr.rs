@@ -2382,6 +2382,14 @@ impl Builder {
                                     .insert((self.current_block_id, self.instructions.len()));
                             }
                             self.push_instr(Instr::Move { dest: slot, src });
+                            if let Place::Local(src_local) = src {
+                                if self.actor_ask_result_locals.contains(&src_local) {
+                                    let Place::Local(slot_local) = slot else {
+                                        unreachable!("alloc_local returns Place::Local");
+                                    };
+                                    self.actor_ask_result_locals.insert(slot_local);
+                                }
+                            }
                             self.binding_locals.insert(binding.id, slot);
                             if let Some(source_binding) = for_await_handoff_source {
                                 if self.binding_locals.get(&source_binding) == Some(&src) {

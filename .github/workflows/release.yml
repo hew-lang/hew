@@ -1583,12 +1583,14 @@ jobs:
     needs: release
     runs-on: ubuntu-24.04
     if: ${{ !cancelled() && needs.release.result == 'success' }}
-    # The downstream publish path is bounded at 5 + 5 + 45 + 30 + 5 minutes
-    # across its authority, contract-verify, smoke, publish, and result jobs
-    # (90 minutes sequential worst case). Leave another 30 minutes for dispatch
-    # visibility and runner scheduling while still failing closed. The image
-    # assertion's own deadline is carved out of the same budget per mode.
+    # The acquisition step establishes one absolute deadline from this budget.
+    # Dispatch visibility, runner scheduling, the downstream run, and polling
+    # all spend the same clock, so independently configured windows cannot
+    # overcommit the job timeout.
     timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: read
 
     steps:
       - name: Resolve release commit identity
@@ -1614,20 +1616,18 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Keep the arithmetic here as the single authority for the assertion
+          # clock. The contract test pins JOB_TIMEOUT_MINUTES to the job timeout.
+          JOB_TIMEOUT_MINUTES=120
+          FINALIZATION_RESERVE_MINUTES=5
+          ASSERTION_BUDGET_MINUTES=$((JOB_TIMEOUT_MINUTES - FINALIZATION_RESERVE_MINUTES))
+          ASSERTION_DEADLINE_EPOCH=$(($(date +%s) + ASSERTION_BUDGET_MINUTES * 60))
+
           # No default and no skip: an unset or unrecognized mode is a release
           # configuration error, and guessing one would publish nothing while
           # reporting success.
           case "${PLAYGROUND_PUBLISH_MODE:-}" in
-            actions)
-              # The dispatched run is watched to completion first, so the image
-              # is already published by the time the assertion starts.
-              deadline=25
-              ;;
-            local)
-              # Nothing is dispatched; the whole remaining job budget is the
-              # window for the maintainer's publish to land.
-              deadline=110
-              ;;
+            actions | local) ;;
             *)
               echo "::error::vars.PLAYGROUND_PUBLISH_MODE must be exactly 'actions' or 'local'; got '${PLAYGROUND_PUBLISH_MODE:-<unset>}'"
               exit 1
@@ -1635,7 +1635,8 @@ jobs:
           esac
           {
             echo "mode=${PLAYGROUND_PUBLISH_MODE}"
-            echo "assert_deadline_minutes=${deadline}"
+            echo "assert_deadline_epoch=${ASSERTION_DEADLINE_EPOCH}"
+            echo "assert_budget_minutes=${ASSERTION_BUDGET_MINUTES}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Checkout release machinery
@@ -1645,6 +1646,7 @@ jobs:
           path: release-machinery
 
       - name: Validate playground GitHub App configuration
+        if: steps.acquisition.outputs.mode == 'actions'
         shell: bash
         env:
           PLAYGROUND_APP_ID: ${{ secrets.PLAYGROUND_APP_ID }}
@@ -1652,15 +1654,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Required in both acquisition modes: the App token dispatches the
-          # playground build in `actions` mode and reads the playground's
-          # container package in either mode.
           if [[ -z "${PLAYGROUND_APP_ID}" || -z "${PLAYGROUND_APP_PRIVATE_KEY}" ]]; then
             echo "::error::The playground release image requires secrets.PLAYGROUND_APP_ID and secrets.PLAYGROUND_APP_PRIVATE_KEY; configure both before running a release"
             exit 1
           fi
 
       - name: Mint playground GitHub App token
+        if: steps.acquisition.outputs.mode == 'actions'
         id: playground-app-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349  # v2.2.2
         with:
@@ -1770,15 +1770,17 @@ jobs:
         shell: bash
         env:
           HEW_SHA: ${{ steps.release-commit.outputs.hew_sha }}
-          DEADLINE_MINUTES: ${{ steps.acquisition.outputs.assert_deadline_minutes }}
+          DEADLINE_EPOCH: ${{ steps.acquisition.outputs.assert_deadline_epoch }}
         run: |
           set -euo pipefail
 
           VERSION="${RELEASE_TAG#v}"
+          REMAINING_SECONDS=$((DEADLINE_EPOCH - $(date +%s)))
+          REMAINING_MINUTES=$(((REMAINING_SECONDS + 59) / 60))
           echo "Acquisition mode is 'local': no playground workflow was dispatched."
           echo "Publish the release image from a hew-lang/playground checkout:"
           echo "  Run the playground checkout's release-publish target with HEW_SHA=${HEW_SHA} HEW_VERSION=${VERSION}"
-          echo "This job waits up to ${DEADLINE_MINUTES}m for that image and fails if it does not arrive."
+          echo "This job has up to ${REMAINING_MINUTES}m remaining for that image and fails if it does not arrive."
 
       - name: Assert release image exists and binds the release commit
         # Runs on every acquisition mode, including one whose acquisition step
@@ -1790,8 +1792,9 @@ jobs:
           IMAGE_REPOSITORY: hew-lang/playground
           IMAGE_TAG: ${{ env.RELEASE_TAG }}
           EXPECTED_REVISION: ${{ steps.release-commit.outputs.hew_sha }}
-          REGISTRY_TOKEN: ${{ steps.playground-app-token.outputs.token }}
-          DEADLINE_MINUTES: ${{ steps.acquisition.outputs.assert_deadline_minutes }}
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_USERNAME: ${{ github.actor }}
+          DEADLINE_EPOCH: ${{ steps.acquisition.outputs.assert_deadline_epoch }}
         run: release-machinery/scripts/assert-playground-release-image.sh
 
   # ─────────────────────────────────────────────────────────────────────────

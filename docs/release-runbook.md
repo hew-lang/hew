@@ -233,6 +233,10 @@ but every arm must succeed before the graph rejoins:
      The job logs the exact invocation and fails if the
      image does not arrive. Then verify the published image, API, and
      `hew run` smoke path against the candidate version.
+     Running `scripts/assert-playground-release-image.sh` outside Actions
+     requires `GHCR_USERNAME` and `GHCR_TOKEN`; the token must be a classic
+     GitHub PAT with the `read:packages` scope (and organization SSO
+     authorization when the organization requires it).
 5. Only after both arms are green, pin the candidate and cut over the banner in
    `hew.sh` and `hew.run`.
 6. Rebuild Android from the tagged candidate and verify its artifact.

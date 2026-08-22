@@ -10,7 +10,12 @@ import tarfile
 import tempfile
 import textwrap
 import tomllib
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+from time import time
+from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -137,9 +142,12 @@ def run_release_image_assertion(env_overrides: dict) -> subprocess.CompletedProc
         "IMAGE_REPOSITORY",
         "IMAGE_TAG",
         "EXPECTED_REVISION",
-        "REGISTRY_TOKEN",
+        "GHCR_TOKEN",
+        "GHCR_USERNAME",
         "DEADLINE_MINUTES",
+        "DEADLINE_EPOCH",
         "IMAGE_REGISTRY",
+        "IMAGE_REGISTRY_SCHEME",
         "POLL_INTERVAL_SECONDS",
     ):
         env.pop(key, None)
@@ -152,6 +160,85 @@ def run_release_image_assertion(env_overrides: dict) -> subprocess.CompletedProc
         capture_output=True,
         text=True,
     )
+
+
+@contextmanager
+def canned_registry(responses: dict[str, list[tuple[int, dict]]]):
+    requests: list[str] = []
+    counts: dict[str, int] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            path = urlparse(self.path).path
+            requests.append(path)
+            sequence = responses.get(path, [(404, {"error": "not found"})])
+            index = counts.get(path, 0)
+            counts[path] = index + 1
+            status, body = sequence[min(index, len(sequence) - 1)]
+            encoded = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        yield server.server_address[1], requests
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def image_manifest(config_digest: str) -> dict:
+    return {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "digest": config_digest,
+            "size": 1,
+        },
+        "layers": [],
+    }
+
+
+def image_config(revision: str) -> dict:
+    return {
+        "architecture": "amd64",
+        "os": "linux",
+        "config": {"Labels": {"org.opencontainers.image.revision": revision}},
+    }
+
+
+def run_canned_release_image_assertion(
+    responses: dict[str, list[tuple[int, dict]]],
+) -> tuple[subprocess.CompletedProcess, list[str]]:
+    responses = {
+        "/token": [(200, {"token": "pull-token"})],
+        **responses,
+    }
+    with canned_registry(responses) as (port, requests):
+        result = run_release_image_assertion(
+            {
+                "IMAGE_REPOSITORY": "hew-lang/playground",
+                "IMAGE_TAG": "v0.6.0-rc2",
+                "EXPECTED_REVISION": HEW_SHA,
+                "GHCR_TOKEN": "test-token",
+                "GHCR_USERNAME": "test-user",
+                "DEADLINE_MINUTES": "1",
+                "IMAGE_REGISTRY": f"127.0.0.1:{port}",
+                "IMAGE_REGISTRY_SCHEME": "http",
+                "POLL_INTERVAL_SECONDS": "1",
+            }
+        )
+    return result, requests
 
 
 def assert_exact_dispatch_correlation(job: str) -> None:
@@ -335,10 +422,16 @@ def run_playground(
 
 
 def assert_wait_budget(job: str) -> None:
-    """Keep caller time above the downstream 5+5+45+30+5 minute maximum."""
+    """Keep the shell's budget authority equal to the enforced job timeout."""
     match = re.search(r"^    timeout-minutes: (\d+)$", job, re.MULTILINE)
     assert match is not None
-    assert int(match.group(1)) >= 100
+    shell_budget = re.search(r"^\s+JOB_TIMEOUT_MINUTES=(\d+)$", job, re.MULTILINE)
+    assert shell_budget is not None
+    assert int(match.group(1)) == int(shell_budget.group(1))
+    assert (
+        "ASSERTION_BUDGET_MINUTES=$((JOB_TIMEOUT_MINUTES - FINALIZATION_RESERVE_MINUTES))"
+        in job
+    )
 
 
 def test_rc_tag_normalization_and_exact_release_body() -> None:
@@ -454,7 +547,7 @@ def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
         in validation_step
     )
     assert "exit 1" in validation_step
-    assert "if:" not in validation_step
+    assert "if: steps.acquisition.outputs.mode == 'actions'" in validation_step
     assert "continue-on-error:" not in validation_step
 
     assert "id: playground-app-token" in token_step
@@ -467,7 +560,7 @@ def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
     assert "private-key: ${{ secrets.PLAYGROUND_APP_PRIVATE_KEY }}" in token_step
     assert "owner: hew-lang" in token_step
     assert "repositories: playground" in token_step
-    assert "if:" not in token_step
+    assert "if: steps.acquisition.outputs.mode == 'actions'" in token_step
     assert "continue-on-error:" not in token_step
     assert "GH_TOKEN: ${{ steps.playground-app-token.outputs.token }}" in trigger_step
     assert "gh repo view hew-lang/playground" in job
@@ -511,12 +604,15 @@ def test_dispatch_correlation_is_unique_and_bounded() -> None:
 
 
 def test_release_image_acquisition_mode_is_exhaustive_and_fails_closed() -> None:
-    accepted = {"actions": "25", "local": "110"}
-    for mode, deadline in accepted.items():
+    for mode in ("actions", "local"):
+        before = int(time())
         result, outputs = run_acquisition(mode)
+        after = int(time())
         assert result.returncode == 0, result.stderr
         assert outputs["mode"] == mode
-        assert outputs["assert_deadline_minutes"] == deadline
+        assert outputs["assert_budget_minutes"] == "115"
+        deadline = int(outputs["assert_deadline_epoch"])
+        assert before + 115 * 60 <= deadline <= after + 115 * 60
 
     for rejected in (None, "", "Actions", "LOCAL", "skip", "true", "actions local"):
         result, outputs = run_acquisition(rejected)
@@ -552,13 +648,13 @@ def test_release_image_assertion_covers_every_acquisition_mode() -> None:
     assert (
         "EXPECTED_REVISION: ${{ steps.release-commit.outputs.hew_sha }}" in assert_step
     )
+    assert "GHCR_TOKEN: ${{ github.token }}" in assert_step
+    assert "GHCR_USERNAME: ${{ github.actor }}" in assert_step
     assert (
-        "REGISTRY_TOKEN: ${{ steps.playground-app-token.outputs.token }}" in assert_step
-    )
-    assert (
-        "DEADLINE_MINUTES: ${{ steps.acquisition.outputs.assert_deadline_minutes }}"
+        "DEADLINE_EPOCH: ${{ steps.acquisition.outputs.assert_deadline_epoch }}"
         in assert_step
     )
+    assert "packages: read" in job
     assert "run: release-machinery/scripts/assert-playground-release-image.sh" in (
         assert_step
     )
@@ -576,7 +672,8 @@ def test_release_image_assertion_rejects_unusable_inputs() -> None:
         "IMAGE_REPOSITORY": "hew-lang/playground",
         "IMAGE_TAG": "v0.6.0-rc2",
         "EXPECTED_REVISION": HEW_SHA,
-        "REGISTRY_TOKEN": "test-token",
+        "GHCR_TOKEN": "test-token",
+        "GHCR_USERNAME": "test-user",
         "DEADLINE_MINUTES": "1",
     }
     # Each case is rejected before any network call, so the assertion can never
@@ -584,14 +681,20 @@ def test_release_image_assertion_rejects_unusable_inputs() -> None:
     cases = {
         "IMAGE_REPOSITORY": "",
         "IMAGE_TAG": "",
-        "REGISTRY_TOKEN": "",
-        "DEADLINE_MINUTES": "",
+        "GHCR_TOKEN": "",
     }
     for key, value in cases.items():
         env = dict(valid, **{key: value})
         result = run_release_image_assertion(env)
         assert result.returncode != 0, key
         assert f"{key} must be set" in result.stderr, key
+
+    without_deadline = {
+        key: value for key, value in valid.items() if key != "DEADLINE_MINUTES"
+    }
+    result = run_release_image_assertion(without_deadline)
+    assert result.returncode != 0
+    assert "DEADLINE_EPOCH or DEADLINE_MINUTES must be set" in result.stderr
 
     for bad_sha in ("not-a-sha", HEW_SHA[:39], HEW_SHA.upper()):
         result = run_release_image_assertion(dict(valid, EXPECTED_REVISION=bad_sha))
@@ -605,6 +708,101 @@ def test_release_image_assertion_rejects_unusable_inputs() -> None:
     result = run_release_image_assertion(dict(valid, POLL_INTERVAL_SECONDS="0"))
     assert result.returncode != 0
     assert "POLL_INTERVAL_SECONDS must be a positive whole number" in result.stderr
+
+
+def test_release_image_assertion_accepts_matching_single_manifest() -> None:
+    config_digest = "sha256:config-good"
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [
+                (200, image_manifest(config_digest))
+            ],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [
+                (200, image_config(HEW_SHA))
+            ],
+        }
+    )
+    assert result.returncode == 0, result.stderr
+    assert requests.count("/token") == 1
+
+
+def test_release_image_assertion_polls_past_a_stale_tag() -> None:
+    stale_digest = "sha256:config-stale"
+    good_digest = "sha256:config-good"
+    tag_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
+    result, requests = run_canned_release_image_assertion(
+        {
+            tag_path: [
+                (200, image_manifest(stale_digest)),
+                (200, image_manifest(good_digest)),
+            ],
+            f"/v2/hew-lang/playground/blobs/{stale_digest}": [
+                (200, image_config("f" * 40))
+            ],
+            f"/v2/hew-lang/playground/blobs/{good_digest}": [
+                (200, image_config(HEW_SHA))
+            ],
+        }
+    )
+    assert result.returncode == 0, result.stderr
+    assert requests.count(tag_path) == 2
+    assert "still binds" in result.stderr
+
+
+def test_release_image_assertion_checks_every_platform_in_an_index() -> None:
+    child_digests = ("sha256:manifest-amd64", "sha256:manifest-arm64")
+    config_digests = ("sha256:config-amd64", "sha256:config-arm64")
+    attestation_digest = "sha256:attestation"
+    index = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [
+            {
+                "digest": child_digests[0],
+                "platform": {"os": "linux", "architecture": "amd64"},
+            },
+            {
+                "digest": child_digests[1],
+                "platform": {"os": "linux", "architecture": "arm64"},
+            },
+            {
+                "digest": attestation_digest,
+                "annotations": {"vnd.docker.reference.type": "attestation-manifest"},
+            },
+        ],
+    }
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, index)],
+            f"/v2/hew-lang/playground/manifests/{child_digests[0]}": [
+                (200, image_manifest(config_digests[0]))
+            ],
+            f"/v2/hew-lang/playground/manifests/{child_digests[1]}": [
+                (200, image_manifest(config_digests[1]))
+            ],
+            f"/v2/hew-lang/playground/blobs/{config_digests[0]}": [
+                (200, image_config(HEW_SHA))
+            ],
+            f"/v2/hew-lang/playground/blobs/{config_digests[1]}": [
+                (200, image_config(HEW_SHA))
+            ],
+        }
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"/v2/hew-lang/playground/manifests/{attestation_digest}" not in requests
+
+
+def test_release_image_assertion_rejects_unclassified_platformless_child() -> None:
+    index = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [{"digest": "sha256:unclassified"}],
+    }
+    result, _requests = run_canned_release_image_assertion(
+        {"/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, index)]}
+    )
+    assert result.returncode != 0
+    assert "has no platform.os and is not marked as an attestation" in result.stderr
 
 
 def test_exact_workflow_shell_accepts_one_stable_matching_run() -> None:

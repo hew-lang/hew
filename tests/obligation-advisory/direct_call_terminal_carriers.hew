@@ -47,7 +47,14 @@ fn nested_match(some: bool, ok: bool) -> string {
 }
 
 fn main() {
-    println(statement_match(true, false));
-    let _ = try_comparison(true, false);
-    println(nested_match(false, true));
+    // Driven 200k times so the leak oracle reads a slope, not one call: a
+    // per-call residue of one allocation is invisible at a single iteration.
+    var k = 0;
+    while k < 200000 {
+        let _statement = statement_match(k % 2 == 0, k % 3 == 0);
+        let _try = try_comparison(k % 2 == 0, k % 3 == 0);
+        let _nested = nested_match(k % 2 == 0, k % 3 == 0);
+        k = k + 1;
+    }
+    println("done");
 }

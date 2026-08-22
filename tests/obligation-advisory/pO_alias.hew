@@ -1,0 +1,33 @@
+import std.string;
+
+// Payload alias through a move chain: the `for` cursor element is moved on
+// through a chain of whole-value moves before it is read. The alias is not an
+// independent mint, and the cloned snapshot's elements are released by the
+// cursor, so this shape is leak-free and must stay silent.
+record Item { name: string, n: i64 }
+
+fn count_items(xs: Vec<Item>) -> i64 {
+    let it = xs.iter();
+    var total = 0;
+    for _ in it {
+        total = total + 1;
+    }
+    total
+}
+
+fn round(k: i64) -> i64 {
+    let xs: Vec<Item> = Vec.new();
+    xs.push(Item { name: "alpha-" + string.from_int(k), n: k });
+    xs.push(Item { name: "beta-" + string.from_int(k), n: k + 1 });
+    count_items(xs)
+}
+
+fn main() {
+    var total = 0;
+    var k = 0;
+    while k < 200000 {
+        total = total + round(k);
+        k = k + 1;
+    }
+    println(total);
+}

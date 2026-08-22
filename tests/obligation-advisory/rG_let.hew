@@ -33,6 +33,12 @@ fn poll(svc: LocalPid<Svc>) -> Snap {
 
 fn main() {
     let svc = spawn Svc(seed: 7);
-    let s = poll(svc);
-    println(s.label);
+    // Driven 200k times so the leak oracle reads a slope, not one call: a
+    // per-call residue of one allocation is invisible at a single iteration.
+    var k = 0;
+    while k < 200000 {
+        let _driven = poll(svc);
+        k = k + 1;
+    }
+    println("done");
 }

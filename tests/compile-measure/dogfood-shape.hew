@@ -1,0 +1,70 @@
+// Compile-measure corpus fixture: an actor, exhaustive machine, ownership-heavy
+// early returns, and a transitive standard-library import exercise a dogfood-
+// shaped compiler path without depending on an external project.
+import std.string;
+
+machine JobState {
+    events {
+        Start;
+        Finish;
+    }
+
+    state Idle;
+    state Running;
+    state Complete;
+
+    on Start: Idle => Running {
+        .Running
+    }
+    on Finish: Running => Complete {
+        .Complete
+    }
+    default {
+        state
+    }
+}
+
+actor Ledger {
+    var total: i64 = 0;
+
+    receive fn add(amount: i64) {
+        total = total + amount;
+    }
+
+    receive fn read() -> i64 {
+        total
+    }
+}
+
+fn classify(value: string, fallback: string) -> string {
+    let trimmed = value.trim();
+    let tagged = "job:" + trimmed + ":ready";
+    if trimmed == "" {
+        return fallback;
+    }
+    if trimmed == "skip" {
+        return tagged;
+    }
+    if trimmed.starts_with("hold") {
+        return tagged;
+    }
+    tagged
+}
+
+fn main() {
+    var state = Idle;
+    state.step(.Start);
+
+    let ledger = spawn Ledger(total: 0);
+    let label = classify("alpha", "fallback");
+    ledger.add(label.len());
+    match string.to_int("7") {
+        .Some(amount) => ledger.add(amount),
+        .None => {},
+    }
+    match await ledger.read() {
+        .Ok(total) => println(total),
+        .Err(_) => println(0),
+    }
+    state.step(.Finish);
+}

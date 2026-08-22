@@ -158,7 +158,7 @@ MAKEFILE_PARSE_INPUTS := \
 .PHONY: assemble assemble-release pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
-.PHONY: ll-diff ll-golden ll-identity-selftest
+.PHONY: ll-diff ll-golden ll-identity-selftest dogfood-compile-measure
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
 
@@ -1295,6 +1295,18 @@ ll-diff-build: hew
 
 ll-golden: hew
 	HEW_BIN="$(BUILD_DIR)/bin/hew" bash scripts/ll-corpus.sh golden
+
+# Dogfood-shaped compile-time measurement gate. Its raw IR byte count and
+# structural counts are exact; timings are printed for observation only.
+#
+# inputs: hew-codegen-rs/** hew-mir/** hew-cli/**
+#         tests/compile-measure/** scripts/dogfood-compile-measure.sh
+#         build/bin/hew (release-lib profile)
+LINT_GATES += dogfood-compile-measure
+dogfood-compile-measure: hew
+	@args=""; \
+	if [ "$(DOGFOOD_MEASURE_UPDATE)" = "1" ]; then args="--update"; fi; \
+	HEW_BIN="$(BUILD_DIR)/bin/hew" bash scripts/dogfood-compile-measure.sh $$args
 
 # Self-test for the ll-byte-identity normaliser: six independently-failable
 # cases that prove string-content changes and numeric-const NAME changes are

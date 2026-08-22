@@ -1,5 +1,6 @@
 """Static contract tests for the release workflow's prerelease handoff."""
 
+import ast
 import json
 import os
 import re
@@ -2220,61 +2221,28 @@ def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:
         raise AssertionError("foundational release-gate mutation escaped")
 
 
-_TESTS = [
-    test_rc_tag_normalization_and_exact_release_body,
-    test_release_tag_must_match_cargo_version_before_build,
-    test_npm_publication_is_pinned_to_a_version_matching_release_tag,
-    test_current_sandbox_vm_version_matches_workspace_version,
-    test_playground_dispatch_is_purpose_scoped_and_fail_closed,
-    test_dispatch_uses_exact_playground_workflow_input_and_ref,
-    test_dispatch_correlation_is_unique_and_bounded,
-    test_release_image_acquisition_mode_is_exhaustive_and_fails_closed,
-    test_release_image_assertion_covers_every_acquisition_mode,
-    test_release_image_assertion_rejects_unusable_inputs,
-    test_exact_workflow_shell_accepts_one_stable_matching_run,
-    test_malformed_release_commit_identity_is_terminal,
-    test_run_listing_api_failure_is_terminal,
-    test_run_listing_jq_failure_is_terminal,
-    test_successful_empty_polls_exhaust_the_bound,
-    test_ambiguous_correlation_fails_on_the_first_poll,
-    test_each_exact_run_identity_dimension_is_mandatory,
-    test_timeout_undercut_mutation_is_rejected,
-    test_publish_mode_downgrade_mutation_is_rejected,
-    test_correlation_swap_with_padding_is_rejected,
-    test_correlation_argument_swap_with_padding_is_rejected,
-    test_pipeline_status_masking_mutation_is_rejected,
-    test_required_downstream_failure_is_not_masked,
-    test_prerelease_policy_uses_selected_release_tag,
-    test_public_ecosystem_artifacts_follow_canonical_release,
-    test_unix_installer_accepts_every_published_freebsd_architecture,
-    test_release_checksums_require_every_platform_asset,
-    test_prerelease_validator_proves_external_staticlib_linking,
-    test_every_release_lane_executes_the_library_consumer_proof,
-    test_cross_release_machinery_resolves_from_workflow_ref,
-    test_npm_publish_machinery_resolves_from_workflow_ref,
-    test_cross_release_libraries_are_target_keyed_and_natively_proved,
-    test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh,
-    test_freebsd_x86_64_release_uses_repository_pinned_rust,
-    test_freebsd_aarch64_release_uses_cross_built_consumer,
-    test_sanitizer_gate_is_behavioral_and_release_scoped,
-    test_release_record_is_durable_and_tag_ready,
-    test_contract_oracle_runs_in_required_ci,
-    test_wasm_pack_consumers_prefetch_checksum_pinned_binaryen,
-    test_binaryen_prefetch_pin_mutations_are_rejected,
-    test_windows_test_workflows_initialise_msvc_before_lld_link,
-    test_windows_test_workflow_msvc_ordering_mutations_are_rejected,
-    test_windows_llvm_prebuild_workflow_is_not_owned_by_this_repository,
-    test_windows_llvm_toolchain_pin_is_coherent_across_consumers,
-    test_windows_llvm_toolchain_pin_mutations_are_rejected,
-    test_release_binary_smoke_honors_absolute_and_relative_target_dirs,
-    test_local_release_builds_and_assembles_every_shipped_binary,
-    test_windows_completion_packaging_fails_closed,
-    test_make_release_surfaces_quote_spacious_cargo_target_dir,
-    test_staged_install_and_uninstall_preserve_spacious_path_boundaries,
-    test_distro_tarball_uses_cargo_output_layout_and_release_lib_archive,
-    test_musl_packaging_uses_explicit_target_release_lib_output,
-    test_foundational_release_gates_are_platform_scoped_and_mandatory,
-]
+def _discover_tests() -> tuple[object, ...]:
+    return tuple(
+        test
+        for name, test in globals().items()
+        if name.startswith("test_") and callable(test)
+    )
+
+
+def _test_function_count_in_file() -> int:
+    tree = ast.parse(Path(__file__).read_text())
+    return sum(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test_")
+        for node in tree.body
+    )
+
+
+_TESTS = _discover_tests()
+_EXPECTED_TEST_COUNT = _test_function_count_in_file()
+assert len(_TESTS) == _EXPECTED_TEST_COUNT, (
+    f"discovered {len(_TESTS)} tests, expected {_EXPECTED_TEST_COUNT}"
+)
 
 
 if __name__ == "__main__":

@@ -933,6 +933,27 @@ def test_an_external_target_annotation_does_not_hide_an_unannotated_target() -> 
     )
 
 
+def test_an_external_target_annotation_requires_owner_and_repository() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env = {
+            "GIT_CONFIG_GLOBAL": str(root / "gitconfig"),
+            "GIT_CONFIG_SYSTEM": str(root / "gitconfig"),
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": tmp,
+        }
+        subprocess.run(["git", "init", "-q", tmp], check=True, env=env)
+        (root / "CONTRIBUTING.md").write_text(
+            f"`make {MISSING}` <!-- external-target: playground -->\n"
+        )
+        subprocess.run(["git", "add", "CONTRIBUTING.md"], cwd=tmp, check=True, env=env)
+        found = gate.documented_make_references(root)
+    assert [(r.target, r.where) for r in found] == [(MISSING, "CONTRIBUTING.md:1")], (
+        "a bare external annotation does not identify an owner/repository and "
+        f"must not hide an unknown target, got {found}"
+    )
+
+
 # ── A5: a declared target does work ──────────────────────────────────────────
 #
 # A0..A4 resolve a name. A5 asks whether the name does anything, because a

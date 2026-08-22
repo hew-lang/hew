@@ -3,13 +3,13 @@
 #
 # Behaviour:
 #   - Exits 0 if the set of failing stdlib files exactly matches the list in
-#     scripts/stdlib-expected-failures.txt and no check emits a deprecation
-#     warning.
+#     scripts/stdlib-expected-failures.txt and no check emits a bare variant
+#     diagnostic.
 #   - Exits 1 if any NEW stdlib file fails (unexpected regression).
 #   - Exits 1 if any LISTED file no longer fails (unexpected fix — delete the
 #     entry from the list to accept the green).
-#   - Exits 1 if any stdlib check emits a deprecation warning, including when
-#     the check otherwise succeeds.
+#   - Exits 1 if any stdlib check emits E_BARE_VARIANT_PATTERN or
+#     E_BARE_VARIANT_EXPR, including when the check otherwise succeeds.
 #
 # WHY: The Hew stdlib type-check suite has known failures that converging lanes
 # are fixing.  Gating on zero failures would block integration; gating on nothing
@@ -107,7 +107,7 @@ done < "$EXPECTED_FAILURES_FILE"
 
 # Type-check each stdlib file and collect failures.
 ACTUAL_STR=""
-DEPRECATIONS_STR=""
+BARE_VARIANTS_STR=""
 TOTAL=0
 
 while IFS= read -r -d $'\0' f; do
@@ -120,9 +120,9 @@ while IFS= read -r -d $'\0' f; do
     if (( check_status != 0 )); then
         ACTUAL_STR="${ACTUAL_STR}${relpath}"$'\n'
     fi
-    deprecations=""
-    if deprecations="$(printf '%s\n' "$check_output" | rg ': warning: [^:]+: .*deprecated')"; then
-        DEPRECATIONS_STR="${DEPRECATIONS_STR}${deprecations}"$'\n'
+    bare_variants=""
+    if bare_variants="$(printf '%s\n' "$check_output" | rg ': warning: E_BARE_VARIANT_(PATTERN|EXPR):')"; then
+        BARE_VARIANTS_STR="${BARE_VARIANTS_STR}${bare_variants}"$'\n'
     fi
 done < <(find "$STDLIB_DIR" -name '*.hew' -not -path '*/target/*' -print0 | sort -z)
 
@@ -148,9 +148,9 @@ if [[ -n "$ACTUAL_STR" ]]; then
     count_actual="$(line_set_count "$ACTUAL_STR")"
 fi
 
-count_deprecations=0
-if [[ -n "$DEPRECATIONS_STR" ]]; then
-    count_deprecations="$(line_set_count "$DEPRECATIONS_STR")"
+count_bare_variants=0
+if [[ -n "$BARE_VARIANTS_STR" ]]; then
+    count_bare_variants="$(line_set_count "$BARE_VARIANTS_STR")"
 fi
 
 # Find unexpected failures (in actual but not in expected).
@@ -175,7 +175,7 @@ echo "==> Stdlib type-check ratchet"
 echo "Files checked:     $TOTAL"
 echo "Expected failures: $count_expected"
 echo "Actual failures:   $count_actual"
-echo "Deprecations:      $count_deprecations"
+echo "Bare variants:     $count_bare_variants"
 echo ""
 
 count_unexpected_fail=0
@@ -184,7 +184,7 @@ count_unexpected_fail=0
 count_unexpected_pass=0
 [[ -n "$unexpected_passes" ]] && count_unexpected_pass="$(line_set_count "$unexpected_passes")"
 
-if [[ $count_unexpected_fail -eq 0 && $count_unexpected_pass -eq 0 && $count_deprecations -eq 0 ]]; then
+if [[ $count_unexpected_fail -eq 0 && $count_unexpected_pass -eq 0 && $count_bare_variants -eq 0 ]]; then
     if [[ $count_actual -eq 0 ]]; then
         echo "All stdlib files pass type-check. Remove entries from expected-failures file."
     else
@@ -200,14 +200,14 @@ if [[ $count_unexpected_fail -eq 0 && $count_unexpected_pass -eq 0 && $count_dep
 fi
 
 # Report problems.
-if [[ $count_deprecations -gt 0 ]]; then
-    echo "RATCHET FAIL: $count_deprecations deprecation warning(s) in stdlib checks:"
+if [[ $count_bare_variants -gt 0 ]]; then
+    echo "RATCHET FAIL: $count_bare_variants bare variant diagnostic(s) in stdlib checks:"
     while IFS= read -r diagnostic; do
         [[ -z "$diagnostic" ]] && continue
-        echo "  DEPRECATED: $diagnostic"
-    done <<< "$DEPRECATIONS_STR"
+        echo "  BARE VARIANT: $diagnostic"
+    done <<< "$BARE_VARIANTS_STR"
     echo ""
-    echo "  Fix every deprecated stdlib use; deprecations are not ratcheted."
+    echo "  Qualify every bare variant; bare variant diagnostics are not ratcheted."
     echo ""
 fi
 

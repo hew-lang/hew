@@ -118,6 +118,11 @@ fence_id="${2##*/}"
 fence_id="${fence_id%.hew}"
 printf '%s\n' "$fence_id" >> "${HEW_CALL_LOG:?}"
 
+if [[ "$fence_id" == "${HEW_BARE_VARIANT_FENCE_ID:-}" ]]; then
+    printf '%s:1:1: warning: E_BARE_VARIANT_PATTERN: bare variant pattern is deprecated\n' "$2" >&2
+    printf '%s:1:1: warning: E_BARE_VARIANT_EXPR: bare variant is deprecated\n' "$2" >&2
+fi
+
 while IFS= read -r failing_id; do
     [[ "$failing_id" == "$fence_id" ]] && exit 1
 done < "${HEW_FAIL_IDS:?}"
@@ -269,6 +274,23 @@ if [[ "$HARNESS_STATUS" -eq 0 ]]; then
 else
     fail "matching failure sets rejected with status $HARNESS_STATUS"
 fi
+
+# Both migration diagnostics must fail the ratchet even when the checked fence
+# otherwise passes and the failure set matches its expected baseline.
+export HEW_BARE_VARIANT_FENCE_ID="$passing_id"
+run_harness "$BASELINE_EXPECTED" "$BASELINE_FAIL_IDS" /dev/null
+unset HEW_BARE_VARIANT_FENCE_ID
+if [[ "$HARNESS_STATUS" -ne 0 ]]; then
+    pass "bare variant diagnostics are rejected"
+else
+    fail "bare variant diagnostics were accepted"
+fi
+assert_contains "$HARNESS_OUTPUT" "RATCHET FAIL: 2 bare variant diagnostic(s)" \
+    "bare variant rejection reports both diagnostics"
+assert_contains "$HARNESS_OUTPUT" "E_BARE_VARIANT_PATTERN" \
+    "bare variant rejection preserves the pattern diagnostic"
+assert_contains "$HARNESS_OUTPUT" "E_BARE_VARIANT_EXPR" \
+    "bare variant rejection preserves the expression diagnostic"
 
 # Mutation 1: a listed failure now passes and must be rejected.
 first_failure=""

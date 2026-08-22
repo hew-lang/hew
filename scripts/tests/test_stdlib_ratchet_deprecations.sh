@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove that successful stdlib checks cannot hide deprecation warnings.
+# Prove that successful stdlib checks cannot hide bare variant diagnostics.
 
 set -euo pipefail
 
@@ -22,8 +22,9 @@ set -euo pipefail
 
 [[ $# -eq 2 && "$1" == "check" ]] || exit 64
 
-if [[ "${FAKE_HEW_MODE:-clean}" == "deprecated" && "${2##*/}" == "arena.hew" ]]; then
-    printf '%s:1:1: warning: E_FAKE_DEPRECATION: fake syntax is deprecated\n' "$2" >&2
+if [[ "${FAKE_HEW_MODE:-clean}" == "bare-variants" && "${2##*/}" == "arena.hew" ]]; then
+    printf '%s:1:1: warning: E_BARE_VARIANT_PATTERN: bare variant pattern is deprecated\n' "$2" >&2
+    printf '%s:1:1: warning: E_BARE_VARIANT_EXPR: bare variant is deprecated\n' "$2" >&2
 fi
 FAKE_HEW_EOF
 chmod +x "$FAKE_HEW"
@@ -42,26 +43,26 @@ if (( clean_status != 0 )); then
 fi
 echo "PASS: clean successful checks satisfy the stdlib ratchet"
 
-deprecated_output=""
-deprecated_status=0
-deprecated_output="$(
-    FAKE_HEW_MODE=deprecated HEW_BIN="$FAKE_HEW" \
+bare_variant_output=""
+bare_variant_status=0
+bare_variant_output="$(
+    FAKE_HEW_MODE=bare-variants HEW_BIN="$FAKE_HEW" \
         "$HARNESS" --expected-failures "$EXPECTED_FAILURES" 2>&1
-)" || deprecated_status=$?
+)" || bare_variant_status=$?
 
-printf '%s\n' "$deprecated_output" | sed 's/^/CF-[deprecated-check] /'
+printf '%s\n' "$bare_variant_output" | sed 's/^/CF-[bare-variant-check] /'
 
-if (( deprecated_status == 0 )); then
-    echo "FAIL: a successful check with a deprecation warning passed" >&2
+if (( bare_variant_status == 0 )); then
+    echo "FAIL: a successful check with bare variant diagnostics passed" >&2
     exit 1
 fi
-if [[ "$deprecated_output" != *"RATCHET FAIL: 1 deprecation warning(s)"* ]]; then
-    echo "FAIL: rejection did not report the deprecation count" >&2
+if [[ "$bare_variant_output" != *"RATCHET FAIL: 2 bare variant diagnostic(s)"* ]]; then
+    echo "FAIL: rejection did not report both bare variant diagnostics" >&2
     exit 1
 fi
-if [[ "$deprecated_output" != *"E_FAKE_DEPRECATION"* ]]; then
-    echo "FAIL: rejection did not preserve the compiler diagnostic" >&2
+if [[ "$bare_variant_output" != *"E_BARE_VARIANT_PATTERN"* || "$bare_variant_output" != *"E_BARE_VARIANT_EXPR"* ]]; then
+    echo "FAIL: rejection did not preserve both bare variant diagnostics" >&2
     exit 1
 fi
 
-echo "PASS: a successful check with a deprecation warning fails the stdlib ratchet"
+echo "PASS: a successful check with bare variant diagnostics fails the stdlib ratchet"

@@ -12,7 +12,7 @@
 use std::cell::Cell;
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -781,6 +781,9 @@ const SUPERVISOR_CLEANUP_TIMER_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 struct RestartTimerState {
     cancelled: bool,
     pending: usize,
+    /// One authority per admitted lease. Cancellation rules on every still-
+    /// armed record before a lease can publish drain completion.
+    records: Vec<Arc<RestartTimerRecord>>,
 }
 
 /// Arc-owned cancellation and raw-borrow authority for delayed restarts.
@@ -803,20 +806,28 @@ impl RestartTimerControl {
         }
     }
 
-    fn begin(self: &Arc<Self>) -> Option<RestartTimerLease> {
+    fn begin(self: &Arc<Self>, record: FaultRecord) -> Option<RestartTimerLease> {
         let mut state = self.state.lock_or_recover();
         if state.cancelled {
             return None;
         }
+        let record = Arc::new(RestartTimerRecord::new(record));
         state.pending += 1;
+        state.records.push(Arc::clone(&record));
         Some(RestartTimerLease {
             control: Arc::clone(self),
+            record,
         })
     }
 
     fn cancel(&self) {
         let mut state = self.state.lock_or_recover();
         state.cancelled = true;
+        // Rule before waking timer threads: dropping a woken lease is what
+        // publishes drain completion, so settlement must precede that drop.
+        for record in &state.records {
+            record.settle_cancelled();
+        }
         self.changed.notify_all();
     }
 
@@ -841,27 +852,80 @@ impl RestartTimerControl {
 
 struct RestartTimerLease {
     control: Arc<RestartTimerControl>,
+    record: Arc<RestartTimerRecord>,
+}
+
+const RESTART_TIMER_RECORD_ARMED: u8 = 0;
+const RESTART_TIMER_RECORD_FIRED: u8 = 1;
+const RESTART_TIMER_RECORD_SETTLED: u8 = 2;
+
+struct RestartTimerRecord {
+    record: FaultRecord,
+    state: AtomicU8,
+}
+
+impl RestartTimerRecord {
+    fn new(record: FaultRecord) -> Self {
+        Self {
+            record,
+            state: AtomicU8::new(RESTART_TIMER_RECORD_ARMED),
+        }
+    }
+
+    fn fire(&self) -> bool {
+        self.state
+            .compare_exchange(
+                RESTART_TIMER_RECORD_ARMED,
+                RESTART_TIMER_RECORD_FIRED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn settle_cancelled(&self) {
+        self.settle_from(RESTART_TIMER_RECORD_ARMED);
+    }
+
+    fn settle_failed_fire(&self) {
+        self.settle_from(RESTART_TIMER_RECORD_FIRED);
+    }
+
+    fn settle_from(&self, expected: u8) {
+        if self
+            .state
+            .compare_exchange(
+                expected,
+                RESTART_TIMER_RECORD_SETTLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            crate::exit_status::settle_supervised_fault(self.record, FaultRuling::Unrecovered);
+        }
+    }
 }
 
 impl RestartTimerLease {
     /// Wait interruptibly, then perform the raw supervisor access while the
     /// cancellation mutex excludes shutdown from publishing cancellation.
     ///
-    /// Returns what `on_elapsed` reported, and `false` when cancellation
-    /// preempted the wait so `on_elapsed` never ran at all. The two are
-    /// deliberately the same answer to the caller: a timer that was cancelled
-    /// performed no work, exactly like a timer whose work failed.
-    fn wait_and_run(self, delay: Duration, on_elapsed: impl FnOnce() -> bool) -> bool {
+    /// Cancellation and expiry race for the armed record before this lease can
+    /// publish drain completion. The winner either settles the record here or
+    /// transfers it to the delayed-restart event.
+    fn wait_and_run(&self, delay: Duration, on_elapsed: impl FnOnce() -> bool) {
         let deadline = Instant::now() + delay;
         let mut state = self.control.state.lock_or_recover();
-        let mut elapsed_result = false;
         loop {
             if state.cancelled {
                 break;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                elapsed_result = on_elapsed();
+                if self.record.fire() && !on_elapsed() {
+                    self.record.settle_failed_fire();
+                }
                 break;
             }
             let (next, _) = self
@@ -870,8 +934,6 @@ impl RestartTimerLease {
                 .wait_timeout_or_recover(state, remaining);
             state = next;
         }
-        drop(state);
-        elapsed_result
     }
 }
 
@@ -880,7 +942,13 @@ impl Drop for RestartTimerLease {
         let mut state = self.control.state.lock_or_recover();
         debug_assert!(state.pending > 0);
         state.pending = state.pending.saturating_sub(1);
+        state
+            .records
+            .retain(|record| !Arc::ptr_eq(record, &self.record));
+        debug_assert_eq!(state.pending, state.records.len());
         self.control.changed.notify_all();
+        drop(state);
+        run_restart_timer_released_hook_for_test();
     }
 }
 
@@ -906,6 +974,9 @@ static RESTART_SPEC_SNAPSHOT_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>
     std::sync::OnceLock::new();
 #[cfg(all(test, not(target_arch = "wasm32")))]
 static DYNAMIC_CHILD_RESERVED_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
+    std::sync::OnceLock::new();
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static RESTART_TIMER_RELEASED_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
     std::sync::OnceLock::new();
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -968,6 +1039,16 @@ fn install_dynamic_child_reserved_hook_for_test(
     SupervisorTestHookGuard(&DYNAMIC_CHILD_RESERVED_HOOK)
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn install_restart_timer_released_hook_for_test(
+    hook: Arc<dyn Fn() + Send + Sync>,
+) -> SupervisorTestHookGuard {
+    *RESTART_TIMER_RELEASED_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock_or_recover() = Some(hook);
+    SupervisorTestHookGuard(&RESTART_TIMER_RELEASED_HOOK)
+}
+
 fn run_supervisor_access_hook_for_test() {
     #[cfg(all(test, not(target_arch = "wasm32")))]
     if let Some(hook) = SUPERVISOR_ACCESS_HOOK
@@ -1015,6 +1096,17 @@ fn run_restart_spec_snapshot_hook_for_test() {
 fn run_dynamic_child_reserved_hook_for_test() {
     #[cfg(all(test, not(target_arch = "wasm32")))]
     if let Some(hook) = DYNAMIC_CHILD_RESERVED_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock_or_recover()
+        .clone()
+    {
+        hook();
+    }
+}
+
+fn run_restart_timer_released_hook_for_test() {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    if let Some(hook) = RESTART_TIMER_RELEASED_HOOK
         .get_or_init(|| Mutex::new(None))
         .lock_or_recover()
         .clone()
@@ -1651,14 +1743,14 @@ fn schedule_delayed_restart(
 ) -> bool {
     // SAFETY: caller keeps `sup` live through timer admission; the returned
     // lease extends raw-pointer lifetime through the spawned closure.
-    let Some(timer) = (unsafe { &(*sup).restart_timers }).begin() else {
+    let Some(timer) = (unsafe { &(*sup).restart_timers }).begin(record) else {
         return false;
     };
     let sup_addr = sup as usize;
     let spawn_result = std::thread::Builder::new()
         .name("hew-supervisor-restart-timer".to_owned())
         .spawn(move || {
-            let delivered = timer.wait_and_run(delay, || {
+            timer.wait_and_run(delay, || {
                 let sup_ptr = sup_addr as *mut HewSupervisor;
                 // SAFETY: the timer lease's pending count keeps `sup_ptr`
                 // allocated, and its state mutex excludes cancellation for the
@@ -1684,24 +1776,6 @@ fn schedule_delayed_restart(
                     )
                 }
             });
-            if !delivered {
-                // THE TIMER'S ONE SETTLEMENT SITE, covering both ways an armed
-                // timer can end without a restart: it fired and its wake-up
-                // reached nobody (supervisor cancelled or stopped, mailbox
-                // refused), or shutdown CANCELLED it before it ever fired, so
-                // the closure above never ran. Either way no restart will be
-                // attempted and the record this timer owned has no authority
-                // left. Leaving the cancelled case Open would still fail
-                // closed on the exit code, but it strands the record: shutdown
-                // waits out its whole quiescence period
-                // (`scheduler::drain_is_idle` + `has_open_supervised_faults`)
-                // for a ruling that can no longer arrive.
-                //
-                // Settled outside `wait_and_run` so the cancellation mutex is
-                // released first: the authority is a lock-free atomic table and
-                // must not extend a lock shutdown is waiting on.
-                crate::exit_status::settle_supervised_fault(record, FaultRuling::Unrecovered);
-            }
         });
     if let Err(error) = spawn_result {
         // The failed builder drops the closure and therefore its timer lease,
@@ -4453,7 +4527,7 @@ mod tests {
 
             let timer = (*sup)
                 .restart_timers
-                .begin()
+                .begin(FaultRecord::NONE)
                 .expect("fresh supervisor accepts a timer lease");
             assert!(!wait_for_pending_restart_timers(
                 &(*sup).restart_timers,
@@ -4554,6 +4628,49 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_restart_timer_settles_record_before_publishing_drain() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the supervisor outlives the timer lease, which drains before
+        // this body returns.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            let timers = Arc::clone(&(*sup).restart_timers);
+            let record = crate::exit_status::open_supervised_fault();
+            let released = Arc::new(std::sync::Barrier::new(2));
+            let continue_timer = Arc::new(std::sync::Barrier::new(2));
+            let released_hook = Arc::clone(&released);
+            let continue_timer_hook = Arc::clone(&continue_timer);
+            let _hook_guard = install_restart_timer_released_hook_for_test(Arc::new(move || {
+                released_hook.wait();
+                continue_timer_hook.wait();
+            }));
+
+            assert!(schedule_delayed_restart(
+                sup,
+                0,
+                Duration::from_secs(30),
+                record
+            ));
+            timers.cancel();
+            released.wait();
+            assert!(timers.wait_for_drain(Instant::now() + Duration::from_secs(5)));
+
+            let settled_before_drain = !crate::exit_status::supervised_fault_is_open(record);
+            continue_timer.wait();
+            let settle_deadline = Instant::now() + Duration::from_secs(5);
+            while crate::exit_status::supervised_fault_is_open(record)
+                && Instant::now() < settle_deadline
+            {
+                std::thread::yield_now();
+            }
+            assert!(
+                settled_before_drain,
+                "a timer must settle its record before releasing the drain lease"
+            );
+        }
+    }
+
+    #[test]
     fn public_stop_cancels_long_restart_timer_promptly() {
         let _rt = crate::runtime_test_guard();
         // SAFETY: public stop owns and reclaims the fresh supervisor only after
@@ -4616,7 +4733,7 @@ mod tests {
             assert_eq!(hew_supervisor_add_child_supervisor(parent, nested), 0);
             let timer = (*nested)
                 .restart_timers
-                .begin()
+                .begin(FaultRecord::NONE)
                 .expect("fresh nested supervisor accepts a timer lease");
 
             supervisor_sys_dispatch_impl(
@@ -4821,7 +4938,7 @@ mod tests {
             crate::shutdown::hew_shutdown_register_supervisor(sup);
             let timer = (*sup)
                 .restart_timers
-                .begin()
+                .begin(FaultRecord::NONE)
                 .expect("fresh supervisor accepts a timer lease");
 
             crate::scheduler::hew_runtime_cleanup();

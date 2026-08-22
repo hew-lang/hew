@@ -508,6 +508,199 @@ fn carry_bytes_field_source(frames: usize) -> String {
     )
 }
 
+// The tuple-carry sources below measure the heap-owning-TUPLE field carry in
+// BOTH drop orders, because the two orders exercise different halves of the
+// transfer:
+//
+//   * ESCAPE order — the result leaves the frame that consumed the base, so the
+//     base's frame teardown runs while the carried tuple is still live. A carry
+//     that failed to hand the tuple over frees it here (use-after-free) or never
+//     frees it (leak).
+//   * SAME-FRAME order — base and result both die at one scope exit, result
+//     first. A carry that transferred without excluding the base releases the
+//     tuple twice.
+//
+// Neither source READS the carried tuple back: a tuple-field read seeds an
+// owned-field binder that the record prover conservatively treats as an escape,
+// excluding the whole record from its `RecordInPlace` drop. That exclusion leaks
+// on `main` today with no functional update in sight, and would swamp the signal
+// these fixtures exist to measure. Value-level read-back of the carried leaves
+// is pinned separately by `accept_carry_nested_and_collection_bearing_tuples`
+// in `funcupdate_consume_semantics.rs`.
+
+/// Carry a `(string, i64)` tuple field, ESCAPE drop order: the update happens in
+/// a helper whose result is returned, so the consumed base dies one frame below
+/// the surviving carry.
+fn carry_tuple_field_escape_source(frames: usize) -> String {
+    format!(
+        "import std.string;\n\
+         \n\
+         record Pair {{\n\
+         \x20   keep: (string, i64),\n\
+         \x20   churn: string,\n\
+         }}\n\
+         \n\
+         fn step() -> Pair {{\n\
+         \x20   let b = Pair {{ keep: (string.repeat(\"k\", 32), 1), churn: string.repeat(\"a\", 32) }};\n\
+         \x20   Pair {{ churn: string.repeat(\"b\", 32), ..b }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let r = step();\n\
+         \x20       total = total + r.churn.len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Carry a `(string, i64)` tuple field, SAME-FRAME drop order: base and result
+/// are two bindings in one loop-body scope, so the result is released first and
+/// the consumed base's teardown follows immediately.
+fn carry_tuple_field_same_frame_source(frames: usize) -> String {
+    format!(
+        "import std.string;\n\
+         \n\
+         record Pair {{\n\
+         \x20   keep: (string, i64),\n\
+         \x20   churn: string,\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let b = Pair {{ keep: (string.repeat(\"k\", 32), 1), churn: string.repeat(\"a\", 32) }};\n\
+         \x20       let s = Pair {{ churn: string.repeat(\"b\", 32), ..b }};\n\
+         \x20       total = total + s.churn.len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Carry a `(Inner, i64)` tuple field — the carried heap leaf is two layers
+/// down (tuple element → record field). Escape drop order.
+fn carry_tuple_of_record_field_source(frames: usize) -> String {
+    format!(
+        "import std.string;\n\
+         \n\
+         record Inner {{\n\
+         \x20   label: string,\n\
+         \x20   n: i64,\n\
+         }}\n\
+         record Pair {{\n\
+         \x20   keep: (Inner, i64),\n\
+         \x20   churn: string,\n\
+         }}\n\
+         \n\
+         fn step() -> Pair {{\n\
+         \x20   let b = Pair {{ keep: (Inner {{ label: string.repeat(\"k\", 32), n: 1 }}, 1), churn: string.repeat(\"a\", 32) }};\n\
+         \x20   Pair {{ churn: string.repeat(\"b\", 32), ..b }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let r = step();\n\
+         \x20       total = total + r.churn.len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// The round-2 reproducer: tuple → record → tuple → `Option<record>`.
+/// This source is deliberately checked, not compiled: the release machinery
+/// has no move-specific enum carry, so the recursive rule must stop it before
+/// a leaking executable can be emitted.
+fn carry_record_nested_option_source(frames: usize) -> String {
+    format!(
+        "import std.string;\n\
+         record Leaf {{ label: string, n: i64 }}\n\
+         record Wrapper {{ inner: (Option<Leaf>, i64), tag: string }}\n\
+         record T {{ pair: (Wrapper, i64), churn: string }}\n\
+         fn mk() -> T {{\n\
+         \x20   let b = T {{\n\
+         \x20       pair: (Wrapper {{ inner: (Some(Leaf {{ label: string.repeat(\"k\", 32), n: 1 }}), 9), tag: string.repeat(\"w\", 32) }}, 5),\n\
+         \x20       churn: string.repeat(\"a\", 32),\n\
+         \x20   }};\n\
+         \x20   T {{ churn: string.repeat(\"b\", 32), ..b }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let r = mk();\n\
+         \x20       total = total + r.churn.len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Isolation control for the reproducer: identical nested payload, constructed
+/// directly without a functional update.
+fn nested_option_without_funcupdate_source(frames: usize) -> String {
+    format!(
+        "import std.string;\n\
+         record Leaf {{ label: string, n: i64 }}\n\
+         record Wrapper {{ inner: (Option<Leaf>, i64), tag: string }}\n\
+         record T {{ pair: (Wrapper, i64), churn: string }}\n\
+         fn mk() -> T {{\n\
+         \x20   T {{\n\
+         \x20       pair: (Wrapper {{ inner: (Some(Leaf {{ label: string.repeat(\"k\", 32), n: 1 }}), 9), tag: string.repeat(\"w\", 32) }}, 5),\n\
+         \x20       churn: string.repeat(\"a\", 32),\n\
+         \x20   }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let r = mk();\n\
+         \x20       total = total + r.churn.len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total - total\n\
+         }}\n"
+    )
+}
+
+/// Isolation control for the reproducer: identical functional-update nesting,
+/// with the unsupported enum path replaced by a carry-sound string leaf.
+fn nested_record_without_option_source(frames: usize) -> String {
+    format!(
+        "import std.string;\n\
+         record Wrapper {{ inner: (string, i64), tag: string }}\n\
+         record T {{ pair: (Wrapper, i64), churn: string }}\n\
+         fn mk() -> T {{\n\
+         \x20   let b = T {{\n\
+         \x20       pair: (Wrapper {{ inner: (string.repeat(\"k\", 32), 9), tag: string.repeat(\"w\", 32) }}, 5),\n\
+         \x20       churn: string.repeat(\"a\", 32),\n\
+         \x20   }};\n\
+         \x20   T {{ churn: string.repeat(\"b\", 32), ..b }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let r = mk();\n\
+         \x20       total = total + r.churn.len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total - total\n\
+         }}\n"
+    )
+}
+
 // ── plumbing (same shape as bytes_drop_leak_oracle) ───────────────────────
 
 /// Compile `source` to a native binary via `hew compile --emit-dir` and
@@ -603,6 +796,52 @@ fn assert_scribble_clean(shape_name: &str, source: &str) {
     assert!(
         output.status.success(),
         "{shape_name} must not free the replacement through the old field owner:\n{}",
+        describe_output(&output)
+    );
+}
+
+fn assert_check_fails_closed(shape_name: &str, source: &str) {
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("funcupdate-check-{shape_name}-"))
+        .tempdir()
+        .expect("tempdir");
+    let hew_src = dir.path().join(format!("{shape_name}.hew"));
+    std::fs::write(&hew_src, source).expect("write hew source");
+    let output = Command::new(hew_binary())
+        .args(["check", hew_src.to_str().expect("hew src utf-8")])
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+    assert!(
+        !output.status.success(),
+        "{shape_name} must fail closed before a leaking executable is emitted:\n{}",
+        describe_output(&output)
+    );
+    let out = describe_output(&output);
+    assert!(
+        out.contains("carry of owned non-record field") || out.contains("E_NOT_YET_IMPLEMENTED"),
+        "{shape_name} must stop at the carry-rule diagnostic; got:\n{out}"
+    );
+}
+
+fn assert_exact_zero_leaks(shape_name: &str, source_fn: fn(usize) -> String) {
+    require_leaks_tool();
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("funcupdate-zero-{shape_name}-"))
+        .tempdir()
+        .expect("tempdir");
+    let source = source_fn(HIGH_FRAMES);
+    let bin = compile_to_native(&source, dir.path(), shape_name);
+    let leaks = measure_leaks(&bin);
+    assert_eq!(
+        leaks, 0,
+        "{shape_name} must report exactly zero leaks over {HIGH_FRAMES} iterations"
+    );
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "{shape_name} must exit cleanly under MallocScribble:\n{}",
         describe_output(&output)
     );
 }
@@ -842,4 +1081,87 @@ fn funcupdate_carry_hashset_field_no_per_frame_leak_slope() {
 #[test]
 fn funcupdate_carry_bytes_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("funcupdate_carry_bytes_field", carry_bytes_field_source);
+}
+
+/// Carried `(string, i64)` tuple field, ESCAPE drop order: the result outlives
+/// the frame that consumed the base. Slope 0 — the tuple's allocation is handed
+/// over once and released once.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn funcupdate_carry_tuple_field_escape_order_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "funcupdate_carry_tuple_field_escape",
+        carry_tuple_field_escape_source,
+    );
+}
+
+/// Carried `(string, i64)` tuple field, SAME-FRAME drop order: result and
+/// consumed base die at one scope exit. Slope 0, and no crash — a transfer that
+/// left the base owning the tuple would double-free here.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn funcupdate_carry_tuple_field_same_frame_order_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "funcupdate_carry_tuple_field_same_frame",
+        carry_tuple_field_same_frame_source,
+    );
+}
+
+/// Carried `(Inner, i64)` tuple field: the heap leaf sits a tuple element AND a
+/// record field deep, so the transfer must carry the whole nested obligation.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn funcupdate_carry_tuple_of_record_field_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "funcupdate_carry_tuple_of_record_field",
+        carry_tuple_of_record_field_source,
+    );
+}
+
+/// The leaking round-2 shape must be refused before native code generation.
+/// A fail-closed diagnostic is the zero-leak outcome while enum-shaped carries
+/// have no move-specific release protocol.
+#[test]
+fn funcupdate_carry_record_with_nested_option_fails_closed() {
+    assert_check_fails_closed(
+        "funcupdate_carry_record_nested_option",
+        &carry_record_nested_option_source(HIGH_FRAMES),
+    );
+}
+
+/// Control 1: the nested enum payload is leak-clean when no functional update
+/// carries it through a shallow field load.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn nested_option_without_funcupdate_has_exactly_zero_leaks() {
+    assert_exact_zero_leaks(
+        "nested_option_without_funcupdate",
+        nested_option_without_funcupdate_source,
+    );
+}
+
+/// Control 2: the same functional-update nesting is leak-clean when every leaf
+/// is carry-sound and no enum boundary is present.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn nested_record_without_option_has_exactly_zero_leaks() {
+    assert_exact_zero_leaks(
+        "nested_record_without_option",
+        nested_record_without_option_source,
+    );
 }

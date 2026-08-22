@@ -6609,6 +6609,9 @@ mod owned_record_drop_derivation {
     //! synthetic MIR blocks: a returned record (escape) must be EXCLUDED so its
     //! `RecordInPlace` drop never double-frees the escapee's fields, while a
     //! field-read-only record must be ADMITTED so its heap fields are freed.
+    //! The paired runtime oracle in the exec suite is Guard-Malloc with
+    //! `MallocScribble`; glibc-only `MALLOC_CHECK_` / `MALLOC_PERTURB_` are
+    //! platform helpers, not the canonical proof on macOS.
     //!
     //! The headline `one_arm_consume_*` pair pins the audit-#5 reconciliation:
     //! a record consumed (returned) on one branch but live on another is gated
@@ -6681,6 +6684,33 @@ mod owned_record_drop_derivation {
             &|_, _| false,
             &record_field_orders,
             &[],
+            &hew_hir::LifecycleRegistry::default(),
+            &[],
+            &HashMap::new(),
+            &HashSet::new(),
+        )
+    }
+
+    fn derive_with_field_ty_and_enums(
+        blocks: &[BasicBlock],
+        owned: &[(BindingId, String, ResolvedTy)],
+        binding_locals: &HashMap<BindingId, Place>,
+        local_tys: &[ResolvedTy],
+        field_ty: ResolvedTy,
+        enum_layouts: &[crate::model::EnumLayout],
+    ) -> HashSet<BindingId> {
+        let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+        record_field_orders.insert("Rec".to_string(), vec![("label".to_string(), field_ty)]);
+        derive_owned_record_drop_allowed(
+            blocks,
+            &HashMap::new(),
+            owned,
+            binding_locals,
+            local_tys,
+            &is_rec,
+            &|_, _| false,
+            &record_field_orders,
+            enum_layouts,
             &hew_hir::LifecycleRegistry::default(),
             &[],
             &HashMap::new(),
@@ -7232,6 +7262,106 @@ mod owned_record_drop_derivation {
             allowed.contains(&b),
             "the returned string field owns a retained share, so the record \
              must keep its original field release; got {allowed:?}"
+        );
+    }
+
+    /// Soundness pin for the tuple-field lift: a `RecordFieldLoad` that carries
+    /// an `(Option<string>, i64)` field into a fresh `RecordInit` transfers the
+    /// tuple-owned drop obligation to the result, so the consumed base record
+    /// must be excluded from `RecordInPlace`.
+    #[test]
+    fn tuple_field_carry_with_option_payload_excludes_record_root() {
+        let b = BindingId(1);
+        let tuple_field_ty = ResolvedTy::Tuple(vec![
+            ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![ResolvedTy::String]),
+            ResolvedTy::I64,
+        ]);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(b, Place::Local(0))].into_iter().collect();
+        let local_tys = vec![rec_ty(), tuple_field_ty.clone(), rec_ty()];
+        let instrs = vec![
+            Instr::RecordFieldLoad {
+                record: Place::Local(0),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(1),
+            },
+            Instr::RecordInit {
+                ty: rec_ty(),
+                fields: vec![(FieldOffset(0), Place::Local(1))],
+                dest: Place::Local(2),
+            },
+        ];
+
+        let allowed = derive(
+            &[block(0, instrs, Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+        );
+        assert!(
+            !allowed.contains(&b),
+            "the tuple payload escapes into RecordInit, so the base record's \
+             in-place drop must be excluded; got {allowed:?}"
+        );
+    }
+
+    /// Companion pin for the user-enum payload family: a tuple field carrying a
+    /// heap-owned user enum into `RecordInit` is also transferred by the same
+    /// owned-record escape rule, so the base record must be excluded.
+    #[test]
+    fn tuple_field_carry_with_user_enum_payload_excludes_record_root() {
+        let b = BindingId(1);
+        let tuple_field_ty = ResolvedTy::Tuple(vec![
+            ResolvedTy::named_user("Wrap", vec![]),
+            ResolvedTy::I64,
+        ]);
+        let enum_layouts = vec![crate::model::EnumLayout {
+            name: "Wrap".to_string(),
+            tag_width: 1,
+            variants: vec![
+                crate::model::MachineVariantLayout {
+                    name: "Some".to_string(),
+                    field_tys: vec![ResolvedTy::String],
+                    field_names: vec![],
+                },
+                crate::model::MachineVariantLayout {
+                    name: "None".to_string(),
+                    field_tys: vec![],
+                    field_names: vec![],
+                },
+            ],
+            is_indirect: false,
+        }];
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(b, Place::Local(0))].into_iter().collect();
+        let local_tys = vec![rec_ty(), tuple_field_ty.clone(), rec_ty()];
+        let instrs = vec![
+            Instr::RecordFieldLoad {
+                record: Place::Local(0),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(1),
+            },
+            Instr::RecordInit {
+                ty: rec_ty(),
+                fields: vec![(FieldOffset(0), Place::Local(1))],
+                dest: Place::Local(2),
+            },
+        ];
+
+        let allowed = derive_with_field_ty_and_enums(
+            &[block(0, instrs, Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+            tuple_field_ty,
+            &enum_layouts,
+        );
+        assert!(
+            !allowed.contains(&b),
+            "the tuple payload escapes into RecordInit, so the base record's \
+             in-place drop must be excluded; got {allowed:?}"
         );
     }
 

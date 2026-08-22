@@ -1516,11 +1516,30 @@ fn main() {
     );
 }
 
-/// Carrying a tuple-of-owned field must FAIL `hew check` fail-closed: a
-/// `(string, i64)` tuple has no single inline-drop leaf symbol and is not an
-/// owned user record, so the shallow carry has no proven-sound transfer path.
+/// Carrying a HEAP-OWNING tuple field is ACCEPTED and runs clean.
+///
+/// This was previously fail-closed (`reject_carry_tuple_of_owned_field`). The
+/// lift admits `ty_is_heap_owning_tuple` into the carry pre-flight's
+/// `sound_carry` predicate. The protection comes from
+/// `derive_owned_record_drop_allowed`, not the tuple-binding prover: the carried
+/// tuple's `RecordFieldLoad` destination is a heap-owning field binder, and its
+/// escape into the result's `RecordInit` excludes the consumed base root from
+/// `RecordInPlace`. The result therefore receives the tuple's complete nested
+/// drop obligation without the base releasing it a second time.
+///
+/// A tuple is admitted only when EVERY element is itself carry-sound by the
+/// same rule that governs a bare field (`carry_transfers_field_ownership`), so
+/// the tuple is not a transfer boundary of its own: `Option` / enum elements,
+/// closures, and handles stay fail-closed inside a tuple exactly as they do
+/// bare (`reject_carry_tuple_of_option_field`,
+/// `reject_carry_tuple_of_enum_field`).
+///
+/// This test pins CHECK-and-RUN correctness only. The per-frame allocation
+/// evidence is the authoritative macOS `leaks(1)` oracle in
+/// `funcupdate_tuple_carry_*` (`funcupdate_owned_field_drop_leak_oracle.rs`),
+/// which measures both drop orders.
 #[test]
-fn reject_carry_tuple_of_owned_field() {
+fn accept_carry_tuple_of_owned_field() {
     let source = r#"
 import std.string;
 record T { pair: (string, i64), tag: string }
@@ -1531,15 +1550,209 @@ fn mk() -> T {
 fn main() {
     let r = mk();
     println(r.tag);
+    println(r.pair.0);
+}
+"#;
+    let (ok, out) = hew_run(source);
+    assert!(ok, "heap-owning tuple carry must run clean; got:\n{out}");
+    assert!(
+        out.contains(&"y".repeat(32)),
+        "carry must override tag; got:\n{out}"
+    );
+    assert!(
+        out.contains(&"k".repeat(32)),
+        "carry must preserve the carried tuple's owned element; got:\n{out}"
+    );
+}
+
+/// Widened shapes for the same lift: nested tuples, a tuple carrying a `Vec`,
+/// and a tuple carrying an owned record. Each must accept AND run correctly —
+/// checking alone would not discriminate a sound carry from one that
+/// double-frees at teardown, so every case reads a carried leaf back out.
+#[test]
+fn accept_carry_nested_and_collection_bearing_tuples() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "tuple nested in tuple",
+            r#"
+import std.string;
+record T { pair: (string, (string, i64)), tag: string }
+fn mk() -> T {
+    let b = T { pair: (string.repeat("k", 32), (string.repeat("m", 32), 7)), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() { let r = mk(); println(r.tag); println(r.pair.0); }
+"#,
+        ),
+        (
+            "tuple of tuples",
+            r#"
+import std.string;
+record T { pair: ((string, i64), (string, i64)), tag: string }
+fn mk() -> T {
+    let b = T { pair: ((string.repeat("k", 32), 1), (string.repeat("m", 32), 2)), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() { let r = mk(); println(r.tag); let first = r.pair.0; println(first.0); }
+"#,
+        ),
+        (
+            "tuple carrying a Vec",
+            r#"
+import std.string;
+record T { pair: (Vec<string>, i64), tag: string }
+fn mk() -> T {
+    let v: Vec<string> = Vec.new();
+    v.push(string.repeat("k", 32));
+    let b = T { pair: (v, 7), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() {
+    let r = mk();
+    println(r.tag);
+    let items = r.pair.0;
+    match items.get(0) {
+        .Some(first) => println(first),
+        .None => println("empty"),
+    }
+}
+"#,
+        ),
+        (
+            "tuple carrying an owned record",
+            r#"
+import std.string;
+record Inner { label: string, n: i64 }
+record T { pair: (Inner, i64), tag: string }
+fn mk() -> T {
+    let b = T { pair: (Inner { label: string.repeat("k", 32), n: 1 }, 7), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() { let r = mk(); println(r.tag); println(r.pair.0.label); }
+"#,
+        ),
+    ];
+    for (name, source) in cases {
+        let (ok, out) = hew_run(source);
+        assert!(
+            ok,
+            "{name}: heap-owning tuple carry must run clean; got:\n{out}"
+        );
+        assert!(
+            out.contains(&"y".repeat(32)),
+            "{name}: carry must override tag; got:\n{out}"
+        );
+        assert!(
+            out.contains(&"k".repeat(32)),
+            "{name}: carry must preserve the carried tuple's owned leaf; got:\n{out}"
+        );
+    }
+}
+
+/// A tuple whose element is an `Option<owned>` must FAIL `hew check`, exactly
+/// as the bare `Option<owned>` field does (`reject_carry_option_of_owned_field`).
+///
+/// The tuple is not a transfer boundary that rescues an element with no sound
+/// carry. Admitting this shape excluded the consumed base from its
+/// `RecordInPlace` drop WITHOUT the result taking over the optional's payload:
+/// `leaks --atExit` counted exactly one leaked payload allocation per frame,
+/// both when the result escaped its constructing frame and when base and result
+/// died in the same frame, while the identical record shape built WITHOUT a
+/// functional update leaked nothing. `Option<string>` leaks the same way, so it
+/// is the optional's shape that has no carry, not the payload's.
+#[test]
+fn reject_carry_tuple_of_option_field() {
+    let source = r#"
+import std.string;
+record Inner { label: string, n: i64 }
+record T { pair: (Option<Inner>, i64), tag: string }
+fn mk() -> T {
+    let b = T { pair: (Some(Inner { label: string.repeat("k", 32), n: 1 }), 7), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() {
+    let r = mk();
+    println(r.tag);
 }
 "#;
     let (ok, out) = hew_check(source);
     assert!(
         !ok,
-        "tuple-of-owned carry must fail check; got success:\n{out}"
+        "Option-in-tuple carry must fail check — admitting it leaks the optional's payload \
+         once per frame; got success:\n{out}"
     );
     assert!(
         out.contains("carry of owned non-record field") || out.contains("E_NOT_YET_IMPLEMENTED"),
+        "expected the fail-closed carry diagnostic; got:\n{out}"
+    );
+}
+
+/// A tuple whose element is a heap-payload user enum must FAIL `hew check`,
+/// matching the bare enum field.
+///
+/// This shape measures clean today, unlike the `Option` element above. It stays
+/// rejected because the carry rule is ONE rule at every nesting depth: a tuple
+/// admits exactly the element types the same field admits bare. Lifting the enum
+/// carry lifts both forms together, with one soundness argument and one leak
+/// oracle, rather than leaving a bare-rejects/tuple-admits split whose only
+/// justification is that nobody has measured the bare form yet.
+#[test]
+fn reject_carry_tuple_of_enum_field() {
+    let source = r#"
+import std.string;
+record Inner { label: string, n: i64 }
+enum Payload { Value(Inner); Empty; }
+record T { pair: (Payload, i64), tag: string }
+fn mk() -> T {
+    let b = T { pair: (.Value(Inner { label: string.repeat("k", 32), n: 1 }), 7), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() {
+    let r = mk();
+    println(r.tag);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "enum-in-tuple carry must fail check while the bare enum field is rejected; \
+         got success:\n{out}"
+    );
+    assert!(
+        out.contains("carry of owned non-record field") || out.contains("E_NOT_YET_IMPLEMENTED"),
+        "expected the fail-closed carry diagnostic; got:\n{out}"
+    );
+}
+
+/// Discrimination control for the tuple lift's LOWER edge: a tuple with NO heap
+/// fields (`(i64, i64)`) is not admitted by `ty_is_heap_owning_tuple` and still
+/// fails closed.
+///
+/// This is a coverage gap, not a soundness one — a plain-scalar tuple is
+/// trivially bit-copyable and carrying it can never double-free, so the reject
+/// is conservative rather than wrong. Recorded here so the boundary is asserted
+/// rather than assumed; lifting it is a separate, strictly-safe follow-up.
+#[test]
+fn reject_carry_non_heap_tuple_field_is_conservative() {
+    let source = r#"
+import std.string;
+record T { pair: (i64, i64), tag: string }
+fn mk() -> T {
+    let b = T { pair: (3, 7), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() {
+    let r = mk();
+    println(r.tag);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "non-heap tuple carry is currently conservative-reject; got success:\n{out}"
+    );
+    assert!(
+        out.contains("E_NOT_YET_IMPLEMENTED"),
         "expected the fail-closed carry diagnostic; got:\n{out}"
     );
 }
@@ -1619,4 +1832,249 @@ fn main() {
             && !out.contains("internal error"),
         "compiler must not panic on this input; got:\n{out}"
     );
+}
+
+/// A record nested in a carried tuple must not hide an unsupported enum path.
+/// Before the recursive record judgment this exact loop was admitted and
+/// leaked the `Leaf.label` and `Wrapper.tag` strings on every call.
+#[test]
+fn reject_carry_record_with_nested_option_payload() {
+    let source = r#"
+import std.string;
+record Leaf { label: string, n: i64 }
+record Wrapper { inner: (Option<Leaf>, i64), tag: string }
+record T { pair: (Wrapper, i64), churn: string }
+fn mk() -> T {
+    let b = T {
+        pair: (Wrapper { inner: (Some(Leaf { label: string.repeat("k", 32), n: 1 }), 9), tag: string.repeat("w", 32) }, 5),
+        churn: string.repeat("a", 32),
+    };
+    T { churn: string.repeat("b", 32), ..b }
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let r = mk();
+        total = total + r.churn.len();
+        i = i + 1;
+    }
+    total
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "record-with-nested-Option carry must fail check before execution; got success:\n{out}"
+    );
+    assert!(
+        out.contains("carry of owned non-record field") || out.contains("E_NOT_YET_IMPLEMENTED"),
+        "expected the fail-closed carry diagnostic; got:\n{out}"
+    );
+}
+
+struct CarryRuleMatrixCase {
+    class: &'static str,
+    depth: usize,
+    ty: &'static str,
+    declarations: &'static str,
+    setup: &'static str,
+    value: &'static str,
+    accepted: bool,
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the explicit five-class by three-depth table keeps every executed fixture cell auditable"
+)]
+fn carry_rule_matrix_cases() -> Vec<CarryRuleMatrixCase> {
+    vec![
+        CarryRuleMatrixCase {
+            class: "record-in-tuple",
+            depth: 2,
+            ty: "(Leaf, i64)",
+            declarations: "",
+            setup: "",
+            value: "(Leaf { label: string.repeat(\"k\", 32), n: 1 }, 2)",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "record-in-tuple",
+            depth: 3,
+            ty: "((Leaf, i64), i64)",
+            declarations: "",
+            setup: "",
+            value: "((Leaf { label: string.repeat(\"k\", 32), n: 1 }, 2), 3)",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "record-in-tuple",
+            depth: 4,
+            ty: "(((Leaf, i64), i64), i64)",
+            declarations: "",
+            setup: "",
+            value: "(((Leaf { label: string.repeat(\"k\", 32), n: 1 }, 2), 3), 4)",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "tuple-in-record",
+            depth: 2,
+            ty: "Wrapper",
+            declarations: "record Wrapper { inner: (string, i64), tag: i64 }",
+            setup: "",
+            value: "Wrapper { inner: (string.repeat(\"k\", 32), 2), tag: 3 }",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "tuple-in-record",
+            depth: 3,
+            ty: "Wrapper",
+            declarations: "record Wrapper { inner: ((string, i64), i64), tag: i64 }",
+            setup: "",
+            value: "Wrapper { inner: ((string.repeat(\"k\", 32), 2), 3), tag: 4 }",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "tuple-in-record",
+            depth: 4,
+            ty: "Wrapper",
+            declarations: "record Wrapper { inner: (((string, i64), i64), i64), tag: i64 }",
+            setup: "",
+            value: "Wrapper { inner: (((string.repeat(\"k\", 32), 2), 3), 4), tag: 5 }",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "enum-payload",
+            depth: 2,
+            ty: "Payload",
+            declarations: "enum Payload { Value(Leaf); Empty; }",
+            setup: "",
+            value: ".Value(Leaf { label: string.repeat(\"k\", 32), n: 1 })",
+            accepted: false,
+        },
+        CarryRuleMatrixCase {
+            class: "enum-payload",
+            depth: 3,
+            ty: "(Payload, i64)",
+            declarations: "enum Payload { Value(Leaf); Empty; }",
+            setup: "",
+            value: "(.Value(Leaf { label: string.repeat(\"k\", 32), n: 1 }), 3)",
+            accepted: false,
+        },
+        CarryRuleMatrixCase {
+            class: "enum-payload",
+            depth: 4,
+            ty: "((Payload, i64), i64)",
+            declarations: "enum Payload { Value(Leaf); Empty; }",
+            setup: "",
+            value: "((.Value(Leaf { label: string.repeat(\"k\", 32), n: 1 }), 3), 4)",
+            accepted: false,
+        },
+        CarryRuleMatrixCase {
+            class: "Option<record>",
+            depth: 2,
+            ty: "Option<Leaf>",
+            declarations: "",
+            setup: "",
+            value: "Some(Leaf { label: string.repeat(\"k\", 32), n: 1 })",
+            accepted: false,
+        },
+        CarryRuleMatrixCase {
+            class: "Option<record>",
+            depth: 3,
+            ty: "(Option<Leaf>, i64)",
+            declarations: "",
+            setup: "",
+            value: "(Some(Leaf { label: string.repeat(\"k\", 32), n: 1 }), 3)",
+            accepted: false,
+        },
+        CarryRuleMatrixCase {
+            class: "Option<record>",
+            depth: 4,
+            ty: "((Option<Leaf>, i64), i64)",
+            declarations: "",
+            setup: "",
+            value: "((Some(Leaf { label: string.repeat(\"k\", 32), n: 1 }), 3), 4)",
+            accepted: false,
+        },
+        CarryRuleMatrixCase {
+            class: "Vec<record>-element",
+            depth: 2,
+            ty: "Vec<Leaf>",
+            declarations: "",
+            setup: "let leaves: Vec<Leaf> = Vec.new(); leaves.push(Leaf { label: string.repeat(\"k\", 32), n: 1 });",
+            value: "leaves",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "Vec<record>-element",
+            depth: 3,
+            ty: "(Vec<Leaf>, i64)",
+            declarations: "",
+            setup: "let leaves: Vec<Leaf> = Vec.new(); leaves.push(Leaf { label: string.repeat(\"k\", 32), n: 1 });",
+            value: "(leaves, 3)",
+            accepted: true,
+        },
+        CarryRuleMatrixCase {
+            class: "Vec<record>-element",
+            depth: 4,
+            ty: "((Vec<Leaf>, i64), i64)",
+            declarations: "",
+            setup: "let leaves: Vec<Leaf> = Vec.new(); leaves.push(Leaf { label: string.repeat(\"k\", 32), n: 1 });",
+            value: "((leaves, 3), 4)",
+            accepted: true,
+        },
+    ]
+}
+
+fn carry_rule_matrix_source(case: &CarryRuleMatrixCase) -> String {
+    format!(
+        r#"
+import std.string;
+record Leaf {{ label: string, n: i64 }}
+{declarations}
+record T {{ keep: {ty}, churn: string }}
+fn mk() -> T {{
+    {setup}
+    let b = T {{ keep: {value}, churn: string.repeat("a", 32) }};
+    T {{ churn: string.repeat("b", 32), ..b }}
+}}
+fn main() {{ let r = mk(); println(r.churn); }}
+"#,
+        declarations = case.declarations,
+        ty = case.ty,
+        setup = case.setup,
+        value = case.value,
+    )
+}
+
+/// Execute every depth/class cell against the same recursive carry judgment.
+/// Accepted cells must run to normal teardown; cells containing a bare enum or
+/// `Option` transfer path must stop at the fail-closed diagnostic.
+#[test]
+fn functional_update_carry_rule_depth_matrix() {
+    require_codegen();
+    for case in carry_rule_matrix_cases() {
+        let source = carry_rule_matrix_source(&case);
+        let (ok, out) = if case.accepted {
+            hew_run(&source)
+        } else {
+            hew_check(&source)
+        };
+        assert_eq!(
+            ok, case.accepted,
+            "{} depth {} (`{}`) expected accepted={}; got:\n{}",
+            case.class, case.depth, case.ty, case.accepted, out
+        );
+        if !case.accepted {
+            assert!(
+                out.contains("carry of owned non-record field")
+                    || out.contains("E_NOT_YET_IMPLEMENTED"),
+                "{} depth {} must fail closed at the carry rule; got:\n{}",
+                case.class,
+                case.depth,
+                out
+            );
+        }
+    }
 }

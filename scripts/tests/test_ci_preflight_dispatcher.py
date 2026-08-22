@@ -2012,6 +2012,10 @@ _DEPENDENCY_GROUPS: tuple[tuple[str, ...], ...] = (
     ("make ll-diff", "make ll-identity-selftest"),
     ("make checked-mir-verify", "make checked-mir-run"),
     ("make test-doc-examples", "make doc-ratchet-selftest"),
+    (
+        "make test-obligation-advisory-corpus",
+        "make test-obligation-advisory-runner-selftest",
+    ),
     ("make stdlib", "scripts/check-libhew-fresh.sh"),
 )
 
@@ -2953,6 +2957,17 @@ def test_hew_tests_path_routes_to_the_hew_suite_ratchet() -> None:
     assert "make test-hew-ratchet  (budget: 1500s)" in result.stdout, result.stdout
     # tests/hew is declared by the ratchet that runs it, and by nothing else.
     assert "make test-stdlib-ratchet" not in result.stdout, result.stdout
+
+
+def test_obligation_runner_selftest_routes_with_corpus_gate() -> None:
+    result = run_dispatcher("scripts/tests/test_obligation_advisory_run.py")
+    assert result.returncode == 0, result.stderr
+    assert_narrow(result)
+    assert_gates(
+        result,
+        "test-obligation-advisory-corpus",
+        "test-obligation-advisory-runner-selftest",
+    )
 
 
 def test_ll_oracle_corpus_routes_to_its_own_differ() -> None:

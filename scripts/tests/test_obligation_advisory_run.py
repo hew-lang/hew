@@ -8,7 +8,8 @@ from pathlib import Path
 import unittest
 
 
-RUN_PATH = Path(__file__).with_name("run.py")
+ROOT = Path(__file__).resolve().parents[2]
+RUN_PATH = ROOT / "tests" / "obligation-advisory" / "run.py"
 SPEC = importlib.util.spec_from_file_location("obligation_advisory_run", RUN_PATH)
 assert SPEC is not None and SPEC.loader is not None
 RUN = importlib.util.module_from_spec(SPEC)

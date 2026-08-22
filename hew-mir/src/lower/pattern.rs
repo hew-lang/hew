@@ -4733,7 +4733,13 @@ impl Builder {
                     // Weak.upgrade shell likewise remains the sole owner. In
                     // both cases the binder is an alias unless a consuming
                     // use transfers the slot and changes its disposition.
-                    if call_scrutinee_owner_needs_arm_release || weak_upgrade_owner_ty.is_some() {
+                    let binder_is_affine = matches!(
+                        ValueClass::of_ty(&binding_ty, &self.type_classes),
+                        ValueClass::AffineResource | ValueClass::Linear
+                    );
+                    if weak_upgrade_owner_ty.is_some()
+                        || (call_scrutinee_owner_needs_arm_release && !binder_is_affine)
+                    {
                         self.set_owned_local_disposition(binding.binding, Disposition::AliasOf);
                     }
                 }

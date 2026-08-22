@@ -1417,6 +1417,12 @@ if (( COMPREHENSIVE == 1 || NEEDS_RUST_CLOSURE == 1 )) \
     REQUIRES_COMPILE=true
 fi
 
+# Assert the supported developer compiler profile on every route that can
+# exercise code or build configuration.
+if [[ "$REQUIRES_COMPILE" == "true" ]]; then
+    add_command "make hew-profile-check"
+fi
+
 if [[ -n "$GITHUB_OUTPUT_PATH" ]]; then
     {
         printf 'profile=%s\n' "$PROFILE_LABEL"

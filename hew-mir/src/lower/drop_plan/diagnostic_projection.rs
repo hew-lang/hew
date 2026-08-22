@@ -1,4 +1,23 @@
 use super::{MirCheck, MirDiagnostic, MirDiagnosticKind};
+use crate::model::ObligationMintProvenance;
+
+fn obligation_under_release_note(provenance: ObligationMintProvenance) -> String {
+    match provenance {
+        ObligationMintProvenance::Ordinary => "every heap-owning owned value must be released \
+             exactly once on every reachable exit path; this exit path never discharges the mint \
+             (leak). This is an advisory warning, not a build error — fix the drop plan (release \
+             on every exit) to silence it"
+            .to_string(),
+        ObligationMintProvenance::ExplicitRetain => "an explicit MIR retain minted an \
+             independently owned reference, but this exit never releases it. Retain-backed \
+             mint/release mismatches are compiler invariant failures and cannot be downgraded"
+            .to_string(),
+        ObligationMintProvenance::Mixed => "at least one failing exit path carries an explicit \
+             MIR retain-backed owner mint that is never released. Retain-backed mint/release \
+             mismatches are compiler invariant failures and cannot be downgraded"
+            .to_string(),
+    }
+}
 
 /// Project a Checked MIR finding to a `MirDiagnostic` for the CLI
 /// rejection surface. `CheckedMirFunction::checks` is the single
@@ -89,6 +108,7 @@ pub(in crate::lower) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagn
             site,
             name,
             local_ty,
+            mint_provenance,
             hard,
             reason,
         } => Some(MirDiagnostic {
@@ -101,17 +121,7 @@ pub(in crate::lower) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagn
                 hard: *hard,
                 reason: reason.clone(),
             },
-            note: if *hard {
-                "an explicit MIR retain minted an independently owned reference, but this exit \
-                 never releases it. Retain-backed mint/release mismatches are compiler invariant \
-                 failures and cannot be downgraded"
-                    .to_string()
-            } else {
-                "every heap-owning owned value must be released exactly once on every reachable \
-                 exit path; this exit path never discharges the mint (leak). This is an advisory \
-                 warning, not a build error — fix the drop plan (release on every exit) to silence it"
-                    .to_string()
-            },
+            note: obligation_under_release_note(*mint_provenance),
         }),
         MirCheck::ObligationOverReleased {
             function,

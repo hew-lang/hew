@@ -3460,7 +3460,18 @@ fn validate_obligation_balance_capped(
                 let aggregate = under_released.entry(*root).or_default();
                 aggregate.blocks.push(block);
                 aggregate.exits.push(format!("{exit_label}[bb{block}]"));
-                aggregate.hard |= retained_path_under_released || ob.explicit_retain_lo;
+                let exit_provenance = if ob.explicit_retain_lo {
+                    crate::model::ObligationMintProvenance::ExplicitRetain
+                } else if ob.explicit_retain_hi {
+                    crate::model::ObligationMintProvenance::Mixed
+                } else {
+                    crate::model::ObligationMintProvenance::Ordinary
+                };
+                aggregate.mint_provenance = Some(
+                    aggregate
+                        .mint_provenance
+                        .map_or(exit_provenance, |current| current.join(exit_provenance)),
+                );
                 aggregate.max_mints = aggregate.max_mints.max(reported_mints);
                 aggregate.max_discharges = aggregate.max_discharges.max(ob.hi);
             } else if ob.max_definite > ob.mint_hi {
@@ -3490,13 +3501,15 @@ fn validate_obligation_balance_capped(
             .get(&root)
             .cloned()
             .unwrap_or_else(|| format!("local_{root}"));
+        let mint_provenance = aggregate.mint_provenance.unwrap_or_default();
         findings.push(MirCheck::ObligationUnderReleased {
             function: elab.name.clone(),
             blocks: aggregate.blocks,
             site: mint_sites.get(&root).copied().unwrap_or(SiteId(0)),
             name: name.clone(),
             local_ty: local_types.get(&root).cloned().unwrap_or_default(),
-            hard: aggregate.hard,
+            mint_provenance,
+            hard: mint_provenance.is_blocking(),
             reason: format!(
                 "owned value `{name}` has up to {mints} owner mint(s), but at most \
                  {discharges} discharge(s), on {count} reachable exit path(s): {exits}; \
@@ -9240,7 +9253,7 @@ mod obligation_balance_validator;
 struct UnderReleaseAggregate {
     blocks: Vec<u32>,
     exits: Vec<String>,
-    hard: bool,
+    mint_provenance: Option<crate::model::ObligationMintProvenance>,
     max_mints: u8,
     max_discharges: u8,
 }

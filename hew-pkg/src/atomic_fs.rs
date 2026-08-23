@@ -210,7 +210,40 @@ where
 /// Resolve a logical publication slot to its immutable active generation.
 /// A missing pointer denotes the legacy direct-directory representation.
 pub(crate) fn resolve_published_dir(target: &Path) -> io::Result<PathBuf> {
-    resolve_published_dir_with(target, |path| fs::read_to_string(path))
+    resolve_published_dir_with(target, read_pointer)
+}
+
+#[cfg(not(windows))]
+fn read_pointer(path: &Path) -> io::Result<String> {
+    fs::read_to_string(path)
+}
+
+#[cfg(windows)]
+fn read_pointer(path: &Path) -> io::Result<String> {
+    use std::io::Read as _;
+
+    let mut file = open_pointer_file(path)?;
+    let mut pointer = String::new();
+    file.read_to_string(&mut pointer)?;
+    Ok(pointer)
+}
+
+#[cfg(windows)]
+fn open_pointer_file(path: &Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    let mut options = OpenOptions::new();
+    options.read(true).share_mode(windows_pointer_share_mode());
+    options.open(path)
+}
+
+#[cfg(windows)]
+fn windows_pointer_share_mode() -> u32 {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
 }
 
 fn resolve_published_dir_with<F>(target: &Path, read_pointer: F) -> io::Result<PathBuf>
@@ -250,15 +283,62 @@ fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
     fs::rename(source, target)
 }
 
+#[cfg(any(test, windows))]
+const WINDOWS_REPLACE_MAX_ATTEMPTS: usize = 8;
+
+#[cfg(all(test, windows))]
+use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{
+    ERROR_FILE_NOT_FOUND, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
+};
+
+#[cfg(all(test, not(windows)))]
+const ERROR_ACCESS_DENIED: u32 = 5;
+#[cfg(all(test, not(windows)))]
+const ERROR_LOCK_VIOLATION: u32 = 33;
+#[cfg(all(test, not(windows)))]
+const ERROR_SHARING_VIOLATION: u32 = 32;
+
+#[cfg(any(test, windows))]
+fn is_windows_replace_contention(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(code)
+            if code == ERROR_SHARING_VIOLATION.cast_signed()
+                || code == ERROR_LOCK_VIOLATION.cast_signed()
+    )
+}
+
+#[cfg(any(test, windows))]
+fn retry_windows_replace_with<F, W>(mut replace: F, mut wait: W) -> io::Result<()>
+where
+    F: FnMut() -> io::Result<()>,
+    W: FnMut(usize),
+{
+    let mut original_error = None;
+    for attempt in 0..WINDOWS_REPLACE_MAX_ATTEMPTS {
+        match replace() {
+            Ok(()) => return Ok(()),
+            Err(error) if is_windows_replace_contention(&error) => {
+                if original_error.is_none() {
+                    original_error = Some(error);
+                }
+                if attempt + 1 == WINDOWS_REPLACE_MAX_ATTEMPTS {
+                    return Err(original_error.expect("a contention error was retained"));
+                }
+                wait(attempt);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("the finite replacement loop always returns")
+}
+
 #[cfg(windows)]
 fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
     use std::iter;
     use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
-
-    if !target.exists() {
-        return fs::rename(source, target);
-    }
 
     let source_wide = source
         .as_os_str()
@@ -270,22 +350,54 @@ fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
         .encode_wide()
         .chain(iter::once(0))
         .collect::<Vec<_>>();
+    retry_windows_replace_with(
+        || replace_file_once(&source_wide, &target_wide),
+        |attempt| std::thread::sleep(std::time::Duration::from_millis(1_u64 << attempt)),
+    )
+}
+
+#[cfg(windows)]
+fn replace_file_once(source: &[u16], target: &[u16]) -> io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, ReplaceFileW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        REPLACEFILE_WRITE_THROUGH,
+    };
+
     // SAFETY: both strings are NUL-terminated and remain alive for the call;
     // no backup or metadata exclusion buffers are supplied.
     let result = unsafe {
         ReplaceFileW(
-            target_wide.as_ptr(),
-            source_wide.as_ptr(),
+            target.as_ptr(),
+            source.as_ptr(),
             std::ptr::null(),
             REPLACEFILE_WRITE_THROUGH,
             std::ptr::null(),
             std::ptr::null(),
         )
     };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
+    if result != 0 {
+        return Ok(());
+    }
+
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() != Some(ERROR_FILE_NOT_FOUND.cast_signed()) {
+        return Err(error);
+    }
+
+    // ReplaceFileW requires an existing target. MoveFileExW provides the same
+    // write-through atomic rename when the target disappeared or never existed.
+    // SAFETY: both strings are NUL-terminated and remain alive for the call.
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result != 0 {
         Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
 }
 
@@ -358,8 +470,9 @@ mod tests {
 
     #[test]
     fn staged_directory_publication_never_exposes_partial_tree() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
 
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("package");
@@ -368,10 +481,14 @@ mod tests {
 
         let stop = Arc::new(AtomicBool::new(false));
         let saw_partial = Arc::new(AtomicBool::new(false));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::sync_channel(0);
         let reader_stop = Arc::clone(&stop);
         let reader_partial = Arc::clone(&saw_partial);
+        let reader_reads = Arc::clone(&reads);
         let reader_target = target.clone();
         let reader = std::thread::spawn(move || {
+            let mut first_read = true;
             while !reader_stop.load(Ordering::Relaxed) {
                 let active = resolve_published_dir(&reader_target).unwrap();
                 if !matches!(
@@ -381,10 +498,18 @@ mod tests {
                     reader_partial.store(true, Ordering::Relaxed);
                     break;
                 }
+                reader_reads.fetch_add(1, Ordering::Relaxed);
+                if first_read {
+                    started_tx.send(()).unwrap();
+                    first_read = false;
+                }
                 std::thread::yield_now();
             }
         });
 
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("reader must observe the initial complete publication");
         for index in 0..100 {
             let staged = StagedDir::new(&target).unwrap();
             let state = if index % 2 == 0 { "new" } else { "old" };
@@ -395,6 +520,7 @@ mod tests {
         reader.join().unwrap();
 
         assert!(!saw_partial.load(Ordering::Relaxed));
+        assert!(reads.load(Ordering::Relaxed) > 0);
         assert!(matches!(
             fs::read_to_string(resolve_published_dir(&target).unwrap().join("state")).as_deref(),
             Ok("old" | "new")
@@ -448,6 +574,115 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn windows_replace_retry_accepts_only_sharing_contention() {
+        assert!(is_windows_replace_contention(
+            &io::Error::from_raw_os_error(ERROR_SHARING_VIOLATION.cast_signed())
+        ));
+        assert!(is_windows_replace_contention(
+            &io::Error::from_raw_os_error(ERROR_LOCK_VIOLATION.cast_signed())
+        ));
+        assert!(!is_windows_replace_contention(
+            &io::Error::from_raw_os_error(ERROR_ACCESS_DENIED.cast_signed())
+        ));
+        assert!(!is_windows_replace_contention(&io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid pointer"
+        )));
+    }
+
+    #[test]
+    fn windows_replace_retry_stops_after_success() {
+        let mut attempts = 0;
+        let mut waits = Vec::new();
+
+        retry_windows_replace_with(
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(io::Error::from_raw_os_error(
+                        ERROR_SHARING_VIOLATION.cast_signed(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+            |attempt| waits.push(attempt),
+        )
+        .unwrap();
+
+        assert_eq!(attempts, 3);
+        assert_eq!(waits, [0, 1]);
+    }
+
+    #[test]
+    fn windows_replace_retry_is_bounded_and_returns_original_error() {
+        let mut attempts = 0;
+        let error = retry_windows_replace_with(
+            || {
+                attempts += 1;
+                let code = if attempts == 1 {
+                    ERROR_SHARING_VIOLATION
+                } else {
+                    ERROR_LOCK_VIOLATION
+                };
+                Err(io::Error::from_raw_os_error(code.cast_signed()))
+            },
+            |_| {},
+        )
+        .unwrap_err();
+
+        assert_eq!(attempts, WINDOWS_REPLACE_MAX_ATTEMPTS);
+        assert_eq!(
+            error.raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION.cast_signed())
+        );
+    }
+
+    #[test]
+    fn windows_replace_retry_does_not_retry_access_denied() {
+        let mut attempts = 0;
+        let error = retry_windows_replace_with(
+            || {
+                attempts += 1;
+                Err(io::Error::from_raw_os_error(
+                    ERROR_ACCESS_DENIED.cast_signed(),
+                ))
+            },
+            |_| panic!("non-contention errors must not wait"),
+        )
+        .unwrap_err();
+
+        assert_eq!(attempts, 1);
+        assert_eq!(
+            error.raw_os_error(),
+            Some(ERROR_ACCESS_DENIED.cast_signed())
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_pointer_reader_allows_delete_compatible_replacement() {
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+
+        assert_eq!(
+            windows_pointer_share_mode(),
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let pointer = dir.path().join(".package.current");
+        fs::write(&pointer, "old").unwrap();
+        let held_reader = open_pointer_file(&pointer).unwrap();
+
+        write_atomic(&pointer, b"new", 0o644).unwrap();
+
+        assert_eq!(read_pointer(&pointer).unwrap(), "new");
+        drop(held_reader);
     }
 
     #[test]

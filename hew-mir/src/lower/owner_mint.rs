@@ -209,7 +209,7 @@ impl Builder {
         field_idx: u32,
         payload_ty: &ResolvedTy,
     ) -> Option<OwnerMintWarrant> {
-        let HirExprKind::Call { callee, args, .. } = &scrutinee.kind else {
+        let HirExprKind::Call { callee, .. } = &scrutinee.kind else {
             return None;
         };
         let HirExprKind::BindingRef {
@@ -354,51 +354,6 @@ impl Builder {
             OwnerMintOrigin::ForwardedFromAdmissionGate,
             !matches!(ownership, ProducedValueOwnership::Owned { .. }),
         )
-    }
-}
-
-fn type_may_carry_builtin_stream_endpoint(ty: &ResolvedTy) -> bool {
-    match ty {
-        ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::Sink | hew_types::BuiltinType::Stream),
-            ..
-        }
-        | ResolvedTy::Named { builtin: None, .. }
-        | ResolvedTy::Function { .. }
-        | ResolvedTy::Closure { .. }
-        | ResolvedTy::Pointer { .. }
-        | ResolvedTy::Borrow { .. }
-        | ResolvedTy::TraitObject { .. }
-        | ResolvedTy::TypeParam { .. } => true,
-        ResolvedTy::Named {
-            args,
-            builtin: Some(_),
-            ..
-        }
-        | ResolvedTy::Tuple(args) => args.iter().any(type_may_carry_builtin_stream_endpoint),
-        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) | ResolvedTy::Task(inner) => {
-            type_may_carry_builtin_stream_endpoint(inner)
-        }
-        ResolvedTy::I8
-        | ResolvedTy::I16
-        | ResolvedTy::I32
-        | ResolvedTy::I64
-        | ResolvedTy::U8
-        | ResolvedTy::U16
-        | ResolvedTy::U32
-        | ResolvedTy::U64
-        | ResolvedTy::Isize
-        | ResolvedTy::Usize
-        | ResolvedTy::F32
-        | ResolvedTy::F64
-        | ResolvedTy::Bool
-        | ResolvedTy::Char
-        | ResolvedTy::String
-        | ResolvedTy::Bytes
-        | ResolvedTy::CancellationToken
-        | ResolvedTy::Duration
-        | ResolvedTy::Unit
-        | ResolvedTy::Never => false,
     }
 }
 

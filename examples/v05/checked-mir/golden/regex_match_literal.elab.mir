@@ -206,7 +206,7 @@ fn std.text.regex.Pattern::captures -> std.text.regex.CaptureMatches
     call[bb1 hew_regex_capture_width -> bb2] ->
       (none)
     return[bb2] ->
-      (none)
+      drop _5 ty=Vec<string> kind=cow_heap(hew_vec_free_owned)
 
 fn std.text.regex.Pattern::find_all_submatch -> std.text.regex.CaptureMatches
   statements:
@@ -228,7 +228,7 @@ fn std.text.regex.Pattern::find_all_submatch -> std.text.regex.CaptureMatches
     call[bb1 hew_regex_capture_width -> bb2] ->
       (none)
     return[bb2] ->
-      (none)
+      drop _5 ty=Vec<string> kind=cow_heap(hew_vec_free_owned)
 
 fn std.text.regex.Pattern::clone -> std.text.regex.Pattern
   statements:

@@ -64,8 +64,9 @@ fn main() -> i64 [conv=default]
     _7: bool
     _8: i64
     _9: bool
-    _10: i64
+    _10: Rc<Node>
     _11: i64
+    _12: i64
   bb0:
     _0 = call build() -> bb1
   bb1:
@@ -85,12 +86,16 @@ fn main() -> i64 [conv=default]
     ret = move _3
     return
   bb3:
-    _10 = const.i64 9000
-    _3 = move _10
+    stmt: bind BindingId(4294967230) __hew_active_variant_payload site=SiteId(19) ty=Rc<Node>
+    _10 = move mvar4.0.0
+    neutralize_payload mvar4.0.0 [EphemeralTempConsume]
+    _11 = const.i64 9000
+    _3 = move _11
+    drop _10 ty=Rc<Node> fn=release(hew_rc_drop)
     goto bb2
   bb4:
-    _11 = const.i64 1
-    _3 = move _11
+    _12 = const.i64 1
+    _3 = move _12
     goto bb2
   bb5:
     trap(ExhaustivenessFallthrough)

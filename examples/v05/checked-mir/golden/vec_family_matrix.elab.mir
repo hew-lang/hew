@@ -343,12 +343,14 @@ fn string_families -> ()
     use BindingId(14) values site=SiteId(191) ty=Vec<string> intent=Read
     eval site=SiteId(190) ty=bool
     use BindingId(14) values site=SiteId(194) ty=Vec<string> intent=Read
-    bind BindingId(4294967230) __hew_produced_value site=SiteId(193) ty=string
+    bind BindingId(4294967230) __hew_discarded_call_result site=SiteId(193) ty=string
+    use BindingId(4294967230) __hew_discarded_call_result site=SiteId(193) ty=string intent=Consume
     eval site=SiteId(193) ty=string
     use BindingId(14) values site=SiteId(196) ty=Vec<string> intent=Read
     eval site=SiteId(195) ty=()
     use BindingId(14) values site=SiteId(199) ty=Vec<string> intent=Read
-    bind BindingId(4294967229) __hew_produced_value site=SiteId(198) ty=string
+    bind BindingId(4294967229) __hew_discarded_call_result site=SiteId(198) ty=string
+    use BindingId(4294967229) __hew_discarded_call_result site=SiteId(198) ty=string intent=Consume
     eval site=SiteId(198) ty=string
     drop BindingId(14) values ty=Vec<string>
   drop_plans:

@@ -369,6 +369,7 @@ fn std$string$to_int -> Option<i64>
     return site=Some(SiteId(181)) ty=Option<i64>
     bind BindingId(25) value site=SiteId(185) ty=i64
     use BindingId(25) value site=SiteId(186) ty=i64 intent=Read
+    bind BindingId(4294967230) __hew_active_variant_payload site=SiteId(187) ty=string
     drop BindingId(4294967231) __hew_call_scrutinee ty=Result<i64, string>
   drop_plans:
     call[bb0 std$string$try_to_int -> bb1] ->
@@ -594,6 +595,7 @@ fn std$string$to_float -> f64
     return site=Some(SiteId(292)) ty=f64
     bind BindingId(38) value site=SiteId(296) ty=f64
     use BindingId(38) value site=SiteId(296) ty=f64 intent=Read
+    bind BindingId(4294967230) __hew_active_variant_payload site=SiteId(297) ty=string
     drop BindingId(4294967231) __hew_call_scrutinee ty=Result<f64, string>
   drop_plans:
     call[bb0 std$string$try_to_float -> bb1] ->

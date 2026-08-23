@@ -29,6 +29,7 @@ fn main -> i64
     use BindingId(2) weak site=SiteId(18) ty=Weak<Node> intent=Read
     bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(17) ty=Option<Rc<Node>>
     return site=Some(SiteId(16)) ty=i64
+    bind BindingId(4294967230) __hew_active_variant_payload site=SiteId(19) ty=Rc<Node>
     drop BindingId(4294967231) __hew_call_scrutinee ty=Option<Rc<Node>>
     drop BindingId(2) weak ty=Weak<Node>
   drop_plans:

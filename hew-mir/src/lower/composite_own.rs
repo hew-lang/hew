@@ -160,6 +160,36 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
     field_dischargeable: &dyn Fn(&ResolvedTy) -> bool,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
+    let owned_binding_bases: HashSet<u32> = owned_locals
+        .iter()
+        .filter_map(|(binding, _, _)| binding_locals.get(binding).and_then(|p| base_local(*p)))
+        .collect();
+    let neutralized_payload_slots: HashSet<Place> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::NeutralizePayloadSlot { place, .. } => Some(*place),
+            _ => None,
+        })
+        .collect();
+    let carrier_backed_payload_aliases: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::Move {
+                dest: Place::Local(dest),
+                src:
+                    source @ (Place::MachineVariant { local: carrier, .. }
+                    | Place::EnumVariant { local: carrier, .. }),
+            } if owned_binding_bases.contains(carrier)
+                && !neutralized_payload_slots.contains(source) =>
+            {
+                Some(*dest)
+            }
+            _ => None,
+        })
+        .collect();
+
     // Candidate roots: base locals of record bindings with projected owned
     // fields. This intentionally includes mixed resource/COW records which
     // cannot admit a whole-record RecordInPlace drop but whose individually
@@ -175,6 +205,13 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
         let Some(local) = base_local(*place) else {
             continue;
         };
+        // A match payload binder backed by an owned, non-neutralized carrier is
+        // a byte-copy view. The carrier's terminal enum drop still owns every
+        // original field; sibling discharges from the binder would release the
+        // same storage a second time (rC's `Option<Secret>` path).
+        if carrier_backed_payload_aliases.contains(&local) {
+            continue;
+        }
         root_record_ty.insert(local, ty.clone());
     }
     // Tuple candidate roots (#2383): base locals of owned heap-owning TUPLE
@@ -245,11 +282,6 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
     }
     // Condition 3 — base locals of every owned binding (a binder in this set
     // is an extracted field with its own release path).
-    let owned_binding_bases: HashSet<u32> = owned_locals
-        .iter()
-        .filter_map(|(binding, _, _)| binding_locals.get(binding).and_then(|p| base_local(*p)))
-        .collect();
-
     let mut scans: HashMap<u32, RootScan> = root_record_ty
         .keys()
         .map(|&r| (r, RootScan::default()))

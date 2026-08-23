@@ -138,6 +138,7 @@ fn main -> i64
     use BindingId(8) weak site=SiteId(49) ty=Weak<i64> intent=Read
     bind BindingId(4294967230) __hew_call_scrutinee site=SiteId(48) ty=Option<Rc<i64>>
     bind BindingId(9) dead site=SiteId(47) ty=i64
+    bind BindingId(4294967229) __hew_active_variant_payload site=SiteId(50) ty=Rc<i64>
     use BindingId(9) dead site=SiteId(55) ty=i64 intent=Read
     return site=Some(SiteId(52)) ty=i64
     drop BindingId(4294967230) __hew_call_scrutinee ty=Option<Rc<i64>>

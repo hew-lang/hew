@@ -2553,6 +2553,38 @@ fn collect_payload_alias_map(blocks: &[BasicBlock]) -> HashMap<u32, u32> {
     )
 }
 
+/// Restrict move-chain payload-alias folding to roots whose release obligation
+/// is itself represented in the balance model. The direct projection binder is
+/// always an alias of its carrier. A later source binding, however, can be
+/// tracked while an ephemeral result carrier is absent from `tracked`; folding
+/// that publication into the absent carrier would erase the only obligation
+/// the validator can see and silently certify a real leak.
+fn collect_balance_payload_alias_map(
+    blocks: &[BasicBlock],
+    tracked: &BTreeMap<u32, String>,
+) -> HashMap<u32, u32> {
+    let direct_payload_binders: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. }
+                if payload_carrier_local(*src).is_some() =>
+            {
+                whole_owner_local(*dest)
+            }
+            _ => None,
+        })
+        .collect();
+    collect_payload_alias_map(blocks)
+        .into_iter()
+        .filter(|(binder, carrier)| {
+            direct_payload_binders.contains(binder)
+                || !tracked.contains_key(binder)
+                || tracked.contains_key(carrier)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod payload_alias_closure_tests {
     use super::*;
@@ -2589,6 +2621,39 @@ mod payload_alias_closure_tests {
             aliases.get(&1),
             None,
             "the returned publication owns its caller transfer independently"
+        );
+    }
+
+    #[test]
+    fn tracked_binding_does_not_fold_into_untracked_ephemeral_carrier() {
+        let blocks = vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::Move {
+                    dest: Place::Local(8),
+                    src: Place::MachineVariant {
+                        local: 2,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Instr::Move {
+                    dest: Place::Local(1),
+                    src: Place::Local(8),
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+        let tracked = BTreeMap::from([(1, "loop payload".to_string())]);
+
+        let aliases = collect_balance_payload_alias_map(&blocks, &tracked);
+
+        assert_eq!(aliases.get(&8), Some(&2));
+        assert_eq!(
+            aliases.get(&1),
+            None,
+            "a tracked publication must retain its advisory when its carrier is outside the balance"
         );
     }
 }
@@ -3433,7 +3498,7 @@ fn validate_obligation_balance_capped(
         return findings;
     }
 
-    let alias_to = collect_payload_alias_map(blocks);
+    let alias_to = collect_balance_payload_alias_map(blocks, tracked_in);
     let retained_move_sites = collect_retained_move_sites(blocks);
     let cow_handoff_commit_sites = collect_cow_handoff_commit_sites(blocks);
     // A payload-alias binder's discharges fold into its carrier; the binder

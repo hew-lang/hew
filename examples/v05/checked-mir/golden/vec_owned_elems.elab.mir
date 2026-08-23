@@ -68,9 +68,7 @@ fn main -> ()
     use BindingId(12) tail_tags site=SiteId(110) ty=Vec<Tag> intent=Read
     bind BindingId(4294967220) __hew_produced_value site=SiteId(109) ty=Tag
     eval site=SiteId(107) ty=()
-    drop BindingId(4294967220) __hew_produced_value ty=Tag
     drop BindingId(12) tail_tags ty=Vec<Tag>
-    drop BindingId(11) t ty=Tag
     drop BindingId(4294967223) __hew_produced_value ty=Tag
     drop BindingId(4294967224) __hew_produced_value ty=Tag
     drop BindingId(10) tags ty=Vec<Tag>
@@ -215,7 +213,6 @@ fn main -> ()
     branch[bb46: bb47/bb48] ->
       (none)
     panic[bb47] ->
-      drop _80 ty=Tag kind=record_in_place
       drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
       drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
@@ -228,7 +225,6 @@ fn main -> ()
       (none)
     panic[bb50] ->
       drop _88 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
-      drop _80 ty=Tag kind=record_in_place
       drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
       drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
@@ -240,9 +236,7 @@ fn main -> ()
     call[bb52 println_i64 -> bb53] ->
       (none)
     return[bb53] ->
-      drop _92 ty=Tag kind=record_in_place
       drop _88 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
-      drop _80 ty=Tag kind=record_in_place
       drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
       drop _55 ty=Vec<Point> kind=cow_heap(hew_vec_free)
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)

@@ -19,37 +19,30 @@
 # shares of one string collapse into a single leak node — an executed fixture
 # that calls its shape once can report zero leaks while leaking on every call.
 #
-# Four advisories sit on rows that execute leak-free at that scale:
-# direct_call_terminal_carriers.hew (2), rG_inline.hew (1), rG_let.hew (1).
-# Those are FALSE POSITIVES of the obligation validator, recorded here so the
-# corpus states the imprecision instead of hiding it. Closing them lowers the
-# count and fails this file, which is the intended signal.
-#
-# pO_alias.hew is the counterexample in the other direction: a `for` cursor over
-# an owned-element `Vec` leaks two allocations per call and its advisory is the
-# only report of that. It is here because folding the cursor element into an
-# alias of the carrier removed the advisory and left the leak, and no gate
-# noticed.
+# pO_alias.hew remains a counterexample: a `for` cursor over an owned-element
+# `Vec` leaks two allocations per call, and its advisory is the only report of
+# that. The validator must not fold its downstream binding into an ephemeral
+# carrier that is absent from the balance model and thereby hide the leak.
 #
 # fixture	advisories	blocking_mir	exit_code	runtime
-cross_module_result/main.hew	2	0	0	check
-direct_call_terminal_carriers.hew	2	0	0	clean
-escaping_direct_call_binding.hew	2	0	0	check
-many_return_blocks.hew	2	0	0	check
-pF.hew	2	0	0	check
-pG.hew	2	0	0	check
-pH.hew	2	0	0	check
-pJ.hew	1	0	0	check
-pK.hew	1	0	0	check
-pL.hew	1	0	0	leaks
-pM.hew	1	0	0	leaks
+cross_module_result/main.hew	0	0	0	check
+direct_call_terminal_carriers.hew	0	0	0	clean
+escaping_direct_call_binding.hew	0	0	0	check
+many_return_blocks.hew	0	0	0	check
+pF.hew	0	0	0	check
+pG.hew	0	0	0	check
+pH.hew	0	0	0	check
+pJ.hew	0	0	0	check
+pK.hew	0	0	0	check
+pL.hew	0	0	0	clean
+pM.hew	0	0	0	clean
 pN.hew	0	0	0	clean
 pO_alias.hew	1	0	0	leaks
 rA.hew	0	0	0	clean
-rC.hew	1	0	0	leaks
-rG_inline.hew	1	0	0	clean
-rG_let.hew	1	0	0	clean
-rJ_noerr.hew	2	0	0	leaks
-rK_noloop.hew	2	0	0	leaks
-retained_call_carriers/main.hew	2	0	0	check
+rC.hew	0	0	0	clean
+rG_inline.hew	0	0	0	clean
+rG_let.hew	0	0	0	clean
+rJ_noerr.hew	0	0	0	clean
+rK_noloop.hew	0	0	0	clean
+retained_call_carriers/main.hew	0	0	0	check
 retained_hard_refusal.hew	0	1	1	refuse

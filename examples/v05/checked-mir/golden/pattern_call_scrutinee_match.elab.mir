@@ -33,8 +33,6 @@ fn probe -> i64
     bind BindingId(3) b site=SiteId(16) ty=string
     use BindingId(2) a site=SiteId(18) ty=string intent=Read
     use BindingId(3) b site=SiteId(21) ty=string intent=Read
-    drop BindingId(3) b ty=string
-    drop BindingId(2) a ty=string
     drop BindingId(4294967231) __hew_call_scrutinee ty=Packet
   drop_plans:
     call[bb0 make -> bb1] ->

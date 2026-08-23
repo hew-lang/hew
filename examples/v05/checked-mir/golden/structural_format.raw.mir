@@ -15,6 +15,7 @@ fn main() -> () [conv=default]
     _2 = record_init Point { .0=_0, .1=_1 }
     _3 = move _2
     _4 = call_rt hew_structural_format(_3)
+    snapshot_drop _3 ty=Point plan=UserRecord { name: "Point" } boundary=LocalCall
     call println_str(_4) -> bb1
   bb1:
     stmt: eval site=SiteId(3) ty=()

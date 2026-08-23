@@ -467,11 +467,11 @@ fn main() -> i64 {
     );
 }
 
-/// A projected record field returned through a shared match-result local
-/// transfers only that field. The record's other owned field must be released
-/// on the predecessor where the projection is still uniquely attributed.
+/// A projected string field is retained by codegen before it is returned. When
+/// the record binder is still backed by an owned enum carrier, that carrier —
+/// not the byte-copy binder — remains responsible for both original fields.
 #[test]
-fn vec_clone_match_field_return_releases_the_record_sibling() {
+fn vec_clone_match_field_return_defers_original_fields_to_carrier() {
     let p = pipeline_with_tc(
         r#"
 record Secret { value: string, kind: string }
@@ -507,24 +507,16 @@ fn collect(n: i64) -> string {
         .iter()
         .find(|function| function.name == "collect")
         .expect("raw fn collect");
-    let sibling_drops = collect
+    let inline_field_drops = collect
         .blocks
         .iter()
         .flat_map(|block| block.instructions.iter())
-        .filter(|instruction| {
-            matches!(
-                instruction,
-                Instr::FieldDropInPlace {
-                    field: hew_mir::FieldAddr::Record(hew_mir::FieldOffset(1)),
-                    ty: hew_types::ResolvedTy::String,
-                    ..
-                }
-            )
-        })
+        .filter(|instruction| matches!(instruction, Instr::FieldDropInPlace { .. }))
         .count();
     assert_eq!(
-        sibling_drops, 1,
-        "the returned value field must leave one exact release for the kind sibling"
+        inline_field_drops, 0,
+        "the carrier's terminal enum drop owns both original record fields; an inline \
+         binder-field release would double-release the same carrier storage"
     );
 }
 

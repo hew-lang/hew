@@ -306,6 +306,7 @@ fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
     _27 = const.i64 1
     mtag26 = move _27
     mvar26.1.0 = move _19
+    neutralize_payload _19 -> mvar26.1.0 [ReturnedAggregateMemberConsume]
     ret = move _26
     return
   bb15:
@@ -336,6 +337,7 @@ fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
     _34 = const.i64 0
     mtag32 = move _34
     mvar32.0.0 = move _33
+    neutralize_payload _33 -> mvar32.0.0 [ReturnedAggregateMemberConsume]
     _35 = move _32
     ret = move _35
     return

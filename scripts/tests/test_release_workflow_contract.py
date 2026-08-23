@@ -243,7 +243,7 @@ def run_canned_release_image_assertion(
 
 
 def assert_exact_dispatch_correlation(job: str) -> None:
-    """Require the unique caller identity in both dispatch and run selection."""
+    """Require the unique dispatch identity in both dispatch and run selection."""
     assert 'CORRELATION_ID="hew-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"' in job
     assert (
         'EXPECTED_DISPLAY_TITLE="Build Playground mode=publish'
@@ -263,12 +263,10 @@ def assert_exact_dispatch_correlation(job: str) -> None:
     query = job[query_start:query_end]
     expected = """            if ! RUN_IDS_OUTPUT=$(jq -r \\
                 --argjson floor "${PRE_DISPATCH_MAX_ID}" \\
-                --arg sha "${PLAYGROUND_SHA}" \\
                 --arg actor "${DISPATCH_ACTOR}" \\
                 --arg display_title "${EXPECTED_DISPLAY_TITLE}" \\
                 '.workflow_runs[]
                   | select(.id > $floor)
-                  | select(.head_sha == $sha)
                   | select(.actor.login == $actor)
                   | select(.display_title == $display_title)
                   | .id' <<< "${RUNS_JSON}"); then
@@ -317,9 +315,9 @@ if not args or args[0] != "api":
     raise SystemExit(92)
 
 joined = " ".join(args)
-if "repos/hew-lang/playground/commits/main" in joined:
-    print("sha-good")
-    raise SystemExit(0)
+if args[1:] == ["user", "--jq", ".login"]:
+    print("GET /user is unavailable to installation tokens", file=sys.stderr)
+    raise SystemExit(43)
 if "repos/hew-lang/playground/actions/workflows/build.yml/runs" in joined:
     if "--jq" in args:
         print("100")
@@ -332,8 +330,8 @@ if "repos/hew-lang/playground/actions/workflows/build.yml/runs" in joined:
     state.write_text(str(poll))
     matching = {
         "id": 101,
-        "head_sha": "sha-good",
-        "actor": {"login": "actor-good"},
+        "head_sha": "sha-after" if scenario == "moving-head" else "sha-good",
+        "actor": {"login": "playground-app[bot]"},
         "display_title": (
             "Build Playground mode=publish"
             " sha=0123456789abcdef0123456789abcdef01234567"
@@ -344,12 +342,10 @@ if "repos/hew-lang/playground/actions/workflows/build.yml/runs" in joined:
         runs = []
     elif scenario == "ambiguous":
         runs = [matching, {**matching, "id": 102}]
-    elif scenario in {"title", "head", "actor", "floor"}:
+    elif scenario in {"title", "actor", "floor"}:
         candidate = dict(matching)
         if scenario == "title":
             candidate["display_title"] = "Build Playground wrong"
-        elif scenario == "head":
-            candidate["head_sha"] = "sha-wrong"
         elif scenario == "actor":
             candidate["actor"] = {"login": "actor-wrong"}
         else:
@@ -358,7 +354,6 @@ if "repos/hew-lang/playground/actions/workflows/build.yml/runs" in joined:
     else:
         runs = [
             {**matching, "id": 100},
-            {**matching, "head_sha": "sha-wrong", "id": 103},
             {**matching, "actor": {"login": "actor-wrong"}, "id": 104},
             {**matching, "display_title": "Build Playground wrong", "id": 105},
             matching,
@@ -368,15 +363,16 @@ if "repos/hew-lang/playground/actions/workflows/build.yml/runs" in joined:
 if "repos/hew-lang/playground" in joined:
     print("main")
     raise SystemExit(0)
-if args[1:] == ["user", "--jq", ".login"]:
-    print("actor-good")
-    raise SystemExit(0)
 raise SystemExit(93)
 """
 
 
 def run_playground(
-    scenario: str, *, jq_failure: bool = False, hew_sha: str = HEW_SHA
+    scenario: str,
+    *,
+    jq_failure: bool = False,
+    hew_sha: str = HEW_SHA,
+    script: str | None = None,
 ) -> tuple:
     """Execute the workflow's exact Bash with deterministic command doubles."""
     with tempfile.TemporaryDirectory() as directory:
@@ -401,6 +397,7 @@ def run_playground(
                 "PATH": f"{bin_dir}:{env['PATH']}",
                 "GH_TOKEN": "test-token",
                 "HEW_SHA": hew_sha,
+                "DISPATCH_ACTOR": "playground-app[bot]",
                 "RELEASE_TAG": "v0.6.0-rc1",
                 "GITHUB_RUN_ID": "777",
                 "GITHUB_RUN_ATTEMPT": "2",
@@ -410,7 +407,7 @@ def run_playground(
             }
         )
         result = subprocess.run(
-            ["bash", "-c", playground_script()],
+            ["bash", "-c", playground_script() if script is None else script],
             cwd=ROOT,
             env=env,
             check=False,
@@ -564,6 +561,11 @@ def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
     assert "if: steps.acquisition.outputs.mode == 'actions'" in token_step
     assert "continue-on-error:" not in token_step
     assert "GH_TOKEN: ${{ steps.playground-app-token.outputs.token }}" in trigger_step
+    assert (
+        "DISPATCH_ACTOR: ${{ steps.playground-app-token.outputs.app-slug }}[bot]"
+        in trigger_step
+    )
+    assert "gh api user" not in trigger_step
     assert "gh repo view hew-lang/playground" in job
     assert "gh api repos/hew-lang/playground --jq '.default_branch'" in job
     assert "gh workflow view build.yml" in job
@@ -587,14 +589,15 @@ def test_dispatch_correlation_is_unique_and_bounded() -> None:
     job = playground_job()
     assert_wait_budget(job)
     assert_exact_dispatch_correlation(job)
-    assert "PLAYGROUND_SHA=" in job
+    assert "PLAYGROUND_SHA" not in job
     assert "PRE_DISPATCH_MAX_ID=" in job
     assert '--argjson floor "${PRE_DISPATCH_MAX_ID}"' in job
-    assert '--arg sha "${PLAYGROUND_SHA}"' in job
-    assert "DISPATCH_ACTOR=" in job
+    assert (
+        "DISPATCH_ACTOR: ${{ steps.playground-app-token.outputs.app-slug }}[bot]" in job
+    )
     assert '--arg actor "${DISPATCH_ACTOR}"' in job
     assert "select(.id > $floor)" in job
-    assert "select(.head_sha == $sha)" in job
+    assert "select(.head_sha" not in job
     assert "select(.actor.login == $actor)" in job
     assert_fail_closed_run_retrieval(job)
     assert "if ! RUN_IDS_OUTPUT=$(jq -r" in job
@@ -818,6 +821,39 @@ def test_exact_workflow_shell_accepts_one_stable_matching_run() -> None:
     ]
     watches = [call for call in calls if call.startswith("gh run watch")]
     assert watches == ["gh run watch 101 -R hew-lang/playground --exit-status"]
+    assert not any(call.startswith("gh api user") for call in calls)
+
+
+def test_moving_default_branch_does_not_break_dispatch_correlation() -> None:
+    result, calls, polls = run_playground("moving-head")
+    assert result.returncode == 0, result.stderr
+    assert polls == 2
+    assert not any("/commits/main" in call for call in calls)
+
+    stale_sha_job = (
+        playground_job()
+        .replace(
+            '                --arg actor "${DISPATCH_ACTOR}" \\\n',
+            '                --arg sha "sha-before" \\\n'
+            '                --arg actor "${DISPATCH_ACTOR}" \\\n',
+        )
+        .replace(
+            "                  | select(.actor.login == $actor)\n",
+            "                  | select(.head_sha == $sha)\n"
+            "                  | select(.actor.login == $actor)\n",
+        )
+        .replace(
+            "          for _ in $(seq 1 30); do",
+            "          for _ in $(seq 1 1); do",
+        )
+    )
+    stale_result, stale_calls, stale_polls = run_playground(
+        "moving-head", script=playground_script(stale_sha_job)
+    )
+    assert stale_result.returncode != 0
+    assert "could not correlate" in stale_result.stdout
+    assert stale_polls == 1
+    assert not any(call.startswith("gh run watch") for call in stale_calls)
 
 
 def test_malformed_release_commit_identity_is_terminal() -> None:
@@ -866,7 +902,7 @@ def test_ambiguous_correlation_fails_on_the_first_poll() -> None:
 
 
 def test_each_exact_run_identity_dimension_is_mandatory() -> None:
-    for scenario in ("title", "head", "actor", "floor"):
+    for scenario in ("title", "actor", "floor"):
         result, calls, polls = run_playground(scenario)
         assert result.returncode != 0, scenario
         assert "could not correlate" in result.stdout, scenario
@@ -912,10 +948,10 @@ def test_correlation_swap_with_padding_is_rejected() -> None:
 
 def test_correlation_argument_swap_with_padding_is_rejected() -> None:
     mutated = playground_job().replace(
-        '--arg sha "${PLAYGROUND_SHA}"',
-        '--arg sha "${DISPATCH_ACTOR}"',
+        '--arg actor "${DISPATCH_ACTOR}"',
+        '--arg actor "${EXPECTED_DISPLAY_TITLE}"',
     )
-    mutated += '\n# --arg sha "${PLAYGROUND_SHA}"\n'
+    mutated += '\n# --arg actor "${DISPATCH_ACTOR}"\n'
     try:
         assert_exact_dispatch_correlation(mutated)
     except (AssertionError, ValueError):

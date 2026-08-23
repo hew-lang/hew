@@ -1675,11 +1675,16 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.playground-app-token.outputs.token }}
           HEW_SHA: ${{ steps.release-commit.outputs.hew_sha }}
+          DISPATCH_ACTOR: ${{ steps.playground-app-token.outputs.app-slug }}[bot]
         run: |
           set -euo pipefail
 
           if ! [[ "${HEW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::release commit identity is not an exact lowercase 40-character commit SHA"
+            exit 1
+          fi
+          if ! [[ "${DISPATCH_ACTOR}" =~ ^[A-Za-z0-9][A-Za-z0-9-]*\[bot\]$ ]]; then
+            echo "::error::playground GitHub App slug did not resolve to a canonical bot actor"
             exit 1
           fi
           VERSION="${RELEASE_TAG#v}"
@@ -1690,10 +1695,6 @@ jobs:
             exit 1
           fi
           PLAYGROUND_REF=$(gh api repos/hew-lang/playground --jq '.default_branch')
-          PLAYGROUND_SHA=$(gh api \
-            "repos/hew-lang/playground/commits/${PLAYGROUND_REF}" \
-            --jq '.sha')
-          DISPATCH_ACTOR=$(gh api user --jq '.login')
           WORKFLOW_STATE=$(gh workflow view build.yml \
             -R hew-lang/playground --json state --jq '.state')
           if [ "${WORKFLOW_STATE}" != "active" ]; then
@@ -1726,12 +1727,10 @@ jobs:
             fi
             if ! RUN_IDS_OUTPUT=$(jq -r \
                 --argjson floor "${PRE_DISPATCH_MAX_ID}" \
-                --arg sha "${PLAYGROUND_SHA}" \
                 --arg actor "${DISPATCH_ACTOR}" \
                 --arg display_title "${EXPECTED_DISPLAY_TITLE}" \
                 '.workflow_runs[]
                   | select(.id > $floor)
-                  | select(.head_sha == $sha)
                   | select(.actor.login == $actor)
                   | select(.display_title == $display_title)
                   | .id' <<< "${RUNS_JSON}"); then

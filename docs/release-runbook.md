@@ -213,18 +213,49 @@ but every arm must succeed before the graph rejoins:
 1. Confirm every release bar and the final-candidate checklist are green on
    the exact candidate commit, including sanitizer evidence, required secrets,
    and branch protection.
-2. Before creating the signed tag, publish the candidate playground image from a
-   playground checkout:
-   `HEW_EXAMPLES_REF=<sha> HEW_VERSION=<version> PLAYGROUND_RELEASE_IMAGE=<image> make release-candidate-publish`. <!-- external-target: hew-lang/playground -->
-   `HEW_EXAMPLES_REF` must be the exact 40-character candidate commit SHA and
-   `HEW_VERSION` the candidate version, while `PLAYGROUND_RELEASE_IMAGE` must
-   be the exact `ghcr.io/hew-lang/playground:<tag>` candidate image. These are
-   inherited environment prefixes, not trailing GNU Make variable assignments.
-   This target uses candidate authority and stamps that SHA as the image's
-   `org.opencontainers.image.revision` label.
-   Playground must include this target and OCI revision-label behavior before
-   rc2. Do not substitute the post-tag `release-publish` target here: it uses
-   publish authority and requires the remote signed tag.
+2. Before creating the signed tag, publish the candidate playground image from
+   the exact reviewed playground commit that introduced the candidate contract:
+
+   ```bash
+   PLAYGROUND_CONTRACT_REF=21be84bb97436436b640f2acd09fb6dd2e0fbf94
+   PLAYGROUND_REF=<exact-reviewed-40-character-playground-sha>
+   HEW_RELEASE_SHA=<exact-40-character-hew-sha>
+   VERSION=<version-without-v-prefix>
+   PLAYGROUND_CHECKOUT="$(mktemp -d)"
+   git clone https://github.com/hew-lang/playground.git "${PLAYGROUND_CHECKOUT}"
+   git -C "${PLAYGROUND_CHECKOUT}" checkout --detach "${PLAYGROUND_REF}"
+   test "$(git -C "${PLAYGROUND_CHECKOUT}" rev-parse HEAD)" = "${PLAYGROUND_REF}"
+   git -C "${PLAYGROUND_CHECKOUT}" merge-base --is-ancestor \
+     "${PLAYGROUND_CONTRACT_REF}" HEAD
+   test -z "$(git -C "${PLAYGROUND_CHECKOUT}" status --porcelain)"
+   (
+     cd "${PLAYGROUND_CHECKOUT}"
+     . ./toolchains.env
+     test "${HEW_DEFAULT_VERSION}" = "${VERSION}"
+     test "${HEW_CANDIDATE_SHA}" = "${HEW_RELEASE_SHA}"
+     env -u MAKEFLAGS -u MFLAGS -u MAKEOVERRIDES -u MAKEFILES -u GNUMAKEFLAGS \
+       HEW_EXAMPLES_REF="${HEW_RELEASE_SHA}" \
+       HEW_VERSION="${VERSION}" \
+       PLAYGROUND_PLATFORM=linux/amd64 \
+       PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground \
+       scripts/publish-release-image.sh candidate
+   )
+   gh variable set PLAYGROUND_PUBLISH_MODE --body local --repo hew-lang/hew
+   ```
+
+   After the Hew candidate SHA is fixed, first merge a separately reviewed,
+   minimal playground `toolchains.env` bump that sets `HEW_DEFAULT_VERSION` to
+   the candidate version and `HEW_CANDIDATE_SHA` to that exact Hew commit.
+   `PLAYGROUND_REF` is the resulting exact clean playground commit; the
+   `merge-base` check proves it contains the candidate publisher merged in #34.
+   `HEW_EXAMPLES_REF` is the exact candidate commit. The playground publisher
+   accepts the untagged repository path and itself publishes the exact
+   `ghcr.io/hew-lang/playground:v${VERSION}` tag. It stages the authorized Hew
+   checkout, scrubs inherited GNU Make parser controls, uses candidate authority,
+   and stamps the SHA as `org.opencontainers.image.revision`. Record the clean
+   playground SHA, candidate SHA, platform, image digest, and smoke result before
+   continuing. Do not use a Make target or the `publish` mode before tagging:
+   publish authority requires the remote signed tag.
 3. Create the signed tag only after the preceding evidence is recorded.
 4. Let the release workflow build and publish the signed platform assets and
    checksums. Its curated body must be the exact
@@ -235,7 +266,8 @@ but every arm must succeed before the graph rejoins:
      `@hew-lang/{wasm,sandbox-wasm,sandbox-vm}@0.6.0-rc1`, and wait for each
      result. The workflow checks out that immutable tag and rejects a workspace
      or sandbox package version mismatch. A tag does not publish these packages.
-6. The release workflow's `playground` job verifies the pre-tag candidate image:
+6. The tag-push release workflow requires `PLAYGROUND_PUBLISH_MODE=local` and
+   verifies the pre-tag candidate image without dispatching a replacement:
    `ghcr.io/hew-lang/playground:<tag>` must exist and its
    `org.opencontainers.image.revision` label must bind the release commit. The
    repository variable `PLAYGROUND_PUBLISH_MODE` selects whether the job
@@ -247,6 +279,11 @@ but every arm must succeed before the graph rejoins:
    `GHCR_USERNAME` and `GHCR_TOKEN`; the token must be a classic GitHub PAT with
    the `read:packages` scope (and organization SSO authorization when the
    organization requires it).
+   An explicit post-tag workflow dispatch may use `PLAYGROUND_PUBLISH_MODE=actions`;
+   that path invokes playground publish authority and watches the authenticated
+   downstream workflow before applying the same image assertion. A maintainer
+   publishing directly after the tag must use
+   `scripts/publish-release-image.sh publish` from the same pinned clean checkout.
 7. Only after both independent publication arms are green, pin the candidate and cut over the banner in
    `hew.sh` and `hew.run`.
 8. Rebuild Android from the tagged candidate and verify its artifact.

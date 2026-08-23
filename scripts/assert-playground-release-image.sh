@@ -3,10 +3,10 @@
 # container registry and that its image config binds the exact release commit.
 #
 # This is the release's acquisition contract: whoever publishes the image -
-# the playground repository's Actions workflow, or a maintainer running
-# `HEW_EXAMPLES_REF=<sha> HEW_VERSION=<version> PLAYGROUND_RELEASE_IMAGE=<image> make release-candidate-publish` from a playground checkout - satisfies the identical assertion. <!-- external-target: hew-lang/playground -->
-# That pre-tag candidate target uses candidate authority. The post-tag
-# release-publish target uses publish authority and is a separate operation.
+# the playground repository's Actions workflow, or a maintainer running the
+# direct, sanitized `scripts/publish-release-image.sh candidate` entrypoint from
+# its pinned clean checkout - satisfies the identical assertion. Post-tag
+# publication uses `scripts/publish-release-image.sh publish` and publish authority.
 # The script observes only; it never publishes or mutates.
 #
 # Inputs (environment):

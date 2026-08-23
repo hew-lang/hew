@@ -4,6 +4,7 @@ import ast
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -64,6 +65,7 @@ WINDOWS_LLVM_TOOLCHAIN_VERSION = "22.1.0-windows-msvc-v1"
 WINDOWS_LLVM_TOOLCHAIN_TAG = f"llvm-{WINDOWS_LLVM_TOOLCHAIN_VERSION}"
 WINDOWS_LLVM_TOOLCHAIN_ASSET = f"hew-llvm-{WINDOWS_LLVM_TOOLCHAIN_VERSION}.tar.gz"
 BINARYEN_SHA256 = "3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e83212"
+PLAYGROUND_CONTRACT_REF = "21be84bb97436436b640f2acd09fb6dd2e0fbf94"
 
 
 def workflow() -> str:
@@ -121,18 +123,21 @@ def local_publish_script(text: str | None = None) -> str:
     return textwrap.dedent(step[run:]).rstrip() + "\n"
 
 
-def run_acquisition(mode: str | None) -> tuple:
+def run_acquisition(
+    mode: str | None, event_name: str = "push", script: str | None = None
+) -> tuple:
     """Execute the acquisition-mode selection with a given repository variable."""
     with tempfile.TemporaryDirectory() as directory:
         output = Path(directory) / "github_output"
         output.touch()
         env = os.environ.copy()
         env["GITHUB_OUTPUT"] = str(output)
+        env["GITHUB_EVENT_NAME"] = event_name
         env.pop("PLAYGROUND_PUBLISH_MODE", None)
         if mode is not None:
             env["PLAYGROUND_PUBLISH_MODE"] = mode
         result = subprocess.run(
-            ["bash", "-c", acquisition_script()],
+            ["bash", "-c", acquisition_script() if script is None else script],
             cwd=ROOT,
             env=env,
             check=False,
@@ -145,6 +150,13 @@ def run_acquisition(mode: str | None) -> tuple:
             if "=" in line
         )
         return result, outputs
+
+
+def assert_actions_push_is_rejected(script: str) -> None:
+    result, outputs = run_acquisition("actions", "push", script)
+    assert result.returncode != 0
+    assert "actions is post-tag only" in result.stdout
+    assert outputs == {}
 
 
 def run_local_publish_report(
@@ -167,6 +179,28 @@ def run_local_publish_report(
         capture_output=True,
         text=True,
     )
+
+
+def assert_candidate_publish_command(command: str) -> None:
+    assert shlex.split(command) == [
+        "env",
+        "-u",
+        "MAKEFLAGS",
+        "-u",
+        "MFLAGS",
+        "-u",
+        "MAKEOVERRIDES",
+        "-u",
+        "MAKEFILES",
+        "-u",
+        "GNUMAKEFLAGS",
+        f"HEW_EXAMPLES_REF={HEW_SHA}",
+        "HEW_VERSION=0.6.0-rc1",
+        "PLAYGROUND_PLATFORM=linux/amd64",
+        "PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground",
+        "scripts/publish-release-image.sh",
+        "candidate",
+    ]
 
 
 def run_release_image_assertion(env_overrides: dict) -> subprocess.CompletedProcess:
@@ -697,15 +731,39 @@ def test_dispatch_correlation_is_unique_and_bounded() -> None:
 
 
 def test_release_image_acquisition_mode_is_exhaustive_and_fails_closed() -> None:
-    for mode in ("actions", "local"):
+    accepted = (
+        ("local", "push"),
+        ("local", "workflow_dispatch"),
+        ("actions", "workflow_dispatch"),
+    )
+    for mode, event_name in accepted:
         before = int(time())
-        result, outputs = run_acquisition(mode)
+        result, outputs = run_acquisition(mode, event_name)
         after = int(time())
         assert result.returncode == 0, result.stderr
         assert outputs["mode"] == mode
         assert outputs["assert_budget_minutes"] == "115"
         deadline = int(outputs["assert_deadline_epoch"])
         assert before + 115 * 60 <= deadline <= after + 115 * 60
+
+    script = acquisition_script()
+    assert_actions_push_is_rejected(script)
+    mutations = (
+        script.replace(
+            'if [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]]; then',
+            "if false; then",
+        ),
+        script.replace(
+            "actions)\n    if [[",
+            "actions)\n    GITHUB_EVENT_NAME=workflow_dispatch\n    if [[",
+        ),
+    )
+    for mutation in mutations:
+        try:
+            assert_actions_push_is_rejected(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError("tag-push actions-mode mutation escaped")
 
     for rejected in (None, "", "Actions", "LOCAL", "skip", "true", "actions local"):
         result, outputs = run_acquisition(rejected)
@@ -768,102 +826,90 @@ def test_local_publish_command_requires_pre_tag_candidate_publisher() -> None:
     commands = [
         line.strip()
         for line in report.stdout.splitlines()
-        if line.strip().endswith(" make release-candidate-publish")
+        if "scripts/publish-release-image.sh candidate" in line
     ]
-    assert commands == [
-        "HEW_EXAMPLES_REF="
-        f"{HEW_SHA} HEW_VERSION=0.6.0-rc1 "
-        "PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground:v0.6.0-rc1 "
-        "make release-candidate-publish"
-    ]
+    assert len(commands) == 1
+    assert_candidate_publish_command(commands[0])
     local_step = step_of(
         playground_job(), "Report expected local release image publish"
     )
-    assert "make release-publish " not in local_step
+    assert "make " not in local_step
     assert "HEW_SHA" not in local_step
-    assert 'PLAYGROUND_RELEASE_IMAGE="ghcr.io/hew-lang/playground:${RELEASE_TAG}"' in (
-        local_step
-    )
+    assert 'PLAYGROUND_RELEASE_IMAGE="ghcr.io/hew-lang/playground"' in local_step
     assert (
-        'if [[ "${PLAYGROUND_RELEASE_IMAGE}" != '
-        '"ghcr.io/hew-lang/playground:${RELEASE_TAG}" ]]' in local_step
+        'EXPECTED_RELEASE_IMAGE="${PLAYGROUND_RELEASE_IMAGE}:${RELEASE_TAG}"'
+        in local_step
     )
-    assert "# external: hew-lang/playground" in local_step
+    assert "PLAYGROUND_PLATFORM=linux/amd64" in local_step
+    inherited_make_controls = (
+        "MAKEFLAGS",
+        "MFLAGS",
+        "MAKEOVERRIDES",
+        "MAKEFILES",
+        "GNUMAKEFLAGS",
+    )
+    for inherited in inherited_make_controls:
+        assert f"-u {inherited}" in local_step
 
     runbook = RUNBOOK.read_text()
     pre_tag = runbook[
         runbook.index("## Phase 5") : runbook.index(
-            "```bash", runbook.index("## Phase 5")
+            "3. Create the signed tag", runbook.index("## Phase 5")
         )
     ]
-    assert (
-        "`HEW_EXAMPLES_REF=<sha> HEW_VERSION=<version> "
-        "PLAYGROUND_RELEASE_IMAGE=<image> make release-candidate-publish`. "
-        "<!-- external-target: hew-lang/playground -->"
-    ) in pre_tag
-    assert (
-        "inherited environment prefixes, not trailing GNU Make variable assignments"
-        in (pre_tag)
-    )
+    assert "scripts/publish-release-image.sh candidate" in pre_tag
+    assert f"PLAYGROUND_CONTRACT_REF={PLAYGROUND_CONTRACT_REF}" in pre_tag
+    assert "PLAYGROUND_REF=<exact-reviewed-40-character-playground-sha>" in pre_tag
+    assert '"${PLAYGROUND_CONTRACT_REF}" HEAD' in pre_tag
+    assert 'test -z "$(git -C "${PLAYGROUND_CHECKOUT}" status --porcelain)"' in pre_tag
+    assert "PLAYGROUND_PLATFORM=linux/amd64" in pre_tag
+    assert "PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground" in pre_tag
+    assert 'test "${HEW_DEFAULT_VERSION}" = "${VERSION}"' in pre_tag
+    assert 'test "${HEW_CANDIDATE_SHA}" = "${HEW_RELEASE_SHA}"' in pre_tag
+    assert "minimal playground `toolchains.env` bump" in pre_tag
+    assert "gh variable set PLAYGROUND_PUBLISH_MODE --body local" in pre_tag
     assert "org.opencontainers.image.revision" in pre_tag
-    assert "before\n   rc2" in pre_tag
-    assert "make release-publish HEW_SHA=" not in pre_tag
-    assert "make release-publish HEW_EXAMPLES_REF=" not in pre_tag
+    assert "scripts/publish-release-image.sh publish" not in pre_tag
+    assert "make release-candidate-publish" not in pre_tag
 
-    release_publish_mutation = local_publish_script().replace(
-        "release-candidate-publish", "release-publish"
-    )
+    release_publish_mutation = local_publish_script().replace(" candidate", " publish")
     mutated = run_local_publish_report(script=release_publish_mutation)
     assert mutated.returncode == 0, mutated.stderr
     mutated_commands = [
         line.strip()
         for line in mutated.stdout.splitlines()
-        if line.strip().endswith(" make release-publish")
+        if "scripts/publish-release-image.sh publish" in line
     ]
-    assert mutated_commands == [
-        "HEW_EXAMPLES_REF="
-        f"{HEW_SHA} HEW_VERSION=0.6.0-rc1 "
-        "PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground:v0.6.0-rc1 "
-        "make release-publish"
-    ]
-    assert mutated_commands != commands
-
-
-def test_local_publish_contract_rejects_trailing_make_assignments() -> None:
-    safe = (
-        "HEW_EXAMPLES_REF=${HEW_EXAMPLES_REF} HEW_VERSION=${VERSION} "
-        "PLAYGROUND_RELEASE_IMAGE=${PLAYGROUND_RELEASE_IMAGE} "
-        "make release-candidate-publish"
-    )
-    unsafe = (
-        "make release-candidate-publish HEW_EXAMPLES_REF=${HEW_EXAMPLES_REF} "
-        "HEW_VERSION=${VERSION} PLAYGROUND_RELEASE_IMAGE=${PLAYGROUND_RELEASE_IMAGE}"
-    )
-    unsafe_report = run_local_publish_report(
-        script=local_publish_script().replace(safe, unsafe)
-    )
-    assert unsafe_report.returncode == 0, unsafe_report.stderr
-    unsafe_commands = [
-        line.strip()
-        for line in unsafe_report.stdout.splitlines()
-        if "release-candidate-publish" in line
-    ]
-    assert unsafe_commands == [
-        f"make release-candidate-publish HEW_EXAMPLES_REF={HEW_SHA} "
-        "HEW_VERSION=0.6.0-rc1 "
-        "PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground:v0.6.0-rc1"
-    ]
+    assert len(mutated_commands) == 1
     try:
-        assert all(
-            line.startswith("HEW_EXAMPLES_REF=")
-            and line.endswith(" make release-candidate-publish")
-            for line in unsafe_commands
-        )
+        assert_candidate_publish_command(mutated_commands[0])
     except AssertionError:
-        return
-    raise AssertionError(
-        "unsafe trailing Make assignments escaped the local publish contract"
+        pass
+    else:
+        raise AssertionError("publish authority escaped the pre-tag command contract")
+
+
+def test_local_publish_contract_rejects_interface_mutations() -> None:
+    command = next(
+        line.strip()
+        for line in run_local_publish_report().stdout.splitlines()
+        if "scripts/publish-release-image.sh candidate" in line
     )
+    mutations = (
+        command.replace("-u MAKEFLAGS ", ""),
+        command.replace("PLAYGROUND_PLATFORM=linux/amd64 ", ""),
+        command.replace("PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground ", ""),
+        command.replace("HEW_EXAMPLES_REF=", "HEW_SHA="),
+        command.replace(
+            "scripts/publish-release-image.sh", "make release-candidate-publish"
+        ),
+    )
+    for mutation in mutations:
+        try:
+            assert_candidate_publish_command(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError(f"candidate interface mutation escaped: {mutation}")
 
 
 def test_local_publish_report_rejects_mutated_or_malformed_authority() -> None:
@@ -871,7 +917,7 @@ def test_local_publish_report_rejects_mutated_or_malformed_authority() -> None:
         result = run_local_publish_report(bad_sha)
         assert result.returncode != 0, bad_sha
         assert "release commit identity is not an exact lowercase" in result.stdout
-        assert "make release-candidate-publish" not in result.stdout
+        assert "scripts/publish-release-image.sh candidate" not in result.stdout
 
     mutation = local_publish_script().replace("${HEW_EXAMPLES_REF}", "${HEW_SHA}")
     result = run_local_publish_report(script=mutation)

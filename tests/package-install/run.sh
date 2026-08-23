@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # End-to-end package-manager consumer proof: explicit local publish setup ->
-# user-facing `hew install` -> lock/materialization -> compiler check/run.
+# user-facing `hew install --offline` -> lock/materialization -> compiler
+# check/run. Locally published packages are cache entries, so consuming them
+# must opt into cache-only resolution rather than treating a registry miss as
+# permission to fall back online.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -146,8 +149,9 @@ expect_install_failure() {
   local dir="$1"
   local name="$2"
   local needle="$3"
+  shift 3
   local output
-  if output="$(cd "${dir}" && "${HEW}" install 2>&1)"; then
+  if output="$(cd "${dir}" && "${HEW}" install "$@" 2>&1)"; then
     echo "${output}" >&2
     fail "${name}: hew install unexpectedly succeeded"
   fi
@@ -174,7 +178,7 @@ run_in "${adder_pkg}" publish-adder "${HEW}" publish --local
 
 consumer="${TMP}/consumer"
 write_consumer "${consumer}" "acme.adder" "0.1.0"
-run_in "${consumer}" install-adder "${HEW}" install
+run_in "${consumer}" install-adder "${HEW}" install --offline
 test -f "${consumer}/hew.lock" || fail "hew.lock was not written"
 assert_contains "${consumer}/hew.lock" 'name = "acme.adder"'
 assert_contains "${consumer}/hew.lock" 'version = "0.1.0"'
@@ -216,7 +220,8 @@ write_consumer "${broken_consumer}" "acme.broken" "0.1.0"
 expect_install_failure \
   "${broken_consumer}" \
   "malformed package" \
-  "cannot read installed manifest for \`acme.broken@0.1.0\`"
+  "cannot read installed manifest for \`acme.broken@0.1.0\`" \
+  --offline
 echo "PASS package-install malformed rejection"
 
 versioned_v1="${TMP}/pkgs/versioned-0.1.0"
@@ -228,14 +233,14 @@ run_in "${versioned_v2}" publish-versioned-v2 "${HEW}" publish --local
 
 versioned_consumer="${TMP}/versioned-consumer"
 write_consumer "${versioned_consumer}" "acme.versioned" "0.1.0"
-run_in "${versioned_consumer}" install-versioned-v1 "${HEW}" install
+run_in "${versioned_consumer}" install-versioned-v1 "${HEW}" install --offline
 assert_contains "${versioned_consumer}/hew.lock" 'name = "acme.versioned"'
 assert_contains "${versioned_consumer}/hew.lock" 'version = "0.1.0"'
 run_in "${versioned_consumer}" check-versioned-v1 "${HEW}" check main.hew
 assert_output "${versioned_consumer}" "101" "run-versioned-v1"
 
 write_consumer "${versioned_consumer}" "acme.versioned" "0.2.0"
-run_in "${versioned_consumer}" install-versioned-v2 "${HEW}" install
+run_in "${versioned_consumer}" install-versioned-v2 "${HEW}" install --offline
 assert_contains "${versioned_consumer}/hew.lock" 'name = "acme.versioned"'
 assert_contains "${versioned_consumer}/hew.lock" 'version = "0.2.0"'
 run_in "${versioned_consumer}" check-versioned-v2 "${HEW}" check main.hew

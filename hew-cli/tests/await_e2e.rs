@@ -15,6 +15,9 @@ use std::time::Duration;
 
 use support::{hew_binary, repo_root, require_codegen, strip_ansi};
 
+const CLOSURE_SUSPENSION_EXPECTED_FAILURE: &str =
+    "E_NOT_YET_IMPLEMENTED: MIR lowering for suspension inside a closure is not implemented yet";
+
 /// Compile one example to a native binary. The caller retains the tempdir for
 /// as long as it needs to launch the artifact.
 fn build_example(category: &str, name: &str) -> (tempfile::TempDir, PathBuf) {
@@ -62,6 +65,24 @@ fn build_example(category: &str, name: &str) -> (tempfile::TempDir, PathBuf) {
 
 fn assert_closure_suspension_rejected(category: &str, name: &str) {
     require_codegen();
+
+    let expected_manifest_entry =
+        format!("examples/{category}/{name}.hew # {CLOSURE_SUSPENSION_EXPECTED_FAILURE}");
+    let manifest = std::fs::read_to_string(
+        repo_root()
+            .join("scripts")
+            .join("hew-corpus-expected-failures.txt"),
+    )
+    .expect("read corpus expected-failures manifest");
+    assert_eq!(
+        manifest
+            .lines()
+            .filter(|line| line == &expected_manifest_entry)
+            .count(),
+        1,
+        "the closure suspension probe must have one exact corpus expected-failure entry: \
+         {expected_manifest_entry}"
+    );
 
     let source = repo_root()
         .join("examples")

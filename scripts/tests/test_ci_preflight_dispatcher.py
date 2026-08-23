@@ -122,7 +122,6 @@ def assert_workflow_contract_profile(result: subprocess.CompletedProcess[str]) -
         "check-gate-reachability",
         "freebsd-workflow-contract-check",
         "test-release-workflow-contract",
-        "lint-ci-coverage-check",
     )
     assert "  - cargo fmt --all -- --check" in result.stdout
     selected = selected_gates(result)

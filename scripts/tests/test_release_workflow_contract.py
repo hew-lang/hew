@@ -1598,8 +1598,10 @@ def test_release_binary_smoke_honors_absolute_and_relative_target_dirs() -> None
 
 def test_local_release_builds_and_assembles_every_shipped_binary() -> None:
     makefile = MAKEFILE.read_text()
+    release_target = re.search(r"^release:[^\n]*\n", makefile, re.MULTILINE)
+    assert release_target is not None
     release = makefile[
-        makefile.index("release:\n") : makefile.index("\n# Validate release builds")
+        release_target.start() : makefile.index("\n# Validate release builds")
     ]
     assembly = makefile[
         makefile.index("assemble-release:\n") : makefile.index("\n# ── Tests")

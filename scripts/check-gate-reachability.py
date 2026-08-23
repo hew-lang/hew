@@ -6,7 +6,7 @@ expands its fail-closed selection when it builds the hosted command graph.
 It also detects a check absent from both graphs, the blind spot that previously
 left test code in the tree while executing nowhere.
 
-This gate closes it, in five directions:
+This gate closes it through the assertions below:
 
   A0  self-anchor — this checker is invoked by a CI workflow step.
   A1  every CI-gate-shaped Makefile target is reached by a CI workflow step, by
@@ -48,6 +48,10 @@ This gate closes it, in five directions:
   A10 the static consumer scan rejects every discovered consumer relation that
       also matches the positive no-gate allowlist; consumed and inert cannot
       both be true.
+  A11 every tracked scripts/tests/test_*.{py,sh} self-test is invoked by CI, a
+      CI-reached Make target, or a shell wrapper reached through that graph.
+  A12 CI executes every member of the local lint graph exactly once, including
+      the lint recipe's Clippy command and structural-lint sub-authorities.
 
 There is deliberately no waiver list. An unreached gate is either wired in or
 deleted; "tracked for later" is how the eight orphans got there in the first
@@ -116,6 +120,7 @@ ACTION_DIR = REPO_ROOT / ".github" / "actions"
 DISPATCHER = REPO_ROOT / "scripts" / "ci-preflight-dispatcher.sh"
 NEXTEST_TOML = REPO_ROOT / ".config" / "nextest.toml"
 ROOT_CARGO = REPO_ROOT / "Cargo.toml"
+STRUCTURAL_LINT_WRAPPER = REPO_ROOT / "scripts" / "ast-grep-lint.sh"
 
 SELF_TARGET = "check-gate-reachability"
 
@@ -2120,6 +2125,207 @@ def documented_make_references(root: Path = REPO_ROOT) -> list[MakeReference]:
     return references
 
 
+# ── A12: local lint graph and hosted CI are the same authority ───────────────
+
+
+def lint_make_variable_words(makefile: str, name: str) -> tuple[str, ...]:
+    words: list[str] = []
+    assignment = re.compile(
+        rf"^{re.escape(name)}\s*(\+=|:=|=)\s*([^\n]*)$", re.MULTILINE
+    )
+    for match in assignment.finditer(makefile):
+        value = match.group(2).partition("#")[0].split()
+        if match.group(1) == "+=":
+            words.extend(value)
+        else:
+            words = value
+    if not words:
+        raise ValueError(f"Makefile variable {name} has no members")
+    return tuple(words)
+
+
+def lint_prerequisites(makefile: str) -> tuple[str, ...]:
+    match = re.search(r"^lint:\s*([^\n]*)$", makefile, re.MULTILINE)
+    if match is None:
+        raise ValueError("Makefile has no plain lint target")
+    prerequisites: list[str] = []
+    for word in match.group(1).partition("#")[0].split():
+        variable = re.fullmatch(r"\$\$\(([A-Za-z_][A-Za-z0-9_]*)\)", word)
+        if variable is None:
+            prerequisites.append(word)
+        else:
+            prerequisites.extend(lint_make_variable_words(makefile, variable.group(1)))
+    if not prerequisites or len(prerequisites) != len(set(prerequisites)):
+        raise ValueError("lint prerequisites must be a nonempty unique list")
+    return tuple(prerequisites)
+
+
+def lint_recipe_tokens(makefile: str) -> tuple[str, ...]:
+    match = re.search(r"^lint:[^\n]*\n(\t[^\n]+)", makefile, re.MULTILINE)
+    if match is None:
+        raise ValueError("lint target has no recipe")
+    tokens = tuple(shlex.split(match.group(1).strip()))
+    if tokens[:2] != ("cargo", "clippy"):
+        raise ValueError("lint recipe must be a cargo clippy command")
+    return tokens
+
+
+def lint_job(workflow: str) -> str:
+    start = workflow.find("  lint:\n")
+    if start < 0:
+        raise ValueError("ci.yml has no lint job")
+    following = re.search(r"^  [a-zA-Z0-9_-]+:\n", workflow[start + 1 :], re.MULTILINE)
+    if following is None:
+        return workflow[start:]
+    return workflow[start : start + 1 + following.start()]
+
+
+def lint_run_blocks(job: str) -> tuple[tuple[str, str], ...]:
+    lines = job.splitlines()
+    blocks: list[tuple[str, str]] = []
+    index = 0
+    while index < len(lines):
+        name_match = re.match(r"^      - name:\s*(.+?)\s*$", lines[index])
+        if name_match is None:
+            index += 1
+            continue
+        name = name_match.group(1).strip("\"'")
+        end = index + 1
+        while end < len(lines) and not re.match(
+            r"^      - (?:name:|uses:)", lines[end]
+        ):
+            end += 1
+        step = lines[index:end]
+        run = ""
+        for offset, line in enumerate(step):
+            scalar = re.match(r"^        run:\s*(.*?)\s*$", line)
+            if scalar is None:
+                continue
+            if scalar.group(1) != "|":
+                run = scalar.group(1)
+                break
+            body: list[str] = []
+            for body_line in step[offset + 1 :]:
+                if body_line.startswith("          "):
+                    body.append(body_line[10:])
+                elif body_line.strip() and not body_line.lstrip().startswith("#"):
+                    break
+            run = "\n".join(body)
+            break
+        if run:
+            blocks.append((name, run))
+        index = end
+    return tuple(blocks)
+
+
+def lint_invoked_make_targets(command: str) -> set[str]:
+    targets: set[str] = set()
+    for line in command.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        try:
+            words = shlex.split(stripped, comments=True)
+        except ValueError:
+            continue
+        if words and words[0] == "make":
+            targets.update(word for word in words[1:] if not word.startswith("-"))
+    return targets
+
+
+def lint_command_tokens(command: str) -> tuple[str, ...]:
+    command = command.replace("\\\n", " ").split("|", 1)[0].strip()
+    try:
+        return tuple(shlex.split(command, comments=True))
+    except ValueError:
+        return ()
+
+
+def lint_is_subsequence(expected: tuple[str, ...], actual: tuple[str, ...]) -> bool:
+    remaining = iter(actual)
+    return all(any(token == candidate for candidate in remaining) for token in expected)
+
+
+def lint_wrapper_command_count(wrapper: str, expected: tuple[str, ...]) -> int:
+    count = 0
+    for line in wrapper.splitlines():
+        try:
+            tokens = tuple(shlex.split(line.strip(), comments=True))
+        except ValueError:
+            continue
+        if tokens == expected:
+            count += 1
+    return count
+
+
+def lint_coverage_errors(
+    makefile: str, workflow: str, structural_wrapper: str | None = None
+) -> list[str]:
+    errors: list[str] = []
+    prerequisites = lint_prerequisites(makefile)
+    blocks = lint_run_blocks(lint_job(workflow))
+    if structural_wrapper is None:
+        structural_wrapper = STRUCTURAL_LINT_WRAPPER.read_text(encoding="utf-8")
+
+    owners: dict[str, list[str]] = {target: [] for target in prerequisites}
+    aggregate_owners: list[str] = []
+    clippy_owners: list[tuple[str, tuple[str, ...]]] = []
+    for name, command in blocks:
+        targets = lint_invoked_make_targets(command)
+        if "lint" in targets:
+            aggregate_owners.append(name)
+        for target in prerequisites:
+            if target in targets:
+                owners[target].append(name)
+        if re.search(r"(?:^|\s)cargo\s+clippy(?:\s|$)", command):
+            clippy_owners.append((name, lint_command_tokens(command)))
+
+    if aggregate_owners:
+        errors.append(
+            "lint job must not replay make lint: " + ", ".join(aggregate_owners)
+        )
+    for target, names in owners.items():
+        if not names:
+            errors.append(f"lint prerequisite has no CI step: {target}")
+        elif len(names) > 1:
+            errors.append(
+                f"lint prerequisite runs more than once: {target}: {', '.join(names)}"
+            )
+    if len(clippy_owners) != 1:
+        errors.append(
+            "lint recipe must have exactly one CI Clippy step: "
+            + (
+                ", ".join(name for name, _ in clippy_owners)
+                if clippy_owners
+                else "none"
+            )
+        )
+    elif not lint_is_subsequence(lint_recipe_tokens(makefile), clippy_owners[0][1]):
+        errors.append(
+            f"CI Clippy step does not cover the lint recipe: {clippy_owners[0][0]}"
+        )
+
+    keyspace_gate = lint_wrapper_command_count(
+        structural_wrapper,
+        ("python3", "scripts/canonical-keyspace-lint.py", "--ast-grep", "$AST_GREP"),
+    )
+    if keyspace_gate != 1:
+        errors.append(
+            "structural lint must run canonical keyspace gate exactly once: "
+            f"found {keyspace_gate}"
+        )
+    keyspace_test = lint_wrapper_command_count(
+        structural_wrapper,
+        ("python3", "scripts/tests/test_canonical_keyspace_lint.py", "$AST_GREP"),
+    )
+    if keyspace_test != 1:
+        errors.append(
+            "structural lint must run canonical keyspace counterfactuals exactly once: "
+            f"found {keyspace_test}"
+        )
+    return errors
+
+
 _SCRIPT_PATH_RE = re.compile(r"scripts/[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:sh|py)")
 
 
@@ -2897,6 +3103,32 @@ def main() -> int:
         )
     print(f"    {len(tests) - len(orphans)}/{len(tests)} self-tests are invoked.")
 
+    # ── A12: CI runs every local lint-graph member exactly once ───────────────
+    try:
+        prerequisites = lint_prerequisites(makefile_text)
+        lint_errors = lint_coverage_errors(
+            makefile_text, (WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+        )
+    except ValueError as error:
+        prerequisites = ()
+        lint_errors = [str(error)]
+    print(
+        f"\n==> A12: lint graph CI coverage ({len(prerequisites)} prerequisite(s) "
+        "+ Clippy)"
+    )
+    for error in lint_errors:
+        findings.fail(
+            "A12",
+            error,
+            "the local `make lint` aggregate and the CI lint job must describe "
+            "the same gates exactly once; the reachability checker is the one "
+            "authority for that set equality.",
+        )
+    print(
+        f"    {len(prerequisites)} lint prerequisites checked; "
+        f"{len(lint_errors)} finding(s)."
+    )
+
     # ── Verdict ───────────────────────────────────────────────────────────────
     print("")
     if findings.failures:
@@ -2914,7 +3146,8 @@ def main() -> int:
     print("    documented `make` target exists; every gate declares its routing")
     print("    inputs; every undeclared path fails closed; every compiled-in asset")
     print("    is tracked; static missing-input findings remain advisory; and no")
-    print("    allowlisted path has a discovered consumer.")
+    print("    allowlisted path has a discovered consumer; every harness self-test")
+    print("    is invoked; and CI covers the local lint graph exactly once.")
     return 0
 
 

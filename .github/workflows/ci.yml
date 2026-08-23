@@ -434,9 +434,6 @@ jobs:
         # (test-sandbox-parity-coverage-check).
         run: make sandbox-parity-coverage-check
 
-      - name: Assert complete lint authority coverage
-        run: make lint-ci-coverage-check
-
   # ─────────────────────────────────────────────────────────────────────────
   # License gate — enforce the deny.toml allow-list so no copyleft or unknown
   # dep silently enters the shipping graph, and assert THIRD-PARTY-LICENSES is

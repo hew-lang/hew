@@ -1002,7 +1002,7 @@ def test_script_stays_python_3_10_compatible_with_no_new_dependency() -> None:
     assert result.returncode == 0, result.stderr
 
 
-# ── A6: harness self-tests under scripts/tests/ are invoked ───────────────────
+# ── A11: harness self-tests under scripts/tests/ are invoked ──────────────────
 
 
 def _synthetic_repo(tmp: str) -> Path:
@@ -1054,9 +1054,9 @@ def test_a_shell_script_a_reached_recipe_runs_carries_its_harness_tests() -> Non
 def test_a_python_file_naming_a_harness_test_is_not_an_indirection() -> None:
     """A Python gate asserting something ABOUT a test does not run it.
 
-    `scripts/check-lint-ci-coverage.py` carries the literal path of a rule
-    counterfactual because it asserts the wrapper invokes it exactly once.
-    Following that would let an assertion about an edge stand in for the edge.
+    A checker can carry the literal path of a rule counterfactual because it
+    asserts that a wrapper invokes it exactly once. Following that would let an
+    assertion about an edge stand in for the edge.
     """
     with tempfile.TemporaryDirectory() as tmp:
         root = _synthetic_repo(tmp)
@@ -1100,7 +1100,7 @@ def test_every_real_harness_test_is_invoked() -> None:
 # The runner enumerates this module rather than reading a hand-maintained list.
 # The list form had already lost four tests: they were defined, never listed,
 # and never run — a self-test file quietly asserting less than it appeared to,
-# which is the same defect A6 exists to catch one level out. Discovery cannot
+# which is the same defect A11 exists to catch one level out. Discovery cannot
 # drift.
 def _tests() -> list:
     return [

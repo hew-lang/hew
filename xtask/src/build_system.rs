@@ -271,8 +271,8 @@ fn gate(root: &Path, args: &[String]) -> Result<()> {
             &["nextest", "run", "--profile", "ci-cabi", "-p", "hew-cabi"],
         ),
         "vertical-slice" => compiled_hew_script(root, "tests/vertical-slice/run.sh", &[]),
-        "hew-ratchet" => compiled_hew_script(root, "scripts/hew-suite-ratchet.sh", &[]),
-        "stdlib-ratchet" => compiled_hew_script(root, "scripts/stdlib-ratchet.sh", &[]),
+        "hew-ratchet" => compiled_hew_script(root, "scripts/corpus-ratchet.sh", &["hew-suite"]),
+        "stdlib-ratchet" => compiled_hew_script(root, "scripts/corpus-ratchet.sh", &["stdlib"]),
         "playground" => {
             cargo(root, &["run", "-p", "hew-capability-gen", "--", "--check"])?;
             run_program(

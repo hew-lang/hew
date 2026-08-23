@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""Counterfactual tests for the lint CI coverage assertion."""
+"""Counterfactual tests for check-gate-reachability's lint coverage assertion."""
 
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CHECKER = ROOT / "scripts" / "check-lint-ci-coverage.py"
-SPEC = importlib.util.spec_from_file_location("check_lint_ci_coverage", CHECKER)
+CHECKER = ROOT / "scripts" / "check-gate-reachability.py"
+SPEC = importlib.util.spec_from_file_location("check_gate_reachability", CHECKER)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 
 def require_failure(makefile: str, workflow: str, message: str) -> None:
-    errors = MODULE.check(makefile, workflow)
+    errors = MODULE.lint_coverage_errors(makefile, workflow)
     assert any(message in error for error in errors), errors
 
 
@@ -24,7 +26,7 @@ def main() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     wrapper = (ROOT / "scripts" / "ast-grep-lint.sh").read_text(encoding="utf-8")
-    assert MODULE.check(makefile, workflow, wrapper) == []
+    assert MODULE.lint_coverage_errors(makefile, workflow, wrapper) == []
 
     extra = makefile.replace(
         "LINT_GATES += legacy-path-syntax-lint",
@@ -69,7 +71,7 @@ def main() -> None:
         "true",
         1,
     )
-    errors = MODULE.check(makefile, workflow, no_keyspace_gate)
+    errors = MODULE.lint_coverage_errors(makefile, workflow, no_keyspace_gate)
     assert any("canonical keyspace gate exactly once" in error for error in errors), (
         errors
     )
@@ -79,7 +81,7 @@ def main() -> None:
         "true",
         1,
     )
-    errors = MODULE.check(makefile, workflow, no_keyspace_test)
+    errors = MODULE.lint_coverage_errors(makefile, workflow, no_keyspace_test)
     assert any(
         "canonical keyspace counterfactuals exactly once" in error for error in errors
     ), errors

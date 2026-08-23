@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.6.0-rc2] - 2026-08-23
+
+Hew v0.6.0-rc2 is the second release candidate for v0.6. It completes the
+dotted-path language cutover, hardens ownership and actor shutdown behavior,
+adds manifest-first package commands, and makes the release and CI gates more
+deterministic. It remains a candidate: the mandatory rc3 pass will retire the
+remaining ownership advisories and exercise the final promotion path.
+
 ### Changed (breaking)
 
 - **We have adopted one dotted path surface throughout Hew.** `::` path
@@ -17,6 +25,60 @@
   name such as `Option`, `Result`, or `Iterator` now fails with
   `E_PRELUDE_DECL_COLLISION`. Rename the user declaration; importing it under
   another module does not create a separate authority for the protected name.
+
+### Added
+
+- **Manifest-first package commands.** `hew build`, `hew run`, and `hew check`
+  resolve a project from its manifest, including test imports and native FFI
+  dependencies, and fail closed when registry publication fails.
+- **More composable language surfaces.** Top-level type aliases, trait objects
+  in return position and `Vec` storage, multi-statement `fork` bodies, fluent
+  `Vec` iterator methods, and structural aggregate formatting are now covered
+  by end-to-end compiler tests.
+- **Generated language reference pages.** Actors, supervision, machines,
+  concurrency, and resources are generated from executable Hew sources and
+  deployed with the standard-library reference.
+
+### Fixed — ownership and compiler correctness
+
+- **Owned aggregates keep one release authority through control flow.** Nested
+  tuple carries, projected record reads, divergent selections, call-result
+  matches, temporary receivers, closure environments, resource matches, and
+  collection ingress no longer lose or duplicate their drop obligation.
+- **Imported and generic identities remain canonical.** Qualified calls,
+  imported machines and wire types, dyn traits, generic layouts, structural
+  clone/equality, and opaque `try` payloads retain their defining identity
+  through checking, HIR, MIR, and code generation.
+- **Diagnostics and lints are fail-closed.** Checker state resets between
+  compilations, direct-iteration suggestions require proven clone support,
+  and deprecated path spellings are rejected by the stdlib ratchet.
+
+### Fixed — runtime and concurrency
+
+- **Faults produce an observable failed process.** Actor and supervised-child
+  failures converge on the runtime exit status, while failed registered sends
+  are reported as connection drops rather than successful delivery.
+- **Shutdown settles outstanding work before reclamation.** Cancelled restart
+  records, abandoned asks, timer ticks, parked asks, worker joins, and scheduler
+  cleanup use bounded, ordered hand-offs that do not publish drained state or
+  free runtime state prematurely.
+- **Actor scheduling tests use explicit happens-before edges.** Mailbox,
+  periodic-timer, restart, ask, and link-race coverage no longer relies on
+  incidental wall-clock ordering.
+
+### Changed — build, CI, and release trust
+
+- **Preflight is derived from declared gate inputs.** Gate routing follows the
+  artifact graph, shared test artifacts build once before execution, Linux CI
+  is split into balanced shards, and generated baselines have one registry and
+  regeneration target.
+- **Release validation covers the shipped layouts.** Windows and FreeBSD
+  candidates exercise the external static-library consumer, packaged archives
+  run clean-room smoke tests, npm publication is pinned to an immutable tag,
+  and documentation deployment validates its generated page set.
+- **Nightly sanitizer and coverage signals are executable again.** ASan keeps
+  timed-out runtime workers alive until bounded reclamation, and the coverage
+  workflow proves that test failures and missing reports cannot be masked.
 
 ## [0.6.0-rc1] - 2026-07-29
 

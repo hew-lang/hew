@@ -12,7 +12,9 @@ This is the concrete expansion of the `ci-full-run-pre-tag` todo.
 - [ ] CHANGELOG.md has either a populated `[Unreleased]` section or the dated
       `[X.Y.Z]` section for the intended release
 - [ ] Curated GitHub release notes are drafted at `docs/releases/vX.Y.Z.md`
-- [ ] Version in workspace `Cargo.toml` is still the *previous* release (bump happens below)
+- [ ] `workspace.package.version` in `Cargo.toml`, `Cargo.lock`, the intended
+      changelog record, and `docs/releases/vX.Y.Z.md` all name the candidate
+      that will be tagged
 
 ## Phase 1 — Assemble the candidate
 
@@ -51,36 +53,45 @@ git log --oneline -5  # confirm expected HEAD
 
 **Rationale:** pre-1.0, breaking changes allow rapid stdlib refinement without long deprecation cycles. All in-tree code must be updated in the same PR so the break is visible at a glance. `#[non_exhaustive]` protects downstream code from silent miscompilation.
 
-## Phase 2 — Version bump
+## Phase 2 — Establish the release identity
 
-> **Prerequisite:** The version bump must be a single commit that updates
-> `Cargo.toml`'s workspace version AND the matching `[Unreleased]` →
-> `[X.Y.Z]` rename in `CHANGELOG.md`. Tagging a commit where `Cargo.toml`
-> still reports the prior version produces binaries that self-report the
-> wrong version.
+> **Prerequisite:** Any required version bump must update `Cargo.toml`'s
+> workspace version, every lockfile, the dated changelog record, and the exact
+> `docs/releases/vX.Y.Z.md` file together. Tagging a commit where any one of
+> those identities differs produces a split release record.
 
 ```bash
-# Bump workspace version in Cargo.toml
-# (currently: edit `version = "X.Y.Z"` in the root [workspace.package])
+# Set the intended version in the root [workspace.package], if needed.
 $EDITOR Cargo.toml
 
-# Stamp CHANGELOG.md — move [Unreleased] contents under new version header
+# Keep a fresh [Unreleased] heading and stamp its completed entries under the
+# dated [X.Y.Z] heading. Create docs/releases/vX.Y.Z.md at the same time.
 $EDITOR CHANGELOG.md
+$EDITOR docs/releases/vX.Y.Z.md
 
-# Update lockfile
+# Update and verify every committed lockfile through Cargo.
 cargo check --workspace
+cargo check --workspace --locked
+cargo update --manifest-path hew-parser/fuzz/Cargo.toml \
+  -p hew-parser --precise X.Y.Z --offline
 
-# Commit the version bump
-# Note: all crates use version.workspace = true, so only root Cargo.toml needs editing.
-git add Cargo.toml Cargo.lock CHANGELOG.md
-git commit -m "chore: bump version to v0.4.0"
+# Confirm the identity that all later commands derive.
+release_version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+release_tag="v${release_version}"
+test -f "docs/releases/${release_tag}.md"
+
+git add Cargo.toml Cargo.lock hew-parser/fuzz/Cargo.lock CHANGELOG.md \
+  "docs/releases/${release_tag}.md"
+git commit -m "chore(release): prepare ${release_tag}"
 ```
 
 ## Phase 3 — Push release branch (triggers release-gate CI)
 
 ```bash
-git checkout -b release/v0.4
-git push origin release/v0.4
+release_version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+release_tag="v${release_version}"
+git checkout -b "release/${release_tag}"
+git push origin "release/${release_tag}"
 ```
 
 This triggers `.github/workflows/release-gate.yml`, which runs:
@@ -210,6 +221,13 @@ The publication sequence is a fail-closed dependency graph. Do not advance
 past a failed or missing result; items grouped in braces may run independently,
 but every arm must succeed before the graph rejoins:
 
+All identities below are derived from the checked-out candidate:
+
+```bash
+release_version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+release_tag="v${release_version}"
+```
+
 1. Confirm every release bar and the final-candidate checklist are green on
    the exact candidate commit, including sanitizer evidence, required secrets,
    and branch protection.
@@ -272,8 +290,8 @@ but every arm must succeed before the graph rejoins:
    `docs/releases/<tag>.md` file for that tag.
 5. After the assets exist, complete the npm publication arm:
    - Manually dispatch `.github/workflows/publish-npm-packages.yml` with
-     `release_tag=v0.6.0-rc1` for
-     `@hew-lang/{wasm,sandbox-wasm,sandbox-vm}@0.6.0-rc1`, and wait for each
+     `release_tag="${release_tag}"` for
+     `@hew-lang/{wasm,sandbox-wasm,sandbox-vm}@${release_version}`, and wait for each
      result. The workflow checks out that immutable tag and rejects a workspace
      or sandbox package version mismatch. A tag does not publish these packages.
 6. The tag-push release workflow only observes the pre-tag candidate image; it
@@ -306,8 +324,10 @@ branch. In particular, `gate-sanitizers` must have executed ASan successfully
 and accepted the bounded TSan/Miri behavioral ledger for the release version.
 
 ```bash
-git tag -s v0.6.0-rc1 -m "Hew v0.6.0-rc1"
-git push origin v0.6.0-rc1
+release_version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+release_tag="v${release_version}"
+git tag -s "$release_tag" -m "Hew $release_tag"
+git push origin "$release_tag"
 ```
 
 This triggers `.github/workflows/release.yml`, which:
@@ -316,7 +336,11 @@ This triggers `.github/workflows/release.yml`, which:
 - Runs `scripts/verify-macos-binary.sh` on macOS artifacts before signing
 - Runs package-layout smoke inside the FreeBSD VM after the tarball is assembled
 - Runs Ubuntu clean-room tarball smoke for linux-x86_64 and linux-aarch64
-- Builds Linux distro packages and smoke-tests the installable `.deb` / `.rpm` / `.pkg.tar.zst` outputs in Docker (Arch remains x86_64-only)
+- For final tags, builds Linux distro packages and smoke-tests the installable
+  `.deb` / `.rpm` / `.pkg.tar.zst` outputs in Docker (Arch remains x86_64-only).
+  Release-candidate tags deliberately skip this job because the current distro
+  version mapping does not encode `-rcN`; RCs are validated through the Linux
+  tarballs and clean-room archive smoke tests instead.
 - Signs and notarizes macOS binaries on tag releases
 - Creates a GitHub Release with checksums and the curated notes from
   `docs/releases/<tag>.md`
@@ -338,9 +362,10 @@ macOS release notes:
 
 ## Phase 6 — Docs publish (after release tag)
 
-- [ ] Confirm `secrets.CLOUDFLARE_API_TOKEN` is set in repository settings
-      (one-time setup — then remove the `if: false` guard in
-      `.github/workflows/deploy-docs.yml` and this checkbox).
+- [ ] Confirm `secrets.CLOUDFLARE_API_TOKEN` and
+      `secrets.CLOUDFLARE_ACCOUNT_ID` are set in repository settings. The docs
+      workflow has no disabled guard: every `v*` tag invokes it and a missing
+      credential fails the deployment.
 - [ ] Confirm the token can edit Pages projects in the target account.
       The production project is
       `hew-docs`, and its custom domain is `docs.hew.sh`.
@@ -400,7 +425,7 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 | Packaged archive smoke (Linux/macOS) | release.yml (Unix matrix) | Yes    |
 | Packaged archive smoke (Windows zip) | release.yml (Windows job) | Yes |
 | FreeBSD packaged archive smoke | release.yml (FreeBSD VM, x86_64 + aarch64) | Yes |
-| Linux package install smoke  | release.yml (`linux-packages`) | Yes    |
+| Linux package install smoke  | release.yml (`linux-packages`) | Yes for final tags; skipped for RCs |
 | Linux Docker clean-room tarball smoke | release.yml (`docker-clean-room-test`) | Yes |
 | macOS build + tests          | ci.yml + release-gate.yml    | Yes       |
 | Windows build + tests        | ci.yml + release-gate.yml    | Yes       |
@@ -440,7 +465,7 @@ one `[[waiver]]` row per non-executed axis:
 ```toml
 [[waiver]]
 axis = "tsan"
-release = "0.6.0-rc1"
+release = "<workspace release version>"
 behavior = "the concrete observed lane or toolchain behavior"
 reason = "why the behavior is not an authoritative release failure"
 tracking = "https://github.com/hew-lang/hew/issues/<issue>"

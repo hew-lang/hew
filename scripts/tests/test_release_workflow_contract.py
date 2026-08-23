@@ -36,7 +36,6 @@ CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 COVERAGE_NIGHTLY_WORKFLOW = ROOT / ".github" / "workflows" / "coverage-nightly.yml"
 DEPLOY_DOCS_WORKFLOW = ROOT / ".github" / "workflows" / "deploy-docs.yml"
 WORKFLOW_DIRECTORY = ROOT / ".github" / "workflows"
-RELEASE_NOTES = ROOT / "docs" / "releases" / "v0.6.0-rc1.md"
 RUNBOOK = ROOT / "docs" / "release-runbook.md"
 CHANGELOG = ROOT / "CHANGELOG.md"
 UNIX_INSTALLER = ROOT / "installers" / "install.sh"
@@ -67,6 +66,20 @@ WINDOWS_LLVM_TOOLCHAIN_TAG = f"llvm-{WINDOWS_LLVM_TOOLCHAIN_VERSION}"
 WINDOWS_LLVM_TOOLCHAIN_ASSET = f"hew-llvm-{WINDOWS_LLVM_TOOLCHAIN_VERSION}.tar.gz"
 BINARYEN_SHA256 = "3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e83212"
 PLAYGROUND_CONTRACT_REF = "21be84bb97436436b640f2acd09fb6dd2e0fbf94"
+
+
+def workspace_version() -> str:
+    manifest = tomllib.loads(WORKSPACE_MANIFEST.read_text())
+    version = manifest["workspace"]["package"]["version"]
+    assert isinstance(version, str) and re.fullmatch(
+        r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?", version
+    ), version
+    return version
+
+
+WORKSPACE_VERSION = workspace_version()
+RELEASE_TAG = f"v{WORKSPACE_VERSION}"
+RELEASE_NOTES = ROOT / "docs" / "releases" / f"{RELEASE_TAG}.md"
 
 
 def workflow() -> str:
@@ -1456,37 +1469,48 @@ def test_sanitizer_gate_is_behavioral_and_release_scoped() -> None:
         assert ledger.count(field) >= 2
 
 
-def test_release_record_is_durable_and_tag_ready() -> None:
-    changelog = CHANGELOG.read_text()
-    notes = RELEASE_NOTES.read_text()
-    runbook = RUNBOOK.read_text()
+def assert_release_record(
+    changelog: str, notes: str, runbook: str, *, notes_exist: bool = True
+) -> None:
+    assert notes_exist
     notes_words = " ".join(notes.split())
     runbook_words = " ".join(runbook.split())
 
     unreleased_start = changelog.index("## [Unreleased]")
-    rc1_start = changelog.index("## [0.6.0-rc1] - 2026-07-29")
-    unreleased = changelog[unreleased_start:rc1_start]
-    assert "### Changed" in unreleased
-    assert "- " in unreleased
-
-    next_release = changelog.find("\n## [", rc1_start + 1)
-    rc1_record = (
-        changelog[rc1_start:]
-        if next_release == -1
-        else changelog[rc1_start:next_release]
+    current_header = re.search(
+        rf"^## \[{re.escape(WORKSPACE_VERSION)}\] - \d{{4}}-\d{{2}}-\d{{2}}$",
+        changelog,
+        re.MULTILINE,
     )
+    assert current_header is not None
+    current_start = current_header.start()
+    assert unreleased_start < current_start
+    unreleased = changelog[unreleased_start:current_start]
+    assert WORKSPACE_VERSION not in unreleased
+
+    next_release = changelog.find("\n## [", current_start + 1)
+    current_record = (
+        changelog[current_start:]
+        if next_release == -1
+        else changelog[current_start:next_release]
+    )
+    assert "### " in current_record
+    assert "- " in current_record
     for provisional in (
         "unreleased",
         "tag is not cut",
         "will be finalized when",
         "in preparation",
     ):
-        assert provisional not in rc1_record.lower()
+        assert provisional not in current_record.lower()
 
-    assert "v0.6.0-rc1" in notes_words
-    assert "first release candidate for v0.6.0" in notes_words
-    assert "not the final v0.6.0 release" in notes_words
-    assert "Publication for this first RC is deliberately staged" in notes_words
+    assert notes.startswith(f"# Hew {RELEASE_TAG}\n")
+    assert RELEASE_TAG in notes_words
+    if "-rc" in WORKSPACE_VERSION:
+        base_version = WORKSPACE_VERSION.split("-", 1)[0]
+        assert f"release candidate for v{base_version}" in notes_words
+        assert f"not the final v{base_version} release" in notes_words
+    assert "Publication for this RC is deliberately staged" in notes_words
     assert (
         "The signed tag publishes the platform assets and checksums first"
         in notes_words
@@ -1502,8 +1526,11 @@ def test_release_record_is_durable_and_tag_ready() -> None:
         "CHANGELOG.md has either a populated `[Unreleased]` section or the dated "
         "`[X.Y.Z]` section for the intended release"
     ) in runbook_words
-    assert 'git tag -s v0.6.0-rc1 -m "Hew v0.6.0-rc1"' in runbook
-    assert "git push origin v0.6.0-rc1" in runbook
+    assert 'git tag -s "$release_tag" -m "Hew $release_tag"' in runbook
+    assert 'git push origin "$release_tag"' in runbook
+    assert "workspace.package.version" in runbook
+    assert "v0.6.0-rc1" not in runbook
+    assert "v0.4" not in runbook
     assert "git tag v0.4.0" not in runbook
     assert "git push origin v0.4.0" not in runbook
     assert "every release bar and the final-candidate checklist are green" in runbook
@@ -1512,6 +1539,46 @@ def test_release_record_is_durable_and_tag_ready() -> None:
     assert "Only after both independent publication arms are green" in runbook
     assert "Homebrew" in runbook and "prerelease" in runbook
     assert "publish-npm-packages.yml" in runbook
+
+
+def test_release_record_is_durable_and_tag_ready() -> None:
+    notes_exist = RELEASE_NOTES.exists()
+    assert_release_record(
+        CHANGELOG.read_text(),
+        RELEASE_NOTES.read_text() if notes_exist else "",
+        RUNBOOK.read_text(),
+        notes_exist=notes_exist,
+    )
+
+
+def test_release_record_rejects_missing_or_wrong_current_files() -> None:
+    changelog = CHANGELOG.read_text()
+    notes = RELEASE_NOTES.read_text()
+    runbook = RUNBOOK.read_text()
+    mutations = (
+        (changelog, notes, False),
+        (
+            changelog,
+            notes.replace(f"# Hew {RELEASE_TAG}", "# Hew v9.9.9", 1),
+            True,
+        ),
+        (
+            changelog.replace(f"## [{WORKSPACE_VERSION}]", "## [9.9.9]", 1),
+            notes,
+            True,
+        ),
+    )
+    for mutated_changelog, mutated_notes, notes_exist in mutations:
+        try:
+            assert_release_record(
+                mutated_changelog,
+                mutated_notes,
+                runbook,
+                notes_exist=notes_exist,
+            )
+        except AssertionError:
+            continue
+        raise AssertionError("missing or wrong current release record escaped")
 
 
 def test_contract_oracle_runs_in_required_ci() -> None:
@@ -2689,8 +2756,6 @@ def test_direct_runner_discovery_rejects_an_omitted_test() -> None:
         assert "test_omitted" in str(exc)
         return
     raise AssertionError("an omitted test escaped direct runner discovery parity")
-
-
 if __name__ == "__main__":
     failures = 0
     discovered = _discover_tests()

@@ -2934,9 +2934,14 @@ def test_generated_and_release_markdown_routes_to_its_consumers() -> None:
         run_dispatcher("docs/wasm-capability-matrix.md"),
         "wasm-capability-check",
     )
+    release_notes = tuple(
+        str(path.relative_to(ROOT))
+        for path in sorted((ROOT / "docs" / "releases").glob("*.md"))
+    )
+    assert release_notes
     for path in (
         "CHANGELOG.md",
-        "docs/releases/v0.6.0-rc1.md",
+        *release_notes,
         "docs/release-runbook.md",
         "docs/cross-platform-build-guide.md",
     ):

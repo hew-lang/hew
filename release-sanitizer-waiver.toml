@@ -31,3 +31,23 @@ reason = "A representative Miri model for the runtime FFI boundary is not yet av
 tracking = "https://github.com/hew-lang/hew/issues/1826"
 owner = "Hew runtime maintainers"
 expires = "2026-09-10"
+
+[[waiver]]
+axis = "tsan"
+release = "0.6.0-rc2"
+behavior = "The scheduled Linux TSan lane executes and reports a false race in libtest's mpmc CompletedTest handoff because the prebuilt standard library is uninstrumented; the same report is outside Hew runtime code."
+reason = "The observed CompletedTest report cannot distinguish instrumented Hew accesses from synchronization hidden inside uninstrumented std, so it is not an authoritative Hew race failure. ASan remains mandatory and executed."
+tracking = "https://github.com/hew-lang/hew/issues/1825"
+owner = "Hew runtime maintainers"
+expires = "2026-09-10"
+
+# Issue #1826 is closed after establishing the curated lane. It remains the
+# evidence record for this bounded rc2 scope; no replacement issue is invented.
+[[waiver]]
+axis = "miri"
+release = "0.6.0-rc2"
+behavior = "The curated runtime Miri lane reports 134 passed, 0 failed, 28 ignored, and 2270 filtered tests; FFI, syscall, socket, and subprocess paths are deliberately outside the interpreted set."
+reason = "The executed subset is green but cannot represent the runtime's foreign and operating-system boundaries, so it is evidence for the curated unsafe core rather than an authoritative whole-runtime gate."
+tracking = "https://github.com/hew-lang/hew/issues/1826"
+owner = "Hew runtime maintainers"
+expires = "2026-09-10"

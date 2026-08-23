@@ -671,7 +671,7 @@ impl Builder {
         if suspends {
             lowered.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "`await` inside a closure".to_string(),
+                    construct: "suspension inside a closure".to_string(),
                     site: body.site,
                 },
                 note: "a suspending closure lowers to a coroutine ramp whose native return is a \

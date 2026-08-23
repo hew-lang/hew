@@ -2813,8 +2813,7 @@ expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/closure_await_fail_closed.hew" \
   "E_NOT_YET_IMPLEMENTED" \
   "closure_await_fail_closed"
-# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
-grep -qF -- '`await` inside a closure' "${reject_output}"
+grep -qF -- 'suspension inside a closure' "${reject_output}"
 
 # Reject: remote dispatch (RemotePid ask/tell) resolving to a multi-arg
 # receive handler fails closed with E_REMOTE_PAYLOAD_UNSUPPORTED. The

@@ -3,7 +3,7 @@
 // The compiler must reject the construct before codegen instead of exposing the
 // ramp's continuation handle as the closure's declared return value.
 //
-// Expected diagnostic: E_NOT_YET_IMPLEMENTED naming `await` inside a closure.
+// Expected diagnostic: E_NOT_YET_IMPLEMENTED naming suspension inside a closure.
 actor Adder {
     receive fn add(a: i64, b: i64) -> i64 {
         a + b

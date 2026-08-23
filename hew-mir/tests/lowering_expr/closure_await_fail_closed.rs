@@ -30,29 +30,8 @@ fn lower_checked(source: &str) -> hew_mir::IrPipeline {
     lower_hir_module(&hir.module)
 }
 
-#[test]
-fn await_in_closure_reports_named_diagnostic_before_codegen() {
-    let pipeline = lower_checked(
-        r"
-actor Adder {
-    receive fn add(a: i64, b: i64) -> i64 {
-        a + b
-    }
-}
-
-fn main() {
-    let adder = spawn Adder();
-    let calculate = || {
-        match await adder.add(7, 8) {
-            .Ok(value) => value,
-            .Err(_error) => 0,
-        }
-    };
-    println(calculate());
-}
-",
-    );
-
+fn assert_closure_suspension_rejected(source: &str) -> hew_mir::IrPipeline {
+    let pipeline = lower_checked(source);
     let matching: Vec<_> = pipeline
         .diagnostics
         .iter()
@@ -60,7 +39,7 @@ fn main() {
             matches!(
                 &diagnostic.kind,
                 MirDiagnosticKind::NotYetImplemented { construct, .. }
-                    if construct == "`await` inside a closure"
+                    if construct == "suspension inside a closure"
             )
         })
         .collect();
@@ -81,5 +60,78 @@ fn main() {
             .iter()
             .any(|block| matches!(block.terminator, Terminator::Suspend { .. })),
         "the diagnostic must be derived from the closure shim's actual suspension carrier"
+    );
+    pipeline
+}
+
+#[test]
+fn await_in_closure_reports_suspension_diagnostic_before_codegen() {
+    assert_closure_suspension_rejected(
+        r"
+actor Adder {
+    receive fn add(a: i64, b: i64) -> i64 {
+        a + b
+    }
+}
+
+fn main() {
+    let adder = spawn Adder();
+    let calculate = || {
+        match await adder.add(7, 8) {
+            .Ok(value) => value,
+            .Err(_error) => 0,
+        }
+    };
+    println(calculate());
+}
+",
+    );
+}
+
+#[test]
+fn sleep_in_closure_reports_suspension_not_await_diagnostic() {
+    let pipeline = assert_closure_suspension_rejected(
+        r"
+fn main() {
+    let pause = || {
+        sleep(1ms);
+    };
+    pause();
+}
+",
+    );
+    assert!(
+        pipeline.diagnostics.iter().all(|diagnostic| {
+            !matches!(
+                &diagnostic.kind,
+                MirDiagnosticKind::NotYetImplemented { construct, .. }
+                    if construct.contains("await")
+            )
+        }),
+        "sleep must not be diagnosed as await: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn statement_level_await_outside_closure_remains_supported() {
+    let pipeline = lower_checked(
+        r"
+actor Adder {
+    receive fn add(a: i64, b: i64) -> i64 {
+        a + b
+    }
+}
+
+fn main() {
+    let adder = spawn Adder();
+    let _ = await adder.add(7, 8);
+}
+",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "statement-level await must remain diagnostic-free: {:#?}",
+        pipeline.diagnostics
     );
 }

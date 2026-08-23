@@ -25,6 +25,12 @@ pub struct InstalledPackage {
     pub path: PathBuf,
 }
 
+#[derive(Debug)]
+pub(crate) struct VerifiedCacheEntry {
+    pub(crate) path: PathBuf,
+    pub(crate) tree_checksum: String,
+}
+
 /// The global Hew package registry (`~/.hew/packages/`).
 ///
 /// Package layout on disk:
@@ -90,20 +96,25 @@ impl Registry {
             .is_ok_and(|path| is_package_dir(&path))
     }
 
-    pub(crate) fn is_online_cache_verified(
+    pub(crate) fn verified_online_cache_entry(
         &self,
         name: &str,
         version: &str,
         registry_checksum: &str,
-    ) -> Result<bool, String> {
-        let package_dir = self.package_dir(name, version);
+    ) -> Result<Option<VerifiedCacheEntry>, String> {
+        let package_dir = self
+            .package_dir_checked(name, version)
+            .map_err(|error| format!("cannot resolve cache for {name}@{version}: {error}"))?;
         if !is_package_dir(&package_dir) {
-            return Ok(false);
+            return Ok(None);
         }
+        let package_dir = package_dir
+            .canonicalize()
+            .map_err(|error| format!("cannot pin cache for {name}@{version}: {error}"))?;
 
         let metadata_text = match std::fs::read_to_string(package_dir.join(CACHE_METADATA_FILE)) {
             Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => {
                 return Err(format!(
                     "cannot read cache metadata for {name}@{version}: {error}"
@@ -112,18 +123,18 @@ impl Registry {
         };
         let metadata: CacheMetadata = match toml::from_str(&metadata_text) {
             Ok(metadata) => metadata,
-            Err(_) => return Ok(false),
+            Err(_) => return Ok(None),
         };
         if metadata.name != name
             || metadata.version != version
             || metadata.registry_checksum != registry_checksum
         {
-            return Ok(false);
+            return Ok(None);
         }
 
         let archive = match std::fs::read(package_dir.join(CACHE_ARCHIVE_FILE)) {
             Ok(archive) => archive,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => {
                 return Err(format!(
                     "cannot read cached archive for {name}@{version}: {error}"
@@ -131,25 +142,32 @@ impl Registry {
             }
         };
         if crate::tarball::checksum_bytes(&archive) != registry_checksum {
-            return Ok(false);
+            return Ok(None);
         }
         let Ok(archive_tree_checksum) = crate::tarball::unpacked_tree_checksum(&archive) else {
-            return Ok(false);
+            return Ok(None);
         };
         if archive_tree_checksum != metadata.tree_checksum {
-            return Ok(false);
+            return Ok(None);
         }
 
         let Ok(manifest) = crate::manifest::parse_manifest(&package_dir.join("hew.toml")) else {
-            return Ok(false);
+            return Ok(None);
         };
         if manifest.package.name != name || manifest.package.version != version {
-            return Ok(false);
+            return Ok(None);
         }
 
         let actual = crate::checksum::compute_dir_checksum(&package_dir)
             .map_err(|error| format!("cannot verify cache for {name}@{version}: {error}"))?;
-        Ok(actual == metadata.tree_checksum)
+        if actual == metadata.tree_checksum {
+            Ok(Some(VerifiedCacheEntry {
+                path: package_dir,
+                tree_checksum: actual,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     pub(crate) fn write_cache_metadata(
@@ -487,12 +505,14 @@ mod tests {
         Registry::write_cache_metadata(&pkg_dir, "foo", "1.0.0", &archive.checksum, &archive.data)
             .unwrap();
         assert!(reg
-            .is_online_cache_verified("foo", "1.0.0", &archive.checksum)
-            .unwrap());
+            .verified_online_cache_entry("foo", "1.0.0", &archive.checksum)
+            .unwrap()
+            .is_some());
 
         std::fs::write(pkg_dir.join("foo.hew"), "pub fn value() -> i64 { 2 }\n").unwrap();
-        assert!(!reg
-            .is_online_cache_verified("foo", "1.0.0", &archive.checksum)
-            .unwrap());
+        assert!(reg
+            .verified_online_cache_entry("foo", "1.0.0", &archive.checksum)
+            .unwrap()
+            .is_none());
     }
 }

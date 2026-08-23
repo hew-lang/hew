@@ -46,11 +46,15 @@ impl StagedDir {
         &self.path
     }
 
-    pub fn publish(mut self, target: &Path) -> io::Result<()> {
+    pub fn publish(mut self, target: &Path) -> io::Result<PathBuf> {
         self.publish_with_hook(target, || Ok(()))
     }
 
-    fn publish_with_hook<F>(&mut self, target: &Path, before_pointer_replace: F) -> io::Result<()>
+    fn publish_with_hook<F>(
+        &mut self,
+        target: &Path,
+        before_pointer_replace: F,
+    ) -> io::Result<PathBuf>
     where
         F: FnOnce() -> io::Result<()>,
     {
@@ -71,7 +75,8 @@ impl StagedDir {
             &pointer_path_for(target)?,
             format!("{generation_name}\n").as_bytes(),
             0o644,
-        )
+        )?;
+        Ok(generation)
     }
 }
 

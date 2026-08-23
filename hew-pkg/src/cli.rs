@@ -1,7 +1,7 @@
 //! Package-manager command surface, flattened into the `hew` CLI as native
 //! top-level subcommands (`hew add`, `hew install`, `hew publish`, …).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
@@ -668,7 +668,7 @@ fn cmd_install(
         .iter()
         .map(|(identity, package)| (identity.clone(), package.path.clone()))
         .collect();
-    let mut confirmed_versions = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut confirmed_registry = BTreeMap::<(String, String), VerifiedRegistryPackage>::new();
     let mut fetch_progress = FetchProgress::default();
     let resolved = loop {
         let result = if locked_lockfile.is_some() {
@@ -676,7 +676,8 @@ fn cmd_install(
         } else if offline {
             resolver::resolve_all_from_root(&m, &cwd, registry)
         } else {
-            resolver::resolve_all_confirmed(&m, &cwd, registry, &confirmed_versions)
+            let pinned_online_paths = pinned_registry_paths(&confirmed_registry);
+            resolver::resolve_all_pinned(&m, &cwd, registry, &pinned_online_paths)
         };
         match result {
             Ok(resolved) => break resolved,
@@ -704,17 +705,17 @@ fn cmd_install(
                     eprintln!("hew install: {error}");
                     std::process::exit(1);
                 }
-                let confirmed_before = confirmed_version_count(&confirmed_versions);
+                let confirmed_before = confirmed_registry.len();
                 if let Err(error) = fetch_missing_packages(
                     &failures,
                     registry,
                     registry_name,
-                    &mut confirmed_versions,
+                    &mut confirmed_registry,
                 ) {
                     eprintln!("hew install: {error}");
                     std::process::exit(1);
                 }
-                if confirmed_version_count(&confirmed_versions) <= confirmed_before {
+                if confirmed_registry.len() <= confirmed_before {
                     eprintln!("hew install: registry fetch completed without making progress");
                     std::process::exit(1);
                 }
@@ -754,7 +755,7 @@ fn cmd_install(
                         None,
                         Some(pinned.checksum.clone()),
                     )
-                } else {
+                } else if offline {
                     let target = registry.package_dir(name, version);
                     if !target.is_dir() {
                         eprintln!(
@@ -773,6 +774,16 @@ fn cmd_install(
                         }
                     };
                     (target, "registry", None, checksum)
+                } else {
+                    let pinned = confirmed_registry
+                        .get(&(name.clone(), version.clone()))
+                        .expect("online registry resolution must retain its verified path");
+                    (
+                        pinned.path.clone(),
+                        "registry",
+                        None,
+                        Some(pinned.checksum.clone()),
+                    )
                 }
             }
             resolver::PackageSource::Path(path) => (
@@ -837,15 +848,24 @@ fn cmd_install(
 }
 
 #[derive(Debug)]
-struct VerifiedLockedPackage {
+struct VerifiedRegistryPackage {
     path: PathBuf,
     checksum: String,
+}
+
+fn pinned_registry_paths(
+    packages: &BTreeMap<(String, String), VerifiedRegistryPackage>,
+) -> BTreeMap<(String, String), PathBuf> {
+    packages
+        .iter()
+        .map(|(identity, package)| (identity.clone(), package.path.clone()))
+        .collect()
 }
 
 fn verify_locked_registry_packages(
     lockfile: &lockfile::LockFile,
     registry: &registry::Registry,
-) -> Result<BTreeMap<(String, String), VerifiedLockedPackage>, String> {
+) -> Result<BTreeMap<(String, String), VerifiedRegistryPackage>, String> {
     let mut pinned = BTreeMap::new();
     for entry in &lockfile.packages {
         if entry.source != "registry" {
@@ -893,7 +913,7 @@ fn verify_locked_registry_packages(
         }
         pinned.insert(
             (entry.name.clone(), entry.version.clone()),
-            VerifiedLockedPackage {
+            VerifiedRegistryPackage {
                 path,
                 checksum: actual,
             },
@@ -967,7 +987,7 @@ fn fetch_missing_packages(
     failures: &[resolver::UnresolvedDep],
     registry: &registry::Registry,
     default_registry_name: Option<&str>,
-    confirmed_versions: &mut BTreeMap<String, BTreeSet<String>>,
+    confirmed_registry: &mut BTreeMap<(String, String), VerifiedRegistryPackage>,
 ) -> Result<(), String> {
     for failure in failures {
         let api_client = make_client(failure.registry.as_deref().or(default_registry_name));
@@ -1048,11 +1068,16 @@ fn fetch_missing_packages(
             )
         })?;
 
-        if registry.is_online_cache_verified(name, version, &resolved.checksum)? {
-            confirmed_versions
-                .entry(name.clone())
-                .or_default()
-                .insert(version.clone());
+        if let Some(verified) =
+            registry.verified_online_cache_entry(name, version, &resolved.checksum)?
+        {
+            confirmed_registry.insert(
+                (name.clone(), version.clone()),
+                VerifiedRegistryPackage {
+                    path: verified.path,
+                    checksum: verified.tree_checksum,
+                },
+            );
             eprintln!("confirmed cached {name}@{version}");
             continue;
         }
@@ -1144,17 +1169,28 @@ fn fetch_missing_packages(
             &resolved.checksum,
             &tarball_data,
         )?;
-        staged.publish(&target).map_err(|error| {
+        let generation = staged.publish(&target).map_err(|error| {
             format!(
                 "could not publish cache entry for {name}@{version} at {}: {error}",
                 target.display()
             )
         })?;
-
-        confirmed_versions
-            .entry(name.clone())
-            .or_default()
-            .insert(version.clone());
+        let generation = generation.canonicalize().map_err(|error| {
+            format!(
+                "could not pin published cache entry for {name}@{version} at {}: {error}",
+                generation.display()
+            )
+        })?;
+        let tree_checksum = checksum::compute_dir_checksum(&generation).map_err(|error| {
+            format!("could not verify published cache entry for {name}@{version}: {error}")
+        })?;
+        confirmed_registry.insert(
+            (name.clone(), version.clone()),
+            VerifiedRegistryPackage {
+                path: generation,
+                checksum: tree_checksum,
+            },
+        );
         eprintln!("{name}@{version}");
     }
 
@@ -1187,10 +1223,6 @@ impl FetchProgress {
         self.rounds += 1;
         Ok(())
     }
-}
-
-fn confirmed_version_count(confirmed: &BTreeMap<String, BTreeSet<String>>) -> usize {
-    confirmed.values().map(BTreeSet::len).sum()
 }
 
 fn validate_registry_identity(name: &str, version: &str) -> Result<(), String> {

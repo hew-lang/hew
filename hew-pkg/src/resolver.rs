@@ -1136,6 +1136,23 @@ pub fn resolve_all_locked(
     registry: &Registry,
     pinned_registry_paths: &BTreeMap<(String, String), PathBuf>,
 ) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
+    resolve_all_pinned(manifest, root, registry, pinned_registry_paths)
+}
+
+/// Resolve dependencies using only the exact immutable registry generations
+/// verified by the current install operation. Path dependencies remain
+/// available from disk.
+///
+/// # Errors
+///
+/// Returns [`ResolveError`] when the pinned graph cannot satisfy all dependency
+/// requirements or a pinned manifest cannot be loaded.
+pub fn resolve_all_pinned(
+    manifest: &HewManifest,
+    root: &Path,
+    registry: &Registry,
+    pinned_registry_paths: &BTreeMap<(String, String), PathBuf>,
+) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
     resolve_all_inner(manifest, root, registry, None, Some(pinned_registry_paths))
 }
 

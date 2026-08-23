@@ -191,18 +191,38 @@ fn start_repair_registry(tarball: Vec<u8>, checksum: String) -> RepairRegistry {
 }
 
 fn package_tarball(root: &Path) -> hew_pkg::tarball::PackResult {
-    let package_source = root.join("foo-source");
+    package_tarball_variant(root, "default", "pub fn answer() -> i64 { 42 }\n", None)
+}
+
+fn package_tarball_variant(
+    root: &Path,
+    label: &str,
+    source: &str,
+    path_dependency: Option<&str>,
+) -> hew_pkg::tarball::PackResult {
+    let package_source = root.join(format!("foo-source-{label}"));
     std::fs::create_dir_all(&package_source).unwrap();
+    let dependency = path_dependency.map_or_else(String::new, |name| {
+        let dependency_root = package_source.join(name);
+        std::fs::create_dir_all(&dependency_root).unwrap();
+        std::fs::write(
+            dependency_root.join("hew.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"1.0.0\"\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            dependency_root.join(format!("{name}.hew")),
+            format!("pub fn identity() -> str {{ \"{label}-{name}\" }}\n"),
+        )
+        .unwrap();
+        format!("\n[dependencies]\n{name} = {{ path = \"{name}\" }}\n")
+    });
     std::fs::write(
         package_source.join("hew.toml"),
-        "[package]\nname = \"foo\"\nversion = \"0.2.1\"\n",
+        format!("[package]\nname = \"foo\"\nversion = \"0.2.1\"\n{dependency}"),
     )
     .unwrap();
-    std::fs::write(
-        package_source.join("foo.hew"),
-        "pub fn answer() -> i64 { 42 }\n",
-    )
-    .unwrap();
+    std::fs::write(package_source.join("foo.hew"), source).unwrap();
     hew_pkg::tarball::pack(&package_source, &[], &[]).unwrap()
 }
 
@@ -475,6 +495,112 @@ fn pkg_concurrent_repair_downloads_and_publishes_once() {
         .unwrap(),
         "pub fn answer() -> i64 { 42 }\n"
     );
+}
+
+#[test]
+fn pkg_online_install_keeps_registry_confirmed_generation_after_pointer_swap() {
+    let root = support::tempdir();
+    let home = root.path().join("home");
+    let cache = root.path().join("cache");
+    let seed_project = root.path().join("seed-b");
+    let project = root.path().join("install-a");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&seed_project).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    write_manifest(&seed_project, "foo = \"0.2.1\"\n");
+    write_manifest(&project, "foo = \"0.2.1\"\n");
+
+    let packed_b = package_tarball_variant(
+        root.path(),
+        "b",
+        "pub fn answer() -> i64 { 222 }\n",
+        Some("poison"),
+    );
+    let checksum_b = packed_b.checksum.clone();
+    let registry_b = start_repair_registry(packed_b.data, packed_b.checksum);
+    write_config(&home, &cache, Some(&registry_b.api_url));
+    let seeded = run_pkg_bounded(
+        &home,
+        &seed_project,
+        &["install", "--registry", "mock"],
+        "seed adversarial generation B",
+    );
+    assert!(
+        seeded.status.success(),
+        "could not seed generation B\n{}",
+        describe_output(&seeded)
+    );
+    drop(registry_b);
+
+    let cache_registry = hew_pkg::registry::Registry::with_root(cache.clone());
+    let generation_b = cache_registry.package_dir("foo", "0.2.1");
+    assert_eq!(
+        std::fs::read_to_string(generation_b.join("foo.hew")).unwrap(),
+        "pub fn answer() -> i64 { 222 }\n"
+    );
+    let generation_b_name = generation_b
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let pointer = cache.join("foo/.0.2.1.current");
+
+    let packed_a = package_tarball_variant(
+        root.path(),
+        "a",
+        "pub fn answer() -> i64 { 111 }\n",
+        Some("slow"),
+    );
+    assert_ne!(packed_a.checksum, checksum_b);
+    let registry_a = start_repair_registry(packed_a.data, packed_a.checksum);
+    write_config(&home, &cache, Some(&registry_a.api_url));
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let writer_stop = Arc::clone(&stop);
+    let swaps = Arc::new(AtomicUsize::new(0));
+    let writer_swaps = Arc::clone(&swaps);
+    let writer = std::thread::spawn(move || {
+        let pointer_b = format!("{generation_b_name}\n");
+        while !writer_stop.load(Ordering::Acquire) {
+            if std::fs::read_to_string(&pointer)
+                .is_ok_and(|current| current.trim() != generation_b_name)
+            {
+                std::fs::write(&pointer, pointer_b.as_bytes()).unwrap();
+                writer_swaps.fetch_add(1, Ordering::Release);
+            }
+            std::thread::yield_now();
+        }
+    });
+
+    let output = run_pkg_bounded(
+        &home,
+        &project,
+        &["install", "--registry", "mock"],
+        "online verified-generation pointer swap",
+    );
+    stop.store(true, Ordering::Release);
+    writer.join().unwrap();
+    assert!(
+        output.status.success(),
+        "install of confirmed generation A failed\n{}",
+        describe_output(&output)
+    );
+    assert!(
+        swaps.load(Ordering::Acquire) > 0,
+        "counterfactual writer never replaced the A pointer with B"
+    );
+    assert_eq!(registry_a.package_requests.load(Ordering::Relaxed), 1);
+    assert_eq!(registry_a.download_requests.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        std::fs::read_to_string(project.join(".hew/packages/foo/foo.hew")).unwrap(),
+        "pub fn answer() -> i64 { 111 }\n",
+        "materialization must use the registry-confirmed A generation"
+    );
+    assert!(project.join(".hew/packages/slow/slow.hew").is_file());
+    assert!(!project.join(".hew/packages/poison").exists());
+    let lock = std::fs::read_to_string(project.join("hew.lock")).unwrap();
+    assert!(lock.contains("name = \"slow\""), "{lock}");
+    assert!(!lock.contains("name = \"poison\""), "{lock}");
 }
 
 #[test]

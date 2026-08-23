@@ -1329,10 +1329,95 @@ def assert_coverage_builds_shared_artifacts_in_instrumented_target(
     )
 
 
+def coverage_run_script(coverage: str) -> str:
+    """Extract the exact Bash program from the instrumented coverage step."""
+    job = workflow_job(coverage, "coverage")
+    step = next(
+        step
+        for step in workflow_steps(job)
+        if 'eval "$(cargo llvm-cov show-env --sh)"' in step
+    )
+    marker = "        run: |\n"
+    return textwrap.dedent(step.split(marker, 1)[1])
+
+
+def run_coverage_script(
+    coverage: str, nextest_exit: int
+) -> tuple[subprocess.CompletedProcess, str]:
+    """Execute the coverage step's exact nextest-to-report control flow."""
+    full_script = coverage_run_script(coverage)
+    report = "cargo llvm-cov report --lcov --output-path lcov.info"
+    script_start = full_script.index("set +e\n")
+    script_end = full_script.index(report, script_start) + len(report)
+    script = full_script[script_start:script_end]
+    nextest_start = script.index("timeout 1800")
+    nextest_end = script.index("\nCOV_EXIT=$?", nextest_start)
+    script = script[:nextest_start] + '(exit "$NEXTEST_EXIT")' + script[nextest_end:]
+    script = script.replace(
+        report,
+        'printf "report\\n" >> "$COVERAGE_CALLS"',
+        1,
+    )
+    with tempfile.TemporaryDirectory(prefix="hew-coverage-contract-") as directory:
+        root = Path(directory)
+        calls = root / "calls.log"
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "COVERAGE_CALLS": str(calls),
+                "NEXTEST_EXIT": str(nextest_exit),
+            }
+        )
+        result = subprocess.run(
+            ["bash", "-e", "-c", script],
+            cwd=root,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return result, calls.read_text() if calls.exists() else ""
+
+
+def assert_coverage_failure_propagates(coverage: str) -> None:
+    """Prove failed and timed-out nextest runs cannot generate a green report."""
+    success, success_calls = run_coverage_script(coverage, 0)
+    assert success.returncode == 0, success.stderr
+    assert "report" in success_calls
+
+    for nextest_exit in (17, 124):
+        failed, failed_calls = run_coverage_script(coverage, nextest_exit)
+        assert failed.returncode != 0, f"nextest exit {nextest_exit} became success"
+        if nextest_exit != 124:
+            assert failed.returncode == nextest_exit, (
+                f"nextest exit {nextest_exit} became coverage exit {failed.returncode}"
+            )
+        assert "report" not in failed_calls, (
+            f"nextest exit {nextest_exit} reached coverage report"
+        )
+
+
 def test_coverage_builds_shared_artifacts_in_instrumented_target() -> None:
     assert_coverage_builds_shared_artifacts_in_instrumented_target(
         COVERAGE_NIGHTLY_WORKFLOW.read_text()
     )
+
+
+def test_coverage_failure_propagates_before_report() -> None:
+    assert_coverage_failure_propagates(COVERAGE_NIGHTLY_WORKFLOW.read_text())
+
+
+def test_coverage_failure_propagation_mutations_are_rejected() -> None:
+    coverage = COVERAGE_NIGHTLY_WORKFLOW.read_text()
+    mutated = coverage.replace('            exit "$COV_EXIT"\n', "            :\n", 1)
+    assert mutated != coverage, "coverage exit mutation did not apply"
+    try:
+        assert_coverage_failure_propagates(mutated)
+    except AssertionError:
+        return
+    raise AssertionError("a no-op coverage exit escaped the executable oracle")
 
 
 def test_coverage_instrumented_target_mutations_are_rejected() -> None:
@@ -2159,6 +2244,8 @@ _TESTS = [
     test_workflow_rust_tests_use_prebuilt_shared_artifact,
     test_workflow_shared_artifact_build_mutations_are_rejected,
     test_coverage_builds_shared_artifacts_in_instrumented_target,
+    test_coverage_failure_propagates_before_report,
+    test_coverage_failure_propagation_mutations_are_rejected,
     test_coverage_instrumented_target_mutations_are_rejected,
     test_wasm_pack_consumers_prefetch_checksum_pinned_binaryen,
     test_binaryen_prefetch_pin_mutations_are_rejected,

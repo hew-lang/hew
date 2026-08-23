@@ -1017,7 +1017,7 @@ def test_a_harness_test_a_reached_recipe_runs_is_invoked() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = _synthetic_repo(tmp)
         text = gate.harness_invocation_text(
-            "", {"gate": "\tpython3 scripts/tests/test_wired.py"}, {"gate"}, root
+            [], {"gate": "\tpython3 scripts/tests/test_wired.py"}, {"gate"}, root
         )
         assert "scripts/tests/test_wired.py" in text
         assert "scripts/tests/test_orphan.sh" not in text
@@ -1027,7 +1027,7 @@ def test_a_harness_test_named_only_in_a_comment_is_not_invoked() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = _synthetic_repo(tmp)
         recipe = "\t# see scripts/tests/test_orphan.sh for the counterfactual\n\ttrue"
-        text = gate.harness_invocation_text("", {"gate": recipe}, {"gate"}, root)
+        text = gate.harness_invocation_text([], {"gate": recipe}, {"gate"}, root)
         assert "scripts/tests/test_orphan.sh" not in text
 
 
@@ -1035,7 +1035,7 @@ def test_a_harness_test_only_echoed_is_not_invoked() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = _synthetic_repo(tmp)
         recipe = '\techo "run scripts/tests/test_orphan.sh yourself"'
-        text = gate.harness_invocation_text("", {"gate": recipe}, {"gate"}, root)
+        text = gate.harness_invocation_text([], {"gate": recipe}, {"gate"}, root)
         assert "scripts/tests/test_orphan.sh" not in text
 
 
@@ -1046,7 +1046,7 @@ def test_a_shell_script_a_reached_recipe_runs_carries_its_harness_tests() -> Non
             "python3 scripts/tests/test_orphan.sh\n"
         )
         text = gate.harness_invocation_text(
-            "", {"gate": "\tscripts/wrapper.sh"}, {"gate"}, root
+            [], {"gate": "\tscripts/wrapper.sh"}, {"gate"}, root
         )
         assert "scripts/tests/test_orphan.sh" in text
 
@@ -1064,7 +1064,7 @@ def test_a_python_file_naming_a_harness_test_is_not_an_indirection() -> None:
             '("python3", "scripts/tests/test_orphan.sh")\n'
         )
         text = gate.harness_invocation_text(
-            "", {"gate": "\tpython3 scripts/asserter.py"}, {"gate"}, root
+            [], {"gate": "\tpython3 scripts/asserter.py"}, {"gate"}, root
         )
         assert "scripts/tests/test_orphan.sh" not in text
 
@@ -1079,8 +1079,87 @@ def test_a_host_release_authority_can_invoke_its_own_counterfactuals() -> None:
         root = _synthetic_repo(tmp)
         authority = gate.HOST_RELEASE_AUTHORITIES[0].target
         text = gate.harness_invocation_text(
-            "", {authority: "\tscripts/tests/test_orphan.sh"}, set(), root
+            [], {authority: "\tscripts/tests/test_orphan.sh"}, set(), root
         )
+        assert "scripts/tests/test_orphan.sh" in text
+
+
+def _synthetic_workflow(extra_step: str) -> str:
+    return f"""name: synthetic
+on: push
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: live owner
+        run: python3 scripts/tests/test_wired.py
+{extra_step}"""
+
+
+def _workflow_harness_text(root: Path, workflow: str) -> str:
+    model = gate._parse_workflow(workflow, "synthetic.yml")
+    commands = gate.ci_step_commands([model])
+    return gate.harness_invocation_text(commands, {}, set(), root)
+
+
+def test_a_harness_test_named_only_in_a_workflow_comment_is_not_invoked() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        workflow = _synthetic_workflow("      # python3 scripts/tests/test_orphan.sh\n")
+        text = _workflow_harness_text(root, workflow)
+        assert "scripts/tests/test_wired.py" in text
+        assert "scripts/tests/test_orphan.sh" not in text
+
+
+def test_a_harness_test_only_echoed_by_a_workflow_step_is_not_invoked() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        workflow = _synthetic_workflow(
+            "      - name: mention only\n"
+            "        run: echo 'python3 scripts/tests/test_orphan.sh'\n"
+        )
+        text = _workflow_harness_text(root, workflow)
+        assert "scripts/tests/test_wired.py" in text
+        assert "scripts/tests/test_orphan.sh" not in text
+
+
+def test_a_harness_test_only_stored_by_a_workflow_step_is_not_invoked() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        workflow = _synthetic_workflow(
+            "      - name: string mention only\n"
+            "        run: |\n"
+            "          TEST_PATH='scripts/tests/test_orphan.sh'\n"
+            '          echo "$TEST_PATH"\n'
+        )
+        text = _workflow_harness_text(root, workflow)
+        assert "scripts/tests/test_wired.py" in text
+        assert "scripts/tests/test_orphan.sh" not in text
+
+
+def test_a_harness_test_in_a_disabled_workflow_step_is_not_invoked() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        workflow = _synthetic_workflow(
+            "      - name: disabled owner\n"
+            "        if: false\n"
+            "        run: python3 scripts/tests/test_orphan.sh\n"
+        )
+        text = _workflow_harness_text(root, workflow)
+        assert "scripts/tests/test_wired.py" in text
+        assert "scripts/tests/test_orphan.sh" not in text
+
+
+def test_a_harness_test_under_a_dynamic_condition_can_be_invoked() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _synthetic_repo(tmp)
+        workflow = _synthetic_workflow(
+            "      - name: conditional owner\n"
+            "        if: ${{ needs.changes.outputs.scripts == 'true' }}\n"
+            "        run: bash scripts/tests/test_orphan.sh\n"
+        )
+        text = _workflow_harness_text(root, workflow)
+        assert "scripts/tests/test_wired.py" in text
         assert "scripts/tests/test_orphan.sh" in text
 
 

@@ -732,13 +732,9 @@ def _composite_run_steps(uses: str) -> list[str]:
     raise YamlError(f"{uses}: local composite action has no action.yml")
 
 
-def _load_workflow(path: Path) -> Workflow:
-    rel = (
-        str(path.relative_to(REPO_ROOT))
-        if path.is_relative_to(REPO_ROOT)
-        else str(path)
-    )
-    document = _require_mapping(parse_yaml(path.read_text(), rel), rel, "workflow")
+def _parse_workflow(text: str, rel: str) -> Workflow:
+    """Parse one workflow into the structural executable-step model."""
+    document = _require_mapping(parse_yaml(text, rel), rel, "workflow")
     workflow = Workflow(rel=rel, triggers=_triggers_of(document, rel))
     jobs = _require_mapping(document.get("jobs"), rel, "`jobs:`")
     for ident, raw in jobs.items():
@@ -781,6 +777,15 @@ def _load_workflow(path: Path) -> Workflow:
             )
         workflow.jobs.append(job)
     return workflow
+
+
+def _load_workflow(path: Path) -> Workflow:
+    rel = (
+        str(path.relative_to(REPO_ROOT))
+        if path.is_relative_to(REPO_ROOT)
+        else str(path)
+    )
+    return _parse_workflow(path.read_text(encoding="utf-8"), rel)
 
 
 def workflow_files() -> list[Path]:
@@ -2170,51 +2175,34 @@ def lint_recipe_tokens(makefile: str) -> tuple[str, ...]:
     return tokens
 
 
-def lint_job(workflow: str) -> str:
-    start = workflow.find("  lint:\n")
-    if start < 0:
-        raise ValueError("ci.yml has no lint job")
-    following = re.search(r"^  [a-zA-Z0-9_-]+:\n", workflow[start + 1 :], re.MULTILINE)
-    if following is None:
-        return workflow[start:]
-    return workflow[start : start + 1 + following.start()]
+def lint_run_blocks(workflow: str) -> tuple[tuple[str, str], ...]:
+    """Executable ``run:`` bodies in the structurally parsed lint job.
 
-
-def lint_run_blocks(job: str) -> tuple[tuple[str, str], ...]:
-    lines = job.splitlines()
+    This deliberately shares A0--A3's workflow authority: YAML comments are
+    absent from the model, output-only commands are removed, and a job or step
+    guarded by a statically-false condition contributes no execution edge.
+    Dynamic conditions remain eligible because they can run.
+    """
+    model = _parse_workflow(workflow, ".github/workflows/ci.yml")
+    jobs = [job for job in model.jobs if job.ident == "lint"]
+    if len(jobs) != 1:
+        raise ValueError("ci.yml must have exactly one lint job")
+    job = jobs[0]
+    if job.disabled:
+        return ()
     blocks: list[tuple[str, str]] = []
-    index = 0
-    while index < len(lines):
-        name_match = re.match(r"^      - name:\s*(.+?)\s*$", lines[index])
-        if name_match is None:
-            index += 1
+    for step in job.steps:
+        if step.disabled:
             continue
-        name = name_match.group(1).strip("\"'")
-        end = index + 1
-        while end < len(lines) and not re.match(
-            r"^      - (?:name:|uses:)", lines[end]
-        ):
-            end += 1
-        step = lines[index:end]
-        run = ""
-        for offset, line in enumerate(step):
-            scalar = re.match(r"^        run:\s*(.*?)\s*$", line)
-            if scalar is None:
-                continue
-            if scalar.group(1) != "|":
-                run = scalar.group(1)
-                break
-            body: list[str] = []
-            for body_line in step[offset + 1 :]:
-                if body_line.startswith("          "):
-                    body.append(body_line[10:])
-                elif body_line.strip() and not body_line.lstrip().startswith("#"):
-                    break
-            run = "\n".join(body)
-            break
-        if run:
-            blocks.append((name, run))
-        index = end
+        if step.run is not None:
+            command = executing_text(strip_shell_comments(step.run))
+            if command:
+                blocks.append((step.name, command))
+        if step.uses:
+            for body in _composite_run_steps(step.uses):
+                command = executing_text(strip_shell_comments(body))
+                if command:
+                    blocks.append((step.name, command))
     return tuple(blocks)
 
 
@@ -2263,7 +2251,7 @@ def lint_coverage_errors(
 ) -> list[str]:
     errors: list[str] = []
     prerequisites = lint_prerequisites(makefile)
-    blocks = lint_run_blocks(lint_job(workflow))
+    blocks = lint_run_blocks(workflow)
     if structural_wrapper is None:
         structural_wrapper = STRUCTURAL_LINT_WRAPPER.read_text(encoding="utf-8")
 
@@ -2327,6 +2315,73 @@ def lint_coverage_errors(
 
 
 _SCRIPT_PATH_RE = re.compile(r"scripts/[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:sh|py)")
+_ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
+
+
+def script_invocations_in(script: str) -> set[str]:
+    """Literal repository scripts that executable shell commands invoke.
+
+    A path in an assignment, argument to ``echo``, or other string-bearing
+    command is not execution. Count only a direct script command, or the script
+    operand of a recognised Python/shell interpreter. Anything more elaborate
+    is deliberately invisible until represented by an executable wrapper that
+    this checker can follow.
+    """
+    invoked: set[str] = set()
+    for segment in _command_segments(script):
+        text = _strip_keywords(" ".join(segment.split()))
+        try:
+            tokens = shlex.split(text, comments=True)
+        except ValueError:
+            continue
+        if not tokens:
+            continue
+        tokens[0] = tokens[0].lstrip("@-")
+        index = 0
+        while index < len(tokens) and _ENV_ASSIGNMENT_RE.fullmatch(tokens[index]):
+            index += 1
+        if index >= len(tokens):
+            continue
+        if tokens[index] == "env":
+            index += 1
+            while index < len(tokens) and (
+                tokens[index].startswith("-")
+                or _ENV_ASSIGNMENT_RE.fullmatch(tokens[index])
+            ):
+                index += 1
+        while index < len(tokens) and tokens[index] in {"command", "exec"}:
+            index += 1
+        if index < len(tokens) and Path(tokens[index]).name in {"timeout", "gtimeout"}:
+            index += 1
+            while index < len(tokens) and tokens[index].startswith("-"):
+                index += 1
+            if index < len(tokens):
+                index += 1  # duration
+        if index >= len(tokens):
+            continue
+        executable = tokens[index]
+        executable_name = Path(executable).name
+        if _SCRIPT_PATH_RE.fullmatch(executable.lstrip("./")):
+            invoked.add(executable.lstrip("./"))
+            continue
+        interpreter = executable_name in {
+            "python",
+            "python3",
+            "bash",
+            "dash",
+            "sh",
+            "zsh",
+        } or executable in {"${BASH}", "$BASH"}
+        if not interpreter and executable not in {".", "source"}:
+            continue
+        for operand in tokens[index + 1 :]:
+            if operand.startswith("-"):
+                continue
+            rel = operand.lstrip("./")
+            if _SCRIPT_PATH_RE.fullmatch(rel):
+                invoked.add(rel)
+            break
+    return invoked
 
 
 def harness_tests(root: Path = REPO_ROOT) -> list[str]:
@@ -2339,23 +2394,29 @@ def harness_tests(root: Path = REPO_ROOT) -> list[str]:
 
 
 def harness_invocation_text(
-    ci_text: str,
+    step_commands: list[tuple[str, str]],
     recipes: dict[str, str],
     reached: set[str],
     root: Path = REPO_ROOT,
 ) -> str:
-    """Everything CI actually executes, with one hop into shell scripts."""
-    parts = [ci_text]
+    """Structurally executable CI/Make text, with shell-wrapper expansion.
+
+    ``step_commands`` is the output of :func:`ci_step_commands`, optionally
+    extended with the dispatcher's executable dry-run selections. Keeping the
+    structured command collection intact here prevents raw workflow text from
+    becoming an A11 execution claim through a comment, echo, or disabled step.
+    """
+    parts = [command for _, command in step_commands]
     invokers = reached | {authority.target for authority in HOST_RELEASE_AUTHORITIES}
     for target in sorted(invokers):
         parts.append(executing_text(strip_shell_comments(recipes.get(target, ""))))
 
+    invoked = {rel for part in parts for rel in script_invocations_in(part)}
     seen: set[str] = set()
     frontier = [
-        match.group(0)
-        for part in parts
-        for match in _SCRIPT_PATH_RE.finditer(part)
-        if match.group(0).endswith(".sh")
+        rel
+        for rel in invoked
+        if rel.endswith(".sh") and not rel.startswith("scripts/tests/")
     ]
     while frontier:
         rel = frontier.pop()
@@ -2367,13 +2428,14 @@ def harness_invocation_text(
         if not path.is_file():
             continue
         body = executing_text(strip_shell_comments(path.read_text(encoding="utf-8")))
-        parts.append(body)
+        nested = script_invocations_in(body)
+        invoked.update(nested)
         frontier.extend(
-            match.group(0)
-            for match in _SCRIPT_PATH_RE.finditer(body)
-            if match.group(0).endswith(".sh")
+            rel
+            for rel in nested
+            if rel.endswith(".sh") and not rel.startswith("scripts/tests/")
         )
-    return "\n".join(parts)
+    return "\n".join(sorted(invoked))
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -3092,7 +3154,7 @@ def main() -> int:
     print(f"    {len(no_gate_rows)} contradictory consumer relation(s).")
 
     tests = harness_tests()
-    invocations = harness_invocation_text(ci_text, recipes, reached)
+    invocations = harness_invocation_text(step_commands, recipes, reached)
     orphans = [test for test in tests if test not in invocations]
     print(f"\n==> A11: CI invokes harness self-tests ({len(tests)} self-test(s))")
     for test in orphans:

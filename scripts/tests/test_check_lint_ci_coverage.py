@@ -35,8 +35,39 @@ def main() -> None:
     )
     require_failure(extra, workflow, "no CI step: future-lint")
 
-    missing = workflow.replace("run: make codegen-trap-inventory-check", "run: true", 1)
+    missing = workflow.replace(
+        "run: make codegen-trap-inventory-check", "run: echo skipped", 1
+    )
     require_failure(makefile, missing, "no CI step: codegen-trap-inventory-check")
+
+    disabled = workflow.replace(
+        "      - name: Check codegen trap inventory\n"
+        "        run: make codegen-trap-inventory-check",
+        "      - name: Check codegen trap inventory\n"
+        "        if: false\n"
+        "        run: make codegen-trap-inventory-check",
+        1,
+    )
+    assert disabled != workflow
+    require_failure(makefile, disabled, "no CI step: codegen-trap-inventory-check")
+
+    echo_only = workflow.replace(
+        "run: make codegen-trap-inventory-check",
+        "run: echo 'make codegen-trap-inventory-check'",
+        1,
+    )
+    require_failure(makefile, echo_only, "no CI step: codegen-trap-inventory-check")
+
+    dynamic = workflow.replace(
+        "      - name: Check codegen trap inventory\n"
+        "        run: make codegen-trap-inventory-check",
+        "      - name: Check codegen trap inventory\n"
+        "        if: ${{ needs.changes.outputs.codegen == 'true' }}\n"
+        "        run: make codegen-trap-inventory-check",
+        1,
+    )
+    assert dynamic != workflow
+    assert MODULE.lint_coverage_errors(makefile, dynamic, wrapper) == []
 
     replay = workflow.replace(
         "run: make codegen-trap-inventory-check",

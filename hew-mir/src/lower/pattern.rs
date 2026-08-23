@@ -4,10 +4,11 @@
 )]
 
 use super::{
-    base_local, callee_is_resolved_item, callee_returns_fresh_owner,
-    field_override_uses_record_field_drop, float_width, generator_yield_instr_escapes,
-    generator_yield_terminator_escapes, hir_expr_contains_synthetic_vec_get_clone,
-    literal_match_scrutinee_ty, place_is_interior_projection, ty_is_generator_handle,
+    base_local, binder_read_is_borrow_safe_terminator, callee_is_resolved_item,
+    callee_returns_fresh_owner, field_override_uses_record_field_drop, float_width,
+    generator_yield_instr_escapes, generator_yield_terminator_escapes,
+    hir_expr_contains_synthetic_vec_get_clone, literal_match_scrutinee_ty,
+    place_is_interior_projection, string_binder_read_is_user_fn_borrow, ty_is_generator_handle,
     ty_is_indirect_enum, user_record_layout_key, BindingId, Builder, BuiltinType, CmpPred,
     Disposition, FailClosedReason, FieldOffset, FloatWidth, HashMap, HashSet, HirExpr, HirExprKind,
     HirLiteral, Instr, IntentKind, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
@@ -776,6 +777,81 @@ impl Builder {
         start_instr_len: usize,
         local: u32,
     ) -> bool {
+        // A minted enum carrier's projected payload binder is an interior
+        // alias until an exact `NeutralizePayloadSlot` transfers that slot.
+        // Scan each still-carrier-backed alias through the same escape proof:
+        // an ownership-opaque extern may retain the binder even though it
+        // never mentions the carrier local directly. Releasing the carrier at
+        // arm end would then release host-owned storage (F1 domestic control).
+        // A neutralized binder is deliberately omitted: its ownership moved
+        // onward, while the carrier still owes its shell and sibling slots.
+        let neutralized_slots: HashSet<Place> = self
+            .pending_blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .chain(self.instructions.iter())
+            .filter_map(|instruction| match instruction {
+                Instr::NeutralizePayloadSlot { place, .. } => Some(*place),
+                _ => None,
+            })
+            .collect();
+        let live_payload_aliases: HashSet<u32> = self
+            .projected_payload_provenance
+            .iter()
+            .filter(|(_, provenance)| {
+                base_local(provenance.source_place) == Some(local)
+                    && !neutralized_slots.contains(&provenance.source_place)
+            })
+            .filter_map(|(binding, _)| {
+                self.binding_locals
+                    .get(binding)
+                    .copied()
+                    .and_then(base_local)
+            })
+            .collect();
+        for alias in live_payload_aliases {
+            // Retain/share bookkeeping can exempt the projected binder's call
+            // from its own body-end drop scan. That does not prove the parent
+            // carrier still owns the handed-off slot. Recheck call arguments
+            // against the ownership-contract boundary itself: an unaudited
+            // extern is consuming/opaque here even when another pass recorded
+            // the binder use as a share for COW accounting.
+            if self.pending_blocks.iter().any(|block| {
+                matches!(
+                    &block.terminator,
+                    Terminator::Call { args, .. }
+                        if args.iter().any(|arg| base_local(*arg) == Some(alias))
+                            && !binder_read_is_borrow_safe_terminator(
+                                &block.terminator,
+                                self.suspend_kinds.get(&block.id),
+                                alias,
+                            )
+                            && !string_binder_read_is_user_fn_borrow(
+                                &block.terminator,
+                                self.suspend_kinds.get(&block.id),
+                                alias,
+                                self.locals.get(alias as usize),
+                                &self.module_fn_names,
+                                &self.module_generic_fn_names,
+                                &self.call_scrutinee_provenance.extern_table,
+                            )
+                )
+            }) {
+                return false;
+            }
+            let mut visiting = HashSet::new();
+            let mut memo = HashMap::new();
+            if !self.generator_yield_block_paths_drop_safe(
+                start_block_id,
+                start_block_id,
+                start_instr_len,
+                alias,
+                &mut visiting,
+                &mut memo,
+            ) {
+                return false;
+            }
+        }
         let mut visiting = HashSet::new();
         let mut memo = HashMap::new();
         self.generator_yield_block_paths_drop_safe(

@@ -5932,6 +5932,72 @@ fn block_executes_at_most_once_per_owner_mint(
     reason = "one proof pass keeps owner eligibility, postdominance, and release insertion together"
 )]
 fn release_last_borrowed_typed_owners(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    // An unretained handle placed into an aggregate remains owned by its
+    // standalone source binding until an exact extraction consumer takes over.
+    // The aggregate is only a byte-copy carrier in that no-consume state. Do
+    // not manufacture a second release by treating its last scalar-field read
+    // as proof that the aggregate itself owns the handle (W3.053 negative).
+    let aggregate_alias_bindings: HashSet<BindingId> = blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .filter_map(|statement| match statement {
+            MirStatement::AggregateAlias { binding, .. } => Some(*binding),
+            _ => None,
+        })
+        .collect();
+    let unretained_source_locals: HashSet<u32> = builder
+        .owned_locals_exit_candidates()
+        .into_iter()
+        .filter(|(binding, _, ty)| {
+            aggregate_alias_bindings.contains(binding) && drop_plan::ty_is_owned_handle_leaf(ty)
+        })
+        .filter_map(|(binding, _, _)| {
+            builder
+                .binding_locals
+                .get(&binding)
+                .and_then(|place| base_local(*place))
+        })
+        .collect();
+    let neutralized_sources: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::NeutralizePayloadSlot {
+                place: Place::Local(local),
+                ..
+            } => Some(*local),
+            _ => None,
+        })
+        .collect();
+    let borrowed_aggregate_roots: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .flat_map(|instruction| match instruction {
+            Instr::TupleConstruct { elements, dest } => elements
+                .iter()
+                .filter_map(|source| {
+                    let source = base_local(*source)?;
+                    (unretained_source_locals.contains(&source)
+                        && !neutralized_sources.contains(&source))
+                    .then(|| base_local(*dest))
+                    .flatten()
+                })
+                .collect::<Vec<_>>(),
+            Instr::RecordInit { fields, dest, .. } => fields
+                .iter()
+                .filter_map(|(_, source)| {
+                    let source = base_local(*source)?;
+                    (unretained_source_locals.contains(&source)
+                        && !neutralized_sources.contains(&source))
+                    .then(|| base_local(*dest))
+                    .flatten()
+                })
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+    let borrowed_aggregate_aliases =
+        propagate_whole_value_alias_roots(blocks, borrowed_aggregate_roots.iter().copied());
     let mut candidates = Vec::new();
     let mut candidate_locals = HashSet::new();
     for (binding, _name, ty) in builder.owned_locals_exit_candidates() {
@@ -5956,6 +6022,12 @@ fn release_last_borrowed_typed_owners(blocks: &mut [BasicBlock], builder: &mut B
         let Some(local) = base_local(place) else {
             continue;
         };
+        if borrowed_aggregate_aliases
+            .get(&local)
+            .is_some_and(|root| borrowed_aggregate_roots.contains(root))
+        {
+            continue;
+        }
         if !candidate_locals.insert(local) {
             continue;
         }

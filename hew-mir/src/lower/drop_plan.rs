@@ -285,11 +285,73 @@ pub(super) fn elaborate(
     // makes the generic sole-owner scan conservative: projection consumes
     // null their source slot, so the tag-aware drop releases only the shell
     // and payload slots that remain owned on each exit.
+    //
+    // The exception is an unneutralized payload binder handed to a call whose
+    // ownership contract does not prove a borrow (most importantly an
+    // unaudited extern). That payload is still a view into the carrier, but the
+    // callee may retain/take it; restoring the carrier drop would release the
+    // callee-owned handle. Keep this veto exact so ordinary domestic carriers
+    // such as rC, whose payload merely flows through local aggregate logic,
+    // retain their required per-iteration release.
+    let neutralized_payload_slots: HashSet<Place> = checked
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instr::NeutralizePayloadSlot { place, .. } => Some(*place),
+            _ => None,
+        })
+        .collect();
+    let call_carriers_with_opaque_payload_handoff: HashSet<u32> = builder
+        .projected_payload_provenance
+        .iter()
+        .filter_map(|(binding, provenance)| {
+            let carrier = base_local(provenance.source_place)?;
+            if !builder
+                .call_scrutinee_carrier_mint_locals
+                .contains(&carrier)
+                || neutralized_payload_slots.contains(&provenance.source_place)
+            {
+                return None;
+            }
+            let alias = builder
+                .binding_locals
+                .get(binding)
+                .copied()
+                .and_then(base_local)?;
+            checked
+                .blocks
+                .iter()
+                .any(|block| {
+                    matches!(
+                        &block.terminator,
+                        Terminator::Call { args, .. }
+                            if args.iter().any(|arg| base_local(*arg) == Some(alias))
+                                && !binder_read_is_borrow_safe_terminator(
+                                    &block.terminator,
+                                    builder.suspend_kinds.get(&block.id),
+                                    alias,
+                                )
+                                && !string_binder_read_is_user_fn_borrow(
+                                    &block.terminator,
+                                    builder.suspend_kinds.get(&block.id),
+                                    alias,
+                                    builder.locals.get(alias as usize),
+                                    &builder.module_fn_names,
+                                    &builder.module_generic_fn_names,
+                                    &builder.call_scrutinee_provenance.extern_table,
+                                )
+                    )
+                })
+                .then_some(carrier)
+        })
+        .collect();
     enum_composite_drop_allowed.extend(builder.binding_locals.iter().filter_map(
         |(binding, place)| {
             let local = base_local(*place)?;
             let ty = builder.locals.get(local as usize)?;
             (builder.call_scrutinee_carrier_mint_locals.contains(&local)
+                && !call_carriers_with_opaque_payload_handoff.contains(&local)
                 && !call_carrier_has_declared_release(ty)
                 && call_carrier_shell_drop_safe(ty))
             .then_some(*binding)
@@ -1902,7 +1964,15 @@ pub(super) fn elaborate(
     for (exit, plan) in &mut drop_plans {
         if let ExitPath::Suspend { block, .. } = exit {
             if let Some(extra) = builder.suspend_abandon_extra_drops.get(block) {
-                plan.drops.extend(extra.iter().cloned());
+                // The binding-scoped prover can now see some active generator
+                // values that originally needed this abandon-only mirror.
+                // Keep the mirror only when the ordinary exit plan has not
+                // already established the exact same release authority.
+                for drop in extra {
+                    if !plan.drops.contains(drop) {
+                        plan.drops.push(drop.clone());
+                    }
+                }
             }
         }
     }
@@ -6382,7 +6452,7 @@ fn build_lifo_drops(
         // hand-off skips both the close and field teardown on the consumed
         // path, while the live path performs the complete resource-record
         // ritual exactly once.
-        if owned_record_drop_allowed.contains(binding) {
+        if owned_record_drop_allowed.contains(binding) && user_record_layout_key(ty).is_some() {
             let place = *binding_locals.get(binding).unwrap_or_else(|| {
                 panic!(
                     "build_lifo_drops invariant: owned record binding {binding:?} is in \

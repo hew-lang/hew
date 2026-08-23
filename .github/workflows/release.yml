@@ -1778,11 +1778,16 @@ jobs:
             exit 1
           fi
           VERSION="${RELEASE_TAG#v}"
+          PLAYGROUND_RELEASE_IMAGE="ghcr.io/hew-lang/playground:${RELEASE_TAG}"
+          if [[ "${PLAYGROUND_RELEASE_IMAGE}" != "ghcr.io/hew-lang/playground:${RELEASE_TAG}" ]]; then
+            echo "::error::release image authority is not the exact playground image for ${RELEASE_TAG}"
+            exit 1
+          fi
           REMAINING_SECONDS=$((DEADLINE_EPOCH - $(date +%s)))
           REMAINING_MINUTES=$(((REMAINING_SECONDS + 59) / 60))
           echo "Acquisition mode is 'local': no playground workflow was dispatched."
           echo "The pre-tag candidate image command for a hew-lang/playground checkout is:"
-          echo "  make release-candidate-publish HEW_EXAMPLES_REF=${HEW_EXAMPLES_REF} HEW_VERSION=${VERSION}" # external: hew-lang/playground
+          echo "  HEW_EXAMPLES_REF=${HEW_EXAMPLES_REF} HEW_VERSION=${VERSION} PLAYGROUND_RELEASE_IMAGE=${PLAYGROUND_RELEASE_IMAGE} make release-candidate-publish" # external: hew-lang/playground
           echo "This job has up to ${REMAINING_MINUTES}m remaining for that image and fails if it does not arrive."
 
       - name: Assert release image exists and binds the release commit

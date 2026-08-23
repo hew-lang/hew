@@ -215,10 +215,13 @@ but every arm must succeed before the graph rejoins:
    and branch protection.
 2. Before creating the signed tag, publish the candidate playground image from a
    playground checkout:
-   `make release-candidate-publish HEW_EXAMPLES_REF=<sha> HEW_VERSION=<version>`. <!-- external-target: hew-lang/playground -->
+   `HEW_EXAMPLES_REF=<sha> HEW_VERSION=<version> PLAYGROUND_RELEASE_IMAGE=<image> make release-candidate-publish`. <!-- external-target: hew-lang/playground -->
    `HEW_EXAMPLES_REF` must be the exact 40-character candidate commit SHA and
-   `HEW_VERSION` the candidate version. This target uses candidate authority and
-   stamps that SHA as the image's `org.opencontainers.image.revision` label.
+   `HEW_VERSION` the candidate version, while `PLAYGROUND_RELEASE_IMAGE` must
+   be the exact `ghcr.io/hew-lang/playground:<tag>` candidate image. These are
+   inherited environment prefixes, not trailing GNU Make variable assignments.
+   This target uses candidate authority and stamps that SHA as the image's
+   `org.opencontainers.image.revision` label.
    Playground must include this target and OCI revision-label behavior before
    rc2. Do not substitute the post-tag `release-publish` target here: it uses
    publish authority and requires the remote signed tag.

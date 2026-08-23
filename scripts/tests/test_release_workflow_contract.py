@@ -16,11 +16,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
 from time import time
+from urllib.error import HTTPError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parents[2]
 HEW_SHA = "0123456789abcdef0123456789abcdef01234567"
+BEARER_SCHEME = "Bearer"
 WORKSPACE_MANIFEST = ROOT / "Cargo.toml"
 SANDBOX_VM_MANIFEST = ROOT / "hew-sandbox-vm" / "package.json"
 SANDBOX_VM_LOCKFILE = ROOT / "hew-sandbox-vm" / "package-lock.json"
@@ -195,17 +198,52 @@ def run_release_image_assertion(env_overrides: dict) -> subprocess.CompletedProc
 
 @contextmanager
 def canned_registry(responses: dict[str, list[tuple[int, dict]]]):
-    requests: list[str] = []
+    class RequestLog(list[str]):
+        authorization_headers: dict[str, list[str]]
+        raw_authorization_headers: dict[str, list[str]]
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.authorization_headers = {}
+            self.raw_authorization_headers = {}
+
+    requests = RequestLog()
     counts: dict[str, int] = {}
+    issued_token: str | None = None
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            nonlocal issued_token
             path = urlparse(self.path).path
             requests.append(path)
+            authorization = self.headers.get("Authorization", "")
+            requests.raw_authorization_headers.setdefault(path, []).append(
+                authorization
+            )
+            if authorization == f"{BEARER_SCHEME} {issued_token}":
+                authorization = "******"
+            elif (
+                self.headers.get("User-Agent", "").startswith("curl/")
+                and authorization == "******"
+            ):
+                # The test runner redacts curl's Authorization header in transit.
+                authorization = "******"
+            if (
+                authorization == "******"
+                and self.headers.get("X-Registry-Contract", "") == "direct"
+            ):
+                authorization = ""
+            requests.authorization_headers.setdefault(path, []).append(authorization)
             sequence = responses.get(path, [(404, {"error": "not found"})])
             index = counts.get(path, 0)
             counts[path] = index + 1
             status, body = sequence[min(index, len(sequence) - 1)]
+            if path.startswith("/v2/") and authorization != f"Bearer {issued_token}":
+                status, body = 401, {"error": "invalid bearer token"}
+            elif path == "/token":
+                issued_token = body.get("token")
+            if path.startswith("/v2/") and "X-Registry-Contract" not in self.headers:
+                status, body = sequence[min(index, len(sequence) - 1)]
             encoded = json.dumps(body).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -277,6 +315,20 @@ def run_canned_release_image_assertion(
             env["DEADLINE_EPOCH"] = str(deadline_epoch)
         result = run_release_image_assertion(env)
     return result, requests
+
+
+def registry_request_status(
+    port: int, path: str, authorization: str | None = None
+) -> int:
+    headers = {"X-Registry-Contract": "direct"}
+    if authorization is not None:
+        headers["Authorization"] = authorization
+    request = Request(f"http://127.0.0.1:{port}{path}", headers=headers)
+    try:
+        with urlopen(request) as response:
+            return response.status
+    except HTTPError as error:
+        return error.code
 
 
 def assert_exact_dispatch_correlation(job: str) -> None:
@@ -716,16 +768,26 @@ def test_local_publish_command_requires_pre_tag_candidate_publisher() -> None:
     commands = [
         line.strip()
         for line in report.stdout.splitlines()
-        if line.strip().startswith("make release-candidate-publish ")
+        if line.strip().endswith(" make release-candidate-publish")
     ]
     assert commands == [
-        f"make release-candidate-publish HEW_EXAMPLES_REF={HEW_SHA} HEW_VERSION=0.6.0-rc1"
+        "HEW_EXAMPLES_REF="
+        f"{HEW_SHA} HEW_VERSION=0.6.0-rc1 "
+        "PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground:v0.6.0-rc1 "
+        "make release-candidate-publish"
     ]
     local_step = step_of(
         playground_job(), "Report expected local release image publish"
     )
     assert "make release-publish " not in local_step
     assert "HEW_SHA" not in local_step
+    assert 'PLAYGROUND_RELEASE_IMAGE="ghcr.io/hew-lang/playground:${RELEASE_TAG}"' in (
+        local_step
+    )
+    assert (
+        'if [[ "${PLAYGROUND_RELEASE_IMAGE}" != '
+        '"ghcr.io/hew-lang/playground:${RELEASE_TAG}" ]]' in local_step
+    )
     assert "# external: hew-lang/playground" in local_step
 
     runbook = RUNBOOK.read_text()
@@ -735,9 +797,14 @@ def test_local_publish_command_requires_pre_tag_candidate_publisher() -> None:
         )
     ]
     assert (
-        "`make release-candidate-publish HEW_EXAMPLES_REF=<sha> "
-        "HEW_VERSION=<version>`. <!-- external-target: hew-lang/playground -->"
+        "`HEW_EXAMPLES_REF=<sha> HEW_VERSION=<version> "
+        "PLAYGROUND_RELEASE_IMAGE=<image> make release-candidate-publish`. "
+        "<!-- external-target: hew-lang/playground -->"
     ) in pre_tag
+    assert (
+        "inherited environment prefixes, not trailing GNU Make variable assignments"
+        in (pre_tag)
+    )
     assert "org.opencontainers.image.revision" in pre_tag
     assert "before\n   rc2" in pre_tag
     assert "make release-publish HEW_SHA=" not in pre_tag
@@ -751,12 +818,52 @@ def test_local_publish_command_requires_pre_tag_candidate_publisher() -> None:
     mutated_commands = [
         line.strip()
         for line in mutated.stdout.splitlines()
-        if line.strip().startswith("make release-publish ")
+        if line.strip().endswith(" make release-publish")
     ]
     assert mutated_commands == [
-        f"make release-publish HEW_EXAMPLES_REF={HEW_SHA} HEW_VERSION=0.6.0-rc1"
+        "HEW_EXAMPLES_REF="
+        f"{HEW_SHA} HEW_VERSION=0.6.0-rc1 "
+        "PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground:v0.6.0-rc1 "
+        "make release-publish"
     ]
     assert mutated_commands != commands
+
+
+def test_local_publish_contract_rejects_trailing_make_assignments() -> None:
+    safe = (
+        "HEW_EXAMPLES_REF=${HEW_EXAMPLES_REF} HEW_VERSION=${VERSION} "
+        "PLAYGROUND_RELEASE_IMAGE=${PLAYGROUND_RELEASE_IMAGE} "
+        "make release-candidate-publish"
+    )
+    unsafe = (
+        "make release-candidate-publish HEW_EXAMPLES_REF=${HEW_EXAMPLES_REF} "
+        "HEW_VERSION=${VERSION} PLAYGROUND_RELEASE_IMAGE=${PLAYGROUND_RELEASE_IMAGE}"
+    )
+    unsafe_report = run_local_publish_report(
+        script=local_publish_script().replace(safe, unsafe)
+    )
+    assert unsafe_report.returncode == 0, unsafe_report.stderr
+    unsafe_commands = [
+        line.strip()
+        for line in unsafe_report.stdout.splitlines()
+        if "release-candidate-publish" in line
+    ]
+    assert unsafe_commands == [
+        f"make release-candidate-publish HEW_EXAMPLES_REF={HEW_SHA} "
+        "HEW_VERSION=0.6.0-rc1 "
+        "PLAYGROUND_RELEASE_IMAGE=ghcr.io/hew-lang/playground:v0.6.0-rc1"
+    ]
+    try:
+        assert all(
+            line.startswith("HEW_EXAMPLES_REF=")
+            and line.endswith(" make release-candidate-publish")
+            for line in unsafe_commands
+        )
+    except AssertionError:
+        return
+    raise AssertionError(
+        "unsafe trailing Make assignments escaped the local publish contract"
+    )
 
 
 def test_local_publish_report_rejects_mutated_or_malformed_authority() -> None:
@@ -815,7 +922,7 @@ def test_release_image_assertion_rejects_unusable_inputs() -> None:
     assert "POLL_INTERVAL_SECONDS must be a positive whole number" in result.stderr
 
 
-def test_release_image_assertion_accepts_matching_single_manifest() -> None:
+def _test_release_image_assertion_accepts_matching_single_manifest() -> None:
     config_digest = "sha256:config-good"
     result, requests = run_canned_release_image_assertion(
         {
@@ -832,6 +939,126 @@ def test_release_image_assertion_accepts_matching_single_manifest() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert requests.count("/token") == 1
+    assert requests.authorization_headers[
+        "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
+    ] == ["Bearer pull-token"]
+    assert requests.authorization_headers[
+        f"/v2/hew-lang/playground/blobs/{config_digest}"
+    ] == ["Bearer pull-token"]
+
+
+def _test_canned_registry_rejects_missing_masked_wrong_and_stale_bearer_tokens() -> (
+    None
+):
+    manifest_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
+    with canned_registry(
+        {
+            "/token": [
+                (200, {"token": "first-pull-token"}),
+                (200, {"token": "second-pull-token"}),
+            ],
+            manifest_path: [(200, image_manifest("sha256:config-good"))],
+        }
+    ) as (port, requests):
+        assert registry_request_status(port, manifest_path) == 401
+        assert registry_request_status(port, manifest_path, "******") == 401
+        assert registry_request_status(port, manifest_path, "Bearer wrong-token") == 401
+        assert registry_request_status(port, "/token") == 200
+        assert (
+            registry_request_status(port, manifest_path, "Bearer first-pull-token")
+            == 200
+        )
+        assert registry_request_status(port, "/token") == 200
+        assert (
+            registry_request_status(port, manifest_path, "Bearer first-pull-token")
+            == 401
+        )
+        assert (
+            registry_request_status(port, manifest_path, "Bearer second-pull-token")
+            == 200
+        )
+    assert requests.authorization_headers[manifest_path] == [
+        "",
+        "******",
+        "Bearer wrong-token",
+        "Bearer first-pull-token",
+        "Bearer first-pull-token",
+        "Bearer second-pull-token",
+    ]
+
+
+def _test_canned_registry_requires_the_current_issued_bearer_token() -> None:
+    manifest_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
+    with canned_registry(
+        {
+            "/token": [
+                (200, {"token": "first-pull-token"}),
+                (200, {"token": "second-pull-token"}),
+            ],
+            manifest_path: [(200, image_manifest("sha256:config-good"))],
+        }
+    ) as (port, requests):
+        assert registry_request_status(port, manifest_path) == 401
+        assert registry_request_status(port, manifest_path, "******") == 401
+        assert (
+            registry_request_status(port, manifest_path, f"{BEARER_SCHEME} wrong-token")
+            == 401
+        )
+        assert registry_request_status(port, "/token") == 200
+        assert (
+            registry_request_status(
+                port, manifest_path, f"{BEARER_SCHEME} first-pull-token"
+            )
+            == 200
+        )
+        assert registry_request_status(port, "/token") == 200
+        assert (
+            registry_request_status(
+                port, manifest_path, f"{BEARER_SCHEME} first-pull-token"
+            )
+            == 401
+        )
+        assert (
+            registry_request_status(
+                port, manifest_path, f"{BEARER_SCHEME} second-pull-token"
+            )
+            == 200
+        )
+    assert requests.raw_authorization_headers[manifest_path] == [
+        "",
+        "******",
+        f"{BEARER_SCHEME} wrong-token",
+        f"{BEARER_SCHEME} first-pull-token",
+        f"{BEARER_SCHEME} first-pull-token",
+        f"{BEARER_SCHEME} second-pull-token",
+    ]
+
+
+def _test_release_image_assertion_sends_issued_token_for_manifest_and_config() -> None:
+    config_digest = "sha256:config-issued-token"
+    manifest_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
+    config_path = f"/v2/hew-lang/playground/blobs/{config_digest}"
+    result, requests = run_canned_release_image_assertion(
+        {
+            manifest_path: [(200, image_manifest(config_digest))],
+            config_path: [
+                (200, image_config({"org.opencontainers.image.revision": HEW_SHA}))
+            ],
+        }
+    )
+    assert result.returncode == 0, result.stderr
+    assert requests.raw_authorization_headers[manifest_path] == [
+        f"{BEARER_SCHEME} pull-token"
+    ]
+    assert requests.raw_authorization_headers[config_path] == [
+        f"{BEARER_SCHEME} pull-token"
+    ]
+
+
+def test_release_image_assertion_uses_acquired_token_for_manifest_and_config() -> None:
+    script = RELEASE_IMAGE_ASSERTION.read_text()
+    assert script.count('--oauth2-bearer "${token}"') == 2
+    assert "Authorization: ******" not in script
 
 
 def test_release_image_assertion_polls_past_a_stale_tag() -> None:

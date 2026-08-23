@@ -4,7 +4,7 @@
 #
 # This is the release's acquisition contract: whoever publishes the image -
 # the playground repository's Actions workflow, or a maintainer running
-# `make release-candidate-publish HEW_EXAMPLES_REF=<sha> HEW_VERSION=<version>` from a playground checkout - satisfies the identical assertion. <!-- external-target: hew-lang/playground -->
+# `HEW_EXAMPLES_REF=<sha> HEW_VERSION=<version> PLAYGROUND_RELEASE_IMAGE=<image> make release-candidate-publish` from a playground checkout - satisfies the identical assertion. <!-- external-target: hew-lang/playground -->
 # That pre-tag candidate target uses candidate authority. The post-tag
 # release-publish target uses publish authority and is a separate operation.
 # The script observes only; it never publishes or mutates.
@@ -111,7 +111,7 @@ pull_token() {
 registry_get() {
     local token="$1" path="$2" accept="$3"
     curl_before_deadline -fsSL \
-        -H "Authorization: Bearer ${token}" \
+        --oauth2-bearer "${token}" \
         -H "Accept: ${accept}" \
         "${IMAGE_REGISTRY_SCHEME}://${IMAGE_REGISTRY}/v2/${IMAGE_REPOSITORY}/${path}"
 }
@@ -122,7 +122,7 @@ trap 'rm -f "${body_file}"' EXIT
 manifest_status() {
     local token="$1"
     curl_before_deadline -sSL -o "${body_file}" -w '%{http_code}' \
-        -H "Authorization: Bearer ${token}" \
+        --oauth2-bearer "${token}" \
         -H "Accept: ${MANIFEST_ACCEPT}" \
         "${IMAGE_REGISTRY_SCHEME}://${IMAGE_REGISTRY}/v2/${IMAGE_REPOSITORY}/manifests/${IMAGE_TAG}"
 }

@@ -909,6 +909,26 @@ fn teardown_workers(
     handles: Option<Vec<Option<JoinHandle<()>>>>,
     take_scheduler: bool,
 ) -> Option<Box<RuntimeInner>> {
+    let (runtime, abandoned) =
+        teardown_workers_collect_abandoned(scheduler, handles, take_scheduler);
+    // Dropping a JoinHandle is Rust's defined detach operation. Do not
+    // `mem::forget` it: that permanently leaks both the thread packet and its
+    // Thread metadata even after the detached worker eventually exits.
+    drop(abandoned);
+    runtime
+}
+
+/// Teardown implementation that returns timed-out handles to its caller.
+///
+/// Production callers immediately drop these handles to detach their workers.
+/// Tests retain them only long enough to release and join their synthetic
+/// blocked workers, so the authoritative `ASan` process does not intentionally
+/// leak the allocations whose reclamation this path controls.
+fn teardown_workers_collect_abandoned(
+    scheduler: Option<*const Scheduler>,
+    handles: Option<Vec<Option<JoinHandle<()>>>>,
+    take_scheduler: bool,
+) -> (Option<Box<RuntimeInner>>, Vec<JoinHandle<()>>) {
     // Take a raw pointer (not `&'static Scheduler`): a reference argument is
     // strongly protected for the whole call, and the `take_scheduler` branch
     // below `Box::from_raw`-frees this same allocation. Freeing strongly-protected
@@ -934,7 +954,7 @@ fn teardown_workers(
     // ONE deadline for the whole set, not per-handle: N workers each parked in a
     // blocking syscall must not multiply the bound by N.
     let deadline = Instant::now() + WORKER_JOIN_TIMEOUT;
-    let mut abandoned = 0usize;
+    let mut abandoned = Vec::new();
     for handle in &mut handles {
         if let Some(ref h) = handle {
             if h.thread().id() == current_id {
@@ -955,22 +975,21 @@ fn teardown_workers(
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                // Deliberately LEAK the handle rather than force-kill: the worker
-                // may still be touching scheduler-owned memory, and there is no
-                // safe way to interrupt it. Detaching is the fail-closed choice —
-                // it bounds shutdown without introducing a use-after-free.
-                abandoned += 1;
-                std::mem::forget(h);
+                // Preserve the handle until the caller can detach it. Dropping
+                // a JoinHandle never force-kills its thread; it only relinquishes
+                // the ability to join, which is the bounded fail-closed choice.
+                abandoned.push(h);
                 break;
             }
             thread::sleep(WORKER_JOIN_POLL_INTERVAL.min(remaining));
         }
     }
-    if abandoned > 0 {
+    if !abandoned.is_empty() {
         eprintln!(
-            "hew: scheduler shutdown timed out joining {abandoned} worker thread(s) after \
+            "hew: scheduler shutdown timed out joining {} worker thread(s) after \
              {WORKER_JOIN_TIMEOUT:?}; detaching them (a worker is likely parked in a \
-             blocking syscall)"
+             blocking syscall)",
+            abandoned.len()
         );
     }
 
@@ -983,13 +1002,13 @@ fn teardown_workers(
     }
 
     if !take_scheduler {
-        return None;
+        return (None, abandoned);
     }
 
     // Detach the owning runtime from its slot. Worker teardown above ensures no
     // thread can still access it; the caller drops the runtime last so the
     // scheduler's deques/parkers/stealers free as the final step.
-    runtime::take_default()
+    (runtime::take_default(), abandoned)
 }
 
 /// Clean up after a worker spawn failure during initialisation.
@@ -4826,7 +4845,7 @@ mod tests {
         });
 
         let start = Instant::now();
-        teardown_workers(None, Some(vec![Some(h)]), false);
+        let (_, abandoned) = teardown_workers_collect_abandoned(None, Some(vec![Some(h)]), false);
         let elapsed = start.elapsed();
 
         assert!(
@@ -4841,6 +4860,10 @@ mod tests {
 
         // Let the detached thread go so it does not outlive the test run.
         release.store(true, Ordering::SeqCst);
+        assert_eq!(abandoned.len(), 1);
+        for handle in abandoned {
+            handle.join().expect("released synthetic worker must exit");
+        }
     }
 
     /// The deadline is shared across the whole set, not applied per handle:
@@ -4860,7 +4883,7 @@ mod tests {
             .collect();
 
         let start = Instant::now();
-        teardown_workers(None, Some(handles), false);
+        let (_, abandoned) = teardown_workers_collect_abandoned(None, Some(handles), false);
         let elapsed = start.elapsed();
 
         assert!(
@@ -4869,6 +4892,10 @@ mod tests {
         );
 
         release.store(true, Ordering::SeqCst);
+        assert_eq!(abandoned.len(), 3);
+        for handle in abandoned {
+            handle.join().expect("released synthetic worker must exit");
+        }
     }
 
     struct ActivatePreReenqueueHookGuard;

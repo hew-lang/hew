@@ -87,7 +87,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # Code coverage — Rust workspace tests instrumented with cargo-llvm-cov.
   # Moved verbatim off ci.yml's per-PR path: same LLVM setup, same disk purge,
-  # same cargo llvm-cov nextest expression, same lcov/HTML uploads.
+  # same instrumented nextest expression, same lcov/HTML uploads.
   # ─────────────────────────────────────────────────────────────────────────
   coverage:
     name: Code coverage
@@ -100,6 +100,13 @@ jobs:
       # the repo std/. Pin std explicitly for the instrumented run; the normal
       # test job finds it relative to target/debug/ and needs no override.
       HEW_STD: ${{ github.workspace }}/std
+      # One authoritative instrumented tree for the prebuilt shared-artifact
+      # producer, nextest, and both report steps. cargo-llvm-cov normally
+      # selects this directory internally; spelling all three variables keeps
+      # ordinary Cargo/Make consumers on that exact same path too.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/llvm-cov-target
+      CARGO_LLVM_COV_TARGET_DIR: ${{ github.workspace }}/target/llvm-cov-target
+      CARGO_LLVM_COV_BUILD_DIR: ${{ github.workspace }}/target/llvm-cov-target
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
@@ -204,6 +211,12 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
         run: |
+          # Export cargo-llvm-cov's instrumentation environment before cleaning
+          # or building anything. The table-derived make target must be built
+          # into the same instrumented target that nextest will consume.
+          eval "$(cargo llvm-cov show-env --sh)"
+          cargo llvm-cov clean --workspace
+
           # Start periodic disk monitor (every 30 s) before the build begins so
           # disk consumption during compilation is also captured.
           ( while true; do
@@ -212,16 +225,19 @@ jobs:
             done ) &
           DISK_MON_PID=$!
 
+          make stdlib
+
+          set +e
           timeout 1800 \
             stdbuf -oL -eL \
-            cargo llvm-cov nextest \
+            cargo nextest run \
             --workspace --exclude hew-wasm \
             --profile ci \
             -E 'not test(eval_wasm) and not binary(wasi_run_e2e)' \
             --status-level pass \
-            --final-status-level slow \
-            --lcov --output-path lcov.info
+            --final-status-level slow
           COV_EXIT=$?
+          set -e
 
           kill "$DISK_MON_PID" 2>/dev/null || true
           wait "$DISK_MON_PID" 2>/dev/null || true
@@ -233,7 +249,15 @@ jobs:
             df -h /
             exit 1
           fi
-          exit "$COV_EXIT"
+          if [ "$COV_EXIT" -ne 0 ]; then
+            exit "$COV_EXIT"
+          fi
+
+          # `show-env` is cargo-llvm-cov's supported integration for external
+          # runners. Generate the report only after ordinary nextest completes;
+          # invoking the llvm-cov nextest subcommand inside this environment is
+          # explicitly unsupported and can recursively wrap rustc.
+          cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Generate HTML report
         run: >

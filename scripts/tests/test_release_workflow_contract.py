@@ -1291,6 +1291,73 @@ def test_workflow_shared_artifact_build_mutations_are_rejected() -> None:
     raise AssertionError("missing workflow shared-artifact build escaped the contract")
 
 
+def assert_coverage_builds_shared_artifacts_in_instrumented_target(
+    coverage: str,
+) -> None:
+    """Pin cargo-llvm-cov's producer/consumer ordering and target authority."""
+    job = workflow_job(coverage, "coverage")
+    instrumented_target = "${{ github.workspace }}/target/llvm-cov-target"
+    for variable in (
+        "CARGO_TARGET_DIR",
+        "CARGO_LLVM_COV_TARGET_DIR",
+        "CARGO_LLVM_COV_BUILD_DIR",
+    ):
+        assert job.count(f"{variable}: {instrumented_target}") == 1, (
+            f"coverage must give {variable} one exact instrumented target authority"
+        )
+
+    run_step = next(
+        step
+        for step in workflow_steps(job)
+        if 'eval "$(cargo llvm-cov show-env --sh)"' in step
+    )
+    ordered_commands = (
+        'eval "$(cargo llvm-cov show-env --sh)"',
+        "cargo llvm-cov clean --workspace",
+        "make stdlib",
+        "cargo nextest run",
+        "cargo llvm-cov report --lcov --output-path lcov.info",
+    )
+    positions = [run_step.index(command) for command in ordered_commands]
+    assert positions == sorted(positions), (
+        "coverage must export instrumentation, clean, build shared artifacts, "
+        "then run nextest"
+    )
+    assert "cargo llvm-cov nextest" not in run_step, (
+        "show-env coverage must use ordinary nextest, not recursively invoke "
+        "cargo-llvm-cov"
+    )
+
+
+def test_coverage_builds_shared_artifacts_in_instrumented_target() -> None:
+    assert_coverage_builds_shared_artifacts_in_instrumented_target(
+        COVERAGE_NIGHTLY_WORKFLOW.read_text()
+    )
+
+
+def test_coverage_instrumented_target_mutations_are_rejected() -> None:
+    coverage = COVERAGE_NIGHTLY_WORKFLOW.read_text()
+    mutations = (
+        coverage.replace("cargo llvm-cov clean --workspace\n", "", 1),
+        coverage.replace("make stdlib\n", "", 1),
+        coverage.replace("            cargo nextest run \\\n", "", 1),
+        coverage.replace(
+            "cargo llvm-cov report --lcov --output-path lcov.info\n", "", 1
+        ),
+        coverage.replace(
+            "CARGO_TARGET_DIR: ${{ github.workspace }}/target/llvm-cov-target",
+            "CARGO_TARGET_DIR: ${{ github.workspace }}/target",
+            1,
+        ),
+    )
+    for mutated in mutations:
+        try:
+            assert_coverage_builds_shared_artifacts_in_instrumented_target(mutated)
+        except (AssertionError, ValueError):
+            continue
+        raise AssertionError("a broken coverage artifact contract escaped the oracle")
+
+
 def test_ci_shared_artifact_build_mutations_are_rejected() -> None:
     ci = CI_WORKFLOW.read_text()
     mutated = ci.replace("run: make stdlib", "run: make check-libhew-fresh")
@@ -2091,6 +2158,8 @@ _TESTS = [
     test_contract_oracle_runs_in_required_ci,
     test_workflow_rust_tests_use_prebuilt_shared_artifact,
     test_workflow_shared_artifact_build_mutations_are_rejected,
+    test_coverage_builds_shared_artifacts_in_instrumented_target,
+    test_coverage_instrumented_target_mutations_are_rejected,
     test_wasm_pack_consumers_prefetch_checksum_pinned_binaryen,
     test_binaryen_prefetch_pin_mutations_are_rejected,
     test_windows_test_workflows_initialise_msvc_before_lld_link,

@@ -3,6 +3,8 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use rand::RngExt as _;
+
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn write_atomic(path: &Path, content: &[u8], mode: u32) -> io::Result<()> {
@@ -174,28 +176,53 @@ fn pointer_path_for(target: &Path) -> io::Result<PathBuf> {
 }
 
 fn generation_path_for(target: &Path) -> io::Result<PathBuf> {
+    let mut rng = rand::rng();
+    generation_path_for_with(target, || rng.random::<u128>())
+}
+
+fn generation_path_for_with<F>(target: &Path, mut nonce: F) -> io::Result<PathBuf>
+where
+    F: FnMut() -> u128,
+{
     let file_name = target
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
-    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    Ok(target.with_file_name(format!(
-        ".{file_name}.generation-{}-{counter}",
-        std::process::id()
-    )))
+    for _ in 0..100 {
+        let candidate = target.with_file_name(format!(".{file_name}.generation-{:032x}", nonce()));
+        match fs::symlink_metadata(&candidate) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(candidate),
+            Ok(_) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique generation name",
+    ))
 }
 
 /// Resolve a logical publication slot to its immutable active generation.
 /// A missing pointer denotes the legacy direct-directory representation.
-pub(crate) fn resolve_published_dir(target: &Path) -> PathBuf {
-    let Ok(pointer_path) = pointer_path_for(target) else {
-        return target.to_path_buf();
-    };
-    let Ok(pointer) = fs::read_to_string(pointer_path) else {
-        return target.to_path_buf();
+pub(crate) fn resolve_published_dir(target: &Path) -> io::Result<PathBuf> {
+    resolve_published_dir_with(target, |path| fs::read_to_string(path))
+}
+
+fn resolve_published_dir_with<F>(target: &Path, read_pointer: F) -> io::Result<PathBuf>
+where
+    F: FnOnce(&Path) -> io::Result<String>,
+{
+    let pointer_path = pointer_path_for(target)?;
+    let pointer = match read_pointer(&pointer_path) {
+        Ok(pointer) => pointer,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(target.to_path_buf()),
+        Err(error) => return Err(error),
     };
     let Some(target_name) = target.file_name().and_then(|name| name.to_str()) else {
-        return target.to_path_buf();
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path has no file name",
+        ));
     };
     let generation = pointer.trim();
     let expected_prefix = format!(".{target_name}.generation-");
@@ -203,11 +230,12 @@ pub(crate) fn resolve_published_dir(target: &Path) -> PathBuf {
         && !generation.contains('/')
         && !generation.contains('\\')
     {
-        target.with_file_name(generation)
+        Ok(target.with_file_name(generation))
     } else {
-        // Fail closed on a corrupt or attacker-controlled pointer rather than
-        // falling back to a potentially stale legacy directory.
-        target.with_file_name(format!(".{target_name}.invalid-generation-pointer"))
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid package generation pointer",
+        ))
     }
 }
 
@@ -340,7 +368,7 @@ mod tests {
         let reader_target = target.clone();
         let reader = std::thread::spawn(move || {
             while !reader_stop.load(Ordering::Relaxed) {
-                let active = resolve_published_dir(&reader_target);
+                let active = resolve_published_dir(&reader_target).unwrap();
                 if !matches!(
                     fs::read_to_string(active.join("state")).as_deref(),
                     Ok("old" | "new")
@@ -363,7 +391,7 @@ mod tests {
 
         assert!(!saw_partial.load(Ordering::Relaxed));
         assert!(matches!(
-            fs::read_to_string(resolve_published_dir(&target).join("state")).as_deref(),
+            fs::read_to_string(resolve_published_dir(&target).unwrap().join("state")).as_deref(),
             Ok("old" | "new")
         ));
     }
@@ -383,8 +411,54 @@ mod tests {
 
         assert_eq!(error.kind(), io::ErrorKind::Other);
         assert_eq!(
-            fs::read_to_string(resolve_published_dir(&target).join("state")).unwrap(),
+            fs::read_to_string(resolve_published_dir(&target).unwrap().join("state")).unwrap(),
             "old"
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_pointer_never_revives_stale_legacy_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("package");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("state"), "stale legacy").unwrap();
+        fs::write(pointer_path_for(&target).unwrap(), [0xff, 0xfe]).unwrap();
+
+        let error = resolve_published_dir(&target).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn unreadable_pointer_never_revives_stale_legacy_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("package");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("state"), "stale legacy").unwrap();
+
+        let error = resolve_published_dir_with(&target, |_| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "simulated unreadable pointer",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn generation_name_retries_a_retained_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("package");
+        let collision = target.with_file_name(format!(".package.generation-{:032x}", 7_u128));
+        fs::create_dir(&collision).unwrap();
+        let mut nonces = [7_u128, 8_u128].into_iter();
+
+        let generation = generation_path_for_with(&target, || nonces.next().unwrap()).unwrap();
+
+        assert_ne!(generation, collision);
+        assert_eq!(
+            generation.file_name().unwrap().to_string_lossy(),
+            format!(".package.generation-{:032x}", 8_u128)
         );
     }
 

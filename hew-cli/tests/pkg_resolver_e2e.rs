@@ -669,3 +669,74 @@ fn pkg_locked_uses_exact_version_and_never_rewrites_lockfile() {
         "transitive packages must also use the exact locked graph"
     );
 }
+
+#[test]
+fn pkg_locked_online_incomplete_graph_never_contacts_registry_or_mutates_cache() {
+    let root = support::tempdir();
+    let home = root.path().join("home");
+    let project = root.path().join("app");
+    let cache = root.path().join("cache");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    write_manifest(&project, "foo = \"0.2.1\"\n");
+    write_config(&home, &cache, None);
+
+    let foo = write_cached_package(&cache, "foo", "0.2.1");
+    std::fs::write(
+        foo.join("hew.toml"),
+        "[package]\nname = \"foo\"\nversion = \"0.2.1\"\n\n[dependencies]\nbar = \"1.0.0\"\n",
+    )
+    .unwrap();
+    write_cached_package(&cache, "bar", "1.0.0");
+    let initial = run_pkg_bounded(
+        &home,
+        &project,
+        &["install", "--offline"],
+        "create complete lock",
+    );
+    assert!(initial.status.success(), "{}", describe_output(&initial));
+
+    let complete_lock = std::fs::read_to_string(project.join("hew.lock")).unwrap();
+    let foo_entry = complete_lock
+        .split("[[package]]")
+        .skip(1)
+        .find(|entry| entry.contains("name = \"foo\""))
+        .unwrap();
+    let incomplete_lock =
+        format!("# intentionally incomplete locked graph\n\n[[package]]{foo_entry}");
+    std::fs::write(project.join("hew.lock"), &incomplete_lock).unwrap();
+    std::fs::remove_dir_all(cache.join("bar")).unwrap();
+    std::fs::remove_dir_all(project.join(".hew")).unwrap();
+
+    let packed = package_tarball(root.path());
+    let registry = start_repair_registry(packed.data, packed.checksum);
+    write_config(&home, &cache, Some(&registry.api_url));
+    let foo_before = std::fs::read(foo.join("hew.toml")).unwrap();
+
+    let output = run_pkg_bounded(
+        &home,
+        &project,
+        &["install", "--locked", "--registry", "mock"],
+        "online incomplete locked graph",
+    );
+    assert!(
+        !output.status.success(),
+        "incomplete locked graph must fail\n{}",
+        describe_output(&output)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("locked graph could not resolve"),
+        "{}",
+        describe_output(&output)
+    );
+    assert_eq!(registry.package_requests.load(Ordering::Relaxed), 0);
+    assert_eq!(registry.download_requests.load(Ordering::Relaxed), 0);
+    assert!(!cache.join(".locks").exists());
+    assert!(!cache.join("bar").exists());
+    assert_eq!(std::fs::read(foo.join("hew.toml")).unwrap(), foo_before);
+    assert_eq!(
+        std::fs::read_to_string(project.join("hew.lock")).unwrap(),
+        incomplete_lock
+    );
+    assert!(!project.join(".hew/packages/foo").exists());
+}

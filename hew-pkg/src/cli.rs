@@ -599,7 +599,7 @@ fn cmd_install(
 
     let lock_path = cwd.join("hew.lock");
 
-    let locked_lockfile = if locked {
+    let (locked_lockfile, pinned_locked_registry) = if locked {
         // --locked: read existing lock and validate against manifest.
         let lf = match lockfile::read_lockfile(&lock_path) {
             Ok(lf) => lf,
@@ -622,48 +622,16 @@ fn cmd_install(
             eprintln!("Run `hew install` without --locked to update it.");
             std::process::exit(1);
         }
-        // Verify every locked registry package before resolution can reuse it.
-        for entry in &lf.packages {
-            if entry.source != "registry" {
-                continue;
-            }
-            let expected = entry
-                .checksum
-                .as_deref()
-                .expect("validated registry lock entry must have a checksum");
-            let pkg_dir = registry.package_dir(&entry.name, &entry.version);
-            if !registry.is_installed(&entry.name, &entry.version) {
-                eprintln!(
-                    "hew install: locked package {}@{} is missing from cache at {}",
-                    entry.name,
-                    entry.version,
-                    pkg_dir.display()
-                );
+        let pinned = match verify_locked_registry_packages(&lf, registry) {
+            Ok(pinned) => pinned,
+            Err(error) => {
+                eprintln!("hew install: {error}");
                 std::process::exit(1);
             }
-            match checksum::compute_dir_checksum(&pkg_dir) {
-                Ok(actual) if actual != expected => {
-                    eprintln!(
-                        "hew install: checksum mismatch for {}@{}",
-                        entry.name, entry.version
-                    );
-                    eprintln!("  expected: {expected}");
-                    eprintln!("  actual:   {actual}");
-                    std::process::exit(1);
-                }
-                Err(error) => {
-                    eprintln!(
-                        "hew install: cannot verify checksum for {}@{}: {error}",
-                        entry.name, entry.version
-                    );
-                    std::process::exit(1);
-                }
-                _ => {}
-            }
-        }
-        Some(lf)
+        };
+        (Some(lf), pinned)
     } else {
-        None
+        (None, BTreeMap::new())
     };
 
     let local_packages = project_packages_path(&cwd);
@@ -693,19 +661,18 @@ fn cmd_install(
         );
     }
 
-    // Online resolution admits only versions confirmed by this registry
-    // session. Offline resolution explicitly admits the local cache.
+    // Locked resolution uses only the immutable paths verified above. Online
+    // resolution admits only versions confirmed by this registry session;
+    // offline resolution explicitly admits the local cache.
+    let pinned_locked_paths = pinned_locked_registry
+        .iter()
+        .map(|(identity, package)| (identity.clone(), package.path.clone()))
+        .collect();
     let mut confirmed_versions = BTreeMap::<String, BTreeSet<String>>::new();
     let mut fetch_progress = FetchProgress::default();
     let resolved = loop {
-        let result = if let Some(lockfile) = &locked_lockfile {
-            let locked_versions = lockfile
-                .packages
-                .iter()
-                .filter(|package| package.source == "registry")
-                .map(|package| (package.name.clone(), package.version.clone()))
-                .collect();
-            resolver::resolve_all_locked(&m, &cwd, registry, &locked_versions)
+        let result = if locked_lockfile.is_some() {
+            resolver::resolve_all_locked(&m, &cwd, registry, &pinned_locked_paths)
         } else if offline {
             resolver::resolve_all_from_root(&m, &cwd, registry)
         } else {
@@ -713,8 +680,15 @@ fn cmd_install(
         };
         match result {
             Ok(resolved) => break resolved,
-            Err(resolver::ResolveError::UnresolvableDeps { failures }) if offline => {
-                eprintln!("hew install: offline cache could not resolve:");
+            Err(resolver::ResolveError::UnresolvableDeps { failures })
+                if offline || locked_lockfile.is_some() =>
+            {
+                let mode = if locked {
+                    "locked graph"
+                } else {
+                    "offline cache"
+                };
+                eprintln!("hew install: {mode} could not resolve:");
                 for failure in failures {
                     eprintln!(
                         "  {} [{}] in {}",
@@ -770,24 +744,36 @@ fn cmd_install(
         let version = &package.version;
         let (target, source, locked_path, pkg_checksum) = match &package.source {
             resolver::PackageSource::Registry => {
-                let target = registry.package_dir(name, version);
-                if !target.is_dir() {
-                    eprintln!(
-                        "hew install: confirmed package {name}@{version} is missing from cache at {}",
-                        target.display()
-                    );
-                    std::process::exit(1);
-                }
-                let checksum = match checksum::compute_dir_checksum(&target) {
-                    Ok(checksum) => Some(checksum),
-                    Err(error) => {
+                if locked {
+                    let pinned = pinned_locked_registry
+                        .get(&(name.clone(), version.clone()))
+                        .expect("locked registry resolution must retain its verified path");
+                    (
+                        pinned.path.clone(),
+                        "registry",
+                        None,
+                        Some(pinned.checksum.clone()),
+                    )
+                } else {
+                    let target = registry.package_dir(name, version);
+                    if !target.is_dir() {
                         eprintln!(
-                            "hew install: cannot compute checksum for {name}@{version}: {error}"
+                            "hew install: confirmed package {name}@{version} is missing from cache at {}",
+                            target.display()
                         );
                         std::process::exit(1);
                     }
-                };
-                (target, "registry", None, checksum)
+                    let checksum = match checksum::compute_dir_checksum(&target) {
+                        Ok(checksum) => Some(checksum),
+                        Err(error) => {
+                            eprintln!(
+                                "hew install: cannot compute checksum for {name}@{version}: {error}"
+                            );
+                            std::process::exit(1);
+                        }
+                    };
+                    (target, "registry", None, checksum)
+                }
             }
             resolver::PackageSource::Path(path) => (
                 path.clone(),
@@ -848,6 +834,72 @@ fn cmd_install(
         }
         println!("Wrote hew.lock");
     }
+}
+
+#[derive(Debug)]
+struct VerifiedLockedPackage {
+    path: PathBuf,
+    checksum: String,
+}
+
+fn verify_locked_registry_packages(
+    lockfile: &lockfile::LockFile,
+    registry: &registry::Registry,
+) -> Result<BTreeMap<(String, String), VerifiedLockedPackage>, String> {
+    let mut pinned = BTreeMap::new();
+    for entry in &lockfile.packages {
+        if entry.source != "registry" {
+            continue;
+        }
+        let expected = entry
+            .checksum
+            .as_deref()
+            .expect("validated registry lock entry must have a checksum");
+        let resolved = registry
+            .package_dir_checked(&entry.name, &entry.version)
+            .map_err(|error| {
+                format!(
+                    "cannot resolve locked package {}@{} generation: {error}",
+                    entry.name, entry.version
+                )
+            })?;
+        let path = resolved.canonicalize().map_err(|error| {
+            format!(
+                "locked package {}@{} is missing from cache at {}: {error}",
+                entry.name,
+                entry.version,
+                resolved.display()
+            )
+        })?;
+        if !path.join("hew.toml").is_file() {
+            return Err(format!(
+                "locked package {}@{} is missing from cache at {}",
+                entry.name,
+                entry.version,
+                path.display()
+            ));
+        }
+        let actual = checksum::compute_dir_checksum(&path).map_err(|error| {
+            format!(
+                "cannot verify checksum for {}@{}: {error}",
+                entry.name, entry.version
+            )
+        })?;
+        if actual != expected {
+            return Err(format!(
+                "checksum mismatch for {}@{}\n  expected: {expected}\n  actual:   {actual}",
+                entry.name, entry.version
+            ));
+        }
+        pinned.insert(
+            (entry.name.clone(), entry.version.clone()),
+            VerifiedLockedPackage {
+                path,
+                checksum: actual,
+            },
+        );
+    }
+    Ok(pinned)
 }
 
 fn validate_locked_resolution(
@@ -2651,6 +2703,124 @@ mod tests {
 
         assert!(dest.join("hew.toml").exists());
         assert!(dest.join("main.hew").exists());
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "security regression keeps verification, concurrent swap, graph, and materialization in one proof"
+    )]
+    fn locked_resolution_and_materialization_keep_verified_generation_after_pointer_swap() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let root = tempfile::tempdir().unwrap();
+        let registry_root = root.path().join("registry");
+        let registry = registry::Registry::with_root(registry_root.clone());
+        let package_root = registry_root.join("foo");
+        let generation_a = package_root.join(".1.0.0.generation-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let generation_b = package_root.join(".1.0.0.generation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let bar = registry_root.join("bar/1.0.0");
+        std::fs::create_dir_all(&generation_a).unwrap();
+        std::fs::create_dir_all(&generation_b).unwrap();
+        std::fs::create_dir_all(&bar).unwrap();
+        std::fs::write(
+            generation_a.join("hew.toml"),
+            "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n\n[dependencies]\nbar = \"1.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(generation_a.join("foo.hew"), "generation A").unwrap();
+        std::fs::write(
+            generation_b.join("hew.toml"),
+            "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n\n[dependencies]\nbaz = \"1.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(generation_b.join("foo.hew"), "generation B").unwrap();
+        std::fs::write(
+            bar.join("hew.toml"),
+            "[package]\nname = \"bar\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            package_root.join(".1.0.0.current"),
+            format!("{}\n", generation_a.file_name().unwrap().to_string_lossy()),
+        )
+        .unwrap();
+
+        let lockfile = lockfile::LockFile {
+            packages: vec![
+                lockfile::LockedPackage {
+                    name: "foo".to_string(),
+                    requirement: Some("1.0.0".to_string()),
+                    version: "1.0.0".to_string(),
+                    checksum: Some(checksum::compute_dir_checksum(&generation_a).unwrap()),
+                    signature: None,
+                    source: "registry".to_string(),
+                    path: None,
+                },
+                lockfile::LockedPackage {
+                    name: "bar".to_string(),
+                    requirement: None,
+                    version: "1.0.0".to_string(),
+                    checksum: Some(checksum::compute_dir_checksum(&bar).unwrap()),
+                    signature: None,
+                    source: "registry".to_string(),
+                    path: None,
+                },
+            ],
+        };
+        let pinned = verify_locked_registry_packages(&lockfile, &registry).unwrap();
+
+        let ready = Arc::new(Barrier::new(2));
+        let writer_ready = Arc::clone(&ready);
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer_stop = Arc::clone(&stop);
+        let pointer = package_root.join(".1.0.0.current");
+        let generation_b_name = generation_b.file_name().unwrap().to_owned();
+        let writer = std::thread::spawn(move || {
+            let pointer_b = format!("{}\n", generation_b_name.to_string_lossy());
+            crate::atomic_fs::write_atomic(&pointer, pointer_b.as_bytes(), 0o644).unwrap();
+            writer_ready.wait();
+            while !writer_stop.load(Ordering::Relaxed) {
+                crate::atomic_fs::write_atomic(&pointer, pointer_b.as_bytes(), 0o644).unwrap();
+                std::thread::yield_now();
+            }
+        });
+        ready.wait();
+        assert_eq!(registry.package_dir("foo", "1.0.0"), generation_b);
+
+        let project = root.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("hew.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nfoo = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let manifest = manifest::parse_manifest(&project.join("hew.toml")).unwrap();
+        let pinned_paths = pinned
+            .iter()
+            .map(|(identity, package)| (identity.clone(), package.path.clone()))
+            .collect();
+        let resolved =
+            resolver::resolve_all_locked(&manifest, &project, &registry, &pinned_paths).unwrap();
+        assert!(resolved.contains_key("bar"));
+        assert!(!resolved.contains_key("baz"));
+
+        let link = project.join(".hew/packages/foo");
+        replace_local_package_materialization(
+            &link,
+            &pinned
+                .get(&("foo".to_string(), "1.0.0".to_string()))
+                .unwrap()
+                .path,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(link.join("foo.hew")).unwrap(),
+            "generation A"
+        );
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
     }
 
     #[test]

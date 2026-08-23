@@ -62,6 +62,18 @@ impl Registry {
     /// `<root>/ecosystem.db.postgres/1.0.0`.
     #[must_use]
     pub fn package_dir(&self, name: &str, version: &str) -> PathBuf {
+        self.package_dir_checked(name, version).unwrap_or_else(|_| {
+            self.root
+                .join(name)
+                .join(format!(".{version}.invalid-generation-pointer"))
+        })
+    }
+
+    pub(crate) fn package_dir_checked(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> std::io::Result<PathBuf> {
         crate::atomic_fs::resolve_published_dir(&self.package_slot(name, version))
     }
 
@@ -74,7 +86,8 @@ impl Registry {
     /// Return `true` if `name@version` is present in the registry.
     #[must_use]
     pub fn is_installed(&self, name: &str, version: &str) -> bool {
-        is_package_dir(&self.package_dir(name, version))
+        self.package_dir_checked(name, version)
+            .is_ok_and(|path| is_package_dir(&path))
     }
 
     pub(crate) fn is_online_cache_verified(
@@ -246,7 +259,9 @@ fn collect_packages(
         // missing generation must not revive a stale legacy directory.
         published_versions.insert(version.to_string());
         let logical_slot = dir.join(version);
-        let active = crate::atomic_fs::resolve_published_dir(&logical_slot);
+        let Ok(active) = crate::atomic_fs::resolve_published_dir(&logical_slot) else {
+            continue;
+        };
         if !is_package_dir(&active) {
             continue;
         }
@@ -404,6 +419,24 @@ mod tests {
         assert_eq!(packages[0].name, "foo");
         assert_eq!(packages[0].version, "1.0.0");
         assert_eq!(packages[0].path, reg.package_dir("foo", "1.0.0"));
+    }
+
+    #[test]
+    fn corrupt_pointer_does_not_revive_valid_legacy_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_root(dir.path().to_path_buf());
+        let legacy = reg.package_slot("foo", "1.0.0");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(
+            legacy.join("hew.toml"),
+            "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(legacy.with_file_name(".1.0.0.current"), [0xff, 0xfe]).unwrap();
+
+        assert!(!reg.is_installed("foo", "1.0.0"));
+        assert_ne!(reg.package_dir("foo", "1.0.0"), legacy);
+        assert!(reg.list_packages().is_empty());
     }
 
     #[test]

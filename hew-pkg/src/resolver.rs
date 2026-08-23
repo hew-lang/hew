@@ -377,6 +377,7 @@ enum PassOutcome {
 struct ResolverPass<'a> {
     registry: &'a Registry,
     root: &'a Path,
+    pinned_registry_paths: Option<&'a BTreeMap<(String, String), PathBuf>>,
     available_versions: BTreeMap<String, Vec<semver::Version>>,
     package_states: BTreeMap<String, PackageState>,
     selected_versions: BTreeMap<String, String>,
@@ -390,12 +391,26 @@ impl<'a> ResolverPass<'a> {
         registry: &'a Registry,
         root: &'a Path,
         confirmed_versions: Option<&'a BTreeMap<String, BTreeSet<String>>>,
+        pinned_registry_paths: Option<&'a BTreeMap<(String, String), PathBuf>>,
         package_states: BTreeMap<String, PackageState>,
     ) -> Self {
+        let available_versions = pinned_registry_paths.map_or_else(
+            || available_versions(registry, confirmed_versions),
+            |paths| {
+                let mut versions = BTreeMap::<String, Vec<semver::Version>>::new();
+                for (name, version) in paths.keys() {
+                    if let Ok(version) = semver::Version::parse(version) {
+                        versions.entry(name.clone()).or_default().push(version);
+                    }
+                }
+                versions
+            },
+        );
         Self {
             registry,
             root,
-            available_versions: available_versions(registry, confirmed_versions),
+            pinned_registry_paths,
+            available_versions,
             package_states,
             selected_versions: BTreeMap::new(),
             expanded_states: BTreeMap::new(),
@@ -593,7 +608,15 @@ impl<'a> ResolverPass<'a> {
         if !self.manifest_cache.contains_key(&key) {
             match source {
                 PackageSource::Registry => {
-                    let root = self.registry.package_dir(package, version);
+                    let root = self.pinned_registry_paths.map_or_else(
+                        || self.registry.package_dir(package, version),
+                        |paths| {
+                            paths
+                                .get(&(package.to_string(), version.to_string()))
+                                .expect("locked available versions must have a pinned path")
+                                .clone()
+                        },
+                    );
                     let manifest =
                         manifest::parse_manifest(&root.join("hew.toml")).map_err(|source| {
                             ResolveError::ManifestRead {
@@ -938,7 +961,7 @@ pub fn resolve_dependency_from_root(
     match source {
         PackageSource::Registry => resolve_version(package_name, spec.version_req(), registry),
         PackageSource::Path(path) => {
-            let mut resolver = ResolverPass::with_seed(registry, root, None, BTreeMap::new());
+            let mut resolver = ResolverPass::with_seed(registry, root, None, None, BTreeMap::new());
             resolver.load_path_manifest(package_name, &path, &[spec.version_req().to_string()])
         }
     }
@@ -1081,7 +1104,7 @@ pub fn resolve_all_from_root(
     root: &Path,
     registry: &Registry,
 ) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
-    resolve_all_inner(manifest, root, registry, None)
+    resolve_all_inner(manifest, root, registry, None, None)
 }
 
 /// Resolve dependencies using only registry versions confirmed by the current
@@ -1096,12 +1119,12 @@ pub fn resolve_all_confirmed(
     registry: &Registry,
     confirmed_versions: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
-    resolve_all_inner(manifest, root, registry, Some(confirmed_versions))
+    resolve_all_inner(manifest, root, registry, Some(confirmed_versions), None)
 }
 
 /// Resolve a dependency graph using the exact registry versions recorded in a
 /// lockfile. Path dependencies continue to be resolved from their declared
-/// paths, but no registry version outside `locked_versions` is eligible.
+/// paths, but no registry version outside `pinned_registry_paths` is eligible.
 ///
 /// # Errors
 ///
@@ -1111,18 +1134,9 @@ pub fn resolve_all_locked(
     manifest: &HewManifest,
     root: &Path,
     registry: &Registry,
-    locked_versions: &BTreeMap<String, String>,
+    pinned_registry_paths: &BTreeMap<(String, String), PathBuf>,
 ) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
-    let exact_versions = locked_versions
-        .iter()
-        .map(|(name, version)| {
-            (
-                name.clone(),
-                std::iter::once(version.clone()).collect::<BTreeSet<_>>(),
-            )
-        })
-        .collect();
-    resolve_all_inner(manifest, root, registry, Some(&exact_versions))
+    resolve_all_inner(manifest, root, registry, None, Some(pinned_registry_paths))
 }
 
 fn resolve_all_inner(
@@ -1130,13 +1144,20 @@ fn resolve_all_inner(
     root: &Path,
     registry: &Registry,
     confirmed_versions: Option<&BTreeMap<String, BTreeSet<String>>>,
+    pinned_registry_paths: Option<&BTreeMap<(String, String), PathBuf>>,
 ) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
     const MAX_RESOLUTION_PASSES: usize = 1024;
 
     let mut seed_states = BTreeMap::new();
     for _ in 0..MAX_RESOLUTION_PASSES {
         let previous_seed_states = seed_states.clone();
-        let pass = ResolverPass::with_seed(registry, root, confirmed_versions, seed_states);
+        let pass = ResolverPass::with_seed(
+            registry,
+            root,
+            confirmed_versions,
+            pinned_registry_paths,
+            seed_states,
+        );
         match pass.resolve_manifest(manifest)? {
             PassOutcome::Resolved(resolved) => return Ok(resolved),
             PassOutcome::Restart(next_seed_states) => {

@@ -99,7 +99,10 @@ fn assert_closure_suspension_rejected(category: &str, name: &str) {
     assert!(
         stderr.contains("E_NOT_YET_IMPLEMENTED")
             && stderr.contains("suspension inside a closure")
-            && stderr.contains("function types do not yet carry suspension"),
+            && stderr.contains(
+                "function types do not yet carry the suspension metadata needed for every direct, \
+                 nested, and higher-order invocation to select the matching driver"
+            ),
         "hew build {} must report the precise closure suspension diagnostic:\n{}",
         source.display(),
         stderr,

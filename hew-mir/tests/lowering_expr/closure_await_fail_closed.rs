@@ -49,6 +49,14 @@ fn assert_closure_suspension_rejected(source: &str) -> hew_mir::IrPipeline {
         "the unsupported construct must have one stable root diagnostic: {:#?}",
         pipeline.diagnostics
     );
+    assert_eq!(
+        matching[0].note,
+        "a suspending closure lowers to a coroutine ramp whose native return is a continuation \
+         handle, but function types do not yet carry the suspension metadata needed for every \
+         direct, nested, and higher-order invocation to select the matching driver; refusing the \
+         closure prevents that handle from being interpreted as the closure's declared result",
+        "the diagnostic must explain why invocation sites cannot safely choose a driver"
+    );
 
     let shim = pipeline
         .raw_mir

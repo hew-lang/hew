@@ -830,7 +830,10 @@ fn assert_suspending_closure_rejected(source: &str, name: &str) {
     assert!(
         stderr.contains("E_NOT_YET_IMPLEMENTED")
             && stderr.contains("suspension inside a closure")
-            && stderr.contains("function types do not yet carry suspension"),
+            && stderr.contains(
+                "function types do not yet carry the suspension metadata needed for every direct, \
+                 nested, and higher-order invocation to select the matching driver"
+            ),
         "{name} must report the generic closure-suspension diagnostic:\n{stderr}"
     );
     let emitted = std::fs::read_dir(dir.path())

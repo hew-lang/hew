@@ -675,10 +675,10 @@ impl Builder {
                     site: body.site,
                 },
                 note: "a suspending closure lowers to a coroutine ramp whose native return is a \
-                       continuation handle, but function types do not yet carry suspension so \
-                       every direct, nested, and higher-order invocation can select the matching \
-                       driver; refusing the closure prevents that handle from being interpreted \
-                       as the closure's declared result"
+                       continuation handle, but function types do not yet carry the suspension \
+                       metadata needed for every direct, nested, and higher-order invocation to \
+                       select the matching driver; refusing the closure prevents that handle from \
+                       being interpreted as the closure's declared result"
                     .to_string(),
             });
         }

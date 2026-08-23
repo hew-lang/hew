@@ -1291,6 +1291,158 @@ def test_workflow_shared_artifact_build_mutations_are_rejected() -> None:
     raise AssertionError("missing workflow shared-artifact build escaped the contract")
 
 
+def assert_coverage_builds_shared_artifacts_in_instrumented_target(
+    coverage: str,
+) -> None:
+    """Pin cargo-llvm-cov's producer/consumer ordering and target authority."""
+    job = workflow_job(coverage, "coverage")
+    instrumented_target = "${{ github.workspace }}/target/llvm-cov-target"
+    for variable in (
+        "CARGO_TARGET_DIR",
+        "CARGO_LLVM_COV_TARGET_DIR",
+        "CARGO_LLVM_COV_BUILD_DIR",
+    ):
+        assert job.count(f"{variable}: {instrumented_target}") == 1, (
+            f"coverage must give {variable} one exact instrumented target authority"
+        )
+
+    run_step = next(
+        step
+        for step in workflow_steps(job)
+        if 'eval "$(cargo llvm-cov show-env --sh)"' in step
+    )
+    ordered_commands = (
+        'eval "$(cargo llvm-cov show-env --sh)"',
+        "cargo llvm-cov clean --workspace",
+        "make stdlib",
+        "cargo nextest run",
+        "cargo llvm-cov report --lcov --output-path lcov.info",
+    )
+    positions = [run_step.index(command) for command in ordered_commands]
+    assert positions == sorted(positions), (
+        "coverage must export instrumentation, clean, build shared artifacts, "
+        "then run nextest"
+    )
+    assert "cargo llvm-cov nextest" not in run_step, (
+        "show-env coverage must use ordinary nextest, not recursively invoke "
+        "cargo-llvm-cov"
+    )
+
+
+def coverage_run_script(coverage: str) -> str:
+    """Extract the exact Bash program from the instrumented coverage step."""
+    job = workflow_job(coverage, "coverage")
+    step = next(
+        step
+        for step in workflow_steps(job)
+        if 'eval "$(cargo llvm-cov show-env --sh)"' in step
+    )
+    marker = "        run: |\n"
+    return textwrap.dedent(step.split(marker, 1)[1])
+
+
+def run_coverage_script(
+    coverage: str, nextest_exit: int
+) -> tuple[subprocess.CompletedProcess, str]:
+    """Execute the coverage step's exact nextest-to-report control flow."""
+    full_script = coverage_run_script(coverage)
+    report = "cargo llvm-cov report --lcov --output-path lcov.info"
+    script_start = full_script.index("set +e\n")
+    script_end = full_script.index(report, script_start) + len(report)
+    script = full_script[script_start:script_end]
+    nextest_start = script.index("timeout 1800")
+    nextest_end = script.index("\nCOV_EXIT=$?", nextest_start)
+    script = script[:nextest_start] + '(exit "$NEXTEST_EXIT")' + script[nextest_end:]
+    script = script.replace(
+        report,
+        'printf "report\\n" >> "$COVERAGE_CALLS"',
+        1,
+    )
+    with tempfile.TemporaryDirectory(prefix="hew-coverage-contract-") as directory:
+        root = Path(directory)
+        calls = root / "calls.log"
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "COVERAGE_CALLS": str(calls),
+                "NEXTEST_EXIT": str(nextest_exit),
+            }
+        )
+        result = subprocess.run(
+            ["bash", "-e", "-c", script],
+            cwd=root,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return result, calls.read_text() if calls.exists() else ""
+
+
+def assert_coverage_failure_propagates(coverage: str) -> None:
+    """Prove failed and timed-out nextest runs cannot generate a green report."""
+    success, success_calls = run_coverage_script(coverage, 0)
+    assert success.returncode == 0, success.stderr
+    assert "report" in success_calls
+
+    for nextest_exit in (17, 124):
+        failed, failed_calls = run_coverage_script(coverage, nextest_exit)
+        assert failed.returncode != 0, f"nextest exit {nextest_exit} became success"
+        if nextest_exit != 124:
+            assert failed.returncode == nextest_exit, (
+                f"nextest exit {nextest_exit} became coverage exit {failed.returncode}"
+            )
+        assert "report" not in failed_calls, (
+            f"nextest exit {nextest_exit} reached coverage report"
+        )
+
+
+def test_coverage_builds_shared_artifacts_in_instrumented_target() -> None:
+    assert_coverage_builds_shared_artifacts_in_instrumented_target(
+        COVERAGE_NIGHTLY_WORKFLOW.read_text()
+    )
+
+
+def test_coverage_failure_propagates_before_report() -> None:
+    assert_coverage_failure_propagates(COVERAGE_NIGHTLY_WORKFLOW.read_text())
+
+
+def test_coverage_failure_propagation_mutations_are_rejected() -> None:
+    coverage = COVERAGE_NIGHTLY_WORKFLOW.read_text()
+    mutated = coverage.replace('            exit "$COV_EXIT"\n', "            :\n", 1)
+    assert mutated != coverage, "coverage exit mutation did not apply"
+    try:
+        assert_coverage_failure_propagates(mutated)
+    except AssertionError:
+        return
+    raise AssertionError("a no-op coverage exit escaped the executable oracle")
+
+
+def test_coverage_instrumented_target_mutations_are_rejected() -> None:
+    coverage = COVERAGE_NIGHTLY_WORKFLOW.read_text()
+    mutations = (
+        coverage.replace("cargo llvm-cov clean --workspace\n", "", 1),
+        coverage.replace("make stdlib\n", "", 1),
+        coverage.replace("            cargo nextest run \\\n", "", 1),
+        coverage.replace(
+            "cargo llvm-cov report --lcov --output-path lcov.info\n", "", 1
+        ),
+        coverage.replace(
+            "CARGO_TARGET_DIR: ${{ github.workspace }}/target/llvm-cov-target",
+            "CARGO_TARGET_DIR: ${{ github.workspace }}/target",
+            1,
+        ),
+    )
+    for mutated in mutations:
+        try:
+            assert_coverage_builds_shared_artifacts_in_instrumented_target(mutated)
+        except (AssertionError, ValueError):
+            continue
+        raise AssertionError("a broken coverage artifact contract escaped the oracle")
+
+
 def test_ci_shared_artifact_build_mutations_are_rejected() -> None:
     ci = CI_WORKFLOW.read_text()
     mutated = ci.replace("run: make stdlib", "run: make check-libhew-fresh")
@@ -2091,6 +2243,10 @@ _TESTS = [
     test_contract_oracle_runs_in_required_ci,
     test_workflow_rust_tests_use_prebuilt_shared_artifact,
     test_workflow_shared_artifact_build_mutations_are_rejected,
+    test_coverage_builds_shared_artifacts_in_instrumented_target,
+    test_coverage_failure_propagates_before_report,
+    test_coverage_failure_propagation_mutations_are_rejected,
+    test_coverage_instrumented_target_mutations_are_rejected,
     test_wasm_pack_consumers_prefetch_checksum_pinned_binaryen,
     test_binaryen_prefetch_pin_mutations_are_rejected,
     test_windows_test_workflows_initialise_msvc_before_lld_link,

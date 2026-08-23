@@ -248,6 +248,22 @@ LIBHEW := $(DEBUG_DIR)/$(LIBHEW_NAME)
 
 TEST_RUN_ENV := HEW_TEST_NO_BUILD=1
 
+# wasm32-wasip1 has no profiler runtime. A table-derived shared-artifact build
+# can run under cargo-llvm-cov's exported environment, so scrub only its
+# instrumentation/wrapper controls while retaining CARGO_TARGET_DIR authority.
+WASM_UNINSTRUMENTED_ENV := env \
+	-u RUSTFLAGS \
+	-u CARGO_ENCODED_RUSTFLAGS \
+	-u CARGO_BUILD_RUSTFLAGS \
+	-u LLVM_PROFILE_FILE \
+	-u RUSTC_WRAPPER \
+	-u __CARGO_LLVM_COV_RUSTC_WRAPPER \
+	-u __CARGO_LLVM_COV_RUSTC_WRAPPER_RUSTFLAGS \
+	-u __CARGO_LLVM_COV_RUSTC_WRAPPER_CRATE_NAMES \
+	-u __CARGO_LLVM_COV_RUSTC_WRAPPER_PRE_EXISTING \
+	-u CARGO_LLVM_COV \
+	RUSTC_WRAPPER=
+
 # Sources that feed the archive. The list is derived, never hand-listed:
 # hew-lib's non-dev path-dependency closure, its Rust sources and manifests,
 # the embedded assets its code names with include_str!/include_bytes!, and the
@@ -439,10 +455,10 @@ endif
 # graph makes repeated invocations cheap and authoritative.
 .PHONY: wasm-runtime-debug wasm-std-debug
 wasm-runtime-debug: $(LIBHEW_SRCS)
-	cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
+	$(WASM_UNINSTRUMENTED_ENV) cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
 
 wasm-std-debug: $(LIBHEW_SRCS)
-	cargo build -p hew-std --target wasm32-wasip1
+	$(WASM_UNINSTRUMENTED_ENV) cargo build -p hew-std --target wasm32-wasip1
 
 wasm-runtime: wasm-runtime-debug wasm-std-debug
 

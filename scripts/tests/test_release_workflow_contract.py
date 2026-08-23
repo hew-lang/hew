@@ -34,6 +34,7 @@ NPM_PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-npm-packages.ym
 RELEASE_GATE = ROOT / ".github" / "workflows" / "release-gate.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 COVERAGE_NIGHTLY_WORKFLOW = ROOT / ".github" / "workflows" / "coverage-nightly.yml"
+DEPLOY_DOCS_WORKFLOW = ROOT / ".github" / "workflows" / "deploy-docs.yml"
 WORKFLOW_DIRECTORY = ROOT / ".github" / "workflows"
 RELEASE_NOTES = ROOT / "docs" / "releases" / "v0.6.0-rc1.md"
 RUNBOOK = ROOT / "docs" / "release-runbook.md"
@@ -1532,6 +1533,54 @@ def test_contract_oracle_runs_in_required_ci() -> None:
         text=True,
     ).stdout
     assert "make test-release-workflow-contract" in dispatched, dispatched
+
+
+def assert_deploy_docs_provisions_pinned_llvm_before_build(text: str) -> None:
+    """Require the docs compiler build to inherit the pinned LLVM toolchain."""
+    assert 'LLVM_VERSION: "22.1.5"' in text
+    job = workflow_job(text, "deploy")
+    setup_use = "uses: ./.github/actions/setup-llvm"
+    build_command = "cargo build -p hew-cli --bin hew --release"
+    assert job.count(setup_use) == 1
+    assert job.count(build_command) == 1
+
+    setup_step = next(step for step in workflow_steps(job) if setup_use in step)
+    assert "if:" not in setup_step
+    assert "version: ${{ env.LLVM_VERSION }}" in setup_step
+    assert job.index(setup_use) < job.index(build_command)
+
+
+def test_deploy_docs_provisions_pinned_llvm_before_build() -> None:
+    deploy_docs = DEPLOY_DOCS_WORKFLOW.read_text()
+    assert_deploy_docs_provisions_pinned_llvm_before_build(deploy_docs)
+
+    setup_step = next(
+        step
+        for step in workflow_steps(workflow_job(deploy_docs, "deploy"))
+        if "uses: ./.github/actions/setup-llvm" in step
+    )
+    build_step = next(
+        step
+        for step in workflow_steps(workflow_job(deploy_docs, "deploy"))
+        if "cargo build -p hew-cli --bin hew --release" in step
+    )
+    mutations = (
+        deploy_docs.replace("uses: ./.github/actions/setup-llvm", "run: true", 1),
+        deploy_docs.replace(setup_step, setup_step + setup_step, 1),
+        deploy_docs.replace(setup_step + build_step, build_step + setup_step, 1),
+        deploy_docs.replace(
+            "uses: ./.github/actions/setup-llvm",
+            "if: false\n        uses: ./.github/actions/setup-llvm",
+            1,
+        ),
+        deploy_docs.replace("version: ${{ env.LLVM_VERSION }}", "version: 22", 1),
+    )
+    for mutation in mutations:
+        try:
+            assert_deploy_docs_provisions_pinned_llvm_before_build(mutation)
+        except (AssertionError, StopIteration):
+            continue
+        raise AssertionError("deploy-docs LLVM mutation escaped the contract")
 
 
 def workflow_job(text: str, name: str) -> str:

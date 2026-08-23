@@ -4,6 +4,8 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 const SKIPPED_PACKAGE_DIRS: &[&str] = &[".git", "target", ".hew"];
+pub const CACHE_METADATA_FILE: &str = ".hew-registry-cache.toml";
+pub const CACHE_ARCHIVE_FILE: &str = ".hew-registry-cache.tar.zst";
 
 /// Return true when a directory should be skipped for package traversal.
 #[must_use]
@@ -27,7 +29,10 @@ fn collect_package_files_inner(
         let entry = entry?;
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if is_skipped_package_dir(&name_str) {
+        if is_skipped_package_dir(&name_str)
+            || name_str == CACHE_METADATA_FILE
+            || name_str == CACHE_ARCHIVE_FILE
+        {
             continue;
         }
         let path = entry.path();

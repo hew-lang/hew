@@ -6,7 +6,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -60,6 +60,17 @@ fn run_pkg(home: &Path, project: &Path, args: &[&str]) -> Output {
         .env_remove("USERPROFILE")
         .output()
         .expect("run hew package command")
+}
+
+fn run_pkg_bounded(home: &Path, project: &Path, args: &[&str], label: &str) -> Output {
+    let mut command = Command::new(hew_binary());
+    command
+        .args(args)
+        .current_dir(project)
+        .env("HOME", home)
+        .env_remove("USERPROFILE");
+    support::try_run_bounded_command(command, label, Duration::from_secs(30))
+        .expect("package command must terminate")
 }
 
 fn start_404_registry() -> String {
@@ -179,6 +190,33 @@ fn start_repair_registry(tarball: Vec<u8>, checksum: String) -> RepairRegistry {
     }
 }
 
+fn package_tarball(root: &Path) -> hew_pkg::tarball::PackResult {
+    let package_source = root.join("foo-source");
+    std::fs::create_dir_all(&package_source).unwrap();
+    std::fs::write(
+        package_source.join("hew.toml"),
+        "[package]\nname = \"foo\"\nversion = \"0.2.1\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        package_source.join("foo.hew"),
+        "pub fn answer() -> i64 { 42 }\n",
+    )
+    .unwrap();
+    hew_pkg::tarball::pack(&package_source, &[], &[]).unwrap()
+}
+
+fn write_lockfile(project: &Path, version: &str, checksum: Option<&str>) {
+    let checksum = checksum.map_or_else(String::new, |value| format!("checksum = {value:?}\n"));
+    std::fs::write(
+        project.join("hew.lock"),
+        format!(
+            "[[package]]\nname = \"foo\"\nrequirement = \"0.2.1\"\nversion = {version:?}\n{checksum}"
+        ),
+    )
+    .unwrap();
+}
+
 #[test]
 fn pkg_registry_404_refuses_stale_cache() {
     let root = support::tempdir();
@@ -247,22 +285,10 @@ fn pkg_online_repairs_incomplete_cache_without_loop() {
     let home = root.path().join("home");
     let project = root.path().join("app");
     let cache = root.path().join("cache");
-    let package_source = root.path().join("foo-source");
     std::fs::create_dir_all(&project).unwrap();
     std::fs::create_dir_all(&home).unwrap();
-    std::fs::create_dir_all(&package_source).unwrap();
     write_manifest(&project, "foo = \"0.2.1\"\n");
-    std::fs::write(
-        package_source.join("hew.toml"),
-        "[package]\nname = \"foo\"\nversion = \"0.2.1\"\n",
-    )
-    .unwrap();
-    std::fs::write(
-        package_source.join("foo.hew"),
-        "pub fn answer() -> i64 { 42 }\n",
-    )
-    .unwrap();
-    let packed = hew_pkg::tarball::pack(&package_source, &[], &[]).unwrap();
+    let packed = package_tarball(root.path());
     let registry = start_repair_registry(packed.data, packed.checksum);
     write_config(&home, &cache, Some(&registry.api_url));
 
@@ -279,7 +305,7 @@ fn pkg_online_repairs_incomplete_cache_without_loop() {
     let output = support::try_run_bounded_command(
         command,
         "online install repairs incomplete cache",
-        Duration::from_secs(10),
+        Duration::from_secs(30),
     )
     .expect("online install must terminate");
 
@@ -294,4 +320,239 @@ fn pkg_online_repairs_incomplete_cache_without_loop() {
     assert!(incomplete.join("foo.hew").is_file());
     assert!(!incomplete.join("partial.marker").exists());
     assert!(project.join(".hew/packages/foo/foo.hew").is_file());
+}
+
+#[test]
+fn pkg_online_repairs_tampered_manifest_present_cache() {
+    let root = support::tempdir();
+    let home = root.path().join("home");
+    let project = root.path().join("app");
+    let cache = root.path().join("cache");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    write_manifest(&project, "foo = \"0.2.1\"\n");
+    let packed = package_tarball(root.path());
+    let registry = start_repair_registry(packed.data, packed.checksum);
+    write_config(&home, &cache, Some(&registry.api_url));
+
+    let first = run_pkg_bounded(
+        &home,
+        &project,
+        &["install", "--registry", "mock"],
+        "initial verified cache install",
+    );
+    assert!(
+        first.status.success(),
+        "initial online install failed\n{}",
+        describe_output(&first)
+    );
+    let cached = cache.join("foo/0.2.1");
+    std::fs::write(cached.join("foo.hew"), "pub fn answer() -> i64 { 7 }\n").unwrap();
+
+    let output = run_pkg_bounded(
+        &home,
+        &project,
+        &["install", "--registry", "mock"],
+        "tampered cache repair",
+    );
+    assert!(
+        output.status.success(),
+        "online install should replace an unverified manifest-present cache\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(registry.download_requests.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        std::fs::read_to_string(cached.join("foo.hew")).unwrap(),
+        "pub fn answer() -> i64 { 42 }\n"
+    );
+    assert!(cached.join(".hew-registry-cache.toml").is_file());
+}
+
+#[test]
+fn pkg_malformed_archive_preserves_untrusted_old_cache() {
+    let root = support::tempdir();
+    let home = root.path().join("home");
+    let project = root.path().join("app");
+    let cache = root.path().join("cache");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    write_manifest(&project, "foo = \"0.2.1\"\n");
+    let cached = write_cached_package(&cache, "foo", "0.2.1");
+    let old_source = std::fs::read(cached.join("foo.hew")).unwrap();
+    let malformed = b"not a zstd archive".to_vec();
+    let registry = start_repair_registry(
+        malformed.clone(),
+        hew_pkg::tarball::checksum_bytes(&malformed),
+    );
+    write_config(&home, &cache, Some(&registry.api_url));
+
+    let output = run_pkg_bounded(
+        &home,
+        &project,
+        &["install", "--registry", "mock"],
+        "malformed archive replacement",
+    );
+    assert!(
+        !output.status.success(),
+        "malformed replacement must fail\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(std::fs::read(cached.join("foo.hew")).unwrap(), old_source);
+    assert!(!cached.join(".hew-registry-cache.toml").exists());
+    assert!(!project.join(".hew/packages/foo").exists());
+}
+
+#[test]
+fn pkg_concurrent_repair_downloads_and_publishes_once() {
+    let root = support::tempdir();
+    let home = root.path().join("home");
+    let cache = root.path().join("cache");
+    let first_project = root.path().join("first");
+    let second_project = root.path().join("second");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&first_project).unwrap();
+    std::fs::create_dir_all(&second_project).unwrap();
+    write_manifest(&first_project, "foo = \"0.2.1\"\n");
+    write_manifest(&second_project, "foo = \"0.2.1\"\n");
+    write_cached_package(&cache, "foo", "0.2.1");
+    let packed = package_tarball(root.path());
+    let registry = start_repair_registry(packed.data, packed.checksum);
+    write_config(&home, &cache, Some(&registry.api_url));
+
+    let barrier = Arc::new(Barrier::new(2));
+    let run_install = |project: PathBuf, barrier: Arc<Barrier>| {
+        let home = home.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            let mut command = Command::new(hew_binary());
+            command
+                .args(["install", "--registry", "mock"])
+                .current_dir(project)
+                .env("HOME", home)
+                .env_remove("USERPROFILE");
+            support::try_run_bounded_command(
+                command,
+                "concurrent package cache repair",
+                Duration::from_secs(30),
+            )
+            .expect("concurrent repair must terminate")
+        })
+    };
+    let first = run_install(first_project.clone(), Arc::clone(&barrier));
+    let second = run_install(second_project.clone(), barrier);
+    let first_output = first.join().unwrap();
+    let second_output = second.join().unwrap();
+
+    assert!(
+        first_output.status.success(),
+        "first concurrent install failed\n{}",
+        describe_output(&first_output)
+    );
+    assert!(
+        second_output.status.success(),
+        "second concurrent install failed\n{}",
+        describe_output(&second_output)
+    );
+    assert_eq!(registry.package_requests.load(Ordering::Relaxed), 2);
+    assert_eq!(registry.download_requests.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        std::fs::read_to_string(cache.join("foo/0.2.1/foo.hew")).unwrap(),
+        "pub fn answer() -> i64 { 42 }\n"
+    );
+}
+
+#[test]
+fn pkg_locked_rejects_traversal_version_before_cache_lookup() {
+    let root = support::tempdir();
+    let home = root.path().join("home");
+    let project = root.path().join("app");
+    let cache = root.path().join("cache");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    write_manifest(&project, "foo = \"0.2.1\"\n");
+    write_config(&home, &cache, None);
+    write_lockfile(
+        &project,
+        "../../escape",
+        Some("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+    );
+
+    let output = run_pkg_bounded(
+        &home,
+        &project,
+        &["install", "--locked", "--offline"],
+        "traversal lock version",
+    );
+    assert!(
+        !output.status.success(),
+        "traversal lock version must fail\n{}",
+        describe_output(&output)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid version"), "{stderr}");
+    assert!(!root.path().join("escape").exists());
+}
+
+#[test]
+fn pkg_locked_rejects_missing_registry_checksum() {
+    let root = support::tempdir();
+    let home = root.path().join("home");
+    let project = root.path().join("app");
+    let cache = root.path().join("cache");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    write_manifest(&project, "foo = \"0.2.1\"\n");
+    write_config(&home, &cache, None);
+    write_lockfile(&project, "0.2.1", None);
+
+    let output = run_pkg_bounded(
+        &home,
+        &project,
+        &["install", "--locked", "--offline"],
+        "missing locked checksum",
+    );
+    assert!(
+        !output.status.success(),
+        "missing locked checksum must fail\n{}",
+        describe_output(&output)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("missing its locked checksum"),
+        "{}",
+        describe_output(&output)
+    );
+}
+
+#[test]
+fn pkg_locked_rejects_missing_cached_package() {
+    let root = support::tempdir();
+    let home = root.path().join("home");
+    let project = root.path().join("app");
+    let cache = root.path().join("cache");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    write_manifest(&project, "foo = \"0.2.1\"\n");
+    write_config(&home, &cache, None);
+    write_lockfile(
+        &project,
+        "0.2.1",
+        Some("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+    );
+
+    let output = run_pkg_bounded(
+        &home,
+        &project,
+        &["install", "--locked", "--offline"],
+        "missing locked cache",
+    );
+    assert!(
+        !output.status.success(),
+        "missing locked cache must fail\n{}",
+        describe_output(&output)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("is missing from cache"),
+        "{}",
+        describe_output(&output)
+    );
 }

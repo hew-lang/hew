@@ -9,6 +9,67 @@ pub fn write_atomic(path: &Path, content: &[u8], mode: u32) -> io::Result<()> {
     write_atomic_with_hook(path, content, mode, |_| Ok(()))
 }
 
+#[derive(Debug)]
+pub struct StagedDir {
+    path: PathBuf,
+    active: bool,
+}
+
+impl StagedDir {
+    pub fn new(target: &Path) -> io::Result<Self> {
+        let parent = target.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "target has no parent directory",
+            )
+        })?;
+        fs::create_dir_all(parent)?;
+
+        for _ in 0..100 {
+            let path = temp_path_for(target)?;
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path, active: true }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate a unique staging directory",
+        ))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn publish(mut self, target: &Path) -> io::Result<()> {
+        match fs::symlink_metadata(target) {
+            Ok(_) => {
+                exchange_paths(&self.path, target)?;
+                remove_path(&self.path)?;
+                self.active = false;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::rename(&self.path, target)?;
+                self.active = false;
+            }
+            Err(error) => return Err(error),
+        }
+
+        sync_parent_dir(target)
+    }
+}
+
+impl Drop for StagedDir {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = remove_path(&self.path);
+        }
+    }
+}
+
 fn write_atomic_with_hook<F>(
     path: &Path,
     content: &[u8],
@@ -93,6 +154,85 @@ fn temp_path_for(path: &Path) -> io::Result<PathBuf> {
     Ok(path.with_file_name(format!(".{file_name}.tmp-{}-{counter}", std::process::id())))
 }
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn exchange_paths(left: &Path, right: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let left = CString::new(left.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
+    let right = CString::new(right.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
+
+    // SAFETY: both pointers remain valid for the duration of the syscall and
+    // identify existing paths on the same filesystem.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            left.as_ptr(),
+            libc::AT_FDCWD,
+            right.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn exchange_paths(left: &Path, right: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let left = CString::new(left.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
+    let right = CString::new(right.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
+
+    // SAFETY: both pointers remain valid for the duration of the call and
+    // identify existing paths on the same filesystem.
+    let result = unsafe { libc::renamex_np(left.as_ptr(), right.as_ptr(), libc::RENAME_SWAP) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios"
+)))]
+fn exchange_paths(left: &Path, right: &Path) -> io::Result<()> {
+    let backup = temp_path_for(right)?;
+    fs::rename(right, &backup)?;
+    if let Err(error) = fs::rename(left, right) {
+        let restore = fs::rename(&backup, right);
+        return match restore {
+            Ok(()) => Err(error),
+            Err(restore_error) => Err(io::Error::other(format!(
+                "publication failed: {error}; restoring previous content failed: {restore_error}"
+            ))),
+        };
+    }
+    fs::rename(backup, left)
+}
+
+fn remove_path(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
 fn sync_parent_dir(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -149,6 +289,46 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "old-token");
         assert_eq!(fs::read_to_string(&temp_path).unwrap(), "new-token");
+    }
+
+    #[test]
+    fn staged_directory_publication_never_exposes_partial_tree() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("package");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("state"), "old").unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let saw_partial = Arc::new(AtomicBool::new(false));
+        let reader_stop = Arc::clone(&stop);
+        let reader_partial = Arc::clone(&saw_partial);
+        let reader_target = target.clone();
+        let reader = std::thread::spawn(move || {
+            while !reader_stop.load(Ordering::Relaxed) {
+                if !matches!(
+                    fs::read_to_string(reader_target.join("state")).as_deref(),
+                    Ok("old" | "new")
+                ) {
+                    reader_partial.store(true, Ordering::Relaxed);
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        });
+
+        for index in 0..100 {
+            let staged = StagedDir::new(&target).unwrap();
+            let state = if index % 2 == 0 { "new" } else { "old" };
+            fs::write(staged.path().join("state"), state).unwrap();
+            staged.publish(&target).unwrap();
+        }
+        stop.store(true, Ordering::Relaxed);
+        reader.join().unwrap();
+
+        assert!(!saw_partial.load(Ordering::Relaxed));
     }
 
     #[cfg(unix)]

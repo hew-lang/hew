@@ -63,6 +63,13 @@ pub enum LockError {
     Stale,
     /// The lockfile does not exist.
     Missing,
+    /// A package entry contains an unsafe or incomplete identity.
+    InvalidEntry {
+        /// Package name as written in the lockfile.
+        package: String,
+        /// Validation failure.
+        reason: String,
+    },
 }
 
 impl fmt::Display for LockError {
@@ -73,6 +80,9 @@ impl fmt::Display for LockError {
             Self::Serialize(e) => write!(f, "cannot serialize lockfile: {e}"),
             Self::Stale => write!(f, "lockfile is out of date with hew.toml"),
             Self::Missing => write!(f, "hew.lock not found"),
+            Self::InvalidEntry { package, reason } => {
+                write!(f, "invalid lockfile entry for `{package}`: {reason}")
+            }
         }
     }
 }
@@ -83,7 +93,7 @@ impl std::error::Error for LockError {
             Self::Io(e) => Some(e),
             Self::Parse(e) => Some(e),
             Self::Serialize(e) => Some(e),
-            Self::Stale | Self::Missing => None,
+            Self::Stale | Self::Missing | Self::InvalidEntry { .. } => None,
         }
     }
 }
@@ -138,6 +148,49 @@ pub fn write_lockfile(path: &Path, lockfile: &LockFile) -> Result<(), LockError>
     let content = format!("{LOCKFILE_HEADER}{body}");
     std::fs::write(path, content)?;
     Ok(())
+}
+
+/// Validate every package identity before callers compose cache paths from it.
+///
+/// # Errors
+///
+/// Returns [`LockError::InvalidEntry`] for invalid names or versions, or when a
+/// registry package lacks the checksum required for a locked install.
+pub fn validate_lockfile(lockfile: &LockFile) -> Result<(), LockError> {
+    for package in &lockfile.packages {
+        if !crate::package_name::is_valid(&package.name) {
+            return Err(LockError::InvalidEntry {
+                package: package.name.clone(),
+                reason: crate::package_name::invalid_message(&package.name),
+            });
+        }
+        semver::Version::parse(&package.version).map_err(|error| LockError::InvalidEntry {
+            package: package.name.clone(),
+            reason: format!("invalid version `{}`: {error}", package.version),
+        })?;
+        if package.source == "registry" {
+            let checksum = package
+                .checksum
+                .as_deref()
+                .ok_or_else(|| LockError::InvalidEntry {
+                    package: package.name.clone(),
+                    reason: "registry package is missing its locked checksum".to_string(),
+                })?;
+            if !is_sha256_checksum(checksum) {
+                return Err(LockError::InvalidEntry {
+                    package: package.name.clone(),
+                    reason: format!("invalid checksum `{checksum}`"),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_sha256_checksum(checksum: &str) -> bool {
+    checksum
+        .strip_prefix("sha256:")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
 /// Returns `true` if the lockfile is stale relative to the manifest.
@@ -547,5 +600,41 @@ mod tests {
 
         let missing_err = LockError::Missing;
         assert!(missing_err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn validation_rejects_traversal_version() {
+        let lockfile = LockFile {
+            packages: vec![LockedPackage {
+                name: "foo".to_string(),
+                requirement: Some("1.0.0".to_string()),
+                version: "../../escape".to_string(),
+                checksum: Some(format!("sha256:{}", "0".repeat(64))),
+                signature: None,
+                source: "registry".to_string(),
+                path: None,
+            }],
+        };
+
+        let error = validate_lockfile(&lockfile).unwrap_err();
+        assert!(error.to_string().contains("invalid version"));
+    }
+
+    #[test]
+    fn validation_requires_registry_checksum() {
+        let lockfile = LockFile {
+            packages: vec![LockedPackage {
+                name: "foo".to_string(),
+                requirement: Some("1.0.0".to_string()),
+                version: "1.0.0".to_string(),
+                checksum: None,
+                signature: None,
+                source: "registry".to_string(),
+                path: None,
+            }],
+        };
+
+        let error = validate_lockfile(&lockfile).unwrap_err();
+        assert!(error.to_string().contains("missing its locked checksum"));
     }
 }

@@ -20,6 +20,8 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.10.1"
 rand_core = "0.10.1"
 base64.workspace = true
+fd-lock.workspace = true
+libc.workspace = true
 tar = "0.4"
 zstd = "0.13"
 ureq = { version = "3", features = ["json"] }

@@ -137,6 +137,13 @@ pub enum ResolveError {
         /// Each unresolved package along with all active requirements.
         failures: Vec<UnresolvedDep>,
     },
+    /// A resolver pass repeated without changing its accumulated state.
+    NoProgress,
+    /// Resolution exceeded its finite pass limit.
+    ProgressLimitExceeded {
+        /// Maximum number of passes attempted.
+        limit: usize,
+    },
 }
 
 impl fmt::Display for ResolveError {
@@ -219,6 +226,13 @@ impl fmt::Display for ResolveError {
                 }
                 Ok(())
             }
+            Self::NoProgress => {
+                f.write_str("dependency resolution repeated without making progress")
+            }
+            Self::ProgressLimitExceeded { limit } => write!(
+                f,
+                "dependency resolution exceeded the finite limit of {limit} passes"
+            ),
         }
     }
 }
@@ -237,7 +251,9 @@ impl std::error::Error for ResolveError {
             | Self::PathVersionMismatch { .. }
             | Self::ConflictingSources { .. }
             | Self::CircularDependency { .. }
-            | Self::UnresolvableDeps { .. } => None,
+            | Self::UnresolvableDeps { .. }
+            | Self::NoProgress
+            | Self::ProgressLimitExceeded { .. } => None,
         }
     }
 }
@@ -301,7 +317,7 @@ impl VersionReq {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct PackageState {
     requirements: BTreeSet<String>,
     direct_requirement: Option<String>,
@@ -1089,12 +1105,18 @@ fn resolve_all_inner(
     registry: &Registry,
     confirmed_versions: Option<&BTreeMap<String, BTreeSet<String>>>,
 ) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
+    const MAX_RESOLUTION_PASSES: usize = 1024;
+
     let mut seed_states = BTreeMap::new();
-    loop {
+    for _ in 0..MAX_RESOLUTION_PASSES {
+        let previous_seed_states = seed_states.clone();
         let pass = ResolverPass::with_seed(registry, root, confirmed_versions, seed_states);
         match pass.resolve_manifest(manifest)? {
             PassOutcome::Resolved(resolved) => return Ok(resolved),
             PassOutcome::Restart(next_seed_states) => {
+                if next_seed_states == previous_seed_states {
+                    return Err(ResolveError::NoProgress);
+                }
                 seed_states = next_seed_states;
             }
             PassOutcome::Unresolved(failures) => {
@@ -1102,6 +1124,9 @@ fn resolve_all_inner(
             }
         }
     }
+    Err(ResolveError::ProgressLimitExceeded {
+        limit: MAX_RESOLUTION_PASSES,
+    })
 }
 
 #[cfg(test)]

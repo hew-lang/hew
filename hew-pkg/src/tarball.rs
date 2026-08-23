@@ -8,6 +8,8 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
+use crate::package_fs::{CACHE_ARCHIVE_FILE, CACHE_METADATA_FILE};
+
 /// Maximum compressed tarball size (10 MB).
 pub const MAX_TARBALL_SIZE: usize = 10 * 1024 * 1024;
 
@@ -189,6 +191,7 @@ fn unpack_with_limit(data: &[u8], target: &Path, max_bytes: u64) -> Result<(), T
         let mut entry = entry?;
         let original_path = entry.path()?.into_owned();
         let normalized_path = normalize_unpack_path(&original_path)?;
+        reject_reserved_cache_path(&normalized_path)?;
         let target_path = target.join(&normalized_path);
         let entry_type = entry.header().entry_type();
 
@@ -237,6 +240,72 @@ fn unpack_with_limit(data: &[u8], target: &Path, max_bytes: u64) -> Result<(), T
 
     cleanup.active = false;
     Ok(())
+}
+
+pub(crate) fn unpacked_tree_checksum(data: &[u8]) -> Result<String, TarballError> {
+    use sha2::{Digest as _, Sha256};
+    use std::collections::BTreeMap;
+
+    let decoder = zstd::Decoder::new(std::io::Cursor::new(data))
+        .map_err(|e| TarballError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+    let mut archive = tar::Archive::new(decoder);
+    let mut files = BTreeMap::<String, Vec<u8>>::new();
+    let mut total_bytes = 0_u64;
+    let mut found_manifest = false;
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let original_path = entry.path()?.into_owned();
+        let normalized_path = normalize_unpack_path(&original_path)?;
+        reject_reserved_cache_path(&normalized_path)?;
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_dir() {
+            continue;
+        }
+        if !entry_type.is_file() {
+            return Err(TarballError::UnsupportedEntryType {
+                path: normalized_path,
+                kind: format!("{entry_type:?}"),
+            });
+        }
+        if normalized_path == Path::new("hew.toml") {
+            found_manifest = true;
+        }
+        let path = normalized_path
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        let mut contents = Vec::new();
+        entry.read_to_end(&mut contents)?;
+        total_bytes = total_bytes.saturating_add(contents.len() as u64);
+        if total_bytes > MAX_UNPACKED_TARBALL_BYTES {
+            return Err(TarballError::TooLarge {
+                size: total_bytes,
+                max: MAX_UNPACKED_TARBALL_BYTES,
+            });
+        }
+        files.insert(path, contents);
+    }
+
+    if !found_manifest {
+        return Err(TarballError::MissingManifest);
+    }
+
+    let mut hasher = Sha256::new();
+    for (path, contents) in files {
+        hasher.update(path.as_bytes());
+        hasher.update(contents);
+    }
+    Ok(crate::package_fs::sha256_prefixed(&hasher.finalize()))
+}
+
+fn reject_reserved_cache_path(path: &Path) -> Result<(), TarballError> {
+    if path == Path::new(CACHE_METADATA_FILE) || path == Path::new(CACHE_ARCHIVE_FILE) {
+        Err(TarballError::InvalidPath(path.to_path_buf()))
+    } else {
+        Ok(())
+    }
 }
 
 fn normalize_unpack_path(path: &Path) -> Result<PathBuf, TarballError> {

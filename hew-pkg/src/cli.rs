@@ -612,40 +612,53 @@ fn cmd_install(
                 std::process::exit(1);
             }
         };
+        if let Err(error) = lockfile::validate_lockfile(&lf) {
+            eprintln!("hew install: {error}");
+            std::process::exit(1);
+        }
         if lockfile::is_lock_stale(&lf, &m) {
             let err = lockfile::LockError::Stale;
             eprintln!("hew install: {err}");
             eprintln!("Run `hew install` without --locked to update it.");
             std::process::exit(1);
         }
-        // Verify checksums of locked packages.
+        // Verify every locked registry package before resolution can reuse it.
         for entry in &lf.packages {
-            if !is_valid_package_name(&entry.name) {
-                eprintln!("hew install: {}", invalid_package_name_message(&entry.name));
+            if entry.source != "registry" {
+                continue;
+            }
+            let expected = entry
+                .checksum
+                .as_deref()
+                .expect("validated registry lock entry must have a checksum");
+            let pkg_dir = registry.package_dir(&entry.name, &entry.version);
+            if !registry.is_installed(&entry.name, &entry.version) {
+                eprintln!(
+                    "hew install: locked package {}@{} is missing from cache at {}",
+                    entry.name,
+                    entry.version,
+                    pkg_dir.display()
+                );
                 std::process::exit(1);
             }
-            if let Some(expected) = &entry.checksum {
-                let pkg_dir = registry.package_dir(&entry.name, &entry.version);
-                if pkg_dir.is_dir() {
-                    match checksum::compute_dir_checksum(&pkg_dir) {
-                        Ok(actual) if actual != *expected => {
-                            eprintln!(
-                                "hew install: checksum mismatch for {}@{}",
-                                entry.name, entry.version
-                            );
-                            eprintln!("  expected: {expected}");
-                            eprintln!("  actual:   {actual}");
-                            std::process::exit(1);
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "warning: cannot verify checksum for {}@{}: {e}",
-                                entry.name, entry.version
-                            );
-                        }
-                        _ => {}
-                    }
+            match checksum::compute_dir_checksum(&pkg_dir) {
+                Ok(actual) if actual != expected => {
+                    eprintln!(
+                        "hew install: checksum mismatch for {}@{}",
+                        entry.name, entry.version
+                    );
+                    eprintln!("  expected: {expected}");
+                    eprintln!("  actual:   {actual}");
+                    std::process::exit(1);
                 }
+                Err(error) => {
+                    eprintln!(
+                        "hew install: cannot verify checksum for {}@{}: {error}",
+                        entry.name, entry.version
+                    );
+                    std::process::exit(1);
+                }
+                _ => {}
             }
         }
     }
@@ -680,6 +693,7 @@ fn cmd_install(
     // Online resolution admits only versions confirmed by this registry
     // session. Offline resolution explicitly admits the local cache.
     let mut confirmed_versions = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut fetch_progress = FetchProgress::default();
     let resolved = loop {
         let result = if offline {
             resolver::resolve_all_from_root(&m, &cwd, registry)
@@ -701,6 +715,11 @@ fn cmd_install(
                 std::process::exit(1);
             }
             Err(resolver::ResolveError::UnresolvableDeps { failures }) => {
+                if let Err(error) = fetch_progress.begin_round(&failures) {
+                    eprintln!("hew install: {error}");
+                    std::process::exit(1);
+                }
+                let confirmed_before = confirmed_version_count(&confirmed_versions);
                 if let Err(error) = fetch_missing_packages(
                     &failures,
                     registry,
@@ -708,6 +727,10 @@ fn cmd_install(
                     &mut confirmed_versions,
                 ) {
                     eprintln!("hew install: {error}");
+                    std::process::exit(1);
+                }
+                if confirmed_version_count(&confirmed_versions) <= confirmed_before {
+                    eprintln!("hew install: registry fetch completed without making progress");
                     std::process::exit(1);
                 }
             }
@@ -740,8 +763,10 @@ fn cmd_install(
                 let checksum = match checksum::compute_dir_checksum(&target) {
                     Ok(checksum) => Some(checksum),
                     Err(error) => {
-                        eprintln!("warning: cannot compute checksum for {name}@{version}: {error}");
-                        None
+                        eprintln!(
+                            "hew install: cannot compute checksum for {name}@{version}: {error}"
+                        );
+                        std::process::exit(1);
                     }
                 };
                 (target, "registry", None, checksum)
@@ -868,7 +893,36 @@ fn fetch_missing_packages(
         };
         let version = &resolved.version;
 
-        if registry.is_installed(name, version) {
+        validate_registry_identity(name, version)?;
+        let lock_dir = registry.root().join(".locks");
+        std::fs::create_dir_all(&lock_dir).map_err(|error| {
+            format!(
+                "could not create package cache lock directory {}: {error}",
+                lock_dir.display()
+            )
+        })?;
+        let lock_path = lock_dir.join(format!("{name}-{version}.lock"));
+        let lock_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|error| {
+                format!(
+                    "could not open package cache lock {}: {error}",
+                    lock_path.display()
+                )
+            })?;
+        let mut package_lock = fd_lock::RwLock::new(lock_file);
+        let _package_guard = package_lock.write().map_err(|error| {
+            format!(
+                "could not acquire package cache lock {}: {error}",
+                lock_path.display()
+            )
+        })?;
+
+        if registry.is_online_cache_verified(name, version, &resolved.checksum)? {
             confirmed_versions
                 .entry(name.clone())
                 .or_default()
@@ -946,28 +1000,30 @@ fn fetch_missing_packages(
             }
         }
 
-        // Replace any incomplete cache entry only after the download has passed
-        // checksum and signature verification.
         let target = registry.package_dir(name, version);
-        match std::fs::symlink_metadata(&target) {
-            Ok(_) => remove_path_for_replacement(&target).map_err(|error| {
-                format!(
-                    "could not replace incomplete cache entry for {name}@{version} at {}: {error}",
-                    target.display()
-                )
-            })?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!(
-                    "could not inspect cache entry for {name}@{version} at {}: {error}",
-                    target.display()
-                ));
-            }
-        }
-        if let Err(e) = tarball::unpack(&tarball_data, &target) {
+        let staged = crate::atomic_fs::StagedDir::new(&target).map_err(|error| {
+            format!(
+                "could not stage cache entry for {name}@{version} at {}: {error}",
+                target.display()
+            )
+        })?;
+        if let Err(e) = tarball::unpack(&tarball_data, staged.path()) {
             eprintln!("unpack failed");
             return Err(format!("could not unpack {name}@{version}: {e}"));
         }
+        registry::Registry::write_cache_metadata(
+            staged.path(),
+            name,
+            version,
+            &resolved.checksum,
+            &tarball_data,
+        )?;
+        staged.publish(&target).map_err(|error| {
+            format!(
+                "could not publish cache entry for {name}@{version} at {}: {error}",
+                target.display()
+            )
+        })?;
 
         confirmed_versions
             .entry(name.clone())
@@ -977,6 +1033,47 @@ fn fetch_missing_packages(
     }
 
     Ok(())
+}
+
+const MAX_FETCH_ROUNDS: usize = 1024;
+
+#[derive(Debug, Default)]
+struct FetchProgress {
+    rounds: usize,
+    previous_failures: Option<Vec<(String, Vec<String>)>>,
+}
+
+impl FetchProgress {
+    fn begin_round(&mut self, failures: &[resolver::UnresolvedDep]) -> Result<(), String> {
+        if self.rounds >= MAX_FETCH_ROUNDS {
+            return Err(format!(
+                "registry fetch exceeded the finite limit of {MAX_FETCH_ROUNDS} rounds"
+            ));
+        }
+        let signature = failures
+            .iter()
+            .map(|failure| (failure.package.clone(), failure.requirements.clone()))
+            .collect::<Vec<_>>();
+        if self.previous_failures.as_ref() == Some(&signature) {
+            return Err("registry fetch repeated without making resolver progress".to_string());
+        }
+        self.previous_failures = Some(signature);
+        self.rounds += 1;
+        Ok(())
+    }
+}
+
+fn confirmed_version_count(confirmed: &BTreeMap<String, BTreeSet<String>>) -> usize {
+    confirmed.values().map(BTreeSet::len).sum()
+}
+
+fn validate_registry_identity(name: &str, version: &str) -> Result<(), String> {
+    if !is_valid_package_name(name) {
+        return Err(invalid_package_name_message(name));
+    }
+    semver::Version::parse(version)
+        .map(|_| ())
+        .map_err(|error| format!("invalid registry version `{version}` for `{name}`: {error}"))
 }
 
 /// Verify an Ed25519 signature over a checksum by fetching the public key
@@ -2332,6 +2429,22 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fetch_progress_rejects_repeated_non_progress() {
+        let failures = vec![resolver::UnresolvedDep {
+            package: "foo".to_string(),
+            requirements: vec!["1.0.0".to_string()],
+            registry: None,
+        }];
+        let mut progress = FetchProgress::default();
+
+        progress.begin_round(&failures).unwrap();
+        let error = progress.begin_round(&failures).unwrap_err();
+
+        assert!(error.contains("repeated without making resolver progress"));
+        assert_eq!(progress.rounds, 1);
+    }
 
     #[test]
     fn ensure_gitignore_entry_creates_file() {

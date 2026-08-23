@@ -313,7 +313,7 @@ pub fn manifest_issues(root: &Path) -> Result<Vec<String>, String> {
     let manifest_path = root.join(crate::project::MANIFEST_FILE);
     let m = manifest::parse_manifest(&manifest_path)
         .map_err(|e| format!("cannot load {}: {e}", manifest_path.display()))?;
-    Ok(collect_manifest_issues(&m, &registry))
+    Ok(collect_manifest_issues(&m, root, &registry))
 }
 
 /// Scaffold a manifest-first Hew project in `dir` — the `hew init` back end.
@@ -946,8 +946,24 @@ fn fetch_missing_packages(
             }
         }
 
-        // Unpack into the global registry.
+        // Replace any incomplete cache entry only after the download has passed
+        // checksum and signature verification.
         let target = registry.package_dir(name, version);
+        match std::fs::symlink_metadata(&target) {
+            Ok(_) => remove_path_for_replacement(&target).map_err(|error| {
+                format!(
+                    "could not replace incomplete cache entry for {name}@{version} at {}: {error}",
+                    target.display()
+                )
+            })?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "could not inspect cache entry for {name}@{version} at {}: {error}",
+                    target.display()
+                ));
+            }
+        }
         if let Err(e) = tarball::unpack(&tarball_data, &target) {
             eprintln!("unpack failed");
             return Err(format!("could not unpack {name}@{version}: {e}"));
@@ -1563,6 +1579,7 @@ fn cmd_remove(package: &str) {
 /// dependency requirement the registry cannot satisfy.
 fn collect_manifest_issues(
     m: &manifest::HewManifest,
+    root: &Path,
     registry: &registry::Registry,
 ) -> Vec<String> {
     let mut issues = Vec::new();
@@ -1580,7 +1597,7 @@ fn collect_manifest_issues(
 
     for (name, spec) in &m.dependencies {
         let req = spec.version_req();
-        if let Err(e) = resolver::resolve_version(name, req, registry) {
+        if let Err(e) = resolver::resolve_dependency_from_root(name, spec, root, registry) {
             issues.push(format!("dependency {name}@{req}: {e}"));
         }
     }

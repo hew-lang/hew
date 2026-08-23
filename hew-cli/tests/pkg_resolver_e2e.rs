@@ -2,9 +2,13 @@ mod support;
 
 use std::fmt::Write as _;
 use std::io::{Read as _, Write as _};
-use std::net::TcpListener;
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use support::{describe_output, hew_binary};
 
@@ -76,6 +80,105 @@ fn start_404_registry() -> String {
     format!("http://{address}/api/v1")
 }
 
+struct RepairRegistry {
+    api_url: String,
+    package_requests: Arc<AtomicUsize>,
+    download_requests: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    wake_address: SocketAddr,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl Drop for RepairRegistry {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = TcpStream::connect(self.wake_address);
+        if let Some(handle) = self.handle.take() {
+            let result = handle.join();
+            if !std::thread::panicking() {
+                result.expect("join mock registry");
+            }
+        }
+    }
+}
+
+fn start_repair_registry(tarball: Vec<u8>, checksum: String) -> RepairRegistry {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock registry");
+    let address = listener.local_addr().expect("mock registry address");
+    let api_url = format!("http://{address}/api/v1");
+    let download_url = format!("http://{address}/packages/foo/0.2.1.tar.zst");
+    let package_requests = Arc::new(AtomicUsize::new(0));
+    let download_requests = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_package_requests = Arc::clone(&package_requests);
+    let thread_download_requests = Arc::clone(&download_requests);
+    let thread_stop = Arc::clone(&stop);
+
+    let handle = std::thread::spawn(move || {
+        while !thread_stop.load(Ordering::Relaxed) {
+            let (mut stream, _) = listener.accept().expect("accept registry request");
+            if thread_stop.load(Ordering::Relaxed) {
+                break;
+            }
+            let mut request = [0_u8; 4096];
+            let bytes_read = stream.read(&mut request).expect("read registry request");
+            let request = String::from_utf8_lossy(&request[..bytes_read]);
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .expect("request path");
+
+            if path == "/api/v1/packages/foo" {
+                thread_package_requests.fetch_add(1, Ordering::Relaxed);
+                let body = serde_json::json!({
+                    "versions": [{
+                        "name": "foo",
+                        "vers": "0.2.1",
+                        "cksum": checksum,
+                        "sig": "",
+                        "key_fp": "",
+                        "dl": download_url,
+                    }]
+                })
+                .to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .expect("write package response");
+            } else if path == "/packages/foo/0.2.1.tar.zst" {
+                thread_download_requests.fetch_add(1, Ordering::Relaxed);
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    tarball.len()
+                )
+                .expect("write tarball headers");
+                stream.write_all(&tarball).expect("write tarball");
+            } else {
+                let body = r#"{"error":"not found"}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .expect("write not-found response");
+            }
+        }
+    });
+
+    RepairRegistry {
+        api_url,
+        package_requests,
+        download_requests,
+        stop,
+        wake_address: address,
+        handle: Some(handle),
+    }
+}
+
 #[test]
 fn pkg_registry_404_refuses_stale_cache() {
     let root = support::tempdir();
@@ -135,5 +238,60 @@ fn pkg_offline_uses_cache_and_says_so() {
         stderr.contains(cache.to_string_lossy().as_ref()),
         "{stderr}"
     );
+    assert!(project.join(".hew/packages/foo/foo.hew").is_file());
+}
+
+#[test]
+fn pkg_online_repairs_incomplete_cache_without_loop() {
+    let root = support::tempdir();
+    let home = root.path().join("home");
+    let project = root.path().join("app");
+    let cache = root.path().join("cache");
+    let package_source = root.path().join("foo-source");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&package_source).unwrap();
+    write_manifest(&project, "foo = \"0.2.1\"\n");
+    std::fs::write(
+        package_source.join("hew.toml"),
+        "[package]\nname = \"foo\"\nversion = \"0.2.1\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        package_source.join("foo.hew"),
+        "pub fn answer() -> i64 { 42 }\n",
+    )
+    .unwrap();
+    let packed = hew_pkg::tarball::pack(&package_source, &[], &[]).unwrap();
+    let registry = start_repair_registry(packed.data, packed.checksum);
+    write_config(&home, &cache, Some(&registry.api_url));
+
+    let incomplete = cache.join("foo").join("0.2.1");
+    std::fs::create_dir_all(&incomplete).unwrap();
+    std::fs::write(incomplete.join("partial.marker"), "incomplete").unwrap();
+
+    let mut command = Command::new(hew_binary());
+    command
+        .args(["install", "--registry", "mock"])
+        .current_dir(&project)
+        .env("HOME", &home)
+        .env_remove("USERPROFILE");
+    let output = support::try_run_bounded_command(
+        command,
+        "online install repairs incomplete cache",
+        Duration::from_secs(10),
+    )
+    .expect("online install must terminate");
+
+    assert!(
+        output.status.success(),
+        "online install should refetch an incomplete cache entry\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(registry.package_requests.load(Ordering::Relaxed), 1);
+    assert_eq!(registry.download_requests.load(Ordering::Relaxed), 1);
+    assert!(incomplete.join("hew.toml").is_file());
+    assert!(incomplete.join("foo.hew").is_file());
+    assert!(!incomplete.join("partial.marker").exists());
     assert!(project.join(".hew/packages/foo/foo.hew").is_file());
 }

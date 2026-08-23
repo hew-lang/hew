@@ -71,6 +71,19 @@ fn pkg_path_dependency_adds_installs_and_builds() {
     assert!(lock.contains("source = \"path\""), "{lock}");
     assert!(lock.contains("path = \"../foo\""), "{lock}");
 
+    let mut check = Command::new(hew_binary());
+    check
+        .arg("check")
+        .current_dir(&project)
+        .env("HOME", &home)
+        .env_remove("USERPROFILE");
+    let output = run_bounded_command(check, "hew check path dependency");
+    assert!(
+        output.status.success(),
+        "path dependency check failed\n{}",
+        describe_output(&output)
+    );
+
     let mut build = Command::new(hew_binary());
     build
         .arg("build")

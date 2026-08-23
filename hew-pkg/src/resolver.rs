@@ -901,6 +901,33 @@ pub fn resolve_version(
     })
 }
 
+/// Resolve one direct dependency from the manifest that declares it.
+///
+/// Registry dependencies are selected from the installed package registry.
+/// Path dependencies are resolved relative to `root` and validated against
+/// their local manifest.
+///
+/// # Errors
+///
+/// Returns [`ResolveError`] when the dependency requirement is invalid, no
+/// registry version matches, or a path dependency is missing or malformed.
+pub fn resolve_dependency_from_root(
+    package_name: &str,
+    spec: &DepSpec,
+    root: &Path,
+    registry: &Registry,
+) -> Result<String, ResolveError> {
+    validate_package_name(package_name)?;
+    let source = dependency_source(package_name, spec, root)?;
+    match source {
+        PackageSource::Registry => resolve_version(package_name, spec.version_req(), registry),
+        PackageSource::Path(path) => {
+            let mut resolver = ResolverPass::with_seed(registry, root, None, BTreeMap::new());
+            resolver.load_path_manifest(package_name, &path, &[spec.version_req().to_string()])
+        }
+    }
+}
+
 /// Find the highest cached version satisfying all active requirements.
 ///
 /// # Errors

@@ -56,7 +56,7 @@ impl Registry {
     /// Return `true` if `name@version` is present in the registry.
     #[must_use]
     pub fn is_installed(&self, name: &str, version: &str) -> bool {
-        self.package_dir(name, version).is_dir()
+        is_package_dir(&self.package_dir(name, version))
     }
 
     /// Return the root path of this registry.
@@ -97,19 +97,16 @@ fn collect_packages(
         return;
     };
 
-    let mut has_toml = false;
     let mut subdirs = Vec::new();
 
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
             subdirs.push(path);
-        } else if entry.file_name() == "hew.toml" {
-            has_toml = true;
         }
     }
 
-    if has_toml {
+    if is_package_dir(dir) {
         if let Ok(rel) = dir.strip_prefix(root) {
             let parts: Vec<&str> = rel
                 .components()
@@ -130,6 +127,10 @@ fn collect_packages(
     for subdir in subdirs {
         collect_packages(root, &subdir, packages);
     }
+}
+
+fn is_package_dir(path: &Path) -> bool {
+    path.join("hew.toml").is_file()
 }
 
 #[cfg(test)]
@@ -216,6 +217,22 @@ mod tests {
         let reg = Registry::with_root(dir.path().to_path_buf());
         let pkg_dir = reg.package_dir("std.net.http", "1.0.0");
         std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(
+            pkg_dir.join("hew.toml"),
+            "[package]\nname = \"std.net.http\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
         assert!(reg.is_installed("std.net.http", "1.0.0"));
+    }
+
+    #[test]
+    fn is_installed_returns_false_for_incomplete_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_root(dir.path().to_path_buf());
+        let pkg_dir = reg.package_dir("std.net.http", "1.0.0");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(pkg_dir.join("partial.marker"), "incomplete").unwrap();
+        assert!(!reg.is_installed("std.net.http", "1.0.0"));
+        assert!(reg.list_packages().is_empty());
     }
 }

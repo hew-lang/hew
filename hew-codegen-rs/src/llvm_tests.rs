@@ -12155,7 +12155,81 @@ fn suspend_coroutine_splits_clean_wasm32() {
     assert_coro_splits_clean_for_triple("wasm32-wasi");
 }
 
-fn pipeline_from_suspending_closure_cleanup_source(capture_strings: bool) -> IrPipeline {
+fn assert_suspending_closure_rejected(
+    source: &str,
+    target_arch: hew_hir::TargetArch,
+) -> IrPipeline {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "suspending-closure rejection source parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    assert!(
+        checked.errors.is_empty(),
+        "suspending-closure rejection source type errors: {:?}",
+        checked.errors
+    );
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        target_arch,
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "suspending-closure rejection source HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    let matching = pipeline
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                    if construct == "suspension inside a closure"
+            )
+        })
+        .count();
+    let suspending_shims = pipeline
+        .raw_mir
+        .iter()
+        .filter(|function| {
+            function.name.starts_with("__hew_closure_invoke_")
+                && function
+                    .blocks
+                    .iter()
+                    .any(|block| matches!(block.terminator, Terminator::Suspend { .. }))
+        })
+        .count();
+    assert_ne!(
+        suspending_shims, 0,
+        "the rejection source must lower an actual suspending closure shim"
+    );
+    assert_eq!(
+        matching, suspending_shims,
+        "every suspending closure carrier must have one stable diagnostic: {:#?}",
+        pipeline.diagnostics
+    );
+    assert_eq!(
+        pipeline.diagnostics.len(),
+        matching,
+        "closure-suspension diagnostics must be the only MIR rejections: {:#?}",
+        pipeline.diagnostics
+    );
+    pipeline
+}
+
+fn pipeline_from_suspending_closure_cleanup_source(
+    capture_strings: bool,
+    target_arch: hew_hir::TargetArch,
+) -> IrPipeline {
     let owners = if capture_strings {
         (
             r#"let outer_owner = "outer-owner".to_upper();"#,
@@ -12208,68 +12282,7 @@ actor Probe {{
         inner_decl = owners.4,
         inner_use = owners.5,
     );
-    let parsed = hew_parser::parse(&source);
-    assert!(
-        parsed.errors.is_empty(),
-        "suspending-closure cleanup source parse errors: {:?}",
-        parsed.errors
-    );
-    let mut checker =
-        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-    let checked = checker.check_program(&parsed.program);
-    let output = hew_hir::lower_program(
-        &parsed.program,
-        &checked,
-        &hew_hir::ResolutionCtx,
-        hew_hir::TargetArch::host(),
-    );
-    let mut pipeline = hew_mir::lower_hir_module(&output.module);
-    pipeline.attach_lowering_facts(&checked);
-    assert!(
-        pipeline.diagnostics.is_empty(),
-        "suspending-closure cleanup pipeline diagnostics: {:#?}",
-        pipeline.diagnostics
-    );
-    pipeline
-}
-
-fn suspending_call_closure_cleanup_drop_count(pipeline: &IrPipeline) -> usize {
-    pipeline
-        .raw_mir
-        .iter()
-        .filter_map(|raw| {
-            let elab = pipeline
-                .elaborated_mir
-                .iter()
-                .find(|candidate| candidate.name == raw.name)?;
-            Some(
-                raw.blocks
-                    .iter()
-                    .filter(|block| {
-                        matches!(
-                            raw.suspend_kinds.get(&block.id),
-                            Some(hew_mir::SuspendKind::CallClosure { .. })
-                        )
-                    })
-                    .map(|block| {
-                        elab.drop_plans
-                            .iter()
-                            .find_map(|(exit, plan)| {
-                                matches!(
-                                    exit,
-                                    hew_mir::ExitPath::Suspend {
-                                        block: plan_block,
-                                        ..
-                                    } if *plan_block == block.id
-                                )
-                                .then_some(plan.drops.len())
-                            })
-                            .unwrap_or(0)
-                    })
-                    .sum::<usize>(),
-            )
-        })
-        .sum()
+    assert_suspending_closure_rejected(&source, target_arch)
 }
 
 fn pipeline_from_fresh_string_suspending_closure_source() -> IrPipeline {
@@ -12293,29 +12306,7 @@ actor Probe {
     }
 }
 "#;
-    let parsed = hew_parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let mut checker =
-        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-    let checked = checker.check_program(&parsed.program);
-    let output = hew_hir::lower_program(
-        &parsed.program,
-        &checked,
-        &hew_hir::ResolutionCtx,
-        hew_hir::TargetArch::host(),
-    );
-    let mut pipeline = hew_mir::lower_hir_module(&output.module);
-    pipeline.attach_lowering_facts(&checked);
-    assert!(
-        pipeline.diagnostics.is_empty(),
-        "fresh-string pipeline diagnostics: {:#?}",
-        pipeline.diagnostics
-    );
-    pipeline
+    assert_suspending_closure_rejected(source, hew_hir::TargetArch::host())
 }
 
 fn pipeline_from_typed_owner_suspending_closure_source(
@@ -12348,29 +12339,7 @@ actor Probe {{
 }}
 "#
     );
-    let parsed = hew_parser::parse(&source);
-    assert!(
-        parsed.errors.is_empty(),
-        "typed-owner source parse errors: {:?}\n{source}",
-        parsed.errors
-    );
-    let mut checker =
-        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-    let checked = checker.check_program(&parsed.program);
-    let output = hew_hir::lower_program(
-        &parsed.program,
-        &checked,
-        &hew_hir::ResolutionCtx,
-        hew_hir::TargetArch::host(),
-    );
-    let mut pipeline = hew_mir::lower_hir_module(&output.module);
-    pipeline.attach_lowering_facts(&checked);
-    assert!(
-        pipeline.diagnostics.is_empty(),
-        "typed-owner pipeline diagnostics: {:#?}\n{source}",
-        pipeline.diagnostics
-    );
-    pipeline
+    assert_suspending_closure_rejected(&source, hew_hir::TargetArch::host())
 }
 
 fn pipeline_from_resumed_root_owner_source() -> IrPipeline {
@@ -12404,100 +12373,16 @@ actor Probe {
     }
 }
 "#;
-    let parsed = hew_parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let mut checker =
-        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-    let checked = checker.check_program(&parsed.program);
-    let output = hew_hir::lower_program(
-        &parsed.program,
-        &checked,
-        &hew_hir::ResolutionCtx,
-        hew_hir::TargetArch::host(),
-    );
-    let mut pipeline = hew_mir::lower_hir_module(&output.module);
-    pipeline.attach_lowering_facts(&checked);
-    assert!(
-        pipeline.diagnostics.is_empty(),
-        "resumed-root pipeline diagnostics: {:#?}",
-        pipeline.diagnostics
-    );
-    pipeline
-}
-
-fn suspending_call_closure_drops(pipeline: &IrPipeline) -> Vec<&hew_mir::ElabDrop> {
-    let mut drops = Vec::new();
-    for raw in &pipeline.raw_mir {
-        let Some(elab) = pipeline
-            .elaborated_mir
-            .iter()
-            .find(|candidate| candidate.name == raw.name)
-        else {
-            continue;
-        };
-        for block in &raw.blocks {
-            if !matches!(
-                raw.suspend_kinds.get(&block.id),
-                Some(hew_mir::SuspendKind::CallClosure { .. })
-            ) {
-                continue;
-            }
-            if let Some(plan) = elab.drop_plans.iter().find_map(|(exit, plan)| {
-                matches!(
-                    exit,
-                    hew_mir::ExitPath::Suspend {
-                        block: plan_block,
-                        ..
-                    } if *plan_block == block.id
-                )
-                .then_some(plan)
-            }) {
-                drops.extend(&plan.drops);
-            }
-        }
-    }
-    drops
+    assert_suspending_closure_rejected(source, hew_hir::TargetArch::host())
 }
 
 #[test]
-fn resumed_root_owners_register_typed_slots() {
-    let pipeline = pipeline_from_resumed_root_owner_source();
-    let drops = suspending_call_closure_drops(&pipeline);
-    assert_eq!(
-        drops.iter().map(|drop| drop.kind).collect::<Vec<_>>(),
-        vec![
-            hew_mir::DropKind::CowHeap {
-                release: hew_mir::CowHeapRelease::Bytes,
-            },
-            hew_mir::DropKind::CowHeap {
-                release: hew_mir::CowHeapRelease::String,
-            },
-        ],
-        "the handler/root Suspend plan must carry both unrelated owners in LIFO order"
-    );
-    let ctx = Context::create();
-    let module =
-        build_module(&ctx, &pipeline, "resumed_root_owner_cleanup").expect("root owner module");
-    let ir = module.print_to_string().to_string();
-    assert_eq!(
-        ir.matches("call i64 @hew_cont_crash_cleanup_arm").count(),
-        2,
-        "two root owners must each acquire one lifecycle token"
-    );
-    assert_eq!(
-        ir.matches("define internal void @__hew_frame_cleanup_")
-            .count(),
-        2,
-        "string and Bytes require distinct cached typed thunks"
-    );
+fn suspending_closure_with_resumed_root_owners_is_rejected_before_codegen() {
+    let _ = pipeline_from_resumed_root_owner_source();
 }
 
 #[test]
-fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
+fn suspending_closure_with_typed_owners_is_rejected_before_codegen() {
     let cases = [
         (
             "bytes",
@@ -12506,10 +12391,6 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
                 r#"let owner = "bytes-owner".to_bytes();"#,
                 r#"if owner.len() == -1 { panic("bytes"); }"#,
             ),
-            vec![hew_mir::DropKind::CowHeap {
-                release: hew_mir::CowHeapRelease::Bytes,
-            }],
-            vec!["call void @hew_bytes_drop("],
         ),
         (
             "record",
@@ -12521,10 +12402,6 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
                 };"#,
                 r#"if owner.text.len() + owner.data.len() == -1 { panic("record"); }"#,
             ),
-            // The fresh bytes producer hands its sole owner directly to
-            // `Packet`; only the record owns a release at suspension.
-            vec![hew_mir::DropKind::RecordInPlace],
-            vec!["call void @__hew_record_drop_inplace_Packet("],
         ),
         (
             "closure",
@@ -12535,195 +12412,27 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
                 r#"let owner = make_nested("nested-owner".to_upper());"#,
                 r#"if owner() == -1 { panic("closure"); }"#,
             ),
-            // The callee retains the String captured by the closure env. The
-            // caller keeps the original fresh argument until the suspended
-            // call completes, so both owners need independent cleanup.
-            vec![
-                hew_mir::DropKind::ClosurePair,
-                hew_mir::DropKind::CowHeap {
-                    release: hew_mir::CowHeapRelease::String,
-                },
-            ],
-            vec!["closure_drop_env_free_thunk", "call void @hew_string_drop("],
         ),
     ];
 
-    for (label, pipeline, expected_kinds, rituals) in cases {
-        if label == "record" {
-            let ingress_retain_count = pipeline
-                .raw_mir
-                .iter()
-                .filter(|function| function.name == "Probe__recv__run")
-                .flat_map(|function| &function.blocks)
-                .flat_map(|block| &block.instructions)
-                .filter(|instr| matches!(instr, Instr::BytesRetain { .. }))
-                .count();
-            assert_eq!(
-                ingress_retain_count, 0,
-                "fresh Bytes aggregate ingress transfers its existing owner; a retain would create an unbalanced producer generation"
-            );
-        }
-        let drops = suspending_call_closure_drops(&pipeline);
+    for (label, pipeline) in cases {
         assert_eq!(
-            drops.iter().map(|drop| drop.kind).collect::<Vec<_>>(),
-            expected_kinds,
-            "{label}: grounded Suspend plan selected the wrong typed rituals: {drops:#?}"
-        );
-        let ctx = Context::create();
-        let module = build_module(&ctx, &pipeline, &format!("{label}_frame_cleanup"))
-            .unwrap_or_else(|error| panic!("{label}: module build failed: {error:?}"));
-        let ir = module.print_to_string().to_string();
-        assert_eq!(
-            ir.matches("call i64 @hew_cont_crash_cleanup_arm").count(),
-            expected_kinds.len(),
-            "{label}: every owner must acquire one lifecycle token:\n{ir}"
-        );
-        assert_eq!(
-            ir.matches("define internal void @__hew_frame_cleanup_")
-                .count(),
-            expected_kinds.len(),
-            "{label}: every distinct typed descriptor must synthesize one cached thunk"
-        );
-        let thunk_bodies = ir
-            .match_indices("define internal void @__hew_frame_cleanup_")
-            .map(|(start, _)| {
-                let tail = &ir[start..];
-                &tail[..tail.find("\n}\n").expect("terminated typed thunk") + 3]
-            })
-            .collect::<Vec<_>>();
-        for ritual in rituals {
-            assert!(
-                thunk_bodies.iter().any(|thunk| thunk.contains(ritual)),
-                "{label}: no typed thunk reused expected ritual `{ritual}`:\n{thunk_bodies:#?}"
-            );
-        }
-        assert!(
-            thunk_bodies
-                .iter()
-                .all(|thunk| !thunk.contains("@hew_dyn_box_free(")),
-            "{label}: frame-slot cleanup must not guess dyn-box ownership:\n{thunk_bodies:#?}"
+            pipeline.diagnostics.len(),
+            1,
+            "{label}: the typed-owner fixture must stop at the generic MIR rejection"
         );
     }
 }
 
 #[test]
-fn suspending_closure_fresh_string_has_exactly_one_crash_cleanup_authority() {
-    let pipeline = pipeline_from_fresh_string_suspending_closure_source();
-    let mut exact_suspend_string_drops = 0;
-    for raw in &pipeline.raw_mir {
-        let Some(elab) = pipeline
-            .elaborated_mir
-            .iter()
-            .find(|candidate| candidate.name == raw.name)
-        else {
-            continue;
-        };
-        for block in &raw.blocks {
-            if !matches!(
-                raw.suspend_kinds.get(&block.id),
-                Some(hew_mir::SuspendKind::CallClosure { .. })
-            ) {
-                continue;
-            }
-            let plan = elab.drop_plans.iter().find_map(|(exit, plan)| {
-                matches!(
-                    exit,
-                    hew_mir::ExitPath::Suspend {
-                        block: plan_block,
-                        ..
-                    } if *plan_block == block.id
-                )
-                .then_some(plan)
-            });
-            if let Some(plan) = plan {
-                exact_suspend_string_drops += plan
-                    .drops
-                    .iter()
-                    .filter(|drop| {
-                        drop.ty == hew_types::ResolvedTy::String
-                            && matches!(
-                                drop.kind,
-                                hew_mir::DropKind::CowHeap {
-                                    release: hew_mir::CowHeapRelease::String
-                                }
-                            )
-                    })
-                    .count();
-            }
-        }
-    }
-    assert_eq!(
-        exact_suspend_string_drops, 1,
-        "the grounded MIR Suspend plan must carry the fresh string's single \
-         typed cleanup obligation"
-    );
-
-    let ctx = Context::create();
-    let module = build_module(&ctx, &pipeline, "fresh_string_cleanup_authority")
-        .expect("fresh-string cleanup module");
-    let ir = module.print_to_string().to_string();
-    assert_eq!(
-        ir.matches("call i64 @hew_cont_crash_cleanup_arm").count(),
-        1,
-        "the fresh string's Real-call destination must acquire one typed-slot authority"
-    );
+fn suspending_closure_with_fresh_string_is_rejected_before_codegen() {
+    let _ = pipeline_from_fresh_string_suspending_closure_source();
 }
 
 #[test]
-fn suspending_closure_frame_cleanup_uses_exact_suspend_drop_plans() {
-    let captured = pipeline_from_suspending_closure_cleanup_source(true);
-    let capture_free = pipeline_from_suspending_closure_cleanup_source(false);
-    assert_eq!(
-        suspending_call_closure_cleanup_drop_count(&captured),
-        3,
-        "the three capture-bearing caller frames must expose exactly their three \
-         existing Suspend-plan string owners"
-    );
-    assert_eq!(
-        suspending_call_closure_cleanup_drop_count(&capture_free),
-        0,
-        "capture-free caller frames must invent no cleanup obligation"
-    );
-
-    let ctx = Context::create();
-    let captured_module =
-        build_module(&ctx, &captured, "captured_frame_cleanup").expect("captured module");
-    let captured_ir = captured_module.print_to_string().to_string();
-    let arm = "call i64 @hew_cont_crash_cleanup_arm";
-    assert_eq!(
-        captured_ir.matches(arm).count(),
-        3,
-        "each of three obligations must acquire one lifecycle token:\n{captured_ir}"
-    );
-    assert_eq!(
-        captured_ir
-            .matches("define internal void @__hew_frame_cleanup_")
-            .count(),
-        1,
-        "all three string owners must share one typed string cleanup thunk:\n{captured_ir}"
-    );
-    let thunk_start = captured_ir
-        .find("define internal void @__hew_frame_cleanup_")
-        .expect("typed frame-cleanup thunk");
-    let thunk = &captured_ir[thunk_start..];
-    let thunk = &thunk[..thunk.find("\n}\n").expect("terminated cleanup thunk") + 3];
-    assert!(
-        thunk.contains("call void @hew_string_drop("),
-        "the cached thunk must reuse the typed string-drop ritual:\n{thunk}"
-    );
-    assert!(
-        !thunk.contains("invoke ")
-            && !thunk.contains("landingpad")
-            && !thunk.contains("personality"),
-        "generated cleanup thunks use a plain direct-call policy, not an LLVM unwind quarantine; \
-         a Rust panic in the plain-C runtime callee is process-fatal:\n{thunk}"
-    );
-
-    let free_module =
-        build_module(&ctx, &capture_free, "capture_free_frame_cleanup").expect("free module");
-    let free_ir = free_module.print_to_string().to_string();
-    assert_eq!(free_ir.matches(arm).count(), 0);
-    assert!(!free_ir.contains("define internal void @__hew_frame_cleanup_"));
+fn nested_suspending_closure_cleanup_sources_are_rejected_before_codegen() {
+    let _ = pipeline_from_suspending_closure_cleanup_source(true, hew_hir::TargetArch::host());
+    let _ = pipeline_from_suspending_closure_cleanup_source(false, hew_hir::TargetArch::host());
 }
 
 fn assert_helper_snapshot_cleanup_arm_for_triple(triple: &str) {
@@ -13552,94 +13261,14 @@ fn helper_snapshot_refreshes_around_bytes_runtime_mutation_native_and_wasm32() {
     }
 }
 
-fn assert_suspending_closure_frame_cleanup_splits_for_triple(triple: &str) {
-    let ctx = Context::create();
-    let pipeline = pipeline_from_suspending_closure_cleanup_source(true);
-    let machine = target_machine_for_triple(triple)
-        .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
-    let module = build_module_for_target(
-        &ctx,
-        &pipeline,
-        "suspending_closure_frame_cleanup_split",
-        Some(&machine),
-        None,
-    )
-    .unwrap_or_else(|error| panic!("{triple}: cleanup module build: {error:?}"));
-    for function in module.get_functions() {
-        let name = function.get_name().to_string_lossy();
-        if function.count_basic_blocks() > 0
-            && (name == "Probe__recv__run"
-                || name.starts_with("__hew_closure_invoke_Probe__recv__run"))
-        {
-            function.set_linkage(Linkage::External);
-        }
-    }
-    crate::coro::run_coro_passes(&module, &machine)
-        .unwrap_or_else(|error| panic!("{triple}: coro passes: {error:?}"));
-    module
-        .verify()
-        .unwrap_or_else(|error| panic!("{triple}: post-CoroSplit verify: {error}"));
-    let ir = module.print_to_string().to_string();
-    let arm = "call i64 @hew_cont_crash_cleanup_arm";
-    assert_eq!(
-        ir.matches(arm).count(),
-        3,
-        "{triple}: three callers must each retain one lifecycle arm after \
-         CoroSplit:\n{ir}"
-    );
-    assert_eq!(
-        ir.matches("define internal void @__hew_frame_cleanup_")
-            .count(),
-        1,
-        "{triple}: equal string drop descriptors must retain one cached typed thunk"
-    );
-    let expected_slot_size = u64::from(machine.get_target_data().get_pointer_byte_size(None));
-    let expected_slot_align = expected_slot_size;
-    assert_eq!(
-        ir.lines()
-            .filter(|line| {
-                line.contains(arm)
-                    && line.contains(&format!(
-                        "i64 {expected_slot_size}, i64 {expected_slot_align}, ptr @__hew_frame_cleanup_"
-                    ))
-                    && line.contains(", i32 0, i32 0)")
-            })
-            .count(),
-        3,
-        "{triple}: every direct-frame arm must carry the target's string-slot \
-         width/alignment plus bitwise relocation in the target-neutral ABI:\n{ir}"
-    );
-    let mut arm_functions = 0;
-    for function in module.get_functions() {
-        let name = function.get_name().to_string_lossy();
-        if function.count_basic_blocks() == 0 || name.starts_with("__hew_frame_cleanup_") {
-            continue;
-        }
-        let body = function.print_to_string().to_string();
-        if body.contains(arm) {
-            arm_functions += 1;
-            assert!(
-                body.contains("getelementptr inbounds")
-                    && (body.contains("Frame") || body.contains(".resume")),
-                "{triple}: direct arm slot must be derived from the split coroutine \
-                 frame, not an unrelated allocation:\n{body}"
-            );
-        }
-    }
-    assert_eq!(
-        arm_functions, 3,
-        "{triple}: each caller must retain one frame-derived lifecycle arm:\n{ir}"
-    );
+#[test]
+fn suspending_closure_cleanup_is_rejected_for_native_target() {
+    let _ = pipeline_from_suspending_closure_cleanup_source(true, hew_hir::TargetArch::host());
 }
 
 #[test]
-fn suspending_closure_frame_cleanup_splits_native() {
-    assert_suspending_closure_frame_cleanup_splits_for_triple(&native_emission_triple());
-}
-
-#[test]
-fn suspending_closure_frame_cleanup_splits_wasm32() {
-    assert_suspending_closure_frame_cleanup_splits_for_triple("wasm32-wasi");
+fn suspending_closure_cleanup_is_rejected_for_wasm32_target() {
+    let _ = pipeline_from_suspending_closure_cleanup_source(true, hew_hir::TargetArch::Wasm32);
 }
 
 /// Build an `IrPipeline` with a coroutine carrying TWO non-final suspends

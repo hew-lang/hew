@@ -296,9 +296,12 @@ REGISTRY: tuple[Baseline, ...] = (
         gates=(),
         regen=(
             "HEW_RELEASE_COUNT_CAPTURE=1 cargo nextest run -p hew-cli "
-            "-E 'test(release_count)' --no-capture"
+            "-E 'binary(stdlib_corpus_release_count_differential)' --no-capture"
         ),
-        check="cargo nextest run -p hew-cli --profile ci -E 'test(release_count)'",
+        check=(
+            "cargo nextest run -p hew-cli --profile ci "
+            "-E 'binary(stdlib_corpus_release_count_differential)'"
+        ),
         # A DROP in a release count is a leak. Re-recording it in a sweep would
         # erase the finding, so the capture stays a named, explained act.
         explicit_only=True,

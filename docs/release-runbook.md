@@ -213,33 +213,40 @@ but every arm must succeed before the graph rejoins:
 1. Confirm every release bar and the final-candidate checklist are green on
    the exact candidate commit, including sanitizer evidence, required secrets,
    and branch protection.
-2. Create the signed tag only after the preceding evidence is recorded.
-3. Let the release workflow build and publish the signed platform assets and
+2. Before creating the signed tag, publish the candidate playground image from a
+   playground checkout:
+   `make release-candidate-publish HEW_EXAMPLES_REF=<sha> HEW_VERSION=<version>`. <!-- external-target: hew-lang/playground -->
+   `HEW_EXAMPLES_REF` must be the exact 40-character candidate commit SHA and
+   `HEW_VERSION` the candidate version. This target uses candidate authority and
+   stamps that SHA as the image's `org.opencontainers.image.revision` label.
+   Playground must include this target and OCI revision-label behavior before
+   rc2. Do not substitute the post-tag `release-publish` target here: it uses
+   publish authority and requires the remote signed tag.
+3. Create the signed tag only after the preceding evidence is recorded.
+4. Let the release workflow build and publish the signed platform assets and
    checksums. Its curated body must be the exact
    `docs/releases/<tag>.md` file for that tag.
-4. After the assets exist, complete both independent publication arms:
+5. After the assets exist, complete the npm publication arm:
    - Manually dispatch `.github/workflows/publish-npm-packages.yml` with
      `release_tag=v0.6.0-rc1` for
      `@hew-lang/{wasm,sandbox-wasm,sandbox-vm}@0.6.0-rc1`, and wait for each
      result. The workflow checks out that immutable tag and rejects a workspace
      or sandbox package version mismatch. A tag does not publish these packages.
-   - Satisfy the release workflow's `playground` job, whose contract is the
-     release image itself: `ghcr.io/hew-lang/playground:<tag>` exists and its
-     `org.opencontainers.image.revision` label binds the release commit. The
-     repository variable `PLAYGROUND_PUBLISH_MODE` selects how it is acquired
-     — `actions` dispatches the playground build workflow and watches it;
-     `local` dispatches nothing and waits for a maintainer to run
-     `make release-publish HEW_SHA=<sha> HEW_VERSION=<version>` from a playground checkout. <!-- external-target: hew-lang/playground -->
-     The job logs the exact invocation and fails if the
-     image does not arrive. Then verify the published image, API, and
-     `hew run` smoke path against the candidate version.
-     Running `scripts/assert-playground-release-image.sh` outside Actions
-     requires `GHCR_USERNAME` and `GHCR_TOKEN`; the token must be a classic
-     GitHub PAT with the `read:packages` scope (and organization SSO
-     authorization when the organization requires it).
-5. Only after both arms are green, pin the candidate and cut over the banner in
+6. The release workflow's `playground` job verifies the pre-tag candidate image:
+   `ghcr.io/hew-lang/playground:<tag>` must exist and its
+   `org.opencontainers.image.revision` label must bind the release commit. The
+   repository variable `PLAYGROUND_PUBLISH_MODE` selects whether the job
+   dispatches and watches the playground build workflow (`actions`) or observes
+   the pre-tag candidate image (`local`). The job fails if the image does not
+   arrive. Then verify the published image, API, and `hew run` smoke path against
+   the candidate version. Running
+   `scripts/assert-playground-release-image.sh` outside Actions requires
+   `GHCR_USERNAME` and `GHCR_TOKEN`; the token must be a classic GitHub PAT with
+   the `read:packages` scope (and organization SSO authorization when the
+   organization requires it).
+7. Only after both independent publication arms are green, pin the candidate and cut over the banner in
    `hew.sh` and `hew.run`.
-6. Rebuild Android from the tagged candidate and verify its artifact.
+8. Rebuild Android from the tagged candidate and verify its artifact.
 
 Homebrew intentionally skips prerelease tags; its optional tap update is
 separate from the required playground release image. Do not run obsolete downstream

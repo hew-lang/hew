@@ -110,6 +110,14 @@ def acquisition_script() -> str:
     return textwrap.dedent(step[run:]).rstrip() + "\n"
 
 
+def local_publish_script(text: str | None = None) -> str:
+    """Extract the exact Bash program that reports the local publish command."""
+    job = playground_job() if text is None else text
+    step = step_of(job, "Report expected local release image publish")
+    run = step.index("        run: |\n") + len("        run: |\n")
+    return textwrap.dedent(step[run:]).rstrip() + "\n"
+
+
 def run_acquisition(mode: str | None) -> tuple:
     """Execute the acquisition-mode selection with a given repository variable."""
     with tempfile.TemporaryDirectory() as directory:
@@ -134,6 +142,28 @@ def run_acquisition(mode: str | None) -> tuple:
             if "=" in line
         )
         return result, outputs
+
+
+def run_local_publish_report(
+    release_ref: str = HEW_SHA, script: str | None = None
+) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env.update(
+        {
+            "HEW_EXAMPLES_REF": release_ref,
+            "RELEASE_TAG": "v0.6.0-rc1",
+            "DEADLINE_EPOCH": str(int(time()) + 60),
+        }
+    )
+    env.pop("HEW_SHA", None)
+    return subprocess.run(
+        ["bash", "-c", local_publish_script() if script is None else script],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 def run_release_image_assertion(env_overrides: dict) -> subprocess.CompletedProcess:
@@ -210,35 +240,42 @@ def image_manifest(config_digest: str) -> dict:
     }
 
 
-def image_config(revision: str) -> dict:
+def image_config(labels: dict[str, str] | None) -> dict:
+    config = {}
+    if labels is not None:
+        config["Labels"] = labels
     return {
         "architecture": "amd64",
         "os": "linux",
-        "config": {"Labels": {"org.opencontainers.image.revision": revision}},
+        "config": config,
     }
 
 
 def run_canned_release_image_assertion(
     responses: dict[str, list[tuple[int, dict]]],
+    *,
+    deadline_epoch: int | None = None,
 ) -> tuple[subprocess.CompletedProcess, list[str]]:
     responses = {
         "/token": [(200, {"token": "pull-token"})],
         **responses,
     }
     with canned_registry(responses) as (port, requests):
-        result = run_release_image_assertion(
-            {
-                "IMAGE_REPOSITORY": "hew-lang/playground",
-                "IMAGE_TAG": "v0.6.0-rc2",
-                "EXPECTED_REVISION": HEW_SHA,
-                "GHCR_TOKEN": "test-token",
-                "GHCR_USERNAME": "test-user",
-                "DEADLINE_MINUTES": "1",
-                "IMAGE_REGISTRY": f"127.0.0.1:{port}",
-                "IMAGE_REGISTRY_SCHEME": "http",
-                "POLL_INTERVAL_SECONDS": "1",
-            }
-        )
+        env = {
+            "IMAGE_REPOSITORY": "hew-lang/playground",
+            "IMAGE_TAG": "v0.6.0-rc2",
+            "EXPECTED_REVISION": HEW_SHA,
+            "GHCR_TOKEN": "test-token",
+            "GHCR_USERNAME": "test-user",
+            "IMAGE_REGISTRY": f"127.0.0.1:{port}",
+            "IMAGE_REGISTRY_SCHEME": "http",
+            "POLL_INTERVAL_SECONDS": "1",
+        }
+        if deadline_epoch is None:
+            env["DEADLINE_MINUTES"] = "1"
+        else:
+            env["DEADLINE_EPOCH"] = str(deadline_epoch)
+        result = run_release_image_assertion(env)
     return result, requests
 
 
@@ -639,6 +676,8 @@ def test_release_image_assertion_covers_every_acquisition_mode() -> None:
     local_step = step_of(job, "Report expected local release image publish")
     assert "if: steps.acquisition.outputs.mode == 'local'" in local_step
     assert "gh workflow run" not in local_step
+    assert "HEW_EXAMPLES_REF: ${{ steps.release-commit.outputs.hew_sha }}" in local_step
+    assert "HEW_SHA:" not in local_step
 
     assert_step = step_of(
         job, "Assert release image exists and binds the release commit"
@@ -669,6 +708,68 @@ def test_release_image_assertion_covers_every_acquisition_mode() -> None:
 
     assert RELEASE_IMAGE_ASSERTION.exists()
     assert RELEASE_IMAGE_ASSERTION.stat().st_mode & stat.S_IXUSR
+
+
+def test_local_publish_command_requires_pre_tag_candidate_publisher() -> None:
+    report = run_local_publish_report()
+    assert report.returncode == 0, report.stderr
+    commands = [
+        line.strip()
+        for line in report.stdout.splitlines()
+        if line.strip().startswith("make release-candidate-publish ")
+    ]
+    assert commands == [
+        f"make release-candidate-publish HEW_EXAMPLES_REF={HEW_SHA} HEW_VERSION=0.6.0-rc1"
+    ]
+    local_step = step_of(
+        playground_job(), "Report expected local release image publish"
+    )
+    assert "make release-publish " not in local_step
+    assert "HEW_SHA" not in local_step
+    assert "# external: hew-lang/playground" in local_step
+
+    runbook = RUNBOOK.read_text()
+    pre_tag = runbook[
+        runbook.index("## Phase 5") : runbook.index(
+            "```bash", runbook.index("## Phase 5")
+        )
+    ]
+    assert (
+        "`make release-candidate-publish HEW_EXAMPLES_REF=<sha> "
+        "HEW_VERSION=<version>`. <!-- external-target: hew-lang/playground -->"
+    ) in pre_tag
+    assert "org.opencontainers.image.revision" in pre_tag
+    assert "before\n   rc2" in pre_tag
+    assert "make release-publish HEW_SHA=" not in pre_tag
+    assert "make release-publish HEW_EXAMPLES_REF=" not in pre_tag
+
+    release_publish_mutation = local_publish_script().replace(
+        "release-candidate-publish", "release-publish"
+    )
+    mutated = run_local_publish_report(script=release_publish_mutation)
+    assert mutated.returncode == 0, mutated.stderr
+    mutated_commands = [
+        line.strip()
+        for line in mutated.stdout.splitlines()
+        if line.strip().startswith("make release-publish ")
+    ]
+    assert mutated_commands == [
+        f"make release-publish HEW_EXAMPLES_REF={HEW_SHA} HEW_VERSION=0.6.0-rc1"
+    ]
+    assert mutated_commands != commands
+
+
+def test_local_publish_report_rejects_mutated_or_malformed_authority() -> None:
+    for bad_sha in ("not-a-sha", HEW_SHA[:39], HEW_SHA.upper()):
+        result = run_local_publish_report(bad_sha)
+        assert result.returncode != 0, bad_sha
+        assert "release commit identity is not an exact lowercase" in result.stdout
+        assert "make release-candidate-publish" not in result.stdout
+
+    mutation = local_publish_script().replace("${HEW_EXAMPLES_REF}", "${HEW_SHA}")
+    result = run_local_publish_report(script=mutation)
+    assert result.returncode != 0
+    assert "HEW_SHA: unbound variable" in result.stderr
 
 
 def test_release_image_assertion_rejects_unusable_inputs() -> None:
@@ -722,7 +823,10 @@ def test_release_image_assertion_accepts_matching_single_manifest() -> None:
                 (200, image_manifest(config_digest))
             ],
             f"/v2/hew-lang/playground/blobs/{config_digest}": [
-                (200, image_config(HEW_SHA))
+                (
+                    200,
+                    image_config({"org.opencontainers.image.revision": HEW_SHA}),
+                )
             ],
         }
     )
@@ -741,16 +845,63 @@ def test_release_image_assertion_polls_past_a_stale_tag() -> None:
                 (200, image_manifest(good_digest)),
             ],
             f"/v2/hew-lang/playground/blobs/{stale_digest}": [
-                (200, image_config("f" * 40))
+                (
+                    200,
+                    image_config({"org.opencontainers.image.revision": "f" * 40}),
+                )
             ],
             f"/v2/hew-lang/playground/blobs/{good_digest}": [
-                (200, image_config(HEW_SHA))
+                (
+                    200,
+                    image_config({"org.opencontainers.image.revision": HEW_SHA}),
+                )
             ],
         }
     )
     assert result.returncode == 0, result.stderr
     assert requests.count(tag_path) == 2
     assert "still binds" in result.stderr
+
+
+def test_release_image_assertion_rejects_missing_revision_label() -> None:
+    config_digest = "sha256:config-missing-revision"
+    config_path = f"/v2/hew-lang/playground/blobs/{config_digest}"
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [
+                (200, image_manifest(config_digest))
+            ],
+            config_path: [(200, image_config({}))],
+        }
+    )
+    assert result.returncode != 0
+    assert config_path in requests
+    assert "carries no org.opencontainers.image.revision label" in result.stderr
+    assert "publisher must stamp the hew release commit" in result.stderr
+
+
+def test_release_image_assertion_rejects_wrong_revision_label() -> None:
+    wrong_revision = "f" * 40
+    config_digest = "sha256:config-wrong-revision"
+    config_path = f"/v2/hew-lang/playground/blobs/{config_digest}"
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [
+                (200, image_manifest(config_digest))
+            ],
+            config_path: [
+                (
+                    200,
+                    image_config({"org.opencontainers.image.revision": wrong_revision}),
+                )
+            ],
+        },
+        deadline_epoch=int(time()) + 2,
+    )
+    assert result.returncode != 0
+    assert config_path in requests
+    assert f"still binds {wrong_revision}; waiting for {HEW_SHA}" in result.stderr
+    assert f"did not bind {HEW_SHA}" in result.stderr
 
 
 def test_release_image_assertion_checks_every_platform_in_an_index() -> None:
@@ -785,10 +936,16 @@ def test_release_image_assertion_checks_every_platform_in_an_index() -> None:
                 (200, image_manifest(config_digests[1]))
             ],
             f"/v2/hew-lang/playground/blobs/{config_digests[0]}": [
-                (200, image_config(HEW_SHA))
+                (
+                    200,
+                    image_config({"org.opencontainers.image.revision": HEW_SHA}),
+                )
             ],
             f"/v2/hew-lang/playground/blobs/{config_digests[1]}": [
-                (200, image_config(HEW_SHA))
+                (
+                    200,
+                    image_config({"org.opencontainers.image.revision": HEW_SHA}),
+                )
             ],
         }
     )
@@ -1523,7 +1680,7 @@ def test_release_record_is_durable_and_tag_ready() -> None:
     assert "every release bar and the final-candidate checklist are green" in runbook
     assert "Manually dispatch" in runbook
     assert "both independent publication arms" in runbook
-    assert "Only after both arms are green" in runbook
+    assert "Only after both independent publication arms are green" in runbook
     assert "Homebrew" in runbook and "prerelease" in runbook
     assert "publish-npm-packages.yml" in runbook
 

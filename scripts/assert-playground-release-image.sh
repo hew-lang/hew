@@ -4,8 +4,10 @@
 #
 # This is the release's acquisition contract: whoever publishes the image -
 # the playground repository's Actions workflow, or a maintainer running
-# `make release-publish` from a playground checkout - satisfies the identical  # external: hew-lang/playground
-# assertion. The script observes only; it never publishes or mutates.
+# `make release-candidate-publish HEW_EXAMPLES_REF=<sha> HEW_VERSION=<version>` from a playground checkout - satisfies the identical assertion. <!-- external-target: hew-lang/playground -->
+# That pre-tag candidate target uses candidate authority. The post-tag
+# release-publish target uses publish authority and is a separate operation.
+# The script observes only; it never publishes or mutates.
 #
 # Inputs (environment):
 #   IMAGE_REPOSITORY       registry repository, e.g. `hew-lang/playground`

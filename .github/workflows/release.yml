@@ -22,8 +22,8 @@
 # Required variable and secrets for the required playground release image:
 #   vars.PLAYGROUND_PUBLISH_MODE — how the release image is acquired; exactly
 #     `actions` (dispatch the playground build workflow and watch it) or
-#     `local` (a maintainer runs the playground checkout's release-publish
-#     target). Any
+#     `local` (a maintainer runs the playground checkout's pre-tag
+#     release-candidate-publish target). Any
 #     other value, including unset, fails the release.
 #   secrets.PLAYGROUND_APP_ID — GitHub App ID for the playground App
 #   secrets.PLAYGROUND_APP_PRIVATE_KEY — Private key for the playground App
@@ -1576,9 +1576,9 @@ jobs:
   # The job's contract is the release image itself: for this tag, an image
   # exists in the registry and it binds this release commit. How the image gets
   # there is an acquisition mode, not the contract — `actions` dispatches the
-  # playground build workflow, `local` waits for a maintainer to run the
-  # playground checkout's release-publish target. Both modes end at the
-  # identical assertion.
+  # playground build workflow, `local` observes an image a maintainer published
+  # before tagging through the playground checkout's release-candidate-publish
+  # target. Both modes end at the identical assertion.
   playground:
     needs: release
     runs-on: ubuntu-24.04
@@ -1768,17 +1768,21 @@ jobs:
         if: steps.acquisition.outputs.mode == 'local'
         shell: bash
         env:
-          HEW_SHA: ${{ steps.release-commit.outputs.hew_sha }}
+          HEW_EXAMPLES_REF: ${{ steps.release-commit.outputs.hew_sha }}
           DEADLINE_EPOCH: ${{ steps.acquisition.outputs.assert_deadline_epoch }}
         run: |
           set -euo pipefail
 
+          if ! [[ "${HEW_EXAMPLES_REF}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::release commit identity is not an exact lowercase 40-character commit SHA"
+            exit 1
+          fi
           VERSION="${RELEASE_TAG#v}"
           REMAINING_SECONDS=$((DEADLINE_EPOCH - $(date +%s)))
           REMAINING_MINUTES=$(((REMAINING_SECONDS + 59) / 60))
           echo "Acquisition mode is 'local': no playground workflow was dispatched."
-          echo "Publish the release image from a hew-lang/playground checkout:"
-          echo "  Run the playground checkout's release-publish target with HEW_SHA=${HEW_SHA} HEW_VERSION=${VERSION}"
+          echo "The pre-tag candidate image command for a hew-lang/playground checkout is:"
+          echo "  make release-candidate-publish HEW_EXAMPLES_REF=${HEW_EXAMPLES_REF} HEW_VERSION=${VERSION}" # external: hew-lang/playground
           echo "This job has up to ${REMAINING_MINUTES}m remaining for that image and fails if it does not arrive."
 
       - name: Assert release image exists and binds the release commit

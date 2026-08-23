@@ -157,7 +157,14 @@ pub fn write_lockfile(path: &Path, lockfile: &LockFile) -> Result<(), LockError>
 /// Returns [`LockError::InvalidEntry`] for invalid names or versions, or when a
 /// registry package lacks the checksum required for a locked install.
 pub fn validate_lockfile(lockfile: &LockFile) -> Result<(), LockError> {
+    let mut names = std::collections::BTreeSet::new();
     for package in &lockfile.packages {
+        if !names.insert(package.name.as_str()) {
+            return Err(LockError::InvalidEntry {
+                package: package.name.clone(),
+                reason: "duplicate package identity".to_string(),
+            });
+        }
         if !crate::package_name::is_valid(&package.name) {
             return Err(LockError::InvalidEntry {
                 package: package.name.clone(),
@@ -168,6 +175,12 @@ pub fn validate_lockfile(lockfile: &LockFile) -> Result<(), LockError> {
             package: package.name.clone(),
             reason: format!("invalid version `{}`: {error}", package.version),
         })?;
+        if !matches!(package.source.as_str(), "registry" | "path") {
+            return Err(LockError::InvalidEntry {
+                package: package.name.clone(),
+                reason: format!("unsupported source `{}`", package.source),
+            });
+        }
         if package.source == "registry" {
             let checksum = package
                 .checksum
@@ -182,6 +195,11 @@ pub fn validate_lockfile(lockfile: &LockFile) -> Result<(), LockError> {
                     reason: format!("invalid checksum `{checksum}`"),
                 });
             }
+        } else if package.path.as_deref().is_none_or(str::is_empty) {
+            return Err(LockError::InvalidEntry {
+                package: package.name.clone(),
+                reason: "path package is missing its locked path".to_string(),
+            });
         }
     }
     Ok(())

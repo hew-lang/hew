@@ -599,7 +599,7 @@ fn cmd_install(
 
     let lock_path = cwd.join("hew.lock");
 
-    if locked {
+    let locked_lockfile = if locked {
         // --locked: read existing lock and validate against manifest.
         let lf = match lockfile::read_lockfile(&lock_path) {
             Ok(lf) => lf,
@@ -661,7 +661,10 @@ fn cmd_install(
                 _ => {}
             }
         }
-    }
+        Some(lf)
+    } else {
+        None
+    };
 
     let local_packages = project_packages_path(&cwd);
     if let Err(e) = std::fs::create_dir_all(&local_packages) {
@@ -671,7 +674,7 @@ fn cmd_install(
 
     ensure_gitignore_entry(&cwd, ".hew/");
 
-    if m.dependencies.is_empty() {
+    if m.dependencies.is_empty() && !locked {
         // Write an empty lockfile for consistency.
         let lf = lockfile::LockFile {
             packages: Vec::new(),
@@ -695,7 +698,15 @@ fn cmd_install(
     let mut confirmed_versions = BTreeMap::<String, BTreeSet<String>>::new();
     let mut fetch_progress = FetchProgress::default();
     let resolved = loop {
-        let result = if offline {
+        let result = if let Some(lockfile) = &locked_lockfile {
+            let locked_versions = lockfile
+                .packages
+                .iter()
+                .filter(|package| package.source == "registry")
+                .map(|package| (package.name.clone(), package.version.clone()))
+                .collect();
+            resolver::resolve_all_locked(&m, &cwd, registry, &locked_versions)
+        } else if offline {
             resolver::resolve_all_from_root(&m, &cwd, registry)
         } else {
             resolver::resolve_all_confirmed(&m, &cwd, registry, &confirmed_versions)
@@ -740,6 +751,13 @@ fn cmd_install(
             }
         }
     };
+
+    if let Some(lockfile) = &locked_lockfile {
+        if let Err(error) = validate_locked_resolution(lockfile, &resolved) {
+            eprintln!("hew install: {error}");
+            std::process::exit(1);
+        }
+    }
 
     // Build lockfile entries from resolved versions.
     let mut lock_packages: Vec<lockfile::LockedPackage> = Vec::new();
@@ -817,15 +835,71 @@ fn cmd_install(
         }
     }
 
-    // Write the lockfile.
-    let lf = lockfile::LockFile {
-        packages: lock_packages,
-    };
-    if let Err(e) = lockfile::write_lockfile(&lock_path, &lf) {
-        eprintln!("hew install: cannot write hew.lock: {e}");
-        std::process::exit(1);
+    if locked {
+        println!("Used locked dependency graph");
+    } else {
+        // Write the lockfile.
+        let lf = lockfile::LockFile {
+            packages: lock_packages,
+        };
+        if let Err(e) = lockfile::write_lockfile(&lock_path, &lf) {
+            eprintln!("hew install: cannot write hew.lock: {e}");
+            std::process::exit(1);
+        }
+        println!("Wrote hew.lock");
     }
-    println!("Wrote hew.lock");
+}
+
+fn validate_locked_resolution(
+    lockfile: &lockfile::LockFile,
+    resolved: &BTreeMap<String, resolver::ResolvedPackage>,
+) -> Result<(), String> {
+    let locked = lockfile
+        .packages
+        .iter()
+        .map(|package| (package.name.as_str(), package))
+        .collect::<BTreeMap<_, _>>();
+
+    for (name, package) in resolved {
+        let entry = locked
+            .get(name.as_str())
+            .ok_or_else(|| format!("locked dependency graph is missing `{name}`"))?;
+        let expected_source = match &package.source {
+            resolver::PackageSource::Registry => "registry",
+            resolver::PackageSource::Path(_) => "path",
+        };
+        if entry.version != package.version || entry.source != expected_source {
+            return Err(format!(
+                "locked dependency `{name}` is {}@{} but resolution requires {}@{}",
+                entry.source, entry.version, expected_source, package.version
+            ));
+        }
+        if let resolver::PackageSource::Path(resolved_path) = &package.source {
+            let path_matches = entry.path.as_deref().is_some_and(|locked_path| {
+                package.direct_path.as_deref() == Some(locked_path)
+                    || Path::new(locked_path)
+                        .canonicalize()
+                        .is_ok_and(|path| &path == resolved_path)
+            });
+            if !path_matches {
+                return Err(format!(
+                    "locked path for dependency `{name}` does not match the resolved graph"
+                ));
+            }
+        }
+    }
+
+    if let Some(extra) = lockfile
+        .packages
+        .iter()
+        .find(|entry| !resolved.contains_key(&entry.name))
+    {
+        return Err(format!(
+            "locked dependency graph contains unreachable package `{}`",
+            extra.name
+        ));
+    }
+    Ok(())
 }
 
 /// Fetch missing packages from the remote registry.
@@ -1000,7 +1074,7 @@ fn fetch_missing_packages(
             }
         }
 
-        let target = registry.package_dir(name, version);
+        let target = registry.package_slot(name, version);
         let staged = crate::atomic_fs::StagedDir::new(&target).map_err(|error| {
             format!(
                 "could not stage cache entry for {name}@{version} at {}: {error}",

@@ -62,6 +62,12 @@ impl Registry {
     /// `<root>/ecosystem.db.postgres/1.0.0`.
     #[must_use]
     pub fn package_dir(&self, name: &str, version: &str) -> PathBuf {
+        crate::atomic_fs::resolve_published_dir(&self.package_slot(name, version))
+    }
+
+    /// Return the stable logical slot used to publish a package generation.
+    #[must_use]
+    pub(crate) fn package_slot(&self, name: &str, version: &str) -> PathBuf {
         self.root.join(name).join(version)
     }
 
@@ -221,11 +227,51 @@ fn collect_packages(
         return;
     };
 
+    let entries = entries.flatten().collect::<Vec<_>>();
+    let mut published_versions = std::collections::BTreeSet::new();
     let mut subdirs = Vec::new();
 
-    for entry in entries.flatten() {
+    for entry in &entries {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(version) = name
+            .strip_prefix('.')
+            .and_then(|name| name.strip_suffix(".current"))
+        else {
+            continue;
+        };
+        // Once a generation pointer exists it is authoritative. A corrupt or
+        // missing generation must not revive a stale legacy directory.
+        published_versions.insert(version.to_string());
+        let logical_slot = dir.join(version);
+        let active = crate::atomic_fs::resolve_published_dir(&logical_slot);
+        if !is_package_dir(&active) {
+            continue;
+        }
+        let Ok(rel) = dir.strip_prefix(root) else {
+            continue;
+        };
+        let name_parts = rel
+            .components()
+            .filter_map(|component| component.as_os_str().to_str())
+            .collect::<Vec<_>>();
+        if name_parts.is_empty() {
+            continue;
+        }
+        packages.push(InstalledPackage {
+            name: name_parts.join("."),
+            version: version.to_string(),
+            path: active,
+        });
+    }
+
+    for entry in entries {
         let path = entry.path();
-        if path.is_dir() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path.is_dir() && !name.starts_with('.') && !published_versions.contains(name.as_ref()) {
             subdirs.push(path);
         }
     }
@@ -326,6 +372,38 @@ mod tests {
         assert_eq!(pkgs.len(), 2);
         assert_eq!(pkgs[0].name, "ecosystem.db.postgres");
         assert_eq!(pkgs[1].name, "std.net.http");
+    }
+
+    #[test]
+    fn list_packages_reports_only_active_published_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_root(dir.path().to_path_buf());
+        let slot = reg.package_slot("foo", "1.0.0");
+        std::fs::create_dir_all(&slot).unwrap();
+        std::fs::write(
+            slot.join("hew.toml"),
+            "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        let staged = crate::atomic_fs::StagedDir::new(&slot).unwrap();
+        std::fs::write(
+            staged.path().join("hew.toml"),
+            "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(staged.path().join("generation"), "new").unwrap();
+        staged.publish(&slot).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(reg.package_dir("foo", "1.0.0").join("generation")).unwrap(),
+            "new"
+        );
+        let packages = reg.list_packages();
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].name, "foo");
+        assert_eq!(packages[0].version, "1.0.0");
+        assert_eq!(packages[0].path, reg.package_dir("foo", "1.0.0"));
     }
 
     #[test]

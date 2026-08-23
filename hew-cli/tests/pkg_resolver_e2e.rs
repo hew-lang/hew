@@ -316,9 +316,10 @@ fn pkg_online_repairs_incomplete_cache_without_loop() {
     );
     assert_eq!(registry.package_requests.load(Ordering::Relaxed), 1);
     assert_eq!(registry.download_requests.load(Ordering::Relaxed), 1);
-    assert!(incomplete.join("hew.toml").is_file());
-    assert!(incomplete.join("foo.hew").is_file());
-    assert!(!incomplete.join("partial.marker").exists());
+    let active = hew_pkg::registry::Registry::with_root(cache.clone()).package_dir("foo", "0.2.1");
+    assert!(active.join("hew.toml").is_file());
+    assert!(active.join("foo.hew").is_file());
+    assert!(incomplete.join("partial.marker").exists());
     assert!(project.join(".hew/packages/foo/foo.hew").is_file());
 }
 
@@ -346,7 +347,8 @@ fn pkg_online_repairs_tampered_manifest_present_cache() {
         "initial online install failed\n{}",
         describe_output(&first)
     );
-    let cached = cache.join("foo/0.2.1");
+    let cache_registry = hew_pkg::registry::Registry::with_root(cache.clone());
+    let cached = cache_registry.package_dir("foo", "0.2.1");
     std::fs::write(cached.join("foo.hew"), "pub fn answer() -> i64 { 7 }\n").unwrap();
 
     let output = run_pkg_bounded(
@@ -362,10 +364,19 @@ fn pkg_online_repairs_tampered_manifest_present_cache() {
     );
     assert_eq!(registry.download_requests.load(Ordering::Relaxed), 2);
     assert_eq!(
-        std::fs::read_to_string(cached.join("foo.hew")).unwrap(),
+        std::fs::read_to_string(cache_registry.package_dir("foo", "0.2.1").join("foo.hew"))
+            .unwrap(),
         "pub fn answer() -> i64 { 42 }\n"
     );
-    assert!(cached.join(".hew-registry-cache.toml").is_file());
+    assert_eq!(
+        std::fs::read_to_string(cached.join("foo.hew")).unwrap(),
+        "pub fn answer() -> i64 { 7 }\n",
+        "published generations are immutable"
+    );
+    assert!(cache_registry
+        .package_dir("foo", "0.2.1")
+        .join(".hew-registry-cache.toml")
+        .is_file());
 }
 
 #[test]
@@ -456,7 +467,12 @@ fn pkg_concurrent_repair_downloads_and_publishes_once() {
     assert_eq!(registry.package_requests.load(Ordering::Relaxed), 2);
     assert_eq!(registry.download_requests.load(Ordering::Relaxed), 1);
     assert_eq!(
-        std::fs::read_to_string(cache.join("foo/0.2.1/foo.hew")).unwrap(),
+        std::fs::read_to_string(
+            hew_pkg::registry::Registry::with_root(cache)
+                .package_dir("foo", "0.2.1")
+                .join("foo.hew")
+        )
+        .unwrap(),
         "pub fn answer() -> i64 { 42 }\n"
     );
 }
@@ -554,5 +570,102 @@ fn pkg_locked_rejects_missing_cached_package() {
         String::from_utf8_lossy(&output.stderr).contains("is missing from cache"),
         "{}",
         describe_output(&output)
+    );
+}
+
+#[test]
+fn pkg_locked_uses_exact_version_and_never_rewrites_lockfile() {
+    let root = support::tempdir();
+    let home = root.path().join("home");
+    let project = root.path().join("app");
+    let cache = root.path().join("cache");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    write_manifest(&project, "foo = \"0.2.1\"\n");
+    write_config(&home, &cache, None);
+
+    let locked_package = write_cached_package(&cache, "foo", "0.2.1");
+    std::fs::write(
+        locked_package.join("foo.hew"),
+        "pub fn selected() -> i64 { 21 }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        locked_package.join("hew.toml"),
+        "[package]\nname = \"foo\"\nversion = \"0.2.1\"\n\n[dependencies]\nbar = \"^1\"\n",
+    )
+    .unwrap();
+    let locked_bar = write_cached_package(&cache, "bar", "1.0.1");
+    std::fs::write(
+        locked_bar.join("bar.hew"),
+        "pub fn selected() -> i64 { 101 }\n",
+    )
+    .unwrap();
+    let initial = run_pkg_bounded(
+        &home,
+        &project,
+        &["install", "--offline"],
+        "create initial lock",
+    );
+    assert!(initial.status.success(), "{}", describe_output(&initial));
+    let generated_lock = std::fs::read_to_string(project.join("hew.lock")).unwrap();
+    let lock_contents = generated_lock.replace(
+        "requirement = \"0.2.1\"",
+        "requirement = \"^0.2\" # retained verbatim by --locked",
+    );
+    assert_ne!(generated_lock, lock_contents);
+    std::fs::write(project.join("hew.lock"), &lock_contents).unwrap();
+    write_manifest(&project, "foo = \"^0.2\"\n");
+
+    let newer_package = write_cached_package(&cache, "foo", "0.2.2");
+    std::fs::write(
+        newer_package.join("foo.hew"),
+        "pub fn selected() -> i64 { 22 }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        newer_package.join("hew.toml"),
+        "[package]\nname = \"foo\"\nversion = \"0.2.2\"\n\n[dependencies]\nbar = \"^1\"\n",
+    )
+    .unwrap();
+    let newer_bar = write_cached_package(&cache, "bar", "1.0.2");
+    std::fs::write(
+        newer_bar.join("bar.hew"),
+        "pub fn selected() -> i64 { 102 }\n",
+    )
+    .unwrap();
+    let materialized = project.join(".hew/packages/foo");
+    let metadata = std::fs::symlink_metadata(&materialized).unwrap();
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        std::fs::remove_file(&materialized).unwrap();
+    } else {
+        std::fs::remove_dir_all(&materialized).unwrap();
+    }
+
+    let output = run_pkg_bounded(
+        &home,
+        &project,
+        &["install", "--locked", "--offline"],
+        "locked exact version",
+    );
+    assert!(
+        output.status.success(),
+        "locked exact install failed\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("hew.lock")).unwrap(),
+        lock_contents,
+        "--locked must not rewrite even formatting or comments"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join(".hew/packages/foo/foo.hew")).unwrap(),
+        "pub fn selected() -> i64 { 21 }\n",
+        "a newer compatible cache entry must not supersede the locked version"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join(".hew/packages/bar/bar.hew")).unwrap(),
+        "pub fn selected() -> i64 { 101 }\n",
+        "transitive packages must also use the exact locked graph"
     );
 }

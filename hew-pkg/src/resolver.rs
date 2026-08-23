@@ -1099,6 +1099,32 @@ pub fn resolve_all_confirmed(
     resolve_all_inner(manifest, root, registry, Some(confirmed_versions))
 }
 
+/// Resolve a dependency graph using the exact registry versions recorded in a
+/// lockfile. Path dependencies continue to be resolved from their declared
+/// paths, but no registry version outside `locked_versions` is eligible.
+///
+/// # Errors
+///
+/// Returns [`ResolveError`] when an exact locked version is missing,
+/// incompatible with the graph, or otherwise cannot be resolved.
+pub fn resolve_all_locked(
+    manifest: &HewManifest,
+    root: &Path,
+    registry: &Registry,
+    locked_versions: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, ResolvedPackage>, ResolveError> {
+    let exact_versions = locked_versions
+        .iter()
+        .map(|(name, version)| {
+            (
+                name.clone(),
+                std::iter::once(version.clone()).collect::<BTreeSet<_>>(),
+            )
+        })
+        .collect();
+    resolve_all_inner(manifest, root, registry, Some(&exact_versions))
+}
+
 fn resolve_all_inner(
     manifest: &HewManifest,
     root: &Path,

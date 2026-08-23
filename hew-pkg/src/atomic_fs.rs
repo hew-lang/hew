@@ -45,20 +45,31 @@ impl StagedDir {
     }
 
     pub fn publish(mut self, target: &Path) -> io::Result<()> {
-        match fs::symlink_metadata(target) {
-            Ok(_) => {
-                exchange_paths(&self.path, target)?;
-                remove_path(&self.path)?;
-                self.active = false;
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                fs::rename(&self.path, target)?;
-                self.active = false;
-            }
-            Err(error) => return Err(error),
-        }
+        self.publish_with_hook(target, || Ok(()))
+    }
 
-        sync_parent_dir(target)
+    fn publish_with_hook<F>(&mut self, target: &Path, before_pointer_replace: F) -> io::Result<()>
+    where
+        F: FnOnce() -> io::Result<()>,
+    {
+        let generation = generation_path_for(target)?;
+        fs::rename(&self.path, &generation)?;
+        self.active = false;
+        sync_parent_dir(&generation)?;
+
+        before_pointer_replace()?;
+
+        let generation_name = generation
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "invalid generation name")
+            })?;
+        write_atomic(
+            &pointer_path_for(target)?,
+            format!("{generation_name}\n").as_bytes(),
+            0o644,
+        )
     }
 }
 
@@ -96,7 +107,7 @@ where
 
     before_rename(&temp_path)?;
 
-    fs::rename(&temp_path, path)?;
+    replace_file(&temp_path, path)?;
     sync_parent_dir(path)?;
     Ok(())
 }
@@ -154,74 +165,95 @@ fn temp_path_for(path: &Path) -> io::Result<PathBuf> {
     Ok(path.with_file_name(format!(".{file_name}.tmp-{}-{counter}", std::process::id())))
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn exchange_paths(left: &Path, right: &Path) -> io::Result<()> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt as _;
+fn pointer_path_for(target: &Path) -> io::Result<PathBuf> {
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
+    Ok(target.with_file_name(format!(".{file_name}.current")))
+}
 
-    let left = CString::new(left.as_os_str().as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
-    let right = CString::new(right.as_os_str().as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
+fn generation_path_for(target: &Path) -> io::Result<PathBuf> {
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    Ok(target.with_file_name(format!(
+        ".{file_name}.generation-{}-{counter}",
+        std::process::id()
+    )))
+}
 
-    // SAFETY: both pointers remain valid for the duration of the syscall and
-    // identify existing paths on the same filesystem.
+/// Resolve a logical publication slot to its immutable active generation.
+/// A missing pointer denotes the legacy direct-directory representation.
+pub(crate) fn resolve_published_dir(target: &Path) -> PathBuf {
+    let Ok(pointer_path) = pointer_path_for(target) else {
+        return target.to_path_buf();
+    };
+    let Ok(pointer) = fs::read_to_string(pointer_path) else {
+        return target.to_path_buf();
+    };
+    let Some(target_name) = target.file_name().and_then(|name| name.to_str()) else {
+        return target.to_path_buf();
+    };
+    let generation = pointer.trim();
+    let expected_prefix = format!(".{target_name}.generation-");
+    if generation.starts_with(&expected_prefix)
+        && !generation.contains('/')
+        && !generation.contains('\\')
+    {
+        target.with_file_name(generation)
+    } else {
+        // Fail closed on a corrupt or attacker-controlled pointer rather than
+        // falling back to a potentially stale legacy directory.
+        target.with_file_name(format!(".{target_name}.invalid-generation-pointer"))
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
+    // POSIX rename atomically replaces an existing directory entry.
+    fs::rename(source, target)
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
+    use std::iter;
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
+
+    if !target.exists() {
+        return fs::rename(source, target);
+    }
+
+    let source_wide = source
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let target_wide = target
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: both strings are NUL-terminated and remain alive for the call;
+    // no backup or metadata exclusion buffers are supplied.
     let result = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            libc::AT_FDCWD,
-            left.as_ptr(),
-            libc::AT_FDCWD,
-            right.as_ptr(),
-            libc::RENAME_EXCHANGE,
+        ReplaceFileW(
+            target_wide.as_ptr(),
+            source_wide.as_ptr(),
+            std::ptr::null(),
+            REPLACEFILE_WRITE_THROUGH,
+            std::ptr::null(),
+            std::ptr::null(),
         )
     };
     if result == 0 {
-        Ok(())
-    } else {
         Err(io::Error::last_os_error())
-    }
-}
-
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-fn exchange_paths(left: &Path, right: &Path) -> io::Result<()> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt as _;
-
-    let left = CString::new(left.as_os_str().as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
-    let right = CString::new(right.as_os_str().as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
-
-    // SAFETY: both pointers remain valid for the duration of the call and
-    // identify existing paths on the same filesystem.
-    let result = unsafe { libc::renamex_np(left.as_ptr(), right.as_ptr(), libc::RENAME_SWAP) };
-    if result == 0 {
-        Ok(())
     } else {
-        Err(io::Error::last_os_error())
+        Ok(())
     }
-}
-
-#[cfg(not(any(
-    target_os = "linux",
-    target_os = "android",
-    target_os = "macos",
-    target_os = "ios"
-)))]
-fn exchange_paths(left: &Path, right: &Path) -> io::Result<()> {
-    let backup = temp_path_for(right)?;
-    fs::rename(right, &backup)?;
-    if let Err(error) = fs::rename(left, right) {
-        let restore = fs::rename(&backup, right);
-        return match restore {
-            Ok(()) => Err(error),
-            Err(restore_error) => Err(io::Error::other(format!(
-                "publication failed: {error}; restoring previous content failed: {restore_error}"
-            ))),
-        };
-    }
-    fs::rename(backup, left)
 }
 
 fn remove_path(path: &Path) -> io::Result<()> {
@@ -308,8 +340,9 @@ mod tests {
         let reader_target = target.clone();
         let reader = std::thread::spawn(move || {
             while !reader_stop.load(Ordering::Relaxed) {
+                let active = resolve_published_dir(&reader_target);
                 if !matches!(
-                    fs::read_to_string(reader_target.join("state")).as_deref(),
+                    fs::read_to_string(active.join("state")).as_deref(),
                     Ok("old" | "new")
                 ) {
                     reader_partial.store(true, Ordering::Relaxed);
@@ -329,6 +362,30 @@ mod tests {
         reader.join().unwrap();
 
         assert!(!saw_partial.load(Ordering::Relaxed));
+        assert!(matches!(
+            fs::read_to_string(resolve_published_dir(&target).join("state")).as_deref(),
+            Ok("old" | "new")
+        ));
+    }
+
+    #[test]
+    fn interrupted_generation_publish_keeps_previous_generation_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("package");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("state"), "old").unwrap();
+
+        let mut staged = StagedDir::new(&target).unwrap();
+        fs::write(staged.path().join("state"), "new").unwrap();
+        let error = staged
+            .publish_with_hook(&target, || Err(io::Error::other("simulated power loss")))
+            .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(
+            fs::read_to_string(resolve_published_dir(&target).join("state")).unwrap(),
+            "old"
+        );
     }
 
     #[cfg(unix)]

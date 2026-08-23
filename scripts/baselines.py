@@ -331,6 +331,15 @@ REGISTRY: tuple[Baseline, ...] = (
         prune_list="scripts/stdlib-expected-failures.txt",
     ),
     Baseline(
+        id="stdlib-user-build-calls",
+        summary="public stdlib function calls exercised by the user-build gate",
+        tier="compiler",
+        paths=("scripts/stdlib-user-build-calls.tsv",),
+        gates=("stdlib-user-build-clean",),
+        regen="python3 scripts/stdlib-user-build-clean.py --write-calls",
+        check=None,
+    ),
+    Baseline(
         id="doc-test-expected-failures",
         summary="docs ```hew fence ratchet",
         tier="compiler",

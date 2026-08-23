@@ -1580,12 +1580,16 @@ fn render_mir_check(check: &MirCheck) -> String {
         }
         MirCheck::ObligationUnderReleased {
             function,
-            block,
+            blocks,
+            site,
             name,
             hard,
             reason,
             ..
-        } => format!("ObligationUnderReleased {function} bb{block} {name} hard={hard} {reason:?}"),
+        } => format!(
+            "ObligationUnderReleased {function} blocks={blocks:?} site={site:?} \
+             {name} hard={hard} {reason:?}"
+        ),
         MirCheck::ObligationOverReleased {
             function,
             block,
@@ -1799,12 +1803,14 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         }
         MirDiagnosticKind::ObligationUnderReleased {
             function,
-            block,
+            blocks,
+            site,
             name,
             hard,
             reason,
+            ..
         } => format!(
-            "ObligationUnderReleased {function} bb{block} {name} hard={hard} {reason:?}"
+            "ObligationUnderReleased {function} blocks={blocks:?} site={site:?} {name} hard={hard} {reason:?}"
         ),
         MirDiagnosticKind::ObligationOverReleased {
             function,

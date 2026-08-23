@@ -165,6 +165,57 @@ fn is_warning_diagnostic(d: &FrontendDiagnostic) -> bool {
     }
 }
 
+fn paths_name_same_file(left: &Path, right: &Path) -> bool {
+    left == right
+        || match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+            (Ok(left), Ok(right)) => left == right,
+            _ => false,
+        }
+}
+
+fn configured_stdlib_roots(options: &FrontendOptions) -> Vec<PathBuf> {
+    options
+        .module_search_paths
+        .clone()
+        .unwrap_or_else(|| {
+            hew_types::module_registry::build_module_search_paths_for(
+                options.project_dir.as_deref(),
+            )
+        })
+        .into_iter()
+        .map(|root| root.join("std"))
+        .collect()
+}
+
+fn path_is_below(path: &Path, root: &Path) -> bool {
+    match (std::fs::canonicalize(path), std::fs::canonicalize(root)) {
+        (Ok(path), Ok(root)) => path.starts_with(root),
+        _ => path.starts_with(root),
+    }
+}
+
+/// Remove diagnostics owned by an imported standard-library source before a
+/// user-facing pipeline returns them. Users cannot act on compiler-shipped
+/// implementation sites. A direct check of a file below `std/` deliberately
+/// retains its diagnostics so the stdlib source gate remains authoritative.
+fn retain_user_facing_diagnostics(
+    root_filename: &str,
+    stdlib_roots: &[PathBuf],
+    diagnostics: &mut Vec<FrontendDiagnostic>,
+) {
+    let root = Path::new(root_filename);
+    diagnostics.retain(|diagnostic| {
+        let Some(filename) = diagnostic.filename.as_deref() else {
+            return true;
+        };
+        let diagnostic_path = Path::new(filename);
+        paths_name_same_file(root, diagnostic_path)
+            || !stdlib_roots
+                .iter()
+                .any(|stdlib_root| path_is_below(diagnostic_path, stdlib_root))
+    });
+}
+
 /// If `options.warnings_as_errors` is set and `diagnostics` contains any
 /// warning-severity entry, return a `FrontendFailure` that includes all
 /// accumulated diagnostics.  Otherwise return `Ok(())`.
@@ -1757,6 +1808,8 @@ fn run_file_frontend_to_typecheck_with_mode(
         };
 
     flatten_file_import_items(&mut program);
+    let stdlib_roots = configured_stdlib_roots(options);
+    retain_user_facing_diagnostics(input, &stdlib_roots, &mut diagnostics);
 
     Ok(FileFrontendState {
         program,
@@ -1807,6 +1860,8 @@ pub fn run_program_frontend_to_typecheck(
         };
 
     flatten_file_import_items(&mut program);
+    let stdlib_roots = configured_stdlib_roots(options);
+    retain_user_facing_diagnostics(source_label, &stdlib_roots, &mut diagnostics);
 
     let diagnostics = fail_on_warning_diagnostics(diagnostics, options)?;
     Ok(ProgramFrontendState {
@@ -2040,8 +2095,9 @@ mod tests {
     use super::{
         check_file, check_file_with_state, check_program, hir_diagnostics_to_frontend,
         load_dependencies, load_lockfile, load_package_name, parse_source,
-        run_file_frontend_to_typecheck, run_file_frontend_to_typecheck_for_migration,
-        FrontendDiagnosticKind, FrontendOptions,
+        retain_user_facing_diagnostics, run_file_frontend_to_typecheck,
+        run_file_frontend_to_typecheck_for_migration, FrontendDiagnostic, FrontendDiagnosticKind,
+        FrontendOptions,
     };
     use hew_parser::ast::Item;
     use std::fs::{self, File};
@@ -2064,6 +2120,67 @@ mod tests {
         file.write_all(content.as_bytes())
             .expect("write source file");
         path.display().to_string()
+    }
+
+    #[test]
+    fn user_surface_removes_imported_stdlib_diagnostics() {
+        let dir = tempfile::tempdir().expect("create diagnostic boundary fixture");
+        let root = write_source(dir.path(), "main.hew", "fn main() {}\n");
+        let std_dir = dir.path().join("toolchain").join("std");
+        fs::create_dir_all(&std_dir).expect("create synthetic stdlib directory");
+        let std_source = write_source(&std_dir, "arena.hew", "// synthetic stdlib\n");
+
+        let mut user = FrontendDiagnostic::message("user warning");
+        user.filename = Some(root.clone());
+        let mut stdlib = FrontendDiagnostic::message("stdlib warning");
+        stdlib.filename = Some(std_source);
+        let mut diagnostics = vec![user, stdlib];
+
+        retain_user_facing_diagnostics(&root, &[std_dir], &mut diagnostics);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].filename.as_deref(), Some(root.as_str()));
+    }
+
+    #[test]
+    fn direct_stdlib_check_retains_source_diagnostics() {
+        let dir = tempfile::tempdir().expect("create direct stdlib fixture");
+        let std_dir = dir.path().join("std");
+        fs::create_dir(&std_dir).expect("create stdlib directory");
+        let std_source = write_source(&std_dir, "arena.hew", "// synthetic stdlib\n");
+        let mut diagnostic = FrontendDiagnostic::message("stdlib warning");
+        diagnostic.filename = Some(std_source.clone());
+        let mut diagnostics = vec![diagnostic];
+
+        retain_user_facing_diagnostics(&std_source, &[std_dir], &mut diagnostics);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].filename.as_deref(),
+            Some(std_source.as_str())
+        );
+    }
+
+    #[test]
+    fn user_std_directory_is_not_treated_as_the_configured_stdlib() {
+        let dir = tempfile::tempdir().expect("create diagnostic boundary fixture");
+        let root = write_source(dir.path(), "main.hew", "fn main() {}\n");
+        let configured_std = dir.path().join("toolchain").join("std");
+        fs::create_dir_all(&configured_std).expect("create configured stdlib directory");
+        let user_std = dir.path().join("project").join("std");
+        fs::create_dir_all(&user_std).expect("create user std directory");
+        let user_source = write_source(&user_std, "helpers.hew", "// user source\n");
+        let mut diagnostic = FrontendDiagnostic::message("user warning");
+        diagnostic.filename = Some(user_source.clone());
+        let mut diagnostics = vec![diagnostic];
+
+        retain_user_facing_diagnostics(&root, &[configured_std], &mut diagnostics);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].filename.as_deref(),
+            Some(user_source.as_str())
+        );
     }
 
     #[test]

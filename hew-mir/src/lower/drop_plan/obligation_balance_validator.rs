@@ -85,12 +85,17 @@ fn run_with_suspend_kinds(
         .collect();
     let params = HashSet::new();
     let local_types = BTreeMap::new();
+    let mint_sites: BTreeMap<u32, SiteId> = tracked
+        .keys()
+        .copied()
+        .map(|local| (local, SiteId(local)))
+        .collect();
     validate_obligation_balance_with(
         &elab,
         blocks,
         suspend_kinds,
         &tracked,
-        &local_types,
+        (&local_types, &mint_sites),
         &params,
     )
 }
@@ -242,12 +247,13 @@ fn param_rebind_and_tuple_load_remint_accept() {
     let suspend_kinds = HashMap::new();
     let params: HashSet<u32> = [0_u32].into_iter().collect();
     let local_types = BTreeMap::new();
+    let mint_sites = BTreeMap::new();
     let findings = validate_obligation_balance_with(
         &elab,
         &blocks,
         &suspend_kinds,
         &tracked,
-        &local_types,
+        (&local_types, &mint_sites),
         &params,
     );
     assert!(
@@ -400,7 +406,7 @@ fn ordinary_empty_bytes_literal_still_mints_an_owner() {
     assert!(
         matches!(
             findings.as_slice(),
-            [MirCheck::ObligationUnderReleased { block: 0, .. }]
+            [MirCheck::ObligationUnderReleased { blocks, .. }] if blocks == &[0]
         ),
         "an ordinary empty bytes allocation still needs its own release: {findings:?}"
     );
@@ -522,12 +528,13 @@ fn fixpoint_cap_exhaustion_fails_closed_unverified() {
     let suspend_kinds = HashMap::new();
     let params = HashSet::new();
     let local_types = BTreeMap::new();
+    let mint_sites = BTreeMap::new();
     let findings = validate_obligation_balance_capped(
         &elab,
         &blocks,
         &suspend_kinds,
         &tracked,
-        &local_types,
+        (&local_types, &mint_sites),
         &params,
         0,
     );
@@ -597,11 +604,53 @@ fn branch_around_missing_guard_drop_rejects_under_release() {
         1,
         "exactly the guard exit is unbalanced: {findings:?}"
     );
-    let MirCheck::ObligationUnderReleased { block, name, .. } = &findings[0] else {
+    let MirCheck::ObligationUnderReleased { blocks, name, .. } = &findings[0] else {
         panic!("expected under-release, got {:?}", findings[0]);
     };
-    assert_eq!(*block, 1);
+    assert_eq!(blocks, &[1]);
     assert_eq!(name, "leaked");
+}
+
+#[test]
+fn under_release_aggregates_all_exits_and_projects_the_mint_site() {
+    let blocks = vec![
+        block(
+            0,
+            vec![mint(1)],
+            Terminator::Branch {
+                cond: Place::Local(0),
+                then_target: 1,
+                else_target: 2,
+            },
+        ),
+        block(1, Vec::new(), Terminator::Return),
+        block(2, Vec::new(), Terminator::Return),
+    ];
+    let plans = vec![
+        (ExitPath::Return { block: 1 }, DropPlan::default()),
+        (ExitPath::Return { block: 2 }, DropPlan::default()),
+    ];
+    let findings = run(blocks, plans, &[(1, "resolve(...)")]);
+    let [MirCheck::ObligationUnderReleased {
+        blocks, site, name, ..
+    }] = findings.as_slice()
+    else {
+        panic!("expected one aggregated under-release: {findings:?}");
+    };
+    assert_eq!(blocks, &[1, 2]);
+    assert_eq!(*site, SiteId(1));
+    assert_eq!(name, "resolve(...)");
+
+    let diagnostic = check_to_diagnostic(&findings[0]).expect("finding must be visible");
+    let MirDiagnosticKind::ObligationUnderReleased {
+        blocks, site, name, ..
+    } = diagnostic.kind
+    else {
+        panic!("expected projected under-release diagnostic");
+    };
+    assert_eq!(blocks, vec![1, 2]);
+    assert_eq!(site, SiteId(1));
+    assert_eq!(name, "resolve(...)");
 }
 
 /// The fixed round-4 shape: every return path carries exactly one
@@ -1125,7 +1174,7 @@ fn suspend_resume_without_return_drop_is_under_release() {
     assert!(
         matches!(
             findings.as_slice(),
-            [MirCheck::ObligationUnderReleased { block: 1, .. }]
+            [MirCheck::ObligationUnderReleased { blocks, .. }] if blocks == &[1]
         ),
         "only the resumed return edge is under-released: {findings:?}"
     );
@@ -1167,7 +1216,7 @@ fn suspend_abandon_without_frame_drop_is_under_release() {
     assert!(
         matches!(
             findings.as_slice(),
-            [MirCheck::ObligationUnderReleased { block: 0, .. }]
+            [MirCheck::ObligationUnderReleased { blocks, .. }] if blocks == &[0]
         ),
         "only the abandon edge with no frame drop is under-released: {findings:?}"
     );
@@ -1259,7 +1308,7 @@ fn suspend_result_mint_is_resume_edge_local() {
     assert!(
         matches!(
             findings.as_slice(),
-            [MirCheck::ObligationUnderReleased { block: 1, .. }]
+            [MirCheck::ObligationUnderReleased { blocks, .. }] if blocks == &[1]
         ),
         "the resumed result is minted only on resume, never on abandon: {findings:?}"
     );

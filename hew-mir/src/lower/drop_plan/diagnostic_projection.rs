@@ -85,16 +85,19 @@ pub(in crate::lower) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagn
         }),
         MirCheck::ObligationUnderReleased {
             function,
-            block,
+            blocks,
+            site,
             name,
+            local_ty,
             hard,
             reason,
-            ..
         } => Some(MirDiagnostic {
             kind: MirDiagnosticKind::ObligationUnderReleased {
                 function: function.clone(),
-                block: *block,
+                blocks: blocks.clone(),
+                site: *site,
                 name: name.clone(),
+                local_ty: local_ty.clone(),
                 hard: *hard,
                 reason: reason.clone(),
             },

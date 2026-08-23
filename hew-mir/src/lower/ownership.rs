@@ -1389,11 +1389,23 @@ impl Builder {
         scrutinee: &HirExpr,
         scrutinee_local: u32,
     ) -> Option<(BindingId, ResolvedTy)> {
-        self.finalize_typed_produced_value_owner(
+        let owner = self.finalize_typed_produced_value_owner(
             SYNTHETIC_CALL_SCRUTINEE_NAME,
             scrutinee.site,
             Place::Local(scrutinee_local),
-        )
+        );
+        if owner.is_some() {
+            let label = match &scrutinee.kind {
+                HirExprKind::Call { callee, .. } => match &callee.kind {
+                    HirExprKind::BindingRef { name, .. } => format!("{name}(...)"),
+                    _ => "direct call expression".to_string(),
+                },
+                _ => "call scrutinee expression".to_string(),
+            };
+            self.call_scrutinee_diagnostic_names
+                .insert(scrutinee.site, label);
+        }
+        owner
     }
 
     /// Reject an ownership-demanding sink whose total HIR row is unresolved.

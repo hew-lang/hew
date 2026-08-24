@@ -2077,6 +2077,7 @@ test-sandbox-parity-coverage-check-build:
 # inputs: scripts/workspace-version.py
 # inputs: scripts/build-npm-packages.mjs scripts/cargo-output-dir.py
 # inputs: scripts/tests/test_rust_dependency_cache_contract.py
+# inputs: hew-parser/fuzz/Cargo.lock
 # inputs: CHANGELOG.md docs/releases/*.md docs/release-runbook.md
 # inputs: docs/cross-platform-build-guide.md
 test-release-workflow-contract:

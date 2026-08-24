@@ -533,18 +533,14 @@ def test_release_image_assertion_rejects_unusable_inputs() -> None:
 
 
 def test_release_image_assertion_accepts_matching_single_manifest() -> None:
-    config_digest = named_digest("config-good")
+    config = image_config({"org.opencontainers.image.revision": HEW_SHA})
+    config_digest = content_digest(config)
     result, requests = run_canned_release_image_assertion(
         {
             "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [
                 (200, image_manifest(config_digest))
             ],
-            f"/v2/hew-lang/playground/blobs/{config_digest}": [
-                (
-                    200,
-                    image_config({"org.opencontainers.image.revision": HEW_SHA}),
-                )
-            ],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [(200, config)],
         }
     )
     assert result.returncode == 0, result.stderr
@@ -643,15 +639,14 @@ def test_canned_registry_requires_the_current_issued_bearer_token() -> None:
 
 
 def test_release_image_assertion_sends_issued_token_for_manifest_and_config() -> None:
-    config_digest = named_digest("config-issued-token")
+    config = image_config({"org.opencontainers.image.revision": HEW_SHA})
+    config_digest = content_digest(config)
     manifest_path = "/v2/hew-lang/playground/manifests/v0.6.0-rc2"
     config_path = f"/v2/hew-lang/playground/blobs/{config_digest}"
     result, requests = run_canned_release_image_assertion(
         {
             manifest_path: [(200, image_manifest(config_digest))],
-            config_path: [
-                (200, image_config({"org.opencontainers.image.revision": HEW_SHA}))
-            ],
+            config_path: [(200, config)],
         }
     )
     assert result.returncode == 0, result.stderr
@@ -721,14 +716,15 @@ def test_release_image_assertion_rejects_a_mutable_tag_digest_immediately() -> N
 
 
 def test_release_image_assertion_rejects_missing_revision_label() -> None:
-    config_digest = named_digest("config-missing-revision")
+    config = image_config({})
+    config_digest = content_digest(config)
     config_path = f"/v2/hew-lang/playground/blobs/{config_digest}"
     result, requests = run_canned_release_image_assertion(
         {
             "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [
                 (200, image_manifest(config_digest))
             ],
-            config_path: [(200, image_config({}))],
+            config_path: [(200, config)],
         }
     )
     assert result.returncode != 0
@@ -739,19 +735,15 @@ def test_release_image_assertion_rejects_missing_revision_label() -> None:
 
 def test_release_image_assertion_rejects_wrong_revision_label() -> None:
     wrong_revision = "f" * 40
-    config_digest = named_digest("config-wrong-revision")
+    config = image_config({"org.opencontainers.image.revision": wrong_revision})
+    config_digest = content_digest(config)
     config_path = f"/v2/hew-lang/playground/blobs/{config_digest}"
     result, requests = run_canned_release_image_assertion(
         {
             "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [
                 (200, image_manifest(config_digest))
             ],
-            config_path: [
-                (
-                    200,
-                    image_config({"org.opencontainers.image.revision": wrong_revision}),
-                )
-            ],
+            config_path: [(200, config)],
         },
         deadline_epoch=int(time()) + 2,
     )
@@ -761,10 +753,10 @@ def test_release_image_assertion_rejects_wrong_revision_label() -> None:
 
 
 def test_release_image_assertion_rejects_wrong_manifest_platform() -> None:
-    config_digest = named_digest("config-arm64")
-    manifest = image_manifest(config_digest)
     config = image_config({"org.opencontainers.image.revision": HEW_SHA})
     config["architecture"] = "arm64"
+    config_digest = content_digest(config)
+    manifest = image_manifest(config_digest)
     result, _requests = run_canned_release_image_assertion(
         {
             "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, manifest)],
@@ -818,54 +810,143 @@ def test_release_image_assertion_hashes_raw_manifest_bytes() -> None:
 
 
 def test_release_image_assertion_selects_linux_amd64_from_an_index() -> None:
-    child_digests = (named_digest("manifest-amd64"), named_digest("manifest-arm64"))
-    config_digests = (named_digest("config-amd64"), named_digest("config-arm64"))
+    config = image_config({"org.opencontainers.image.revision": HEW_SHA})
+    config_digest = content_digest(config)
+    child = image_manifest(config_digest)
+    child_digest = content_digest(child)
     attestation_digest = named_digest("attestation")
     index = {
         "schemaVersion": 2,
         "mediaType": "application/vnd.oci.image.index.v1+json",
         "manifests": [
             {
-                "digest": child_digests[0],
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": child_digest,
                 "platform": {"os": "linux", "architecture": "amd64"},
             },
             {
-                "digest": child_digests[1],
-                "platform": {"os": "linux", "architecture": "arm64"},
-            },
-            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
                 "digest": attestation_digest,
                 "annotations": {"vnd.docker.reference.type": "attestation-manifest"},
+                "platform": {"os": "unknown", "architecture": "unknown"},
             },
         ],
     }
     result, requests = run_canned_release_image_assertion(
         {
             "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, index)],
-            f"/v2/hew-lang/playground/manifests/{child_digests[0]}": [
-                (200, image_manifest(config_digests[0]))
-            ],
-            f"/v2/hew-lang/playground/manifests/{child_digests[1]}": [
-                (200, image_manifest(config_digests[1]))
-            ],
-            f"/v2/hew-lang/playground/blobs/{config_digests[0]}": [
-                (
-                    200,
-                    image_config({"org.opencontainers.image.revision": HEW_SHA}),
-                )
-            ],
-            f"/v2/hew-lang/playground/blobs/{config_digests[1]}": [
-                (
-                    200,
-                    image_config({"org.opencontainers.image.revision": HEW_SHA}),
-                )
-            ],
+            f"/v2/hew-lang/playground/manifests/{child_digest}": [(200, child)],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [(200, config)],
         }
     )
     assert result.returncode == 0, result.stderr
     assert f"/v2/hew-lang/playground/manifests/{attestation_digest}" not in requests
-    assert f"/v2/hew-lang/playground/manifests/{child_digests[0]}" in requests
-    assert f"/v2/hew-lang/playground/manifests/{child_digests[1]}" not in requests
+    assert f"/v2/hew-lang/playground/manifests/{child_digest}" in requests
+
+
+def test_release_image_assertion_rejects_an_additional_runnable_platform() -> None:
+    descriptors = []
+    responses = {
+        "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [],
+    }
+    for architecture in ("amd64", "arm64"):
+        config = image_config({"org.opencontainers.image.revision": HEW_SHA})
+        config["architecture"] = architecture
+        config_digest = content_digest(config)
+        child = image_manifest(config_digest)
+        child_digest = content_digest(child)
+        descriptors.append(
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": child_digest,
+                "platform": {"os": "linux", "architecture": architecture},
+            }
+        )
+        responses[f"/v2/hew-lang/playground/manifests/{child_digest}"] = [(200, child)]
+        responses[f"/v2/hew-lang/playground/blobs/{config_digest}"] = [(200, config)]
+    index = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": descriptors,
+    }
+    responses["/v2/hew-lang/playground/manifests/v0.6.0-rc2"] = [(200, index)]
+
+    result, requests = run_canned_release_image_assertion(responses)
+
+    assert result.returncode != 0
+    assert "contains additional runnable platform linux/arm64" in result.stderr
+    arm64_digest = descriptors[1]["digest"]
+    assert f"/v2/hew-lang/playground/manifests/{arm64_digest}" not in requests
+
+
+def test_release_image_assertion_rejects_mislabeled_runnable_attestation() -> None:
+    descriptor_digest = named_digest("mislabeled-attestation")
+    index = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": descriptor_digest,
+                "annotations": {"vnd.docker.reference.type": "attestation-manifest"},
+                "platform": {"os": "linux", "architecture": "amd64"},
+            }
+        ],
+    }
+    result, requests = run_canned_release_image_assertion(
+        {"/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, index)]}
+    )
+    assert result.returncode != 0
+    assert "not a narrowly recognized non-runnable attestation" in result.stderr
+    assert f"/v2/hew-lang/playground/manifests/{descriptor_digest}" not in requests
+
+
+def test_release_image_assertion_hashes_index_child_response_bytes() -> None:
+    declared_child_digest = named_digest("declared-child")
+    config = image_config({"org.opencontainers.image.revision": HEW_SHA})
+    config_digest = content_digest(config)
+    served_child = image_manifest(config_digest)
+    index = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": declared_child_digest,
+                "platform": {"os": "linux", "architecture": "amd64"},
+            }
+        ],
+    }
+    result, requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, index)],
+            f"/v2/hew-lang/playground/manifests/{declared_child_digest}": [
+                (200, served_child)
+            ],
+            f"/v2/hew-lang/playground/blobs/{config_digest}": [(200, config)],
+        }
+    )
+    assert result.returncode != 0
+    assert "raw response digest is" in result.stderr
+    assert "not its descriptor digest" in result.stderr
+    assert f"/v2/hew-lang/playground/blobs/{config_digest}" not in requests
+
+
+def test_release_image_assertion_hashes_config_response_bytes() -> None:
+    declared_config_digest = named_digest("declared-config")
+    manifest = image_manifest(declared_config_digest)
+    served_config = image_config({"org.opencontainers.image.revision": HEW_SHA})
+    result, _requests = run_canned_release_image_assertion(
+        {
+            "/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, manifest)],
+            f"/v2/hew-lang/playground/blobs/{declared_config_digest}": [
+                (200, served_config)
+            ],
+        }
+    )
+    assert result.returncode != 0
+    assert "raw response digest is" in result.stderr
+    assert "not its descriptor digest" in result.stderr
 
 
 def test_release_image_assertion_rejects_unclassified_platformless_child() -> None:
@@ -878,7 +959,9 @@ def test_release_image_assertion_rejects_unclassified_platformless_child() -> No
         {"/v2/hew-lang/playground/manifests/v0.6.0-rc2": [(200, index)]}
     )
     assert result.returncode != 0
-    assert "has no platform.os and is not marked as an attestation" in result.stderr
+    assert (
+        "has no runnable platform and is not marked as an attestation" in result.stderr
+    )
 
 
 def test_prerelease_policy_uses_selected_release_tag() -> None:

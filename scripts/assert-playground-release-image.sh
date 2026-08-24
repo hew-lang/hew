@@ -27,6 +27,9 @@ set -euo pipefail
 readonly REVISION_LABEL="org.opencontainers.image.revision"
 readonly MANIFEST_ACCEPT="application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
 readonly CONFIG_ACCEPT="application/vnd.oci.image.config.v1+json,application/vnd.docker.container.image.v1+json"
+readonly OCI_IMAGE_MANIFEST="application/vnd.oci.image.manifest.v1+json"
+readonly DOCKER_IMAGE_MANIFEST="application/vnd.docker.distribution.manifest.v2+json"
+readonly ATTESTATION_TYPE="attestation-manifest"
 readonly CURL_CONNECT_TIMEOUT_SECONDS=5
 readonly CURL_MAX_TIME_SECONDS=20
 
@@ -55,8 +58,6 @@ fi
 if [ "${EXPECTED_PLATFORM}" != "linux/amd64" ]; then
     fail "EXPECTED_PLATFORM must be exactly linux/amd64"
 fi
-readonly EXPECTED_OS="${EXPECTED_PLATFORM%%/*}"
-readonly EXPECTED_ARCH="${EXPECTED_PLATFORM#*/}"
 if [ -n "${DEADLINE_EPOCH:-}" ] && [ -n "${DEADLINE_MINUTES:-}" ]; then
     fail "set only one of DEADLINE_EPOCH or DEADLINE_MINUTES"
 fi
@@ -118,17 +119,19 @@ pull_token() {
         jq -er '.token'
 }
 
-registry_get() {
-    local token="$1" path="$2" accept="$3"
+registry_get_to_file() {
+    local token="$1" path="$2" accept="$3" output_file="$4"
     curl_before_deadline -fsSL \
+        -o "${output_file}" \
         --oauth2-bearer "${token}" \
         -H "Accept: ${accept}" \
         "${IMAGE_REGISTRY_SCHEME}://${IMAGE_REGISTRY}/v2/${IMAGE_REPOSITORY}/${path}"
 }
 
-body_file=$(mktemp)
-headers_file=$(mktemp)
-trap 'rm -f "${body_file}" "${headers_file}"' EXIT
+work_dir=$(mktemp -d)
+body_file="${work_dir}/manifest"
+headers_file="${work_dir}/headers"
+trap 'rm -rf -- "${work_dir}"' EXIT
 
 sha256_file() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -148,40 +151,62 @@ manifest_status() {
 }
 
 manifest_binds_expected_identity() {
-    local token="$1" manifest="$2" descriptor child_digest child config_digest
-    local annotation platform_os platform_arch config config_os config_arch revision
+    local token="$1" manifest_file="$2" descriptor child_digest config_digest
+    local annotation media_type platform_os platform_arch config_os config_arch revision
+    local child_file config_file raw_digest runnable_count=0 descriptor_count=0
     local config_digests=()
 
-    jq -e . >/dev/null <<<"${manifest}" ||
+    jq -e . "${manifest_file}" >/dev/null ||
         fail "${IMAGE_REF} returned an invalid manifest document"
 
-    if jq -e 'has("manifests")' >/dev/null <<<"${manifest}"; then
+    if jq -e 'has("manifests")' "${manifest_file}" >/dev/null; then
         while IFS= read -r descriptor; do
             [ -n "${descriptor}" ] || continue
+            descriptor_count=$((descriptor_count + 1))
             annotation=$(jq -r '.annotations["vnd.docker.reference.type"] // ""' <<<"${descriptor}")
-            if [ "${annotation}" = "attestation-manifest" ]; then
-                continue
-            fi
+            media_type=$(jq -r '.mediaType // ""' <<<"${descriptor}")
             platform_os=$(jq -r '.platform.os // ""' <<<"${descriptor}")
             platform_arch=$(jq -r '.platform.architecture // ""' <<<"${descriptor}")
             child_digest=$(jq -r '.digest // ""' <<<"${descriptor}")
-            if [ -z "${platform_os}" ] || [ "${platform_os}" = "unknown" ]; then
-                fail "${IMAGE_REF} index child ${child_digest:-<missing digest>} has no platform.os and is not marked as an attestation manifest"
-            fi
             if ! [[ "${child_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-                fail "${IMAGE_REF} index contains a runnable child with an invalid digest"
+                fail "${IMAGE_REF} index child has an invalid digest"
             fi
-            if [ "${platform_os}" != "${EXPECTED_OS}" ] || [ "${platform_arch}" != "${EXPECTED_ARCH}" ]; then
+            if [ "${annotation}" = "${ATTESTATION_TYPE}" ]; then
+                if [ "${platform_os}/${platform_arch}" != "unknown/unknown" ] ||
+                    [ "${media_type}" != "${OCI_IMAGE_MANIFEST}" ]; then
+                    fail "${IMAGE_REF} index child ${child_digest} is not a narrowly recognized non-runnable attestation descriptor"
+                fi
                 continue
             fi
-            child=$(registry_get "${token}" "manifests/${child_digest}" "${MANIFEST_ACCEPT}") ||
+            if [ -z "${platform_os}" ] || [ "${platform_os}" = "unknown" ]; then
+                fail "${IMAGE_REF} index child ${child_digest} has no runnable platform and is not marked as an attestation manifest"
+            fi
+            if [ "${media_type}" != "${OCI_IMAGE_MANIFEST}" ] &&
+                [ "${media_type}" != "${DOCKER_IMAGE_MANIFEST}" ]; then
+                fail "${IMAGE_REF} runnable index child ${child_digest} has unsupported mediaType '${media_type:-<missing>}'"
+            fi
+            runnable_count=$((runnable_count + 1))
+            if [ "${platform_os}/${platform_arch}" != "${EXPECTED_PLATFORM}" ]; then
+                fail "${IMMUTABLE_IMAGE_REF} contains additional runnable platform ${platform_os:-<missing>}/${platform_arch:-<missing>}; expected exactly one ${EXPECTED_PLATFORM} image manifest"
+            fi
+            child_file="${work_dir}/child-${descriptor_count}"
+            registry_get_to_file "${token}" "manifests/${child_digest}" "${MANIFEST_ACCEPT}" "${child_file}" ||
                 fail "could not read image manifest ${child_digest}"
-            config_digest=$(jq -er '.config.digest' <<<"${child}") ||
+            raw_digest="sha256:$(sha256_file "${child_file}")"
+            if [ "${raw_digest}" != "${child_digest}" ]; then
+                fail "image manifest ${child_digest} raw response digest is ${raw_digest}, not its descriptor digest"
+            fi
+            jq -e . "${child_file}" >/dev/null ||
+                fail "image manifest ${child_digest} returned an invalid document"
+            config_digest=$(jq -er '.config.digest' "${child_file}") ||
                 fail "image manifest ${child_digest} has no config descriptor"
             config_digests+=("${config_digest}")
-        done < <(jq -c '.manifests[]' <<<"${manifest}")
+        done < <(jq -c '.manifests[]' "${manifest_file}")
+        if [ "${runnable_count}" -ne 1 ]; then
+            fail "${IMMUTABLE_IMAGE_REF} must resolve to exactly one ${EXPECTED_PLATFORM} runnable image manifest"
+        fi
     else
-        config_digest=$(jq -er '.config.digest' <<<"${manifest}") ||
+        config_digest=$(jq -er '.config.digest' "${manifest_file}") ||
             fail "${IMAGE_REF} has no config descriptor"
         config_digests+=("${config_digest}")
     fi
@@ -190,18 +215,27 @@ manifest_binds_expected_identity() {
         fail "${IMMUTABLE_IMAGE_REF} must resolve to exactly one ${EXPECTED_PLATFORM} image manifest"
     fi
 
+    descriptor_count=0
     for config_digest in "${config_digests[@]}"; do
+        descriptor_count=$((descriptor_count + 1))
         if ! [[ "${config_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             fail "image manifest has an invalid config digest"
         fi
-        config=$(registry_get "${token}" "blobs/${config_digest}" "${CONFIG_ACCEPT}") ||
+        config_file="${work_dir}/config-${descriptor_count}"
+        registry_get_to_file "${token}" "blobs/${config_digest}" "${CONFIG_ACCEPT}" "${config_file}" ||
             fail "could not read image config ${config_digest}"
-        config_os=$(jq -r '.os // ""' <<<"${config}")
-        config_arch=$(jq -r '.architecture // ""' <<<"${config}")
+        raw_digest="sha256:$(sha256_file "${config_file}")"
+        if [ "${raw_digest}" != "${config_digest}" ]; then
+            fail "image config ${config_digest} raw response digest is ${raw_digest}, not its descriptor digest"
+        fi
+        jq -e . "${config_file}" >/dev/null ||
+            fail "image config ${config_digest} returned an invalid document"
+        config_os=$(jq -r '.os // ""' "${config_file}")
+        config_arch=$(jq -r '.architecture // ""' "${config_file}")
         if [ "${config_os}/${config_arch}" != "${EXPECTED_PLATFORM}" ]; then
             fail "${IMMUTABLE_IMAGE_REF} config is ${config_os:-<missing>}/${config_arch:-<missing>}, not ${EXPECTED_PLATFORM}"
         fi
-        revision=$(jq -r --arg label "${REVISION_LABEL}" '.config.Labels[$label] // ""' <<<"${config}")
+        revision=$(jq -r --arg label "${REVISION_LABEL}" '.config.Labels[$label] // ""' "${config_file}")
         if [ -z "${revision}" ]; then
             fail "${IMAGE_REF} (config ${config_digest}) carries no ${REVISION_LABEL} label; the publisher must stamp the hew release commit onto the image"
         fi
@@ -236,8 +270,7 @@ while :; do
         if [ "${raw_digest}" != "${EXPECTED_DIGEST}" ]; then
             fail "${IMAGE_REF} raw manifest digest is ${raw_digest}, not ${EXPECTED_DIGEST}"
         fi
-        manifest=$(cat "${body_file}")
-        manifest_binds_expected_identity "${token}" "${manifest}"
+        manifest_binds_expected_identity "${token}" "${body_file}"
         echo "${IMMUTABLE_IMAGE_REF} is ${EXPECTED_PLATFORM} and binds release commit ${EXPECTED_REVISION}"
         exit 0
         ;;

@@ -1234,8 +1234,38 @@ def _tests() -> list:
     ]
 
 
+def _assert_runner_covers_every_top_level_test(
+    tests: list[object], source: str
+) -> None:
+    defined = {
+        node.name
+        for node in ast.parse(source).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test_")
+    }
+    registered = {test.__name__ for test in tests}
+    assert registered == defined, (
+        f"runner discovery mismatch: missing={sorted(defined - registered)}, "
+        f"extra={sorted(registered - defined)}"
+    )
+
+
+def test_runner_discovery_rejects_an_unregistered_test() -> None:
+    def test_registered() -> None:
+        pass
+
+    source = "def test_registered(): pass\ndef test_omitted(): pass\n"
+    try:
+        _assert_runner_covers_every_top_level_test([test_registered], source)
+    except AssertionError as exc:
+        assert "test_omitted" in str(exc)
+        return
+    raise AssertionError("an unregistered test escaped runner discovery parity")
+
+
 if __name__ == "__main__":
     tests = _tests()
+    _assert_runner_covers_every_top_level_test(tests, Path(__file__).read_text())
     failures = 0
     for test in tests:
         try:

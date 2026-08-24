@@ -1994,12 +1994,16 @@ def test_ci_wasm_consumers_provision_unknown_target() -> None:
     ci = CI_WORKFLOW.read_text()
     for job_name in ("playground-wasm-build", "build-and-test"):
         job = workflow_job(ci, job_name)
-        assert "uses: ./.github/actions/setup-rust-build" in job
-        assert re.search(
-            r"^\s+targets:\s+['\"]?[^\n]*\bwasm32-unknown-unknown\b",
-            job,
-            re.MULTILINE,
+        setup = next(
+            step
+            for step in workflow_steps(job)
+            if "uses: ./.github/actions/setup-rust-build" in step
         )
+        targets = re.search(r"^\s+targets:\s+['\"]?([^'\"\n]+)", setup, re.MULTILINE)
+        assert targets is not None
+        assert "wasm32-unknown-unknown" in {
+            target.strip() for target in targets.group(1).split(",")
+        }
 
 
 def test_binaryen_prefetch_pin_mutations_are_rejected() -> None:
@@ -2649,33 +2653,49 @@ def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:
         raise AssertionError("foundational release-gate mutation escaped")
 
 
-def _discover_tests() -> tuple[object, ...]:
-    return tuple(
-        test
-        for name, test in globals().items()
-        if name.startswith("test_") and callable(test)
-    )
+def _discover_tests() -> list:
+    """Return every test function after the module has finished loading."""
+    return [
+        value
+        for name, value in sorted(globals().items())
+        if name.startswith("test_") and callable(value)
+    ]
 
 
-def _test_function_count_in_file() -> int:
-    tree = ast.parse(Path(__file__).read_text())
-    return sum(
-        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+def _assert_runner_covers_every_top_level_test(
+    tests: list[object], source: str
+) -> None:
+    defined = {
+        node.name
+        for node in ast.parse(source).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name.startswith("test_")
-        for node in tree.body
+    }
+    discovered = {test.__name__ for test in tests}
+    assert discovered == defined, (
+        f"runner discovery mismatch: missing={sorted(defined - discovered)}, "
+        f"extra={sorted(discovered - defined)}"
     )
 
 
-_TESTS = _discover_tests()
-_EXPECTED_TEST_COUNT = _test_function_count_in_file()
-assert len(_TESTS) == _EXPECTED_TEST_COUNT, (
-    f"discovered {len(_TESTS)} tests, expected {_EXPECTED_TEST_COUNT}"
-)
+def test_direct_runner_discovery_rejects_an_omitted_test() -> None:
+    def test_discovered() -> None:
+        pass
+
+    source = "def test_discovered(): pass\ndef test_omitted(): pass\n"
+    try:
+        _assert_runner_covers_every_top_level_test([test_discovered], source)
+    except AssertionError as exc:
+        assert "test_omitted" in str(exc)
+        return
+    raise AssertionError("an omitted test escaped direct runner discovery parity")
 
 
 if __name__ == "__main__":
     failures = 0
-    for test in _TESTS:
+    discovered = _discover_tests()
+    _assert_runner_covers_every_top_level_test(discovered, Path(__file__).read_text())
+    for test in discovered:
         try:
             test()
             print(f"PASS {test.__name__}")
@@ -2683,5 +2703,5 @@ if __name__ == "__main__":
             print(f"FAIL {test.__name__}: {exc}")
             failures += 1
     if failures:
-        raise SystemExit(f"{failures}/{len(_TESTS)} tests failed")
-    print(f"All {len(_TESTS)} tests passed.")
+        raise SystemExit(f"{failures}/{len(discovered)} tests failed")
+    print(f"All {len(discovered)} tests passed.")

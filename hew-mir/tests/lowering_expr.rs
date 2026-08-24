@@ -18,6 +18,8 @@ mod binop_bitwise_logical;
 mod borrowed_forwarder_retained_owner_class;
 #[path = "lowering_expr/bytes_literal_lowering.rs"]
 mod bytes_literal_lowering;
+#[path = "lowering_expr/closure_await_fail_closed.rs"]
+mod closure_await_fail_closed;
 #[path = "lowering_expr/closure_env_ownership.rs"]
 mod closure_env_ownership;
 #[path = "lowering_expr/conditional_ask_return_ownership.rs"]

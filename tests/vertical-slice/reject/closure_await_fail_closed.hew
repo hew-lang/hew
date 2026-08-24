@@ -1,0 +1,22 @@
+// A closure body that awaits an actor reply currently lowers to a coroutine
+// ramp, but `fn` types do not carry suspension through every invocation path.
+// The compiler must reject the construct before codegen instead of exposing the
+// ramp's continuation handle as the closure's declared return value.
+//
+// Expected diagnostic: E_NOT_YET_IMPLEMENTED naming suspension inside a closure.
+actor Adder {
+    receive fn add(a: i64, b: i64) -> i64 {
+        a + b
+    }
+}
+
+fn main() {
+    let adder = spawn Adder();
+    let calculate = || {
+        match await adder.add(7, 8) {
+            .Ok(value) => value,
+            .Err(_error) => 0,
+        }
+    };
+    println(calculate());
+}

@@ -42,13 +42,6 @@ notify = "8"
 dirs.workspace = true
 wasmparser = "0.252.0"
 
-[features]
-# Red-first spec for the capture-escrow crash-cleanup feature (issue #2863).
-# Off by default: it gates the `suspending_closure_codegen_uses_one_typed_fresh_arg_cleanup_authority`
-# oracle, which asserts an unbuilt codegen behaviour and fails until #2863 lands.
-# RC2 re-enables it with `--features capture-escrow-spec`.
-capture-escrow-spec = []
-
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 

@@ -4,6 +4,8 @@
 //! Red baseline at `f7b703131`, before `hew_markdown_to_html` had a measured
 //! retention row: 3 calls leaked 3 nodes / 192 bytes and 50 calls leaked
 //! 50 nodes / 3,200 bytes. The admitted contract makes both probes exact zero.
+//! Historical suspending-closure fixtures remain here as rejection coverage;
+//! they must stop at the generic MIR diagnostic before any runtime oracle.
 
 #![cfg(unix)]
 
@@ -12,13 +14,10 @@ mod support;
 use std::path::Path;
 use std::process::Command;
 
-use support::leak_slope::{
-    assert_frame_slope_below_tolerance_exact_lines, compile_to_native, measure_leaks_exact,
-    run_probe_witness, HIGH_FRAMES, LOW_FRAMES,
+use support::leak_slope::{assert_frame_slope_below_tolerance_exact_lines, compile_to_native};
+use support::{
+    describe_output, hew_binary, repo_root, require_codegen, run_bounded_command, strip_ansi,
 };
-use support::{describe_output, require_codegen, run_bounded_command};
-
-type CrashSource = fn(usize) -> String;
 
 fn markdown_wrapper_source(frames: usize) -> String {
     format!(
@@ -804,26 +803,48 @@ fn main() {
     TEMPLATE.replace("__FRAMES__", &frames.to_string())
 }
 
-// Only the capture-escrow-spec IR oracle reads a specific function body out of
-// the emitted LLVM IR; gated with its sole caller so the default build carries
-// no dead helper (issue #2863).
-#[cfg(feature = "capture-escrow-spec")]
-fn llvm_function_body<'a>(ir: &'a str, name: &str) -> &'a str {
-    let marker = format!("@{name}(");
-    let function_start = ir
-        .match_indices("define ")
-        .filter(|(start, _)| ir[*start..].contains(&marker))
-        .find_map(|(start, _)| {
-            let line_end = ir[start..].find('\n').map(|offset| start + offset)?;
-            ir[start..line_end].contains(&marker).then_some(start)
-        })
-        .unwrap_or_else(|| panic!("missing LLVM function `{name}`"));
-    let tail = &ir[function_start..];
-    let function_end = tail
-        .find("\n}\n")
-        .unwrap_or_else(|| panic!("unterminated LLVM function `{name}`"))
-        + 3;
-    &tail[..function_end]
+fn assert_suspending_closure_rejected(source: &str, name: &str) {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("suspending-closure-reject-")
+        .tempdir()
+        .expect("tempdir");
+    let source_path = dir.path().join(format!("{name}.hew"));
+    std::fs::write(&source_path, source).expect("write rejection fixture");
+    let output = Command::new(hew_binary())
+        .args([
+            "compile",
+            "--emit-dir",
+            dir.path().to_str().expect("emit-dir utf-8"),
+            source_path.to_str().expect("source path utf-8"),
+        ])
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew compile");
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        !output.status.success(),
+        "{name} must reject closure suspension before its runtime oracle:\n{}",
+        describe_output(&output)
+    );
+    assert!(
+        stderr.contains("E_NOT_YET_IMPLEMENTED")
+            && stderr.contains("suspension inside a closure")
+            && stderr.contains(
+                "function types do not yet carry the suspension metadata needed for every direct, \
+                 nested, and higher-order invocation to select the matching driver"
+            ),
+        "{name} must report the generic closure-suspension diagnostic:\n{stderr}"
+    );
+    let emitted = std::fs::read_dir(dir.path())
+        .expect("read rejection output directory")
+        .map(|entry| entry.expect("read rejection output entry").path())
+        .filter(|path| path != &source_path)
+        .collect::<Vec<_>>();
+    assert!(
+        emitted.is_empty(),
+        "{name} must emit no codegen artifacts after MIR rejection: {emitted:#?}"
+    );
 }
 
 fn run_fixture(bin: &Path, label: &str) -> std::process::Output {
@@ -858,207 +879,64 @@ fn closure_invoke_string_returns_have_no_per_call_leak() {
     );
 }
 
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
-)]
 #[test]
-fn suspending_closure_fresh_string_argument_has_no_completion_leak_slope() {
-    assert_frame_slope_below_tolerance_exact_lines(
-        "suspending_closure_fresh_string_completion",
-        suspending_closure_completion_source,
-        std::convert::identity,
-    );
-}
-
-#[test]
-fn suspending_closure_parked_abandon_completes_shutdown() {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix("suspending-closure-abandon-")
-        .tempdir()
-        .expect("tempdir");
-    let bin = compile_to_native(
-        SUSPENDING_CLOSURE_ABANDON_SOURCE,
-        dir.path(),
-        "suspending_closure_abandon",
-    );
-    let output = run_fixture(&bin, "run suspending-closure parked-abandon fixture");
-    assert!(
-        output.status.success(),
-        "parked-abandon fixture failed:\n{}",
-        describe_output(&output)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "parked\nshutdown\n",
-        "the fixture must prove the fresh argument was live across a real park \
-         before the runtime destroyed the suspended handler"
-    );
-}
-
-/// Red-first spec for the capture-escrow feature (issue #2863): asserts a
-/// captured owner's crash-cleanup moves INTO the closure child. Current codegen
-/// is already memory-safe (the peer-EOF oracle below proves it closes exactly
-/// once) but arms the cleanup in the PARENT frame, so this assertion fails until
-/// #2863 lands. It is compiled out of the default build behind the
-/// `capture-escrow-spec` feature rather than `#[ignore]`d: an ignored test the
-/// reachability gate cannot see a CI target behind is dark-zoned, whereas a
-/// feature-gated body is honestly absent until re-enabled. RC2 re-enables it by
-/// building `-p hew-cli --features capture-escrow-spec` (or by deleting this cfg
-/// when #2863 makes it green).
-#[cfg(feature = "capture-escrow-spec")]
-#[test]
-fn suspending_closure_codegen_uses_one_typed_fresh_arg_cleanup_authority() {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix("suspending-closure-codegen-")
-        .tempdir()
-        .expect("tempdir");
-    let fresh_bin = compile_to_native(
-        SUSPENDING_CLOSURE_FRESH_CRASH_SOURCE,
-        dir.path(),
-        "suspending_closure_fresh_crash_codegen",
-    );
-    let static_bin = compile_to_native(
-        &static_crash_source(),
-        dir.path(),
-        "suspending_closure_static_crash_codegen",
-    );
-    let fresh_ir =
-        std::fs::read_to_string(fresh_bin.with_extension("ll")).expect("read fresh LLVM IR");
-    let static_ir =
-        std::fs::read_to_string(static_bin.with_extension("ll")).expect("read static LLVM IR");
-    let fresh_handler = llvm_function_body(&fresh_ir, "Reader__recv__go");
-    let static_handler = llvm_function_body(&static_ir, "Reader__recv__go");
-    let typed_arm = "call i64 @hew_cont_crash_cleanup_arm";
-
-    assert_eq!(
-        fresh_handler.matches(typed_arm).count(),
-        1,
-        "the fresh string producer must arm one typed cleanup authority:\n{fresh_handler}"
-    );
-    assert_eq!(
-        static_handler.matches(typed_arm).count(),
-        0,
-        "a borrowed static literal carries no typed crash-unwind ownership obligation:\n\
-         {static_handler}"
-    );
-}
-
-/// Crash-path close-EXACTLY-once witness for the reader-owned connection of a
-/// suspending closure, from the peer's point of view.
-///
-/// - **At least once**: the peer's `try_read` must return an orderly EOF.
-///   An unclosed connection blocks the bounded read until its timeout and the
-///   run fails — the leak polarity a `leaks(1)` slope cannot detect.
-/// - **At most once**: the run executes under the poisoned-allocator pair
-///   (`MallocScribble`/`MallocPreScribble`), so a second cleanup authority
-///   releasing the same connection touches scribbled memory and aborts before
-///   stdout settles — the double-free polarity.
-///
-/// Both polarities must keep holding through any change to how the typed
-/// crash-cleanup arms in `Reader__recv__go` and its closure frame are
-/// distributed (the arm-count oracle above counts sites; this one proves the
-/// close behaviour those sites exist for).
-#[test]
-fn suspending_closure_crash_peer_observes_connection_close_exactly_once() {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix("suspending-closure-peer-eof-")
-        .tempdir()
-        .expect("tempdir");
-    let bin = compile_to_native(
-        SUSPENDING_CLOSURE_PEER_EOF_SOURCE,
-        dir.path(),
-        "suspending_closure_crash_peer_eof",
-    );
-    let mut command = Command::new(&bin);
-    command
-        .env("HEW_WORKERS", "1")
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1");
-    let output = run_bounded_command(command, "run suspending-closure peer-EOF crash fixture");
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "peer-EOF crash fixture failed (a hang here means the crash path never \
-         closed the reader connection; an abort means it was closed twice):\n{}",
-        describe_output(&output)
-    );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("crash before child suspend"));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "crash-fallback\npeer-eof\nmain-done\n",
-        "the peer must observe an orderly EOF exactly once after the reader \
-         crashes, before main's own controls close"
-    );
-}
-
-#[test]
-fn suspending_closure_sync_crash_explicitly_closes_tcp_controls() {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix("suspending-closure-crash-tcp-controls-")
-        .tempdir()
-        .expect("tempdir");
-    let fresh_bin = compile_to_native(
-        SUSPENDING_CLOSURE_FRESH_CRASH_SOURCE,
-        dir.path(),
-        "suspending_closure_fresh_crash_tcp_controls",
-    );
-    let static_bin = compile_to_native(
-        &static_crash_source(),
-        dir.path(),
-        "suspending_closure_static_crash_tcp_controls",
-    );
-
-    for (label, bin) in [("fresh", &fresh_bin), ("static", &static_bin)] {
-        let output = run_fixture(bin, &format!("run {label} crash TCP-control fixture"));
-        assert_eq!(
-            output.status.code(),
-            Some(1),
-            "{label} crash TCP-control fixture failed:\n{}",
-            describe_output(&output)
-        );
-        assert!(String::from_utf8_lossy(&output.stderr).contains("crash before child suspend"));
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout),
-            "crash-fallback\nmain-done\n0\n",
-            "{label} must await the crashing reader after explicitly closing \
-             both the listener and accepted peer; only the reader connection \
-             remains for typed crash cleanup"
-        );
+fn suspending_closure_runtime_fixtures_are_rejected_before_codegen() {
+    let fixtures = [
+        (
+            "suspending_closure_fresh_string_completion",
+            suspending_closure_completion_source(1),
+        ),
+        (
+            "suspending_closure_abandon",
+            SUSPENDING_CLOSURE_ABANDON_SOURCE.to_string(),
+        ),
+        (
+            "suspending_closure_fresh_crash",
+            SUSPENDING_CLOSURE_FRESH_CRASH_SOURCE.to_string(),
+        ),
+        ("suspending_closure_static_crash", static_crash_source()),
+        (
+            "suspending_closure_crash_peer_eof",
+            SUSPENDING_CLOSURE_PEER_EOF_SOURCE.to_string(),
+        ),
+        ("tcp_fresh_crash", tcp_fresh_crash_source(1)),
+        ("tcp_static_crash", tcp_static_crash_source(1)),
+        (
+            "no_resource_static_crash",
+            no_resource_static_crash_source(1),
+        ),
+        (
+            "suspending_closure_fresh_resume_crash",
+            SUSPENDING_CLOSURE_FRESH_RESUME_CRASH_SOURCE.to_string(),
+        ),
+        (
+            "suspending_closure_static_resume_crash",
+            static_resume_crash_source(),
+        ),
+        (
+            "suspending_closure_child_owner_pre_first_await_crash",
+            suspending_closure_child_owner_pre_first_await_crash_source(1),
+        ),
+        (
+            "suspending_closure_child_owner_reassign_then_crash",
+            suspending_closure_child_owner_reassign_then_crash_source(1),
+        ),
+        (
+            "suspending_closure_child_owner_resume_crash",
+            suspending_closure_child_owner_resume_crash_source(1),
+        ),
+        (
+            "nested_suspending_closure_crash_restart",
+            nested_suspending_closure_crash_restart_source(1),
+        ),
+        (
+            "nested_captured_string_crash_restart",
+            nested_captured_string_crash_restart_source(1),
+        ),
+    ];
+    for (name, source) in fixtures {
+        assert_suspending_closure_rejected(&source, name);
     }
-}
-
-#[test]
-fn suspending_closure_later_resume_crash_drains_typed_root_owners_once() {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix("suspending-closure-resume-root-owners-")
-        .tempdir()
-        .expect("tempdir");
-    let bin = compile_to_native(
-        SUSPENDING_CLOSURE_FRESH_RESUME_CRASH_SOURCE,
-        dir.path(),
-        "suspending_closure_resume_root_owners",
-    );
-    let output = run_fixture(&bin, "run later-resume typed-root cleanup fixture");
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "later-resume typed-root cleanup fixture failed (a poisoned-header abort \
-         here is a double drop):\n{}",
-        describe_output(&output)
-    );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("crash after child resume"));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "crash-fallback\nmain-done\n0\n",
-        "string, Bytes, record, and nested-closure owners must be drained before \
-         the crashed root frame is reclaimed"
-    );
 }
 
 #[test]
@@ -1110,223 +988,5 @@ fn ordinary_helper_snapshot_raw_trap_has_zero_leak_slope() {
         "ordinary_helper_snapshot_raw_trap",
         ordinary_helper_snapshot_crash_source,
         |frames| frames * 2,
-    );
-}
-
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "exact crash differential needs macOS `leaks(1)` / the Darwin poisoned allocator"
-)]
-#[test]
-fn suspending_closure_sync_crash_releases_only_the_fresh_argument_delta() {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix("suspending-closure-crash-")
-        .tempdir()
-        .expect("tempdir");
-    let fresh_bin = compile_to_native(
-        SUSPENDING_CLOSURE_FRESH_CRASH_SOURCE,
-        dir.path(),
-        "suspending_closure_fresh_crash",
-    );
-    let static_bin = compile_to_native(
-        &static_crash_source(),
-        dir.path(),
-        "suspending_closure_static_crash",
-    );
-
-    for (label, bin) in [("fresh", &fresh_bin), ("static", &static_bin)] {
-        let output = run_fixture(bin, &format!("run {label} synchronous-crash fixture"));
-        assert_eq!(
-            output.status.code(),
-            Some(1),
-            "{label} synchronous-crash fixture failed:\n{}",
-            describe_output(&output)
-        );
-        assert!(String::from_utf8_lossy(&output.stderr).contains("crash before child suspend"));
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout),
-            "crash-fallback\nmain-done\n0\n",
-            "{label} fixture must close the listener and accepted peer explicitly, \
-             then await the crash teardown before reporting live coroutine-frame bytes"
-        );
-    }
-
-    let fresh_leaks = measure_leaks_exact(&fresh_bin);
-    let static_leaks = measure_leaks_exact(&static_bin);
-    assert_eq!(
-        fresh_leaks, static_leaks,
-        "the heap-producing argument must add no leak over the static-literal \
-         control after a synchronous child-ramp crash; fresh={fresh_leaks:?}, \
-         static={static_leaks:?}"
-    );
-    assert_eq!(
-        static_leaks,
-        (0, 0),
-        "explicit listener and accepted-peer closes leave no TCP baseline: the \
-         reader connection and both coroutine frames must be reclaimed by their \
-         typed crash cleanup"
-    );
-}
-
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "exact TCP crash leak evidence needs macOS `leaks(1)` / the Darwin poisoned allocator"
-)]
-#[test]
-fn tcp_crash_resource_lifecycles_are_exact_zero_at_low_and_high_frames() {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix("tcp-crash-resource-lifecycle-")
-        .tempdir()
-        .expect("tempdir");
-
-    // The low/high pair detects a per-frame owner leak.  The static TCP
-    // variant controls fresh-string ownership, while the no-resource variant
-    // controls the same actor/closure crash path without either resource.
-    let sources: [(&str, CrashSource); 3] = [
-        ("tcp_fresh", tcp_fresh_crash_source),
-        ("tcp_static", tcp_static_crash_source),
-        ("no_resource_static", no_resource_static_crash_source),
-    ];
-    for (label, source) in sources {
-        for frames in [LOW_FRAMES, HIGH_FRAMES] {
-            let bin = compile_to_native(
-                &source(frames),
-                dir.path(),
-                &format!("{label}_{frames}_frames"),
-            );
-            let lines = run_probe_witness(&bin, &[]);
-            assert_eq!(
-                lines, frames,
-                "{label} must complete all {frames} crash/cleanup frames before its leak \
-                 measurement is trusted"
-            );
-            let leaks = measure_leaks_exact(&bin);
-            assert_eq!(
-                leaks,
-                (0, 0),
-                "{label} must release every owner at {frames} frames; leaks={leaks:?}"
-            );
-        }
-    }
-}
-
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "exact crash differential needs macOS `leaks(1)` / the Darwin poisoned allocator"
-)]
-#[test]
-fn suspending_closure_later_resume_crash_reclaims_nested_frame_only() {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix("suspending-closure-resume-crash-")
-        .tempdir()
-        .expect("tempdir");
-    let fresh_bin = compile_to_native(
-        SUSPENDING_CLOSURE_FRESH_RESUME_CRASH_SOURCE,
-        dir.path(),
-        "suspending_closure_fresh_resume_crash",
-    );
-    let static_bin = compile_to_native(
-        &static_resume_crash_source(),
-        dir.path(),
-        "suspending_closure_static_resume_crash",
-    );
-
-    for (label, bin) in [("fresh", &fresh_bin), ("static", &static_bin)] {
-        let output = run_fixture(bin, &format!("run {label} later-resume crash fixture"));
-        assert_eq!(
-            output.status.code(),
-            Some(1),
-            "{label} later-resume crash fixture failed:\n{}",
-            describe_output(&output)
-        );
-        assert!(String::from_utf8_lossy(&output.stderr).contains("crash after child resume"));
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout),
-            "crash-fallback\nmain-done\n0\n",
-            "{label} later-resume crash must preserve the scheduler root's sole \
-             teardown while returning live frame bytes to baseline"
-        );
-    }
-
-    let fresh_leaks = measure_leaks_exact(&fresh_bin);
-    let static_leaks = measure_leaks_exact(&static_bin);
-    assert_eq!(
-        fresh_leaks, static_leaks,
-        "a later child-resume crash must add neither a frame leak nor a fresh \
-         string leak over the static control; fresh={fresh_leaks:?}, \
-         static={static_leaks:?}"
-    );
-    assert_eq!(
-        static_leaks,
-        (0, 0),
-        "the actor-ask resume fixture carries no unrelated typed resource floor"
-    );
-}
-
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "exact child-frame crash leak slope needs macOS `leaks(1)` / the Darwin poisoned allocator"
-)]
-#[test]
-fn suspending_closure_child_owners_survive_await_without_crash_leaks() {
-    assert_frame_slope_below_tolerance_exact_lines(
-        "suspending_closure_child_owner_resume_crash",
-        suspending_closure_child_owner_resume_crash_source,
-        std::convert::identity,
-    );
-}
-
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "exact initial-ramp child-frame crash leak slope needs macOS `leaks(1)` / the Darwin poisoned allocator"
-)]
-#[test]
-fn suspending_closure_child_owners_crash_before_first_await_without_leaks() {
-    assert_frame_slope_below_tolerance_exact_lines(
-        "suspending_closure_child_owner_pre_first_await_crash",
-        suspending_closure_child_owner_pre_first_await_crash_source,
-        std::convert::identity,
-    );
-}
-
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "exact reassigned child-frame crash leak slope needs macOS `leaks(1)` / the Darwin poisoned allocator"
-)]
-#[test]
-fn suspending_closure_child_owner_reassignment_rearms_current_value_once() {
-    assert_frame_slope_below_tolerance_exact_lines(
-        "suspending_closure_child_owner_reassign_then_crash",
-        suspending_closure_child_owner_reassign_then_crash_source,
-        std::convert::identity,
-    );
-}
-
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator"
-)]
-#[test]
-fn nested_suspending_closure_crash_restart_has_zero_leak_slope() {
-    assert_frame_slope_below_tolerance_exact_lines(
-        "nested_suspending_closure_crash_restart",
-        nested_suspending_closure_crash_restart_source,
-        std::convert::identity,
-    );
-}
-
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "exact crash leak slope needs macOS `leaks(1)` / the Darwin poisoned allocator"
-)]
-#[test]
-fn nested_captured_strings_crash_restart_has_zero_leak_slope() {
-    assert_frame_slope_below_tolerance_exact_lines(
-        "nested_captured_strings_crash_restart",
-        nested_captured_string_crash_restart_source,
-        std::convert::identity,
     );
 }

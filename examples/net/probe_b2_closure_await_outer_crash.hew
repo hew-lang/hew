@@ -1,22 +1,11 @@
-// SEC-2 load-bearing regression fixture: an outer handler that CRASHES DURING a
-// child suspending-closure await.
-//
-// `Reader.go` is an ASK handler. Inside it, `read_once` is a suspending closure
-// (it `await`s the captured Connection). The closure body panics on its first
-// statement — i.e. WHILE the driver's reply-channel swap is open, inside the
-// synchronous ramp call, before the await parks. The panic longjmps to the
-// scheduler crash-recovery frame.
-//
-// Pre-fix: the swap was never unwound on the crash edge, so the outer context
-// was left pointing at the driver channel; crash cleanup replied to the driver
-// channel and nulled the real outer reply channel, so `await reader.go(0)` hung
-// forever (the bounded test runner turns that into a failure).
-//
-// Post-fix: the crash-recovery edge unwinds the open swap first, restoring the
-// outer reply routing and tearing the driver channel down, so the outer ask
-// resolves to `Err` (the empty crash fallback) and the program completes. The
-// `trigger` parameter is a runtime value so the panic is not statically
-// unreachable ahead of the await (the closure still classifies as suspending).
+// Retained future semantic fixture for an ASK handler that crashes before a
+// child suspending closure reaches its await. Once function types carry
+// suspension metadata, this will exercise restoration of the outer reply route
+// while a closure driver is active. The `trigger` parameter keeps the await
+// structurally reachable so the closure remains classified as suspending.
+// Today invocation sites cannot select a matching driver safely, so MIR
+// deliberately rejects this fixture with `suspension inside a closure` before
+// code generation; none of the runtime crash/reply behavior below is executed.
 import std.net.{Listener};
 
 extern "C" {

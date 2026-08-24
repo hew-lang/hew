@@ -43,7 +43,12 @@
 examples/multifile/02_geometry/geo/area.hew
 examples/multifile/02_geometry/geo/distance.hew
 
-# deferred-nyi: net/await NYI
+# deferred-nyi: closure suspension is fail-closed until MIR can lower the
+# coroutine frame and invocation driver metadata for closure calls
+examples/net/probe_b2_closure_await_outer_crash.hew # E_NOT_YET_IMPLEMENTED: MIR lowering for suspension inside a closure is not implemented yet
+examples/net/probe_b2_closure_capture_await.hew # E_NOT_YET_IMPLEMENTED: MIR lowering for suspension inside a closure is not implemented yet
+examples/net/probe_b2_closure_multi_await.hew # E_NOT_YET_IMPLEMENTED: MIR lowering for suspension inside a closure is not implemented yet
+examples/net/probe_b2_closure_unit_await.hew # E_NOT_YET_IMPLEMENTED: MIR lowering for suspension inside a closure is not implemented yet
 
 # deferred-nyi: observe-related NYI
 

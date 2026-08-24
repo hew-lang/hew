@@ -1,12 +1,9 @@
-// CODE-1 regression fixture: a UNIT-returning suspending closure.
-//
-// `read_once` awaits the captured Connection but DISCARDS the read value, so the
-// closure's logical return is unit. The call site still lowers to
-// `Terminator::SuspendingCallClosure` (the body carries an `await` suspend), and
-// the driver's finish path takes the unit branch — which must release BOTH the
-// retained sender ref and the creator ref so the driver reply channel is
-// reclaimed exactly once (no leaked sender reference). Running it under both
-// pools proves the unit path suspends, resumes, and completes cleanly.
+// Retained future semantic fixture for a unit-returning suspending closure.
+// `read_once` awaits a captured Connection and discards the read value. Once
+// function types carry suspension metadata, this will exercise the closure
+// driver's unit-result cleanup path. Today invocation sites cannot select that
+// driver safely, so MIR deliberately rejects this fixture with `suspension
+// inside a closure` before code generation.
 import std.net.{Listener};
 
 extern "C" {

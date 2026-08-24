@@ -48,10 +48,10 @@
 //! that can fall.
 //!
 //! Regenerate with `HEW_RELEASE_COUNT_CAPTURE=1 cargo nextest run -p hew-cli
-//! -E 'test(release_count)' --no-capture`, and say in the commit message which
-//! counts moved and why. A DROP is a finding; an INCREASE passes and is
-//! reported, because restoring a release is the direction this file exists to
-//! protect.
+//! -E 'binary(stdlib_corpus_release_count_differential)' --no-capture`, and say
+//! in the commit message which counts moved and why. A DROP is a finding; an
+//! INCREASE passes and is reported, because restoring a release is the direction
+//! this file exists to protect.
 
 mod support;
 

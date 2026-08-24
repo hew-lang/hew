@@ -153,16 +153,18 @@ pub fn compile_to_native(source: &str, dir: &Path, name: &str) -> PathBuf {
     let hew_src = dir.join(format!("{name}.hew"));
     std::fs::write(&hew_src, source).expect("write hew source");
 
-    let output = Command::new(hew_binary())
+    let mut command = Command::new(hew_binary());
+    command
         .args([
             "compile",
             "--emit-dir",
             dir.to_str().expect("emit-dir utf-8"),
             hew_src.to_str().expect("hew src utf-8"),
         ])
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile");
+        .current_dir(repo_root());
+    let output = hew_testutil::compile_with_ir(&mut command, dir.join(format!("{name}.ll")))
+        .expect("invoke hew compile")
+        .output;
 
     assert!(
         output.status.success(),
@@ -177,6 +179,40 @@ pub fn compile_to_native(source: &str, dir: &Path, name: &str) -> PathBuf {
         .unwrap_or_else(|| panic!("no `native:` line for {name}:\n{stdout}"))
         .to_string();
     PathBuf::from(bin)
+}
+
+/// Compile `source` to native code while retaining the emitted LLVM IR.
+///
+/// Returns the native binary and explicitly requested `.ll` sidecar paths.
+pub fn compile_to_native_with_ir(source: &str, dir: &Path, name: &str) -> (PathBuf, PathBuf) {
+    let hew_src = dir.join(format!("{name}.hew"));
+    std::fs::write(&hew_src, source).expect("write hew source");
+
+    let mut command = Command::new(hew_binary());
+    command
+        .args([
+            "compile",
+            "--emit-dir",
+            dir.to_str().expect("emit-dir utf-8"),
+            hew_src.to_str().expect("hew src utf-8"),
+        ])
+        .current_dir(repo_root());
+    let compiled = hew_testutil::compile_with_ir(&mut command, dir.join(format!("{name}.ll")))
+        .expect("invoke hew compile");
+
+    assert!(
+        compiled.output.status.success(),
+        "hew compile failed for {name}:\n{}",
+        describe_output(&compiled.output)
+    );
+
+    let stdout = String::from_utf8_lossy(&compiled.output.stdout);
+    let bin = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("native: "))
+        .unwrap_or_else(|| panic!("no `native:` line for {name}:\n{stdout}"))
+        .to_string();
+    (PathBuf::from(bin), compiled.ll_path)
 }
 
 /// One observation of a probe binary: what it did, and what it leaked.

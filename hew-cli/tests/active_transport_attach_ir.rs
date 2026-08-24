@@ -128,6 +128,7 @@ fn inferred_transport_attach_emits_concrete_dispatch_ids() {
     let output = Command::new(hew_binary())
         .args([
             "compile",
+            "--emit-llvm",
             "--emit-dir",
             dir.path().to_str().expect("emit directory is UTF-8"),
             source.to_str().expect("source path is UTF-8"),

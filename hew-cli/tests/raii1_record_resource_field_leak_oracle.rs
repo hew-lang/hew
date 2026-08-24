@@ -237,9 +237,26 @@ fn compile_to_native(source: &str, dir: &Path, name: &str) -> PathBuf {
 
 /// Compile `source` and read the emitted `<name>.ll` LLVM IR text.
 fn compile_and_read_ll(source: &str, dir: &Path, name: &str) -> String {
-    let _bin = compile_to_native(source, dir, name);
-    let ll = dir.join(format!("{name}.ll"));
-    std::fs::read_to_string(&ll).unwrap_or_else(|e| panic!("read emitted IR {}: {e}", ll.display()))
+    let hew_src = dir.join(format!("{name}.hew"));
+    std::fs::write(&hew_src, source).expect("write hew source");
+    let mut command = Command::new(hew_binary());
+    command
+        .args([
+            "compile",
+            "--emit-dir",
+            dir.to_str().expect("emit-dir utf-8"),
+            hew_src.to_str().expect("hew src utf-8"),
+        ])
+        .current_dir(repo_root());
+    let compiled = hew_testutil::compile_with_ir(&mut command, dir.join(format!("{name}.ll")))
+        .expect("invoke hew compile");
+    assert!(
+        compiled.output.status.success(),
+        "hew compile failed for {name}:\n{}",
+        describe_output(&compiled.output)
+    );
+    std::fs::read_to_string(&compiled.ll_path)
+        .unwrap_or_else(|e| panic!("read emitted IR {}: {e}", compiled.ll_path.display()))
 }
 
 /// Extract a function body from `ll`: the lines from the `define` containing

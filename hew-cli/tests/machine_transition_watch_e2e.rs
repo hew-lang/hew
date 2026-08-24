@@ -499,6 +499,7 @@ fn suspending_select_wake_gate_ir_shape_holds() {
         dir.path(),
         &[
             "compile",
+            "--emit-llvm",
             "--emit-dir",
             emit_dir.to_str().unwrap(),
             source.to_str().unwrap(),

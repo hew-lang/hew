@@ -224,6 +224,16 @@ REGISTRY: tuple[Baseline, ...] = (
         check="make ll-diff",
     ),
     Baseline(
+        id="dogfood-compile-measure",
+        summary="dogfood-shaped LLVM IR byte and structural count baseline",
+        tier="compiler",
+        paths=("tests/compile-measure/dogfood-shape-baseline.txt",),
+        gates=("dogfood-compile-measure",),
+        regen="make dogfood-compile-measure DOGFOOD_MEASURE_UPDATE=1",
+        check="make dogfood-compile-measure",
+        explicit_only=True,
+    ),
+    Baseline(
         id="checked-mir-goldens",
         summary="checked-MIR corpus --dump-mir goldens",
         tier="compiler",

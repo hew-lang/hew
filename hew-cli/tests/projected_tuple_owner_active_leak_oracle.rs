@@ -176,7 +176,7 @@ fn compile_to_llvm(source: &str, name: &str) -> String {
     std::fs::create_dir(&emit_dir).expect("create emit dir");
     std::fs::write(&source_path, source).expect("write Hew source");
     let output = Command::new(hew_binary())
-        .args(["compile", "--emit-dir"])
+        .args(["compile", "--emit-llvm", "--emit-dir"])
         .arg(&emit_dir)
         .arg(&source_path)
         .current_dir(repo_root())

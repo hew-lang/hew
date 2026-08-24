@@ -448,6 +448,7 @@ fn consuming_a_resource_from_a_reusable_closure_fails_closed() {
     let output = Command::new(hew_binary())
         .args([
             "compile",
+            "--emit-llvm",
             "--emit-dir",
             emit_dir.to_str().expect("emit path utf-8"),
             input.to_str().expect("fixture path utf-8"),

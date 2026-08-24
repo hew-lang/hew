@@ -434,6 +434,9 @@ jobs:
         # (test-sandbox-parity-coverage-check).
         run: make sandbox-parity-coverage-check
 
+      - name: Measure dogfood compiler IR
+        run: make dogfood-compile-measure
+
   # ─────────────────────────────────────────────────────────────────────────
   # License gate — enforce the deny.toml allow-list so no copyleft or unknown
   # dep silently enters the shipping graph, and assert THIRD-PARTY-LICENSES is
@@ -536,6 +539,10 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         with:
           cache-shared-key: compiled-hew-linux
+
+      - name: Assert the developer compiler profile
+        if: env.RUN_CODE_PATH == 'true'
+        run: make hew-profile-check
 
       - name: Build and certify the compiled Hew bundle
         if: env.RUN_CODE_PATH == 'true'

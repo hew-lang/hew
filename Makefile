@@ -83,11 +83,12 @@
 # so there are no redundant copies and incremental builds just work.
 #
 # Usage:
-#   make              — build everything (debug)
+#   make              — build the release-lib compiler and debug support tools
 #   make release      — build everything (release, optimized)
 #   make pre-release  — release + validate on all platforms before tagging
 #   make publish-docs — build stdlib docs + print wrangler deploy command (operator runs wrangler)
-#   make hew          — alias for hew-native (a driver-only build cannot link)
+#   make hew          — release-lib compiler + archive, staged at build/bin/hew
+#   make hew-debug    — debug compiler + archive, staged at build/bin/hew-debug
 #   make hew-native   — compiler driver + native libhew archive for `hew build`
 #   make observe      — just the TUI observer (hew-observe)
 #   make observe-functional-test — HTTP-backed functional observe harness
@@ -140,7 +141,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks help shell-script-lint hew hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check baselines baselines-check baselines-check-build
+.PHONY: all build bootstrap install-hooks help shell-script-lint hew hew-debug hew-profile-check hew-native hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check baselines baselines-check baselines-check-build
 .PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-cabi-build test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-obligation-advisory-corpus test-obligation-advisory-runner-selftest core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan legacy-path-syntax-lint hew-fmt-check test-migrate-corpus check-gate-reachability test-check-gate-reachability check-counterfactual-output check-counterfactual-output-build sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property tool-pin-contract-check test-build-harness forced-cancel-composite-check
 .PHONY: stdlib-user-build-clean stdlib-user-build-clean-build
 .PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check test-python310-toml-compat
@@ -157,7 +158,7 @@ MAKEFILE_PARSE_INPUTS := \
 .PHONY: assemble assemble-release pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
-.PHONY: ll-diff ll-golden ll-identity-selftest
+.PHONY: ll-diff ll-golden ll-identity-selftest dogfood-compile-measure dogfood-compile-measure-build
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
 
@@ -210,10 +211,14 @@ RELEASE_DIR := $(CARGO_NATIVE_OUT)/release
 # `release` archive. See `[profile.release-lib]` in Cargo.toml.
 RELEASE_LIB_DIR := $(CARGO_NATIVE_OUT)/release-lib
 ifeq ($(OS),Windows_NT)
+DEBUG_HEW := $(DEBUG_DIR)/hew.exe
 RELEASE_HEW := $(RELEASE_DIR)/hew.exe
+RELEASE_LIB_HEW := $(RELEASE_LIB_DIR)/hew.exe
 RELEASE_LIBHEW := $(RELEASE_LIB_DIR)/hew.lib
 else
+DEBUG_HEW := $(DEBUG_DIR)/hew
 RELEASE_HEW := $(RELEASE_DIR)/hew
+RELEASE_LIB_HEW := $(RELEASE_LIB_DIR)/hew
 RELEASE_LIBHEW := $(RELEASE_LIB_DIR)/libhew.a
 endif
 # The wasm archives are always built with an explicit `--target wasm32-wasip1`,
@@ -328,22 +333,54 @@ RUNTIME_MIRI_TARGET_DIR := target/miri-runtime
 
 # ── Default target ──────────────────────────────────────────────────────────
 
-all: hew-native hew-lsp observe runtime stdlib wasm-runtime assemble ## Build: build all debug artifacts
+all: assemble ## Build: build the release-lib compiler and debug support artifacts
+	$(ASSERT_RELEASE_LIB_HEW_PROFILE)
 
-# Convenience alias — rebuilds all debug artifacts including libhew.a.
+# Convenience alias — builds the release-lib compiler and debug support tools.
 # Equivalent to `make all`; exists so that `make build` behaves as expected.
 build: all
 
 # ── Rust targets ────────────────────────────────────────────────────────────
 
-# `hew` used to run `cargo build -p hew-cli`, which produces the compiler
-# DRIVER only. The link step for a compiled program also needs hew-lib's
-# staticlib beside that driver, so the target handed out a compiler that could
-# not link a single program — and the resulting undefined-symbol wall reads
-# like a compiler bug. There is no legitimate use for that pairing, so `hew`
-# is now exactly `hew-native`. If you truly want the driver alone (to check
-# that it compiles, say), run `cargo build -p hew-cli` and own the consequence.
-hew: hew-native ## Build: build the compiler and native libhew archive
+# The supported developer launcher uses the non-LTO release-lib profile for
+# both the driver and its linkable archive. Keep a separate debug launcher for
+# compiler debugging without changing the stable build/bin/hew selection.
+hew: libhew-release-lib ## Build: build the release-lib compiler and native archive
+	cargo build -p hew-cli --profile release-lib $(CARGO_TARGET_FLAG)
+	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
+	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)" "$(BUILD_DIR)/bin/hew"
+	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)" "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
+
+hew-debug: hew-native
+	@mkdir -p $(BUILD_DIR)/bin
+	@ln -sfn "$(LINK_UP2)$(DEBUG_HEW)" "$(BUILD_DIR)/bin/hew-debug"
+	@echo "compiler profile: debug"
+	@echo "compiler path: $(DEBUG_HEW)"
+	@test -f "$(DEBUG_HEW)"
+
+# Shared assertion recipe. `hew-profile-check` builds the supported launcher
+# before checking it; `all` runs the same assertion only after `assemble`, so a
+# later assembly step cannot silently replace the launcher with another profile.
+define ASSERT_RELEASE_LIB_HEW_PROFILE
+	@actual="$$(readlink "$(BUILD_DIR)/bin/hew")"; \
+	expected="$(LINK_UP2)$(RELEASE_LIB_HEW)"; \
+	echo "compiler profile: release-lib"; \
+	echo "compiler path: $(RELEASE_LIB_HEW)"; \
+	test -f "$(RELEASE_LIB_HEW)"; \
+	test "$$actual" = "$$expected" || { \
+		echo "Error: build/bin/hew resolves through $$actual, expected $$expected" >&2; \
+		exit 1; \
+	}
+endef
+
+# inputs: Makefile Cargo.toml Cargo.lock
+hew-profile-check: hew
+	$(ASSERT_RELEASE_LIB_HEW_PROFILE)
+
+# Warm-up form for the preflight dispatcher: build and stage the launcher, but
+# leave the profile assertion itself to the gate command.
+hew-profile-check-build: hew
+	@:
 
 # The gate is itself an artifact build; warming it is building it.
 hew-build: hew
@@ -455,6 +492,10 @@ else ifeq ($(shell uname -s),Linux)
 else
 	@:
 endif
+
+.PHONY: libhew-release-lib
+libhew-release-lib: $(LIBHEW_SRCS)
+	cargo build -p hew-lib --profile release-lib $(CARGO_TARGET_FLAG)
 
 # Build the WASM runtime + the consolidated stdlib archive (libhew_std.a).
 #
@@ -861,20 +902,22 @@ wasm-dist: wasm
 
 # Create symlinks from build/ into the real output locations.
 # This gives you one stable directory to point PATH at during development.
-assemble: | hew-native hew-lsp observe runtime stdlib wasm-runtime
+assemble: | hew hew-native hew-lsp observe runtime stdlib wasm-runtime
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
 	@# assemble-release makes build/std a symlink to ../std; reset it so the
 	@# flat std stub loop below cannot rewrite tracked std/*.hew files in root.
 	@rm -rf $(BUILD_DIR)/std
 	@mkdir -p $(BUILD_DIR)/std
-	@# Compiler driver
-	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew"                "$(BUILD_DIR)/bin/hew"
+	@# Compiler drivers: keep the supported release-lib launcher stable while
+	@# exposing the debug compiler under its explicit debug name.
+	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)"              "$(BUILD_DIR)/bin/hew"
+	@ln -sfn "$(LINK_UP2)$(DEBUG_HEW)"                    "$(BUILD_DIR)/bin/hew-debug"
 	@# Language server
 	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew-lsp"            "$(BUILD_DIR)/bin/hew-lsp"
 	@# TUI actor observer (sibling binary — `hew observe` delegates here)
 	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew-observe"        "$(BUILD_DIR)/bin/hew-observe"
 	@# Combined Hew library (runtime + all stdlib packages)
-	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/libhew.a"           "$(BUILD_DIR)/lib/libhew.a"
+	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_DIR)/libhew.a"     "$(BUILD_DIR)/lib/libhew.a"
 	@# WASM runtime + focused wire stdlib archives (symlink if built)
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f "$(WASM_DEBUG_DIR)/$$lib" ]; then \
@@ -889,10 +932,10 @@ assemble: | hew-native hew-lsp observe runtime stdlib wasm-runtime
 	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
 		lib_path=""; \
-		if [ -f "$(CARGO_TARGET_ROOT)/$$triple/debug/libhew.a" ]; then \
-			lib_path="$(CARGO_TARGET_ROOT)/$$triple/debug/libhew.a"; \
-		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f "$(DEBUG_DIR)/libhew.a" ]; then \
-			lib_path="$(DEBUG_DIR)/libhew.a"; \
+		if [ -f "$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a" ]; then \
+			lib_path="$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a"; \
+		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f "$(RELEASE_LIB_DIR)/libhew.a" ]; then \
+			lib_path="$(RELEASE_LIB_DIR)/libhew.a"; \
 		else \
 			continue; \
 		fi; \
@@ -903,7 +946,7 @@ assemble: | hew-native hew-lsp observe runtime stdlib wasm-runtime
 	@for f in std/*.hew; do \
 		ln -sfn "../../$$f" "$(BUILD_DIR)/std/$$(basename $$f)"; \
 	done
-	@echo "build/ assembled (debug). Add to PATH:"
+	@echo "build/ assembled (release-lib compiler, debug support tools). Add to PATH:"
 	@echo "  export PATH=\"$(CURDIR)/$(BUILD_DIR)/bin:\$$PATH\""
 
 # ── Release build ───────────────────────────────────────────────────────────
@@ -922,6 +965,7 @@ endif
 release: ## Release: build optimized release artifacts
 	$(RELEASE_PREP)
 	$(RELEASE_ENV) cargo build -p hew-cli --release $(CARGO_TARGET_FLAG)
+	$(RELEASE_ENV) cargo build -p hew-cli --profile release-lib $(CARGO_TARGET_FLAG)
 	$(RELEASE_ENV) cargo build -p hew-lsp --release $(CARGO_TARGET_FLAG)
 	$(RELEASE_ENV) cargo build -p hew-observe --release $(CARGO_TARGET_FLAG)
 	$(RELEASE_ENV) cargo build -p hew-lib --profile release-lib $(CARGO_TARGET_FLAG)
@@ -1172,6 +1216,7 @@ test-opaque-resource-lifecycle-matrix-external-build: wasm-runtime hew-native
 # inputs: hew-types/src/*.rs hew-hir/src/*.rs hew-mir/src/*.rs hew-codegen-rs/src/*.rs
 # inputs: hew-cli/src/*.rs hew-runtime/src/*.rs std/*.hew
 test-vertical-slice: hew-native runtime $(LIBHEW_READY) ## Test: run the end-to-end compiler oracle
+	bash tests/vertical-slice/test-compile-accept.sh
 	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/vertical-slice/run.sh
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
@@ -1208,17 +1253,17 @@ test-package-install-build: hew-native runtime $(LIBHEW_READY)
 # inputs: hew-hir/src/*.rs hew-mir/src/*.rs hew-codegen-rs/src/*.rs
 # fixture and diffs against the committed goldens; `make baselines` recaptures
 # them (only in a commit that justifies the dump change).
-checked-mir-verify: hew
-	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/checked-mir-corpus.sh verify
+checked-mir-verify: hew-native
+	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh verify
 
 # Regen seam (see above): driven by `make baselines`, not run directly.
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
-checked-mir-verify-build: hew
+checked-mir-verify-build: hew-native
 	@:
 
-checked-mir-golden: hew
-	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/checked-mir-corpus.sh golden
+checked-mir-golden: hew-native
+	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh golden
 
 # Execution gate for the same corpus: build and run every fixture and diff
 # a transcript (exit status + verbatim stdout) against its committed
@@ -1231,17 +1276,17 @@ checked-mir-golden: hew
 # expectation fails, an expectation for a fixture without `main` fails.
 # inputs: examples/v05/checked-mir/* scripts/checked-mir-corpus.sh hew-types/src/*.rs
 # inputs: hew-hir/src/*.rs hew-mir/src/*.rs hew-codegen-rs/src/*.rs hew-runtime/src/*.rs
-checked-mir-run: hew runtime stdlib check-libhew-fresh
-	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/checked-mir-corpus.sh run
+checked-mir-run: hew-native runtime stdlib check-libhew-fresh
+	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh run
 
 # Regen seam (see above): driven by `make baselines`, not run directly.
 
 # Artifacts only: the freshness check belongs to the gate.
-checked-mir-run-build: hew runtime stdlib
+checked-mir-run-build: hew-native runtime stdlib
 	@:
 
-checked-mir-expect: hew runtime stdlib check-libhew-fresh
-	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/checked-mir-corpus.sh expect
+checked-mir-expect: hew-native runtime stdlib check-libhew-fresh
+	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh expect
 
 # Per-function .ll byte-identity oracle (tests/ll-oracle/corpus/): proves a
 # pure codegen refactor (dedup, extract-helper, file-split) emits zero changed
@@ -1251,17 +1296,35 @@ checked-mir-expect: hew runtime stdlib check-libhew-fresh
 # wasm32 targets are covered.
 # inputs: tests/ll-oracle/* scripts/ll-corpus.sh scripts/ll-byte-identity.sh
 # inputs: hew-hir/src/*.rs hew-mir/src/*.rs hew-codegen-rs/src/*.rs
-ll-diff: hew
-	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/ll-corpus.sh verify
+ll-diff: hew-native
+	HEW_BIN="$(DEBUG_HEW)" bash scripts/ll-corpus.sh verify
 
 # Regen seam (see above): driven by `make baselines`, not run directly.
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
-ll-diff-build: hew
+ll-diff-build: hew-native
 	@:
 
-ll-golden: hew
-	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/ll-corpus.sh golden
+ll-golden: hew-native
+	HEW_BIN="$(DEBUG_HEW)" bash scripts/ll-corpus.sh golden
+
+# Dogfood-shaped compile-time measurement gate. Its raw IR byte count and
+# structural counts are exact; timings are printed for observation only.
+#
+# inputs: hew-codegen-rs/** hew-mir/** hew-cli/**
+#         tests/compile-measure/** scripts/dogfood-compile-measure.sh
+# The gate measures define blocks, excluding host-specific module headers.
+#         build/bin/hew (release-lib profile)
+LINT_GATES += dogfood-compile-measure
+dogfood-compile-measure: hew $(LIBHEW_READY)
+	@args=""; \
+	if [ "$(DOGFOOD_MEASURE_UPDATE)" = "1" ]; then args="--update"; fi; \
+	HEW_BIN="$(BUILD_DIR)/bin/hew" bash scripts/dogfood-compile-measure.sh $$args
+
+# Warm the release-lib compiler and the table-derived shared artifacts without
+# running the measurement gate.
+dogfood-compile-measure-build: hew $(LIBHEW_READY)
+	@:
 
 # Self-test for the ll-byte-identity normaliser: six independently-failable
 # cases that prove string-content changes and numeric-const NAME changes are
@@ -1368,7 +1431,7 @@ funcupdate-mir-baselines-golden: hew
 	grep -v '^#' "$$baseline_dir/manifest.tsv" | while IFS="$$(printf '\t')" read -r fixture baseline; do \
 	  [ -n "$$fixture" ] || continue; \
 	  echo "re-dumping $$fixture -> $$baseline"; \
-	  "$(DEBUG_DIR)/hew" compile --dump-mir elab "$$fixture" > "$$baseline_dir/$$baseline"; \
+	  "$(BUILD_DIR)/bin/hew" compile --dump-mir elab "$$fixture" > "$$baseline_dir/$$baseline"; \
 	done
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
@@ -1498,10 +1561,10 @@ check-counterfactual-output-artifacts-build: $(LIBHEW_READY)
 	bash -n scripts/ci-preflight-dispatcher.sh
 
 # inputs: std/* scripts/corpus-ratchet.sh scripts/stdlib-expected-failures.txt
-test-stdlib-ratchet: hew ## Test: type-check the standard library against its ratchet
+test-stdlib-ratchet: hew-native ## Test: type-check the standard library against its ratchet
 	@bash scripts/tests/test_stdlib_ratchet_deprecations.sh
 	@echo "==> Type-checking stdlib (ratcheted)"
-	HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh stdlib
+	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh stdlib
 
 # Every stdlib source must stay clean in isolation, and every module must stay
 # silent when checked and built through a temporary user package.
@@ -1515,7 +1578,7 @@ stdlib-user-build-clean-build: hew runtime $(LIBHEW_READY)
 	@:
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
-test-stdlib-ratchet-build: hew
+test-stdlib-ratchet-build: hew-native
 	@:
 
 # Verify the public stdlib index has exactly one executable fixture proof per
@@ -1630,11 +1693,11 @@ test-example-expectations-selftest-build:
 # regressions were introduced.
 # inputs: docs/hew-language-guide.md docs/specs/HEW-SPEC-2026.md docs/language/*.hew
 # inputs: scripts/corpus-ratchet.sh scripts/doc-test-expected-failures.txt
-test-doc-examples: hew
-	@HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh doc-fences
+test-doc-examples: hew-native
+	@HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh doc-fences
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
-test-doc-examples-build: hew
+test-doc-examples-build: hew-native
 	@:
 
 # Exercise pipe-safe membership wiring across every shell ratchet, then drive
@@ -2075,7 +2138,7 @@ hew-fmt-check: hew
 	@total=$$(find std examples -name "*.hew" | wc -l | tr -d ' '); \
 	bash scripts/lib/corpus-nonempty.sh hew-fmt-check-files "$$total" || exit 1; \
 	find std examples -name "*.hew" -print0 \
-	    | xargs -0 "$(DEBUG_DIR)/hew" fmt --check \
+	    | xargs -0 "$(BUILD_DIR)/bin/hew" fmt --check \
 	    && echo "hew-fmt-check passed: all $$total .hew sources are formatted." \
 	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
 
@@ -2092,7 +2155,7 @@ test-migrate-corpus: hew
 	trap 'rm -rf "$$migration_root" "$$migration_fixed"' 0; \
 	cp -R tests/corpus/migrate/. "$$migration_root/"; \
 	echo "1/6 migrate accepted representative sources"; \
-	"$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_root/accept"; \
+	"$(BUILD_DIR)/bin/hew" fmt --migrate --root "$$migration_root/accept"; \
 	echo "2/6 compare exact migrated sources"; \
 	for migration_source in "$$migration_root"/accept/*.hew; do \
 		migration_expected="$${migration_source%.hew}.expected"; \
@@ -2100,7 +2163,7 @@ test-migrate-corpus: hew
 	done; \
 	echo "3/6 require the unresolvable source to fail loudly"; \
 	migration_refusal="$$migration_root/refusal.log"; \
-	if "$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_root/reject" >"$$migration_refusal" 2>&1; then \
+	if "$(BUILD_DIR)/bin/hew" fmt --migrate --root "$$migration_root/reject" >"$$migration_refusal" 2>&1; then \
 		cat "$$migration_refusal"; \
 		echo "error: migration accepted the unresolvable representative site" >&2; \
 		exit 1; \
@@ -2109,14 +2172,14 @@ test-migrate-corpus: hew
 	diff -u tests/corpus/migrate/reject/unresolvable.hew "$$migration_root/reject/unresolvable.hew"; \
 	echo "4/6 prove the migrated snapshot reaches a successful typecheck"; \
 	for migration_source in "$$migration_root"/accept/*.hew; do \
-		"$(DEBUG_DIR)/hew" check "$$migration_source"; \
+		"$(BUILD_DIR)/bin/hew" check "$$migration_source"; \
 	done; \
 	echo "5/6 require a byte-identical second migration pass"; \
 	cp -R "$$migration_root/accept/." "$$migration_fixed/"; \
-	"$(DEBUG_DIR)/hew" fmt --migrate --root "$$migration_root/accept"; \
+	"$(BUILD_DIR)/bin/hew" fmt --migrate --root "$$migration_root/accept"; \
 	diff -ru "$$migration_fixed" "$$migration_root/accept"; \
 	echo "6/6 require check mode to recognize the fixed point"; \
-	"$(DEBUG_DIR)/hew" fmt --migrate --check --root "$$migration_root/accept"
+	"$(BUILD_DIR)/bin/hew" fmt --migrate --check --root "$$migration_root/accept"
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 test-migrate-corpus-build: hew
@@ -2126,7 +2189,7 @@ test-migrate-corpus-build: hew
 # path-preserving mirror, then require the result to check and reach a fixed point.
 # inputs: *.hew scripts/hew-fmt-property.sh hew-parser/src/*.rs hew-cli/src/*.rs
 hew-fmt-property: hew
-	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/hew-fmt-property.sh
+	HEW_BIN="$(BUILD_DIR)/bin/hew" bash scripts/hew-fmt-property.sh
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
 hew-fmt-property-build: hew
@@ -2139,12 +2202,12 @@ hew-fmt-property-build: hew
 # See scripts/corpus-ratchet.sh for the allowlist format and classification guide.
 # inputs: *.hew */hew.toml scripts/corpus-ratchet.sh
 # inputs: scripts/hew-corpus-expected-failures.txt
-hew-check-all: hew
+hew-check-all: hew-native
 	@echo "==> hew-check-all: compiling full .hew corpus"
-	HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh hew-corpus
+	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh hew-corpus
 
 # Warm-up form for the preflight dispatcher, which derives it by name.
-hew-check-all-build: hew
+hew-check-all-build: hew-native
 	@:
 
 .PHONY: codegen-carried-identity-gate

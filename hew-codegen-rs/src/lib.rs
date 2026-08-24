@@ -43,6 +43,7 @@ pub(crate) mod thunks;
 pub(crate) mod wire;
 
 pub use llvm::{
-    emit_module, emit_module_objects, emit_wasi_entry_adapter, validate_codegen_front,
-    verify_pipeline, CodegenError, EmitArtefacts, EmitOptions, OptLevel,
+    emit_module, emit_module_objects, emit_module_objects_without_llvm, emit_module_without_llvm,
+    emit_wasi_entry_adapter, validate_codegen_front, verify_pipeline, CodegenError, EmitArtefacts,
+    EmitOptions, OptLevel,
 };

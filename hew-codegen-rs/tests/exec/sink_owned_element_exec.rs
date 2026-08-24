@@ -107,7 +107,11 @@ fn emit_llvm_ir(stem: &str, source: &str) -> String {
     let (dir, path) = temp_source(stem, source);
 
     let mut cmd = hew_command();
-    cmd.arg("compile").arg("--emit-dir").arg(&dir).arg(&path);
+    cmd.arg("compile")
+        .arg("--emit-llvm")
+        .arg("--emit-dir")
+        .arg(&dir)
+        .arg(&path);
     let output = hew_testutil::run_command_bounded(
         &mut cmd,
         format!("hew compile --emit-dir {}", dir.display()),

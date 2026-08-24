@@ -567,6 +567,7 @@ fn emit_module(
     emit_target: CompileEmitTarget,
     link_freestanding_wasm: bool,
     opt_level: hew_codegen_rs::OptLevel,
+    emit_llvm: bool,
 ) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
     emit_module_with_triple(
         pipeline,
@@ -577,6 +578,7 @@ fn emit_module(
         link_freestanding_wasm,
         false,
         opt_level,
+        emit_llvm,
         None,
     )
 }
@@ -600,6 +602,7 @@ fn emit_module_with_triple(
     link_freestanding_wasm: bool,
     debug: bool,
     opt_level: hew_codegen_rs::OptLevel,
+    emit_llvm: bool,
     source_path: Option<&Path>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
     let options = hew_codegen_rs::EmitOptions {
@@ -613,9 +616,15 @@ fn emit_module_with_triple(
         source_path,
     };
     let result = if emit_target == CompileEmitTarget::Wasm && !link_freestanding_wasm {
-        hew_codegen_rs::emit_module_objects(pipeline, &options)
-    } else {
+        if emit_llvm {
+            hew_codegen_rs::emit_module_objects(pipeline, &options)
+        } else {
+            hew_codegen_rs::emit_module_objects_without_llvm(pipeline, &options)
+        }
+    } else if emit_llvm {
         hew_codegen_rs::emit_module(pipeline, &options)
+    } else {
+        hew_codegen_rs::emit_module_without_llvm(pipeline, &options)
     };
     match result {
         Ok(artefacts) => Ok(artefacts),
@@ -652,6 +661,7 @@ fn emit_module_for_target(
     link_freestanding_wasm: bool,
     debug: bool,
     opt_level: hew_codegen_rs::OptLevel,
+    emit_llvm: bool,
     source_path: Option<&Path>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
     let codegen_triple = match emit_target {
@@ -667,6 +677,7 @@ fn emit_module_for_target(
         link_freestanding_wasm,
         debug,
         opt_level,
+        emit_llvm,
         source_path,
     )
 }
@@ -718,6 +729,7 @@ pub(crate) fn compile_native_binary(input: &Path, bin_path: &Path) -> Result<(),
         CompileEmitTarget::Native,
         true,
         hew_codegen_rs::OptLevel::O0,
+        false,
     )?;
     let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
         eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
@@ -854,6 +866,7 @@ pub(crate) fn compile_native_from_program_with_paths(
         emit_target,
         false,
         hew_codegen_rs::OptLevel::O0,
+        false,
     )?;
 
     match emit_target {
@@ -950,6 +963,7 @@ fn compile_build_binary(
     target: &target::TargetSpec,
     debug: bool,
     opt_level: hew_codegen_rs::OptLevel,
+    emit_llvm: bool,
     extra_libs: &[String],
     options: &compile::CompileOptions,
 ) -> Result<(), ()> {
@@ -959,6 +973,7 @@ fn compile_build_binary(
         target,
         debug,
         opt_level,
+        emit_llvm,
         extra_libs,
         options,
         None,
@@ -975,11 +990,15 @@ fn compile_build_binary_with_hew_lib(
     target: &target::TargetSpec,
     debug: bool,
     opt_level: hew_codegen_rs::OptLevel,
+    emit_llvm: bool,
     extra_libs: &[String],
     options: &compile::CompileOptions,
     hew_lib: Option<&Path>,
 ) -> Result<(), ()> {
+    let wall_started = std::time::Instant::now();
+    let lower_started = std::time::Instant::now();
     let (pipeline, native_pkg_dirs) = lower_file_to_mir_for_target(input, target, options)?;
+    measure_compile_phase("MIR lowering", lower_started.elapsed());
     let emit_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
     let module_name = output_path
         .file_stem()
@@ -990,6 +1009,7 @@ fn compile_build_binary_with_hew_lib(
     } else {
         CompileEmitTarget::Native
     };
+    let backend_started = std::time::Instant::now();
     let artefacts = emit_module_for_target(
         &pipeline,
         module_name,
@@ -1001,10 +1021,12 @@ fn compile_build_binary_with_hew_lib(
         emit_target == CompileEmitTarget::Wasm,
         debug,
         opt_level,
+        emit_llvm,
         Some(input),
     )?;
+    measure_compile_phase("backend", backend_started.elapsed());
 
-    match emit_target {
+    let result = match emit_target {
         CompileEmitTarget::Native => {
             let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
                 eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
@@ -1023,7 +1045,8 @@ fn compile_build_binary_with_hew_lib(
                 debug,
                 &all_libs,
                 hew_lib,
-            )
+            )?;
+            remove_intermediate_object(obj)
         }
         CompileEmitTarget::Wasm => {
             let wasm = artefacts.wasm_path.as_deref().ok_or_else(|| {
@@ -1039,9 +1062,34 @@ fn compile_build_binary_with_hew_lib(
                     );
                 })?;
             }
-            Ok(())
+            let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
+                eprintln!("E_NOT_YET_IMPLEMENTED: WASM codegen did not produce an object");
+            })?;
+            remove_intermediate_object(obj)
         }
+    };
+    if result.is_ok() {
+        measure_compile_phase("wall", wall_started.elapsed());
     }
+    result
+}
+
+fn measure_compile_phase(phase: &str, elapsed: std::time::Duration) {
+    if std::env::var_os("HEW_MEASURE_TIMINGS").is_some() {
+        eprintln!(
+            "hew measure: {phase} {:.3} ms",
+            elapsed.as_secs_f64() * 1_000.0
+        );
+    }
+}
+
+fn remove_intermediate_object(path: &Path) -> Result<(), ()> {
+    std::fs::remove_file(path).map_err(|error| {
+        eprintln!(
+            "Error: cannot remove intermediate object {}: {error}",
+            path.display()
+        );
+    })
 }
 
 /// Emit a single relocatable object for `hew build --emit-obj`, skipping the
@@ -1054,6 +1102,7 @@ fn emit_obj_only(
     target: &target::TargetSpec,
     debug: bool,
     opt_level: hew_codegen_rs::OptLevel,
+    emit_llvm: bool,
     options: &compile::CompileOptions,
 ) -> Result<(), ()> {
     let (pipeline, _native_pkg_dirs) = lower_file_to_mir_for_target(input, target, options)?;
@@ -1079,6 +1128,7 @@ fn emit_obj_only(
         false,
         debug,
         opt_level,
+        emit_llvm,
         if debug { Some(input) } else { None },
     )?;
     let produced = match emit_target {
@@ -1186,7 +1236,7 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
     };
 
     if a.emit_obj {
-        return match emit_obj_only(input, &target, a.debug, opt_level, &options) {
+        return match emit_obj_only(input, &target, a.debug, opt_level, a.emit_llvm, &options) {
             Ok(()) => 0,
             Err(()) => 1,
         };
@@ -1206,6 +1256,7 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
         &target,
         a.debug,
         opt_level,
+        a.emit_llvm,
         &link_libs,
         &options,
     ) {
@@ -1299,6 +1350,7 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
         emit_target,
         true,
         opt_level,
+        a.emit_llvm,
     ) else {
         return 1;
     };
@@ -1441,6 +1493,7 @@ fn compile_temp_wasi_module(
             // The WASI `run`/`eval` path is debug-default O0; the `HEW_OPT_LEVEL`
             // env floor lifts the whole corpus to O2 for the differential gate.
             hew_codegen_rs::OptLevel::O0,
+            false,
             None,
         )?;
         let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
@@ -1499,6 +1552,7 @@ fn compile_temp_artifact(
         // `hew run` is debug-default O0; the `HEW_OPT_LEVEL` env floor lifts the
         // whole corpus to O2 for the differential-exec parity gate.
         hew_codegen_rs::OptLevel::O0,
+        false,
         extra_libs,
         options,
     )

@@ -559,6 +559,7 @@ pub unsafe extern "C" fn hew_float_to_string(f: f64) -> *mut c_char {
     unsafe extern "C" {
         fn snprintf(buf: *mut c_char, size: usize, fmt: *const c_char, ...) -> i32;
     }
+    let f = crate::print::canonical_f64_for_render(f);
     let mut buf = [0u8; 64];
     // SAFETY: buf is large enough for any %g output. snprintf is available
     // on all platforms (MSVC CRT, glibc, musl).

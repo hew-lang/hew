@@ -12,7 +12,7 @@ mod support;
 
 use std::process::Command;
 
-use support::leak_slope::compile_to_native;
+use support::leak_slope::{assert_frame_slope_below_tolerance_exact_lines, compile_to_native};
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const SOURCE_TEMPLATE: &str = r#"
@@ -76,6 +76,48 @@ fn main() {
 
 fn source(detail: &str) -> String {
     SOURCE_TEMPLATE.replace("__DETAIL__", detail)
+}
+
+fn repeated_source(frames: usize) -> String {
+    format!(
+        r#"
+enum CleanupError {{
+    Dirty(string);
+}}
+
+type Pair {{
+    first: string;
+    second: string;
+}}
+
+fn cleanup() -> Result<(), CleanupError> {{
+    Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))
+}}
+
+fn build() -> Result<Pair, string> {{
+    match cleanup() {{
+        .Ok(_) => Ok(Pair {{ first: "", second: "" }}),
+        .Err(CleanupError.Dirty(message)) => {{
+            Ok(Pair {{ first: message, second: message }})
+        }},
+    }}
+}}
+
+fn main() {{
+    for _ in 0..{frames} {{
+        match build() {{
+            .Err(message) => panic(message),
+            .Ok(pair) => {{
+                if pair.first != pair.second {{
+                    panic("wrong pair");
+                }}
+            }},
+        }}
+        println("frame");
+    }}
+}}
+"#
+    )
 }
 
 fn dump_raw_mir(source: &str, name: &str) -> String {
@@ -152,6 +194,15 @@ fn nested_payload_return_mints_only_the_missing_owner() {
         0,
         "the explicit one-boundary clone already owns the returned field:\n{control_retire}"
     );
+
+    let repeated_raw = dump_raw_mir(&repeated_source(1), "repeated_source");
+    let repeated_build = function_section(&repeated_raw, "build");
+    assert_eq!(
+        repeated_build.match_indices("string.retain").count(),
+        2,
+        "two returned fields sharing one borrowed nested payload need exactly two owners:\n\
+         {repeated_build}"
+    );
 }
 
 #[test]
@@ -159,4 +210,18 @@ fn nested_payload_return_and_explicit_clone_control_release_exactly_once() {
     require_codegen();
     compile_and_run(&source("message"), "implicit_retain");
     compile_and_run(&source("message.clone()"), "explicit_clone");
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the low/high leak-slope oracle requires macOS leaks(1)"
+)]
+#[test]
+fn repeated_nested_payload_return_has_no_per_iteration_leak() {
+    require_codegen();
+    assert_frame_slope_below_tolerance_exact_lines(
+        "repeated_returned_nested_string_payload",
+        repeated_source,
+        |frames| frames,
+    );
 }

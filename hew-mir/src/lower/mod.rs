@@ -6271,11 +6271,15 @@ fn retain_nested_projected_returned_strings(
     index: &mut usize,
     builder: &mut Builder,
 ) {
-    for source in sources.iter().copied().filter(|source| {
-        nested_projected_strings.contains(source)
-            && !share_reuse_exclusions.contains(source)
-            && !already_neutralized.contains(source)
-    }) {
+    let mut retained = HashSet::new();
+    for source in sources.iter().copied() {
+        if !retained.insert(source)
+            || !nested_projected_strings.contains(&source)
+            || share_reuse_exclusions.contains(&source)
+            || already_neutralized.contains(&source)
+        {
+            continue;
+        }
         shift_instr_spans_on_insert(
             &mut builder.instr_spans,
             block.id,
@@ -6472,8 +6476,10 @@ fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], build
             // local cannot neutralize. Mint the returned field's owner before
             // the byte-copying constructor, unless a later use already makes
             // this a SHARE handled by `finalize_string_ownership`. Retains are
-            // per field occurrence: two returned fields need two independent
-            // owner counts even when they read the same alias.
+            // once per distinct nested alias. `finalize_string_ownership`
+            // supplies the ordinary N-1 shares when one source appears in N
+            // fields; this bridge retain supplies the otherwise-missing first
+            // returned owner because the carrier keeps the original.
             retain_nested_projected_returned_strings(
                 block,
                 &sources,

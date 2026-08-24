@@ -89,6 +89,17 @@ const SYMBOLS: &[&str] = &[
 /// Final owner slots for fresh strings which the witness keeps live across
 /// later calls. The CFG oracle below proves that every path from each mint to
 /// a terminating block passes through its matching `hew_string_drop`.
+///
+/// The `fs.try_read` result binds through the owned-carrier release funnel,
+/// which moves the selected `Ok(text)` / `Err(...)` payload into a fresh local
+/// and neutralizes the carrier slot before releasing it on every exit. That
+/// fresh transfer local advanced every subsequent owner's slot number by one
+/// (the release AUTHORITY moved from `local_33` to `local_34`, `local_36` to
+/// `local_37`, ...); the pre-carrier `local_33`-family numbers are now the
+/// moved-out transfer temps, never released (and never leaked — the value is
+/// owned by the `+1` slot). Executable behavior is unchanged: the oracle proves
+/// each `+1` owner is released exactly once on every normal and crash-cleanup
+/// exit, and the witness runs clean under `leaks(1)`.
 const STRING_OWNER_SLOTS: &[&str] = &[
     // os.args, os.env, cwd, home_dir, hostname, temp_dir, stdin line/all,
     // fs.read, fs.try_read, path.absolute, path_error_message, dns direct /
@@ -98,7 +109,7 @@ const STRING_OWNER_SLOTS: &[&str] = &[
     // composite's recursive `EnumInPlace`/record drop (asserted below), not a
     // caller `hew_string_drop`, so no separate compress-error owner slot exists.
     "local_2", "local_5", "local_7", "local_9", "local_11", "local_13", "local_15", "local_17",
-    "local_20", "local_33", "local_36", "local_61", "local_66", "local_70", "local_95", "local_97",
+    "local_20", "local_34", "local_37", "local_62", "local_67", "local_71", "local_96", "local_98",
 ];
 
 #[derive(Debug)]

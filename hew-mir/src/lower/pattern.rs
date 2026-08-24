@@ -4480,6 +4480,24 @@ impl Builder {
                 &super::outbound_record_layouts(self),
                 &self.opaque_handle_names,
                 &self.lifecycle_registry,
+            )
+            // A carrier whose variant payload is a declared-release `#[resource]`
+            // RECORD is EXCLUDED from every enum drop class in the drop planner
+            // (`direct_payload_has_registered_resource_record`): a record close is
+            // not null-safe over a consumed/zeroed slot, so no `EnumInPlace` shell
+            // drop is ever scheduled for it. The arm-release protocol below aliases
+            // the payload binder onto that (absent) carrier drop and hands arm
+            // results through the whole-carrier funnel, which leaks a
+            // bound-but-unconsumed handle and strands an unbalanced retain on a
+            // moved-out sibling `Err(string)`. Fall back to the same discipline the
+            // `#[opaque]` handle carrier already uses (its shell is likewise not
+            // drop-safe, so this predicate is already false there): the payload
+            // binder owns its own scope-exit close, and a moved-out sibling routes
+            // through the `call_carrier_has_resource_payload` match-result funnel.
+            && !super::composite_own::direct_payload_has_registered_resource_record(
+                &self.subst_ty(&scrutinee.ty),
+                &self.enum_layouts,
+                &self.lifecycle_registry,
             );
         if call_scrutinee_owner_needs_arm_release {
             let carrier = Place::Local(scrutinee_local);
@@ -4779,6 +4797,17 @@ impl Builder {
                     .is_some_and(|layout| {
                         layout.variants.iter().any(|variant| {
                             variant.field_tys.iter().any(|field_ty| {
+                                // A resource RECORD payload (`is_opaque: false`)
+                                // or an `#[opaque]` resource handle payload both
+                                // make the carrier's whole-shell drop unsafe (the
+                                // handle is closed exactly once by its own arm),
+                                // so a sibling string/bytes payload moved out as
+                                // the match result cannot rely on a carrier drop
+                                // to balance its retain — it must transfer
+                                // cleanly. Detect BOTH resource shapes here; the
+                                // pre-fix check saw only the record and leaked
+                                // the sibling `Err(string)` of a
+                                // `Result<OpaqueHandle, string>`.
                                 matches!(
                                     field_ty,
                                     ResolvedTy::Named {
@@ -4790,7 +4819,10 @@ impl Builder {
                                         && self.lifecycle_registry.resource_record(
                                             &hew_types::DefId::legacy_reconstruct_from_full_path(name),
                                         ).is_some()
-                                )
+                                ) || self
+                                    .lifecycle_registry
+                                    .opaque_resource_for_ty(field_ty)
+                                    .is_some()
                             })
                         })
                     }),
@@ -5130,8 +5162,27 @@ impl Builder {
                         continue;
                     }
                     let warrant = if call_carrier_needs_skipped_payload_owner {
-                        let warrant = self.owner_warrant_for_admitted_temp(scrutinee);
-                        (!warrant.withholds_mint()).then_some(warrant)
+                        let admitted = self.owner_warrant_for_admitted_temp(scrutinee);
+                        if admitted.withholds_mint() {
+                            // The whole-carrier admission is opaque-tainted (a
+                            // resource sibling in another variant), so it
+                            // withholds. A DOMESTIC skipped leaf is still sound
+                            // to release here when the callee measurably returns
+                            // a fresh payload for THIS exact variant slot: fall
+                            // back to the field-precise freshness authority so a
+                            // `Result<OpaqueResource, string>`'s discarded
+                            // `Err(_)` string is released instead of leaked. The
+                            // field warrant only grants on proven freshness, so
+                            // an opaque/foreign sibling stays withheld.
+                            self.owner_warrant_for_fresh_variant_payload(
+                                scrutinee,
+                                variant_idx,
+                                field_idx,
+                                &field_ty,
+                            )
+                        } else {
+                            Some(admitted)
+                        }
                     } else {
                         self.owner_warrant_for_fresh_variant_payload(
                             scrutinee,
@@ -5344,11 +5395,30 @@ impl Builder {
                             .get(binding)
                             .map(|provenance| provenance.source_place)
                         {
-                            self.push_instr(Instr::NeutralizePayloadSlot {
-                                place: source_place,
-                                transferee: None,
-                                authority: crate::model::NeutralizeAuthority::MoveOutArmConsume,
+                            // A resource payload moved out of the carrier is
+                            // already neutralized on this arm by the projected
+                            // move-out lowering (`ProjectedPayloadOrigin::
+                            // EphemeralTemp`). Adding the match-result neutralize
+                            // for the SAME slot would double-null it — harmless at
+                            // runtime, but it violates the one-transfer-per-arm
+                            // structural contract. Only mint the match-result
+                            // neutralize when no earlier neutralize on this exact
+                            // slot exists (the string/record match-result case,
+                            // which has no independent resource move-out).
+                            let already_neutralized = self.instructions.iter().any(|instr| {
+                                matches!(
+                                    instr,
+                                    Instr::NeutralizePayloadSlot { place, .. }
+                                        if *place == source_place
+                                )
                             });
+                            if !already_neutralized {
+                                self.push_instr(Instr::NeutralizePayloadSlot {
+                                    place: source_place,
+                                    transferee: None,
+                                    authority: crate::model::NeutralizeAuthority::MoveOutArmConsume,
+                                });
+                            }
                         }
                     }
                 }

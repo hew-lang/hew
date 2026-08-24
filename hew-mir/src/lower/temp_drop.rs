@@ -1068,7 +1068,7 @@ fn local_redefined_in_block_prefix(block: &BasicBlock, instr_index: usize, local
 /// loop: the next iteration's write creates a new generation and cannot make
 /// the previous generation a co-owner. This walk stops a path at the first
 /// overwrite, keeping retain decisions tied to the actual allocation.
-fn fresh_generation_is_used_after(
+pub(super) fn fresh_generation_is_used_after(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
     source_local: u32,

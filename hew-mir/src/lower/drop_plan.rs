@@ -968,6 +968,21 @@ pub(super) fn elaborate(
             }
         }
     }
+    // A neutralized aggregate-member source that is an `indirect enum` node must
+    // release through the recursive `DropKind::IndirectEnum` free (null-tolerant
+    // after the `NeutralizePayloadSlot` nulls its slot), NOT the whole-record
+    // `RecordInPlace` arm — an indirect enum has no `__hew_record_drop_inplace_*`
+    // helper, so the blanket `owned_record_drop_allowed` extension above would
+    // fail closed at codegen. Admit these members here (the indirect arm in
+    // `build_lifo_drops` runs before the record arm) so the child is freed on a
+    // pre-construction early exit and no-ops on the moved-into-parent path.
+    for (binding, _name, ty) in &owned_locals_snapshot {
+        if aggregate_member_neutralized_bindings.contains(binding)
+            && ty_is_indirect_enum(ty, &builder.enum_layouts)
+        {
+            indirect_enum_drop_allowed.insert(*binding);
+        }
+    }
 
     // A parent overwrite or borrow-spine call forwarding can transfer a direct
     // string payload's release authority to its still-live binder. Re-admit

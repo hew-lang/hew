@@ -6259,6 +6259,63 @@ fn returned_aggregate_member_source_target(
     })
 }
 
+/// The member sources of a returned aggregate that are READ AFTER their
+/// construction — a retained co-owner (SHARE), not a clean transfer. The
+/// constructor byte-copies the pointer into the returned aggregate while the
+/// source keeps its own generation for the later read, and
+/// `finalize_string_ownership` mints a `+1` `StringRetain` for it. Neutralizing
+/// such a source clears the slot its scope-exit release needs, dropping the
+/// source's count on the floor (the retained co-owner leak). That later pass
+/// runs after the neutralize, so its retain marker is not yet present; detect
+/// the share directly from the reuse — the exact `fresh_generation_is_used_after`
+/// authority the string finalizer guards its own neutralize with. A clean
+/// transfer (source never read after) is not excluded and keeps its stale-slot
+/// neutralize.
+fn returned_member_share_reuse_exclusions(
+    blocks: &[BasicBlock],
+    builder: &Builder,
+    returned_value_locals: &HashSet<u32>,
+) -> HashSet<Place> {
+    let mut excluded = HashSet::new();
+    for block in blocks {
+        for (idx, instr) in block.instructions.iter().enumerate() {
+            let sources: Vec<Place> = match instr {
+                Instr::TupleConstruct { elements, dest }
+                    if base_local(*dest)
+                        .is_some_and(|local| returned_value_locals.contains(&local)) =>
+                {
+                    elements.clone()
+                }
+                Instr::RecordInit { fields, dest, .. }
+                    if base_local(*dest)
+                        .is_some_and(|local| returned_value_locals.contains(&local)) =>
+                {
+                    fields.iter().map(|(_offset, source)| *source).collect()
+                }
+                Instr::Move {
+                    dest: Place::MachineVariant { local, .. } | Place::EnumVariant { local, .. },
+                    src,
+                } if returned_value_locals.contains(local) => vec![*src],
+                _ => continue,
+            };
+            for source in sources {
+                if let Some(local) = base_local(source) {
+                    if temp_drop::fresh_generation_is_used_after(
+                        blocks,
+                        &builder.suspend_kinds,
+                        local,
+                        block.id,
+                        idx,
+                    ) {
+                        excluded.insert(source);
+                    }
+                }
+            }
+        }
+    }
+    excluded
+}
+
 fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
     let candidates = builder.owned_locals_exit_candidates();
     let returned_members =
@@ -6303,6 +6360,12 @@ fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], build
         }
     }
 
+    // A member source that is read after its aggregate construction is a
+    // retained co-owner (a SHARE), not a transfer, and must keep its scope-exit
+    // release (see `returned_member_share_reuse_exclusions`).
+    let share_reuse_exclusions =
+        returned_member_share_reuse_exclusions(blocks, builder, &returned_value_locals);
+
     for block in blocks {
         let mut index = 0;
         while index < block.instructions.len() {
@@ -6329,6 +6392,7 @@ fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], build
             let mut neutralized = HashSet::new();
             let sources: Vec<Place> = sources
                 .into_iter()
+                .filter(|source| !share_reuse_exclusions.contains(source))
                 .filter_map(|source| {
                     returned_aggregate_member_source_target(
                         source,

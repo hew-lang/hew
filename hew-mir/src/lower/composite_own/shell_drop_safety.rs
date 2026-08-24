@@ -347,6 +347,26 @@ fn payload_leaf_is_shell_drop_safe(
     if direct_runtime_payload_is_shell_drop_safe(ty, type_classes, depth) {
         return true;
     }
+    // `Rc<T>` / `Weak<T>` carrier payloads release through a null-tolerant
+    // refcount decrement (`rc_release` / `weak_release`), so — like a direct
+    // runtime handle or a `string`/`bytes` leaf — the candidate shell's
+    // tag-aware `EnumInPlace` drop can run the neutralize-then-shell-drop
+    // protocol over a possibly-zeroed slot without ever double-releasing. They
+    // classify `AffineResource` (below), so admit them HERE, before the affine
+    // refusal, exactly as the runtime-handle arm does. Gated to the candidate's
+    // DIRECT variant payloads (`depth == 1`); a deeper `Rc` rides its enclosing
+    // aggregate's own helper family.
+    if depth == 1
+        && matches!(
+            ty,
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::Rc | hew_types::BuiltinType::Weak),
+                ..
+            }
+        )
+    {
+        return true;
+    }
     // Affine leaves (`#[resource]` records, closeable opaque resources, owned
     // runtime handles, `@linear` / `Task` values) carry their own consume-once
     // close discipline and have no clone helper. Refuse the WHOLE composite the

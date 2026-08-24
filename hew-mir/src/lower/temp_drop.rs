@@ -1643,6 +1643,132 @@ fn apply_string_retain_sites(
     }
     *instr_spans = new_spans;
 }
+
+fn stable_string_fork_families_at_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    forks: &[(Place, Place, u32, usize)],
+    target_block: u32,
+    target_index: usize,
+) -> (HashSet<Place>, HashMap<Place, Vec<Place>>) {
+    let mut owner_destinations = HashSet::new();
+    let mut stable_family = HashMap::<Place, Vec<Place>>::new();
+    for (source, destination, move_block, move_index) in forks {
+        if !unique_move_generation_reaches_site(
+            blocks,
+            suspend_kinds,
+            *source,
+            *destination,
+            target_block,
+            target_index,
+        ) {
+            continue;
+        }
+        owner_destinations.insert(*destination);
+        if local_generation_survives_to_site(
+            blocks,
+            suspend_kinds,
+            *source,
+            *move_block,
+            *move_index,
+            target_block,
+            target_index,
+        ) {
+            stable_family.entry(*source).or_default().push(*destination);
+            stable_family.entry(*destination).or_default().push(*source);
+        }
+    }
+    (owner_destinations, stable_family)
+}
+
+fn suppress_aggregate_retains_covered_by_stable_forks(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    retain_sites: &mut Vec<StringRetainSite>,
+) {
+    let forks: Vec<(Place, Place, u32, usize)> = retain_sites
+        .iter()
+        .filter(|site| matches!(site.condition, StringRetainCondition::Always))
+        .filter_map(|site| {
+            let instruction = block_by_id(blocks, site.block)?
+                .instructions
+                .get(site.instr_index)?;
+            let Instr::Move { dest, src } = instruction else {
+                return None;
+            };
+            (*src == site.value).then_some((*src, *dest, site.block, site.instr_index))
+        })
+        .collect();
+    let mut remove = HashMap::<(u32, usize, Place), usize>::new();
+    for block in blocks {
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            let sources: Vec<Place> = match instruction {
+                Instr::TupleConstruct { elements, .. } => elements.clone(),
+                Instr::RecordInit { fields, .. } => {
+                    fields.iter().map(|(_offset, source)| *source).collect()
+                }
+                _ => continue,
+            };
+            let aggregate_sites: Vec<&StringRetainSite> = retain_sites
+                .iter()
+                .filter(|site| {
+                    site.block == block.id
+                        && site.instr_index == index
+                        && matches!(site.condition, StringRetainCondition::Always)
+                        && sources.contains(&site.value)
+                })
+                .collect();
+            let (owner_destinations, stable_family) =
+                stable_string_fork_families_at_site(blocks, suspend_kinds, &forks, block.id, index);
+            let mut processed = HashSet::new();
+            for site in &aggregate_sites {
+                if processed.contains(&site.value) {
+                    continue;
+                }
+                let mut family = HashSet::from([site.value]);
+                let mut work = vec![site.value];
+                while let Some(member) = work.pop() {
+                    for next in stable_family.get(&member).into_iter().flatten() {
+                        if family.insert(*next) {
+                            work.push(*next);
+                        }
+                    }
+                }
+                processed.extend(family.iter().copied());
+                let occurrences = sources
+                    .iter()
+                    .filter(|source| family.contains(source))
+                    .count();
+                let preminted = owner_destinations
+                    .iter()
+                    .filter(|owner| family.contains(owner))
+                    .count();
+                let required = occurrences.saturating_sub(preminted);
+                let family_sites: Vec<&StringRetainSite> = aggregate_sites
+                    .iter()
+                    .copied()
+                    .filter(|candidate| family.contains(&candidate.value))
+                    .collect();
+                for excess in family_sites.into_iter().skip(required) {
+                    *remove
+                        .entry((excess.block, excess.instr_index, excess.value))
+                        .or_default() += 1;
+                }
+            }
+        }
+    }
+    retain_sites.retain(|site| {
+        let key = (site.block, site.instr_index, site.value);
+        let Some(count) = remove.get_mut(&key) else {
+            return true;
+        };
+        if *count == 0 {
+            return true;
+        }
+        *count -= 1;
+        false
+    });
+}
 /// Retain-aware drop derivation for heap-owning `string` bindings.
 ///
 /// By-value calls borrow. A genuine co-owner mint (aggregate ingress,
@@ -4972,6 +5098,11 @@ pub(super) fn finalize_string_ownership(
             DischargeSite::BindingMoved,
         );
     }
+    suppress_aggregate_retains_covered_by_stable_forks(
+        &raw.blocks,
+        &builder.suspend_kinds,
+        &mut derivation.retain_sites,
+    );
     apply_string_retain_sites(
         &mut raw.blocks,
         &mut raw.instr_spans,

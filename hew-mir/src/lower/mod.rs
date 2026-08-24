@@ -6271,12 +6271,38 @@ fn retain_nested_projected_returned_strings(
     index: &mut usize,
     builder: &mut Builder,
 ) {
+    let share_alias_edges: HashMap<Place, Vec<Place>> = builder
+        .string_local_share_sites
+        .values()
+        .filter_map(|(source, destination)| {
+            Some((
+                *builder.binding_locals.get(source)?,
+                *builder.binding_locals.get(destination)?,
+            ))
+        })
+        .fold(HashMap::new(), |mut edges, (source, destination)| {
+            edges.entry(source).or_default().push(destination);
+            edges
+        });
+    let returned_sources: HashSet<Place> = sources.iter().copied().collect();
     let mut retained = HashSet::new();
     for source in sources.iter().copied() {
+        let mut family = vec![source];
+        let mut seen = HashSet::from([source]);
+        let mut returned_share_descendant = false;
+        while let Some(member) = family.pop() {
+            for destination in share_alias_edges.get(&member).into_iter().flatten() {
+                if seen.insert(*destination) {
+                    returned_share_descendant |= returned_sources.contains(destination);
+                    family.push(*destination);
+                }
+            }
+        }
         if !retained.insert(source)
             || !nested_projected_strings.contains(&source)
             || share_reuse_exclusions.contains(&source)
             || already_neutralized.contains(&source)
+            || returned_share_descendant
         {
             continue;
         }
@@ -6478,8 +6504,11 @@ fn neutralize_returned_aggregate_member_sources(blocks: &mut [BasicBlock], build
             // this a SHARE handled by `finalize_string_ownership`. Retains are
             // once per distinct nested alias. `finalize_string_ownership`
             // supplies the ordinary N-1 shares when one source appears in N
-            // fields; this bridge retain supplies the otherwise-missing first
-            // returned owner because the carrier keeps the original.
+            // fields. A returned descendant in the same local-share family
+            // already has that family's retained fork owner, so it also
+            // suppresses the bridge. Otherwise this bridge retain supplies the
+            // missing first returned owner because the carrier keeps the
+            // original.
             retain_nested_projected_returned_strings(
                 block,
                 &sources,

@@ -79,6 +79,16 @@ fn source(detail: &str) -> String {
 }
 
 fn repeated_source(frames: usize) -> String {
+    repeated_source_with_alias(frames, false)
+}
+
+fn aliased_repeated_source(frames: usize) -> String {
+    repeated_source_with_alias(frames, true)
+}
+
+fn repeated_source_with_alias(frames: usize, alias: bool) -> String {
+    let alias_binding = if alias { "let alias = message;" } else { "" };
+    let second = if alias { "alias" } else { "message" };
     format!(
         r#"
 enum CleanupError {{
@@ -98,7 +108,8 @@ fn build() -> Result<Pair, string> {{
     match cleanup() {{
         .Ok(_) => Ok(Pair {{ first: "", second: "" }}),
         .Err(CleanupError.Dirty(message)) => {{
-            Ok(Pair {{ first: message, second: message }})
+            {alias_binding}
+            Ok(Pair {{ first: message, second: {second} }})
         }},
     }}
 }}
@@ -203,6 +214,15 @@ fn nested_payload_return_mints_only_the_missing_owner() {
         "two returned fields sharing one borrowed nested payload need exactly two owners:\n\
          {repeated_build}"
     );
+
+    let aliased_raw = dump_raw_mir(&aliased_repeated_source(1), "aliased_repeated_source");
+    let aliased_build = function_section(&aliased_raw, "build");
+    assert_eq!(
+        aliased_build.match_indices("string.retain").count(),
+        2,
+        "distinct locals in one projected-owner family still need exactly two returned owners:\n\
+         {aliased_build}"
+    );
 }
 
 #[test]
@@ -222,6 +242,20 @@ fn repeated_nested_payload_return_has_no_per_iteration_leak() {
     assert_frame_slope_below_tolerance_exact_lines(
         "repeated_returned_nested_string_payload",
         repeated_source,
+        |frames| frames,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the low/high leak-slope oracle requires macOS leaks(1)"
+)]
+#[test]
+fn aliased_repeated_nested_payload_return_has_no_per_iteration_leak() {
+    require_codegen();
+    assert_frame_slope_below_tolerance_exact_lines(
+        "aliased_repeated_returned_nested_string_payload",
+        aliased_repeated_source,
         |frames| frames,
     );
 }

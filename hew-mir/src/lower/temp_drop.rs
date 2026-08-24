@@ -1,3 +1,4 @@
+use super::ownership::returned_aggregate_consumes_source;
 #[cfg(test)]
 use super::*;
 #[cfg(not(test))]
@@ -1770,29 +1771,6 @@ fn fresh_transferable_string_owner_reaches_site(
         target_index,
         &mut HashSet::new(),
     )
-}
-
-fn returned_aggregate_consumes_source(
-    block: &BasicBlock,
-    constructor_index: usize,
-    source: Place,
-    destination: Place,
-) -> bool {
-    block
-        .instructions
-        .iter()
-        .skip(constructor_index.saturating_add(1))
-        .take_while(|instruction| matches!(instruction, Instr::NeutralizePayloadSlot { .. }))
-        .any(|instruction| {
-            matches!(
-                instruction,
-                Instr::NeutralizePayloadSlot {
-                    place,
-                    transferee: Some(transferee),
-                    authority: crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume,
-                } if *place == source && *transferee == destination
-            )
-        })
 }
 
 fn remove_counted_string_retain_sites(

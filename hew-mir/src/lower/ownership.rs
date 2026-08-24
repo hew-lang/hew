@@ -122,6 +122,29 @@ impl crate::return_provenance::LeafPolicy for ClosureStringReturnPolicy<'_> {
     }
 }
 
+pub(super) fn returned_aggregate_consumes_source(
+    block: &BasicBlock,
+    constructor_index: usize,
+    source: Place,
+    destination: Place,
+) -> bool {
+    block
+        .instructions
+        .iter()
+        .skip(constructor_index.saturating_add(1))
+        .take_while(|instruction| matches!(instruction, Instr::NeutralizePayloadSlot { .. }))
+        .any(|instruction| {
+            matches!(
+                instruction,
+                Instr::NeutralizePayloadSlot {
+                    place,
+                    transferee: Some(transferee),
+                    authority: crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume,
+                } if *place == source && *transferee == destination
+            )
+        })
+}
+
 impl Builder {
     /// Emit the handoff immediately. Correct wherever the destructure itself
     /// only runs on the path that selected the pattern (`if let` / `while let`

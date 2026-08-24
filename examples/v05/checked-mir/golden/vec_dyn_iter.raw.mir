@@ -207,6 +207,7 @@ fn main() -> () [conv=default]
     _10 = const.i64 0
     _11 = const.i64 0
     _12 = record_init VecIter<dyn Labeled> { .0=_1, .1=_11 }
+    neutralize_payload _1 -> _12 [AggregateMemberConsume]
     _13 = move _10
     _14 = move _12
     goto bb8
@@ -329,6 +330,7 @@ fn main() -> () [conv=default]
     _53 = const.i64 0
     _54 = const.i64 0
     _55 = record_init VecIter<dyn Labeled> { .0=_46, .1=_54 }
+    neutralize_payload _46 -> _55 [AggregateMemberConsume]
     _56 = move _53
     _57 = move _55
     goto bb33
@@ -571,8 +573,9 @@ fn std$string$to_int(string) -> Option<i64> [conv=default]
     _8: i64
     _9: Option<i64>
     _10: i64
-    _11: Option<i64>
-    _12: i64
+    _11: string
+    _12: Option<i64>
+    _13: i64
   bb0:
     stmt: use BindingId(24) s site=SiteId(183) ty=string intent=Read
     _2 = call std$string$try_to_int(_0) -> bb1
@@ -595,11 +598,17 @@ fn std$string$to_int(string) -> Option<i64> [conv=default]
     string.retain_aggregate _8
     mvar9.0.0 = move _8
     _1 = move _9
+    drop _2 ty=Result<i64, string> fn=in_place(Enum)
     goto bb2
   bb4:
-    _12 = const.i64 1
-    mtag11 = move _12
-    _1 = move _11
+    stmt: bind BindingId(4294967230) __hew_active_variant_payload site=SiteId(187) ty=string
+    _11 = move mvar2.1.0
+    neutralize_payload mvar2.1.0 [EphemeralTempConsume]
+    _13 = const.i64 1
+    mtag12 = move _13
+    _1 = move _12
+    drop _11 ty=string fn=release(hew_string_drop)
+    drop _2 ty=Result<i64, string> fn=in_place(Enum)
     goto bb2
   bb5:
     trap(ExhaustivenessFallthrough)
@@ -966,7 +975,8 @@ fn std$string$to_float(string) -> f64 [conv=default]
     _6: i64
     _7: bool
     _8: f64
-    _9: f64
+    _9: string
+    _10: f64
   bb0:
     stmt: use BindingId(37) s site=SiteId(294) ty=string intent=Read
     _2 = call std$string$try_to_float(_0) -> bb1
@@ -985,10 +995,16 @@ fn std$string$to_float(string) -> f64 [conv=default]
     stmt: use BindingId(38) value site=SiteId(296) ty=f64 intent=Read
     _8 = move mvar2.0.0
     _1 = move _8
+    drop _2 ty=Result<f64, string> fn=in_place(Enum)
     goto bb2
   bb4:
-    _9 = const.f64 0x0000000000000000
-    _1 = move _9
+    stmt: bind BindingId(4294967230) __hew_active_variant_payload site=SiteId(297) ty=string
+    _9 = move mvar2.1.0
+    neutralize_payload mvar2.1.0 [EphemeralTempConsume]
+    _10 = const.f64 0x0000000000000000
+    _1 = move _10
+    drop _9 ty=string fn=release(hew_string_drop)
+    drop _2 ty=Result<f64, string> fn=in_place(Enum)
     goto bb2
   bb5:
     trap(ExhaustivenessFallthrough)

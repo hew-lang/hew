@@ -153,12 +153,20 @@ impl Builder {
             {
                 continue;
             }
+            let runtime_contract = crate::runtime_symbols::callee_ownership_contract(callee_symbol);
+            if matches!(owned_ty, ResolvedTy::String) && runtime_contract.borrows_string_call_args()
+            {
+                // The runtime call consumes the field load's retained read-copy
+                // through its existing inline drop. Complete an independently
+                // owned temporary aggregate behind that projection as well, so
+                // its original fields reach the exit LIFO.
+                self.finalize_typed_projection_parent_owner(arg);
+            }
             let callee_borrows = if matches!(owned_ty, ResolvedTy::String) {
                 // Runtime string receivers already receive exactly one inline
                 // release. Only an analyzed Hew function borrows the anonymous
                 // string through the ordinary caller-owner path.
-                !crate::runtime_symbols::callee_ownership_contract(callee_symbol)
-                    .borrows_string_call_args()
+                !runtime_contract.borrows_string_call_args()
                     && self.callee_is_analyzed_hew_arg_sink(callee_symbol)
             } else {
                 proven_borrow_args.contains(&index)

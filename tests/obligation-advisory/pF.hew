@@ -1,0 +1,16 @@
+import std.string;
+record Secret { value: string, length: i64 }
+enum CredErr { Missing(string); }
+fn resolve(n: i64) -> Result<Secret, CredErr> {
+    if n > 0 { return Ok(Secret { value: "s", length: n }); }
+    Err(CredErr.Missing("nope"))
+}
+fn preflight(n: i64, a: bool) -> string {
+    let secret = match resolve(n) {
+        .Err(_) => return "cred",
+        .Ok(value) => value,
+    };
+    if a { return "a"; }
+    "ok:" + secret.value
+}
+fn main() { println(preflight(1, false)); }

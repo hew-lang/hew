@@ -84,6 +84,7 @@ fn probe(bool) -> i64 [conv=default]
   bb4:
     _14 = const.i64 0
     _1 = move _14
+    drop _2 ty=Packet fn=in_place(Enum)
     goto bb2
   bb5:
     trap(ExhaustivenessFallthrough)
@@ -101,6 +102,7 @@ fn probe(bool) -> i64 [conv=default]
     trap(IntegerOverflow)
   bb10:
     _1 = move _12
+    drop _2 ty=Packet fn=in_place(Enum)
     goto bb2
 
 fn main() -> i64 [conv=default]

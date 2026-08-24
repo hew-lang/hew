@@ -509,7 +509,8 @@ fn string_families() -> () [conv=default]
     stmt: use BindingId(14) values site=SiteId(194) ty=Vec<string> intent=Read
     _7 = call hew_vec_pop_str(_1) [authority=Runtime(VecScalar { op: Pop, elem: Str })] -> bb5
   bb5:
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(193) ty=string
+    stmt: bind BindingId(4294967230) __hew_discarded_call_result site=SiteId(193) ty=string
+    stmt: use BindingId(4294967230) __hew_discarded_call_result site=SiteId(193) ty=string intent=Consume
     stmt: eval site=SiteId(193) ty=string
     stmt: use BindingId(14) values site=SiteId(196) ty=Vec<string> intent=Read
     drop _7 ty=string fn=release(hew_string_drop)
@@ -521,7 +522,8 @@ fn string_families() -> () [conv=default]
     _9 = const.i64 0
     _10 = call hew_vec_remove_at_str(_1, _9) [authority=Runtime(VecScalar { op: RemoveAt, elem: Str })] -> bb7
   bb7:
-    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(198) ty=string
+    stmt: bind BindingId(4294967229) __hew_discarded_call_result site=SiteId(198) ty=string
+    stmt: use BindingId(4294967229) __hew_discarded_call_result site=SiteId(198) ty=string intent=Consume
     stmt: eval site=SiteId(198) ty=string
     drop _10 ty=string fn=release(hew_string_drop)
     return

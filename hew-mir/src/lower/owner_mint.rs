@@ -196,19 +196,77 @@ impl Builder {
     /// refusing a `Result` that contains an opaque sibling. The variant summary
     /// has already proved this exact `(tag, field)` path fresh using the same
     /// precise and audited-transfer authorities, so this grants only that
-    /// binder; it never makes the enclosing shell droppable.
+    /// binder; it never makes the enclosing shell droppable. An imported call
+    /// can carry a declaration identity distinct from its analyzed origin, so
+    /// the emitted-symbol projection must preserve the measured fact. If
+    /// neither identity has a row, a `Sink` or `Stream` payload is refused with
+    /// a named diagnostic. Argument shapes cannot prove that a returned
+    /// endpoint is newly owned.
     pub(crate) fn owner_warrant_for_fresh_variant_payload(
-        &self,
+        &mut self,
         scrutinee: &HirExpr,
         variant_idx: u32,
         field_idx: u32,
+        payload_ty: &ResolvedTy,
     ) -> Option<OwnerMintWarrant> {
         let HirExprKind::Call { callee, .. } = &scrutinee.kind else {
             return None;
         };
-        self.call_scrutinee_provenance
-            .callee_returns_fresh_variant_payload(callee, variant_idx, field_idx)
-            .then(|| OwnerMintWarrant::new(OwnerMintOrigin::PayloadOfScrutinee, false))
+        let HirExprKind::BindingRef {
+            name,
+            resolved: hew_hir::ResolvedRef::Item(_),
+        } = &callee.kind
+        else {
+            return None;
+        };
+        if self
+            .call_scrutinee_provenance
+            .extern_table
+            .is_extern_name(name)
+        {
+            return None;
+        }
+        let measured_fresh = self
+            .call_scrutinee_provenance
+            .callee_returns_fresh_variant_payload(callee, variant_idx, field_idx);
+        if measured_fresh {
+            return Some(OwnerMintWarrant::new(
+                OwnerMintOrigin::PayloadOfScrutinee,
+                false,
+            ));
+        }
+
+        let payload_ty = self.subst_ty(payload_ty);
+        let resource_payload_without_summary = matches!(
+            payload_ty,
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::Sink | hew_types::BuiltinType::Stream),
+                ..
+            }
+        );
+        if resource_payload_without_summary
+            && !self.diagnostics.iter().any(|diagnostic| {
+                matches!(
+                    &diagnostic.kind,
+                    super::MirDiagnosticKind::ImportedResourcePayloadSummaryMissing {
+                        symbol,
+                        site,
+                        ..
+                    } if symbol == name && *site == scrutinee.site
+                )
+            })
+        {
+            self.diagnostics.push(super::MirDiagnostic {
+                kind: super::MirDiagnosticKind::ImportedResourcePayloadSummaryMissing {
+                    symbol: name.clone(),
+                    payload_ty: payload_ty.user_facing().to_string(),
+                    site: scrutinee.site,
+                },
+                note: "the callee has no measured active resource payload summary; publish a per-variant return summary before matching this payload"
+                    .to_string(),
+            });
+        }
+        None
     }
 
     /// Ask about a binder that rebinds or restores another binding in this same

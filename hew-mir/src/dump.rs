@@ -1583,12 +1583,13 @@ fn render_mir_check(check: &MirCheck) -> String {
             blocks,
             site,
             name,
+            mint_provenance,
             hard,
             reason,
             ..
         } => format!(
             "ObligationUnderReleased {function} blocks={blocks:?} site={site:?} \
-             {name} hard={hard} {reason:?}"
+             {name} mint={mint_provenance:?} hard={hard} {reason:?}"
         ),
         MirCheck::ObligationOverReleased {
             function,
@@ -1766,6 +1767,13 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         MirDiagnosticKind::ExternStringOwnershipUnresolved { symbol } => {
             format!("ExternStringOwnershipUnresolved {symbol}")
         }
+        MirDiagnosticKind::ImportedResourcePayloadSummaryMissing {
+            symbol,
+            payload_ty,
+            site,
+        } => format!(
+            "ImportedResourcePayloadSummaryMissing {symbol} payload={payload_ty} site={site:?}"
+        ),
         MirDiagnosticKind::UnsupportedUserRecordValueClass { name, reason } => {
             format!("UnsupportedUserRecordValueClass {name} {reason:?}")
         }

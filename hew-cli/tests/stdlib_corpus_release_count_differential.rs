@@ -82,19 +82,228 @@ const REJECTED: &str = "REJECTED";
 /// but a source refresh must not omit one of its new functions from future
 /// regression coverage.
 ///
-/// `examples/mqtt_broker.hew` is no longer here: it is REJECTED at the
-/// current compiler by a real, tracked static leak-obligation finding (an
-/// owned value reaching a suspend-abandon exit with more mints than
-/// discharges in `Acceptor__recv__start`), so it no longer has a
-/// `Functions`-shaped block for this mechanism to protect. Its baseline row
-/// is `REJECTED`; the main differential's `(Rejected, Rejected)` branch
-/// covers it, and the suspend-abandon gap itself is a compiler defect to fix
-/// separately, not something this ratchet can paper over.
+/// `examples/mqtt_broker.hew` remains in the ordinary baseline: its repaired
+/// suspend-abandon cleanup compiles cleanly again, so the main differential
+/// continues to protect every positive-count function in its `Functions` block.
 const SOURCE_REFRESHED_BASELINE_FILES: &[&str] = &[];
 
-/// Cells that stand below the captured baseline on purpose. The current
-/// capture has no such cells; a future exception must state its exact reason.
-const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[];
+/// Cells that stand below the captured baseline on purpose.
+const INLINE_RELEASE_REASON: &str = "generation-aware ownership now places the release directly \
+    after the final borrowing read in raw MIR instead of copying it into each reachable exit \
+    plan; the raw instruction remains the runtime release authority, and the executable \
+    ownership corpus plus checked-MIR execution pin the affected cleanup paths";
+const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
+    (
+        "examples/benchmarks/http_server.hew",
+        "std$net$http$find_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/benchmarks/http_server.hew",
+        "std$net$http$find_response_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/benchmarks/http_server.hew",
+        "std$net$http$header_count",
+        31,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/benchmarks/http_server_expert.hew",
+        "std$net$http$find_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/benchmarks/http_server_expert.hew",
+        "std$net$http$find_response_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/benchmarks/http_server_expert.hew",
+        "std$net$http$header_count",
+        31,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/curl_client.hew",
+        "main",
+        220,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/http_server.hew",
+        "std$net$http$find_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/http_server.hew",
+        "std$net$http$find_response_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/http_server.hew",
+        "std$net$http$header_count",
+        31,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/log/logger_scoped.hew",
+        "std$misc$log$field",
+        0,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/log/structured_json.hew",
+        "std$misc$log$field",
+        0,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/log/structured_text.hew",
+        "std$misc$log$field",
+        0,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/net/await_http_codec_hardening.hew",
+        "std$net$http$http_async_client$find_response_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/net/await_http_codec_hardening.hew",
+        "std$net$http$http_async_server$find_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/net/await_http_codec_hardening.hew",
+        "std$net$http$http_async_server$header_count",
+        31,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/net/await_http_roundtrip.hew",
+        "std$net$http$http_async_client$find_response_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/net/await_http_roundtrip.hew",
+        "std$net$http$http_async_server$find_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/net/await_http_roundtrip.hew",
+        "std$net$http$http_async_server$header_count",
+        31,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/net/http_await_service.hew",
+        "std$net$http$http_async_client$find_response_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/net/http_await_service.hew",
+        "std$net$http$http_async_server$find_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/net/http_await_service.hew",
+        "std$net$http$http_async_server$header_count",
+        31,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/playground/types/method_clone.hew",
+        "main",
+        10,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/sandbox-graduation/struct_functional_update.hew",
+        "main",
+        1,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/selfhost_lexer_v2.hew",
+        "test_string_builtins",
+        0,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/static_server.hew",
+        "std$net$http$find_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/static_server.hew",
+        "std$net$http$find_response_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/static_server.hew",
+        "std$net$http$header_count",
+        31,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/v05/checked-mir/vec_owned_elems.hew",
+        "main",
+        59,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "examples/v05/surfaces/template_render.hew",
+        "std$text$template$validate",
+        138,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "std/misc/log/log.hew",
+        "std$misc$log$field",
+        0,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "std/net/http/http_async_client.hew",
+        "std$net$http$find_response_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "std/net/http/http_async_server.hew",
+        "std$net$http$find_header",
+        42,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "std/net/http/http_async_server.hew",
+        "std$net$http$header_count",
+        31,
+        INLINE_RELEASE_REASON,
+    ),
+    (
+        "std/text/template/template.hew",
+        "std$text$template$validate",
+        138,
+        INLINE_RELEASE_REASON,
+    ),
+];
 
 fn accounted_shortfalls() -> impl Iterator<Item = (&'static str, &'static str, usize, &'static str)>
 {

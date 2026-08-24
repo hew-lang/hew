@@ -202,12 +202,13 @@ fn main() -> i64 [conv=default]
     _7: bool
     _8: i64
     _9: bool
-    _10: i64
+    _10: Rc<i64>
     _11: i64
     _12: i64
     _13: i64
     _14: i64
-    _15: bool
+    _15: i64
+    _16: bool
   bb0:
     _0 = call expired() -> bb1
   bb1:
@@ -225,15 +226,19 @@ fn main() -> i64 [conv=default]
   bb2:
     stmt: bind BindingId(9) dead site=SiteId(47) ty=i64
     drop _4 ty=Option<Rc<i64>> fn=in_place(Enum)
-    _12 = move _3
-    _13 = call live() -> bb7
+    _13 = move _3
+    _14 = call live() -> bb7
   bb3:
-    _10 = const.i64 9000
-    _3 = move _10
+    stmt: bind BindingId(4294967229) __hew_active_variant_payload site=SiteId(50) ty=Rc<i64>
+    _10 = move mvar4.0.0
+    neutralize_payload mvar4.0.0 [EphemeralTempConsume]
+    _11 = const.i64 9000
+    _3 = move _11
+    drop _10 ty=Rc<i64> fn=release(hew_rc_drop)
     goto bb2
   bb4:
-    _11 = const.i64 1
-    _3 = move _11
+    _12 = const.i64 1
+    _3 = move _12
     goto bb2
   bb5:
     trap(ExhaustivenessFallthrough)
@@ -243,13 +248,13 @@ fn main() -> i64 [conv=default]
     branch _9 ? bb4 : bb5
   bb7:
     stmt: use BindingId(9) dead site=SiteId(55) ty=i64 intent=Read
-    _14 ovf=_15 = add.checked.s _13 _12
-    branch _15 ? bb8 : bb9
+    _15 ovf=_16 = add.checked.s _14 _13
+    branch _16 ? bb8 : bb9
   bb8:
     trap(IntegerOverflow)
   bb9:
     stmt: return site=Some(SiteId(52)) ty=i64
-    ret = move _14
+    ret = move _15
     return
 
 fn i8::fmt(i8) -> string [conv=default]

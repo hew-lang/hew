@@ -95,8 +95,10 @@ fn Inbox__recv__run(i64) -> () [conv=actor_handler]
     _15 = icmp.eq _11 _14
     branch _15 ? bb7 : bb8
   bb10:
+    drop _10 ty=Option<string> fn=in_place(Enum)
     goto bb5
   bb11:
+    drop _10 ty=Option<string> fn=in_place(Enum)
     goto bb5
   bb12:
     _20 = move etag19
@@ -429,6 +431,7 @@ fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
     _27 = const.i64 1
     mtag26 = move _27
     mvar26.1.0 = move _19
+    neutralize_payload _19 -> mvar26.1.0 [ReturnedAggregateMemberConsume]
     ret = move _26
     return
   bb15:
@@ -459,6 +462,7 @@ fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
     _34 = const.i64 0
     mtag32 = move _34
     mvar32.0.0 = move _33
+    neutralize_payload _33 -> mvar32.0.0 [ReturnedAggregateMemberConsume]
     _35 = move _32
     ret = move _35
     return

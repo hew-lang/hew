@@ -74,11 +74,6 @@ fn goto_drops(p: &IrPipeline, fn_name: &str) -> Vec<ElabDrop> {
     drops_matching(p, fn_name, |exit| matches!(exit, ExitPath::Goto { .. }))
 }
 
-/// Every `ElabDrop` across every exit of the named function.
-fn all_exit_drops(p: &IrPipeline, fn_name: &str) -> Vec<ElabDrop> {
-    drops_matching(p, fn_name, |_| true)
-}
-
 fn enum_in_place(drops: &[ElabDrop]) -> Vec<ElabDrop> {
     drops
         .iter()
@@ -192,6 +187,113 @@ fn main() {
         "the from-call Result<string, string> scrutinee must be released exactly \
          once per iteration on the loop back-edge Goto plan; got {backedge:?}"
     );
+}
+
+/// Moving a payload binder into an early return transfers only the selected
+/// payload slot. The direct-call carrier still owns its shell and every
+/// remaining slot, so that same return edge must release the neutralized
+/// carrier rather than treating the partial transfer as a whole-owner escape.
+#[test]
+fn returned_payload_binder_releases_remaining_call_carrier_on_early_return() {
+    let p = pipeline_with_tc(
+        r#"
+record Snap { label: string, terminal: bool }
+
+actor Svc {
+    receive fn snapshot() -> Snap {
+        Snap { label: "ready".to_upper(), terminal: true }
+    }
+}
+
+fn empty_snap() -> Snap {
+    Snap { label: "", terminal: false }
+}
+
+fn poll(svc: LocalPid<Svc>) -> Snap {
+    var i = 0;
+    while i < 3 {
+        match await svc.snapshot() {
+            .Ok(s) => {
+                if s.terminal {
+                    return s;
+                }
+            },
+            .Err(_) => {},
+        }
+        i = i + 1;
+    }
+    empty_snap()
+}
+
+fn poll_let(svc: LocalPid<Svc>) -> Snap {
+    var i = 0;
+    while i < 3 {
+        let result = await svc.snapshot();
+        match result {
+            .Ok(s) => {
+                if s.terminal {
+                    return s;
+                }
+            },
+            .Err(_) => {},
+        }
+        i = i + 1;
+    }
+    empty_snap()
+}
+"#,
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "the payload transfer and remaining carrier release must balance: {:?}",
+        p.diagnostics
+    );
+    for name in ["poll", "poll_let"] {
+        let poll = p
+            .raw_mir
+            .iter()
+            .find(|function| function.name == name)
+            .unwrap_or_else(|| panic!("raw fn {name}"));
+        let return_block = poll
+            .blocks
+            .iter()
+            .find(|block| {
+                matches!(block.terminator, hew_mir::Terminator::Return)
+                    && block.instructions.iter().any(|instr| {
+                        matches!(
+                            instr,
+                            Instr::NeutralizePayloadSlot {
+                                place: hew_mir::Place::MachineVariant { .. },
+                                ..
+                            }
+                        )
+                    })
+            })
+            .unwrap_or_else(|| panic!("payload-return block in {name}"));
+        let neutralize = return_block
+            .instructions
+            .iter()
+            .position(|instr| matches!(instr, Instr::NeutralizePayloadSlot { .. }))
+            .expect("payload slot transfer");
+        let release = return_block
+            .instructions
+            .iter()
+            .position(|instr| {
+                matches!(
+                    instr,
+                    Instr::Drop {
+                        place: hew_mir::Place::Local(_),
+                        drop_fn: Some(_),
+                        ..
+                    }
+                )
+            })
+            .expect("remaining carrier release");
+        assert!(
+            release > neutralize,
+            "the carrier release must follow the selected payload transfer in {name}"
+        );
+    }
 }
 
 /// Bytes-payload admission (the second #2429 gap): a LET-BOUND
@@ -365,13 +467,64 @@ fn main() -> i64 {
     );
 }
 
-/// Negative control — escaping payload stays fail-closed. When the arm moves
-/// the payload into an outer binding that survives the loop back-edge, the
-/// composite must stay EXCLUDED from the per-iteration release (freeing it
-/// would leave the outer binding dangling — the #2384 class). Leak, never
-/// double-free.
+/// A projected string field is retained by codegen before it is returned. When
+/// the record binder is still backed by an owned enum carrier, that carrier —
+/// not the byte-copy binder — remains responsible for both original fields.
 #[test]
-fn escaping_payload_keeps_composite_excluded_from_backedge_drop() {
+fn vec_clone_match_field_return_defers_original_fields_to_carrier() {
+    let p = pipeline_with_tc(
+        r#"
+record Secret { value: string, kind: string }
+enum CredErr { Missing(string); Denied(string) }
+
+fn resolve(n: i64) -> Result<Secret, CredErr> {
+    if n == 0 { return Err(CredErr.Missing("missing".to_upper())); }
+    Ok(Secret { value: "secret".to_upper(), kind: "api".to_upper() })
+}
+
+fn collect(n: i64) -> string {
+    let bag: Vec<Secret> = [];
+    let secret = match resolve(n) {
+        Err(_) => return "error",
+        Ok(value) => value,
+    };
+    bag.push(secret);
+    let first = bag.get(0);
+    match first {
+        Some(found) => found.value,
+        None => "empty",
+    }
+}
+"#,
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        p.diagnostics
+    );
+    let collect = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "collect")
+        .expect("raw fn collect");
+    let inline_field_drops = collect
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter(|instruction| matches!(instruction, Instr::FieldDropInPlace { .. }))
+        .count();
+    assert_eq!(
+        inline_field_drops, 0,
+        "the carrier's terminal enum drop owns both original record fields; an inline \
+         binder-field release would double-release the same carrier storage"
+    );
+}
+
+/// Moving a payload into an outer binding neutralizes its source slot. The
+/// carrier therefore keeps its back-edge release for the shell and sibling
+/// slot without invalidating the escaped payload.
+#[test]
+fn escaping_payload_neutralizes_slot_before_backedge_carrier_drop() {
     let p = pipeline_with_tc(
         r#"
 fn f() -> Result<string, string> {
@@ -392,11 +545,86 @@ fn main() {
 }
 "#,
     );
-    let all = enum_in_place(&all_exit_drops(&p, "main"));
     assert!(
-        all.is_empty(),
-        "a payload moved to an outer surviving binding escapes the composite; \
-         the prover must keep the scrutinee excluded on every plan \
-         (leak-not-double-free); got {all:?}"
+        p.diagnostics.is_empty(),
+        "the escaped payload and remaining carrier must both balance: {:?}",
+        p.diagnostics
+    );
+    let main = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("raw fn main");
+    assert!(
+        main.blocks.iter().any(
+            |block| block.instructions.iter().any(|instruction| matches!(
+                instruction,
+                Instr::NeutralizePayloadSlot {
+                    place: hew_mir::Place::MachineVariant { .. },
+                    ..
+                }
+            ))
+        ),
+        "the escaped payload must clear its carrier slot"
+    );
+    let backedge = enum_in_place(&goto_drops(&p, "main"));
+    assert!(
+        !backedge.is_empty(),
+        "the neutralized carrier must release on the loop back-edge"
+    );
+}
+
+/// A payload may itself contain a carrier whose selected leaf escapes. The
+/// nested match must retain the original call carrier's projection authority:
+/// clearing only the copied inner temp leaves the original record field live
+/// and its terminal carrier drop would free the escaped string a second time.
+#[test]
+fn nested_record_payload_escape_neutralizes_original_call_carrier() {
+    let p = pipeline_with_tc(
+        r#"
+record Slot { generation: i64, value: Option<string> }
+
+fn clone_slot() -> Option<Slot> {
+    Some(Slot { generation: 1, value: Some("payload".to_upper()) })
+}
+
+fn take() -> Option<string> {
+    match clone_slot() {
+        Some(slot) => match slot.value {
+            Some(value) => Some(value),
+            None => None,
+        },
+        None => None,
+    }
+}
+"#,
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "the nested payload transfer and original carrier release must balance: {:?}",
+        p.diagnostics
+    );
+    let take = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "take")
+        .expect("raw fn take");
+    let projection_paths = take
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instruction| match instruction {
+            Instr::AggregateProjectionNeutralize {
+                root: hew_mir::Place::MachineVariant { .. },
+                fields,
+                ..
+            } => Some(fields.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        projection_paths,
+        vec![vec![1]],
+        "the escaped inner payload must clear field 1 in the original outer carrier"
     );
 }

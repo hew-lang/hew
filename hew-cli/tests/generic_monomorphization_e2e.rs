@@ -198,8 +198,9 @@ fn generic_record_with_owned_field_admits_and_runs() {
 /// A generic record whose concrete inline-enum field owns a string must use the
 /// recursive record drop spine after both ordinary construction and repeated
 /// field overwrite. The MIR assertions cover normal, panic, and cancellation
-/// exits; the LLVM assertions prove both enclosing-record and nested-enum
-/// clone/drop thunks have bodies rather than declarations.
+/// exits plus the last-borrow release path; the LLVM assertions prove both
+/// enclosing-record and nested-enum clone/drop thunks have bodies rather than
+/// declarations.
 #[test]
 fn generic_record_with_inline_owned_enum_drops_on_all_exits() {
     require_codegen();
@@ -224,9 +225,27 @@ fn generic_record_with_inline_owned_enum_drops_on_all_exits() {
             )
             && mir.contains(
                 "cancel[bb7] ->\n      drop _8 ty=EnumHolder<string> kind=record_in_place"
-            )
-            && mir.contains("drop _7 ty=EnumHolder<string> kind=record_in_place"),
-        "generic enum-record drop must cover overwrite, untouched, error, and cancel exits:\n{mir}"
+            ),
+        "generic enum-record drop must cover overwrite, error, and cancel exits:\n{mir}"
+    );
+
+    let raw = std::process::Command::new(hew_binary())
+        .args(["compile", "--dump-mir", "raw"])
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("dump raw MIR");
+    assert!(
+        raw.status.success(),
+        "generic enum-record raw MIR should lower; stderr: {}",
+        String::from_utf8_lossy(&raw.stderr)
+    );
+    let raw = String::from_utf8_lossy(&raw.stdout);
+    assert!(
+        raw.contains(
+            "_8 = _7.field[1]\n    snapshot_drop _7 ty=EnumHolder<string> plan=UserRecord { name: \"EnumHolder$$string\" } boundary=LocalCall\n    ret = move _8"
+        ),
+        "untouched generic enum-record must release after its final borrow and before return:\n{raw}"
     );
 
     let emit_dir = support::tempdir();

@@ -40,7 +40,7 @@ checker-hir-fact-relation	hir-relation-consumer	hew-hir/src/verify.rs	8	stage-2	
 checker-hir-fact-relation	hir-relation-consumer	hew-mir/src/lower/ownership.rs	4	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-use	hew-hir/src/lower.rs	2	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-use	hew-hir/src/verify.rs	22	stage-2	real checker/HIR produced-value carrier inventory; +3 for the subsumption-spine guardrail (Subsumes/Identity edge-skip check publishing CheckerBoundaryViolation)
-checker-hir-fact-relation	hir-relation-use	hew-mir/src/lower/ownership.rs	8	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	hir-relation-use	hew-mir/src/lower/ownership.rs	9	stage-2	real checker/HIR produced-value carrier inventory plus exact projection-source lookup for completing an owned temporary parent behind a runtime-borrowed string field
 checker-hir-fact-relation	hir-relation-variant	hew-hir/src/node.rs	6	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	produced-fact-field	hew-types/src/check/types.rs	64	stage-2	real checker/HIR produced-value carrier inventory plus interpolation Display-selection identity
 checker-hir-publication	checker-insert-call	hew-types/src/check/expressions.rs	1	stage-2	RC1 syntax-node authority inventory
@@ -57,7 +57,7 @@ mir-ownership-sink	ownership-classify-call	hew-mir/src/lower/ownership.rs	3	stag
 mir-ownership-sink	ownership-classify-call	hew-mir/src/ownership.rs	1	stage-4	RC1 syntax-node authority inventory
 owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/closure_gen.rs	2	stage-3	composed owner retirement path
 owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/drop_plan.rs	1	stage-3	composed owner retirement path
-owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/mod.rs	2	stage-3	composed owner retirement path
+owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/mod.rs	4	stage-3	composed owner retirement path
 owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/temp_drop.rs	2	stage-3	composed owner retirement path
 owner-retirement-path	crash-cleanup-owner-path	hew-codegen-rs/src/llvm.rs	2	stage-3	composed owner retirement path
 owner-retirement-path	crash-cleanup-owner-path	hew-mir/src/lower/machine_synth.rs	1	stage-3	composed owner retirement path

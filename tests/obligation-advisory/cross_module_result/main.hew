@@ -1,0 +1,12 @@
+import producer;
+
+fn describe(n: i64) -> string {
+    let user = match producer.relay(n) {
+        .Err(_) => return "missing",
+        .Ok(value) => value,
+    };
+    if n == 8 { return "reserved"; }
+    "user:" + user.name
+}
+
+fn main() { println(describe(3)); }

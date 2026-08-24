@@ -165,10 +165,11 @@ impl Builder {
     /// binder that never escapes leaves the entry unfired and the terminal
     /// drop releases the payload — exactly once either way, per arm.
     ///
-    /// Only a SELF-ROOTED whole carrier participates (the owned call-carrier
-    /// parameter slot itself); projection or derived scrutinees keep their
-    /// existing fail-closed handling. `BitCopy` payloads carry no release
-    /// authority and are skipped.
+    /// A self-rooted carrier seeds its selected variant slot directly. A nested
+    /// carrier reached through an existing root-relative projection preserves
+    /// that projection, so an escaping inner payload clears the ORIGINAL field
+    /// rather than only its copied match temp. Other derived scrutinees remain
+    /// fail-closed. `BitCopy` payloads carry no release authority and are skipped.
     pub(crate) fn note_carrier_payload_binder(
         &mut self,
         scrutinee_local: u32,
@@ -177,30 +178,33 @@ impl Builder {
         binding_ty: &hew_types::ResolvedTy,
     ) {
         let scrutinee = Place::Local(scrutinee_local);
-        if !matches!(
-            self.owned_carrier_authority(scrutinee),
-            Some(OwnedCarrierNeutralizeTarget::Whole(root)) if root == scrutinee
+        let authority = match self.owned_carrier_authority(scrutinee) {
+            Some(OwnedCarrierNeutralizeTarget::Whole(root)) if root == scrutinee => {
+                OwnedCarrierNeutralizeTarget::Whole(source)
+            }
+            Some(OwnedCarrierNeutralizeTarget::Projection {
+                root,
+                fields,
+                scope_exit_owner,
+            }) => OwnedCarrierNeutralizeTarget::Projection {
+                root,
+                fields,
+                scope_exit_owner,
+            },
+            _ => return,
+        };
+        if matches!(
+            hew_hir::ValueClass::of_ty(binding_ty, &self.type_classes),
+            hew_hir::ValueClass::BitCopy
         ) {
             return;
         }
-        let record_layouts = outbound_record_layouts(self);
-        let Ok(plan) = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
-            binding_ty,
-            &record_layouts,
-            &self.enum_layouts,
-            &self.opaque_handle_names,
-            &self.lifecycle_registry,
-        ) else {
-            // Unreachable for a registered carrier: the parameter registration
-            // requires a clone-total plan over the whole enum, which
-            // classifies every payload field.
-            return;
-        };
-        if matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }) {
-            return;
-        }
-        self.owned_carrier_neutralize
-            .insert(dest, OwnedCarrierNeutralizeTarget::Whole(source));
+        // This is a whole-value move, not a snapshot. Heap ownership is the
+        // required authority: the destination receives the existing value and
+        // the source payload slot is neutralized on the same edge. Requiring a
+        // clone-total plan here incorrectly excludes move-only resource
+        // composites such as `(Sender<T>, Receiver<T>)`.
+        self.owned_carrier_neutralize.insert(dest, authority);
     }
 
     /// Save the raw argument places for the post-CFG owned-carrier pass.

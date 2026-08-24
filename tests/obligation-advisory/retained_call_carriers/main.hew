@@ -1,0 +1,37 @@
+import producer;
+
+fn statement_match(ok: bool, stop: bool) -> string {
+    match producer.unit_result(ok) {
+        .Err(message) => return "error:" + message,
+        .Ok(_) => {},
+    }
+    if stop { return "stopped"; }
+    "continued"
+}
+
+fn try_comparison(ok: bool, stop: bool) -> Result<string, string> {
+    if producer.text_result(ok)? != "ready" {
+        return Err("unexpected");
+    }
+    if stop { return Ok("stopped"); }
+    Ok("continued")
+}
+
+fn nested_match(some: bool, ok: bool) -> string {
+    match producer.optional_envelope(some) {
+        .Some(envelope) => return envelope.message,
+        .None => {
+            match producer.unit_result(ok) {
+                .Err(message) => return message,
+                .Ok(_) => {},
+            }
+        },
+    }
+    "nested-continued"
+}
+
+fn main() {
+    println(statement_match(true, false));
+    let _ = try_comparison(true, false);
+    println(nested_match(false, true));
+}

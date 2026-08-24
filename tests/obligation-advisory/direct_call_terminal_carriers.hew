@@ -1,0 +1,60 @@
+enum ProbeError { Failed(string); }
+record Envelope { message: string }
+
+fn unit_result(ok: bool) -> Result<(), string> {
+    if ok { return Ok(()); }
+    Err("unit failed")
+}
+
+fn text_result(ok: bool) -> Result<string, ProbeError> {
+    if ok { return Ok("ready"); }
+    Err(ProbeError.Failed("text failed"))
+}
+
+fn optional_envelope(some: bool) -> Option<Envelope> {
+    if some { return Some(Envelope { message: "stop" }); }
+    None
+}
+
+fn statement_match(ok: bool, stop: bool) -> string {
+    match unit_result(ok) {
+        .Err(message) => return "error:" + message,
+        .Ok(_) => {},
+    }
+    if stop { return "stopped"; }
+    "continued"
+}
+
+fn try_comparison(ok: bool, stop: bool) -> Result<string, ProbeError> {
+    if text_result(ok)? != "ready" {
+        return Err(ProbeError.Failed("unexpected"));
+    }
+    if stop { return Ok("stopped"); }
+    Ok("continued")
+}
+
+fn nested_match(some: bool, ok: bool) -> string {
+    match optional_envelope(some) {
+        .Some(envelope) => return envelope.message,
+        .None => {
+            match unit_result(ok) {
+                .Err(message) => return message,
+                .Ok(_) => {},
+            }
+        },
+    }
+    "nested-continued"
+}
+
+fn main() {
+    // Driven 200k times so the leak oracle reads a slope, not one call: a
+    // per-call residue of one allocation is invisible at a single iteration.
+    var k = 0;
+    while k < 200000 {
+        let _statement = statement_match(k % 2 == 0, k % 3 == 0);
+        let _try = try_comparison(k % 2 == 0, k % 3 == 0);
+        let _nested = nested_match(k % 2 == 0, k % 3 == 0);
+        k = k + 1;
+    }
+    println("done");
+}

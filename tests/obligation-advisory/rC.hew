@@ -1,0 +1,39 @@
+import std.string;
+
+record Secret { value: string, kind: string }
+enum CredErr { Missing(string); Denied(string) }
+
+fn resolve(n: i64) -> Result<Secret, CredErr> {
+    if n % 3 == 0 {
+        return Err(CredErr.Missing("nope-" + string.from_int(n)));
+    }
+    Ok(Secret { value: "sec-" + string.from_int(n), kind: "api" })
+}
+
+fn collect(n: i64) -> string {
+    var bag: Vec<Secret> = [];
+    let secret = match resolve(n) {
+        .Err(_) => { return "cred"; },
+        .Ok(value) => value,
+    };
+    bag.push(secret);
+    if n % 5 == 0 {
+        return "skipped";
+    }
+    let first = bag.get(0);
+    match first {
+        .Some(s) => s.value,
+        .None => "empty",
+    }
+}
+
+fn main() {
+    var i: i64 = 0;
+    while i < 1000000 {
+        let _ = collect(i);
+        i = i + 1;
+    }
+    println(collect(1));
+    println(collect(3));
+    println(collect(5));
+}

@@ -5,14 +5,13 @@ fn main -> ()
     use BindingId(0) point site=SiteId(5) ty=Point intent=Read
     bind BindingId(4294967230) __hew_produced_value site=SiteId(4) ty=string
     eval site=SiteId(3) ty=()
-    drop BindingId(0) point ty=Point
   drop_plans:
     call[bb0 println_str -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
     return[bb1] ->
-      drop _3 ty=Point kind=record_in_place
+      (none)
 
 fn i8::fmt -> string
   statements:

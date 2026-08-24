@@ -349,6 +349,10 @@ entry:
   %local_10 = alloca ptr, align 8
   %local_11 = alloca i64, align 8
   %local_12 = alloca i64, align 8
+  %helper_crash_cleanup_token_1 = alloca i64, align 8
+  store i64 0, ptr %helper_crash_cleanup_token_1, align 8
+  %helper_crash_cleanup_active_1 = alloca i1, align 1
+  store i1 false, ptr %helper_crash_cleanup_active_1, align 1
   %helper_crash_cleanup_token_9 = alloca i64, align 8
   store i64 0, ptr %helper_crash_cleanup_token_9, align 8
   %helper_crash_cleanup_active_9 = alloca i1, align 1
@@ -363,20 +367,10 @@ bb0:                                              ; preds = %after_cooperate
   br label %bb1
 
 bb1:                                              ; preds = %bb0
-  %move_load = load ptr, ptr %local_0, align 8
-  store ptr %move_load, ptr %local_1, align 8
-  store ptr @str_lit, ptr %local_2, align 8
-  store ptr @str_lit.1, ptr %local_3, align 8
-  %"hew_string_concat arg0" = load ptr, ptr %local_2, align 8
-  %"hew_string_concat arg1" = load ptr, ptr %local_3, align 8
-  %hew_string_concat_call = call ptr @hew_string_concat(ptr %"hew_string_concat arg0", ptr %"hew_string_concat arg1")
-  store ptr %hew_string_concat_call, ptr %local_4, align 8
-  %call_arg = load ptr, ptr %local_1, align 8
-  %call_arg1 = load ptr, ptr %local_4, align 8
-  call void @hew_vec_push_str(ptr %call_arg, ptr %call_arg1)
-  br label %bb2
+  %helper_crash_cleanup_was_active = load i1, ptr %helper_crash_cleanup_active_1, align 1
+  br i1 %helper_crash_cleanup_was_active, label %helper_crash_cleanup_deactivate, label %helper_crash_cleanup_deactivate_merge
 
-bb2:                                              ; preds = %bb1
+bb2:                                              ; preds = %frame_cleanup_registered
   %"hew_string_drop drop" = load ptr, ptr %local_4, align 8
   call void @hew_string_drop(ptr %"hew_string_drop drop")
   store ptr null, ptr %local_4, align 8
@@ -392,22 +386,22 @@ bb2:                                              ; preds = %bb1
   %field_1_init_ptr = getelementptr inbounds nuw %Bundle, ptr %local_8, i32 0, i32 1
   %field_1_init_src = load ptr, ptr %local_1, align 8
   store ptr %field_1_init_src, ptr %field_1_init_ptr, align 8
-  %helper_crash_cleanup_was_active = load i1, ptr %helper_crash_cleanup_active_9, align 1
-  br i1 %helper_crash_cleanup_was_active, label %helper_crash_cleanup_deactivate, label %helper_crash_cleanup_deactivate_merge
+  %helper_crash_cleanup_was_active5 = load i1, ptr %helper_crash_cleanup_active_1, align 1
+  br i1 %helper_crash_cleanup_was_active5, label %helper_crash_cleanup_deactivate6, label %helper_crash_cleanup_deactivate_merge7
 
-bb3:                                              ; preds = %frame_cleanup_registered
-  %"hew_string_drop drop7" = load ptr, ptr %local_10, align 8
-  call void @hew_string_drop(ptr %"hew_string_drop drop7")
+bb3:                                              ; preds = %frame_cleanup_registered23
+  %"hew_string_drop drop26" = load ptr, ptr %local_10, align 8
+  call void @hew_string_drop(ptr %"hew_string_drop drop26")
   store ptr null, ptr %local_10, align 8
-  %move_load8 = load i64, ptr %local_11, align 8
-  store i64 %move_load8, ptr %local_12, align 8
+  %move_load27 = load i64, ptr %local_11, align 8
+  store i64 %move_load27, ptr %local_12, align 8
   %print_arg = load i64, ptr %local_12, align 8
   call void @hew_print_value(i8 1, i64 %print_arg, i1 true)
   br label %bb4
 
 bb4:                                              ; preds = %bb3
-  %move_load9 = load i64, ptr %local_12, align 8
-  store i64 %move_load9, ptr %return_slot, align 8
+  %move_load28 = load i64, ptr %local_12, align 8
+  store i64 %move_load28, ptr %return_slot, align 8
   %helper_crash_cleanup_drop_active = load i1, ptr %helper_crash_cleanup_active_9, align 1
   br i1 %helper_crash_cleanup_drop_active, label %helper_crash_cleanup_retire, label %helper_crash_cleanup_retire_merge
 
@@ -426,21 +420,21 @@ hew_exit_status_failed:                           ; preds = %cancel_exit
 hew_exit_status_continue:                         ; preds = %hew_exit_status_failed, %cancel_exit
   ret i64 0
 
-helper_crash_cleanup_deactivate:                  ; preds = %bb2
-  %helper_crash_cleanup_token = load i64, ptr %helper_crash_cleanup_token_9, align 8
+helper_crash_cleanup_deactivate:                  ; preds = %bb1
+  %helper_crash_cleanup_token = load i64, ptr %helper_crash_cleanup_token_1, align 8
   %helper_crash_cleanup_deactivate_call = call i1 @hew_cont_crash_cleanup_deactivate(i64 %helper_crash_cleanup_token)
   br i1 %helper_crash_cleanup_deactivate_call, label %helper_crash_cleanup_deactivate_accepted, label %helper_crash_cleanup_deactivate_rejected
 
-helper_crash_cleanup_deactivate_merge:            ; preds = %helper_crash_cleanup_deactivate_accepted, %bb2
-  %move_load5 = load %Bundle, ptr %local_8, align 8
-  store %Bundle %move_load5, ptr %local_9, align 8
-  %helper_crash_cleanup_prior_token = load i64, ptr %helper_crash_cleanup_token_9, align 8
-  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_9, i64 16, i64 8, ptr @__hew_frame_cleanup_dd2698fd845d405b, i32 1, i32 0)
+helper_crash_cleanup_deactivate_merge:            ; preds = %helper_crash_cleanup_deactivate_accepted, %bb1
+  %move_load = load ptr, ptr %local_0, align 8
+  store ptr %move_load, ptr %local_1, align 8
+  %helper_crash_cleanup_prior_token = load i64, ptr %helper_crash_cleanup_token_1, align 8
+  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_1, i64 8, i64 8, ptr @__hew_frame_cleanup_231a5e1683e2486b, i32 1, i32 0)
   %frame_cleanup_arm_failed = icmp eq i64 %arm_typed_crash_cleanup, -1
   br i1 %frame_cleanup_arm_failed, label %frame_cleanup_rejected, label %frame_cleanup_registered
 
 helper_crash_cleanup_deactivate_accepted:         ; preds = %helper_crash_cleanup_deactivate
-  store i1 false, ptr %helper_crash_cleanup_active_9, align 1
+  store i1 false, ptr %helper_crash_cleanup_active_1, align 1
   br label %helper_crash_cleanup_deactivate_merge
 
 helper_crash_cleanup_deactivate_rejected:         ; preds = %helper_crash_cleanup_deactivate
@@ -449,19 +443,79 @@ helper_crash_cleanup_deactivate_rejected:         ; preds = %helper_crash_cleanu
   unreachable
 
 frame_cleanup_registered:                         ; preds = %helper_crash_cleanup_deactivate_merge
-  store i64 %arm_typed_crash_cleanup, ptr %helper_crash_cleanup_token_9, align 8
+  store i64 %arm_typed_crash_cleanup, ptr %helper_crash_cleanup_token_1, align 8
+  store i1 true, ptr %helper_crash_cleanup_active_1, align 1
+  store ptr @str_lit, ptr %local_2, align 8
+  store ptr @str_lit.1, ptr %local_3, align 8
+  %"hew_string_concat arg0" = load ptr, ptr %local_2, align 8
+  %"hew_string_concat arg1" = load ptr, ptr %local_3, align 8
+  %hew_string_concat_call = call ptr @hew_string_concat(ptr %"hew_string_concat arg0", ptr %"hew_string_concat arg1")
+  store ptr %hew_string_concat_call, ptr %local_4, align 8
+  %call_arg = load ptr, ptr %local_1, align 8
+  %call_arg1 = load ptr, ptr %local_4, align 8
+  call void @hew_vec_push_str(ptr %call_arg, ptr %call_arg1)
+  br label %bb2
+
+frame_cleanup_rejected:                           ; preds = %helper_crash_cleanup_deactivate_merge
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+helper_crash_cleanup_deactivate6:                 ; preds = %bb2
+  %helper_crash_cleanup_token8 = load i64, ptr %helper_crash_cleanup_token_1, align 8
+  %helper_crash_cleanup_deactivate_call9 = call i1 @hew_cont_crash_cleanup_deactivate(i64 %helper_crash_cleanup_token8)
+  br i1 %helper_crash_cleanup_deactivate_call9, label %helper_crash_cleanup_deactivate_accepted10, label %helper_crash_cleanup_deactivate_rejected11
+
+helper_crash_cleanup_deactivate_merge7:           ; preds = %helper_crash_cleanup_deactivate_accepted10, %bb2
+  store ptr null, ptr %local_1, align 8
+  %helper_crash_cleanup_was_active12 = load i1, ptr %helper_crash_cleanup_active_9, align 1
+  br i1 %helper_crash_cleanup_was_active12, label %helper_crash_cleanup_deactivate13, label %helper_crash_cleanup_deactivate_merge14
+
+helper_crash_cleanup_deactivate_accepted10:       ; preds = %helper_crash_cleanup_deactivate6
+  store i1 false, ptr %helper_crash_cleanup_active_1, align 1
+  br label %helper_crash_cleanup_deactivate_merge7
+
+helper_crash_cleanup_deactivate_rejected11:       ; preds = %helper_crash_cleanup_deactivate6
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+helper_crash_cleanup_deactivate13:                ; preds = %helper_crash_cleanup_deactivate_merge7
+  %helper_crash_cleanup_token15 = load i64, ptr %helper_crash_cleanup_token_9, align 8
+  %helper_crash_cleanup_deactivate_call16 = call i1 @hew_cont_crash_cleanup_deactivate(i64 %helper_crash_cleanup_token15)
+  br i1 %helper_crash_cleanup_deactivate_call16, label %helper_crash_cleanup_deactivate_accepted17, label %helper_crash_cleanup_deactivate_rejected18
+
+helper_crash_cleanup_deactivate_merge14:          ; preds = %helper_crash_cleanup_deactivate_accepted17, %helper_crash_cleanup_deactivate_merge7
+  %move_load19 = load %Bundle, ptr %local_8, align 8
+  store %Bundle %move_load19, ptr %local_9, align 8
+  %helper_crash_cleanup_prior_token20 = load i64, ptr %helper_crash_cleanup_token_9, align 8
+  %arm_typed_crash_cleanup21 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token20, ptr %local_9, i64 16, i64 8, ptr @__hew_frame_cleanup_dd2698fd845d405b, i32 1, i32 0)
+  %frame_cleanup_arm_failed22 = icmp eq i64 %arm_typed_crash_cleanup21, -1
+  br i1 %frame_cleanup_arm_failed22, label %frame_cleanup_rejected24, label %frame_cleanup_registered23
+
+helper_crash_cleanup_deactivate_accepted17:       ; preds = %helper_crash_cleanup_deactivate13
+  store i1 false, ptr %helper_crash_cleanup_active_9, align 1
+  br label %helper_crash_cleanup_deactivate_merge14
+
+helper_crash_cleanup_deactivate_rejected18:       ; preds = %helper_crash_cleanup_deactivate13
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+frame_cleanup_registered23:                       ; preds = %helper_crash_cleanup_deactivate_merge14
+  store i64 %arm_typed_crash_cleanup21, ptr %helper_crash_cleanup_token_9, align 8
   store i1 true, ptr %helper_crash_cleanup_active_9, align 1
   %field_0_load_ptr = getelementptr inbounds nuw %Bundle, ptr %local_9, i32 0, i32 0
   %field_0_load = load ptr, ptr %field_0_load_ptr, align 8
   %field_0_str_retain = call ptr @hew_string_clone(ptr %field_0_load)
   store ptr %field_0_str_retain, ptr %local_10, align 8
-  %call_arg6 = load ptr, ptr %local_10, align 8
-  %call_result = call i32 @hew_string_length(ptr %call_arg6)
+  %call_arg25 = load ptr, ptr %local_10, align 8
+  %call_result = call i32 @hew_string_length(ptr %call_arg25)
   %ffi_sext = sext i32 %call_result to i64
   store i64 %ffi_sext, ptr %local_11, align 8
   br label %bb3
 
-frame_cleanup_rejected:                           ; preds = %helper_crash_cleanup_deactivate_merge
+frame_cleanup_rejected24:                         ; preds = %helper_crash_cleanup_deactivate_merge14
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
@@ -473,9 +527,8 @@ helper_crash_cleanup_retire:                      ; preds = %bb4
 
 helper_crash_cleanup_retire_merge:                ; preds = %helper_crash_cleanup_retire_accepted, %bb4
   call void @__hew_record_drop_inplace_Bundle(ptr %local_9)
-  %helper_crash_cleanup_return_token_9 = load i64, ptr %helper_crash_cleanup_token_9, align 8
-  %helper_crash_cleanup_return_has_token_9 = icmp ne i64 %helper_crash_cleanup_return_token_9, 0
-  br i1 %helper_crash_cleanup_return_has_token_9, label %helper_crash_cleanup_return_retire_9, label %helper_crash_cleanup_return_merge_9
+  %helper_crash_cleanup_drop_active29 = load i1, ptr %helper_crash_cleanup_active_1, align 1
+  br i1 %helper_crash_cleanup_drop_active29, label %helper_crash_cleanup_retire30, label %helper_crash_cleanup_retire_merge31
 
 helper_crash_cleanup_retire_accepted:             ; preds = %helper_crash_cleanup_retire
   store i64 0, ptr %helper_crash_cleanup_token_9, align 8
@@ -487,15 +540,57 @@ helper_crash_cleanup_retire_rejected:             ; preds = %helper_crash_cleanu
   call void @llvm.trap()
   unreachable
 
-helper_crash_cleanup_return_merge_9:              ; preds = %helper_crash_cleanup_return_retire_9_accepted, %helper_crash_cleanup_retire_merge
+helper_crash_cleanup_retire30:                    ; preds = %helper_crash_cleanup_retire_merge
+  %helper_crash_cleanup_retire_token32 = load i64, ptr %helper_crash_cleanup_token_1, align 8
+  %helper_crash_cleanup_retire_call33 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token32)
+  br i1 %helper_crash_cleanup_retire_call33, label %helper_crash_cleanup_retire_accepted34, label %helper_crash_cleanup_retire_rejected35
+
+helper_crash_cleanup_retire_merge31:              ; preds = %helper_crash_cleanup_retire_accepted34, %helper_crash_cleanup_retire_merge
+  %"hew_vec_free_owned drop" = load ptr, ptr %local_1, align 8
+  call void @hew_vec_free_owned(ptr %"hew_vec_free_owned drop")
+  store ptr null, ptr %local_1, align 8
+  %helper_crash_cleanup_return_token_1 = load i64, ptr %helper_crash_cleanup_token_1, align 8
+  %helper_crash_cleanup_return_has_token_1 = icmp ne i64 %helper_crash_cleanup_return_token_1, 0
+  br i1 %helper_crash_cleanup_return_has_token_1, label %helper_crash_cleanup_return_retire_1, label %helper_crash_cleanup_return_merge_1
+
+helper_crash_cleanup_retire_accepted34:           ; preds = %helper_crash_cleanup_retire30
+  store i64 0, ptr %helper_crash_cleanup_token_1, align 8
+  store i1 false, ptr %helper_crash_cleanup_active_1, align 1
+  br label %helper_crash_cleanup_retire_merge31
+
+helper_crash_cleanup_retire_rejected35:           ; preds = %helper_crash_cleanup_retire30
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+helper_crash_cleanup_return_merge_1:              ; preds = %helper_crash_cleanup_return_retire_1_accepted, %helper_crash_cleanup_retire_merge31
+  %helper_crash_cleanup_return_token_9 = load i64, ptr %helper_crash_cleanup_token_9, align 8
+  %helper_crash_cleanup_return_has_token_9 = icmp ne i64 %helper_crash_cleanup_return_token_9, 0
+  br i1 %helper_crash_cleanup_return_has_token_9, label %helper_crash_cleanup_return_retire_9, label %helper_crash_cleanup_return_merge_9
+
+helper_crash_cleanup_return_retire_1:             ; preds = %helper_crash_cleanup_retire_merge31
+  %helper_crash_cleanup_return_retire_1_call = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_return_token_1)
+  br i1 %helper_crash_cleanup_return_retire_1_call, label %helper_crash_cleanup_return_retire_1_accepted, label %helper_crash_cleanup_return_retire_1_rejected
+
+helper_crash_cleanup_return_retire_1_accepted:    ; preds = %helper_crash_cleanup_return_retire_1
+  store i64 0, ptr %helper_crash_cleanup_token_1, align 8
+  store i1 false, ptr %helper_crash_cleanup_active_1, align 1
+  br label %helper_crash_cleanup_return_merge_1
+
+helper_crash_cleanup_return_retire_1_rejected:    ; preds = %helper_crash_cleanup_return_retire_1
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+helper_crash_cleanup_return_merge_9:              ; preds = %helper_crash_cleanup_return_retire_9_accepted, %helper_crash_cleanup_return_merge_1
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
   %hew_lambda_drain_failed = icmp ne i32 %hew_lambda_drain_all_call, 0
-  %hew_runtime_exit_status_call10 = call i32 @hew_runtime_exit_status()
-  %hew_runtime_faulted11 = icmp ne i32 %hew_runtime_exit_status_call10, 0
-  %hew_exit_any_failed = or i1 %hew_lambda_drain_failed, %hew_runtime_faulted11
+  %hew_runtime_exit_status_call36 = call i32 @hew_runtime_exit_status()
+  %hew_runtime_faulted37 = icmp ne i32 %hew_runtime_exit_status_call36, 0
+  %hew_exit_any_failed = or i1 %hew_lambda_drain_failed, %hew_runtime_faulted37
   br i1 %hew_exit_any_failed, label %hew_shutdown_exit_failed, label %hew_shutdown_exit_continue
 
-helper_crash_cleanup_return_retire_9:             ; preds = %helper_crash_cleanup_retire_merge
+helper_crash_cleanup_return_retire_9:             ; preds = %helper_crash_cleanup_return_merge_1
   %helper_crash_cleanup_return_retire_9_call = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_return_token_9)
   br i1 %helper_crash_cleanup_return_retire_9_call, label %helper_crash_cleanup_return_retire_9_accepted, label %helper_crash_cleanup_return_retire_9_rejected
 
@@ -1265,13 +1360,21 @@ declare void @hew_trap_with_code(i32)
 ; Function Attrs: cold noreturn nounwind memory(inaccessiblemem: write)
 declare void @llvm.trap() #0
 
+define internal void @__hew_frame_cleanup_231a5e1683e2486b(ptr %0) {
+entry:
+  %"hew_vec_free_owned drop" = load ptr, ptr %0, align 8
+  call void @hew_vec_free_owned(ptr %"hew_vec_free_owned drop")
+  store ptr null, ptr %0, align 8
+  ret void
+}
+
+declare i64 @hew_cont_crash_cleanup_arm(i64, ptr, i64, i64, ptr, i32, i32)
+
 define internal void @__hew_frame_cleanup_dd2698fd845d405b(ptr %0) {
 entry:
   call void @__hew_record_drop_inplace_Bundle(ptr %0)
   ret void
 }
-
-declare i64 @hew_cont_crash_cleanup_arm(i64, ptr, i64, i64, ptr, i32, i32)
 
 declare i1 @hew_cont_crash_cleanup_retire(i64)
 

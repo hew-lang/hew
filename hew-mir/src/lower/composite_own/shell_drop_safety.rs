@@ -27,7 +27,7 @@ use super::{base_local, BasicBlock, Instr, Place};
 /// close zeroed storage. The prover tracks these candidates so
 /// [`note_declared_release_neutralize_exclusions`] can exclude them the
 /// moment their payload is handed off.
-pub(super) fn direct_payload_has_registered_resource_record(
+pub(in crate::lower) fn direct_payload_has_registered_resource_record(
     ty: &ResolvedTy,
     enum_layouts: &[crate::model::EnumLayout],
     lifecycle_registry: &hew_hir::LifecycleRegistry,
@@ -256,6 +256,18 @@ pub(in crate::lower) fn enum_payloads_are_shell_drop_safe(
         0,
     )
 }
+fn direct_runtime_payload_is_shell_drop_safe(
+    ty: &ResolvedTy,
+    type_classes: &TypeClassTable,
+    depth: u32,
+) -> bool {
+    depth == 1
+        && matches!(
+            crate::lower::drop_plan::resource_drop_fn(ty, type_classes),
+            Some(crate::model::DropFnSpec::Runtime(_))
+        )
+}
+
 /// Whether every heap leaf reachable through `ty` is shell-drop-safe. See
 /// [`enum_payloads_are_shell_drop_safe`] for the shape table and the
 /// fail-closed rule. `depth` gates the bare-opaque admission to the candidate
@@ -264,6 +276,7 @@ pub(in crate::lower) fn enum_payloads_are_shell_drop_safe(
 /// genuinely recursive enum short-circuits on `is_indirect`.
 #[allow(
     clippy::too_many_arguments,
+    clippy::too_many_lines,
     reason = "same authority set as the public entry, plus the depth gate"
 )]
 fn payload_leaf_is_shell_drop_safe(
@@ -326,6 +339,33 @@ fn payload_leaf_is_shell_drop_safe(
                 });
             }
         }
+    }
+    // Direct builtin runtime handles have an exact null-tolerant close descriptor.
+    // Their carrier slot can therefore use the same neutralize-then-shell-drop
+    // protocol as string and bytes. User close functions remain below the
+    // affine refusal: calling arbitrary close code over zeroed storage is unsafe.
+    if direct_runtime_payload_is_shell_drop_safe(ty, type_classes, depth) {
+        return true;
+    }
+    // `Rc<T>` / `Weak<T>` carrier payloads release through a null-tolerant
+    // refcount decrement (`rc_release` / `weak_release`), so — like a direct
+    // runtime handle or a `string`/`bytes` leaf — the candidate shell's
+    // tag-aware `EnumInPlace` drop can run the neutralize-then-shell-drop
+    // protocol over a possibly-zeroed slot without ever double-releasing. They
+    // classify `AffineResource` (below), so admit them HERE, before the affine
+    // refusal, exactly as the runtime-handle arm does. Gated to the candidate's
+    // DIRECT variant payloads (`depth == 1`); a deeper `Rc` rides its enclosing
+    // aggregate's own helper family.
+    if depth == 1
+        && matches!(
+            ty,
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::Rc | hew_types::BuiltinType::Weak),
+                ..
+            }
+        )
+    {
+        return true;
     }
     // Affine leaves (`#[resource]` records, closeable opaque resources, owned
     // runtime handles, `@linear` / `Task` values) carry their own consume-once
@@ -419,6 +459,9 @@ fn payload_leaf_is_shell_drop_safe(
                         .variants
                         .iter()
                         .all(|variant| variant.field_tys.iter().all(&recurse));
+            }
+            if let Some(layout) = crate::model::find_record_layout_for_ty(ty, record_layouts) {
+                return layout.field_tys.iter().all(&recurse);
             }
             record_field_orders
                 .get(name)

@@ -59,6 +59,8 @@ mod http_ws_string_temp_drop_canary;
 mod identity_lowering;
 #[path = "lowering_expr/lambda_captures.rs"]
 mod lambda_captures;
+#[path = "lowering_expr/last_borrowed_release_multiplicity.rs"]
+mod last_borrowed_release_multiplicity;
 #[path = "lowering_expr/literal_misc.rs"]
 mod literal_misc;
 #[path = "lowering_expr/loop_break_continue.rs"]

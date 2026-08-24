@@ -631,7 +631,8 @@ fn std$fs$last_io_error() -> std.fs.IoError [conv=default]
     _5 = move _4
     _6 = call hew_stream_last_error() -> bb3
   bb3:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(192) ty=string
+    stmt: bind BindingId(4294967231) __hew_discarded_call_result site=SiteId(192) ty=string
+    stmt: use BindingId(4294967231) __hew_discarded_call_result site=SiteId(192) ty=string intent=Consume
     stmt: eval site=SiteId(192) ty=string
     stmt: use BindingId(17) errno site=SiteId(197) ty=i64 intent=Read
     drop _6 ty=string fn=release(hew_string_drop)
@@ -872,7 +873,8 @@ fn std$fs$try_read(string) -> Result<string, std.fs.IoError> [conv=default]
     _12 = move _11
     _13 = call hew_stream_last_error() -> bb9
   bb9:
-    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(288) ty=string
+    stmt: bind BindingId(4294967229) __hew_discarded_call_result site=SiteId(288) ty=string
+    stmt: use BindingId(4294967229) __hew_discarded_call_result site=SiteId(288) ty=string intent=Consume
     stmt: eval site=SiteId(288) ty=string
     stmt: use BindingId(26) errno site=SiteId(292) ty=i32 intent=Read
     drop _13 ty=string fn=release(hew_string_drop)
@@ -885,6 +887,7 @@ fn std$fs$try_read(string) -> Result<string, std.fs.IoError> [conv=default]
     _18 = const.i64 0
     mtag17 = move _18
     mvar17.0.0 = move _7
+    neutralize_payload _7 -> mvar17.0.0 [ReturnedAggregateMemberConsume]
     _19 = move _17
     _14 = move _19
     goto bb12
@@ -902,6 +905,7 @@ fn std$fs$try_read(string) -> Result<string, std.fs.IoError> [conv=default]
     _23 = const.i64 1
     mtag20 = move _23
     mvar20.1.0 = move _22
+    neutralize_payload _22 -> mvar20.1.0 [ReturnedAggregateMemberConsume]
     _24 = move _20
     _14 = move _24
     goto bb12
@@ -909,6 +913,7 @@ fn std$fs$try_read(string) -> Result<string, std.fs.IoError> [conv=default]
     _28 = const.i64 1
     mtag26 = move _28
     mvar26.1.0 = move _27
+    neutralize_payload _27 -> mvar26.1.0 [ReturnedAggregateMemberConsume]
     _29 = move _26
     _4 = move _29
     goto bb5
@@ -1201,6 +1206,7 @@ fn std$fs$try_read_bytes(string) -> Result<bytes, std.fs.IoError> [conv=default]
     _18 = const.i64 0
     mtag17 = move _18
     mvar17.0.0 = move _2
+    neutralize_payload _2 -> mvar17.0.0 [ReturnedAggregateMemberConsume]
     _19 = move _17
     _8 = move _19
     goto bb6
@@ -1211,7 +1217,8 @@ fn std$fs$try_read_bytes(string) -> Result<bytes, std.fs.IoError> [conv=default]
     ret = move _20
     return
   bb7:
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(383) ty=string
+    stmt: bind BindingId(4294967230) __hew_discarded_call_result site=SiteId(383) ty=string
+    stmt: use BindingId(4294967230) __hew_discarded_call_result site=SiteId(383) ty=string intent=Consume
     stmt: eval site=SiteId(383) ty=string
     stmt: use BindingId(42) kind site=SiteId(387) ty=i64 intent=Read
     stmt: use BindingId(43) errno site=SiteId(389) ty=i32 intent=Read
@@ -1222,6 +1229,7 @@ fn std$fs$try_read_bytes(string) -> Result<bytes, std.fs.IoError> [conv=default]
     _15 = const.i64 1
     mtag12 = move _15
     mvar12.1.0 = move _14
+    neutralize_payload _14 -> mvar12.1.0 [ReturnedAggregateMemberConsume]
     _16 = move _12
     _8 = move _16
     goto bb6
@@ -1470,7 +1478,8 @@ fn std$fs$try_list_dir(string) -> Result<Vec<string>, std.fs.IoError> [conv=defa
     _7 = move _6
     _8 = call hew_stream_last_error() -> bb4
   bb4:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(454) ty=string
+    stmt: bind BindingId(4294967231) __hew_discarded_call_result site=SiteId(454) ty=string
+    stmt: use BindingId(4294967231) __hew_discarded_call_result site=SiteId(454) ty=string intent=Consume
     stmt: eval site=SiteId(454) ty=string
     stmt: use BindingId(56) errno site=SiteId(458) ty=i32 intent=Read
     drop _8 ty=string fn=release(hew_string_drop)
@@ -1483,6 +1492,7 @@ fn std$fs$try_list_dir(string) -> Result<Vec<string>, std.fs.IoError> [conv=defa
     _13 = const.i64 0
     mtag12 = move _13
     mvar12.0.0 = move _2
+    neutralize_payload _2 -> _12 [AggregateMemberConsume]
     _14 = move _12
     _9 = move _14
     goto bb7
@@ -1500,6 +1510,7 @@ fn std$fs$try_list_dir(string) -> Result<Vec<string>, std.fs.IoError> [conv=defa
     _18 = const.i64 1
     mtag15 = move _18
     mvar15.1.0 = move _17
+    neutralize_payload _17 -> mvar15.1.0 [ReturnedAggregateMemberConsume]
     _19 = move _15
     _9 = move _19
     goto bb7
@@ -1824,6 +1835,7 @@ fn std$stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [c
     _27 = const.i64 1
     mtag26 = move _27
     mvar26.1.0 = move _19
+    neutralize_payload _19 -> mvar26.1.0 [ReturnedAggregateMemberConsume]
     ret = move _26
     return
   bb15:
@@ -1858,6 +1870,7 @@ fn std$stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [c
     _34 = const.i64 0
     mtag32 = move _34
     mvar32.0.0 = move _33
+    neutralize_payload _33 -> mvar32.0.0 [ReturnedAggregateMemberConsume]
     _35 = move _32
     ret = move _35
     return
@@ -2023,6 +2036,7 @@ fn std$stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string
     _27 = const.i64 1
     mtag26 = move _27
     mvar26.1.0 = move _19
+    neutralize_payload _19 -> mvar26.1.0 [ReturnedAggregateMemberConsume]
     ret = move _26
     return
   bb15:
@@ -2057,6 +2071,7 @@ fn std$stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string
     _34 = const.i64 0
     mtag32 = move _34
     mvar32.0.0 = move _33
+    neutralize_payload _33 -> mvar32.0.0 [ReturnedAggregateMemberConsume]
     _35 = move _32
     ret = move _35
     return
@@ -2094,6 +2109,7 @@ fn std$stream$from_file(string) -> Result<Stream<string>, string> [conv=default]
     _6 = const.i64 0
     mtag5 = move _6
     mvar5.0.0 = move _2
+    neutralize_payload _2 -> mvar5.0.0 [ReturnedAggregateMemberConsume]
     _7 = move _5
     _3 = move _7
     goto bb5
@@ -2155,6 +2171,7 @@ fn std$stream$try_from_file(string) -> Result<Stream<string>, std.fs.IoError> [c
     _6 = const.i64 0
     mtag5 = move _6
     mvar5.0.0 = move _2
+    neutralize_payload _2 -> mvar5.0.0 [ReturnedAggregateMemberConsume]
     _7 = move _5
     _3 = move _7
     goto bb5
@@ -2176,7 +2193,8 @@ fn std$stream$try_from_file(string) -> Result<Stream<string>, std.fs.IoError> [c
     _12 = move _11
     _13 = call hew_stream_last_error() -> bb8
   bb8:
-    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(662) ty=string
+    stmt: bind BindingId(4294967229) __hew_discarded_call_result site=SiteId(662) ty=string
+    stmt: use BindingId(4294967229) __hew_discarded_call_result site=SiteId(662) ty=string intent=Consume
     stmt: eval site=SiteId(662) ty=string
     stmt: use BindingId(87) kind site=SiteId(666) ty=i64 intent=Read
     stmt: use BindingId(88) errno site=SiteId(668) ty=i32 intent=Read
@@ -2187,6 +2205,7 @@ fn std$stream$try_from_file(string) -> Result<Stream<string>, std.fs.IoError> [c
     _17 = const.i64 1
     mtag14 = move _17
     mvar14.1.0 = move _16
+    neutralize_payload _16 -> mvar14.1.0 [ReturnedAggregateMemberConsume]
     _18 = move _14
     _3 = move _18
     goto bb5
@@ -2210,6 +2229,7 @@ fn std$stream$to_file(string) -> Result<Sink<string>, string> [conv=default]
     stmt: use BindingId(89) path site=SiteId(672) ty=string intent=Read
     _1 = call hew_stream_from_file_write(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(671) ty=Sink<string>
     stmt: bind BindingId(90) s site=SiteId(671) ty=Sink<string>
     stmt: use BindingId(90) s site=SiteId(676) ty=Sink<string> intent=Read
     _2 = move _1
@@ -2219,23 +2239,25 @@ fn std$stream$to_file(string) -> Result<Sink<string>, string> [conv=default]
   bb3:
     stmt: use BindingId(90) s site=SiteId(680) ty=Sink<string> intent=Read
     stmt: agg_alias BindingId(90) s site=SiteId(680) ty=Sink<string>
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(679) ty=Result<Sink<string>, string>
     _6 = const.i64 0
     mtag5 = move _6
     mvar5.0.0 = move _2
+    neutralize_payload _2 -> mvar5.0.0 [ReturnedAggregateMemberConsume]
     _7 = move _5
     _3 = move _7
     goto bb5
   bb4:
     _9 = call hew_stream_last_error() -> bb6
   bb5:
-    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(674) ty=Result<Sink<string>, string>
+    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(674) ty=Result<Sink<string>, string>
     stmt: return site=Some(SiteId(670)) ty=Result<Sink<string>, string>
     _12 = move _3
     ret = move _12
     return
   bb6:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(683) ty=string
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(682) ty=Result<Sink<string>, string>
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(683) ty=string
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(682) ty=Result<Sink<string>, string>
     _10 = const.i64 1
     mtag8 = move _10
     mvar8.1.0 = move _9
@@ -2269,6 +2291,7 @@ fn std$stream$try_to_file(string) -> Result<Sink<string>, std.fs.IoError> [conv=
     stmt: use BindingId(91) path site=SiteId(687) ty=string intent=Read
     _1 = call hew_stream_from_file_write(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(686) ty=Sink<string>
     stmt: bind BindingId(92) s site=SiteId(686) ty=Sink<string>
     stmt: use BindingId(92) s site=SiteId(691) ty=Sink<string> intent=Read
     _2 = move _1
@@ -2278,15 +2301,18 @@ fn std$stream$try_to_file(string) -> Result<Sink<string>, std.fs.IoError> [conv=
   bb3:
     stmt: use BindingId(92) s site=SiteId(695) ty=Sink<string> intent=Read
     stmt: agg_alias BindingId(92) s site=SiteId(695) ty=Sink<string>
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(694) ty=Result<Sink<string>, std.fs.IoError>
     _6 = const.i64 0
     mtag5 = move _6
     mvar5.0.0 = move _2
+    neutralize_payload _2 -> mvar5.0.0 [ReturnedAggregateMemberConsume]
     _7 = move _5
     _3 = move _7
     goto bb5
   bb4:
     _8 = call hew_stream_last_error_kind() -> bb6
   bb5:
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(689) ty=Result<Sink<string>, std.fs.IoError>
     stmt: return site=Some(SiteId(685)) ty=Result<Sink<string>, std.fs.IoError>
     _19 = move _3
     ret = move _19
@@ -2301,7 +2327,8 @@ fn std$stream$try_to_file(string) -> Result<Sink<string>, std.fs.IoError> [conv=
     _12 = move _11
     _13 = call hew_stream_last_error() -> bb8
   bb8:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(702) ty=string
+    stmt: bind BindingId(4294967229) __hew_discarded_call_result site=SiteId(702) ty=string
+    stmt: use BindingId(4294967229) __hew_discarded_call_result site=SiteId(702) ty=string intent=Consume
     stmt: eval site=SiteId(702) ty=string
     stmt: use BindingId(93) kind site=SiteId(706) ty=i64 intent=Read
     stmt: use BindingId(94) errno site=SiteId(708) ty=i32 intent=Read
@@ -2312,6 +2339,7 @@ fn std$stream$try_to_file(string) -> Result<Sink<string>, std.fs.IoError> [conv=
     _17 = const.i64 1
     mtag14 = move _17
     mvar14.1.0 = move _16
+    neutralize_payload _16 -> mvar14.1.0 [ReturnedAggregateMemberConsume]
     _18 = move _14
     _3 = move _18
     goto bb5

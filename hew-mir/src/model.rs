@@ -4629,6 +4629,11 @@ pub enum NeutralizeAuthority {
     /// aggregate `dest`; nulling the source leaves the returned aggregate as
     /// the sole close authority. `transferee` is that constructor destination.
     ReturnedAggregateMemberConsume,
+    /// A whole owned local moved into a tuple, record, enum payload, or record
+    /// field. The constructor/store has copied the value into `transferee`;
+    /// nulling the source makes its path-complete scope drop safe while the
+    /// destination becomes the sole owner on the completed path.
+    AggregateMemberConsume,
     /// A DIVERGENT-ARM VALUE SELECTION: two or more mutually-exclusive control
     /// paths each move a whole owned local into the same branch-join result
     /// slot (`let out = match c { true => a, false => b };`, the if/else and
@@ -4661,6 +4666,7 @@ impl NeutralizeAuthority {
             NeutralizeAuthority::SendTransferLastUse
             | NeutralizeAuthority::WholeCarrierConsume
             | NeutralizeAuthority::ReturnedAggregateMemberConsume
+            | NeutralizeAuthority::AggregateMemberConsume
             | NeutralizeAuthority::DivergentSelectionTransfer => true,
             NeutralizeAuthority::MoveOutArmConsume | NeutralizeAuthority::EphemeralTempConsume => {
                 false
@@ -6438,6 +6444,10 @@ pub enum MirCheck {
         /// the diagnostic. Empty when the type could not be recovered
         /// (hand-built test MIR).
         local_ty: String,
+        /// Measured origin of the owner mint on the failing path(s). Diagnostic
+        /// prose is rendered from this closed provenance instead of inferring
+        /// a cause from severity.
+        mint_provenance: ObligationMintProvenance,
         /// Explicit retain-backed owner leaks are compiler invariant failures
         /// and therefore blocking; legacy unretained holes remain advisory.
         hard: bool,
@@ -6526,6 +6536,41 @@ pub enum MirCheck {
         name: String,
         reason: String,
     },
+}
+
+/// Closed provenance for owner mints participating in an under-release
+/// finding. The balance validator derives this from its retain bits while
+/// folding CFG exits; diagnostic projection only renders the carried fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ObligationMintProvenance {
+    /// No failing path carries an explicit retain-backed owner mint.
+    #[default]
+    Ordinary,
+    /// Every failing path represented by the finding carries an explicit
+    /// retain-backed owner mint.
+    ExplicitRetain,
+    /// The finding combines ordinary and explicit-retain mint paths.
+    Mixed,
+}
+
+impl ObligationMintProvenance {
+    /// Join two exit-local provenance facts while aggregating one finding.
+    #[must_use]
+    pub const fn join(self, other: Self) -> Self {
+        if matches!((self, other), (Self::Ordinary, Self::Ordinary)) {
+            Self::Ordinary
+        } else if matches!((self, other), (Self::ExplicitRetain, Self::ExplicitRetain)) {
+            Self::ExplicitRetain
+        } else {
+            Self::Mixed
+        }
+    }
+
+    /// Whether this finding contains an explicit retain-backed owner debt.
+    #[must_use]
+    pub const fn is_blocking(self) -> bool {
+        !matches!(self, Self::Ordinary)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -7383,6 +7428,16 @@ pub enum MirDiagnosticKind {
         bind_site: SiteId,
         exit_site: SiteId,
         ty: ResolvedTy,
+    },
+    /// A call returned a `Sink` or `Stream` inside an enum payload,
+    /// but neither its declaration identity nor its emitted symbol has a
+    /// measured per-variant return summary. Minting a close obligation from
+    /// the call arguments would guess ownership, so the construct is refused
+    /// until a summary is available.
+    ImportedResourcePayloadSummaryMissing {
+        symbol: String,
+        payload_ty: String,
+        site: SiteId,
     },
     /// D10: a named user type had no known `ValueClass` at the MIR boundary.
     /// Only builtin types are supported in slice 1.

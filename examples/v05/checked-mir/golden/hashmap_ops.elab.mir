@@ -39,7 +39,6 @@ fn main -> ()
     return site=Some(SiteId(81)) ty=()
     bind BindingId(7) s site=SiteId(85) ty=string
     use BindingId(7) s site=SiteId(86) ty=string intent=Read
-    drop BindingId(7) s ty=string
     drop BindingId(4294967227) __hew_call_scrutinee ty=Option<string>
     drop BindingId(6) labels ty=HashMap<string, string>
     drop BindingId(5) ratios ty=HashMap<string, f64>

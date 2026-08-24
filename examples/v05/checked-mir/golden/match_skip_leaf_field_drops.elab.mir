@@ -79,11 +79,11 @@ fn skip_vec_record -> i64
     goto[bb3->bb5] ->
       (none)
     return[bb4] ->
-      (none)
+      drop _2 ty=Vec<string> kind=cow_heap(hew_vec_free_owned)
     goto[bb5->bb4] ->
       (none)
     cancel[bb5] ->
-      (none)
+      drop _2 ty=Vec<string> kind=cow_heap(hew_vec_free_owned)
 
 fn skip_bytes_record -> i64
   statements:

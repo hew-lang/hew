@@ -246,8 +246,10 @@ fn main() -> () [conv=default]
     _63 = icmp.eq _59 _62
     branch _63 ? bb37 : bb38
   bb40:
+    drop _58 ty=Option<string> fn=in_place(Enum)
     goto bb35
   bb41:
+    drop _58 ty=Option<string> fn=in_place(Enum)
     goto bb35
 
 fn i8::fmt(i8) -> string [conv=default]

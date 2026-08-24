@@ -204,11 +204,11 @@ fn apply_match_hop(blocks: &mut [BasicBlock], local_tys: &[ResolvedTy]) {
     );
 }
 
-/// The #2212 shape: one field loaded out and returned, record untouched
-/// afterwards → the owned sibling gets its in-place discharge spliced
-/// directly after the escape instruction.
+/// A retained string field loaded and returned owns an independent share.
+/// Once that clone escapes, both the record's original field and its owned
+/// sibling must be discharged after the escape instruction.
 #[test]
-fn single_attributed_escape_discharges_owned_sibling() {
+fn retained_clone_escape_discharges_original_and_sibling() {
     let b = BindingId(1);
     let owned = vec![(b, "r".to_string(), rec_ty())];
     let binding_locals: HashMap<BindingId, Place> = [(b, Place::Local(0))].into_iter().collect();
@@ -232,19 +232,25 @@ fn single_attributed_escape_discharges_owned_sibling() {
     apply(&mut blocks, &owned, &binding_locals, &local_tys);
     assert_eq!(
         blocks[0].instructions.len(),
-        3,
-        "exactly one sibling discharge must be spliced; got {:?}",
+        4,
+        "the original retained field and its sibling must be discharged; got {:?}",
         blocks[0].instructions
     );
     assert_eq!(
-        blocks[0].instructions[2],
-        Instr::FieldDropInPlace {
-            base: Place::Local(0),
-            field: crate::model::FieldAddr::Record(FieldOffset(1)),
-            ty: ResolvedTy::String,
-        },
-        "the discharge must address the NON-escaped sibling (field 1) on \
-         the root local, typed at the field"
+        &blocks[0].instructions[2..],
+        &[
+            Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: crate::model::FieldAddr::Record(FieldOffset(0)),
+                ty: ResolvedTy::String,
+            },
+            Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: crate::model::FieldAddr::Record(FieldOffset(1)),
+                ty: ResolvedTy::String,
+            },
+        ],
+        "the escapee keeps its retained share while the record releases both originals"
     );
 }
 
@@ -347,11 +353,11 @@ fn consuming_call_with_a_shared_continuation_refuses_discharge() {
     );
 }
 
-/// The escaped field itself must never be discharged: when field 1 is the
-/// escapee, the spliced set contains ONLY field 0 — a discharge of the
-/// escaped slot would free the buffer the escapee now owns.
+/// A retained string escape owns a distinct share. When field 1 is the
+/// escapee, the spliced set contains both original record fields while the
+/// returned clone remains live.
 #[test]
-fn escaped_field_is_never_in_the_discharge_set() {
+fn retained_escape_discharges_both_original_fields() {
     let b = BindingId(1);
     let owned = vec![(b, "r".to_string(), rec_ty())];
     let binding_locals: HashMap<BindingId, Place> = [(b, Place::Local(0))].into_iter().collect();
@@ -380,13 +386,19 @@ fn escaped_field_is_never_in_the_discharge_set() {
         .collect();
     assert_eq!(
         ops,
-        vec![&Instr::FieldDropInPlace {
-            base: Place::Local(0),
-            field: crate::model::FieldAddr::Record(FieldOffset(0)),
-            ty: ResolvedTy::String,
-        }],
-        "only the non-escaped sibling (field 0) may be discharged — a \
-         discharge of escaped field 1 double-frees the escapee"
+        vec![
+            &Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: crate::model::FieldAddr::Record(FieldOffset(0)),
+                ty: ResolvedTy::String,
+            },
+            &Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: crate::model::FieldAddr::Record(FieldOffset(1)),
+                ty: ResolvedTy::String,
+            },
+        ],
+        "both original record shares must be discharged after the retained clone escapes"
     );
 }
 
@@ -661,13 +673,19 @@ fn uncoverable_sibling_keeps_leak_while_coverable_discharges() {
         .collect();
     assert_eq!(
         ops,
-        vec![&Instr::FieldDropInPlace {
-            base: Place::Local(0),
-            field: crate::model::FieldAddr::Record(FieldOffset(1)),
-            ty: ResolvedTy::String,
-        }],
-        "the string sibling is discharged; the uncovered Vec sibling \
-         keeps its leak (fail-closed partial discharge)"
+        vec![
+            &Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: crate::model::FieldAddr::Record(FieldOffset(0)),
+                ty: ResolvedTy::String,
+            },
+            &Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: crate::model::FieldAddr::Record(FieldOffset(1)),
+                ty: ResolvedTy::String,
+            },
+        ],
+        "both original strings are discharged; the uncovered Vec sibling keeps its leak"
     );
 }
 

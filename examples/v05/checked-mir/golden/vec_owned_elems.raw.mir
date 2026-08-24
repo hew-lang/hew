@@ -325,6 +325,7 @@ fn main() -> () [conv=default]
     stmt: use BindingId(11) t site=SiteId(101) ty=Tag intent=Read
     _80 = move _79
     _81 = _80.field[1]
+    snapshot_drop _80 ty=Tag plan=UserRecord { name: "Tag" } boundary=LocalCall
     call println_i64(_81) -> bb46
   bb46:
     stmt: eval site=SiteId(99) ty=()
@@ -356,6 +357,7 @@ fn main() -> () [conv=default]
   bb52:
     stmt: bind BindingId(4294967220) __hew_produced_value site=SiteId(109) ty=Tag
     _93 = _92.field[1]
+    snapshot_drop _92 ty=Tag plan=UserRecord { name: "Tag" } boundary=LocalCall
     call println_i64(_93) -> bb53
   bb53:
     stmt: eval site=SiteId(107) ty=()

@@ -15,20 +15,13 @@ use std::path::Path;
 /// Returns an [`io::Error`] if any file cannot be read or the directory cannot
 /// be traversed.
 pub fn compute_dir_checksum(dir: &Path) -> Result<String, io::Error> {
-    use sha2::{Digest, Sha256};
-
-    let mut hasher = Sha256::new();
-    let mut files = crate::package_fs::collect_package_files(dir)?;
-    files.sort();
-
-    for rel_path in &files {
-        let abs_path = dir.join(rel_path);
-        hasher.update(rel_path.as_bytes());
-        let contents = std::fs::read(&abs_path)?;
-        hasher.update(&contents);
+    let mut digest = crate::package_fs::TreeDigest::new();
+    let files = crate::package_fs::collect_package_snapshot(dir)?;
+    for file in &files {
+        digest.add_file(&file.path, &file.contents);
     }
 
-    Ok(crate::package_fs::sha256_prefixed(&hasher.finalize()))
+    Ok(digest.finish())
 }
 
 /// Verify that a directory's checksum matches an expected value.
@@ -94,16 +87,49 @@ mod tests {
     }
 
     #[test]
-    fn checksum_skips_git_and_target() {
+    fn checksum_frames_path_and_content() {
+        let tree_a = tempfile::tempdir().unwrap();
+        std::fs::write(tree_a.path().join("a"), "bc").unwrap();
+
+        let tree_b = tempfile::tempdir().unwrap();
+        std::fs::write(tree_b.path().join("ab"), "c").unwrap();
+
+        assert_ne!(
+            compute_dir_checksum(tree_a.path()).unwrap(),
+            compute_dir_checksum(tree_b.path()).unwrap()
+        );
+    }
+
+    #[test]
+    fn checksum_has_stable_domain_version_golden() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a"), "bc").unwrap();
+        assert_eq!(
+            compute_dir_checksum(dir.path()).unwrap(),
+            "sha256:e76ce035ee455d973bbe1ab1636cb48437c085f1dab958efa6a25370db8073a8"
+        );
+    }
+
+    #[test]
+    fn checksum_skips_package_artifacts() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("main.hew"), "content").unwrap();
         let c1 = compute_dir_checksum(dir.path()).unwrap();
 
-        // Adding .git and target dirs should not change checksum.
-        std::fs::create_dir(dir.path().join(".git")).unwrap();
-        std::fs::write(dir.path().join(".git").join("HEAD"), "ref").unwrap();
-        std::fs::create_dir(dir.path().join("target")).unwrap();
-        std::fs::write(dir.path().join("target").join("out"), "bin").unwrap();
+        for (directory, file) in [(".git", "HEAD"), ("target", "out"), (".hew", "state")] {
+            std::fs::create_dir(dir.path().join(directory)).unwrap();
+            std::fs::write(dir.path().join(directory).join(file), "ignored").unwrap();
+        }
+        std::fs::write(
+            dir.path().join(crate::package_fs::CACHE_METADATA_FILE),
+            "mutable metadata",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(crate::package_fs::CACHE_ARCHIVE_FILE),
+            "mutable archive",
+        )
+        .unwrap();
         let c2 = compute_dir_checksum(dir.path()).unwrap();
 
         assert_eq!(c1, c2);
@@ -147,5 +173,29 @@ mod tests {
         std::fs::write(dir.path().join("src").join("lib.hew"), "actor Lib2 {}").unwrap();
         let c2 = compute_dir_checksum(dir.path()).unwrap();
         assert_ne!(c1, c2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checksum_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("outside"), "content").unwrap();
+        symlink(dir.path().join("outside"), dir.path().join("link")).unwrap();
+
+        assert!(compute_dir_checksum(dir.path()).is_err());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn checksum_rejects_non_utf8_names() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(OsStr::from_bytes(b"bad-\xff")), "content").unwrap();
+
+        assert!(compute_dir_checksum(dir.path()).is_err());
     }
 }

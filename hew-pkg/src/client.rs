@@ -202,9 +202,9 @@ impl RegistryClient {
 
     /// Create a client for a named registry.
     #[must_use]
-    pub fn with_url(api_url: String) -> Self {
+    pub fn with_url(api_url: impl AsRef<str>) -> Self {
         Self {
-            api_url,
+            api_url: config::registry_identity(api_url.as_ref()),
             fallback_urls: Vec::new(),
             cdn_url: None,
             token: None,
@@ -224,6 +224,18 @@ impl RegistryClient {
     pub fn with_token(mut self, token: String) -> Self {
         self.token = Some(token);
         self
+    }
+
+    /// Return the registry API URL used to query a package.
+    #[must_use]
+    pub fn package_url(&self, name: &str) -> String {
+        format!("{}/packages/{name}", self.api_url)
+    }
+
+    /// Canonical source identity bound to this client's primary API URL.
+    #[must_use]
+    pub fn registry_identity(&self) -> &str {
+        &self.api_url
     }
 
     /// Start the GitHub OAuth device flow.
@@ -747,7 +759,7 @@ mod tests {
 
     #[test]
     fn package_urls_preserve_dotted_names() {
-        let client = RegistryClient::with_url("https://registry.example.com".to_string());
+        let client = RegistryClient::with_url("https://registry.example.com");
         assert_eq!(
             format!("{}/packages/{}", client.api_url, "alice.router"),
             "https://registry.example.com/packages/alice.router"
@@ -770,7 +782,7 @@ mod tests {
 
     #[test]
     fn client_custom_url() {
-        let client = RegistryClient::with_url("https://internal.example.com/api/v1".to_string());
+        let client = RegistryClient::with_url("https://internal.example.com/api/v1");
         assert_eq!(client.api_url, "https://internal.example.com/api/v1");
     }
 
@@ -843,7 +855,7 @@ mod tests {
 
     #[test]
     fn client_with_fallback() {
-        let client = RegistryClient::with_url("https://primary.example.com/api/v1".to_string())
+        let client = RegistryClient::with_url("https://primary.example.com/api/v1")
             .with_fallback("https://mirror.example.com/api/v1".to_string());
         assert_eq!(
             client.fallback_urls,

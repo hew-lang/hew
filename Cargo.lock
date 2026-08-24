@@ -1934,6 +1934,8 @@ dependencies = [
  "base64",
  "clap",
  "ed25519-dalek",
+ "fd-lock",
+ "libc",
  "rand 0.10.1",
  "rand_core 0.10.1",
  "semver",
@@ -1945,6 +1947,7 @@ dependencies = [
  "tiny_http",
  "toml",
  "ureq",
+ "windows-sys 0.61.2",
  "zstd",
 ]
 

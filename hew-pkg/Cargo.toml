@@ -20,9 +20,18 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.10.1"
 rand_core = "0.10.1"
 base64.workspace = true
+fd-lock.workspace = true
+libc.workspace = true
 tar = "0.4"
 zstd = "0.13"
 ureq = { version = "3", features = ["json"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+] }
 
 [dev-dependencies]
 tempfile.workspace = true

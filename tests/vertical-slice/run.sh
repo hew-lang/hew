@@ -47,23 +47,11 @@ trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_o
 
 compile_accept() {
   local fixture="$1"
-  local emit_llvm=()
-  case "${fixture}" in
-    link_monitor_value_monitor_in_actor|actor_channel_shadow_sender_codec)
-      emit_llvm=(--emit-llvm)
-      ;;
-  esac
-  local status=0
-  if "${HEW}" compile "${emit_llvm[@]}" "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" >"${accept_output}" 2>&1; then
-    status=0
-  else
-    status=$?
-  fi
-  if [[ "${status}" -ne 0 ]]; then
-    echo "expected ${fixture} to compile cleanly, got exit ${status}" >&2
-    cat "${accept_output}" >&2
-    exit 1
-  fi
+  # Keep failure propagation explicit: Bash disables `errexit` inside a
+  # function when an outer caller evaluates that function as a condition.
+  # `exit` here makes a failed fixture fatal even through such a caller.
+  "${ROOT}/tests/vertical-slice/compile-accept.sh" \
+    "${HEW}" "${ROOT}" "${fixture}" "${accept_output}" || exit 1
 }
 
 run_fixture_path_expect_status() {

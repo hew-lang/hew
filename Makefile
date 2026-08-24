@@ -1216,6 +1216,7 @@ test-opaque-resource-lifecycle-matrix-external-build: wasm-runtime hew-native
 # inputs: hew-types/src/*.rs hew-hir/src/*.rs hew-mir/src/*.rs hew-codegen-rs/src/*.rs
 # inputs: hew-cli/src/*.rs hew-runtime/src/*.rs std/*.hew
 test-vertical-slice: hew-native runtime $(LIBHEW_READY) ## Test: run the end-to-end compiler oracle
+	bash tests/vertical-slice/test-compile-accept.sh
 	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/vertical-slice/run.sh
 
 # Warm-up form for the preflight dispatcher, which derives it by name.

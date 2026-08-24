@@ -34,6 +34,7 @@ NPM_PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-npm-packages.ym
 RELEASE_GATE = ROOT / ".github" / "workflows" / "release-gate.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 COVERAGE_NIGHTLY_WORKFLOW = ROOT / ".github" / "workflows" / "coverage-nightly.yml"
+DEPLOY_DOCS_WORKFLOW = ROOT / ".github" / "workflows" / "deploy-docs.yml"
 WORKFLOW_DIRECTORY = ROOT / ".github" / "workflows"
 RELEASE_NOTES = ROOT / "docs" / "releases" / "v0.6.0-rc1.md"
 RUNBOOK = ROOT / "docs" / "release-runbook.md"
@@ -1534,6 +1535,54 @@ def test_contract_oracle_runs_in_required_ci() -> None:
     assert "make test-release-workflow-contract" in dispatched, dispatched
 
 
+def assert_deploy_docs_provisions_pinned_llvm_before_build(text: str) -> None:
+    """Require the docs compiler build to inherit the pinned LLVM toolchain."""
+    assert 'LLVM_VERSION: "22.1.5"' in text
+    job = workflow_job(text, "deploy")
+    setup_use = "uses: ./.github/actions/setup-llvm"
+    build_command = "cargo build -p hew-cli --bin hew --release"
+    assert job.count(setup_use) == 1
+    assert job.count(build_command) == 1
+
+    setup_step = next(step for step in workflow_steps(job) if setup_use in step)
+    assert "if:" not in setup_step
+    assert "version: ${{ env.LLVM_VERSION }}" in setup_step
+    assert job.index(setup_use) < job.index(build_command)
+
+
+def test_deploy_docs_provisions_pinned_llvm_before_build() -> None:
+    deploy_docs = DEPLOY_DOCS_WORKFLOW.read_text()
+    assert_deploy_docs_provisions_pinned_llvm_before_build(deploy_docs)
+
+    setup_step = next(
+        step
+        for step in workflow_steps(workflow_job(deploy_docs, "deploy"))
+        if "uses: ./.github/actions/setup-llvm" in step
+    )
+    build_step = next(
+        step
+        for step in workflow_steps(workflow_job(deploy_docs, "deploy"))
+        if "cargo build -p hew-cli --bin hew --release" in step
+    )
+    mutations = (
+        deploy_docs.replace("uses: ./.github/actions/setup-llvm", "run: true", 1),
+        deploy_docs.replace(setup_step, setup_step + setup_step, 1),
+        deploy_docs.replace(setup_step + build_step, build_step + setup_step, 1),
+        deploy_docs.replace(
+            "uses: ./.github/actions/setup-llvm",
+            "if: false\n        uses: ./.github/actions/setup-llvm",
+            1,
+        ),
+        deploy_docs.replace("version: ${{ env.LLVM_VERSION }}", "version: 22", 1),
+    )
+    for mutation in mutations:
+        try:
+            assert_deploy_docs_provisions_pinned_llvm_before_build(mutation)
+        except (AssertionError, StopIteration):
+            continue
+        raise AssertionError("deploy-docs LLVM mutation escaped the contract")
+
+
 def workflow_job(text: str, name: str) -> str:
     """Return one top-level GitHub Actions job without parsing unrelated YAML."""
     start = text.index(f"  {name}:\n")
@@ -1945,12 +1994,16 @@ def test_ci_wasm_consumers_provision_unknown_target() -> None:
     ci = CI_WORKFLOW.read_text()
     for job_name in ("playground-wasm-build", "build-and-test"):
         job = workflow_job(ci, job_name)
-        assert "uses: ./.github/actions/setup-rust-build" in job
-        assert re.search(
-            r"^\s+targets:\s+['\"]?[^\n]*\bwasm32-unknown-unknown\b",
-            job,
-            re.MULTILINE,
+        setup = next(
+            step
+            for step in workflow_steps(job)
+            if "uses: ./.github/actions/setup-rust-build" in step
         )
+        targets = re.search(r"^\s+targets:\s+['\"]?([^'\"\n]+)", setup, re.MULTILINE)
+        assert targets is not None
+        assert "wasm32-unknown-unknown" in {
+            target.strip() for target in targets.group(1).split(",")
+        }
 
 
 def test_binaryen_prefetch_pin_mutations_are_rejected() -> None:
@@ -2600,33 +2653,49 @@ def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:
         raise AssertionError("foundational release-gate mutation escaped")
 
 
-def _discover_tests() -> tuple[object, ...]:
-    return tuple(
-        test
-        for name, test in globals().items()
-        if name.startswith("test_") and callable(test)
-    )
+def _discover_tests() -> list:
+    """Return every test function after the module has finished loading."""
+    return [
+        value
+        for name, value in sorted(globals().items())
+        if name.startswith("test_") and callable(value)
+    ]
 
 
-def _test_function_count_in_file() -> int:
-    tree = ast.parse(Path(__file__).read_text())
-    return sum(
-        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+def _assert_runner_covers_every_top_level_test(
+    tests: list[object], source: str
+) -> None:
+    defined = {
+        node.name
+        for node in ast.parse(source).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name.startswith("test_")
-        for node in tree.body
+    }
+    discovered = {test.__name__ for test in tests}
+    assert discovered == defined, (
+        f"runner discovery mismatch: missing={sorted(defined - discovered)}, "
+        f"extra={sorted(discovered - defined)}"
     )
 
 
-_TESTS = _discover_tests()
-_EXPECTED_TEST_COUNT = _test_function_count_in_file()
-assert len(_TESTS) == _EXPECTED_TEST_COUNT, (
-    f"discovered {len(_TESTS)} tests, expected {_EXPECTED_TEST_COUNT}"
-)
+def test_direct_runner_discovery_rejects_an_omitted_test() -> None:
+    def test_discovered() -> None:
+        pass
+
+    source = "def test_discovered(): pass\ndef test_omitted(): pass\n"
+    try:
+        _assert_runner_covers_every_top_level_test([test_discovered], source)
+    except AssertionError as exc:
+        assert "test_omitted" in str(exc)
+        return
+    raise AssertionError("an omitted test escaped direct runner discovery parity")
 
 
 if __name__ == "__main__":
     failures = 0
-    for test in _TESTS:
+    discovered = _discover_tests()
+    _assert_runner_covers_every_top_level_test(discovered, Path(__file__).read_text())
+    for test in discovered:
         try:
             test()
             print(f"PASS {test.__name__}")
@@ -2634,5 +2703,5 @@ if __name__ == "__main__":
             print(f"FAIL {test.__name__}: {exc}")
             failures += 1
     if failures:
-        raise SystemExit(f"{failures}/{len(_TESTS)} tests failed")
-    print(f"All {len(_TESTS)} tests passed.")
+        raise SystemExit(f"{failures}/{len(discovered)} tests failed")
+    print(f"All {len(discovered)} tests passed.")

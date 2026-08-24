@@ -1,5 +1,11 @@
 name: Deploy docs
 
+env:
+  # Keep llvm-sys on the same checksum-pinned LLVM release as CI. Bumps must
+  # also update .github/actions/setup-llvm/action.yml's asset digests.
+  LLVM_VERSION: "22.1.5"
+  CARGO_TERM_COLOR: always
+
 on:
   push:
     tags:
@@ -17,6 +23,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
         with:
           toolchain: stable
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
       - name: Build hew
         run: cargo build -p hew-cli --bin hew --release
       - name: Generate language and stdlib docs
